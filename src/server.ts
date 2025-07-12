@@ -149,6 +149,63 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
         }
     }
 
+    // Pattern to match substr() calls with incorrect parameter types
+    const substrPattern = /\bsubstr\s*\(\s*([^,\)]+)\s*,\s*([^,\)]+)(?:\s*,\s*([^,\)]+))?\s*\)/g;
+    let substrMatch: RegExpExecArray | null;
+
+    while ((substrMatch = substrPattern.exec(text)) !== null) {
+        const firstArg = substrMatch[1]?.trim();
+        const secondArg = substrMatch[2]?.trim();
+        const thirdArg = substrMatch[3]?.trim();
+        
+        if (!firstArg || !secondArg) continue;
+        
+        // Check if first argument is a number (should be string)
+        if (/^\d+$/.test(firstArg)) {
+            const argStart = substrMatch.index + substrMatch[0].indexOf(firstArg);
+            const diagnostic: Diagnostic = {
+                severity: DiagnosticSeverity.Error,
+                range: {
+                    start: textDocument.positionAt(argStart),
+                    end: textDocument.positionAt(argStart + firstArg.length)
+                },
+                message: `substr() first parameter should be a string, not a number. Use substr(string, ${firstArg}).`,
+                source: 'ucode'
+            };
+            diagnostics.push(diagnostic);
+        }
+        
+        // Check if second argument is a string literal (should be number)
+        if (/^["']/.test(secondArg)) {
+            const argStart = substrMatch.index + substrMatch[0].indexOf(secondArg);
+            const diagnostic: Diagnostic = {
+                severity: DiagnosticSeverity.Error,
+                range: {
+                    start: textDocument.positionAt(argStart),
+                    end: textDocument.positionAt(argStart + secondArg.length)
+                },
+                message: `substr() second parameter should be a number (start position), not a string.`,
+                source: 'ucode'
+            };
+            diagnostics.push(diagnostic);
+        }
+        
+        // Check if third argument is a string literal (should be number)
+        if (thirdArg && /^["']/.test(thirdArg)) {
+            const argStart = substrMatch.index + substrMatch[0].indexOf(thirdArg);
+            const diagnostic: Diagnostic = {
+                severity: DiagnosticSeverity.Error,
+                range: {
+                    start: textDocument.positionAt(argStart),
+                    end: textDocument.positionAt(argStart + thirdArg.length)
+                },
+                message: `substr() third parameter should be a number (length), not a string.`,
+                source: 'ucode'
+            };
+            diagnostics.push(diagnostic);
+        }
+    }
+
     // Send the computed diagnostics to VS Code
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
 }
