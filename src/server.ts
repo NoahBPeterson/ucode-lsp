@@ -14,7 +14,6 @@ import {
     Hover,
     MarkupKind,
     WorkspaceFoldersChangeEvent,
-    DidChangeConfigurationParams,
     DidChangeWatchedFilesParams,
     TextDocumentChangeEvent
 } from 'vscode-languageserver/node';
@@ -29,7 +28,6 @@ const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
 let hasConfigurationCapability = false;
 let hasWorkspaceFolderCapability = false;
-let hasDiagnosticRelatedInformationCapability = false;
 
 connection.onInitialize((params: InitializeParams) => {
     connection.console.log('ucode language server initializing...');
@@ -41,11 +39,6 @@ connection.onInitialize((params: InitializeParams) => {
     );
     hasWorkspaceFolderCapability = !!(
         capabilities.workspace && !!capabilities.workspace.workspaceFolders
-    );
-    hasDiagnosticRelatedInformationCapability = !!(
-        capabilities.textDocument &&
-        capabilities.textDocument.publishDiagnostics &&
-        capabilities.textDocument.publishDiagnostics.relatedInformation
     );
 
     const result: InitializeResult = {
@@ -81,51 +74,9 @@ connection.onInitialized(() => {
     }
 });
 
-// Example settings interface
-interface ExampleSettings {
-    maxNumberOfProblems: number;
-}
-
-// The global settings, used when the `workspace/configuration` request is not supported by the client
-const defaultSettings: ExampleSettings = { maxNumberOfProblems: 1000 };
-let globalSettings: ExampleSettings = defaultSettings;
-
-// Cache the settings of all open documents
-const documentSettings: Map<string, Thenable<ExampleSettings>> = new Map();
-
-connection.onDidChangeConfiguration((change: DidChangeConfigurationParams) => {
-    if (hasConfigurationCapability) {
-        // Reset all cached document settings
-        documentSettings.clear();
-    } else {
-        globalSettings = <ExampleSettings>(
-            (change.settings.languageServerExample || defaultSettings)
-        );
-    }
-
-    // Revalidate all open text documents
-    documents.all().forEach(validateTextDocument);
-});
-
-function getDocumentSettings(resource: string): Thenable<ExampleSettings> {
-    if (!hasConfigurationCapability) {
-        return Promise.resolve(globalSettings);
-    }
-    let result = documentSettings.get(resource);
-    if (!result) {
-        result = connection.workspace.getConfiguration({
-            scopeUri: resource,
-            section: 'ucode'
-        });
-        documentSettings.set(resource, result);
-        return result;
-    }
-    return result;
-}
-
 // Only keep settings for open documents
-documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
-    documentSettings.delete(e.document.uri);
+documents.onDidClose((_e: TextDocumentChangeEvent<TextDocument>) => {
+    // Document closed - could clean up any document-specific data here
 });
 
 // The content of a text document has changed. This event is emitted
@@ -135,39 +86,67 @@ documents.onDidChangeContent((change: TextDocumentChangeEvent<TextDocument>) => 
 });
 
 async function validateTextDocument(textDocument: TextDocument): Promise<void> {
-    // In a real server this would be computed using the actual ucode syntax
-    const settings = await getDocumentSettings(textDocument.uri);
-
-    // The validator creates diagnostics for all uppercase words length 2 and more
     const text = textDocument.getText();
-    const pattern = /\b[A-Z]{2,}\b/g;
-    let m: RegExpExecArray | null;
-
-    let problems = 0;
     const diagnostics: Diagnostic[] = [];
-    while ((m = pattern.exec(text)) && problems < settings.maxNumberOfProblems) {
-        problems++;
-        const diagnostic: Diagnostic = {
-            severity: DiagnosticSeverity.Warning,
-            range: {
-                start: textDocument.positionAt(m.index),
-                end: textDocument.positionAt(m.index + m[0].length)
-            },
-            message: `${m[0]} is all uppercase.`,
-            source: 'ucode'
-        };
-        if (hasDiagnosticRelatedInformationCapability) {
-            diagnostic.relatedInformation = [
-                {
-                    location: {
-                        uri: textDocument.uri,
-                        range: Object.assign({}, diagnostic.range)
-                    },
-                    message: 'Spelling matters'
-                }
-            ];
+
+    // Built-in functions that should NOT be called as methods
+    const problematicMethods = [
+        'trim', 'ltrim', 'rtrim', 'split', 'substr', 'replace', 'match', 
+        'length', 'push', 'pop', 'shift', 'unshift', 'slice', 'splice',
+        'sort', 'reverse', 'join', 'indexOf', 'toUpperCase', 'toLowerCase',
+        'startsWith', 'endsWith', 'includes', 'charAt', 'charCodeAt', 'uc',
+        'lc', 'index', 'rindex', 'chr', 'ord', 'filter', 'map', 'exists',
+        'keys', 'values', 'hex', 'int', 'type', 'uchr', 'min', 'max',
+        'b64dec', 'b64enc', 'hexdec', 'hexenc', 'uniq', 'localtime', 'gmtime',
+        'timelocal', 'timegm', 'clock', 'iptoarr', 'arrtoip', 'wildcard',
+        'regexp', 'sourcepath', 'assert', 'gc', 'loadstring', 'loadfile',
+        'call', 'signal'
+    ];
+
+    // Pattern to match .methodName( calls
+    const methodCallPattern = /\.(\w+)\s*\(/g;
+    let match: RegExpExecArray | null;
+
+    while ((match = methodCallPattern.exec(text)) !== null) {
+        const methodName = match[1];
+        
+        // Check if this is a problematic built-in method call
+        if (methodName && problematicMethods.includes(methodName)) {
+            const diagnostic: Diagnostic = {
+                severity: DiagnosticSeverity.Error,
+                range: {
+                    start: textDocument.positionAt(match.index),
+                    end: textDocument.positionAt(match.index + match[0].length - 1) // Don't include the '('
+                },
+                message: `ucode does not support .${methodName}() method calls. Use ${methodName}(value, ...) instead.`,
+                source: 'ucode'
+            };
+            diagnostics.push(diagnostic);
         }
-        diagnostics.push(diagnostic);
+    }
+
+    // Pattern to match invalid syntax before declaration keywords
+    const invalidDeclarationPattern = /(^|\s)(\w+)\s+(let|var|const)\b/gm;
+    let declarationMatch: RegExpExecArray | null;
+
+    while ((declarationMatch = invalidDeclarationPattern.exec(text)) !== null) {
+        const invalidToken = declarationMatch[2]; // Now group 2 is the invalid token
+        const keyword = declarationMatch[3]; // Now group 3 is the keyword
+        
+        if (invalidToken && keyword && declarationMatch[1] !== undefined) {
+            // Calculate position of the invalid token (skip the whitespace/start match)
+            const tokenStart = declarationMatch.index + declarationMatch[1].length;
+            const diagnostic: Diagnostic = {
+                severity: DiagnosticSeverity.Error,
+                range: {
+                    start: textDocument.positionAt(tokenStart),
+                    end: textDocument.positionAt(tokenStart + invalidToken.length)
+                },
+                message: `Unexpected token '${invalidToken}' before '${keyword}' declaration. Remove '${invalidToken}'.`,
+                source: 'ucode'
+            };
+            diagnostics.push(diagnostic);
+        }
     }
 
     // Send the computed diagnostics to VS Code

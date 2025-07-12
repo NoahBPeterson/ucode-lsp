@@ -131,8 +131,17 @@
     "functions": {
       "patterns": [
         {
+          "name": "invalid.illegal.method-call.ucode",
+          "match": "\\.(trim|ltrim|rtrim|split|substr|replace|match|length|push|pop|shift|unshift|slice|splice|sort|reverse|join|indexOf|toUpperCase|toLowerCase|startsWith|endsWith|includes|charAt|charCodeAt|uc|lc|index|rindex|chr|ord|filter|map|exists|keys|values|hex|int|type|uchr|min|max|b64dec|b64enc|hexdec|hexenc|uniq|localtime|gmtime|timelocal|timegm|clock|iptoarr|arrtoip|wildcard|regexp|sourcepath|assert|gc|loadstring|loadfile|call|signal|print|printf|sprintf|require|include|json|system|time|sleep|die|exit|warn|trace|proto|render|getenv)\\s*(?=\\()",
+          "captures": {
+            "0": {
+              "name": "invalid.illegal.method-call.ucode"
+            }
+          }
+        },
+        {
           "name": "support.function.builtin.ucode",
-          "match": "\\b(print|printf|sprintf|length|substr|split|join|trim|ltrim|rtrim|chr|ord|hex|int|type|keys|values|push|pop|shift|unshift|slice|splice|sort|reverse|map|filter|exists|delete|clone|gc|time|localtime|gmtime|timelocal|timegm|clock|sleep|system|popen|require|include|render|json|b64enc|b64dec|hexenc|hexdec|match|replace|search|uc|lc|uchr|min|max|abs|atan2|cos|sin|tan|exp|log|sqrt|rand|srand|trace|warn|die|exit|assert|loadfile|loadstring|call|sourcepath|proto|uniq|index|rindex|wildcard|regexp|getenv|open|error)\\b(?=\\s*\\()"
+          "match": "\\b(print|printf|sprintf|length|substr|split|join|trim|ltrim|rtrim|chr|ord|hex|int|type|keys|values|push|pop|shift|unshift|slice|splice|sort|reverse|map|filter|exists|uc|lc|index|rindex|uchr|min|max|b64dec|b64enc|hexdec|hexenc|uniq|localtime|gmtime|timelocal|timegm|clock|iptoarr|arrtoip|wildcard|regexp|sourcepath|assert|gc|loadstring|loadfile|call|signal|require|include|json|system|time|sleep|die|exit|warn|trace|proto|render|getenv)\\b(?=\\s*\\()"
         },
         {
           "name": "entity.name.function.ucode",
