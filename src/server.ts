@@ -206,6 +206,70 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
         }
     }
 
+    // Track variable declarations to detect redeclarations
+    const variableDeclarations = new Map<string, { type: 'const' | 'let' | 'var', line: number }>();
+    
+    // Pattern to match variable declarations
+    const declarationPattern = /\b(const|let|var)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)/g;
+    let declMatch: RegExpExecArray | null;
+
+    while ((declMatch = declarationPattern.exec(text)) !== null) {
+        const declarationType = declMatch[1] as 'const' | 'let' | 'var';
+        const variableName = declMatch[2];
+        
+        if (!declarationType || !variableName) continue;
+        
+        const line = textDocument.positionAt(declMatch.index).line;
+        
+        if (variableDeclarations.has(variableName)) {
+            const existing = variableDeclarations.get(variableName)!;
+            const varStart = declMatch.index + declMatch[0].indexOf(variableName);
+            const diagnostic: Diagnostic = {
+                severity: DiagnosticSeverity.Error,
+                range: {
+                    start: textDocument.positionAt(varStart),
+                    end: textDocument.positionAt(varStart + variableName.length)
+                },
+                message: `Variable '${variableName}' is already declared on line ${existing.line + 1}. Cannot redeclare variable.`,
+                source: 'ucode'
+            };
+            diagnostics.push(diagnostic);
+        } else {
+            variableDeclarations.set(variableName, { type: declarationType, line });
+        }
+    }
+
+    // Pattern to match variable assignments (to detect const reassignment)
+    const assignmentPattern = /\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=/g;
+    let assignMatch: RegExpExecArray | null;
+
+    while ((assignMatch = assignmentPattern.exec(text)) !== null) {
+        const variableName = assignMatch[1];
+        
+        if (!variableName) continue;
+        
+        // Skip if this is part of a declaration (has const/let/var before it)
+        const beforeAssignment = text.substring(Math.max(0, assignMatch.index - 20), assignMatch.index);
+        if (/\b(const|let|var)\s*$/.test(beforeAssignment)) {
+            continue;
+        }
+        
+        const varInfo = variableDeclarations.get(variableName);
+        if (varInfo && varInfo.type === 'const') {
+            const varStart = assignMatch.index;
+            const diagnostic: Diagnostic = {
+                severity: DiagnosticSeverity.Error,
+                range: {
+                    start: textDocument.positionAt(varStart),
+                    end: textDocument.positionAt(varStart + variableName.length)
+                },
+                message: `Cannot assign to '${variableName}' because it is a constant declared on line ${varInfo.line + 1}.`,
+                source: 'ucode'
+            };
+            diagnostics.push(diagnostic);
+        }
+    }
+
     // Send the computed diagnostics to VS Code
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
 }
