@@ -1,0 +1,7 @@
+/node_modules
+/payload_processor_ucode
+out/*
+dist/*
+.claude/
+*.vsix
+ucode_gotchas.md

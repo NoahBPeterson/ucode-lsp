@@ -1,0 +1,32 @@
+{
+  "iconDefinitions": {
+    "ucode-file": {
+      "iconPath": "./ucode-file.svg"
+    }
+  },
+  "fileExtensions": {
+    "uc": "ucode-file"
+  },
+  "fileNames": {},
+  "folderNames": {},
+  "folderNamesExpanded": {},
+  "languageIds": {
+    "ucode": "ucode-file"
+  },
+  "light": {
+    "fileExtensions": {
+      "uc": "ucode-file"
+    },
+    "languageIds": {
+      "ucode": "ucode-file"
+    }
+  },
+  "highContrast": {
+    "fileExtensions": {
+      "uc": "ucode-file"
+    },
+    "languageIds": {
+      "ucode": "ucode-file"
+    }
+  }
+}

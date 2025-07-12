@@ -1,0 +1,21 @@
+<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ucodeGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#4A90E2;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#357ABD;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- File background -->
+  <rect x="2" y="1" width="11" height="14" rx="1" fill="url(#ucodeGradient)"/>
+  
+  <!-- File corner fold -->
+  <path d="M10 1 L13 4 L13 1 Z" fill="#2E6B9E"/>
+  
+  <!-- "uc" text -->
+  <text x="8" y="9" font-family="Arial, sans-serif" font-size="5" font-weight="bold" text-anchor="middle" fill="white">uc</text>
+  
+  <!-- Small gear icon to represent scripting -->
+  <circle cx="8" cy="12" r="1.5" fill="none" stroke="white" stroke-width="0.5"/>
+  <circle cx="8" cy="12" r="0.5" fill="white"/>
+</svg>
