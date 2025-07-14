@@ -5,9 +5,13 @@ import {
 } from 'vscode-languageserver/node';
 import { TokenType, Token } from '../lexer';
 
+function isNumericToken(token: Token): boolean {
+    return token.type === TokenType.TK_NUMBER || token.type === TokenType.TK_DOUBLE;
+}
+
 export function validateArrayFunctions(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
     // Functions that expect arrays as first parameter
-    const arrayFunctions = ['push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'sort', 'reverse'];
+    const arrayFunctions = ['push', 'pop', 'shift', 'unshift', 'slice', 'splice', 'sort', 'reverse', 'filter', 'map'];
     
     // Special case: join has reversed parameters: join(separator, array)
     const joinFunction = 'join';
@@ -25,7 +29,7 @@ export function validateArrayFunctions(textDocument: TextDocument, tokens: Token
             if (arrayFunctions.includes(funcToken.value)) {
                 const firstParamToken = tokens[i + 2];
                 if (firstParamToken && 
-                    (firstParamToken.type === TokenType.TK_NUMBER || 
+                    (isNumericToken(firstParamToken) || 
                      firstParamToken.type === TokenType.TK_STRING)) {
                     
                     const diagnostic: Diagnostic = {
@@ -48,7 +52,7 @@ export function validateArrayFunctions(textDocument: TextDocument, tokens: Token
                 const secondParamToken = tokens[i + 4];
                 if (commaToken && secondParamToken &&
                     commaToken.type === TokenType.TK_COMMA &&
-                    (secondParamToken.type === TokenType.TK_NUMBER || 
+                    (isNumericToken(secondParamToken) || 
                      secondParamToken.type === TokenType.TK_STRING)) {
                     
                     const diagnostic: Diagnostic = {
@@ -69,6 +73,8 @@ export function validateArrayFunctions(textDocument: TextDocument, tokens: Token
                 validateSliceParameters(textDocument, tokens, diagnostics, i);
             } else if (funcToken.value === 'splice') {
                 validateSpliceParameters(textDocument, tokens, diagnostics, i);
+            } else if (funcToken.value === 'filter' || funcToken.value === 'map') {
+                validateFilterMapParameters(textDocument, tokens, diagnostics, i, funcToken.value);
             }
         }
     }
@@ -152,6 +158,29 @@ function validateSpliceParameters(textDocument: TextDocument, tokens: Token[], d
                 end: textDocument.positionAt(thirdParamToken.end)
             },
             message: `splice() third parameter (delete count) should be a number, not a string.`,
+            source: 'ucode'
+        };
+        diagnostics.push(diagnostic);
+    }
+}
+
+function validateFilterMapParameters(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[], startIndex: number, funcName: string): void {
+    // filter(array, function) / map(array, function) - second parameter should be a function
+    const commaToken = tokens[startIndex + 3];
+    const secondParamToken = tokens[startIndex + 4];
+    
+    if (commaToken && secondParamToken &&
+        commaToken.type === TokenType.TK_COMMA &&
+        (isNumericToken(secondParamToken) || 
+         secondParamToken.type === TokenType.TK_STRING)) {
+        
+        const diagnostic: Diagnostic = {
+            severity: DiagnosticSeverity.Error,
+            range: {
+                start: textDocument.positionAt(secondParamToken.pos),
+                end: textDocument.positionAt(secondParamToken.end)
+            },
+            message: `${funcName}() second parameter should be a function, not a ${secondParamToken.type === TokenType.TK_NUMBER ? 'number' : 'string'}.`,
             source: 'ucode'
         };
         diagnostics.push(diagnostic);
