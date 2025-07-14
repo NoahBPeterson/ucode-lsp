@@ -1,4 +1,4 @@
-const { UcodeLexer, TokenType } = require('./dist/server.js');
+const { UcodeLexer, TokenType } = require('./out/server.js');
 
 // Test the lexer with some sample ucode
 const testCode = `
