@@ -4,7 +4,7 @@ import {
     TextDocument
 } from 'vscode-languageserver/node';
 
-export function validateWithRegex(textDocument: TextDocument, connection: any): Diagnostic[] {
+export function validateWithRegex(textDocument: TextDocument): Diagnostic[] {
     const text = textDocument.getText();
     const diagnostics: Diagnostic[] = [];
 
@@ -99,7 +99,6 @@ export function validateWithRegex(textDocument: TextDocument, connection: any): 
                 source: 'ucode'
             };
             diagnostics.push(diagnostic);
-            connection.console.log(`Text length: ${textDocument.getText().length}`);
         }
         
         if (thirdArg && /^["']/.test(thirdArg)) {
@@ -145,6 +144,32 @@ export function validateWithRegex(textDocument: TextDocument, connection: any): 
             diagnostics.push(diagnostic);
         } else {
             variableDeclarations.set(variableName, { type: declarationType, line });
+        }
+    }
+
+    // Pattern to match ltrim(), rtrim(), and trim() calls with incorrect parameter types
+    const trimPattern = /\b(ltrim|rtrim|trim)\s*\(\s*([^,\)]+)\s*\)/g;
+    let trimMatch: RegExpExecArray | null;
+
+    while ((trimMatch = trimPattern.exec(text)) !== null) {
+        const functionName = trimMatch[1];
+        const firstArg = trimMatch[2]?.trim();
+        
+        if (!firstArg) continue;
+        
+        // Check if argument is a number (should be string)
+        if (/^\d+$/.test(firstArg)) {
+            const argStart = trimMatch.index + trimMatch[0].indexOf(firstArg);
+            const diagnostic: Diagnostic = {
+                severity: DiagnosticSeverity.Error,
+                range: {
+                    start: textDocument.positionAt(argStart),
+                    end: textDocument.positionAt(argStart + firstArg.length)
+                },
+                message: `${functionName}() parameter should be a string, not a number. Use ${functionName}(string) instead.`,
+                source: 'ucode'
+            };
+            diagnostics.push(diagnostic);
         }
     }
 
