@@ -5,3 +5,6 @@ dist/*
 .claude/
 *.vsix
 ucode_gotchas.md
+.vscode/settings.json
+.vscode/settings.json
+BUILTIN_FUNCTIONS_VALIDATION.md

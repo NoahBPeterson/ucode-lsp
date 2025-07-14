@@ -9,6 +9,10 @@ import { validateVariableDeclarations } from './variable-declarations';
 import { validateConstReassignments } from './const-reassignments';
 import { validateSubstrParametersSimple } from './substr-parameters';
 import { validateTrimParameters } from './trim-parameters';
+import { validateStringFunctions } from './string-functions';
+import { validateCharacterFunctions } from './character-functions';
+import { validateSplitFunction } from './split-function';
+import { validateReplaceFunction } from './replace-function';
 import { validateWithRegex } from './regex';
 
 export function validateWithLexer(textDocument: TextDocument, connection: any): Diagnostic[] {
@@ -39,6 +43,10 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateConstReassignments(textDocument, tokens, diagnostics);
         validateSubstrParametersSimple(textDocument, tokens, diagnostics);
         validateTrimParameters(textDocument, tokens, diagnostics);
+        validateStringFunctions(textDocument, tokens, diagnostics);
+        validateCharacterFunctions(textDocument, tokens, diagnostics);
+        validateSplitFunction(textDocument, tokens, diagnostics);
+        validateReplaceFunction(textDocument, tokens, diagnostics);
         
     } catch (error) {
         connection.console.log(`Lexer failed with error: ${error}`);
