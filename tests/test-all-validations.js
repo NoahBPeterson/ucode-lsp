@@ -8,7 +8,8 @@ const testFiles = [
     './test-simple-validation.js',
     './test-array-validations.js', 
     './test-new-validations-unit.js',
-    './test-trim-validations.js'
+    './test-trim-validations.js',
+    './test-encoding-io-functions.js'
 ];
 
 console.log('🚀 Running Comprehensive Validation Test Suite\n');

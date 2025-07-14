@@ -72,6 +72,40 @@ export function validateNumberConversions(textDocument: TextDocument, tokens: To
                     diagnostics.push(diagnostic);
                 }
             }
+            
+            // Handle b64enc function: b64enc(string)
+            if (funcToken.value === 'b64enc') {
+                const firstParamToken = tokens[i + 2];
+                if (firstParamToken && isNumericToken(firstParamToken)) {
+                    const diagnostic: Diagnostic = {
+                        severity: DiagnosticSeverity.Error,
+                        range: {
+                            start: textDocument.positionAt(firstParamToken.pos),
+                            end: textDocument.positionAt(firstParamToken.end)
+                        },
+                        message: `b64enc() parameter should be a string, not a number.`,
+                        source: 'ucode'
+                    };
+                    diagnostics.push(diagnostic);
+                }
+            }
+            
+            // Handle b64dec function: b64dec(string)
+            if (funcToken.value === 'b64dec') {
+                const firstParamToken = tokens[i + 2];
+                if (firstParamToken && isNumericToken(firstParamToken)) {
+                    const diagnostic: Diagnostic = {
+                        severity: DiagnosticSeverity.Error,
+                        range: {
+                            start: textDocument.positionAt(firstParamToken.pos),
+                            end: textDocument.positionAt(firstParamToken.end)
+                        },
+                        message: `b64dec() parameter should be a base64 string, not a number.`,
+                        source: 'ucode'
+                    };
+                    diagnostics.push(diagnostic);
+                }
+            }
         }
     }
 }

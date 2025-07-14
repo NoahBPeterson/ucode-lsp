@@ -17,6 +17,7 @@ import { validateArrayFunctions } from './array-functions';
 import { validateStringAnalysisFunctions } from './string-analysis';
 import { validateObjectFunctions } from './object-functions';
 import { validateNumberConversions } from './number-conversions';
+import { validateIOFunctions } from './io-functions';
 import { validateWithRegex } from './regex';
 
 export function validateWithLexer(textDocument: TextDocument, connection: any): Diagnostic[] {
@@ -55,6 +56,7 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateStringAnalysisFunctions(textDocument, tokens, diagnostics);
         validateObjectFunctions(textDocument, tokens, diagnostics);
         validateNumberConversions(textDocument, tokens, diagnostics);
+        validateIOFunctions(textDocument, tokens, diagnostics);
         
     } catch (error) {
         connection.console.log(`Lexer failed with error: ${error}`);

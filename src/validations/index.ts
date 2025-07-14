@@ -12,4 +12,5 @@ export { validateArrayFunctions } from './array-functions';
 export { validateStringAnalysisFunctions } from './string-analysis';
 export { validateObjectFunctions } from './object-functions';
 export { validateNumberConversions } from './number-conversions';
+export { validateIOFunctions } from './io-functions';
 export { validateWithRegex } from './regex';
