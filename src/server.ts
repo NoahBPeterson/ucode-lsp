@@ -19,6 +19,7 @@ import {
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import { UcodeLexer, TokenType, Token } from './lexer';
 
 // Create a connection for the server
 const connection = createConnection(ProposedFeatures.all);
@@ -85,7 +86,321 @@ documents.onDidChangeContent((change: TextDocumentChangeEvent<TextDocument>) => 
     validateTextDocument(change.document);
 });
 
-async function validateTextDocument(textDocument: TextDocument): Promise<void> {
+// Enhanced validation using the lexer
+function validateWithLexer(textDocument: TextDocument): Diagnostic[] {
+    const text = textDocument.getText();
+    const diagnostics: Diagnostic[] = [];
+    
+    // Send visible messages to client
+    connection.sendNotification('window/showMessage', {
+        type: 1, // Info
+        message: `DEBUG: validateWithLexer called - text contains substr: ${text.includes('substr')}`
+    });
+    
+    try {
+        const lexer = new UcodeLexer(text, { rawMode: true });
+        const tokens = lexer.tokenize();
+        
+        connection.sendNotification('window/showMessage', {
+            type: 1,
+            message: `DEBUG: Lexer generated ${tokens.length} tokens`
+        });
+        
+        // Log all LABEL tokens to see if substr is being tokenized
+        for (let i = 0; i < tokens.length; i++) {
+            const token = tokens[i];
+            if (token && token.type === TokenType.TK_LABEL) {
+                connection.sendNotification('window/showMessage', {
+                    type: 1,
+                    message: `DEBUG: LABEL token ${i}: "${token.value}" at ${token.pos}-${token.end}`
+                });
+            }
+        }
+        
+        for (const token of tokens) {
+            // Check for lexer errors
+            if (token.type === TokenType.TK_ERROR) {
+                const diagnostic: Diagnostic = {
+                    severity: DiagnosticSeverity.Error,
+                    range: {
+                        start: textDocument.positionAt(token.pos),
+                        end: textDocument.positionAt(token.end)
+                    },
+                    message: `Syntax error: ${token.value || 'Invalid token'}`,
+                    source: 'ucode-lexer'
+                };
+                diagnostics.push(diagnostic);
+            }
+        }
+        
+        // Check for method calls on built-ins using token-based analysis
+        validateMethodCalls(textDocument, tokens, diagnostics);
+        
+        // Check for variable redeclarations using token-based analysis
+        validateVariableDeclarations(textDocument, tokens, diagnostics);
+        
+        // Check for const reassignments using token-based analysis
+        validateConstReassignments(textDocument, tokens, diagnostics);
+        
+        // Check for substr() parameter types using token-based analysis  
+        connection.sendNotification('window/showMessage', {
+            type: 1,
+            message: `DEBUG: About to call validateSubstrParametersSimple`
+        });
+        validateSubstrParametersSimple(textDocument, tokens, diagnostics);
+        connection.sendNotification('window/showMessage', {
+            type: 1,
+            message: `DEBUG: validateSubstrParametersSimple completed`
+        });
+        
+    } catch (error) {
+        connection.console.log(`Lexer failed with error: ${error}`);
+        // Fallback to regex-based validation if lexer fails
+        return validateWithRegex(textDocument);
+    }
+    
+    return diagnostics;
+}
+
+function validateMethodCalls(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
+    const problematicMethods = [
+        'trim', 'ltrim', 'rtrim', 'split', 'substr', 'replace', 'match', 
+        'length', 'push', 'pop', 'shift', 'unshift', 'slice', 'splice',
+        'sort', 'reverse', 'join', 'indexOf', 'toUpperCase', 'toLowerCase',
+        'startsWith', 'endsWith', 'includes', 'charAt', 'charCodeAt', 'uc',
+        'lc', 'index', 'rindex', 'chr', 'ord', 'filter', 'map', 'exists',
+        'keys', 'values', 'hex', 'int', 'type', 'uchr', 'min', 'max',
+        'b64dec', 'b64enc', 'hexdec', 'hexenc', 'uniq', 'localtime', 'gmtime',
+        'timelocal', 'timegm', 'clock', 'iptoarr', 'arrtoip', 'wildcard',
+        'regexp', 'sourcepath', 'assert', 'gc', 'loadstring', 'loadfile',
+        'call', 'signal'
+    ];
+
+    for (let i = 0; i < tokens.length - 2; i++) {
+        const dotToken = tokens[i];
+        const methodToken = tokens[i + 1];
+        const parenToken = tokens[i + 2];
+
+        if (dotToken && methodToken && parenToken &&
+            dotToken.type === TokenType.TK_DOT &&
+            methodToken.type === TokenType.TK_LABEL &&
+            parenToken.type === TokenType.TK_LPAREN &&
+            typeof methodToken.value === 'string' &&
+            problematicMethods.includes(methodToken.value)) {
+            
+            const diagnostic: Diagnostic = {
+                severity: DiagnosticSeverity.Error,
+                range: {
+                    start: textDocument.positionAt(dotToken.pos),
+                    end: textDocument.positionAt(parenToken.pos)
+                },
+                message: `ucode does not support .${methodToken.value}() method calls. Use ${methodToken.value}(value, ...) instead.`,
+                source: 'ucode'
+            };
+            diagnostics.push(diagnostic);
+        }
+    }
+}
+
+function validateVariableDeclarations(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
+    const declarations = new Map<string, { type: 'const' | 'let' | 'var', line: number, pos: number }>();
+    
+    for (let i = 0; i < tokens.length - 1; i++) {
+        const declToken = tokens[i];
+        const nameToken = tokens[i + 1];
+        
+        if (declToken && nameToken &&
+            (declToken.type === TokenType.TK_CONST || 
+             declToken.type === TokenType.TK_LOCAL ||
+             (declToken.type === TokenType.TK_LABEL && declToken.value === 'var')) &&
+            nameToken.type === TokenType.TK_LABEL &&
+            typeof nameToken.value === 'string') {
+            
+            const varType = declToken.type === TokenType.TK_CONST ? 'const' : 
+                           declToken.type === TokenType.TK_LOCAL ? 'let' : 'var';
+            
+            const currentLine = textDocument.positionAt(nameToken.pos).line;
+            
+            if (declarations.has(nameToken.value)) {
+                const existing = declarations.get(nameToken.value)!;
+                
+                const diagnostic: Diagnostic = {
+                    severity: DiagnosticSeverity.Error,
+                    range: {
+                        start: textDocument.positionAt(nameToken.pos),
+                        end: textDocument.positionAt(Math.min(nameToken.end, nameToken.pos + nameToken.value.length))
+                    },
+                    message: `Variable '${nameToken.value}' is already declared on line ${existing.line + 1}. Cannot redeclare variable.`,
+                    source: 'ucode'
+                };
+                diagnostics.push(diagnostic);
+            } else {
+                declarations.set(nameToken.value, { 
+                    type: varType, 
+                    line: currentLine, 
+                    pos: nameToken.pos 
+                });
+            }
+        }
+    }
+}
+
+function validateConstReassignments(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
+    const constDeclarations = new Set<string>();
+    const constDeclarationPositions = new Set<number>();
+    
+    // First pass: collect all const declarations and their positions
+    for (let i = 0; i < tokens.length - 1; i++) {
+        const declToken = tokens[i];
+        const nameToken = tokens[i + 1];
+        
+        if (declToken && nameToken &&
+            declToken.type === TokenType.TK_CONST &&
+            nameToken.type === TokenType.TK_LABEL &&
+            typeof nameToken.value === 'string') {
+            
+            constDeclarations.add(nameToken.value);
+            constDeclarationPositions.add(nameToken.pos); // Track declaration positions
+        }
+    }
+    
+    // Second pass: check for reassignments (excluding initial declarations)
+    for (let i = 0; i < tokens.length - 2; i++) {
+        const varToken = tokens[i];
+        const assignToken = tokens[i + 1];
+        
+        if (varToken && assignToken &&
+            varToken.type === TokenType.TK_LABEL &&
+            typeof varToken.value === 'string' &&
+            constDeclarations.has(varToken.value) &&
+            !constDeclarationPositions.has(varToken.pos) && // Exclude initial declarations
+            (assignToken.type === TokenType.TK_ASSIGN ||
+             assignToken.type === TokenType.TK_ASADD ||
+             assignToken.type === TokenType.TK_ASSUB ||
+             assignToken.type === TokenType.TK_ASMUL ||
+             assignToken.type === TokenType.TK_ASDIV ||
+             assignToken.type === TokenType.TK_ASMOD ||
+             assignToken.type === TokenType.TK_ASLEFT ||
+             assignToken.type === TokenType.TK_ASRIGHT ||
+             assignToken.type === TokenType.TK_ASBAND ||
+             assignToken.type === TokenType.TK_ASBXOR ||
+             assignToken.type === TokenType.TK_ASBOR ||
+             assignToken.type === TokenType.TK_ASEXP ||
+             assignToken.type === TokenType.TK_ASAND ||
+             assignToken.type === TokenType.TK_ASOR ||
+             assignToken.type === TokenType.TK_ASNULLISH)) {
+            
+            const diagnostic: Diagnostic = {
+                severity: DiagnosticSeverity.Error,
+                range: {
+                    start: textDocument.positionAt(varToken.pos),
+                    end: textDocument.positionAt(varToken.end)
+                },
+                message: `Cannot assign to '${varToken.value}' because it is a constant.`,
+                source: 'ucode'
+            };
+            diagnostics.push(diagnostic);
+        }
+    }
+}
+
+function validateSubstrParametersSimple(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
+    for (let i = 0; i < tokens.length - 6; i++) {
+        const funcToken = tokens[i];
+        const parenToken = tokens[i + 1];
+        
+        if (funcToken && parenToken &&
+            funcToken.type === TokenType.TK_LABEL &&
+            funcToken.value === 'substr' &&
+            parenToken.type === TokenType.TK_LPAREN) {
+            
+            // Debug: print all tokens after substr(
+            connection.sendNotification('window/showMessage', {
+                type: 1,
+                message: `DEBUG: Found substr at position ${funcToken.pos}-${funcToken.end}`
+            });
+            for (let j = i; j < Math.min(i + 10, tokens.length); j++) {
+                const token = tokens[j];
+                if (token) {
+                    connection.sendNotification('window/showMessage', {
+                        type: 1,
+                        message: `DEBUG: Token ${j}: ${UcodeLexer.getTokenName(token.type)} = "${token.value}" at ${token.pos}-${token.end}`
+                    });
+                }
+            }
+            
+            // Look for specific bad patterns
+            // Pattern: substr(number, ...)
+            const firstParamToken = tokens[i + 2];
+            if (firstParamToken && firstParamToken.type === TokenType.TK_NUMBER) {
+                connection.console.log(`First param token: pos=${firstParamToken.pos}, end=${firstParamToken.end}, value=${firstParamToken.value}`);
+                
+                const diagnostic: Diagnostic = {
+                    severity: DiagnosticSeverity.Error,
+                    range: {
+                        start: textDocument.positionAt(firstParamToken.pos),
+                        end: textDocument.positionAt(firstParamToken.end)
+                    },
+                    message: `substr() first parameter should be a string, not a number. Use substr(string, ${firstParamToken.value}).`,
+                    source: 'ucode'
+                };
+                diagnostics.push(diagnostic);
+            }
+            
+            // Pattern: substr(string, "string", ...)  
+            const commaToken = tokens[i + 3];
+            const secondParamToken = tokens[i + 4];
+            if (commaToken && secondParamToken &&
+                commaToken.type === TokenType.TK_COMMA &&
+                secondParamToken.type === TokenType.TK_STRING) {
+                
+                connection.sendNotification('window/showMessage', {
+                    type: 1,
+                    message: `DEBUG: Second param token: pos=${secondParamToken.pos}, end=${secondParamToken.end}, value="${secondParamToken.value}"`
+                });
+                connection.sendNotification('window/showMessage', {
+                    type: 1,
+                    message: `DEBUG: Text length: ${textDocument.getText().length}`
+                });
+
+                const diagnostic: Diagnostic = {
+                    severity: DiagnosticSeverity.Error,
+                    range: {
+                        start: textDocument.positionAt(secondParamToken.pos),
+                        end: textDocument.positionAt(secondParamToken.end)
+                    },
+                    message: `substr() second parameter should be a number (start position), not a string. defg`,
+                    source: 'ucode'
+                };
+                diagnostics.push(diagnostic);
+            }
+            
+            // Pattern: substr(string, number, "string")
+            const comma2Token = tokens[i + 5];
+            const thirdParamToken = tokens[i + 6];
+            if (comma2Token && thirdParamToken &&
+                comma2Token.type === TokenType.TK_COMMA &&
+                thirdParamToken.type === TokenType.TK_STRING) {
+                
+                connection.console.log(`Third param token: pos=${thirdParamToken.pos}, end=${thirdParamToken.end}, value="${thirdParamToken.value}"`);
+                
+                const diagnostic: Diagnostic = {
+                    severity: DiagnosticSeverity.Error,
+                    range: {
+                        start: textDocument.positionAt(thirdParamToken.pos),
+                        end: textDocument.positionAt(thirdParamToken.end)
+                    },
+                    message: `substr() third parameter should be a number (length), not a string.`,
+                    source: 'ucode'
+                };
+                diagnostics.push(diagnostic);
+            }
+        }
+    }
+}
+
+// Fallback regex-based validation (original implementation)
+function validateWithRegex(textDocument: TextDocument): Diagnostic[] {
     const text = textDocument.getText();
     const diagnostics: Diagnostic[] = [];
 
@@ -184,10 +499,12 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
                     start: textDocument.positionAt(argStart),
                     end: textDocument.positionAt(argStart + secondArg.length)
                 },
-                message: `substr() second parameter should be a number (start position), not a string.`,
+                message: `substr() second parameter should be a number (start position), not a string. abcd`,
                 source: 'ucode'
             };
             diagnostics.push(diagnostic);
+            connection.console.log(`Text length: ${textDocument.getText().length}`);
+
         }
         
         // Check if third argument is a string literal (should be number)
@@ -239,37 +556,16 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
         }
     }
 
-    // Pattern to match variable assignments (to detect const reassignment)
-    const assignmentPattern = /\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=/g;
-    let assignMatch: RegExpExecArray | null;
+    // TODO: Implement token-based const reassignment validation
+    // For now, disabled due to complexity - will implement in future version
 
-    while ((assignMatch = assignmentPattern.exec(text)) !== null) {
-        const variableName = assignMatch[1];
-        
-        if (!variableName) continue;
-        
-        // Skip if this is part of a declaration (has const/let/var before it)
-        const beforeAssignment = text.substring(Math.max(0, assignMatch.index - 20), assignMatch.index);
-        if (/\b(const|let|var)\s*$/.test(beforeAssignment)) {
-            continue;
-        }
-        
-        const varInfo = variableDeclarations.get(variableName);
-        if (varInfo && varInfo.type === 'const') {
-            const varStart = assignMatch.index;
-            const diagnostic: Diagnostic = {
-                severity: DiagnosticSeverity.Error,
-                range: {
-                    start: textDocument.positionAt(varStart),
-                    end: textDocument.positionAt(varStart + variableName.length)
-                },
-                message: `Cannot assign to '${variableName}' because it is a constant declared on line ${varInfo.line + 1}.`,
-                source: 'ucode'
-            };
-            diagnostics.push(diagnostic);
-        }
-    }
+    return diagnostics;
+}
 
+async function validateTextDocument(textDocument: TextDocument): Promise<void> {
+    // Use the new lexer-based validation
+    const diagnostics = validateWithLexer(textDocument);
+    
     // Send the computed diagnostics to VS Code
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
 }
@@ -326,29 +622,71 @@ connection.onHover((_textDocumentPositionParams: TextDocumentPositionParams): Ho
     const text = document.getText();
     const offset = document.offsetAt(position);
     
-    // Find the word at the current position
-    const wordRange = getWordRangeAtPosition(text, offset);
-    if (!wordRange) {
-        return undefined;
-    }
-    
-    const word = text.substring(wordRange.start, wordRange.end);
-    connection.console.log('Hover word: ' + word);
-    
-    // Check if it's a built-in function
-    const documentation = builtinFunctions.get(word);
-    if (documentation) {
-        connection.console.log('Found documentation for: ' + word);
-        return {
-            contents: {
-                kind: MarkupKind.Markdown,
-                value: `**${word}** (built-in function)\n\n${documentation}`
-            },
-            range: {
-                start: document.positionAt(wordRange.start),
-                end: document.positionAt(wordRange.end)
+    try {
+        // Use lexer to get precise token information
+        const lexer = new UcodeLexer(text, { rawMode: true });
+        const tokens = lexer.tokenize();
+        
+        // Find the token at the hover position
+        const token = tokens.find(t => t.pos <= offset && offset <= t.end);
+        
+        if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
+            const word = token.value;
+            connection.console.log('Hover word (from lexer): ' + word);
+            
+            // Check if it's a built-in function
+            const documentation = builtinFunctions.get(word);
+            if (documentation) {
+                connection.console.log('Found documentation for: ' + word);
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: `**${word}** (built-in function)\n\n${documentation}`
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
             }
-        };
+            
+            // Check if it's a keyword
+            if (UcodeLexer.isKeyword(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: `**${word}** (ucode keyword)`
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+        }
+    } catch (error) {
+        // Fallback to regex-based word detection
+        const wordRange = getWordRangeAtPosition(text, offset);
+        if (!wordRange) {
+            return undefined;
+        }
+        
+        const word = text.substring(wordRange.start, wordRange.end);
+        connection.console.log('Hover word (fallback): ' + word);
+        
+        const documentation = builtinFunctions.get(word);
+        if (documentation) {
+            return {
+                contents: {
+                    kind: MarkupKind.Markdown,
+                    value: `**${word}** (built-in function)\n\n${documentation}`
+                },
+                range: {
+                    start: document.positionAt(wordRange.start),
+                    end: document.positionAt(wordRange.end)
+                }
+            };
+        }
     }
     
     return undefined;
@@ -399,6 +737,9 @@ connection.onCompletionResolve((item: CompletionItem): CompletionItem => {
 // Make the text document manager listen on the connection
 // for open, change and close text document events
 documents.listen(connection);
+
+// TODO: Token-based parsing will be implemented in a future version
+// Currently disabled due to TypeScript complexity
 
 // Listen on the connection
 connection.listen();
