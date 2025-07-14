@@ -13,6 +13,7 @@ import { validateStringFunctions } from './string-functions';
 import { validateCharacterFunctions } from './character-functions';
 import { validateSplitFunction } from './split-function';
 import { validateReplaceFunction } from './replace-function';
+import { validateArrayFunctions } from './array-functions';
 import { validateWithRegex } from './regex';
 
 export function validateWithLexer(textDocument: TextDocument, connection: any): Diagnostic[] {
@@ -47,6 +48,7 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateCharacterFunctions(textDocument, tokens, diagnostics);
         validateSplitFunction(textDocument, tokens, diagnostics);
         validateReplaceFunction(textDocument, tokens, diagnostics);
+        validateArrayFunctions(textDocument, tokens, diagnostics);
         
     } catch (error) {
         connection.console.log(`Lexer failed with error: ${error}`);

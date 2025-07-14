@@ -8,4 +8,5 @@ export { validateStringFunctions } from './string-functions';
 export { validateCharacterFunctions } from './character-functions';
 export { validateSplitFunction } from './split-function';
 export { validateReplaceFunction } from './replace-function';
+export { validateArrayFunctions } from './array-functions';
 export { validateWithRegex } from './regex';
