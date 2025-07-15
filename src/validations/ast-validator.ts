@@ -11,6 +11,7 @@ import {
 import { UcodeLexer } from '../lexer';
 import { UcodeParser } from '../parser';
 import { AstNode } from '../ast';
+import { SemanticAnalyzer } from '../analysis';
 
 interface ValidationOptions {
     enableAstValidation?: boolean;
@@ -30,9 +31,9 @@ export function validateWithAst(
     // Default options
     const opts = {
         enableAstValidation: true,
-        enableTypeChecking: false, // Start with false until we implement it
-        enableScopeAnalysis: false,
-        enableControlFlowAnalysis: false,
+        enableTypeChecking: true, // Enable type checking now that it's implemented
+        enableScopeAnalysis: true,
+        enableControlFlowAnalysis: true,
         ...options
     };
 
@@ -120,34 +121,22 @@ function runSemanticAnalysis(
 ): Diagnostic[] {
     const diagnostics: Diagnostic[] = [];
     
-    // For now, just run basic AST validation
-    // Later we'll add symbol table, type checking, etc.
-    
     try {
         // 1. Basic AST structure validation
         const structuralIssues = validateAstStructure(ast, textDocument);
         diagnostics.push(...structuralIssues);
         
-        // 2. Scope analysis (if enabled)
-        if (options.enableScopeAnalysis) {
-            // TODO: Implement scope analysis
-            // const scopeIssues = validateScopes(ast, textDocument);
-            // diagnostics.push(...scopeIssues);
-        }
+        // 2. Run comprehensive semantic analysis
+        const semanticAnalyzer = new SemanticAnalyzer(textDocument, {
+            enableScopeAnalysis: options.enableScopeAnalysis ?? true,
+            enableTypeChecking: options.enableTypeChecking ?? true,
+            enableControlFlowAnalysis: options.enableControlFlowAnalysis ?? true,
+            enableUnusedVariableDetection: true,
+            enableShadowingWarnings: true
+        });
         
-        // 3. Type checking (if enabled)
-        if (options.enableTypeChecking) {
-            // TODO: Implement type checking
-            // const typeIssues = validateTypes(ast, textDocument);
-            // diagnostics.push(...typeIssues);
-        }
-        
-        // 4. Control flow analysis (if enabled)
-        if (options.enableControlFlowAnalysis) {
-            // TODO: Implement control flow analysis
-            // const flowIssues = validateControlFlow(ast, textDocument);
-            // diagnostics.push(...flowIssues);
-        }
+        const result = semanticAnalyzer.analyze(ast);
+        diagnostics.push(...result.diagnostics);
         
     } catch (error) {
         const diagnostic: Diagnostic = {

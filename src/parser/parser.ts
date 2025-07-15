@@ -716,6 +716,10 @@ export class UcodeParser {
       prefix: () => this.parseThis(), 
       precedence: Precedence.NONE 
     });
+    this.rules.set(TokenType.TK_REGEXP, { 
+      prefix: () => this.parseRegex(), 
+      precedence: Precedence.NONE 
+    });
 
     // Grouping
     this.rules.set(TokenType.TK_LPAREN, { 
@@ -883,6 +887,18 @@ export class UcodeParser {
       type: 'ThisExpression',
       start: token.pos,
       end: token.end
+    };
+  }
+
+  private parseRegex(): LiteralNode {
+    const token = this.previous()!;
+    return {
+      type: 'Literal',
+      start: token.pos,
+      end: token.end,
+      value: token.value as string,
+      raw: token.value as string,
+      literalType: 'regexp'
     };
   }
 

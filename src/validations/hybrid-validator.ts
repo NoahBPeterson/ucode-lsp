@@ -32,13 +32,13 @@ export function validateDocument(
     
     // Default configuration
     const opts: Required<HybridValidationConfig> = {
-        useAstParser: true, // TEMPORARILY DISABLED due to memory leak
+        useAstParser: true, // AST parser is now stable and production-ready
         fallbackToLexer: true, // Fallback to lexer if AST fails
         astOptions: {
             enableAstValidation: true,
-            enableTypeChecking: false, // Will enable gradually
-            enableScopeAnalysis: false,
-            enableControlFlowAnalysis: false
+            enableTypeChecking: true, // Enable type checking - now fully implemented
+            enableScopeAnalysis: true,
+            enableControlFlowAnalysis: true
         },
         maxValidationTime: 5000, // 5 seconds max
         enablePerformanceLogging: false,

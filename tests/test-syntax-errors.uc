@@ -28,7 +28,7 @@ let array = [1, 2, 3;
 
 // Incomplete if statement
 if (x > 0
-    console.log("positive");
+    print("positive");
 
 // Missing function body
 function incomplete();
