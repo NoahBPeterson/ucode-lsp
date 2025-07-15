@@ -9,7 +9,9 @@ const testFiles = [
     './test-array-validations.js', 
     './test-new-validations-unit.js',
     './test-trim-validations.js',
-    './test-encoding-io-functions.js'
+    './test-encoding-io-functions.js',
+    './test-system-functions.js',
+    './test-utility-functions.js'
 ];
 
 console.log('🚀 Running Comprehensive Validation Test Suite\n');

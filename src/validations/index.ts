@@ -13,4 +13,6 @@ export { validateStringAnalysisFunctions } from './string-analysis';
 export { validateObjectFunctions } from './object-functions';
 export { validateNumberConversions } from './number-conversions';
 export { validateIOFunctions } from './io-functions';
+export { validateSystemFunctions } from './system-functions';
+export { validateUtilityFunctions } from './utility-functions';
 export { validateWithRegex } from './regex';

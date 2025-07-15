@@ -18,6 +18,8 @@ import { validateStringAnalysisFunctions } from './string-analysis';
 import { validateObjectFunctions } from './object-functions';
 import { validateNumberConversions } from './number-conversions';
 import { validateIOFunctions } from './io-functions';
+import { validateSystemFunctions } from './system-functions';
+import { validateUtilityFunctions } from './utility-functions';
 import { validateWithRegex } from './regex';
 
 export function validateWithLexer(textDocument: TextDocument, connection: any): Diagnostic[] {
@@ -57,6 +59,8 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateObjectFunctions(textDocument, tokens, diagnostics);
         validateNumberConversions(textDocument, tokens, diagnostics);
         validateIOFunctions(textDocument, tokens, diagnostics);
+        validateSystemFunctions(textDocument, tokens, diagnostics);
+        validateUtilityFunctions(textDocument, tokens, diagnostics);
         
     } catch (error) {
         connection.console.log(`Lexer failed with error: ${error}`);
