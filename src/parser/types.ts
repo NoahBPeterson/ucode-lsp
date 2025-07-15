@@ -75,28 +75,30 @@ export enum RecoveryMode {
 }
 
 // Synchronization points for error recovery
-export const STATEMENT_SYNC_TOKENS = [
-  'TK_SCOL',        // ;
-  'TK_RBRACE',      // }
-  'TK_IF',          // if
-  'TK_WHILE',       // while
-  'TK_FOR',         // for
-  'TK_FUNC',        // function
-  'TK_RETURN',      // return
-  'TK_BREAK',       // break
-  'TK_CONTINUE',    // continue
-  'TK_TRY',         // try
-  'TK_SWITCH',      // switch
-  'TK_LOCAL',       // let
-  'TK_CONST',       // const
-  'TK_EOF'          // end of file
+import { TokenType } from '../lexer';
+
+export const STATEMENT_SYNC_TOKENS: TokenType[] = [
+  TokenType.TK_SCOL,        // ;
+  TokenType.TK_RBRACE,      // }
+  TokenType.TK_IF,          // if
+  TokenType.TK_WHILE,       // while
+  TokenType.TK_FOR,         // for
+  TokenType.TK_FUNC,        // function
+  TokenType.TK_RETURN,      // return
+  TokenType.TK_BREAK,       // break
+  TokenType.TK_CONTINUE,    // continue
+  TokenType.TK_TRY,         // try
+  TokenType.TK_SWITCH,      // switch
+  TokenType.TK_LOCAL,       // let
+  TokenType.TK_CONST,       // const
+  TokenType.TK_EOF          // end of file
 ];
 
-export const EXPRESSION_SYNC_TOKENS = [
-  'TK_SCOL',        // ;
-  'TK_RPAREN',      // )
-  'TK_RBRACK',      // ]
-  'TK_RBRACE',      // }
-  'TK_COMMA',       // ,
-  'TK_EOF'          // end of file
+export const EXPRESSION_SYNC_TOKENS: TokenType[] = [
+  TokenType.TK_SCOL,        // ;
+  TokenType.TK_RPAREN,      // )
+  TokenType.TK_RBRACK,      // ]
+  TokenType.TK_RBRACE,      // }
+  TokenType.TK_COMMA,       // ,
+  TokenType.TK_EOF          // end of file
 ];

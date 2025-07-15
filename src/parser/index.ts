@@ -2,7 +2,7 @@
  * Parser module exports
  */
 
-export { UcodeParser } from './parser';
+export { UcodeParser } from './ucodeParser';
 export { 
   ParseResult, 
   ParseError, 
