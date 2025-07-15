@@ -288,6 +288,60 @@ export interface LabeledStatementNode extends AstNode {
   body: AstNode;
 }
 
+// Import statements: import { name } from 'module';
+export interface ImportDeclarationNode extends AstNode {
+  type: 'ImportDeclaration';
+  specifiers: (ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode)[];
+  source: LiteralNode;
+}
+
+// Import specifiers: { name } or { name as alias }
+export interface ImportSpecifierNode extends AstNode {
+  type: 'ImportSpecifier';
+  imported: IdentifierNode;
+  local: IdentifierNode;
+}
+
+// Import default specifier: name
+export interface ImportDefaultSpecifierNode extends AstNode {
+  type: 'ImportDefaultSpecifier';
+  local: IdentifierNode;
+}
+
+// Import namespace specifier: * as name
+export interface ImportNamespaceSpecifierNode extends AstNode {
+  type: 'ImportNamespaceSpecifier';
+  local: IdentifierNode;
+}
+
+// Export statements: export function name() {}
+export interface ExportNamedDeclarationNode extends AstNode {
+  type: 'ExportNamedDeclaration';
+  declaration: AstNode | null;
+  specifiers: ExportSpecifierNode[];
+  source: LiteralNode | null;
+}
+
+// Export default: export default function() {}
+export interface ExportDefaultDeclarationNode extends AstNode {
+  type: 'ExportDefaultDeclaration';
+  declaration: AstNode;
+}
+
+// Export specifiers: { name } or { name as alias }
+export interface ExportSpecifierNode extends AstNode {
+  type: 'ExportSpecifier';
+  local: IdentifierNode;
+  exported: IdentifierNode;
+}
+
+// Export all: export * from 'module'
+export interface ExportAllDeclarationNode extends AstNode {
+  type: 'ExportAllDeclaration';
+  source: LiteralNode;
+  exported: IdentifierNode | null;
+}
+
 // ========== UNION TYPES ==========
 
 // All expression types
@@ -326,7 +380,11 @@ export type Statement =
   | ThrowStatementNode
   | SwitchStatementNode
   | EmptyStatementNode
-  | LabeledStatementNode;
+  | LabeledStatementNode
+  | ImportDeclarationNode
+  | ExportNamedDeclarationNode
+  | ExportDefaultDeclarationNode
+  | ExportAllDeclarationNode;
 
 // All AST node types
 export type AstNodeType = ProgramNode | Expression | Statement | 

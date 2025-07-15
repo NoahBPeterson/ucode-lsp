@@ -38,7 +38,18 @@ export abstract class BasicStatements extends ControlFlowStatements {
     
     if (!expression) return null;
     
-    this.consume(TokenType.TK_SCOL, "Expected ';' after expression");
+    // Check for semicolon but don't let missing semicolon trigger panic mode
+    const hadSemicolon = this.check(TokenType.TK_SCOL);
+    if (hadSemicolon) {
+      this.advance();
+    } else {
+      // Record error but continue parsing
+      this.errorAt("Expected ';' after expression", 
+                   this.previous()?.end || start, 
+                   this.previous()?.end || start);
+      // Reset panic mode for missing semicolon to allow subsequent errors
+      this.panicMode = false;
+    }
     
     return {
       type: 'ExpressionStatement',

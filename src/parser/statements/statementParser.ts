@@ -23,6 +23,16 @@ export abstract class StatementParser extends BasicStatements {
     }
 
     try {
+      // Import declarations
+      if (this.match(TokenType.TK_IMPORT)) {
+        return this.parseImportDeclaration();
+      }
+
+      // Export declarations
+      if (this.match(TokenType.TK_EXPORT)) {
+        return this.parseExportDeclaration();
+      }
+
       // Variable declarations
       if (this.match(TokenType.TK_LOCAL, TokenType.TK_CONST)) {
         return this.parseVariableDeclaration();

@@ -197,18 +197,76 @@ export class UcodeLexer {
             return this.parseString(ch);
         }
 
-        // Regular expressions
-        if (ch === '/' && !this.noRegexp) {
-            return this.parseRegex();
-        }
-
-        // Comments
+        // Comments (must come before regex parsing)
         if (ch === '/' && this.peekChar(1) === '/') {
             return this.parseLineComment();
         }
 
         if (ch === '/' && this.peekChar(1) === '*') {
             return this.parseBlockComment();
+        }
+
+        // Regular expressions
+        if (ch === '/' && !this.noRegexp) {
+            // Look ahead to check if this looks like a valid regex start
+            const next = this.peekChar(1);
+            
+            // Quick check: if followed immediately by newline or EOF, it's a stray slash
+            if (next === '' || isLineBreak(next)) {
+                const startPos = this.pos;
+                this.nextChar(); // Consume the '/'
+                return this.emitToken(
+                    TokenType.TK_ERROR,
+                    "Unexpected token '/'. Did you mean to use a comment '//'?",
+                    startPos
+                );
+            }
+            
+            // Look ahead to see if this slash is followed by suspicious patterns
+            const remainingCode = this.source.substring(this.pos + 1);
+            
+            // Pattern 1: / followed by whitespace and then /*
+            const blockCommentPattern = /^\s*\/\*/;
+            if (blockCommentPattern.test(remainingCode)) {
+                const startPos = this.pos;
+                this.nextChar(); // Consume the problematic '/'
+                return this.emitToken(
+                    TokenType.TK_ERROR,
+                    "Unexpected token '/' before block comment. Did you mean to use a comment '//'?",
+                    startPos
+                );
+            }
+            
+            // Pattern 2: / followed by whitespace and then a statement keyword
+            const statementKeywords = ['export', 'import', 'function', 'let', 'const', 'var', 'if', 'while', 'for', 'return', 'break', 'continue', 'try', 'switch', 'class'];
+            const keywordPattern = new RegExp(`^\\s*(${statementKeywords.join('|')})\\b`);
+            const keywordMatch = remainingCode.match(keywordPattern);
+            if (keywordMatch) {
+                const startPos = this.pos;
+                this.nextChar(); // Consume the problematic '/'
+                return this.emitToken(
+                    TokenType.TK_ERROR,
+                    `Unexpected token '/' before '${keywordMatch[1]}'. Did you mean to use a comment '//'?`,
+                    startPos
+                );
+            }
+            
+            // Pattern 3: / followed only by whitespace until end of line
+            const whitespaceOnlyPattern = /^\s*$/m;
+            const lineEnd = remainingCode.indexOf('\n');
+            const restOfLine = lineEnd === -1 ? remainingCode : remainingCode.substring(0, lineEnd);
+            if (whitespaceOnlyPattern.test(restOfLine)) {
+                const startPos = this.pos;
+                this.nextChar(); // Consume the problematic '/'
+                return this.emitToken(
+                    TokenType.TK_ERROR,
+                    "Unexpected token '/'. Did you mean to use a comment '//'?",
+                    startPos
+                );
+            }
+            
+            // If the lookahead passed, parse the regex as normal
+            return this.parseRegex();
         }
 
         // Identifiers and keywords
@@ -331,6 +389,13 @@ export class UcodeLexer {
                 }
                 
                 return this.emitToken(TokenType.TK_REGEXP, value, startPos);
+            }
+            
+            // Check for unescaped newline - this indicates a stray slash, not a regex
+            if (isLineBreak(ch)) {
+                // Reset position to just after the initial slash
+                this.pos = startPos + 1;
+                return this.emitToken(TokenType.TK_ERROR, "Unexpected token '/'. Did you mean to use a comment '//'?", startPos);
             }
             
             if (ch === '\\') {
@@ -460,9 +525,13 @@ export class UcodeLexer {
         }
     }
 
+
     private emitToken(type: TokenType, value?: string | number, pos?: number): Token {
         const startPos = pos ?? this.pos;
         const endPos = this.pos;
+        
+        // Update noRegexp flag based on the token type
+        this.updateNoRegexpFlag(type);
         
         return {
             type,
@@ -472,6 +541,60 @@ export class UcodeLexer {
             line: this.line,
             column: this.column
         };
+    }
+
+    private updateNoRegexpFlag(tokenType: TokenType): void {
+        // After these tokens, a regex is not expected (division is more likely)
+        if (tokenType === TokenType.TK_LABEL ||          // identifier
+            tokenType === TokenType.TK_NUMBER ||         // number
+            tokenType === TokenType.TK_DOUBLE ||         // double
+            tokenType === TokenType.TK_STRING ||         // string
+            tokenType === TokenType.TK_RPAREN ||         // )
+            tokenType === TokenType.TK_RBRACK ||         // ]
+            tokenType === TokenType.TK_RBRACE ||         // }
+            tokenType === TokenType.TK_TRUE ||           // true
+            tokenType === TokenType.TK_FALSE ||          // false
+            tokenType === TokenType.TK_NULL ||           // null
+            tokenType === TokenType.TK_THIS ||           // this
+            tokenType === TokenType.TK_INC ||            // ++
+            tokenType === TokenType.TK_DEC) {            // --
+            this.noRegexp = true;
+        }
+        // After these tokens, a regex is expected (not division)
+        else if (tokenType === TokenType.TK_LPAREN ||    // (
+                 tokenType === TokenType.TK_LBRACK ||    // [
+                 tokenType === TokenType.TK_COMMA ||     // ,
+                 tokenType === TokenType.TK_ASSIGN ||    // =
+                 tokenType === TokenType.TK_EQ ||        // ==
+                 tokenType === TokenType.TK_NE ||        // !=
+                 tokenType === TokenType.TK_LT ||        // <
+                 tokenType === TokenType.TK_LE ||        // <=
+                 tokenType === TokenType.TK_GT ||        // >
+                 tokenType === TokenType.TK_GE ||        // >=
+                 tokenType === TokenType.TK_AND ||       // &&
+                 tokenType === TokenType.TK_OR ||        // ||
+                 tokenType === TokenType.TK_NOT ||       // !
+                 tokenType === TokenType.TK_BAND ||      // &
+                 tokenType === TokenType.TK_BOR ||       // |
+                 tokenType === TokenType.TK_BXOR ||      // ^
+                 tokenType === TokenType.TK_ADD ||       // +
+                 tokenType === TokenType.TK_SUB ||       // -
+                 tokenType === TokenType.TK_MUL ||       // *
+                 tokenType === TokenType.TK_MOD ||       // %
+                 tokenType === TokenType.TK_RETURN ||    // return
+                 tokenType === TokenType.TK_IF ||        // if
+                 tokenType === TokenType.TK_WHILE ||     // while
+                 tokenType === TokenType.TK_FOR ||       // for
+                 tokenType === TokenType.TK_CASE ||      // case
+                 tokenType === TokenType.TK_COLON) {     // :
+            this.noRegexp = false;
+        }
+        // Special handling for { and ; - regex is less likely but still possible
+        else if (tokenType === TokenType.TK_LBRACE ||    // {
+                 tokenType === TokenType.TK_SCOL) {      // ;
+            this.noRegexp = false; // Allow regex but lookahead will catch stray slashes
+        }
+        // For other tokens, don't change the flag
     }
 
     private emitBuffer(type: TokenType, stripTrailingChars?: string): Token | null {

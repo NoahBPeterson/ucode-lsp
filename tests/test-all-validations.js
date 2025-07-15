@@ -41,7 +41,7 @@ testFiles.forEach((testFile, index) => {
     console.log('-' * 50);
     
     try {
-        const output = execSync(`node ${testFile}`, { encoding: 'utf8' });
+        const output = execSync(`bun ${testFile}`, { encoding: 'utf8' });
         console.log(output);
         
         // Parse test results from output
