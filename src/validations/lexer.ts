@@ -25,6 +25,7 @@ import { validateNetworkFunctions } from './network-functions';
 import { validateConversionFunctions } from './conversion-functions';
 import { validateModuleFunctions } from './module-functions';
 import { validateRemainingUtilityFunctions } from './remaining-utility-functions';
+import { validateJSONUtilityFunctions } from './json-utility-functions';
 import { validateWithRegex } from './regex';
 
 export function validateWithLexer(textDocument: TextDocument, connection: any): Diagnostic[] {
@@ -71,6 +72,7 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateConversionFunctions(textDocument, tokens, diagnostics);
         validateModuleFunctions(textDocument, tokens, diagnostics);
         validateRemainingUtilityFunctions(textDocument, tokens, diagnostics);
+        validateJSONUtilityFunctions(textDocument, tokens, diagnostics);
         
     } catch (error) {
         connection.console.log(`Lexer failed with error: ${error}`);
