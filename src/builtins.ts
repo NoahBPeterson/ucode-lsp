@@ -41,5 +41,7 @@ export const builtinFunctions = new Map<string, string>([
     ['hexenc', 'Encode string to hexadecimal.\n\n**Parameters:**\n- `string` - String to encode\n\n**Returns:** `string` - Hexadecimal encoded string'],
     ['hexdec', 'Decode hexadecimal string.\n\n**Parameters:**\n- `string` - Hexadecimal string to decode\n\n**Returns:** `string` - Decoded string'],
     ['hex', 'Convert number to hexadecimal string.\n\n**Parameters:**\n- `number` - Number to convert\n\n**Returns:** `string` - Hexadecimal representation'],
-    ['uchr', 'Convert Unicode code point to character.\n\n**Parameters:**\n- `code` - Unicode code point\n\n**Returns:** `string` - The Unicode character']
+    ['uchr', 'Convert Unicode code point to character.\n\n**Parameters:**\n- `code` - Unicode code point\n\n**Returns:** `string` - The Unicode character'],
+    ['iptoarr', 'Convert IP address string to array of components.\n\n**Parameters:**\n- `ipString` - IP address string (IPv4 or IPv6)\n\n**Returns:** `array` - Array of IP address components\n\n**Example:**\n```ucode\niptoarr("192.168.1.1")  // [192, 168, 1, 1]\n```'],
+    ['arrtoip', 'Convert array of IP components to IP address string.\n\n**Parameters:**\n- `ipArray` - Array of IP address components\n\n**Returns:** `string` - IP address string\n\n**Example:**\n```ucode\narrtoip([192, 168, 1, 1])  // "192.168.1.1"\n```']
 ]);

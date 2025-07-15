@@ -21,6 +21,7 @@ import { validateIOFunctions } from './io-functions';
 import { validateSystemFunctions } from './system-functions';
 import { validateUtilityFunctions } from './utility-functions';
 import { validateDateTimeFunctions } from './datetime-functions';
+import { validateNetworkFunctions } from './network-functions';
 import { validateWithRegex } from './regex';
 
 export function validateWithLexer(textDocument: TextDocument, connection: any): Diagnostic[] {
@@ -63,6 +64,7 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateSystemFunctions(textDocument, tokens, diagnostics);
         validateUtilityFunctions(textDocument, tokens, diagnostics);
         validateDateTimeFunctions(textDocument, tokens, diagnostics);
+        validateNetworkFunctions(textDocument, tokens, diagnostics);
         
     } catch (error) {
         connection.console.log(`Lexer failed with error: ${error}`);
