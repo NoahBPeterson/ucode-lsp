@@ -22,6 +22,8 @@ import { validateSystemFunctions } from './system-functions';
 import { validateUtilityFunctions } from './utility-functions';
 import { validateDateTimeFunctions } from './datetime-functions';
 import { validateNetworkFunctions } from './network-functions';
+import { validateConversionFunctions } from './conversion-functions';
+import { validateModuleFunctions } from './module-functions';
 import { validateWithRegex } from './regex';
 
 export function validateWithLexer(textDocument: TextDocument, connection: any): Diagnostic[] {
@@ -65,6 +67,8 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateUtilityFunctions(textDocument, tokens, diagnostics);
         validateDateTimeFunctions(textDocument, tokens, diagnostics);
         validateNetworkFunctions(textDocument, tokens, diagnostics);
+        validateConversionFunctions(textDocument, tokens, diagnostics);
+        validateModuleFunctions(textDocument, tokens, diagnostics);
         
     } catch (error) {
         connection.console.log(`Lexer failed with error: ${error}`);

@@ -17,4 +17,6 @@ export { validateSystemFunctions } from './system-functions';
 export { validateUtilityFunctions } from './utility-functions';
 export { validateDateTimeFunctions } from './datetime-functions';
 export { validateNetworkFunctions } from './network-functions';
+export { validateConversionFunctions } from './conversion-functions';
+export { validateModuleFunctions } from './module-functions';
 export { validateWithRegex } from './regex';

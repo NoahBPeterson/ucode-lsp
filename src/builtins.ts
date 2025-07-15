@@ -43,5 +43,8 @@ export const builtinFunctions = new Map<string, string>([
     ['hex', 'Convert number to hexadecimal string.\n\n**Parameters:**\n- `number` - Number to convert\n\n**Returns:** `string` - Hexadecimal representation'],
     ['uchr', 'Convert Unicode code point to character.\n\n**Parameters:**\n- `code` - Unicode code point\n\n**Returns:** `string` - The Unicode character'],
     ['iptoarr', 'Convert IP address string to array of components.\n\n**Parameters:**\n- `ipString` - IP address string (IPv4 or IPv6)\n\n**Returns:** `array` - Array of IP address components\n\n**Example:**\n```ucode\niptoarr("192.168.1.1")  // [192, 168, 1, 1]\n```'],
-    ['arrtoip', 'Convert array of IP components to IP address string.\n\n**Parameters:**\n- `ipArray` - Array of IP address components\n\n**Returns:** `string` - IP address string\n\n**Example:**\n```ucode\narrtoip([192, 168, 1, 1])  // "192.168.1.1"\n```']
+    ['arrtoip', 'Convert array of IP components to IP address string.\n\n**Parameters:**\n- `ipArray` - Array of IP address components\n\n**Returns:** `string` - IP address string\n\n**Example:**\n```ucode\narrtoip([192, 168, 1, 1])  // "192.168.1.1"\n```'],
+    ['int', 'Convert value to integer.\n\n**Parameters:**\n- `value` - String or number to convert to integer\n\n**Returns:** `number` - Integer value\n\n**Example:**\n```ucode\nint("123")    // 123\nint(45.67)    // 45\nint("-89")    // -89\n```'],
+    ['loadstring', 'Load and execute uCode from string.\n\n**Parameters:**\n- `code` - String containing uCode source code\n\n**Returns:** `*` - Result of executed code\n\n**Example:**\n```ucode\nloadstring("return 42")()  // 42\n```'],
+    ['loadfile', 'Load and execute uCode from file.\n\n**Parameters:**\n- `path` - Path to uCode file\n\n**Returns:** `*` - Result of executed file\n\n**Example:**\n```ucode\nloadfile("script.uc")()\n```']
 ]);
