@@ -3,6 +3,9 @@
   "scopeName": "source.ucode",
   "patterns": [
     {
+      "include": "#template_blocks"
+    },
+    {
       "include": "#comments"
     },
     {
@@ -25,6 +28,30 @@
     }
   ],
   "repository": {
+    "template_blocks": {
+      "patterns": [
+        {
+          "name": "meta.embedded.block.expression.ucode",
+          "begin": "{{",
+          "end": "}}",
+          "patterns": [
+            {
+              "include": "$self"
+            }
+          ]
+        },
+        {
+          "name": "meta.embedded.block.statement.ucode",
+          "begin": "{%",
+          "end": "%}",
+          "patterns": [
+            {
+              "include": "$self"
+            }
+          ]
+        }
+      ]
+    },
     "comments": {
       "patterns": [
         {
@@ -35,6 +62,11 @@
           "name": "comment.block.ucode",
           "begin": "/\\*",
           "end": "\\*/"
+        },
+        {
+          "name": "comment.block.template.ucode",
+          "begin": "{#",
+          "end": "#}"
         }
       ]
     },
@@ -61,6 +93,27 @@
               "match": "\\\\."
             }
           ]
+        },
+        {
+          "name": "string.template.ucode",
+          "begin": "`",
+          "end": "`",
+          "patterns": [
+            {
+              "name": "constant.character.escape.ucode",
+              "match": "\\\\."
+            },
+            {
+              "name": "keyword.control.interpolation.ucode",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "patterns": [
+                {
+                  "include": "$self"
+                }
+              ]
+            }
+          ]
         }
       ]
     },
@@ -80,27 +133,19 @@
       "patterns": [
         {
           "name": "keyword.control.ucode",
-          "match": "\\b(if|else|while|for|do|break|continue|return|try|catch|finally|throw|switch|case|default|delete|typeof|instanceof|in|of|with|yield|await|async)\\b"
+          "match": "\\b(if|else|elif|endif|while|endwhile|for|endfor|break|continue|return|try|catch|switch|case|default|in)\\b"
         },
         {
           "name": "storage.type.ucode",
-          "match": "\\b(var|let|const|function)\\b"
+          "match": "\\b(let|const|function|endfunction|delete)\\b"
         },
         {
-          "name": "keyword.control.import.ucode",
-          "match": "\\b(import|export|from|as|default)\\b"
-        },
-        {
-          "name": "keyword.other.ucode",
-          "match": "\\b(new|this|super|extends|static|class)\\b"
+          "name": "keyword.control.module.ucode",
+          "match": "\\b(import|export)\\b"
         },
         {
           "name": "constant.language.ucode",
-          "match": "\\b(true|false|null|undefined|NaN|Infinity)\\b"
-        },
-        {
-          "name": "keyword.other.ucode",
-          "match": "\\b(use strict)\\b"
+          "match": "\\b(true|false|null|this)\\b"
         }
       ]
     },
@@ -108,40 +153,47 @@
       "patterns": [
         {
           "name": "keyword.operator.arithmetic.ucode",
-          "match": "\\+|\\-|\\*|/|%|\\+\\+|\\-\\-"
+          "match": "(\\+|\\-|\\*|/|%|\\*\\*|\\+\\+|--)"
         },
         {
           "name": "keyword.operator.assignment.ucode",
-          "match": "=|\\+=|\\-=|\\*=|/=|%=|\\|=|&=|\\^=|<<=|>>=|>>>="
+          "match": "(=|\\+=|\\-=|\\*=|/=|%=|\\*\\*=|&=|\\^=|\\|=|<<=|>>=|&&=|\\|\\|=|\\?\\?=)"
         },
         {
           "name": "keyword.operator.comparison.ucode",
-          "match": "==|!=|===|!==|<|>|<=|>=|<=>|~~|!~"
+          "match": "(===|!==|==|!=|<|<=|>|>=)"
         },
         {
           "name": "keyword.operator.logical.ucode",
-          "match": "&&|\\|\\||!"
+          "match": "(&&|\\|\\||!)"
         },
         {
           "name": "keyword.operator.bitwise.ucode",
-          "match": "&|\\||\\^|~|<<|>>|>>>"
+          "match": "(&|\\||\\^|~|<<|>>)"
+        },
+        {
+          "name": "keyword.operator.ternary.ucode",
+          "match": "(\\?|:)"
+        },
+        {
+          "name": "keyword.operator.optional-chaining.ucode",
+          "match": "(\\?\\.)"
+        },
+        {
+          "name": "keyword.operator.nullish-coalescing.ucode",
+          "match": "(\\?\\?)"
+        },
+        {
+          "name": "keyword.operator.arrow.ucode",
+          "match": "(=>)"
         }
       ]
     },
     "functions": {
       "patterns": [
         {
-          "name": "invalid.illegal.method-call.ucode",
-          "match": "\\.(trim|ltrim|rtrim|split|substr|replace|match|length|push|pop|shift|unshift|slice|splice|sort|reverse|join|indexOf|toUpperCase|toLowerCase|startsWith|endsWith|includes|charAt|charCodeAt|uc|lc|index|rindex|chr|ord|filter|map|exists|keys|values|hex|int|type|uchr|min|max|b64dec|b64enc|hexdec|hexenc|uniq|localtime|gmtime|timelocal|timegm|clock|iptoarr|arrtoip|wildcard|regexp|sourcepath|assert|gc|loadstring|loadfile|call|signal|print|printf|sprintf|require|include|json|system|time|sleep|die|exit|warn|trace|proto|render|getenv)\\s*(?=\\()",
-          "captures": {
-            "0": {
-              "name": "invalid.illegal.method-call.ucode"
-            }
-          }
-        },
-        {
           "name": "support.function.builtin.ucode",
-          "match": "\\b(print|printf|sprintf|length|substr|split|join|trim|ltrim|rtrim|chr|ord|hex|int|type|keys|values|push|pop|shift|unshift|slice|splice|sort|reverse|map|filter|exists|uc|lc|index|rindex|uchr|min|max|b64dec|b64enc|hexdec|hexenc|uniq|localtime|gmtime|timelocal|timegm|clock|iptoarr|arrtoip|wildcard|regexp|sourcepath|assert|gc|loadstring|loadfile|call|signal|require|include|json|system|time|sleep|die|exit|warn|trace|proto|render|getenv)\\b(?=\\s*\\()"
+          "match": "\\b(print|printf|sprintf|length|substr|split|join|trim|ltrim|rtrim|chr|ord|uc|lc|type|keys|values|push|pop|shift|unshift|index|require|include|json|match|replace|system|time|sleep|localtime|gmtime|timelocal|timegm|min|max|uniq|b64enc|b64dec|hexenc|hexdec|hex|uchr|iptoarr|arrtoip|int|loadstring|loadfile|wildcard|regexp|assert|call|signal|clock|sourcepath|gc)\\b(?=\\s*\\()"
         },
         {
           "name": "entity.name.function.ucode",
