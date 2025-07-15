@@ -28,5 +28,18 @@ export const builtinFunctions = new Map<string, string>([
     ['replace', 'Replace occurrences in string.\n\n**Parameters:**\n- `string` - The string\n- `search` - String or regex to search for\n- `replacement` - Replacement string\n\n**Returns:** `string` - String with replacements'],
     ['system', 'Execute shell command.\n\n**Parameters:**\n- `command` - Command to execute\n\n**Returns:** `number` - Exit code of command'],
     ['time', 'Get current Unix timestamp.\n\n**Returns:** `number` - Current time in seconds since epoch'],
-    ['sleep', 'Pause execution for specified seconds.\n\n**Parameters:**\n- `seconds` - Number of seconds to sleep\n\n**Returns:** `null`']
+    ['sleep', 'Pause execution for specified seconds.\n\n**Parameters:**\n- `seconds` - Number of seconds to sleep\n\n**Returns:** `null`'],
+    ['localtime', 'Convert timestamp to local time components.\n\n**Parameters:**\n- `timestamp` - Unix timestamp (optional, defaults to current time)\n\n**Returns:** `array` - Time components: [year, month, day, hour, minute, second, weekday, yearday]'],
+    ['gmtime', 'Convert timestamp to UTC time components.\n\n**Parameters:**\n- `timestamp` - Unix timestamp (optional, defaults to current time)\n\n**Returns:** `array` - Time components: [year, month, day, hour, minute, second, weekday, yearday]'],
+    ['timelocal', 'Convert local time components to timestamp.\n\n**Parameters:**\n- `timeArray` - Array of time components [year, month, day, hour, minute, second]\n\n**Returns:** `number` - Unix timestamp'],
+    ['timegm', 'Convert UTC time components to timestamp.\n\n**Parameters:**\n- `timeArray` - Array of time components [year, month, day, hour, minute, second]\n\n**Returns:** `number` - Unix timestamp'],
+    ['min', 'Find minimum value from numbers.\n\n**Parameters:**\n- `...numbers` - Numbers to compare\n\n**Returns:** `number` - The smallest number'],
+    ['max', 'Find maximum value from numbers.\n\n**Parameters:**\n- `...numbers` - Numbers to compare\n\n**Returns:** `number` - The largest number'],
+    ['uniq', 'Remove duplicate values from array.\n\n**Parameters:**\n- `array` - The input array\n\n**Returns:** `array` - Array with unique values'],
+    ['b64enc', 'Encode string to Base64.\n\n**Parameters:**\n- `string` - String to encode\n\n**Returns:** `string` - Base64 encoded string'],
+    ['b64dec', 'Decode Base64 string.\n\n**Parameters:**\n- `string` - Base64 string to decode\n\n**Returns:** `string` - Decoded string'],
+    ['hexenc', 'Encode string to hexadecimal.\n\n**Parameters:**\n- `string` - String to encode\n\n**Returns:** `string` - Hexadecimal encoded string'],
+    ['hexdec', 'Decode hexadecimal string.\n\n**Parameters:**\n- `string` - Hexadecimal string to decode\n\n**Returns:** `string` - Decoded string'],
+    ['hex', 'Convert number to hexadecimal string.\n\n**Parameters:**\n- `number` - Number to convert\n\n**Returns:** `string` - Hexadecimal representation'],
+    ['uchr', 'Convert Unicode code point to character.\n\n**Parameters:**\n- `code` - Unicode code point\n\n**Returns:** `string` - The Unicode character']
 ]);

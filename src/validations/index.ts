@@ -15,4 +15,5 @@ export { validateNumberConversions } from './number-conversions';
 export { validateIOFunctions } from './io-functions';
 export { validateSystemFunctions } from './system-functions';
 export { validateUtilityFunctions } from './utility-functions';
+export { validateDateTimeFunctions } from './datetime-functions';
 export { validateWithRegex } from './regex';

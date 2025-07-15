@@ -11,7 +11,8 @@ const testFiles = [
     './test-trim-validations.js',
     './test-encoding-io-functions.js',
     './test-system-functions.js',
-    './test-utility-functions.js'
+    './test-utility-functions.js',
+    './test-datetime-functions.js'
 ];
 
 console.log('🚀 Running Comprehensive Validation Test Suite\n');
