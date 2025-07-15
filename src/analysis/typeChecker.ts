@@ -1,0 +1,475 @@
+/**
+ * Main Type Checker for ucode semantic analysis
+ * Handles type inference and type checking
+ */
+
+import { 
+  AstNode, LiteralNode, IdentifierNode, BinaryExpressionNode, UnaryExpressionNode,
+  CallExpressionNode, MemberExpressionNode, AssignmentExpressionNode, ArrayExpressionNode,
+  ObjectExpressionNode, ConditionalExpressionNode
+} from '../ast/nodes';
+import { SymbolTable, SymbolType, UcodeType } from './symbolTable';
+import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
+
+export interface FunctionSignature {
+  name: string;
+  parameters: UcodeType[];
+  returnType: UcodeType;
+  variadic?: boolean;
+  minParams?: number;
+  maxParams?: number;
+}
+
+export interface TypeCheckResult {
+  type: UcodeType;
+  errors: TypeError[];
+  warnings: TypeWarning[];
+}
+
+export interface TypeError {
+  message: string;
+  start: number;
+  end: number;
+  severity: 'error';
+}
+
+export interface TypeWarning {
+  message: string;
+  start: number;
+  end: number;
+  severity: 'warning';
+}
+
+export class TypeChecker {
+  private symbolTable: SymbolTable;
+  private builtinFunctions: Map<string, FunctionSignature>;
+  private errors: TypeError[] = [];
+  private warnings: TypeWarning[] = [];
+  private builtinValidator: BuiltinValidator;
+  private typeCompatibility: TypeCompatibilityChecker;
+
+  constructor(symbolTable: SymbolTable) {
+    this.symbolTable = symbolTable;
+    this.builtinFunctions = new Map();
+    this.builtinValidator = new BuiltinValidator();
+    this.typeCompatibility = new TypeCompatibilityChecker();
+    
+    // Inject type checker into builtin validator
+    this.builtinValidator.setTypeChecker(this.checkNode.bind(this));
+    
+    this.initializeBuiltins();
+  }
+
+  private initializeBuiltins(): void {
+    const builtins: FunctionSignature[] = [
+      { name: 'print', parameters: [], returnType: UcodeType.INTEGER, variadic: true },
+      { name: 'printf', parameters: [UcodeType.STRING], returnType: UcodeType.INTEGER, variadic: true },
+      { name: 'sprintf', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, variadic: true },
+      { name: 'length', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
+      { name: 'substr', parameters: [UcodeType.STRING, UcodeType.INTEGER], returnType: UcodeType.STRING, minParams: 2, maxParams: 3 },
+      { name: 'split', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.ARRAY, minParams: 2, maxParams: 3 },
+      { name: 'join', parameters: [UcodeType.STRING, UcodeType.ARRAY], returnType: UcodeType.STRING },
+      { name: 'trim', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'ltrim', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'rtrim', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'chr', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
+      { name: 'ord', parameters: [UcodeType.STRING], returnType: UcodeType.INTEGER },
+      { name: 'uc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'lc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'type', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.STRING },
+      { name: 'keys', parameters: [UcodeType.OBJECT], returnType: UcodeType.ARRAY },
+      { name: 'values', parameters: [UcodeType.OBJECT], returnType: UcodeType.ARRAY },
+      { name: 'push', parameters: [UcodeType.ARRAY], returnType: UcodeType.INTEGER, variadic: true },
+      { name: 'pop', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN },
+      { name: 'shift', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN },
+      { name: 'unshift', parameters: [UcodeType.ARRAY], returnType: UcodeType.INTEGER, variadic: true },
+      { name: 'index', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
+      { name: 'rindex', parameters: [UcodeType.STRING, UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
+      { name: 'require', parameters: [UcodeType.STRING], returnType: UcodeType.UNKNOWN },
+      { name: 'include', parameters: [UcodeType.STRING], returnType: UcodeType.UNKNOWN },
+      { name: 'json', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
+      { name: 'match', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.ARRAY },
+      { name: 'replace', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'system', parameters: [UcodeType.STRING], returnType: UcodeType.INTEGER },
+      { name: 'time', parameters: [], returnType: UcodeType.INTEGER },
+      { name: 'sleep', parameters: [UcodeType.INTEGER], returnType: UcodeType.NULL },
+      { name: 'localtime', parameters: [], returnType: UcodeType.ARRAY, minParams: 0, maxParams: 1 },
+      { name: 'gmtime', parameters: [], returnType: UcodeType.ARRAY, minParams: 0, maxParams: 1 },
+      { name: 'timelocal', parameters: [UcodeType.ARRAY], returnType: UcodeType.INTEGER },
+      { name: 'timegm', parameters: [UcodeType.ARRAY], returnType: UcodeType.INTEGER },
+      { name: 'min', parameters: [], returnType: UcodeType.INTEGER, variadic: true },
+      { name: 'max', parameters: [], returnType: UcodeType.INTEGER, variadic: true },
+      { name: 'uniq', parameters: [UcodeType.ARRAY], returnType: UcodeType.ARRAY },
+      { name: 'b64enc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'b64dec', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'hexenc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'hexdec', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'hex', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
+      { name: 'uchr', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
+      { name: 'iptoarr', parameters: [UcodeType.STRING], returnType: UcodeType.ARRAY },
+      { name: 'arrtoip', parameters: [UcodeType.ARRAY], returnType: UcodeType.STRING },
+      { name: 'int', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
+      { name: 'loadstring', parameters: [UcodeType.STRING], returnType: UcodeType.FUNCTION },
+      { name: 'loadfile', parameters: [UcodeType.STRING], returnType: UcodeType.FUNCTION },
+      { name: 'wildcard', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
+      { name: 'regexp', parameters: [UcodeType.STRING], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
+      { name: 'assert', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
+      { name: 'call', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, variadic: true },
+      { name: 'signal', parameters: [UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
+      { name: 'clock', parameters: [], returnType: UcodeType.DOUBLE },
+      { name: 'sourcepath', parameters: [], returnType: UcodeType.STRING },
+      { name: 'gc', parameters: [], returnType: UcodeType.NULL }
+    ];
+
+    for (const builtin of builtins) {
+      this.builtinFunctions.set(builtin.name, builtin);
+    }
+  }
+
+  resetErrors(): void {
+    this.errors = [];
+    this.warnings = [];
+    this.builtinValidator.resetErrors();
+  }
+
+  checkNode(node: AstNode): UcodeType {
+    if (!node) return UcodeType.UNKNOWN;
+
+    switch (node.type) {
+      case 'Literal':
+        return this.checkLiteral(node as LiteralNode);
+      case 'Identifier':
+        return this.checkIdentifier(node as IdentifierNode);
+      case 'BinaryExpression':
+        return this.checkBinaryExpression(node as BinaryExpressionNode);
+      case 'UnaryExpression':
+        return this.checkUnaryExpression(node as UnaryExpressionNode);
+      case 'CallExpression':
+        return this.checkCallExpression(node as CallExpressionNode);
+      case 'MemberExpression':
+        return this.checkMemberExpression(node as MemberExpressionNode);
+      case 'AssignmentExpression':
+        return this.checkAssignmentExpression(node as AssignmentExpressionNode);
+      case 'ArrayExpression':
+        return this.checkArrayExpression(node as ArrayExpressionNode);
+      case 'ObjectExpression':
+        return this.checkObjectExpression(node as ObjectExpressionNode);
+      case 'ConditionalExpression':
+        return this.checkConditionalExpression(node as ConditionalExpressionNode);
+      default:
+        return UcodeType.UNKNOWN;
+    }
+  }
+
+  getResult(): TypeCheckResult {
+    // Collect errors from builtin validator
+    const builtinErrors = this.builtinValidator.getErrors();
+    
+    return {
+      type: UcodeType.UNKNOWN,
+      errors: [...this.errors, ...builtinErrors],
+      warnings: this.warnings
+    };
+  }
+
+  private checkLiteral(node: LiteralNode): UcodeType {
+    switch (node.literalType) {
+      case 'number':
+        return typeof node.value === 'number' && node.value % 1 === 0 ? 
+               UcodeType.INTEGER : UcodeType.DOUBLE;
+      case 'double':
+        return UcodeType.DOUBLE;
+      case 'string':
+        return UcodeType.STRING;
+      case 'boolean':
+        return UcodeType.BOOLEAN;
+      case 'null':
+        return UcodeType.NULL;
+      case 'regexp':
+        return UcodeType.OBJECT; // Regex literals are objects in ucode
+      default:
+        return UcodeType.UNKNOWN;
+    }
+  }
+
+  private checkIdentifier(node: IdentifierNode): UcodeType {
+    const symbol = this.symbolTable.lookup(node.name);
+    if (symbol) {
+      this.symbolTable.markUsed(node.name, node.start);
+      return symbol.dataType;
+    } else {
+      this.errors.push({
+        message: `Undefined variable: ${node.name}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return UcodeType.UNKNOWN;
+    }
+  }
+
+  private checkBinaryExpression(node: BinaryExpressionNode): UcodeType {
+    const leftType = this.checkNode(node.left);
+    const rightType = this.checkNode(node.right);
+
+    // Type checking for binary operators
+    switch (node.operator) {
+      case '+':
+        if (this.typeCompatibility.canAddTypes(leftType, rightType)) {
+          return this.typeCompatibility.getArithmeticResultType(leftType, rightType, '+');
+        }
+        this.errors.push({
+          message: `Cannot add ${leftType} and ${rightType}`,
+          start: node.start,
+          end: node.end,
+          severity: 'error'
+        });
+        return UcodeType.UNKNOWN;
+
+      case '-':
+      case '*':
+      case '/':
+      case '%':
+        if (!this.typeCompatibility.canPerformArithmetic(leftType, rightType)) {
+          this.errors.push({
+            message: `Cannot perform ${node.operator} on ${leftType} and ${rightType}`,
+            start: node.start,
+            end: node.end,
+            severity: 'error'
+          });
+          return UcodeType.UNKNOWN;
+        }
+        return this.typeCompatibility.getArithmeticResultType(leftType, rightType, node.operator);
+
+      case '==':
+      case '!=':
+      case '===':
+      case '!==':
+      case '<':
+      case '>':
+      case '<=':
+      case '>=':
+        return this.typeCompatibility.getComparisonResultType();
+
+      case '&&':
+      case '||':
+        return this.typeCompatibility.getLogicalResultType();
+
+      case '&':
+      case '|':
+      case '^':
+      case '<<':
+      case '>>':
+        if (!this.typeCompatibility.canPerformBitwiseOp(leftType, rightType)) {
+          this.errors.push({
+            message: `Bitwise operations require integers, got ${leftType} and ${rightType}`,
+            start: node.start,
+            end: node.end,
+            severity: 'error'
+          });
+          return UcodeType.UNKNOWN;
+        }
+        return this.typeCompatibility.getBitwiseResultType();
+
+      case 'in':
+        if (!this.typeCompatibility.canUseInOperator(leftType, rightType)) {
+          this.errors.push({
+            message: `'in' operator requires object or array on right side, got ${rightType}`,
+            start: node.start,
+            end: node.end,
+            severity: 'error'
+          });
+        }
+        return UcodeType.BOOLEAN;
+
+      default:
+        return UcodeType.UNKNOWN;
+    }
+  }
+
+  private checkUnaryExpression(node: UnaryExpressionNode): UcodeType {
+    const argType = this.checkNode(node.argument);
+    const resultType = this.typeCompatibility.getUnaryResultType(argType, node.operator);
+    
+    if (resultType === UcodeType.UNKNOWN) {
+      this.errors.push({
+        message: `Cannot apply ${node.operator} to ${argType}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+    }
+    
+    return resultType;
+  }
+
+  private checkCallExpression(node: CallExpressionNode): UcodeType {
+    if (node.callee.type === 'Identifier') {
+      const funcName = (node.callee as IdentifierNode).name;
+      const signature = this.builtinFunctions.get(funcName);
+      
+      if (signature) {
+        return this.validateBuiltinCall(node, signature);
+      } else {
+        // Check if it's a user-defined function
+        const symbol = this.symbolTable.lookup(funcName);
+        if (symbol && symbol.type === SymbolType.FUNCTION) {
+          return symbol.dataType;
+        }
+        
+        this.errors.push({
+          message: `Undefined function: ${funcName}`,
+          start: node.start,
+          end: node.end,
+          severity: 'error'
+        });
+        return UcodeType.UNKNOWN;
+      }
+    }
+
+    // For member expressions and other callees
+    const calleeType = this.checkNode(node.callee);
+    if (!this.typeCompatibility.isValidCallTarget(calleeType)) {
+      this.errors.push({
+        message: `Cannot call ${calleeType} as function`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return UcodeType.UNKNOWN;
+    }
+
+    return UcodeType.UNKNOWN;
+  }
+
+  private validateBuiltinCall(node: CallExpressionNode, signature: FunctionSignature): UcodeType {
+    // First check special cases
+    if (this.validateSpecialBuiltins(node, signature)) {
+      return signature.returnType;
+    }
+
+    const argCount = node.arguments.length;
+    const minParams = signature.minParams || signature.parameters.length;
+    const maxParams = signature.maxParams || (signature.variadic ? Infinity : signature.parameters.length);
+
+    // Check argument count
+    if (argCount < minParams) {
+      this.errors.push({
+        message: `Function '${signature.name}' expects at least ${minParams} arguments, got ${argCount}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+    } else if (argCount > maxParams) {
+      this.errors.push({
+        message: `Function '${signature.name}' expects at most ${maxParams} arguments, got ${argCount}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+    }
+
+    // Check argument types
+    for (let i = 0; i < Math.min(argCount, signature.parameters.length); i++) {
+      const expectedType = signature.parameters[i];
+      const arg = node.arguments[i];
+      if (!arg) continue;
+      
+      const actualType = this.checkNode(arg) || UcodeType.UNKNOWN;
+      
+      if (expectedType !== UcodeType.UNKNOWN && !this.typeCompatibility.isTypeCompatible(actualType as UcodeType, expectedType as UcodeType)) {
+        this.errors.push({
+          message: `Function '${signature.name}' expects ${expectedType} for argument ${i + 1}, got ${actualType}`,
+          start: arg.start,
+          end: arg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    return signature.returnType;
+  }
+
+  private validateSpecialBuiltins(node: CallExpressionNode, signature: FunctionSignature): boolean {
+    const funcName = signature.name;
+    
+    switch (funcName) {
+      case 'length':
+        return this.builtinValidator.validateLengthFunction(node);
+      case 'index':
+        return this.builtinValidator.validateIndexFunction(node);
+      case 'rindex':
+        return this.builtinValidator.validateRindexFunction(node);
+      case 'match':
+        return this.builtinValidator.validateMatchFunction(node);
+      default:
+        return false;
+    }
+  }
+
+  private checkMemberExpression(node: MemberExpressionNode): UcodeType {
+    const objectType = this.checkNode(node.object);
+    
+    if (objectType === UcodeType.ARRAY) {
+      return this.typeCompatibility.getArrayElementType(objectType);
+    }
+    
+    if (objectType === UcodeType.OBJECT) {
+      return this.typeCompatibility.getObjectPropertyType(objectType);
+    }
+
+    if (objectType === UcodeType.STRING && !node.computed) {
+      // String properties like length
+      const propertyName = (node.property as IdentifierNode).name;
+      return this.typeCompatibility.getStringPropertyType(propertyName);
+    }
+
+    return UcodeType.UNKNOWN;
+  }
+
+  private checkAssignmentExpression(node: AssignmentExpressionNode): UcodeType {
+    const leftType = this.checkNode(node.left);
+    const rightType = this.checkNode(node.right);
+    
+    // Basic type compatibility check
+    if (node.operator === '=' && leftType !== UcodeType.UNKNOWN && rightType !== UcodeType.UNKNOWN) {
+      if (!this.typeCompatibility.canAssign(leftType, rightType)) {
+        this.warnings.push({
+          message: `Type mismatch: assigning ${rightType} to ${leftType}`,
+          start: node.start,
+          end: node.end,
+          severity: 'warning'
+        });
+      }
+    }
+
+    return rightType;
+  }
+
+  private checkArrayExpression(node: ArrayExpressionNode): UcodeType {
+    // Check all elements for type consistency
+    for (const element of node.elements) {
+      if (element) {
+        this.checkNode(element);
+      }
+    }
+    return UcodeType.ARRAY;
+  }
+
+  private checkObjectExpression(node: ObjectExpressionNode): UcodeType {
+    // Check all properties
+    for (const property of node.properties) {
+      this.checkNode(property.key);
+      this.checkNode(property.value);
+    }
+    return UcodeType.OBJECT;
+  }
+
+  private checkConditionalExpression(node: ConditionalExpressionNode): UcodeType {
+    this.checkNode(node.test);
+    const consequentType = this.checkNode(node.consequent);
+    const alternateType = this.checkNode(node.alternate);
+
+    return this.typeCompatibility.getTernaryResultType(consequentType, alternateType);
+  }
+}

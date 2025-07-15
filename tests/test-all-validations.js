@@ -15,7 +15,12 @@ const testFiles = [
     './test-datetime-functions.js',
     './test-network-functions.js',
     './test-conversion-functions.js',
-    './test-module-functions.js'
+    './test-module-functions.js',
+    './test-json-utility-functions.js',
+    './test-remaining-utility-functions.js',
+    './test-system-utility-functions.js',
+    './test-validation-refactor.js',
+    './test-validation-simple.js'
 ];
 
 console.log('🚀 Running Comprehensive Validation Test Suite\n');

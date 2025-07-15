@@ -1,6 +1,7 @@
 /**
- * Refactored ucode Parser
- * Organized into logical sections but in a single file for better maintainability
+ * ucode AST Parser
+ * Recursive descent parser with Pratt parsing for expressions
+ * Includes comprehensive error recovery mechanisms
  */
 
 import { Token, TokenType } from '../lexer';
@@ -29,8 +30,11 @@ export class UcodeParser {
   private warnings: ParseWarning[] = [];
   private rules: Map<TokenType, ParseRule> = new Map();
   private panicMode = false;
-  constructor(tokens: Token[], _sourceCode: string = '') {
+  private sourceCode: string;
+
+  constructor(tokens: Token[], sourceCode: string = '') {
     this.tokens = tokens;
+    this.sourceCode = sourceCode;
     this.initializeParseRules();
   }
 
@@ -79,47 +83,6 @@ export class UcodeParser {
     };
   }
 
-  private parseExpression(precedence: Precedence = Precedence.ASSIGNMENT): AstNode | null {
-    try {
-      // Handle error tokens in expressions too
-      if (this.check(TokenType.TK_ERROR)) {
-        const errorToken = this.advance()!;
-        const message = errorToken.value ? String(errorToken.value) : "Unexpected token";
-        this.errorAt(message, errorToken.pos, errorToken.end);
-        return null;
-      }
-
-      const prefixRule = this.getRule(this.peek()?.type).prefix;
-      
-      // If there's no prefix rule, it's not a valid expression start
-      if (!prefixRule) {
-        this.error("Unexpected token in expression");
-        this.advance(); // Consume the invalid token
-        return null;
-      }
-
-      this.advance();
-      let left = prefixRule();
-      if (!left) return null;
-
-      while (precedence <= this.getRule(this.peek()?.type).precedence) {
-        const infixRule = this.getRule(this.peek()?.type).infix;
-        if (!infixRule) break;
-
-        this.advance();
-        left = infixRule(left);
-        if (!left) break;
-      }
-
-      return left;
-    } catch (error) {
-      this.synchronize(RecoveryMode.EXPRESSION);
-      return null;
-    }
-  }
-
-  // ========== STATEMENT PARSERS ==========
-
   private parseStatement(): AstNode | null {
     // Skip comments and handle error tokens
     if (this.match(TokenType.TK_COMMENT)) {
@@ -128,6 +91,7 @@ export class UcodeParser {
 
     if (this.check(TokenType.TK_ERROR)) {
       const errorToken = this.advance()!;
+      // Use the error message from the token if available
       const message = errorToken.value ? String(errorToken.value) : "Unexpected token";
       this.errorAt(message, errorToken.pos, errorToken.end);
       return null;
@@ -173,13 +137,15 @@ export class UcodeParser {
         return this.parseTryStatement();
       }
 
+      // Note: ucode doesn't have throw statements
+
       if (this.match(TokenType.TK_SWITCH)) {
         return this.parseSwitchStatement();
       }
 
       // Block statements
       if (this.match(TokenType.TK_LBRACE)) {
-        const openingBrace = this.previous()!;
+        const openingBrace = this.previous()!; // We just consumed it with match()
         return this.parseBlockStatement(openingBrace, "block statement");
       }
 
@@ -197,6 +163,48 @@ export class UcodeParser {
       return null;
     }
   }
+
+  private parseExpression(precedence: Precedence = Precedence.ASSIGNMENT): AstNode | null {
+    try {
+      // Handle error tokens in expressions too
+      if (this.check(TokenType.TK_ERROR)) {
+        const errorToken = this.advance()!;
+        const message = errorToken.value ? String(errorToken.value) : "Unexpected token";
+        this.errorAt(message, errorToken.pos, errorToken.end);
+        return null;
+      }
+
+      const prefixRule = this.getRule(this.peek()?.type).prefix;
+      
+      // *** FIX: If there's no prefix rule, it's not a valid expression start. ***
+      // Report error and consume the token to prevent an infinite loop.
+      if (!prefixRule) {
+        this.error("Unexpected token in expression");
+        this.advance(); // Consume the invalid token
+        return null;
+      }
+
+      this.advance();
+      let left = prefixRule();
+      if (!left) return null;
+
+      while (precedence <= this.getRule(this.peek()?.type).precedence) {
+        const infixRule = this.getRule(this.peek()?.type).infix;
+        if (!infixRule) break;
+
+        this.advance();
+        left = infixRule(left);
+        if (!left) break;
+      }
+
+      return left;
+    } catch (error) {
+      this.synchronize(RecoveryMode.EXPRESSION);
+      return null;
+    }
+  }
+
+  // ========== STATEMENT PARSERS ==========
 
   private parseVariableDeclaration(): VariableDeclarationNode {
     const start = this.previous()!.pos;
@@ -249,6 +257,7 @@ export class UcodeParser {
   private parseFunctionDeclaration(): FunctionDeclarationNode | null {
     const start = this.previous()!.pos;
 
+    // Function declarations must have a name
     if (!this.check(TokenType.TK_LABEL)) {
       this.error("Expected function name");
       return null;
@@ -271,7 +280,10 @@ export class UcodeParser {
 
     this.consume(TokenType.TK_RPAREN, "Expected ')' after parameters");
 
+    // Consume the opening brace before parsing the block
     const openingBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' to start function body");
+
+    // Pass the consumed brace token to the block parser
     const body = this.parseBlockStatement(openingBrace, "function body");
 
     return {
@@ -343,6 +355,7 @@ export class UcodeParser {
       const left = this.parseExpression();
       
       if (left && this.match(TokenType.TK_IN)) {
+        // This is a for-in loop
         const right = this.parseExpression();
         if (!right) return null;
 
@@ -359,6 +372,7 @@ export class UcodeParser {
           body
         };
       } else {
+        // Reset and parse as regular for loop
         this.current = checkpoint;
       }
     }
@@ -373,7 +387,7 @@ export class UcodeParser {
         this.consume(TokenType.TK_SCOL, "Expected ';' after for loop initializer");
       }
     } else {
-      this.advance();
+      this.advance(); // consume semicolon
     }
 
     let test: AstNode | null = null;
@@ -386,7 +400,7 @@ export class UcodeParser {
     if (!this.check(TokenType.TK_RPAREN)) {
       update = this.parseExpression();
     }
-    this.consume(TokenType.TK_RPAREN, "Expected ')' after for loop");
+    this.consume(TokenType.TK_RPAREN, "Expected ')' after for clauses");
 
     const body = this.parseStatement();
     if (!body) return null;
@@ -404,14 +418,14 @@ export class UcodeParser {
 
   private parseReturnStatement(): ReturnStatementNode {
     const start = this.previous()!.pos;
-    
+
     let argument: AstNode | null = null;
     if (!this.check(TokenType.TK_SCOL) && !this.isAtEnd()) {
       argument = this.parseExpression();
     }
-    
+
     this.consume(TokenType.TK_SCOL, "Expected ';' after return value");
-    
+
     return {
       type: 'ReturnStatement',
       start,
@@ -422,46 +436,34 @@ export class UcodeParser {
 
   private parseBreakStatement(): BreakStatementNode {
     const start = this.previous()!.pos;
-    
-    let label: IdentifierNode | null = null;
-    if (this.check(TokenType.TK_LABEL)) {
-      label = this.parseIdentifierName();
-    }
-    
     this.consume(TokenType.TK_SCOL, "Expected ';' after 'break'");
-    
+
     return {
       type: 'BreakStatement',
       start,
       end: this.previous()!.end,
-      label
+      label: null // ucode doesn't support labeled breaks
     };
   }
 
   private parseContinueStatement(): ContinueStatementNode {
     const start = this.previous()!.pos;
-    
-    let label: IdentifierNode | null = null;
-    if (this.check(TokenType.TK_LABEL)) {
-      label = this.parseIdentifierName();
-    }
-    
     this.consume(TokenType.TK_SCOL, "Expected ';' after 'continue'");
-    
+
     return {
       type: 'ContinueStatement',
       start,
       end: this.previous()!.end,
-      label
+      label: null // ucode doesn't support labeled continues
     };
   }
 
   private parseTryStatement(): TryStatementNode | null {
     const start = this.previous()!.pos;
-    
+
     const openingBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' after 'try'");
     const block = this.parseBlockStatement(openingBrace, "try block");
-    
+
     let handler: CatchClauseNode | null = null;
     if (this.match(TokenType.TK_CATCH)) {
       const catchStart = this.previous()!.pos;
@@ -471,10 +473,10 @@ export class UcodeParser {
         param = this.parseIdentifierName();
         this.consume(TokenType.TK_RPAREN, "Expected ')' after catch parameter");
       }
-      
-      const catchBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' after catch");
-      const body = this.parseBlockStatement(catchBrace, "catch block");
-      
+
+      const catchOpeningBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' after 'catch'");
+      const body = this.parseBlockStatement(catchOpeningBrace, "catch block");
+
       handler = {
         type: 'CatchClause',
         start: catchStart,
@@ -483,75 +485,81 @@ export class UcodeParser {
         body
       };
     }
-    
-    let finalizer: BlockStatementNode | null = null;
-    if (this.match(TokenType.TK_FINALLY)) {
-      const finallyBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' after 'finally'");
-      finalizer = this.parseBlockStatement(finallyBrace, "finally block");
-    }
-    
-    if (!handler && !finalizer) {
-      this.error("Missing catch or finally after try");
+
+    if (!handler) {
+      this.error("Missing catch clause after try");
       return null;
     }
-    
+
     return {
       type: 'TryStatement',
       start,
-      end: (finalizer || handler || block).end,
+      end: handler.end,
       block,
       handler,
-      finalizer
+      finalizer: null // ucode doesn't support finally
     };
   }
 
+  // Note: parseThrowStatement removed as ucode doesn't support throw statements
+
   private parseSwitchStatement(): SwitchStatementNode | null {
     const start = this.previous()!.pos;
-    
+
     this.consume(TokenType.TK_LPAREN, "Expected '(' after 'switch'");
     const discriminant = this.parseExpression();
     if (!discriminant) return null;
-    
-    this.consume(TokenType.TK_RPAREN, "Expected ')' after switch discriminant");
-    this.consume(TokenType.TK_LBRACE, "Expected '{' after switch");
-    
+
+    this.consume(TokenType.TK_RPAREN, "Expected ')' after switch expression");
+    this.consume(TokenType.TK_LBRACE, "Expected '{' before switch body");
+
     const cases: SwitchCaseNode[] = [];
-    
     while (!this.check(TokenType.TK_RBRACE) && !this.isAtEnd()) {
-      const caseStart = this.peek()?.pos || 0;
-      
-      let test: AstNode | null = null;
       if (this.match(TokenType.TK_CASE)) {
-        test = this.parseExpression();
+        const caseStart = this.previous()!.pos;
+        const test = this.parseExpression();
+        this.consume(TokenType.TK_COLON, "Expected ':' after case value");
+
+        const consequent: AstNode[] = [];
+        while (!this.check(TokenType.TK_CASE) && !this.check(TokenType.TK_DEFAULT) && 
+               !this.check(TokenType.TK_RBRACE) && !this.isAtEnd()) {
+          const stmt = this.parseStatement();
+          if (stmt) consequent.push(stmt);
+        }
+
+        cases.push({
+          type: 'SwitchCase',
+          start: caseStart,
+          end: consequent.length > 0 ? consequent[consequent.length - 1]!.end : caseStart,
+          test,
+          consequent
+        });
       } else if (this.match(TokenType.TK_DEFAULT)) {
-        test = null;
+        const defaultStart = this.previous()!.pos;
+        this.consume(TokenType.TK_COLON, "Expected ':' after 'default'");
+
+        const consequent: AstNode[] = [];
+        while (!this.check(TokenType.TK_CASE) && !this.check(TokenType.TK_DEFAULT) && 
+               !this.check(TokenType.TK_RBRACE) && !this.isAtEnd()) {
+          const stmt = this.parseStatement();
+          if (stmt) consequent.push(stmt);
+        }
+
+        cases.push({
+          type: 'SwitchCase',
+          start: defaultStart,
+          end: consequent.length > 0 ? consequent[consequent.length - 1]!.end : defaultStart,
+          test: null, // null indicates default case
+          consequent
+        });
       } else {
         this.error("Expected 'case' or 'default' in switch statement");
         break;
       }
-      
-      this.consume(TokenType.TK_COLON, "Expected ':' after case label");
-      
-      const consequent: AstNode[] = [];
-      while (!this.check(TokenType.TK_CASE) && !this.check(TokenType.TK_DEFAULT) && 
-             !this.check(TokenType.TK_RBRACE) && !this.isAtEnd()) {
-        const stmt = this.parseStatement();
-        if (stmt) {
-          consequent.push(stmt);
-        }
-      }
-      
-      cases.push({
-        type: 'SwitchCase',
-        start: caseStart,
-        end: consequent.length > 0 ? consequent[consequent.length - 1]!.end : caseStart,
-        test,
-        consequent
-      });
     }
-    
+
     this.consume(TokenType.TK_RBRACE, "Expected '}' after switch body");
-    
+
     return {
       type: 'SwitchStatement',
       start,
@@ -561,23 +569,55 @@ export class UcodeParser {
     };
   }
 
-  private parseBlockStatement(openingBrace: any, context: string): BlockStatementNode {
-    const start = openingBrace.pos;
-    const body: AstNode[] = [];
+  private parseBlockStatement(openingBrace?: Token, context: string = "block"): BlockStatementNode {
+    // If no opening brace provided, get it from previous token
+    const actualOpeningBrace = openingBrace || this.previous();
+    const start = actualOpeningBrace?.pos || this.peek()?.pos || 0;
     
+    const body: AstNode[] = [];
     while (!this.check(TokenType.TK_RBRACE) && !this.isAtEnd()) {
-      const stmt = this.parseStatement();
-      if (stmt) {
-        body.push(stmt);
+      try {
+        const stmt = this.parseStatement();
+        if (stmt) {
+          body.push(stmt);
+        }
+      } catch (error) {
+        this.synchronize(RecoveryMode.STATEMENT);
+        if (this.isAtEnd()) break;
       }
     }
+
+    let end = start;
     
-    this.consume(TokenType.TK_RBRACE, `Expected '}' to close ${context}`);
-    
+    // Check if the file ended before the block was closed
+    if (this.isAtEnd()) {
+      if (this.previous()?.type !== TokenType.TK_RBRACE) {
+        // Report the error at the location of the opening brace for better context
+        if (actualOpeningBrace) {
+          this.errorAt(`Unclosed ${context}, expected '}' to match this '{'`, actualOpeningBrace.pos, actualOpeningBrace.end);
+        } else {
+          this.error(`Unclosed ${context}, expected '}'`);
+        }
+      }
+      end = this.previous()?.end || start;
+    } else if (this.check(TokenType.TK_RBRACE)) {
+      // Found the closing brace
+      this.advance();
+      end = this.previous()!.end;
+    } else {
+      // Missing closing brace but not at EOF
+      if (actualOpeningBrace) {
+        this.errorAt(`Expected '}' to close ${context}`, actualOpeningBrace.pos, actualOpeningBrace.end);
+      } else {
+        this.error(`Expected '}' to close ${context}`);
+      }
+      end = this.previous()?.end || start;
+    }
+
     return {
       type: 'BlockStatement',
       start,
-      end: this.previous()!.end,
+      end,
       body
     };
   }
@@ -585,11 +625,10 @@ export class UcodeParser {
   private parseExpressionStatement(): ExpressionStatementNode | null {
     const start = this.peek()?.pos || 0;
     const expression = this.parseExpression();
-    
     if (!expression) return null;
-    
+
     this.consume(TokenType.TK_SCOL, "Expected ';' after expression");
-    
+
     return {
       type: 'ExpressionStatement',
       start,
@@ -599,18 +638,18 @@ export class UcodeParser {
   }
 
   private parseEmptyStatement(): EmptyStatementNode {
-    const token = this.previous()!;
+    const start = this.previous()!.pos;
     return {
       type: 'EmptyStatement',
-      start: token.pos,
-      end: token.end
+      start,
+      end: this.previous()!.end
     };
   }
 
   // ========== EXPRESSION PARSERS ==========
 
   private parseIdentifier(): IdentifierNode | null {
-    const token = this.previous()!;
+    const token = this.previous()!; // Token already consumed by parseExpression
     
     if (token.type !== TokenType.TK_LABEL) {
       this.error("Expected identifier");
@@ -625,6 +664,7 @@ export class UcodeParser {
     };
   }
 
+  // Parse identifier when we need to consume the token (not as prefix)
   private parseIdentifierName(): IdentifierNode | null {
     if (!this.check(TokenType.TK_LABEL)) {
       this.error("Expected identifier");
@@ -640,297 +680,7 @@ export class UcodeParser {
     };
   }
 
-  private parseLiteral(literalType: string): LiteralNode {
-    const token = this.previous()!;
-    let value: string | number | boolean | null;
-
-    switch (literalType) {
-      case 'number':
-        value = Number(token.value);
-        break;
-      case 'double':
-        value = Number(token.value);
-        break;
-      case 'string':
-        value = String(token.value);
-        break;
-      case 'boolean':
-        value = token.type === TokenType.TK_TRUE;
-        break;
-      case 'null':
-        value = null;
-        break;
-      case 'regexp':
-        value = String(token.value);
-        break;
-      default:
-        value = token.value;
-    }
-
-    return {
-      type: 'Literal',
-      start: token.pos,
-      end: token.end,
-      value,
-      raw: String(token.value),
-      literalType: literalType as any
-    };
-  }
-
-  private parseThis(): ThisExpressionNode {
-    const token = this.previous()!;
-    return {
-      type: 'ThisExpression',
-      start: token.pos,
-      end: token.end
-    };
-  }
-
-  private parseRegex(): LiteralNode {
-    const token = this.previous()!;
-    return {
-      type: 'Literal',
-      start: token.pos,
-      end: token.end,
-      value: String(token.value),
-      raw: String(token.value),
-      literalType: 'regexp'
-    };
-  }
-
-  private parseGrouping(): AstNode | null {
-    const expr = this.parseExpression();
-    this.consume(TokenType.TK_RPAREN, "Expected ')' after expression");
-    return expr;
-  }
-
-  private parseArray(): ArrayExpressionNode {
-    const start = this.previous()!.pos;
-    const elements: (AstNode | null)[] = [];
-
-    if (!this.check(TokenType.TK_RBRACK)) {
-      do {
-        if (this.check(TokenType.TK_COMMA)) {
-          elements.push(null);
-        } else {
-          const expr = this.parseExpression();
-          elements.push(expr);
-        }
-      } while (this.match(TokenType.TK_COMMA));
-    }
-
-    this.consume(TokenType.TK_RBRACK, "Expected ']' after array elements");
-
-    return {
-      type: 'ArrayExpression',
-      start,
-      end: this.previous()!.end,
-      elements
-    };
-  }
-
-  private parseObject(): ObjectExpressionNode {
-    const start = this.previous()!.pos;
-    const properties: PropertyNode[] = [];
-
-    if (!this.check(TokenType.TK_RBRACE)) {
-      do {
-        let key: AstNode;
-        let computed = false;
-
-        if (this.match(TokenType.TK_LBRACK)) {
-          computed = true;
-          key = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
-          this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property key");
-        } else if (this.check(TokenType.TK_LABEL)) {
-          key = this.parseIdentifierName() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
-        } else if (this.check(TokenType.TK_STRING)) {
-          this.advance();
-          key = this.parseLiteral('string');
-        } else {
-          this.error("Expected property name");
-          break;
-        }
-
-        this.consume(TokenType.TK_COLON, "Expected ':' after property key");
-        
-        const value = this.parseExpression();
-        if (!value) continue;
-
-        properties.push({
-          type: 'Property',
-          start: key.start,
-          end: value.end,
-          key,
-          value,
-          computed
-        });
-      } while (this.match(TokenType.TK_COMMA));
-    }
-
-    this.consume(TokenType.TK_RBRACE, "Expected '}' after object properties");
-
-    return {
-      type: 'ObjectExpression',
-      start,
-      end: this.previous()!.end,
-      properties
-    };
-  }
-
-  private parseUnary(): UnaryExpressionNode | null {
-    const operatorToken = this.previous()!;
-    const operator = this.tokenToOperator(operatorToken.type);
-    const argument = this.parseExpression(Precedence.UNARY);
-    
-    if (!argument) return null;
-
-    return {
-      type: 'UnaryExpression',
-      start: operatorToken.pos,
-      end: argument.end,
-      operator: operator as any,
-      argument,
-      prefix: true
-    };
-  }
-
-  private parseBinary(left: AstNode): BinaryExpressionNode | null {
-    const operatorToken = this.previous()!;
-    const operator = this.tokenToOperator(operatorToken.type);
-    const rule = this.getRule(operatorToken.type);
-    
-    const right = this.parseExpression(rule.precedence + 1);
-    if (!right) return null;
-
-    return {
-      type: 'BinaryExpression',
-      start: left.start,
-      end: right.end,
-      operator: operator as any,
-      left,
-      right
-    };
-  }
-
-  private parseAssignment(left: AstNode): AssignmentExpressionNode | null {
-    const operatorToken = this.previous()!;
-    const operator = this.tokenToOperator(operatorToken.type);
-    
-    if (left.type !== 'Identifier' && left.type !== 'MemberExpression') {
-      this.error("Invalid assignment target");
-      return null;
-    }
-
-    const right = this.parseExpression(Precedence.ASSIGNMENT);
-    if (!right) return null;
-
-    return {
-      type: 'AssignmentExpression',
-      start: left.start,
-      end: right.end,
-      operator: operator as any,
-      left,
-      right
-    };
-  }
-
-  private parsePostfix(left: AstNode): UnaryExpressionNode {
-    const operatorToken = this.previous()!;
-    const operator = this.tokenToOperator(operatorToken.type);
-
-    return {
-      type: 'UnaryExpression',
-      start: left.start,
-      end: operatorToken.end,
-      operator: operator as any,
-      argument: left,
-      prefix: false
-    };
-  }
-
-  private parseCall(left: AstNode): CallExpressionNode {
-    const start = left.start;
-    const args: AstNode[] = [];
-
-    if (!this.check(TokenType.TK_RPAREN)) {
-      do {
-        const arg = this.parseExpression();
-        if (arg) args.push(arg);
-      } while (this.match(TokenType.TK_COMMA));
-    }
-
-    this.consume(TokenType.TK_RPAREN, "Expected ')' after arguments");
-
-    return {
-      type: 'CallExpression',
-      start,
-      end: this.previous()!.end,
-      callee: left,
-      arguments: args
-    };
-  }
-
-  private parseMemberAccess(left: AstNode): MemberExpressionNode | null {
-    const operatorToken = this.previous()!;
-    const computed = operatorToken.type === TokenType.TK_LBRACK;
-    
-    let property: AstNode;
-    
-    if (computed) {
-      property = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
-      this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property");
-    } else {
-      if (!this.check(TokenType.TK_LABEL)) {
-        this.error("Expected property name after '.'");
-        return null;
-      }
-      property = this.parseIdentifierName() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
-    }
-
-    return {
-      type: 'MemberExpression',
-      start: left.start,
-      end: property.end,
-      object: left,
-      property,
-      computed
-    };
-  }
-
-  private parseConditional(left: AstNode): ConditionalExpressionNode | null {
-    const consequent = this.parseExpression();
-    if (!consequent) return null;
-
-    this.consume(TokenType.TK_COLON, "Expected ':' after '?' in conditional expression");
-    
-    const alternate = this.parseExpression(Precedence.CONDITIONAL);
-    if (!alternate) return null;
-
-    return {
-      type: 'ConditionalExpression',
-      start: left.start,
-      end: alternate.end,
-      test: left,
-      consequent,
-      alternate
-    };
-  }
-
-  private parseDelete(): DeleteExpressionNode | null {
-    const start = this.previous()!.pos;
-    const argument = this.parseExpression(Precedence.UNARY);
-    if (!argument) return null;
-
-    return {
-      type: 'DeleteExpression',
-      start,
-      end: argument.end,
-      argument
-    };
-  }
-
-  // ========== PARSER RULES INITIALIZATION ==========
+  // ========== PARSER UTILITIES ==========
 
   private initializeParseRules(): void {
     // Primary expressions
@@ -1096,6 +846,341 @@ export class UcodeParser {
     });
   }
 
+  // Placeholder implementations for prefix/infix parsers
+  private parseLiteral(literalType: string): LiteralNode {
+    const token = this.previous()!;
+    let value: string | number | boolean | null;
+
+    switch (literalType) {
+      case 'number':
+        value = Number(token.value);
+        break;
+      case 'double':
+        value = parseFloat(token.value as string);
+        break;
+      case 'string':
+        value = token.value as string;
+        break;
+      case 'boolean':
+        value = token.type === TokenType.TK_TRUE;
+        break;
+      case 'null':
+        value = null;
+        break;
+      default:
+        value = token.value as string;
+    }
+
+    return {
+      type: 'Literal',
+      start: token.pos,
+      end: token.end,
+      value,
+      raw: token.value as string,
+      literalType: literalType as any
+    };
+  }
+
+  private parseThis(): ThisExpressionNode {
+    const token = this.previous()!;
+    return {
+      type: 'ThisExpression',
+      start: token.pos,
+      end: token.end
+    };
+  }
+
+  private parseRegex(): LiteralNode {
+    const token = this.previous()!;
+    return {
+      type: 'Literal',
+      start: token.pos,
+      end: token.end,
+      value: token.value as string,
+      raw: token.value as string,
+      literalType: 'regexp'
+    };
+  }
+
+  private parseGrouping(): AstNode | null {
+    const expression = this.parseExpression();
+    this.consume(TokenType.TK_RPAREN, "Expected ')' after expression");
+    return expression;
+  }
+
+  private parseArray(): ArrayExpressionNode {
+    const start = this.previous()!.pos;
+    const elements: (AstNode | null)[] = [];
+
+    if (!this.check(TokenType.TK_RBRACK)) {
+      do {
+        if (this.check(TokenType.TK_COMMA)) {
+          elements.push(null); // sparse array
+        } else {
+          elements.push(this.parseExpression());
+        }
+      } while (this.match(TokenType.TK_COMMA));
+    }
+
+    this.consume(TokenType.TK_RBRACK, "Expected ']' after array elements");
+
+    return {
+      type: 'ArrayExpression',
+      start,
+      end: this.previous()!.end,
+      elements
+    };
+  }
+
+  private parseObject(): ObjectExpressionNode {
+    const start = this.previous()!.pos;
+    const properties: PropertyNode[] = [];
+
+    if (!this.check(TokenType.TK_RBRACE)) {
+      let expectingComma = false;
+      
+      while (!this.check(TokenType.TK_RBRACE) && !this.isAtEnd()) {
+        if (expectingComma) {
+          if (this.match(TokenType.TK_COMMA)) {
+            expectingComma = false;
+            continue;
+          } else {
+            // Missing comma - report error and try to recover
+            const prevProperty = properties[properties.length - 1];
+            if (prevProperty) {
+              this.errorAt("Expected ',' between object properties", prevProperty.end, prevProperty.end);
+            }
+            // Don't consume any tokens, just continue to parse the next property
+            expectingComma = false;
+          }
+        }
+        
+        const property = this.parseProperty();
+        if (property) {
+          properties.push(property);
+          expectingComma = true;
+        } else {
+          // Failed to parse property, try to recover
+          this.advance(); // Skip problematic token
+        }
+      }
+    }
+
+    this.consume(TokenType.TK_RBRACE, "Expected '}' after object properties");
+
+    return {
+      type: 'ObjectExpression',
+      start,
+      end: this.previous()!.end,
+      properties
+    };
+  }
+
+  private parseProperty(): PropertyNode | null {
+    const start = this.peek()?.pos || 0;
+    
+    let key: AstNode;
+    let computed = false;
+
+    if (this.match(TokenType.TK_LBRACK)) {
+      computed = true;
+      key = this.parseExpression()!;
+      this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property");
+    } else if (this.check(TokenType.TK_LABEL)) {
+      key = this.parseIdentifierName()!;
+    } else if (this.check(TokenType.TK_STRING)) {
+      this.advance();
+      key = this.parseLiteral('string');
+    } else {
+      this.error("Expected property name");
+      return null;
+    }
+
+    this.consume(TokenType.TK_COLON, "Expected ':' after property key");
+    const value = this.parseExpression();
+    if (!value) return null;
+
+    return {
+      type: 'Property',
+      start,
+      end: value.end,
+      key,
+      value,
+      computed
+    };
+  }
+
+  private parseUnary(): UnaryExpressionNode | null {
+    const operator = this.previous()!;
+    const argument = this.parseExpression(Precedence.UNARY);
+    if (!argument) return null;
+
+    let operatorStr: string;
+    switch (operator.type) {
+      case TokenType.TK_NOT: operatorStr = '!'; break;
+      case TokenType.TK_SUB: operatorStr = '-'; break;
+      case TokenType.TK_ADD: operatorStr = '+'; break;
+      case TokenType.TK_COMPL: operatorStr = '~'; break;
+      case TokenType.TK_INC: operatorStr = '++'; break;
+      case TokenType.TK_DEC: operatorStr = '--'; break;
+      default:
+        this.error(`Unknown unary operator: ${operator.type}`);
+        return null;
+    }
+
+    return {
+      type: 'UnaryExpression',
+      start: operator.pos,
+      end: argument.end,
+      operator: operatorStr as any,
+      argument,
+      prefix: true
+    };
+  }
+
+  private parseBinary(left: AstNode): BinaryExpressionNode | null {
+    const operator = this.previous()!;
+    const precedence = this.getRule(operator.type).precedence;
+    const right = this.parseExpression(precedence + 1);
+    if (!right) return null;
+
+    return {
+      type: 'BinaryExpression',
+      start: left.start,
+      end: right.end,
+      operator: this.tokenToOperator(operator.type) as any,
+      left,
+      right
+    };
+  }
+
+  private parseAssignment(left: AstNode): AssignmentExpressionNode | null {
+    const operator = this.previous()!;
+    
+    // Validate assignment target
+    if (!this.isValidAssignmentTarget(left)) {
+      this.error("Invalid assignment target");
+      return null;
+    }
+    
+    const right = this.parseExpression(Precedence.ASSIGNMENT);
+    if (!right) return null;
+
+    return {
+      type: 'AssignmentExpression',
+      start: left.start,
+      end: right.end,
+      operator: this.tokenToOperator(operator.type) as any,
+      left,
+      right
+    };
+  }
+
+  private isValidAssignmentTarget(node: AstNode): boolean {
+    return node.type === 'Identifier' || 
+           node.type === 'MemberExpression';
+  }
+
+  private parsePostfix(left: AstNode): UnaryExpressionNode {
+    const operator = this.previous()!;
+
+    // Postfix ++/-- cannot be the left-hand side of an assignment
+    if (this.check(TokenType.TK_ASSIGN)) {
+      this.error("Invalid assignment target");
+    }
+
+    return {
+      type: 'UnaryExpression',
+      start: left.start,
+      end: operator.end,
+      operator: operator.type === TokenType.TK_INC ? '++' : '--',
+      argument: left,
+      prefix: false // This is key!
+    };
+  }
+
+  private parseCall(left: AstNode): CallExpressionNode {
+    const start = left.start;
+    const args: AstNode[] = [];
+
+    if (!this.check(TokenType.TK_RPAREN)) {
+      do {
+        const arg = this.parseExpression();
+        if (arg) args.push(arg);
+      } while (this.match(TokenType.TK_COMMA));
+    }
+
+    this.consume(TokenType.TK_RPAREN, "Expected ')' after arguments");
+
+    return {
+      type: 'CallExpression',
+      start,
+      end: this.previous()!.end,
+      callee: left,
+      arguments: args
+    };
+  }
+
+  private parseMemberAccess(left: AstNode): MemberExpressionNode | null {
+    const operator = this.previous()!;
+    const computed = operator.type === TokenType.TK_LBRACK;
+    
+    let property: AstNode;
+    if (computed) {
+      property = this.parseExpression()!;
+      this.consume(TokenType.TK_RBRACK, "Expected ']' after computed member");
+    } else {
+      // For dot notation, we need an identifier
+      if (!this.check(TokenType.TK_LABEL)) {
+        this.errorAt("Expected property name after '.'", operator.end, operator.end);
+        return null;
+      }
+      property = this.parseIdentifierName()!;
+    }
+
+    if (!property) return null;
+
+    return {
+      type: 'MemberExpression',
+      start: left.start,
+      end: property.end,
+      object: left,
+      property,
+      computed
+    };
+  }
+
+  private parseConditional(left: AstNode): ConditionalExpressionNode | null {
+    const consequent = this.parseExpression();
+    if (!consequent) return null;
+
+    this.consume(TokenType.TK_COLON, "Expected ':' after conditional consequent");
+    const alternate = this.parseExpression(Precedence.CONDITIONAL);
+    if (!alternate) return null;
+
+    return {
+      type: 'ConditionalExpression',
+      start: left.start,
+      end: alternate.end,
+      test: left,
+      consequent,
+      alternate
+    };
+  }
+
+  private parseDelete(): DeleteExpressionNode | null {
+    const start = this.previous()!.pos;
+    const argument = this.parseExpression(Precedence.UNARY);
+    if (!argument) return null;
+
+    return {
+      type: 'DeleteExpression',
+      start,
+      end: argument.end,
+      argument
+    };
+  }
+
   // ========== UTILITY METHODS ==========
 
   private tokenToOperator(tokenType: TokenType): string {
@@ -1178,6 +1263,7 @@ export class UcodeParser {
       const prevToken = this.previous();
       if (prevToken) {
         this.errorAt(message, prevToken.end, prevToken.end);
+        // Return a dummy semicolon token positioned right after the previous token
         return { type: TokenType.TK_SCOL, pos: prevToken.end, end: prevToken.end, value: ';' };
       }
     }
@@ -1189,11 +1275,13 @@ export class UcodeParser {
     
     this.errorAt(message, errorPos, errorEnd);
 
+    // Return a dummy token with proper positioning
     return { type, pos: errorPos, end: errorEnd, value: '' };
   }
 
   private isAtEnd(): boolean {
-    return this.current >= this.tokens.length || this.peek()?.type === TokenType.TK_EOF;
+    return this.current >= this.tokens.length || 
+           this.peek()?.type === TokenType.TK_EOF;
   }
 
   private peek(): Token | undefined {
@@ -1206,38 +1294,71 @@ export class UcodeParser {
 
   private error(message: string): void {
     const token = this.peek();
-    const pos = token?.pos ?? this.previous()?.end ?? 0;
-    const end = token?.end ?? pos;
-    this.errorAt(message, pos, end);
+    const start = token?.pos || 0;
+    const end = token?.end || start;
+
+    this.errorAt(message, start, end);
   }
 
-  private errorAt(message: string, pos: number, end: number): void {
-    if (this.panicMode) return;
+  private errorAt(message: string, start: number, end: number): void {
+    const { line, column } = this.calculateLineColumn(start);
     
-    this.panicMode = true;
     this.errors.push({
       message,
-      start: pos,
+      start,
       end,
+      line,
+      column,
       severity: 'error'
     });
+    if (!this.panicMode) {
+      this.panicMode = true;
+    }
   }
 
+  private calculateLineColumn(position: number): { line: number; column: number } {
+    if (!this.sourceCode) return { line: 1, column: 1 };
+    
+    let line = 1;
+    let column = 1;
+    
+    for (let i = 0; i < position && i < this.sourceCode.length; i++) {
+      if (this.sourceCode[i] === '\n') {
+        line++;
+        column = 1;
+      } else {
+        column++;
+      }
+    }
+    
+    return { line, column };
+  }
 
+  // Note: warning method available but not used yet
 
   private synchronize(mode: RecoveryMode): void {
     this.panicMode = false;
-    
-    const syncTokens = mode === RecoveryMode.STATEMENT ? STATEMENT_SYNC_TOKENS : EXPRESSION_SYNC_TOKENS;
-    
+
+    let syncTokens: string[];
+    switch (mode) {
+      case RecoveryMode.STATEMENT:
+        syncTokens = STATEMENT_SYNC_TOKENS;
+        break;
+      case RecoveryMode.EXPRESSION:
+        syncTokens = EXPRESSION_SYNC_TOKENS;
+        break;
+      case RecoveryMode.BLOCK:
+        syncTokens = ['TK_RBRACE', 'TK_EOF'];
+        break;
+      default:
+        return;
+    }
+
     while (!this.isAtEnd()) {
-      if (this.previous()?.type === TokenType.TK_SCOL) return;
-      
-      const currentType = this.peek()?.type;
-      if (currentType && syncTokens.includes(currentType as any)) {
+      const tokenTypeName = TokenType[this.peek()!.type];
+      if (syncTokens.includes(tokenTypeName)) {
         return;
       }
-      
       this.advance();
     }
   }

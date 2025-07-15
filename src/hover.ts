@@ -3,7 +3,7 @@ import {
     Hover,
     MarkupKind
 } from 'vscode-languageserver/node';
-import { UcodeLexer, TokenType } from './lexer';
+import { UcodeLexer, TokenType, isKeyword } from './lexer';
 import { builtinFunctions } from './builtins';
 
 export function handleHover(
@@ -47,7 +47,7 @@ export function handleHover(
                 };
             }
             
-            if (UcodeLexer.isKeyword(word)) {
+            if (isKeyword(word)) {
                 return {
                     contents: {
                         kind: MarkupKind.Markdown,
