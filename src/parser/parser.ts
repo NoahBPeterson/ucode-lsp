@@ -175,8 +175,12 @@ export class UcodeParser {
       }
 
       const prefixRule = this.getRule(this.peek()?.type).prefix;
+      
+      // *** FIX: If there's no prefix rule, it's not a valid expression start. ***
+      // Report error and consume the token to prevent an infinite loop.
       if (!prefixRule) {
-        this.error("Expected expression");
+        this.error("Unexpected token in expression");
+        this.advance(); // Consume the invalid token
         return null;
       }
 
@@ -1238,18 +1242,25 @@ export class UcodeParser {
   private consume(type: TokenType, message: string): Token {
     if (this.check(type)) return this.advance()!;
 
-    // For missing semicolons, point to the end of previous token
+    // For missing semicolons, point to the end of previous token for better UX
     if (type === TokenType.TK_SCOL) {
       const prevToken = this.previous();
       if (prevToken) {
         this.errorAt(message, prevToken.end, prevToken.end);
-      } else {
-        this.error(message);
+        // Return a dummy semicolon token positioned right after the previous token
+        return { type: TokenType.TK_SCOL, pos: prevToken.end, end: prevToken.end, value: ';' };
       }
-    } else {
-      this.error(message);
     }
-    throw new Error(message);
+
+    // For other tokens, report at current position
+    const badToken = this.peek();
+    const errorPos = badToken?.pos ?? this.previous()?.end ?? 0;
+    const errorEnd = badToken?.end ?? errorPos;
+    
+    this.errorAt(message, errorPos, errorEnd);
+
+    // Return a dummy token with proper positioning
+    return { type, pos: errorPos, end: errorEnd, value: '' };
   }
 
   private isAtEnd(): boolean {

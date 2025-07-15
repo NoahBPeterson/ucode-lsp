@@ -32,7 +32,7 @@ export function validateDocument(
     
     // Default configuration
     const opts: Required<HybridValidationConfig> = {
-        useAstParser: true, // Enable AST parser by default
+        useAstParser: true, // TEMPORARILY DISABLED due to memory leak
         fallbackToLexer: true, // Fallback to lexer if AST fails
         astOptions: {
             enableAstValidation: true,

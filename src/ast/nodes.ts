@@ -8,7 +8,7 @@ export interface AstNode {
   type: string;
   start: number;
   end: number;
-  parent?: AstNode;
+  // parent?: AstNode; // REMOVED: Causes memory leaks due to circular references
 }
 
 // Program root - contains all top-level statements

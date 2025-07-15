@@ -73,7 +73,7 @@ documents.onDidChangeContent((change: TextDocumentChangeEvent<TextDocument>) => 
 });
 
 async function validateTextDocument(textDocument: TextDocument): Promise<void> {
-    // Use the hybrid validation system - start with AST basic validation
+    // Use the hybrid validation system - Testing AST basic validation with fixed error recovery
     // Change to 'lexer' to disable AST, 'ast-full' for complete analysis
     const config = createValidationConfig('ast-basic');
     

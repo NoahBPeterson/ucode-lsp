@@ -42,7 +42,7 @@ export function validateWithAst(
         const tokens = lexer.tokenize();
         
         // 2. Parse into AST
-        const parser = new UcodeParser(tokens);
+        const parser = new UcodeParser(tokens, text);
         const parseResult = parser.parse();
         
         // 3. Add parsing errors to diagnostics
