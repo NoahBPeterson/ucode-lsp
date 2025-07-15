@@ -12,7 +12,7 @@ import {
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { validateWithLexer } from './validations';
+import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
 
@@ -73,7 +73,15 @@ documents.onDidChangeContent((change: TextDocumentChangeEvent<TextDocument>) => 
 });
 
 async function validateTextDocument(textDocument: TextDocument): Promise<void> {
-    const diagnostics = validateWithLexer(textDocument, connection);
+    // Use the hybrid validation system - start with AST basic validation
+    // Change to 'lexer' to disable AST, 'ast-full' for complete analysis
+    const config = createValidationConfig('ast-basic');
+    
+    const diagnostics = validateDocument(textDocument, connection, {
+        ...config,
+        enablePerformanceLogging: true // Enable for development
+    });
+    
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
 }
 

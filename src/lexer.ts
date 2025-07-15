@@ -827,7 +827,7 @@ export class UcodeLexer {
 
             if (token && token.type !== TokenType.TK_COMMENT) {
                 this.noKeyword = false;
-                this.noRegexp = false;
+                this.updateLexerState(token);
             }
 
             if (token) {
@@ -836,6 +836,31 @@ export class UcodeLexer {
         }
 
         return this.emitToken(TokenType.TK_EOF, '');
+    }
+
+    private updateLexerState(token: Token): void {
+        // These are the token types that can be followed by a division operator,
+        // but not a regular expression.
+        const typesThatPrecedeDiv = [
+            TokenType.TK_RPAREN,    // )
+            TokenType.TK_RBRACK,    // ]
+            TokenType.TK_LABEL,     // variable
+            TokenType.TK_NUMBER,    // 123
+            TokenType.TK_DOUBLE,    // 1.23
+            TokenType.TK_STRING,    // "hello"
+            TokenType.TK_TRUE,
+            TokenType.TK_FALSE,
+            TokenType.TK_NULL,
+            TokenType.TK_THIS,
+            TokenType.TK_INC,       // x++
+            TokenType.TK_DEC        // x--
+        ];
+
+        if (typesThatPrecedeDiv.includes(token.type)) {
+            this.noRegexp = true;
+        } else {
+            this.noRegexp = false;
+        }
     }
 
     public tokenize(): Token[] {
