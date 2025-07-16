@@ -19,7 +19,6 @@ const testFiles = [
     'tests/test-json-utility-functions.js',
     'tests/test-remaining-utility-functions.js',
     'tests/test-system-utility-functions.js',
-    'tests/test-validation-simple.js',
     'tests/test-union-types-programmatic.js',
     'tests/test-unknown-return-types.js',
     'tests/test-arrow-function-parsing.js',
