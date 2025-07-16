@@ -8,7 +8,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
          ContinueStatementNode, AssignmentExpressionNode, ImportDeclarationNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
-         PropertyNode } from '../ast/nodes';
+         PropertyNode, MemberExpressionNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -290,6 +290,32 @@ export class SemanticAnalyzer extends BaseVisitor {
         // Mark as used
         this.symbolTable.markUsed(node.name, node.start);
       }
+    }
+  }
+
+  visitMemberExpression(node: MemberExpressionNode): void {
+    if (this.options.enableScopeAnalysis) {
+      // Visit the object part (e.g., 'constants' in 'constants.DT_HOSTINFO_FINAL_PATH')
+      this.visit(node.object);
+      
+      // For non-computed member access (obj.prop), check if it's a namespace import
+      if (!node.computed && node.object.type === 'Identifier') {
+        const objectName = (node.object as IdentifierNode).name;
+        const symbol = this.symbolTable.lookup(objectName);
+        
+        // If the object is a namespace import, don't visit the property as it's not a variable
+        if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importSpecifier === '*') {
+          // This is a namespace import member access (e.g., constants.DT_HOSTINFO_FINAL_PATH)
+          // Don't visit the property name as it's not a variable reference
+          return;
+        }
+      }
+      
+      // For computed access (obj[prop]) or non-namespace access, visit the property
+      this.visit(node.property);
+    } else {
+      // If scope analysis is disabled, use default behavior
+      super.visitMemberExpression(node);
     }
   }
 

@@ -26,7 +26,8 @@ const testFiles = [
     'tests/test-for-in-bare-fix.js',
     'tests/test-imported-function-fix.js',
     'tests/test-object-property-keys.test.js',
-    'tests/test-object-property-keys-fix.js'
+    'tests/test-object-property-keys-fix.js',
+    'tests/test-namespace-import-validation.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
@@ -98,6 +99,8 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('✅ Imported function recognition in type checker fixed');
         console.log('✅ Object property keys no longer show undefined variable errors');
         console.log('✅ Parser creates LiteralNode for property keys instead of IdentifierNode');
+        console.log('✅ Namespace import member access (import * as name) working correctly');
+        console.log('✅ Namespace import validation logic tests passing');
     } else {
         console.log('\n❌ Some test suites failed. Please review the output above.');
     }
