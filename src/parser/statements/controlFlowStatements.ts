@@ -9,7 +9,7 @@ import {
   ForInStatementNode, ReturnStatementNode, BreakStatementNode, 
   ContinueStatementNode, TryStatementNode, CatchClauseNode, 
   SwitchStatementNode, SwitchCaseNode, BlockStatementNode, 
-  IdentifierNode
+  IdentifierNode, VariableDeclarationNode, VariableDeclaratorNode
 } from '../../ast/nodes';
 import { DeclarationStatements } from './declarationStatements';
 
@@ -63,15 +63,58 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     };
   }
 
+  private parseVariableDeclarationWithoutSemicolon(): VariableDeclarationNode {
+    const start = this.previous()!.pos;
+    const kind = this.previous()!.type === TokenType.TK_CONST ? 'const' : 'let';
+    const declarations: VariableDeclaratorNode[] = [];
+
+    // Parse only a single variable declarator for for-in loops
+    if (this.check(TokenType.TK_LABEL)) {
+      const idStart = this.peek()?.pos || 0;
+      const name = this.advance()!.value as string;
+      
+      const declarator: VariableDeclaratorNode = {
+        type: 'VariableDeclarator',
+        start: idStart,
+        end: this.previous()!.end,
+        id: {
+          type: 'Identifier',
+          start: idStart,
+          end: this.previous()!.end,
+          name
+        },
+        init: null // No initialization in for-in loops
+      };
+      
+      declarations.push(declarator);
+    }
+
+    // No semicolon expected in for-in loop declarations
+    return {
+      type: 'VariableDeclaration',
+      start,
+      end: this.previous()!.end,
+      kind,
+      declarations
+    };
+  }
+
   protected parseForStatement(): ForStatementNode | ForInStatementNode | null {
     const start = this.previous()!.pos;
 
     this.consume(TokenType.TK_LPAREN, "Expected '(' after 'for'");
 
     // Check for for-in loop
-    if (this.check(TokenType.TK_LABEL)) {
+    if (this.check(TokenType.TK_LABEL) || this.check(TokenType.TK_LOCAL) || this.check(TokenType.TK_CONST)) {
       const checkpoint = this.current;
-      const left = this.parseExpression();
+      let left: AstNode | null = null;
+      
+      // Handle variable declarations in for-in loops
+      if (this.match(TokenType.TK_LOCAL, TokenType.TK_CONST)) {
+        left = this.parseVariableDeclarationWithoutSemicolon();
+      } else {
+        left = this.parseExpression();
+      }
       
       if (left && this.match(TokenType.TK_IN)) {
         const right = this.parseExpression();

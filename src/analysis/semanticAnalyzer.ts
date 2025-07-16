@@ -7,7 +7,8 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          FunctionDeclarationNode, IdentifierNode, CallExpressionNode, 
          BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
          ContinueStatementNode, AssignmentExpressionNode, ImportDeclarationNode,
-         ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode } from '../ast/nodes';
+         ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
+         PropertyNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -162,6 +163,15 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Only visit the local identifier, not the imported one
     // This prevents the "undefined variable" error for the original name in aliases
     this.visit(node.local);
+  }
+
+  visitProperty(node: PropertyNode): void {
+    // Only visit computed property keys (obj[key]), not literal keys (obj.key)
+    if (node.computed) {
+      this.visit(node.key);
+    }
+    // Always visit the property value
+    this.visit(node.value);
   }
 
   private processImportSpecifier(specifier: ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode, source: string): void {

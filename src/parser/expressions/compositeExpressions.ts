@@ -51,7 +51,17 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
           key = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
           this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property key");
         } else if (this.check(TokenType.TK_LABEL)) {
+          // Accept labels as property keys
           key = this.parseIdentifierName() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
+        } else if (this.check(TokenType.TK_NUMBER) || this.check(TokenType.TK_DOUBLE)) {
+          // Accept numbers as property keys (they become string keys)
+          const token = this.advance()!;
+          key = {
+            type: 'Identifier',
+            start: token.pos,
+            end: token.end,
+            name: token.value as string
+          } as IdentifierNode;
         } else if (this.check(TokenType.TK_STRING)) {
           this.advance();
           key = this.parseLiteral('string');
