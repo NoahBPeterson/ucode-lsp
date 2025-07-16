@@ -113,7 +113,9 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
       if (this.match(TokenType.TK_LOCAL, TokenType.TK_CONST)) {
         left = this.parseVariableDeclarationWithoutSemicolon();
       } else {
-        left = this.parseExpression();
+        // Parse only the left-hand side identifier, not a full expression
+        // to avoid consuming the 'in' operator as part of a binary expression
+        left = this.parseIdentifierName();
       }
       
       if (left && this.match(TokenType.TK_IN)) {

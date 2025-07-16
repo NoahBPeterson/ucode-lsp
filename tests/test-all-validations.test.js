@@ -22,7 +22,8 @@ const testFiles = [
     'tests/test-validation-simple.js',
     'tests/test-union-types-programmatic.js',
     'tests/test-unknown-return-types.js',
-    'tests/test-arrow-function-parsing.js'
+    'tests/test-arrow-function-parsing.js',
+    'tests/test-for-in-bare-fix.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
@@ -90,6 +91,7 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('✅ Dynamic typing with union types working correctly');
         console.log('✅ Unknown return types preserved in union inference');
         console.log('✅ Arrow function parsing implemented correctly');
+        console.log('✅ For-in loop parsing with bare identifiers fixed');
     } else {
         console.log('\n❌ Some test suites failed. Please review the output above.');
     }
