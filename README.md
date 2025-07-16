@@ -1,6 +1,6 @@
 # ucode Language Server Protocol (LSP)
 
-A comprehensive Language Server Protocol implementation for the ucode scripting language, providing syntax highlighting, function definition go-to, basic type inference, and syntax error diagnostics.
+A comprehensive Language Server Protocol implementation for the [ucode scripting language](https://github.com/jow-/ucode), providing syntax highlighting, function definition go-to, basic type inference, and syntax error diagnostics.
 
 ## Features
 
