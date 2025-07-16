@@ -6,7 +6,8 @@
 import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode, 
          FunctionDeclarationNode, IdentifierNode, CallExpressionNode, 
          BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
-         ContinueStatementNode, AssignmentExpressionNode } from '../ast/nodes';
+         ContinueStatementNode, AssignmentExpressionNode, ImportDeclarationNode,
+         ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -141,6 +142,53 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
     } else {
       super.visitVariableDeclarator(node);
+    }
+  }
+
+  visitImportDeclaration(node: ImportDeclarationNode): void {
+    if (this.options.enableScopeAnalysis) {
+      // For now, just add imported symbols to the symbol table
+      // TODO: Add proper file resolution and cross-file analysis
+      for (const specifier of node.specifiers) {
+        this.processImportSpecifier(specifier, node.source.value as string);
+      }
+    }
+    
+    // Continue with default traversal
+    super.visitImportDeclaration(node);
+  }
+
+  private processImportSpecifier(specifier: ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode, source: string): void {
+    let localName: string;
+    let importedName: string;
+    
+    if (specifier.type === 'ImportSpecifier') {
+      localName = specifier.local.name;
+      importedName = specifier.imported.name;
+    } else if (specifier.type === 'ImportDefaultSpecifier') {
+      localName = specifier.local.name;
+      importedName = 'default';
+    } else { // ImportNamespaceSpecifier
+      localName = specifier.local.name;
+      importedName = '*';
+    }
+    
+    // Add imported symbol to symbol table
+    if (!this.symbolTable.declare(localName, SymbolType.IMPORTED, UcodeType.UNKNOWN as UcodeDataType, specifier.local)) {
+      this.addDiagnostic(
+        `Imported symbol '${localName}' is already declared in current scope`,
+        specifier.local.start,
+        specifier.local.end,
+        DiagnosticSeverity.Error
+      );
+    } else {
+      // Store import information in the symbol
+      const symbol = this.symbolTable.lookup(localName);
+      if (symbol) {
+        symbol.importedFrom = source;
+        symbol.importSpecifier = importedName;
+        // TODO: Resolve actual definition location
+      }
     }
   }
 

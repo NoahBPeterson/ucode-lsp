@@ -9,7 +9,8 @@ export enum SymbolType {
   VARIABLE = 'variable',
   FUNCTION = 'function',
   PARAMETER = 'parameter',
-  BUILTIN = 'builtin'
+  BUILTIN = 'builtin',
+  IMPORTED = 'imported'
 }
 
 export enum UcodeType {
@@ -95,6 +96,13 @@ export interface Symbol {
   node: AstNode;
   declaredAt: number; // position in source
   usedAt: number[];   // positions where used
+  // Import-specific fields
+  importedFrom?: string;        // File path where this symbol is imported from
+  importSpecifier?: string;     // Original name if aliased (e.g., 'run_command' for 'import { run_command as cmd }')
+  definitionLocation?: {        // Location of the actual definition
+    uri: string;
+    range: { start: number; end: number };
+  };
 }
 
 export class SymbolTable {

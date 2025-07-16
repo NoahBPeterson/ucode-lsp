@@ -10,13 +10,14 @@ import {
     DidChangeWatchedFilesParams,
     TextDocumentChangeEvent,
     Diagnostic,
-    DiagnosticSeverity
+    DiagnosticSeverity,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
 // import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
+import { handleDefinition } from './definition';
 import { SemanticAnalyzer, SemanticAnalysisResult } from './analysis';
 import { UcodeParser } from './parser';
 import { UcodeLexer } from './lexer';
@@ -48,7 +49,8 @@ connection.onInitialize((params: InitializeParams) => {
             completionProvider: {
                 resolveProvider: true
             },
-            hoverProvider: true
+            hoverProvider: true,
+            definitionProvider: true
         }
     };
     if (hasWorkspaceFolderCapability) {
@@ -134,6 +136,10 @@ connection.onCompletion((params) => {
 
 connection.onCompletionResolve((item) => {
     return handleCompletionResolve(item);
+});
+
+connection.onDefinition((params) => {
+    return handleDefinition(params, documents, analysisCache);
 });
 
 documents.listen(connection);

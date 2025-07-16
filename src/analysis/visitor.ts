@@ -11,7 +11,8 @@ import {
   IfStatementNode, ForStatementNode, WhileStatementNode, FunctionDeclarationNode,
   ReturnStatementNode, BreakStatementNode, ContinueStatementNode, TryStatementNode,
   CatchClauseNode, SwitchStatementNode, SwitchCaseNode, ConditionalExpressionNode,
-  ForInStatementNode, EmptyStatementNode, ThisExpressionNode, DeleteExpressionNode
+  ForInStatementNode, EmptyStatementNode, ThisExpressionNode, DeleteExpressionNode,
+  ImportDeclarationNode, ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode
 } from '../ast/nodes';
 
 export interface VisitorMethods {
@@ -46,6 +47,10 @@ export interface VisitorMethods {
   visitEmptyStatement?(node: EmptyStatementNode): void;
   visitThisExpression?(node: ThisExpressionNode): void;
   visitDeleteExpression?(node: DeleteExpressionNode): void;
+  visitImportDeclaration?(node: ImportDeclarationNode): void;
+  visitImportSpecifier?(node: ImportSpecifierNode): void;
+  visitImportDefaultSpecifier?(node: ImportDefaultSpecifierNode): void;
+  visitImportNamespaceSpecifier?(node: ImportNamespaceSpecifierNode): void;
 }
 
 export class BaseVisitor implements VisitorMethods {
@@ -143,6 +148,18 @@ export class BaseVisitor implements VisitorMethods {
         break;
       case 'DeleteExpression':
         this.visitDeleteExpression(node as DeleteExpressionNode);
+        break;
+      case 'ImportDeclaration':
+        this.visitImportDeclaration(node as ImportDeclarationNode);
+        break;
+      case 'ImportSpecifier':
+        this.visitImportSpecifier(node as ImportSpecifierNode);
+        break;
+      case 'ImportDefaultSpecifier':
+        this.visitImportDefaultSpecifier(node as ImportDefaultSpecifierNode);
+        break;
+      case 'ImportNamespaceSpecifier':
+        this.visitImportNamespaceSpecifier(node as ImportNamespaceSpecifierNode);
         break;
     }
   }
@@ -332,5 +349,27 @@ export class BaseVisitor implements VisitorMethods {
 
   visitDeleteExpression(node: DeleteExpressionNode): void {
     this.visit(node.argument);
+  }
+
+  visitImportDeclaration(node: ImportDeclarationNode): void {
+    // Visit all specifiers
+    for (const specifier of node.specifiers) {
+      this.visit(specifier);
+    }
+    // Visit the source literal
+    this.visit(node.source);
+  }
+
+  visitImportSpecifier(node: ImportSpecifierNode): void {
+    this.visit(node.imported);
+    this.visit(node.local);
+  }
+
+  visitImportDefaultSpecifier(node: ImportDefaultSpecifierNode): void {
+    this.visit(node.local);
+  }
+
+  visitImportNamespaceSpecifier(node: ImportNamespaceSpecifierNode): void {
+    this.visit(node.local);
   }
 }
