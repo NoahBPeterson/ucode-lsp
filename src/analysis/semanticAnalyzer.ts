@@ -7,7 +7,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          FunctionDeclarationNode, IdentifierNode, CallExpressionNode, 
          BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
          ContinueStatementNode, AssignmentExpressionNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, TextDocument } from 'vscode-languageserver/node';
@@ -34,6 +34,8 @@ export class SemanticAnalyzer extends BaseVisitor {
   private options: SemanticAnalysisOptions;
   private functionScopes: number[] = []; // Track function scope levels
   private loopScopes: number[] = []; // Track loop scope levels
+  private currentFunctionNode: FunctionDeclarationNode | null = null;
+  private functionReturnTypes = new Map<FunctionDeclarationNode, UcodeType[]>();
 
   constructor(textDocument: TextDocument, options: SemanticAnalysisOptions = {}) {
     super();
@@ -54,6 +56,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.diagnostics = [];
     this.functionScopes = [];
     this.loopScopes = [];
+    this.currentFunctionNode = null;
+    this.functionReturnTypes.clear();
 
     try {
       // Visit the AST to perform semantic analysis
@@ -100,7 +104,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const name = node.id.name;
       
       // Check for redeclaration in current scope
-      if (!this.symbolTable.declare(name, SymbolType.VARIABLE, UcodeType.UNKNOWN, node.id)) {
+      if (!this.symbolTable.declare(name, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType, node.id)) {
         this.addDiagnostic(
           `Variable '${name}' is already declared in this scope`,
           node.id.start,
@@ -131,7 +135,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           const initType = this.typeChecker.checkNode(node.init);
           const symbol = this.symbolTable.lookup(name);
           if (symbol) {
-            symbol.dataType = initType;
+            symbol.dataType = initType as UcodeDataType;
           }
         }
       }
@@ -143,9 +147,9 @@ export class SemanticAnalyzer extends BaseVisitor {
   visitFunctionDeclaration(node: FunctionDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
-      
-      // Declare function in current scope
-      if (!this.symbolTable.declare(name, SymbolType.FUNCTION, UcodeType.FUNCTION, node.id)) {
+
+      // Declare the function first with an UNKNOWN return type to handle recursion.
+      if (!this.symbolTable.declare(name, SymbolType.FUNCTION, UcodeType.UNKNOWN as UcodeDataType, node.id)) {
         this.addDiagnostic(
           `Function '${name}' is already declared in this scope`,
           node.id.start,
@@ -154,21 +158,37 @@ export class SemanticAnalyzer extends BaseVisitor {
         );
       }
 
+      // Set context for nested return statement analysis.
+      const previousFunction = this.currentFunctionNode;
+      this.currentFunctionNode = node;
+      this.functionReturnTypes.set(node, []);
+
       // Enter function scope
       this.symbolTable.enterScope();
       this.functionScopes.push(this.symbolTable.getCurrentScope());
 
       // Declare parameters
       for (const param of node.params) {
-        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN, param);
+        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
       }
 
-      // Visit function body
+      // Visit the function body to find all return statements.
       this.visit(node.body);
+
+      // Infer the final return type from all collected return types.
+      const returnTypes = this.functionReturnTypes.get(node) || [];
+      const inferredReturnType = this.typeChecker.getCommonReturnType(returnTypes);
+
+      // Update the function's symbol with the now-known return type.
+      const symbol = this.symbolTable.lookup(name);
+      if (symbol) {
+        symbol.dataType = inferredReturnType;
+      }
 
       // Exit function scope
       this.symbolTable.exitScope();
       this.functionScopes.pop();
+      this.currentFunctionNode = previousFunction;
     } else {
       super.visitFunctionDeclaration(node);
     }
@@ -266,8 +286,10 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   visitReturnStatement(node: ReturnStatementNode): void {
+    // Continue with default traversal to ensure argument expression is visited first
+    super.visitReturnStatement(node);
+
     if (this.options.enableControlFlowAnalysis) {
-      // Check if return is inside a function
       if (this.functionScopes.length === 0) {
         this.addDiagnostic(
           'Return statement outside function',
@@ -275,11 +297,14 @@ export class SemanticAnalyzer extends BaseVisitor {
           node.end,
           DiagnosticSeverity.Error
         );
+      } else if (this.currentFunctionNode) {
+        // Determine the type of the returned value.
+        const returnType = node.argument ? this.typeChecker.checkNode(node.argument) : UcodeType.NULL;
+        
+        // Store it for later inference.
+        this.functionReturnTypes.get(this.currentFunctionNode)?.push(returnType);
       }
     }
-
-    // Continue with default traversal
-    super.visitReturnStatement(node);
   }
 
   visitBreakStatement(node: BreakStatementNode): void {

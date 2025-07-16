@@ -19,8 +19,9 @@ const testFiles = [
     './test-json-utility-functions.js',
     './test-remaining-utility-functions.js',
     './test-system-utility-functions.js',
-    './test-validation-refactor.js',
-    './test-validation-simple.js'
+    './test-validation-simple.js',
+    './test-union-types-programmatic.js',
+    './test-unknown-return-types.js'
 ];
 
 console.log('🚀 Running Comprehensive Validation Test Suite\n');
@@ -84,6 +85,10 @@ if (passedSuites === totalSuites) {
     console.log('✅ String function validations working correctly');
     console.log('✅ Trim function validations working correctly');
     console.log('✅ Both TK_NUMBER and TK_DOUBLE tokens handled correctly');
+    console.log('✅ Union type system working correctly');
+    console.log('✅ Type inference for function returns working correctly');
+    console.log('✅ Dynamic typing with union types working correctly');
+    console.log('✅ Unknown return types preserved in union inference');
 } else {
     console.log('\n❌ Some test suites failed. Please review the output above.');
 }

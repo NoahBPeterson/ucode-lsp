@@ -21,13 +21,74 @@ export enum UcodeType {
   OBJECT = 'object',
   FUNCTION = 'function',
   NULL = 'null',
-  UNKNOWN = 'unknown'
+  UNKNOWN = 'unknown',
+  UNION = 'union'
+}
+
+export interface UnionType {
+  type: UcodeType.UNION;
+  types: UcodeType[];
+}
+
+export type UcodeDataType = UcodeType | UnionType;
+
+// Utility functions for working with union types
+export function createUnionType(types: UcodeType[]): UcodeDataType {
+  // Remove duplicates but preserve UNKNOWN types (they represent valid unknown return types)
+  const uniqueTypes = [...new Set(types)];
+  
+  if (uniqueTypes.length === 0) {
+    return UcodeType.UNKNOWN;
+  }
+  
+  if (uniqueTypes.length === 1) {
+    return uniqueTypes[0] as UcodeDataType;
+  }
+  
+  return {
+    type: UcodeType.UNION,
+    types: uniqueTypes
+  };
+}
+
+export function isUnionType(type: UcodeDataType): type is UnionType {
+  return typeof type === 'object' && type.type === UcodeType.UNION;
+}
+
+export function getUnionTypes(type: UcodeDataType): UcodeType[] {
+  if (isUnionType(type)) {
+    return type.types;
+  }
+  return [type as UcodeType];
+}
+
+export function typeToString(type: UcodeDataType): string {
+  if (isUnionType(type)) {
+    return type.types.join(' | ');
+  }
+  return type as string;
+}
+
+export function isTypeCompatible(actual: UcodeDataType, expected: UcodeDataType): boolean {
+  const actualTypes = getUnionTypes(actual);
+  const expectedTypes = getUnionTypes(expected);
+  
+  // Check if any actual type is compatible with any expected type
+  return actualTypes.some(actualType => 
+    expectedTypes.some(expectedType => 
+      actualType === expectedType || 
+      expectedType === UcodeType.UNKNOWN ||
+      actualType === UcodeType.UNKNOWN ||
+      // Allow integer to double conversion
+      (actualType === UcodeType.INTEGER && expectedType === UcodeType.DOUBLE)
+    )
+  );
 }
 
 export interface Symbol {
   name: string;
   type: SymbolType;
-  dataType: UcodeType;
+  dataType: UcodeDataType;
   scope: number;
   declared: boolean;
   used: boolean;
@@ -140,7 +201,7 @@ export class SymbolTable {
     }
   }
 
-  declare(name: string, type: SymbolType, dataType: UcodeType, node: AstNode): boolean {
+  declare(name: string, type: SymbolType, dataType: UcodeDataType, node: AstNode): boolean {
     const currentScopeMap = this.scopes[this.scopes.length - 1];
     if (!currentScopeMap) {
       return false;

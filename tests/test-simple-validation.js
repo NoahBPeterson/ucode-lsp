@@ -100,6 +100,9 @@ function testValidationLogic() {
     // Since we can't easily import the TypeScript modules, 
     // let's manually verify the logic pattern
     
+    let totalTests = testCases.length;
+    let passedTests = 0;
+    
     testCases.forEach((testCase, index) => {
         console.log(`Test ${index + 1}: ${testCase.name}`);
         console.log(`  Validation type: ${testCase.validationType}`);
@@ -146,7 +149,14 @@ function testValidationLogic() {
         const result = foundError === testCase.shouldError;
         console.log(`  Result: ${result ? '✅ PASS' : '❌ FAIL'} (found error: ${foundError})`);
         console.log('');
+        
+        if (result) {
+            passedTests++;
+        }
     });
+    
+    console.log(`📊 Test Results: ${passedTests}/${totalTests} tests passed`);
+    return passedTests === totalTests;
 }
 
 testValidationLogic();

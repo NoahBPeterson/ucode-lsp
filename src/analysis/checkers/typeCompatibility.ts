@@ -2,7 +2,7 @@
  * Type compatibility checker for ucode
  */
 
-import { UcodeType } from '../symbolTable';
+import { UcodeType, UcodeDataType, createUnionType } from '../symbolTable';
 
 export class TypeCompatibilityChecker {
   
@@ -140,5 +140,34 @@ export class TypeCompatibilityChecker {
       return consequentType;
     }
     return UcodeType.UNKNOWN;
+  }
+
+  getCommonType(types: UcodeType[]): UcodeDataType {
+    if (types.length === 0) {
+      return UcodeType.NULL; // No return statement means the function returns null.
+    }
+
+    // Filter out undefined types
+    const validTypes = types.filter(t => t !== undefined);
+    
+    if (validTypes.length === 0) {
+      return UcodeType.NULL;
+    }
+
+    if (validTypes.length === 1) {
+      return validTypes[0] as UcodeDataType;
+    }
+
+    // For dynamic languages like ucode, we want to preserve type information
+    // rather than defaulting to UNKNOWN for mixed types
+    
+    // Check if all types are numeric - if so, promote to the widest numeric type
+    const allNumeric = validTypes.every(t => this.isNumericType(t));
+    if (allNumeric) {
+      return validTypes.some(t => t === UcodeType.DOUBLE) ? UcodeType.DOUBLE : UcodeType.INTEGER;
+    }
+
+    // For truly mixed types, create a union type
+    return createUnionType(validTypes);
   }
 }

@@ -5,11 +5,14 @@ import {
 } from 'vscode-languageserver/node';
 import { UcodeLexer, TokenType, isKeyword } from './lexer';
 import { builtinFunctions } from './builtins';
+import { SemanticAnalysisResult, SymbolType } from './analysis';
+import { typeToString } from './analysis/symbolTable';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
     documents: any,
-    connection: any
+    connection: any,
+    analysisResult?: SemanticAnalysisResult
 ): Hover | undefined {
     connection.console.log('Hover request received for: ' + textDocumentPositionParams.textDocument.uri);
     const document = documents.get(textDocumentPositionParams.textDocument.uri);
@@ -32,6 +35,35 @@ export function handleHover(
             const word = token.value;
             connection.console.log('Hover word (from lexer): ' + word);
             
+            // 1. Check for user-defined symbols using the analysis cache
+            if (analysisResult) {
+                const symbol = analysisResult.symbolTable.lookup(word);
+                if (symbol) {
+                    let hoverText = '';
+                    switch (symbol.type) {
+                        case SymbolType.VARIABLE:
+                        case SymbolType.PARAMETER:
+                            hoverText = `(${symbol.type}) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
+                            break;
+                        case SymbolType.FUNCTION:
+                            // NOTE: Parameter types are not yet tracked in this example.
+                            hoverText = `(function) **${symbol.name}**(): \`${typeToString(symbol.dataType)}\``;
+                            break;
+                    }
+                    
+                    if (hoverText) {
+                        return {
+                            contents: { kind: MarkupKind.Markdown, value: hoverText },
+                            range: {
+                                start: document.positionAt(token.pos),
+                                end: document.positionAt(token.end)
+                            }
+                        };
+                    }
+                }
+            }
+            
+            // 2. Fallback to built-in functions and keywords
             const documentation = builtinFunctions.get(word);
             if (documentation) {
                 connection.console.log('Found documentation for: ' + word);

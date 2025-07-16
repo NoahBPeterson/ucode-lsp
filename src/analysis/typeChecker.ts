@@ -8,7 +8,7 @@ import {
   CallExpressionNode, MemberExpressionNode, AssignmentExpressionNode, ArrayExpressionNode,
   ObjectExpressionNode, ConditionalExpressionNode
 } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
 
 export interface FunctionSignature {
@@ -196,7 +196,13 @@ export class TypeChecker {
     const symbol = this.symbolTable.lookup(node.name);
     if (symbol) {
       this.symbolTable.markUsed(node.name, node.start);
-      return symbol.dataType;
+      // Convert UcodeDataType to UcodeType for backwards compatibility
+      if (typeof symbol.dataType === 'string') {
+        return symbol.dataType as UcodeType;
+      } else {
+        // For union types, return the first type or UNKNOWN
+        return symbol.dataType.types[0] || UcodeType.UNKNOWN;
+      }
     } else {
       this.errors.push({
         message: `Undefined variable: ${node.name}`,
@@ -314,7 +320,13 @@ export class TypeChecker {
         // Check if it's a user-defined function
         const symbol = this.symbolTable.lookup(funcName);
         if (symbol && symbol.type === SymbolType.FUNCTION) {
-          return symbol.dataType;
+          // Convert UcodeDataType to UcodeType for backwards compatibility
+          if (typeof symbol.dataType === 'string') {
+            return symbol.dataType as UcodeType;
+          } else {
+            // For union types, return the first type or UNKNOWN
+            return symbol.dataType.types[0] || UcodeType.UNKNOWN;
+          }
         }
         
         this.errors.push({
@@ -471,5 +483,9 @@ export class TypeChecker {
     const alternateType = this.checkNode(node.alternate);
 
     return this.typeCompatibility.getTernaryResultType(consequentType, alternateType);
+  }
+
+  getCommonReturnType(types: UcodeType[]): UcodeDataType {
+    return this.typeCompatibility.getCommonType(types);
   }
 }

@@ -8,17 +8,25 @@ import {
     InitializeResult,
     WorkspaceFoldersChangeEvent,
     DidChangeWatchedFilesParams,
-    TextDocumentChangeEvent
+    TextDocumentChangeEvent,
+    Diagnostic,
+    DiagnosticSeverity
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
+// import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
+import { SemanticAnalyzer, SemanticAnalysisResult } from './analysis';
+import { UcodeParser } from './parser';
+import { UcodeLexer } from './lexer';
 
 const connection = createConnection(ProposedFeatures.all);
 
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
+
+// Analysis cache for storing semantic analysis results
+const analysisCache = new Map<string, SemanticAnalysisResult>();
 
 let hasConfigurationCapability = false;
 let hasWorkspaceFolderCapability = false;
@@ -68,19 +76,45 @@ documents.onDidClose((_e: TextDocumentChangeEvent<TextDocument>) => {
     // Document closed - could clean up any document-specific data here
 });
 
-documents.onDidChangeContent((change: TextDocumentChangeEvent<TextDocument>) => {
-    validateTextDocument(change.document);
+documents.onDidChangeContent(async (change: TextDocumentChangeEvent<TextDocument>) => {
+    await validateAndAnalyzeDocument(change.document);
 });
 
-async function validateTextDocument(textDocument: TextDocument): Promise<void> {
-    // Use the hybrid validation system - Testing AST basic validation with fixed error recovery
-    // Change to 'lexer' to disable AST, 'ast-full' for complete analysis
-    const config = createValidationConfig('ast-basic');
-    
-    const diagnostics = validateDocument(textDocument, connection, {
-        ...config,
-        enablePerformanceLogging: true // Enable for development
-    });
+documents.onDidOpen(async (change: TextDocumentChangeEvent<TextDocument>) => {
+    await validateAndAnalyzeDocument(change.document);
+});
+
+async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<void> {
+    const text = textDocument.getText();
+    const lexer = new UcodeLexer(text, { rawMode: true });
+    const tokens = lexer.tokenize();
+    const parser = new UcodeParser(tokens, text);
+    const parseResult = parser.parse();
+
+    let diagnostics: Diagnostic[] = parseResult.errors.map(err => ({
+        severity: DiagnosticSeverity.Error,
+        range: {
+            start: textDocument.positionAt(err.start),
+            end: textDocument.positionAt(err.end),
+        },
+        message: err.message,
+        source: 'ucode-parser'
+    }));
+
+    if (parseResult.ast) {
+        const analyzer = new SemanticAnalyzer(textDocument, {
+            enableTypeChecking: true,
+            enableScopeAnalysis: true,
+            enableControlFlowAnalysis: true,
+            enableUnusedVariableDetection: true,
+            enableShadowingWarnings: true,
+        });
+        const analysisResult = analyzer.analyze(parseResult.ast);
+        analysisCache.set(textDocument.uri, analysisResult);
+        diagnostics.push(...analysisResult.diagnostics);
+    } else {
+        analysisCache.delete(textDocument.uri);
+    }
     
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
 }
@@ -90,7 +124,8 @@ connection.onDidChangeWatchedFiles((_change: DidChangeWatchedFilesParams) => {
 });
 
 connection.onHover((params) => {
-    return handleHover(params, documents, connection);
+    const analysisResult = analysisCache.get(params.textDocument.uri);
+    return handleHover(params, documents, connection, analysisResult);
 });
 
 connection.onCompletion((params) => {
