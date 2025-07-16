@@ -23,7 +23,8 @@ const testFiles = [
     'tests/test-union-types-programmatic.js',
     'tests/test-unknown-return-types.js',
     'tests/test-arrow-function-parsing.js',
-    'tests/test-for-in-bare-fix.js'
+    'tests/test-for-in-bare-fix.js',
+    'tests/test-imported-function-fix.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
@@ -92,6 +93,7 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('✅ Unknown return types preserved in union inference');
         console.log('✅ Arrow function parsing implemented correctly');
         console.log('✅ For-in loop parsing with bare identifiers fixed');
+        console.log('✅ Imported function recognition in type checker fixed');
     } else {
         console.log('\n❌ Some test suites failed. Please review the output above.');
     }

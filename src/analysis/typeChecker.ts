@@ -317,9 +317,9 @@ export class TypeChecker {
       if (signature) {
         return this.validateBuiltinCall(node, signature);
       } else {
-        // Check if it's a user-defined function
+        // Check if it's a user-defined function or imported function
         const symbol = this.symbolTable.lookup(funcName);
-        if (symbol && symbol.type === SymbolType.FUNCTION) {
+        if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
           // Convert UcodeDataType to UcodeType for backwards compatibility
           if (typeof symbol.dataType === 'string') {
             return symbol.dataType as UcodeType;
