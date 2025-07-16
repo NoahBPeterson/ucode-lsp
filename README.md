@@ -16,7 +16,7 @@ A comprehensive Language Server Protocol implementation for the ucode scripting 
 - Symbol resolution with cross-file analysis
 - Hover information showing types and function signatures
 
-### ⚡ Performance Optimized
+### Performance Optimized
 - Caching system for analysis results
 
 ## Quick Start
