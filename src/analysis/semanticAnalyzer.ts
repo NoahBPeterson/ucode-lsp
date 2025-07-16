@@ -158,6 +158,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     super.visitImportDeclaration(node);
   }
 
+  visitImportSpecifier(node: ImportSpecifierNode): void {
+    // Only visit the local identifier, not the imported one
+    // This prevents the "undefined variable" error for the original name in aliases
+    this.visit(node.local);
+  }
+
   private processImportSpecifier(specifier: ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode, source: string): void {
     let localName: string;
     let importedName: string;
