@@ -24,7 +24,9 @@ const testFiles = [
     'tests/test-unknown-return-types.js',
     'tests/test-arrow-function-parsing.js',
     'tests/test-for-in-bare-fix.js',
-    'tests/test-imported-function-fix.js'
+    'tests/test-imported-function-fix.js',
+    'tests/test-object-property-keys.test.js',
+    'tests/test-object-property-keys-fix.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
@@ -94,6 +96,8 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('✅ Arrow function parsing implemented correctly');
         console.log('✅ For-in loop parsing with bare identifiers fixed');
         console.log('✅ Imported function recognition in type checker fixed');
+        console.log('✅ Object property keys no longer show undefined variable errors');
+        console.log('✅ Parser creates LiteralNode for property keys instead of IdentifierNode');
     } else {
         console.log('\n❌ Some test suites failed. Please review the output above.');
     }

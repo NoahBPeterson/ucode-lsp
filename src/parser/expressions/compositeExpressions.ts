@@ -6,7 +6,7 @@
 import { TokenType } from '../../lexer';
 import { 
   AstNode, IdentifierNode, ArrayExpressionNode, ObjectExpressionNode, 
-  PropertyNode, MemberExpressionNode 
+  PropertyNode, MemberExpressionNode, LiteralNode 
 } from '../../ast/nodes';
 import { PrimaryExpressions } from './primaryExpressions';
 
@@ -51,17 +51,27 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
           key = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
           this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property key");
         } else if (this.check(TokenType.TK_LABEL)) {
-          // Accept labels as property keys
-          key = this.parseIdentifierName() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
+          // Accept labels as property keys - treat them as string literals, not identifiers
+          const token = this.advance()!;
+          key = {
+            type: 'Literal',
+            start: token.pos,
+            end: token.end,
+            value: token.value as string,
+            raw: token.value as string,
+            literalType: 'string'
+          } as LiteralNode;
         } else if (this.check(TokenType.TK_NUMBER) || this.check(TokenType.TK_DOUBLE)) {
           // Accept numbers as property keys (they become string keys)
           const token = this.advance()!;
           key = {
-            type: 'Identifier',
+            type: 'Literal',
             start: token.pos,
             end: token.end,
-            name: token.value as string
-          } as IdentifierNode;
+            value: token.value as string,
+            raw: token.value as string,
+            literalType: 'string'
+          } as LiteralNode;
         } else if (this.check(TokenType.TK_STRING)) {
           this.advance();
           key = this.parseLiteral('string');
