@@ -12,7 +12,8 @@ import {
   ReturnStatementNode, BreakStatementNode, ContinueStatementNode, TryStatementNode,
   CatchClauseNode, SwitchStatementNode, SwitchCaseNode, ConditionalExpressionNode,
   ForInStatementNode, EmptyStatementNode, ThisExpressionNode, DeleteExpressionNode,
-  ImportDeclarationNode, ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode
+  ImportDeclarationNode, ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
+  ArrowFunctionExpressionNode
 } from '../ast/nodes';
 
 export interface VisitorMethods {
@@ -51,6 +52,7 @@ export interface VisitorMethods {
   visitImportSpecifier?(node: ImportSpecifierNode): void;
   visitImportDefaultSpecifier?(node: ImportDefaultSpecifierNode): void;
   visitImportNamespaceSpecifier?(node: ImportNamespaceSpecifierNode): void;
+  visitArrowFunctionExpression?(node: ArrowFunctionExpressionNode): void;
 }
 
 export class BaseVisitor implements VisitorMethods {
@@ -160,6 +162,9 @@ export class BaseVisitor implements VisitorMethods {
         break;
       case 'ImportNamespaceSpecifier':
         this.visitImportNamespaceSpecifier(node as ImportNamespaceSpecifierNode);
+        break;
+      case 'ArrowFunctionExpression':
+        this.visitArrowFunctionExpression(node as ArrowFunctionExpressionNode);
         break;
     }
   }
@@ -371,5 +376,14 @@ export class BaseVisitor implements VisitorMethods {
 
   visitImportNamespaceSpecifier(node: ImportNamespaceSpecifierNode): void {
     this.visit(node.local);
+  }
+
+  visitArrowFunctionExpression(node: ArrowFunctionExpressionNode): void {
+    // Visit parameters
+    for (const param of node.params) {
+      this.visit(param);
+    }
+    // Visit body
+    this.visit(node.body);
   }
 }
