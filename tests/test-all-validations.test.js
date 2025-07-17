@@ -8,7 +8,7 @@ const testFiles = [
     'tests/test-simple-validation.js',
     'tests/test-array-validations.js', 
     'tests/test-new-validations-unit.js',
-    'tests/test-trim-validations.js',
+    'tests/test-trim-validations-real.js',
     'tests/test-encoding-io-functions.js',
     'tests/test-system-functions.js',
     'tests/test-utility-functions.js',
@@ -93,7 +93,7 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('✅ Number conversion validations working correctly');
         console.log('✅ Character function validations working correctly');
         console.log('✅ String function validations working correctly');
-        console.log('✅ Trim function validations working correctly');
+        console.log('✅ Real trim function validations with actual LSP logic working correctly');
         console.log('✅ Both TK_NUMBER and TK_DOUBLE tokens handled correctly');
         console.log('✅ Union type system working correctly');
         console.log('✅ Type inference for function returns working correctly');

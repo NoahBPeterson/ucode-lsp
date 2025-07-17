@@ -8,7 +8,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
          ContinueStatementNode, AssignmentExpressionNode, ImportDeclarationNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
-         PropertyNode, MemberExpressionNode } from '../ast/nodes';
+         PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -277,6 +277,52 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.symbolTable.exitScope();
     } else {
       super.visitBlockStatement(node);
+    }
+  }
+
+  visitTryStatement(node: TryStatementNode): void {
+    if (this.options.enableScopeAnalysis) {
+      // Visit the try block
+      this.visit(node.block);
+      
+      // Visit the catch handler if present
+      if (node.handler) {
+        this.visit(node.handler);
+      }
+      
+      // Visit the finally block if present
+      if (node.finalizer) {
+        this.visit(node.finalizer);
+      }
+    } else {
+      super.visit(node);
+    }
+  }
+
+  visitCatchClause(node: CatchClauseNode): void {
+    if (this.options.enableScopeAnalysis) {
+      // Enter catch scope
+      this.symbolTable.enterScope();
+      
+      // Declare the catch parameter if present
+      if (node.param) {
+        if (!this.symbolTable.declare(node.param.name, SymbolType.PARAMETER, UcodeType.STRING as UcodeDataType, node.param)) {
+          this.addDiagnostic(
+            `Parameter '${node.param.name}' is already declared in this scope`,
+            node.param.start,
+            node.param.end,
+            DiagnosticSeverity.Error
+          );
+        }
+      }
+      
+      // Visit the catch body
+      this.visit(node.body);
+      
+      // Exit catch scope
+      this.symbolTable.exitScope();
+    } else {
+      super.visit(node);
     }
   }
 
