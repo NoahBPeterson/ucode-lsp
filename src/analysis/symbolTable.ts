@@ -10,7 +10,8 @@ export enum SymbolType {
   FUNCTION = 'function',
   PARAMETER = 'parameter',
   BUILTIN = 'builtin',
-  IMPORTED = 'imported'
+  IMPORTED = 'imported',
+  MODULE = 'module'
 }
 
 export enum UcodeType {
@@ -31,7 +32,12 @@ export interface UnionType {
   types: UcodeType[];
 }
 
-export type UcodeDataType = UcodeType | UnionType;
+export interface ModuleType {
+  type: UcodeType.OBJECT;
+  moduleName: string;
+}
+
+export type UcodeDataType = UcodeType | UnionType | ModuleType;
 
 // Utility functions for working with union types
 export function createUnionType(types: UcodeType[]): UcodeDataType {

@@ -26,7 +26,13 @@ const testFiles = [
     'tests/test-imported-function-fix.js',
     'tests/test-object-property-keys.test.js',
     'tests/test-object-property-keys-fix.js',
-    'tests/test-namespace-import-validation.js'
+    'tests/test-namespace-import-validation.js',
+    'tests/test-fs-module-support.js',
+    'tests/test-fs-undefined-diagnostics.js',
+    'tests/test-fs-method-diagnostics.js',
+    'tests/test-open-builtin-diagnostics.js',
+    'tests/test-completion-detection.js',
+    'tests/test-completion-simple.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
@@ -100,6 +106,10 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('✅ Parser creates LiteralNode for property keys instead of IdentifierNode');
         console.log('✅ Namespace import member access (import * as name) working correctly');
         console.log('✅ Namespace import validation logic tests passing');
+        console.log('✅ Built-in fs module support working correctly');
+        console.log('✅ Only one diagnostic per undefined fs reference (no duplicates)');
+        console.log('✅ Member expression completion detection working correctly');
+        console.log('✅ fs module autocomplete/IntelliSense logic working correctly');
     } else {
         console.log('\n❌ Some test suites failed. Please review the output above.');
     }

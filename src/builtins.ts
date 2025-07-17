@@ -57,3 +57,67 @@ export const builtinFunctions = new Map<string, string>([
     ['sourcepath', 'Get the path of the current source file.\n\n**Returns:** `string` - Absolute path to current source file\n\n**Example:**\n```ucode\nlet currentFile = sourcepath();\nprint("Running:", currentFile);\n```'],
     ['gc', 'Trigger garbage collection.\n\n**Returns:** `null`\n\n**Example:**\n```ucode\ngc();  // Force garbage collection\n```']
 ]);
+
+// ============================================================================
+// File System Built-in Functions (from fs.c global_fns[])
+// These are global functions, not methods of an fs module object
+// ============================================================================
+
+export const fsBuiltinFunctions = new Map<string, string>([
+    ['error', '**error()** - Get error information for the last fs operation.\n\n**Returns:** `string|null` - Description of the last error, or null if no error\n\n**Example:**\n```ucode\nunlink("/path/does/not/exist");\nprint(error()); // "No such file or directory"\n```'],
+    
+    ['open', '**open(path, mode, perm)** - Open a file and return a file handle.\n\n**Parameters:**\n- `path` (string): Path to the file\n- `mode` (string): Open mode ("r", "w", "a", "r+", "w+", "a+")\n- `perm` (number): File creation permissions (optional, default 0o666)\n\n**Returns:** `object|null` - File handle object or null on error\n\n**Example:**\n```ucode\nlet file = open("/tmp/test.txt", "w");\nif (file) {\n    file.write("Hello World");\n    file.close();\n}\n```'],
+    
+    ['fdopen', '**fdopen(fd, mode)** - Create a file handle from a file descriptor.\n\n**Parameters:**\n- `fd` (number): File descriptor number\n- `mode` (string): Open mode ("r", "w", "a")\n\n**Returns:** `object|null` - File handle object or null on error\n\n**Example:**\n```ucode\nlet stdin = fdopen(0, "r");\n```'],
+    
+    ['opendir', '**opendir(path)** - Open a directory for reading.\n\n**Parameters:**\n- `path` (string): Path to the directory\n\n**Returns:** `object|null` - Directory handle object or null on error\n\n**Example:**\n```ucode\nlet dir = opendir("/etc");\nif (dir) {\n    let entry;\n    while ((entry = dir.read()) !== null) {\n        print(entry);\n    }\n    dir.close();\n}\n```'],
+    
+    ['popen', '**popen(command, mode)** - Open a pipe to a command.\n\n**Parameters:**\n- `command` (string): Command to execute\n- `mode` (string): Pipe mode ("r" for reading, "w" for writing)\n\n**Returns:** `object|null` - Process handle object or null on error\n\n**Example:**\n```ucode\nlet proc = popen("ls -la", "r");\nif (proc) {\n    let output = proc.read("all");\n    let exitCode = proc.close();\n}\n```'],
+    
+    ['readlink', '**readlink(path)** - Read the target of a symbolic link.\n\n**Parameters:**\n- `path` (string): Path to the symbolic link\n\n**Returns:** `string|null` - Target path or null on error\n\n**Example:**\n```ucode\nlet target = readlink("/sys/class/net/eth0");\n```'],
+    
+    ['stat', '**stat(path)** - Get information about a file or directory.\n\n**Parameters:**\n- `path` (string): Path to the file or directory\n\n**Returns:** `object|null` - Stat object with file information or null on error\n\n**Example:**\n```ucode\nlet info = stat("/etc/passwd");\nif (info) {\n    print("Size:", info.size);\n    print("Type:", info.type);\n}\n```'],
+    
+    ['lstat', '**lstat(path)** - Get information about a file (don\'t follow symlinks).\n\n**Parameters:**\n- `path` (string): Path to the file or directory\n\n**Returns:** `object|null` - Stat object with file information or null on error\n\n**Example:**\n```ucode\nlet info = lstat("/etc/passwd");\n```'],
+    
+    ['mkdir', '**mkdir(path, mode)** - Create a new directory.\n\n**Parameters:**\n- `path` (string): Path for the new directory\n- `mode` (number): Directory permissions (optional, default 0o777)\n\n**Returns:** `boolean|null` - true on success, null on error\n\n**Example:**\n```ucode\nif (mkdir("/tmp/newdir", 0o755)) {\n    print("Directory created");\n}\n```'],
+    
+    ['rmdir', '**rmdir(path)** - Remove a directory.\n\n**Parameters:**\n- `path` (string): Path to the directory to remove\n\n**Returns:** `boolean|null` - true on success, null on error\n\n**Example:**\n```ucode\nif (rmdir("/tmp/olddir")) {\n    print("Directory removed");\n}\n```'],
+    
+    ['symlink', '**symlink(target, path)** - Create a symbolic link.\n\n**Parameters:**\n- `target` (string): Target of the symbolic link\n- `path` (string): Path for the new symbolic link\n\n**Returns:** `boolean|null` - true on success, null on error\n\n**Example:**\n```ucode\nif (symlink("/target/file", "/path/to/symlink")) {\n    print("Symlink created");\n}\n```'],
+    
+    ['unlink', '**unlink(path)** - Remove a file.\n\n**Parameters:**\n- `path` (string): Path to the file to remove\n\n**Returns:** `boolean|null` - true on success, null on error\n\n**Example:**\n```ucode\nif (unlink("/tmp/tempfile")) {\n    print("File removed");\n}\n```'],
+    
+    ['getcwd', '**getcwd()** - Get the current working directory.\n\n**Returns:** `string|null` - Current working directory path or null on error\n\n**Example:**\n```ucode\nlet cwd = getcwd();\nprint("Current directory:", cwd);\n```'],
+    
+    ['chdir', '**chdir(path)** - Change the current working directory.\n\n**Parameters:**\n- `path` (string): Path to the new working directory\n\n**Returns:** `boolean|null` - true on success, null on error\n\n**Example:**\n```ucode\nif (chdir("/new/directory")) {\n    print("Changed directory");\n}\n```'],
+    
+    ['chmod', '**chmod(path, mode)** - Change file permissions.\n\n**Parameters:**\n- `path` (string): Path to the file\n- `mode` (number): New permissions\n\n**Returns:** `boolean|null` - true on success, null on error\n\n**Example:**\n```ucode\nif (chmod("/path/to/file", 0o644)) {\n    print("Permissions changed");\n}\n```'],
+    
+    ['chown', '**chown(path, uid, gid)** - Change file ownership.\n\n**Parameters:**\n- `path` (string): Path to the file\n- `uid` (number): New user ID\n- `gid` (number): New group ID\n\n**Returns:** `boolean|null` - true on success, null on error\n\n**Example:**\n```ucode\nif (chown("/path/to/file", 1000, 1000)) {\n    print("Ownership changed");\n}\n```'],
+    
+    ['rename', '**rename(oldpath, newpath)** - Rename or move a file.\n\n**Parameters:**\n- `oldpath` (string): Current path\n- `newpath` (string): New path\n\n**Returns:** `boolean|null` - true on success, null on error\n\n**Example:**\n```ucode\nif (rename("/old/path", "/new/path")) {\n    print("File renamed");\n}\n```'],
+    
+    ['glob', '**glob(pattern)** - Find pathnames matching a pattern.\n\n**Parameters:**\n- `pattern` (string): Glob pattern to match\n\n**Returns:** `array|null` - Array of matching paths or null on error\n\n**Example:**\n```ucode\nlet files = glob("/tmp/*.txt");\nfor (let file in files) {\n    print(file);\n}\n```'],
+    
+    ['dirname', '**dirname(path)** - Get the directory part of a path.\n\n**Parameters:**\n- `path` (string): File path\n\n**Returns:** `string|null` - Directory name or null on invalid input\n\n**Example:**\n```ucode\nlet dir = dirname("/path/to/file.txt"); // "/path/to"\n```'],
+    
+    ['basename', '**basename(path)** - Get the filename part of a path.\n\n**Parameters:**\n- `path` (string): File path\n\n**Returns:** `string|null` - Base name or null on invalid input\n\n**Example:**\n```ucode\nlet name = basename("/path/to/file.txt"); // "file.txt"\n```'],
+    
+    ['lsdir', '**lsdir(path)** - List directory contents.\n\n**Parameters:**\n- `path` (string): Path to the directory\n\n**Returns:** `array|null` - Array of file names or null on error\n\n**Example:**\n```ucode\nlet files = lsdir("/etc");\nfor (let file in files) {\n    print(file);\n}\n```'],
+    
+    ['mkstemp', '**mkstemp(template)** - Create a temporary file.\n\n**Parameters:**\n- `template` (string): Template for the temporary filename\n\n**Returns:** `object|null` - File handle for temporary file or null on error\n\n**Example:**\n```ucode\nlet tempFile = mkstemp("/tmp/tempXXXXXX");\nif (tempFile) {\n    tempFile.write("temporary data");\n    tempFile.close();\n}\n```'],
+    
+    ['access', '**access(path, mode)** - Check file accessibility.\n\n**Parameters:**\n- `path` (string): Path to the file\n- `mode` (string): Access mode to check ("r", "w", "x", "f")\n\n**Returns:** `boolean|null` - true if accessible, false if not, null on error\n\n**Example:**\n```ucode\nif (access("/etc/passwd", "r")) {\n    print("File is readable");\n}\n```'],
+    
+    ['readfile', '**readfile(path)** - Read the contents of a file.\n\n**Parameters:**\n- `path` (string): Path to the file to read\n\n**Returns:** `string|null` - File contents or null on error\n\n**Example:**\n```ucode\nlet content = readfile("/etc/hostname");\nif (content) {\n    print("Hostname:", trim(content));\n}\n```'],
+    
+    ['writefile', '**writefile(path, data)** - Write data to a file.\n\n**Parameters:**\n- `path` (string): Path to the file\n- `data` (string): Data to write\n\n**Returns:** `number|null` - Number of bytes written or null on error\n\n**Example:**\n```ucode\nlet bytes = writefile("/tmp/output.txt", "Hello World!");\nif (bytes) {\n    print("Wrote", bytes, "bytes");\n}\n```'],
+    
+    ['realpath', '**realpath(path)** - Resolve a pathname to its canonical form.\n\n**Parameters:**\n- `path` (string): Path to resolve\n\n**Returns:** `string|null` - Absolute path or null on error\n\n**Example:**\n```ucode\nlet resolved = realpath("../relative/path");\n```'],
+    
+    ['pipe', '**pipe()** - Create a pipe (returns array of file descriptors).\n\n**Returns:** `array|null` - Array of [readfd, writefd] or null on error\n\n**Example:**\n```ucode\nlet [readfd, writefd] = pipe();\nif (readfd && writefd) {\n    // Use the pipe\n}\n```']
+]);
+
+// Merge fs builtins with regular builtins for completion
+export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions]);

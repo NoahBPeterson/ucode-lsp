@@ -4,7 +4,7 @@
  */
 
 import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode, 
-         FunctionDeclarationNode, IdentifierNode, CallExpressionNode, 
+         FunctionDeclarationNode, IdentifierNode, CallExpressionNode,
          BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
          ContinueStatementNode, AssignmentExpressionNode, ImportDeclarationNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
@@ -13,6 +13,7 @@ import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, TextDocument } from 'vscode-languageserver/node';
+import { allBuiltinFunctions } from '../builtins';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -105,8 +106,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
       
+      // Standard variable declaration
+      let symbolType = SymbolType.VARIABLE;
+      let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
+      
       // Check for redeclaration in current scope
-      if (!this.symbolTable.declare(name, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType, node.id)) {
+      if (!this.symbolTable.declare(name, symbolType, dataType, node.id)) {
         this.addDiagnostic(
           `Variable '${name}' is already declared in this scope`,
           node.id.start,
@@ -280,12 +285,16 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Check if identifier is defined
       const symbol = this.symbolTable.lookup(node.name);
       if (!symbol) {
-        this.addDiagnostic(
-          `Undefined variable: ${node.name}`,
-          node.start,
-          node.end,
-          DiagnosticSeverity.Error
-        );
+        // Check if it's a builtin function before reporting as undefined
+        const isBuiltin = allBuiltinFunctions.has(node.name);
+        if (!isBuiltin) {
+          this.addDiagnostic(
+            `Undefined variable: ${node.name}`,
+            node.start,
+            node.end,
+            DiagnosticSeverity.Error
+          );
+        }
       } else {
         // Mark as used
         this.symbolTable.markUsed(node.name, node.start);
@@ -298,7 +307,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Visit the object part (e.g., 'constants' in 'constants.DT_HOSTINFO_FINAL_PATH')
       this.visit(node.object);
       
-      // For non-computed member access (obj.prop), check if it's a namespace import
+      // For non-computed member access (obj.prop), check if it's a namespace import or module
       if (!node.computed && node.object.type === 'Identifier') {
         const objectName = (node.object as IdentifierNode).name;
         const symbol = this.symbolTable.lookup(objectName);
@@ -309,9 +318,12 @@ export class SemanticAnalyzer extends BaseVisitor {
           // Don't visit the property name as it's not a variable reference
           return;
         }
+        
+        // Module member access is no longer special-cased
+        // since fs functions are now global builtins
       }
       
-      // For computed access (obj[prop]) or non-namespace access, visit the property
+      // For computed access (obj[prop]) or non-namespace/module access, visit the property
       this.visit(node.property);
     } else {
       // If scope analysis is disabled, use default behavior
@@ -487,14 +499,29 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   private addDiagnostic(message: string, start: number, end: number, severity: DiagnosticSeverity): void {
-    this.diagnostics.push({
-      severity,
-      range: {
-        start: this.textDocument.positionAt(start),
-        end: this.textDocument.positionAt(end)
-      },
-      message,
-      source: 'ucode-semantic'
-    });
+    // Check for duplicate diagnostics to prevent multiple identical errors
+    const startPos = this.textDocument.positionAt(start);
+    const endPos = this.textDocument.positionAt(end);
+    
+    const isDuplicate = this.diagnostics.some(existing => 
+      existing.message === message &&
+      existing.severity === severity &&
+      existing.range.start.line === startPos.line &&
+      existing.range.start.character === startPos.character &&
+      existing.range.end.line === endPos.line &&
+      existing.range.end.character === endPos.character
+    );
+    
+    if (!isDuplicate) {
+      this.diagnostics.push({
+        severity,
+        range: {
+          start: startPos,
+          end: endPos
+        },
+        message,
+        source: 'ucode-semantic'
+      });
+    }
   }
 }

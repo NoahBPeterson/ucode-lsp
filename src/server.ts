@@ -47,7 +47,12 @@ connection.onInitialize((params: InitializeParams) => {
         capabilities: {
             textDocumentSync: TextDocumentSyncKind.Incremental,
             completionProvider: {
-                resolveProvider: true
+                resolveProvider: true,
+                triggerCharacters: ['.'],
+                allCommitCharacters: ['.', '(', '['],
+                completionItem: {
+                    labelDetailsSupport: true
+                }
             },
             hoverProvider: true,
             definitionProvider: true
@@ -131,7 +136,8 @@ connection.onHover((params) => {
 });
 
 connection.onCompletion((params) => {
-    return handleCompletion(params);
+    const analysisResult = analysisCache.get(params.textDocument.uri);
+    return handleCompletion(params, documents, connection, analysisResult);
 });
 
 connection.onCompletionResolve((item) => {

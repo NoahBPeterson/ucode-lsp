@@ -8,8 +8,9 @@ import {
   CallExpressionNode, MemberExpressionNode, AssignmentExpressionNode, ArrayExpressionNode,
   ObjectExpressionNode, ConditionalExpressionNode
 } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes } from './symbolTable';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
+import { allBuiltinFunctions } from '../builtins';
 
 export interface FunctionSignature {
   name: string;
@@ -118,7 +119,36 @@ export class TypeChecker {
       { name: 'signal', parameters: [UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
       { name: 'clock', parameters: [], returnType: UcodeType.DOUBLE },
       { name: 'sourcepath', parameters: [], returnType: UcodeType.STRING },
-      { name: 'gc', parameters: [], returnType: UcodeType.NULL }
+      { name: 'gc', parameters: [], returnType: UcodeType.NULL },
+      
+      // File System builtin functions (from fs.c global_fns[])
+      { name: 'error', parameters: [], returnType: UcodeType.STRING },
+      { name: 'open', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.OBJECT, minParams: 2, maxParams: 3 },
+      { name: 'fdopen', parameters: [UcodeType.INTEGER, UcodeType.STRING], returnType: UcodeType.OBJECT },
+      { name: 'opendir', parameters: [UcodeType.STRING], returnType: UcodeType.OBJECT },
+      { name: 'popen', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.OBJECT },
+      { name: 'readlink', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'stat', parameters: [UcodeType.STRING], returnType: UcodeType.OBJECT },
+      { name: 'lstat', parameters: [UcodeType.STRING], returnType: UcodeType.OBJECT },
+      { name: 'mkdir', parameters: [UcodeType.STRING], returnType: UcodeType.BOOLEAN, minParams: 1, maxParams: 2 },
+      { name: 'rmdir', parameters: [UcodeType.STRING], returnType: UcodeType.BOOLEAN },
+      { name: 'symlink', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
+      { name: 'unlink', parameters: [UcodeType.STRING], returnType: UcodeType.BOOLEAN },
+      { name: 'getcwd', parameters: [], returnType: UcodeType.STRING },
+      { name: 'chdir', parameters: [UcodeType.STRING], returnType: UcodeType.BOOLEAN },
+      { name: 'chmod', parameters: [UcodeType.STRING, UcodeType.INTEGER], returnType: UcodeType.BOOLEAN },
+      { name: 'chown', parameters: [UcodeType.STRING, UcodeType.INTEGER, UcodeType.INTEGER], returnType: UcodeType.BOOLEAN },
+      { name: 'rename', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
+      { name: 'glob', parameters: [UcodeType.STRING], returnType: UcodeType.ARRAY },
+      { name: 'dirname', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'basename', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'lsdir', parameters: [UcodeType.STRING], returnType: UcodeType.ARRAY },
+      { name: 'mkstemp', parameters: [UcodeType.STRING], returnType: UcodeType.OBJECT },
+      { name: 'access', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
+      { name: 'readfile', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'writefile', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.INTEGER },
+      { name: 'realpath', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'pipe', parameters: [], returnType: UcodeType.ARRAY }
     ];
 
     for (const builtin of builtins) {
@@ -199,18 +229,27 @@ export class TypeChecker {
       // Convert UcodeDataType to UcodeType for backwards compatibility
       if (typeof symbol.dataType === 'string') {
         return symbol.dataType as UcodeType;
-      } else {
+      } else if (isUnionType(symbol.dataType)) {
         // For union types, return the first type or UNKNOWN
-        return symbol.dataType.types[0] || UcodeType.UNKNOWN;
+        const types = getUnionTypes(symbol.dataType);
+        return types[0] || UcodeType.UNKNOWN;
+      } else {
+        // For other complex types like ModuleType, return OBJECT
+        return UcodeType.OBJECT;
       }
     } else {
-      this.errors.push({
-        message: `Undefined variable: ${node.name}`,
-        start: node.start,
-        end: node.end,
-        severity: 'error'
-      });
-      return UcodeType.UNKNOWN;
+      // Check if it's a builtin function before reporting as undefined
+      const isBuiltin = allBuiltinFunctions.has(node.name);
+      if (!isBuiltin) {
+        this.errors.push({
+          message: `Undefined variable: ${node.name}`,
+          start: node.start,
+          end: node.end,
+          severity: 'error'
+        });
+      }
+      // Return FUNCTION type for builtin functions, UNKNOWN for truly undefined variables
+      return isBuiltin ? UcodeType.FUNCTION : UcodeType.UNKNOWN;
     }
   }
 
@@ -323,9 +362,13 @@ export class TypeChecker {
           // Convert UcodeDataType to UcodeType for backwards compatibility
           if (typeof symbol.dataType === 'string') {
             return symbol.dataType as UcodeType;
-          } else {
+          } else if (isUnionType(symbol.dataType)) {
             // For union types, return the first type or UNKNOWN
-            return symbol.dataType.types[0] || UcodeType.UNKNOWN;
+            const types = getUnionTypes(symbol.dataType);
+            return types[0] || UcodeType.UNKNOWN;
+          } else {
+            // For other complex types like ModuleType, return UNKNOWN
+            return UcodeType.UNKNOWN;
           }
         }
         
@@ -339,7 +382,16 @@ export class TypeChecker {
       }
     }
 
-    // For member expressions and other callees
+    // Handle member expression calls (e.g., fs.open, obj.method)
+    if (node.callee.type === 'MemberExpression') {
+      // Member expression calls are handled like regular calls
+      const calleeType = this.checkNode(node.callee);
+      if (calleeType !== UcodeType.UNKNOWN) {
+        return calleeType;
+      }
+    }
+
+    // For other callees
     const calleeType = this.checkNode(node.callee);
     if (!this.typeCompatibility.isValidCallTarget(calleeType)) {
       this.errors.push({
@@ -420,6 +472,17 @@ export class TypeChecker {
   }
 
   private checkMemberExpression(node: MemberExpressionNode): UcodeType {
+    // Check if the object is a module
+    if (node.object.type === 'Identifier') {
+      const symbol = this.symbolTable.lookup((node.object as IdentifierNode).name);
+      
+      // If symbol doesn't exist, let the semantic analyzer handle the "Undefined variable" error
+      // Don't duplicate the error here by calling checkNode(node.object)
+      if (!symbol) {
+        return UcodeType.UNKNOWN;
+      }
+    }
+    
     const objectType = this.checkNode(node.object);
     
     if (objectType === UcodeType.ARRAY) {
@@ -438,6 +501,7 @@ export class TypeChecker {
 
     return UcodeType.UNKNOWN;
   }
+
 
   private checkAssignmentExpression(node: AssignmentExpressionNode): UcodeType {
     const leftType = this.checkNode(node.left);

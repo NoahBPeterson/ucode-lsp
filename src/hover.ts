@@ -4,7 +4,7 @@ import {
     MarkupKind
 } from 'vscode-languageserver/node';
 import { UcodeLexer, TokenType, isKeyword } from './lexer';
-import { builtinFunctions } from './builtins';
+import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType } from './analysis';
 import { typeToString } from './analysis/symbolTable';
 
@@ -35,6 +35,16 @@ export function handleHover(
             const word = token.value;
             connection.console.log('Hover word (from lexer): ' + word);
             
+            // Check if this is part of a member expression (e.g., fs.open)
+            const memberExpressionInfo = detectMemberExpression(offset, tokens);
+            if (memberExpressionInfo && analysisResult) {
+                const { objectName, propertyName } = memberExpressionInfo;
+                connection.console.log(`Detected member expression: ${objectName}.${propertyName}`);
+                
+                // For member expressions, we could add object-specific hover here
+                // For now, fall through to regular symbol analysis
+            }
+            
             // 1. Check for user-defined symbols using the analysis cache
             if (analysisResult) {
                 const symbol = analysisResult.symbolTable.lookup(word);
@@ -48,6 +58,12 @@ export function handleHover(
                         case SymbolType.FUNCTION:
                             // NOTE: Parameter types are not yet tracked in this example.
                             hoverText = `(function) **${symbol.name}**(): \`${typeToString(symbol.dataType)}\``;
+                            break;
+                        case SymbolType.MODULE:
+                            hoverText = `(module) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
+                            break;
+                        case SymbolType.IMPORTED:
+                            hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
                             break;
                     }
                     
@@ -64,7 +80,7 @@ export function handleHover(
             }
             
             // 2. Fallback to built-in functions and keywords
-            const documentation = builtinFunctions.get(word);
+            const documentation = allBuiltinFunctions.get(word);
             if (documentation) {
                 connection.console.log('Found documentation for: ' + word);
                 return {
@@ -101,7 +117,7 @@ export function handleHover(
         const word = text.substring(wordRange.start, wordRange.end);
         connection.console.log('Hover word (fallback): ' + word);
         
-        const documentation = builtinFunctions.get(word);
+        const documentation = allBuiltinFunctions.get(word);
         if (documentation) {
             return {
                 contents: {
@@ -112,6 +128,49 @@ export function handleHover(
                     start: document.positionAt(wordRange.start),
                     end: document.positionAt(wordRange.end)
                 }
+            };
+        }
+    }
+    
+    return undefined;
+}
+
+function detectMemberExpression(offset: number, tokens: any[]): { objectName: string; propertyName: string } | undefined {
+    // Find the token at the current position
+    const currentTokenIndex = tokens.findIndex(t => t.pos <= offset && offset <= t.end);
+    if (currentTokenIndex === -1) return undefined;
+    
+    const currentToken = tokens[currentTokenIndex];
+    
+    // Look for pattern: LABEL DOT LABEL or LABEL DOT current_position
+    // Check if current token is part of a member expression
+    
+    // Case 1: Hovering over object name in "object.property"
+    if (currentTokenIndex + 2 < tokens.length) {
+        const nextToken = tokens[currentTokenIndex + 1];
+        const afterNextToken = tokens[currentTokenIndex + 2];
+        
+        if (nextToken.type === TokenType.TK_DOT && 
+            afterNextToken.type === TokenType.TK_LABEL &&
+            currentToken.type === TokenType.TK_LABEL) {
+            return {
+                objectName: currentToken.value as string,
+                propertyName: afterNextToken.value as string
+            };
+        }
+    }
+    
+    // Case 2: Hovering over property name in "object.property"
+    if (currentTokenIndex >= 2) {
+        const prevToken = tokens[currentTokenIndex - 1];
+        const beforePrevToken = tokens[currentTokenIndex - 2];
+        
+        if (prevToken.type === TokenType.TK_DOT && 
+            beforePrevToken.type === TokenType.TK_LABEL &&
+            currentToken.type === TokenType.TK_LABEL) {
+            return {
+                objectName: beforePrevToken.value as string,
+                propertyName: currentToken.value as string
             };
         }
     }
