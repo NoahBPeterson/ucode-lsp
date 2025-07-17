@@ -8,17 +8,21 @@ import {
 import { UcodeLexer, TokenType } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult } from './analysis';
+import { fsTypeRegistry } from './analysis/fsTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
     documents: any,
     connection: any,
-    _analysisResult?: SemanticAnalysisResult
+    analysisResult?: SemanticAnalysisResult
 ): CompletionItem[] {
     const document = documents.get(textDocumentPositionParams.textDocument.uri);
     if (!document) {
+        connection.console.log(`[COMPLETION] No document found for URI: ${textDocumentPositionParams.textDocument.uri}`);
         return createGeneralCompletions();
     }
+    
+    connection.console.log(`[COMPLETION] Document found, analysisResult: ${!!analysisResult}`);
 
     const position = textDocumentPositionParams.position;
     const text = document.getText();
@@ -36,11 +40,15 @@ export function handleCompletion(
             const { objectName } = memberContext;
             connection.console.log(`Member expression detected for: ${objectName}`);
             
-            // For member expressions, we could add object-specific completions here
-            // For now, don't show any completions for unknown objects
-            connection.console.log(`No specific completions for object: ${objectName}`);
+            // Check if this is an fs object with completions available
+            const fsCompletions = getFsObjectCompletions(objectName, analysisResult);
+            if (fsCompletions.length > 0) {
+                connection.console.log(`Returning ${fsCompletions.length} fs object completions for ${objectName}`);
+                return fsCompletions;
+            }
             
-            // For any member expression, return empty array - never show builtin functions
+            // For member expressions, return empty array - never show builtin functions
+            connection.console.log(`No specific completions for object: ${objectName}`);
             return [];
         }
         
@@ -75,8 +83,8 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
         
         // Check if previous token is a LABEL and it's immediately before the dot
         if (prevToken.type === TokenType.TK_LABEL && prevToken.end === dotToken.pos) {
-            // Make sure the cursor is after the dot (for completion)
-            if (offset > dotToken.end) {
+            // Make sure the cursor is after or at the dot (for completion)
+            if (offset >= dotToken.end) {
                 return {
                     objectName: prevToken.value as string
                 };
@@ -87,6 +95,56 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
     return undefined;
 }
 
+function getFsObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        console.log(`[FS_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
+        return [];
+    }
+
+    // Look up the symbol in the symbol table
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        console.log(`[FS_COMPLETION] Symbol not found: ${objectName}`);
+        // Debug the symbol table to see what's available
+        analysisResult.symbolTable.debugLookup(objectName);
+        return [];
+    }
+
+    console.log(`[FS_COMPLETION] Symbol found: ${objectName}, dataType: ${JSON.stringify(symbol.dataType)}`);
+
+    // Check if this is an fs object type
+    const fsType = fsTypeRegistry.isVariableOfFsType(symbol.dataType);
+    if (!fsType) {
+        console.log(`[FS_COMPLETION] Not an fs type: ${objectName}`);
+        return [];
+    }
+
+    console.log(`[FS_COMPLETION] FS type detected: ${fsType} for ${objectName}`);
+
+    // Get the methods for this fs type
+    const methods = fsTypeRegistry.getMethodsForType(fsType);
+    const completions: CompletionItem[] = [];
+
+    // Create completion items for each method
+    for (const methodName of methods) {
+        const methodSignature = fsTypeRegistry.getFsMethod(fsType, methodName);
+        if (methodSignature) {
+            completions.push({
+                label: methodName,
+                kind: CompletionItemKind.Method,
+                detail: `${fsType} method`,
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: methodSignature.description || `${methodName}() method for ${fsType}`
+                },
+                insertText: `${methodName}($1)`,
+                insertTextFormat: InsertTextFormat.Snippet
+            });
+        }
+    }
+
+    return completions;
+}
 
 function createGeneralCompletions(): CompletionItem[] {
     const completions: CompletionItem[] = [];

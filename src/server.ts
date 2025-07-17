@@ -26,8 +26,8 @@ const connection = createConnection(ProposedFeatures.all);
 
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
-// Analysis cache for storing semantic analysis results
-const analysisCache = new Map<string, SemanticAnalysisResult>();
+// Analysis cache for storing semantic analysis results with timestamps
+const analysisCache = new Map<string, {result: SemanticAnalysisResult, timestamp: number}>();
 
 let hasConfigurationCapability = false;
 let hasWorkspaceFolderCapability = false;
@@ -117,10 +117,12 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
             enableShadowingWarnings: true,
         });
         const analysisResult = analyzer.analyze(parseResult.ast);
-        analysisCache.set(textDocument.uri, analysisResult);
+        analysisCache.set(textDocument.uri, {result: analysisResult, timestamp: Date.now()});
+        connection.console.log(`[ANALYSIS] Cached analysis result for: ${textDocument.uri}`);
         diagnostics.push(...analysisResult.diagnostics);
     } else {
         analysisCache.delete(textDocument.uri);
+        connection.console.log(`[ANALYSIS] Removed analysis cache for: ${textDocument.uri} (no AST)`);
     }
     
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
@@ -131,12 +133,27 @@ connection.onDidChangeWatchedFiles((_change: DidChangeWatchedFilesParams) => {
 });
 
 connection.onHover((params) => {
-    const analysisResult = analysisCache.get(params.textDocument.uri);
+    const cacheEntry = analysisCache.get(params.textDocument.uri);
+    const analysisResult = cacheEntry?.result;
     return handleHover(params, documents, connection, analysisResult);
 });
 
-connection.onCompletion((params) => {
-    const analysisResult = analysisCache.get(params.textDocument.uri);
+connection.onCompletion(async (params) => {
+    let cacheEntry = analysisCache.get(params.textDocument.uri);
+    let analysisResult = cacheEntry?.result;
+    connection.console.log(`[COMPLETION] URI: ${params.textDocument.uri}, Analysis cached: ${!!analysisResult}, Position: ${params.position.line}:${params.position.character}`);
+    
+    // If no analysis result is cached, force a fresh analysis
+    if (!analysisResult) {
+        connection.console.log(`[COMPLETION] WARNING: No analysis result in cache, forcing fresh analysis`);
+        const document = documents.get(params.textDocument.uri);
+        if (document) {
+            await validateAndAnalyzeDocument(document);
+            cacheEntry = analysisCache.get(params.textDocument.uri);
+            analysisResult = cacheEntry?.result;
+        }
+    }
+    
     return handleCompletion(params, documents, connection, analysisResult);
 });
 
@@ -145,7 +162,12 @@ connection.onCompletionResolve((item) => {
 });
 
 connection.onDefinition((params) => {
-    return handleDefinition(params, documents, analysisCache);
+    // Convert cache format for definition handler
+    const legacyCache = new Map<string, SemanticAnalysisResult>();
+    for (const [uri, entry] of analysisCache.entries()) {
+        legacyCache.set(uri, entry.result);
+    }
+    return handleDefinition(params, documents, legacyCache);
 });
 
 documents.listen(connection);

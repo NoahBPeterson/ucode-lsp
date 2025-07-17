@@ -14,6 +14,7 @@ import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, TextDocument } from 'vscode-languageserver/node';
 import { allBuiltinFunctions } from '../builtins';
+import { FsObjectType, createFsObjectDataType } from './fsTypes';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -142,7 +143,16 @@ export class SemanticAnalyzer extends BaseVisitor {
           const initType = this.typeChecker.checkNode(node.init);
           const symbol = this.symbolTable.lookup(name);
           if (symbol) {
-            symbol.dataType = initType as UcodeDataType;
+            // Check if this is an fs function call and assign the appropriate fs type
+            const fsType = this.inferFsType(node.init);
+            if (fsType) {
+              const dataType = createFsObjectDataType(fsType);
+              symbol.dataType = dataType;
+              // For fs object variables, also force declaration in global scope to ensure completion access
+              this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+            } else {
+              symbol.dataType = initType as UcodeDataType;
+            }
           }
         }
       }
@@ -353,7 +363,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Visit the object part (e.g., 'constants' in 'constants.DT_HOSTINFO_FINAL_PATH')
       this.visit(node.object);
       
-      // For non-computed member access (obj.prop), check if it's a namespace import or module
+      // For non-computed member access (obj.prop), check if it's a namespace import, module, or fs object
       if (!node.computed && node.object.type === 'Identifier') {
         const objectName = (node.object as IdentifierNode).name;
         const symbol = this.symbolTable.lookup(objectName);
@@ -365,11 +375,19 @@ export class SemanticAnalyzer extends BaseVisitor {
           return;
         }
         
-        // Module member access is no longer special-cased
-        // since fs functions are now global builtins
+        // If the object is an fs type, don't visit the property as it's a method name
+        if (symbol && symbol.type === SymbolType.VARIABLE && symbol.dataType) {
+          const { fsTypeRegistry } = require('./fsTypes');
+          const fsType = fsTypeRegistry.isVariableOfFsType(symbol.dataType);
+          if (fsType) {
+            // This is an fs object method access (e.g., file_content.write)
+            // Don't visit the property name as it's not a variable reference
+            return;
+          }
+        }
       }
       
-      // For computed access (obj[prop]) or non-namespace/module access, visit the property
+      // For computed access (obj[prop]) or other member access, visit the property
       this.visit(node.property);
     } else {
       // If scope analysis is disabled, use default behavior
@@ -403,18 +421,49 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   visitAssignmentExpression(node: AssignmentExpressionNode): void {
     if (this.options.enableTypeChecking) {
-      // Check assignment type compatibility
-      this.typeChecker.checkNode(node.left);
-      this.typeChecker.checkNode(node.right);
-      
-      // Check for const reassignment
+      // Handle fs type inference for assignment expressions FIRST (e.g., file_content = open(...))
+      // This creates symbols for undeclared variables before type checking tries to look them up
       if (node.left.type === 'Identifier') {
-        const symbol = this.symbolTable.lookup((node.left as IdentifierNode).name);
+        const variableName = (node.left as IdentifierNode).name;
+        let symbol = this.symbolTable.lookup(variableName);
+        
+        // Check if this is an fs function call and assign the appropriate fs type
+        const fsType = this.inferFsType(node.right);
+        let dataType: UcodeDataType;
+        
+        if (fsType) {
+          dataType = createFsObjectDataType(fsType);
+        } else {
+          // Use the inferred type from the right-hand side
+          const rightType = this.typeChecker.checkNode(node.right);
+          dataType = rightType as UcodeDataType;
+        }
+        
         if (symbol && symbol.type === SymbolType.VARIABLE) {
-          // TODO: Track const declarations properly
-          // This would require extending the symbol table to track const vs let
+          // Update existing variable symbol across all scopes
+          symbol.dataType = dataType;
+          // Also force update in case it's in a different scope
+          this.symbolTable.updateSymbolType(variableName, dataType);
+          console.log(`[SEMANTIC] Updated variable: ${variableName} to type: ${JSON.stringify(dataType)}`);
+        } else if (!symbol) {
+          // Create new symbol for undeclared variable (implicit declaration)
+          this.symbolTable.declare(variableName, SymbolType.VARIABLE, dataType, node.left as IdentifierNode);
+          console.log(`[SEMANTIC] Created new variable: ${variableName} with type: ${JSON.stringify(dataType)}`);
+        } else {
+          // Symbol exists but wrong type, try to update it anyway
+          this.symbolTable.updateSymbolType(variableName, dataType);
+          console.log(`[SEMANTIC] Force updated variable: ${variableName} to type: ${JSON.stringify(dataType)}`);
+        }
+        
+        // For fs object variables, also force declaration in global scope to ensure completion access
+        if (fsType) {
+          this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
         }
       }
+      
+      // Now check assignment type compatibility after symbols are created
+      this.typeChecker.checkNode(node.left);
+      this.typeChecker.checkNode(node.right);
       
       const result = this.typeChecker.getResult();
       
@@ -542,6 +591,57 @@ export class SemanticAnalyzer extends BaseVisitor {
         DiagnosticSeverity.Warning
       );
     }
+  }
+
+  private inferFsType(node: AstNode): FsObjectType | null {
+    // Check if this is a call expression that returns an fs object
+    if (node.type === 'CallExpression') {
+      const callNode = node as CallExpressionNode;
+      if (callNode.callee.type === 'Identifier') {
+        const funcName = (callNode.callee as IdentifierNode).name;
+        
+        // Map fs functions to their return types
+        console.log(`[SEMANTIC] Checking fs function: ${funcName}`);
+        switch (funcName) {
+          case 'open':
+          case 'fdopen':
+          case 'mkstemp':
+            console.log(`[SEMANTIC] Detected fs.file function: ${funcName}`);
+            return FsObjectType.FS_FILE;
+          case 'opendir':
+            console.log(`[SEMANTIC] Detected fs.dir function: ${funcName}`);
+            return FsObjectType.FS_DIR;
+          case 'popen':
+            console.log(`[SEMANTIC] Detected fs.proc function: ${funcName}`);
+            return FsObjectType.FS_PROC;
+          default:
+            console.log(`[SEMANTIC] Not an fs function: ${funcName}`);
+            return null;
+        }
+      }
+      // Handle module member calls like fs.open()
+      else if (callNode.callee.type === 'MemberExpression') {
+        const memberNode = callNode.callee as MemberExpressionNode;
+        if (memberNode.object.type === 'Identifier' && 
+            (memberNode.object as IdentifierNode).name === 'fs' &&
+            memberNode.property.type === 'Identifier') {
+          const methodName = (memberNode.property as IdentifierNode).name;
+          
+          switch (methodName) {
+            case 'open':
+            case 'fdopen':
+            case 'mkstemp':
+              return FsObjectType.FS_FILE;
+            case 'opendir':
+              return FsObjectType.FS_DIR;
+            case 'popen':
+              return FsObjectType.FS_PROC;
+          }
+        }
+      }
+    }
+    
+    return null;
   }
 
   private addDiagnostic(message: string, start: number, end: number, severity: DiagnosticSeverity): void {

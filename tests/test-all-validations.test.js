@@ -30,6 +30,8 @@ const testFiles = [
     'tests/test-fs-module-support.js',
     'tests/test-fs-undefined-diagnostics.js',
     'tests/test-fs-method-diagnostics.js',
+    'tests/test-fs-types.js',
+    'tests/test-fs-object-completion.js',
     'tests/test-open-builtin-diagnostics.js',
     'tests/test-completion-detection.js',
     'tests/test-completion-simple.js',

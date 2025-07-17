@@ -73,6 +73,13 @@ export function typeToString(type: UcodeDataType): string {
   if (isUnionType(type)) {
     return type.types.join(' | ');
   }
+  
+  // Handle fs object types (ModuleType)
+  if (typeof type === 'object' && type.type === UcodeType.OBJECT && 'moduleName' in type) {
+    const moduleType = type as ModuleType;
+    return moduleType.moduleName; // Returns "fs.file", "fs.dir", or "fs.proc"
+  }
+  
   return type as string;
 }
 
@@ -254,6 +261,84 @@ export class SymbolTable {
       }
     }
     return null;
+  }
+
+  // Debug method to see all symbols in all scopes
+  debugLookup(name: string): void {
+    console.log(`[SYMBOL_DEBUG] Looking up '${name}' in ${this.scopes.length} scopes:`);
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      const scope = this.scopes[i];
+      if (scope) {
+        const symbol = scope.get(name);
+        const allSymbols = Array.from(scope.keys());
+        console.log(`[SYMBOL_DEBUG] Scope ${i}: ${allSymbols.length} symbols [${allSymbols.join(', ')}] - ${name}: ${symbol ? 'FOUND' : 'NOT FOUND'}`);
+        if (symbol) {
+          console.log(`[SYMBOL_DEBUG] Symbol details: type=${symbol.type}, dataType=${JSON.stringify(symbol.dataType)}`);
+        }
+      }
+    }
+  }
+
+  // Force update a symbol's type across all scopes
+  updateSymbolType(name: string, newDataType: UcodeDataType): boolean {
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      const scope = this.scopes[i];
+      if (scope) {
+        const symbol = scope.get(name);
+        if (symbol) {
+          symbol.dataType = newDataType;
+          console.log(`[SYMBOL_UPDATE] Updated ${name} to type ${JSON.stringify(newDataType)} in scope ${i}`);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Force declare a symbol in global scope - ALWAYS ensures symbol exists in global scope
+  forceGlobalDeclaration(name: string, type: SymbolType, dataType: UcodeDataType): void {
+    // Always ensure the symbol exists in global scope (scope 0) for completion access
+    const globalScope = this.scopes[0];
+    if (!globalScope) {
+      console.log(`[SYMBOL_FORCE] ERROR: No global scope available for ${name}`);
+      return;
+    }
+    
+    // Check if symbol already exists in global scope
+    const globalSymbol = globalScope.get(name);
+    if (globalSymbol) {
+      // Update existing global symbol
+      globalSymbol.dataType = dataType;
+      console.log(`[SYMBOL_FORCE] Updated existing global ${name} to type ${JSON.stringify(dataType)}`);
+      return;
+    }
+    
+    // Create new symbol in global scope
+    const symbol: Symbol = {
+      name,
+      type,
+      dataType,
+      scope: 0,
+      declared: true,
+      used: false,
+      node: {
+        type: 'Identifier',
+        start: 0,
+        end: 0,
+        name: name
+      } as IdentifierNode,
+      declaredAt: 0,
+      usedAt: []
+    };
+    globalScope.set(name, symbol);
+    console.log(`[SYMBOL_FORCE] Created ${name} in global scope with type ${JSON.stringify(dataType)}`);
+    
+    // Also update any existing symbols in other scopes
+    const existingSymbol = this.lookup(name);
+    if (existingSymbol && existingSymbol.scope !== 0) {
+      existingSymbol.dataType = dataType;
+      console.log(`[SYMBOL_FORCE] Also updated existing ${name} in scope ${existingSymbol.scope} to type ${JSON.stringify(dataType)}`);
+    }
   }
 
   markUsed(name: string, position: number): boolean {

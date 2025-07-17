@@ -11,6 +11,7 @@ import {
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes } from './symbolTable';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
 import { allBuiltinFunctions } from '../builtins';
+import { fsTypeRegistry } from './fsTypes';
 
 export interface FunctionSignature {
   name: string;
@@ -409,7 +410,7 @@ export class TypeChecker {
   private validateBuiltinCall(node: CallExpressionNode, signature: FunctionSignature): UcodeType {
     // First check special cases
     if (this.validateSpecialBuiltins(node, signature)) {
-      return signature.returnType;
+      return this.getReturnTypeForFsFunction(signature.name);
     }
 
     const argCount = node.arguments.length;
@@ -451,7 +452,26 @@ export class TypeChecker {
       }
     }
 
-    return signature.returnType;
+    return this.getReturnTypeForFsFunction(signature.name);
+  }
+
+  private getReturnTypeForFsFunction(functionName: string): UcodeType {
+    // Return specific fs object types for fs functions
+    switch (functionName) {
+      case 'open':
+      case 'fdopen':
+      case 'mkstemp':
+        return UcodeType.OBJECT; // Will be treated as fs.file by symbol table
+      case 'opendir':
+        return UcodeType.OBJECT; // Will be treated as fs.dir by symbol table
+      case 'popen':
+        return UcodeType.OBJECT; // Will be treated as fs.proc by symbol table
+      case 'pipe':
+        return UcodeType.ARRAY; // Array of fs.file objects
+      default:
+        const signature = this.builtinFunctions.get(functionName);
+        return signature?.returnType || UcodeType.UNKNOWN;
+    }
   }
 
   private validateSpecialBuiltins(node: CallExpressionNode, signature: FunctionSignature): boolean {
@@ -479,6 +499,24 @@ export class TypeChecker {
       // If symbol doesn't exist, let the semantic analyzer handle the "Undefined variable" error
       // Don't duplicate the error here by calling checkNode(node.object)
       if (!symbol) {
+        return UcodeType.UNKNOWN;
+      }
+
+      // Check if this is an fs object with a specific type
+      const fsType = fsTypeRegistry.isVariableOfFsType(symbol.dataType);
+      if (fsType && !node.computed) {
+        const methodName = (node.property as IdentifierNode).name;
+        const method = fsTypeRegistry.getFsMethod(fsType, methodName);
+        if (method) {
+          return method.returnType;
+        }
+        // Method not found on fs type
+        this.errors.push({
+          message: `Method '${methodName}' does not exist on ${fsType}`,
+          start: node.start,
+          end: node.end,
+          severity: 'error'
+        });
         return UcodeType.UNKNOWN;
       }
     }
