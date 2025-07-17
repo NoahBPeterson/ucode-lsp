@@ -32,7 +32,17 @@ const testFiles = [
     'tests/test-fs-method-diagnostics.js',
     'tests/test-open-builtin-diagnostics.js',
     'tests/test-completion-detection.js',
-    'tests/test-completion-simple.js'
+    'tests/test-completion-simple.js',
+    'tests/test-in-token.js',
+    'tests/test-lexer.js',
+    'tests/test-parser.js',
+    'tests/test-go-to-definition.js',
+    'tests/test-import-simple.js',
+    'tests/test-export-debug.js',
+    'tests/test-for-in-debug.js',
+    'tests/test-refactor.js',
+    'tests/test-new-validations.js',
+    'tests/test-validations-only.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
@@ -110,6 +120,16 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('✅ Only one diagnostic per undefined fs reference (no duplicates)');
         console.log('✅ Member expression completion detection working correctly');
         console.log('✅ fs module autocomplete/IntelliSense logic working correctly');
+        console.log('✅ TK_IN token recognition and for-in loop parsing working correctly');
+        console.log('✅ Lexer tokenization patterns and position tracking working correctly');
+        console.log('✅ Parser AST node creation and validation working correctly');
+        console.log('✅ Go to Definition functionality for imported and local symbols working correctly');
+        console.log('✅ Import statement parsing (named and namespace imports) working correctly');
+        console.log('✅ Export statement parsing and module system support working correctly');
+        console.log('✅ For-in loop parsing with bare identifiers working correctly');
+        console.log('✅ Module refactoring and code organization patterns working correctly');
+        console.log('✅ New validation implementations and parameter type checking working correctly');
+        console.log('✅ Validation-only mode and isolated validation engine working correctly');
     } else {
         console.log('\n❌ Some test suites failed. Please review the output above.');
     }
