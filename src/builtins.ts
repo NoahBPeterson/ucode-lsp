@@ -178,5 +178,34 @@ export const digestBuiltinFunctions = new Map<string, string>([
     ['sha512_file', '**sha512_file(path)** - Calculate SHA512 hash of file (extended).\\n\\n**Parameters:**\\n- `path` (string): Path to the file\\n\\n**Returns:** `string | null` - SHA512 hash string or null if error occurred\\n\\n**Example:**\\n```ucode\\nsha512_file("/etc/passwd");  // Returns file hash\\n```']
 ]);
 
+// ============================================================================
+// Log Built-in Functions (from log.c global_fns[])
+// These are global functions, not methods of a log module object
+// ============================================================================
+
+export const logBuiltinFunctions = new Map<string, string>([
+    ['openlog', '**openlog(ident, options, facility)** - Open connection to system logger.\\n\\n**Parameters:**\\n- `ident` (string, optional): String identifying the program name\\n- `options` (number|string|string[], optional): Logging options to use\\n- `facility` (number|string, optional): The facility for log messages (default: "user")\\n\\n**Returns:** `boolean` - true if system openlog() was invoked, false on invalid arguments\\n\\n**Example:**\\n```ucode\\n// Using constants\\nopenlog("myapp", LOG_PID | LOG_NDELAY, LOG_LOCAL0);\\n\\n// Using option names\\nopenlog("myapp", ["pid", "ndelay"], "user");\\n```'],
+    
+    ['syslog', '**syslog(priority, format, ...args)** - Log a message to the system logger.\\n\\n**Parameters:**\\n- `priority` (number|string): Log message priority\\n- `format` (any): The sprintf-like format string or value to log\\n- `...args` (any, optional): Arguments for format string\\n\\n**Returns:** `boolean` - true if message was logged, false on invalid priority or empty message\\n\\n**Example:**\\n```ucode\\n// Using constants\\nsyslog(LOG_ERR, "User %s encountered error: %d", username, errorCode);\\n\\n// Using priority names\\nsyslog("info", "System started successfully");\\n\\n// Implicit stringification\\nsyslog("debug", { status: "running", pid: 1234 });\\n```'],
+    
+    ['closelog', '**closelog()** - Close connection to system logger.\\n\\n**Returns:** `null`\\n\\n**Example:**\\n```ucode\\ncloselog();\\n```'],
+    
+    ['ulog_open', '**ulog_open(channels, facility, ident)** - Configure ulog logger (OpenWrt specific).\\n\\n**Parameters:**\\n- `channels` (number|string|string[], optional): Log channels to use\\n- `facility` (number|string, optional): The facility for log messages\\n- `ident` (string, optional): String identifying the program name\\n\\n**Returns:** `boolean` - true if ulog was configured, false on invalid arguments\\n\\n**Example:**\\n```ucode\\n// Log to dmesg and stderr\\nulog_open(["stdio", "kmsg"], "daemon", "my-program");\\n\\n// Use numeric constants\\nulog_open(ULOG_SYSLOG, LOG_LOCAL0);\\n```'],
+    
+    ['ulog', '**ulog(priority, format, ...args)** - Log a message via ulog mechanism (OpenWrt specific).\\n\\n**Parameters:**\\n- `priority` (number|string): Log message priority\\n- `format` (any): The sprintf-like format string or value to log\\n- `...args` (any, optional): Arguments for format string\\n\\n**Returns:** `boolean` - true if message was logged, false on invalid priority or empty message\\n\\n**Example:**\\n```ucode\\n// Using constants\\nulog(LOG_ERR, "User %s encountered error: %d", username, errorCode);\\n\\n// Using priority names\\nulog("info", "System started successfully");\\n\\n// Implicit stringification\\nulog("debug", { status: "running", pid: 1234 });\\n```'],
+    
+    ['ulog_close', '**ulog_close()** - Close ulog logger (OpenWrt specific).\\n\\n**Returns:** `null`\\n\\n**Example:**\\n```ucode\\nulog_close();\\n```'],
+    
+    ['ulog_threshold', '**ulog_threshold(priority)** - Set ulog priority threshold (OpenWrt specific).\\n\\n**Parameters:**\\n- `priority` (number|string, optional): The priority threshold to configure\\n\\n**Returns:** `boolean` - true if threshold was set, false on invalid priority\\n\\n**Example:**\\n```ucode\\n// Set threshold to "warning" or more severe\\nulog_threshold(LOG_WARNING);\\n\\n// Using priority name\\nulog_threshold("debug");\\n```'],
+    
+    ['INFO', '**INFO(format, ...args)** - Convenience wrapper for ulog(LOG_INFO, ...).\\n\\n**Parameters:**\\n- `format` (any): The sprintf-like format string or value to log\\n- `...args` (any, optional): Arguments for format string\\n\\n**Returns:** `boolean` - true if message was logged, false on error\\n\\n**Example:**\\n```ucode\\nINFO("System initialization complete");\\nINFO("User %s logged in", username);\\n```'],
+    
+    ['NOTE', '**NOTE(format, ...args)** - Convenience wrapper for ulog(LOG_NOTICE, ...).\\n\\n**Parameters:**\\n- `format` (any): The sprintf-like format string or value to log\\n- `...args` (any, optional): Arguments for format string\\n\\n**Returns:** `boolean` - true if message was logged, false on error\\n\\n**Example:**\\n```ucode\\nNOTE("Configuration change detected");\\nNOTE("Service %s restarted", serviceName);\\n```'],
+    
+    ['WARN', '**WARN(format, ...args)** - Convenience wrapper for ulog(LOG_WARNING, ...).\\n\\n**Parameters:**\\n- `format` (any): The sprintf-like format string or value to log\\n- `...args` (any, optional): Arguments for format string\\n\\n**Returns:** `boolean` - true if message was logged, false on error\\n\\n**Example:**\\n```ucode\\nWARN("Low disk space detected");\\nWARN("Connection timeout for %s", hostname);\\n```'],
+    
+    ['ERR', '**ERR(format, ...args)** - Convenience wrapper for ulog(LOG_ERR, ...).\\n\\n**Parameters:**\\n- `format` (any): The sprintf-like format string or value to log\\n- `...args` (any, optional): Arguments for format string\\n\\n**Returns:** `boolean` - true if message was logged, false on error\\n\\n**Example:**\\n```ucode\\nERR("Failed to connect to database");\\nERR("Invalid configuration: %s", errorMessage);\\n```']
+]);
+
 // Merge all builtins for completion
-export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions]);
+export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions]);

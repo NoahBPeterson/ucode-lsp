@@ -44,7 +44,10 @@ const testFiles = [
     'tests/test-for-in-debug.js',
     'tests/test-refactor.js',
     'tests/test-new-validations.js',
-    'tests/test-validations-only.js'
+    'tests/test-validations-only.js',
+    'tests/test-log-module.js',
+    'tests/test-log-import-validation.js',
+    'tests/test-log-constant-hover.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

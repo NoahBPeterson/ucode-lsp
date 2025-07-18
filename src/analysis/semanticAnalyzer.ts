@@ -15,6 +15,7 @@ import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, TextDocument } from 'vscode-languageserver/node';
 import { allBuiltinFunctions } from '../builtins';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
+import { logTypeRegistry } from './logTypes';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -202,6 +203,19 @@ export class SemanticAnalyzer extends BaseVisitor {
     } else { // ImportNamespaceSpecifier
       localName = specifier.local.name;
       importedName = '*';
+    }
+    
+    // Validate log module imports
+    if (source === 'log' && specifier.type === 'ImportSpecifier') {
+      if (!logTypeRegistry.isValidLogImport(importedName)) {
+        this.addDiagnostic(
+          `'${importedName}' is not exported by the log module. Available exports: ${logTypeRegistry.getValidLogImports().join(', ')}`,
+          specifier.imported.start,
+          specifier.imported.end,
+          DiagnosticSeverity.Error
+        );
+        return; // Don't add invalid import to symbol table
+      }
     }
     
     // Add imported symbol to symbol table

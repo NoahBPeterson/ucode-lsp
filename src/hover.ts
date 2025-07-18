@@ -9,6 +9,7 @@ import { SemanticAnalysisResult, SymbolType } from './analysis';
 import { typeToString } from './analysis/symbolTable';
 import { debugTypeRegistry } from './analysis/debugTypes';
 import { digestTypeRegistry } from './analysis/digestTypes';
+import { logTypeRegistry } from './analysis/logTypes';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -40,7 +41,38 @@ export function handleHover(
                 // For now, fall through to regular symbol analysis
             }
             
-            // 0. Check if this is a digest module function FIRST (before symbol table)
+            // Check if this is a log module function FIRST (before symbol table)
+            if (logTypeRegistry.isLogFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: logTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a log module constant FIRST (before symbol table)
+            if (logTypeRegistry.isLogConstant(word)) {
+                const constantDoc = logTypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+            }
+            
+            // Check if this is a digest module function FIRST (before symbol table)
             if (digestTypeRegistry.isDigestFunction(word)) {
                 return {
                     contents: {
@@ -91,6 +123,8 @@ export function handleHover(
                                 hoverText = getDebugModuleDocumentation();
                             } else if (symbol.importedFrom === 'digest') {
                                 hoverText = getDigestModuleDocumentation();
+                            } else if (symbol.importedFrom === 'log') {
+                                hoverText = getLogModuleDocumentation();
                             } else {
                                 hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
                             }
@@ -144,6 +178,37 @@ export function handleHover(
         }
         
         const word = text.substring(wordRange.start, wordRange.end);
+        
+        // Check if this is a log module function
+        if (logTypeRegistry.isLogFunction(word)) {
+            return {
+                contents: {
+                    kind: MarkupKind.Markdown,
+                    value: logTypeRegistry.getFunctionDocumentation(word)
+                },
+                range: {
+                    start: document.positionAt(wordRange.start),
+                    end: document.positionAt(wordRange.end)
+                }
+            };
+        }
+        
+        // Check if this is a log module constant
+        if (logTypeRegistry.isLogConstant(word)) {
+            const constantDoc = logTypeRegistry.getConstantDocumentation(word);
+            if (constantDoc) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: constantDoc
+                    },
+                    range: {
+                        start: document.positionAt(wordRange.start),
+                        end: document.positionAt(wordRange.end)
+                    }
+                };
+            }
+        }
         
         // Check if this is a digest module function
         if (digestTypeRegistry.isDigestFunction(word)) {
@@ -345,6 +410,73 @@ let fileHash = digest.sha256_file("/path/to/file.txt");
 - Extended algorithms (MD2, MD4, SHA384, SHA512) may not be available on all systems
 - All functions return \`null\` on error or invalid input
 - File functions return \`null\` if the file cannot be read
+
+*Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getLogModuleDocumentation(): string {
+    return `## Log Module
+
+**System logging functions for ucode scripts**
+
+The log module provides bindings to the POSIX syslog functions as well as OpenWrt specific ulog library functions.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { openlog, syslog, LOG_PID, LOG_USER, LOG_ERR } from 'log';
+
+openlog("my-log-ident", LOG_PID, LOG_USER);
+syslog(LOG_ERR, "An error occurred!");
+
+// OpenWrt specific ulog functions
+import { ulog_open, ulog, ULOG_SYSLOG, LOG_DAEMON, LOG_INFO } from 'log';
+
+ulog_open(ULOG_SYSLOG, LOG_DAEMON, "my-log-ident");
+ulog(LOG_INFO, "The current epoch is %d", time());
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as log from 'log';
+
+log.openlog("my-log-ident", log.LOG_PID, log.LOG_USER);
+log.syslog(log.LOG_ERR, "An error occurred!");
+
+// OpenWrt specific ulog functions
+log.ulog_open(log.ULOG_SYSLOG, log.LOG_DAEMON, "my-log-ident");
+log.ulog(log.LOG_INFO, "The current epoch is %d", time());
+\`\`\`
+
+### Available Functions
+
+**Standard syslog functions:**
+- **\`openlog()\`** - Open connection to system logger
+- **\`syslog()\`** - Log a message to the system logger
+- **\`closelog()\`** - Close connection to system logger
+
+**OpenWrt ulog functions:**
+- **\`ulog_open()\`** - Configure ulog logger
+- **\`ulog()\`** - Log a message via ulog mechanism
+- **\`ulog_close()\`** - Close ulog logger
+- **\`ulog_threshold()\`** - Set ulog priority threshold
+
+**Convenience functions:**
+- **\`INFO()\`** - Log with LOG_INFO priority
+- **\`NOTE()\`** - Log with LOG_NOTICE priority
+- **\`WARN()\`** - Log with LOG_WARNING priority
+- **\`ERR()\`** - Log with LOG_ERR priority
+
+### Constants
+
+**Log options:** LOG_PID, LOG_CONS, LOG_NDELAY, LOG_ODELAY, LOG_NOWAIT
+
+**Log facilities:** LOG_AUTH, LOG_AUTHPRIV, LOG_CRON, LOG_DAEMON, LOG_FTP, LOG_KERN, LOG_LPR, LOG_MAIL, LOG_NEWS, LOG_SYSLOG, LOG_USER, LOG_UUCP, LOG_LOCAL0-7
+
+**Log priorities:** LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG
+
+**Ulog channels:** ULOG_KMSG, ULOG_STDIO, ULOG_SYSLOG
 
 *Hover over individual function names for detailed parameter and return type information.*`;
 }

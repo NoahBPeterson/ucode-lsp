@@ -11,6 +11,7 @@ import { SemanticAnalysisResult } from './analysis';
 import { fsTypeRegistry } from './analysis/fsTypes';
 import { debugTypeRegistry } from './analysis/debugTypes';
 import { digestTypeRegistry } from './analysis/digestTypes';
+import { logTypeRegistry } from './analysis/logTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -61,6 +62,13 @@ export function handleCompletion(
             if (digestCompletions.length > 0) {
                 connection.console.log(`Returning ${digestCompletions.length} digest module completions for ${objectName}`);
                 return digestCompletions;
+            }
+            
+            // Check if this is a log module with completions available
+            const logCompletions = getLogModuleCompletions(objectName, analysisResult);
+            if (logCompletions.length > 0) {
+                connection.console.log(`Returning ${logCompletions.length} log module completions for ${objectName}`);
+                return logCompletions;
             }
             
             
@@ -244,6 +252,44 @@ function getDigestModuleCompletions(objectName: string, analysisResult?: Semanti
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: digestTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
+}
+
+function getLogModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a log module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'log') {
+        const functionNames = logTypeRegistry.getFunctionNames();
+        const completions: CompletionItem[] = [];
+        
+        for (const functionName of functionNames) {
+            const signature = logTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'log module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: logTypeRegistry.getFunctionDocumentation(functionName)
                     },
                     insertText: `${functionName}($1)`,
                     insertTextFormat: InsertTextFormat.Snippet
