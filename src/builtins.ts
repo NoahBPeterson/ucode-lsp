@@ -142,5 +142,41 @@ export const debugBuiltinFunctions = new Map<string, string>([
     ['setupval', '**setupval(target, variable, value)** - Set the value of an upvalue (closure variable).\\n\\n**Parameters:**\\n- `target` (function | number): Target function or stack level\\n- `variable` (string | number): Variable name or index\\n- `value` (any): New value to set\\n\\n**Returns:** `module:debug.UpvalInfo | null` - Updated upvalue information or null\\n\\n**Example:**\\n```ucode\\nlet result = setupval(myFunction, \"closureVar\", \"new value\");\\nif (result) {\\n    print(\"Upvalue updated:\", result.name);\\n}\\n```']
 ]);
 
+// ============================================================================
+// Digest Built-in Functions (from digest.c global_fns[])
+// These are global functions, not methods of a digest module object
+// ============================================================================
+
+export const digestBuiltinFunctions = new Map<string, string>([
+    ['md5', '**md5(str)** - Calculate MD5 hash of string.\\n\\n**Parameters:**\\n- `str` (string): The string to hash\\n\\n**Returns:** `string | null` - MD5 hash string or null if invalid input\\n\\n**Example:**\\n```ucode\\nmd5("This is a test");  // "ce114e4501d2f4e2dcea3e17b546f339"\\nmd5(123);               // null\\n```'],
+    
+    ['sha1', '**sha1(str)** - Calculate SHA1 hash of string.\\n\\n**Parameters:**\\n- `str` (string): The string to hash\\n\\n**Returns:** `string | null` - SHA1 hash string or null if invalid input\\n\\n**Example:**\\n```ucode\\nsha1("This is a test");  // "a54d88e06612d820bc3be72877c74f257b561b19"\\nsha1(123);               // null\\n```'],
+    
+    ['sha256', '**sha256(str)** - Calculate SHA256 hash of string.\\n\\n**Parameters:**\\n- `str` (string): The string to hash\\n\\n**Returns:** `string | null` - SHA256 hash string or null if invalid input\\n\\n**Example:**\\n```ucode\\nsha256("This is a test");  // "c7be1ed902fb8dd4d48997c6452f5d7e509fbcdbe2808b16bcf4edce4c07d14e"\\nsha256(123);               // null\\n```'],
+    
+    ['md5_file', '**md5_file(path)** - Calculate MD5 hash of file.\\n\\n**Parameters:**\\n- `path` (string): Path to the file\\n\\n**Returns:** `string | null` - MD5 hash string or null if error occurred\\n\\n**Example:**\\n```ucode\\nmd5_file("/etc/passwd");    // Returns file hash\\nmd5_file("/nonexistent");   // null\\n```'],
+    
+    ['sha1_file', '**sha1_file(path)** - Calculate SHA1 hash of file.\\n\\n**Parameters:**\\n- `path` (string): Path to the file\\n\\n**Returns:** `string | null` - SHA1 hash string or null if error occurred\\n\\n**Example:**\\n```ucode\\nsha1_file("/etc/passwd");    // Returns file hash\\nsha1_file("/nonexistent");   // null\\n```'],
+    
+    ['sha256_file', '**sha256_file(path)** - Calculate SHA256 hash of file.\\n\\n**Parameters:**\\n- `path` (string): Path to the file\\n\\n**Returns:** `string | null` - SHA256 hash string or null if error occurred\\n\\n**Example:**\\n```ucode\\nsha256_file("/etc/passwd");  // Returns file hash\\nsha256_file("/nonexistent"); // null\\n```'],
+    
+    // Extended digest functions (may not be available on all systems)
+    ['md2', '**md2(str)** - Calculate MD2 hash of string (extended).\\n\\n**Parameters:**\\n- `str` (string): The string to hash\\n\\n**Returns:** `string | null` - MD2 hash string or null if invalid input\\n\\n**Example:**\\n```ucode\\nmd2("This is a test");  // "dc378580fd0722e56b82666a6994c718"\\nmd2(123);               // null\\n```'],
+    
+    ['md4', '**md4(str)** - Calculate MD4 hash of string (extended).\\n\\n**Parameters:**\\n- `str` (string): The string to hash\\n\\n**Returns:** `string | null` - MD4 hash string or null if invalid input\\n\\n**Example:**\\n```ucode\\nmd4("This is a test");  // "3b487cf6856af7e330bc4b1b7d977ef8"\\nmd4(123);               // null\\n```'],
+    
+    ['sha384', '**sha384(str)** - Calculate SHA384 hash of string (extended).\\n\\n**Parameters:**\\n- `str` (string): The string to hash\\n\\n**Returns:** `string | null` - SHA384 hash string or null if invalid input\\n\\n**Example:**\\n```ucode\\nsha384("This is a test");  // Returns long SHA384 hash\\nsha384(123);               // null\\n```'],
+    
+    ['sha512', '**sha512(str)** - Calculate SHA512 hash of string (extended).\\n\\n**Parameters:**\\n- `str` (string): The string to hash\\n\\n**Returns:** `string | null` - SHA512 hash string or null if invalid input\\n\\n**Example:**\\n```ucode\\nsha512("This is a test");  // Returns long SHA512 hash\\nsha512(123);               // null\\n```'],
+    
+    ['md2_file', '**md2_file(path)** - Calculate MD2 hash of file (extended).\\n\\n**Parameters:**\\n- `path` (string): Path to the file\\n\\n**Returns:** `string | null` - MD2 hash string or null if error occurred\\n\\n**Example:**\\n```ucode\\nmd2_file("/etc/passwd");  // Returns file hash\\n```'],
+    
+    ['md4_file', '**md4_file(path)** - Calculate MD4 hash of file (extended).\\n\\n**Parameters:**\\n- `path` (string): Path to the file\\n\\n**Returns:** `string | null` - MD4 hash string or null if error occurred\\n\\n**Example:**\\n```ucode\\nmd4_file("/etc/passwd");  // Returns file hash\\n```'],
+    
+    ['sha384_file', '**sha384_file(path)** - Calculate SHA384 hash of file (extended).\\n\\n**Parameters:**\\n- `path` (string): Path to the file\\n\\n**Returns:** `string | null` - SHA384 hash string or null if error occurred\\n\\n**Example:**\\n```ucode\\nsha384_file("/etc/passwd");  // Returns file hash\\n```'],
+    
+    ['sha512_file', '**sha512_file(path)** - Calculate SHA512 hash of file (extended).\\n\\n**Parameters:**\\n- `path` (string): Path to the file\\n\\n**Returns:** `string | null` - SHA512 hash string or null if error occurred\\n\\n**Example:**\\n```ucode\\nsha512_file("/etc/passwd");  // Returns file hash\\n```']
+]);
+
 // Merge all builtins for completion
-export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions]);
+export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions]);

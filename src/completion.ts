@@ -10,6 +10,7 @@ import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult } from './analysis';
 import { fsTypeRegistry } from './analysis/fsTypes';
 import { debugTypeRegistry } from './analysis/debugTypes';
+import { digestTypeRegistry } from './analysis/digestTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -53,6 +54,13 @@ export function handleCompletion(
             if (debugCompletions.length > 0) {
                 connection.console.log(`Returning ${debugCompletions.length} debug module completions for ${objectName}`);
                 return debugCompletions;
+            }
+            
+            // Check if this is a digest module with completions available
+            const digestCompletions = getDigestModuleCompletions(objectName, analysisResult);
+            if (digestCompletions.length > 0) {
+                connection.console.log(`Returning ${digestCompletions.length} digest module completions for ${objectName}`);
+                return digestCompletions;
             }
             
             
@@ -189,6 +197,53 @@ function getDebugModuleCompletions(objectName: string, analysisResult?: Semantic
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: debugTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
+}
+
+function getDigestModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        console.log(`[DIGEST_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
+        return [];
+    }
+
+    // Look up the symbol in the symbol table
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        console.log(`[DIGEST_COMPLETION] Symbol not found: ${objectName}`);
+        return [];
+    }
+
+    console.log(`[DIGEST_COMPLETION] Symbol found: ${objectName}, type: ${symbol.type}`);
+
+    // Check if this is a digest module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'digest') {
+        console.log(`[DIGEST_COMPLETION] Digest module detected for ${objectName}`);
+        
+        // Get all digest function names
+        const functionNames = digestTypeRegistry.getFunctionNames();
+        const completions: CompletionItem[] = [];
+        
+        // Create completion items for each digest function
+        for (const functionName of functionNames) {
+            const signature = digestTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'digest module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: digestTypeRegistry.getFunctionDocumentation(functionName)
                     },
                     insertText: `${functionName}($1)`,
                     insertTextFormat: InsertTextFormat.Snippet

@@ -8,6 +8,7 @@ import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType } from './analysis';
 import { typeToString } from './analysis/symbolTable';
 import { debugTypeRegistry } from './analysis/debugTypes';
+import { digestTypeRegistry } from './analysis/digestTypes';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -15,10 +16,8 @@ export function handleHover(
     connection: any,
     analysisResult?: SemanticAnalysisResult
 ): Hover | undefined {
-    connection.console.log('Hover request received for: ' + textDocumentPositionParams.textDocument.uri);
     const document = documents.get(textDocumentPositionParams.textDocument.uri);
     if (!document) {
-        connection.console.log('Document not found');
         return undefined;
     }
 
@@ -34,22 +33,30 @@ export function handleHover(
         
         if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
             const word = token.value;
-            connection.console.log('Hover word (from lexer): ' + word);
             
             // Check if this is part of a member expression (e.g., fs.open)
             const memberExpressionInfo = detectMemberExpression(offset, tokens);
             if (memberExpressionInfo && analysisResult) {
-                const { objectName, propertyName } = memberExpressionInfo;
-                connection.console.log(`Detected member expression: ${objectName}.${propertyName}`);
-                
                 // For member expressions, we could add object-specific hover here
                 // For now, fall through to regular symbol analysis
             }
             
-            // 0. Check if this is a debug module function FIRST (before symbol table)
-            connection.console.log('Checking if debug function: ' + word);
+            // 0. Check if this is a digest module function FIRST (before symbol table)
+            if (digestTypeRegistry.isDigestFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: digestTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // 1. Check if this is a debug module function FIRST (before symbol table)
             if (debugTypeRegistry.isDebugFunction(word)) {
-                connection.console.log('Found debug function: ' + word);
                 return {
                     contents: {
                         kind: MarkupKind.Markdown,
@@ -80,9 +87,11 @@ export function handleHover(
                             hoverText = `(module) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
                             break;
                         case SymbolType.IMPORTED:
-                            // Special handling for debug module imports
+                            // Special handling for module imports
                             if (symbol.importedFrom === 'debug') {
                                 hoverText = getDebugModuleDocumentation();
+                            } else if (symbol.importedFrom === 'digest') {
+                                hoverText = getDigestModuleDocumentation();
                             } else {
                                 hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
                             }
@@ -104,7 +113,6 @@ export function handleHover(
             // 3. Fallback to built-in functions and keywords
             const documentation = allBuiltinFunctions.get(word);
             if (documentation) {
-                connection.console.log('Found documentation for: ' + word);
                 return {
                     contents: {
                         kind: MarkupKind.Markdown,
@@ -137,10 +145,22 @@ export function handleHover(
         }
         
         const word = text.substring(wordRange.start, wordRange.end);
-        connection.console.log('Hover word (fallback): ' + word);
+        
+        // Check if this is a digest module function
+        if (digestTypeRegistry.isDigestFunction(word)) {
+            return {
+                contents: {
+                    kind: MarkupKind.Markdown,
+                    value: digestTypeRegistry.getFunctionDocumentation(word)
+                },
+                range: {
+                    start: document.positionAt(wordRange.start),
+                    end: document.positionAt(wordRange.end)
+                }
+            };
+        }
         
         // Check if this is a debug module function
-        connection.console.log('Fallback checking if debug function: ' + word);
         if (debugTypeRegistry.isDebugFunction(word)) {
             return {
                 contents: {
@@ -272,6 +292,60 @@ debug.memdump("/tmp/dump.txt");
 - **\`UCODE_DEBUG_MEMDUMP_ENABLED\`** - Enable/disable automatic memory dumps (default: enabled)
 - **\`UCODE_DEBUG_MEMDUMP_SIGNAL\`** - Signal for triggering memory dumps (default: SIGUSR2)
 - **\`UCODE_DEBUG_MEMDUMP_PATH\`** - Output directory for memory dumps (default: /tmp)
+
+*Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getDigestModuleDocumentation(): string {
+    return `## Digest Module
+
+**Cryptographic hash functions for ucode scripts**
+
+The digest module provides secure hashing functionality using industry-standard algorithms.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { md5, sha256, sha1_file } from 'digest';
+
+let hash = md5("Hello World");
+let fileHash = sha256_file("/path/to/file.txt");
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as digest from 'digest';
+
+let hash = digest.md5("Hello World");
+let fileHash = digest.sha256_file("/path/to/file.txt");
+\`\`\`
+
+### Available Functions
+
+**String hashing functions:**
+- **\`md5()\`** - Calculate MD5 hash of string
+- **\`sha1()\`** - Calculate SHA1 hash of string
+- **\`sha256()\`** - Calculate SHA256 hash of string
+- **\`sha384()\`** - Calculate SHA384 hash of string (extended)
+- **\`sha512()\`** - Calculate SHA512 hash of string (extended)
+- **\`md2()\`** - Calculate MD2 hash of string (extended)
+- **\`md4()\`** - Calculate MD4 hash of string (extended)
+
+**File hashing functions:**
+- **\`md5_file()\`** - Calculate MD5 hash of file
+- **\`sha1_file()\`** - Calculate SHA1 hash of file
+- **\`sha256_file()\`** - Calculate SHA256 hash of file
+- **\`sha384_file()\`** - Calculate SHA384 hash of file (extended)
+- **\`sha512_file()\`** - Calculate SHA512 hash of file (extended)
+- **\`md2_file()\`** - Calculate MD2 hash of file (extended)
+- **\`md4_file()\`** - Calculate MD4 hash of file (extended)
+
+### Notes
+
+- Extended algorithms (MD2, MD4, SHA384, SHA512) may not be available on all systems
+- All functions return \`null\` on error or invalid input
+- File functions return \`null\` if the file cannot be read
 
 *Hover over individual function names for detailed parameter and return type information.*`;
 }
