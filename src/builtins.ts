@@ -119,5 +119,28 @@ export const fsBuiltinFunctions = new Map<string, string>([
     ['pipe', '**pipe()** - Create a pipe (returns array of file descriptors).\n\n**Returns:** `array|null` - Array of [readfd, writefd] or null on error\n\n**Example:**\n```ucode\nlet [readfd, writefd] = pipe();\nif (readfd && writefd) {\n    // Use the pipe\n}\n```']
 ]);
 
-// Merge fs builtins with regular builtins for completion
-export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions]);
+// ============================================================================
+// Debug Built-in Functions (from debug.c global_fns[])
+// These are global functions, not methods of a debug module object
+// ============================================================================
+
+export const debugBuiltinFunctions = new Map<string, string>([
+    ['memdump', '**memdump(file)** - Write a memory dump report to the given file.\\n\\n**Parameters:**\\n- `file` (string | module:fs.file | module:fs.proc): Output file path or file handle\\n\\n**Returns:** `boolean | null` - true on success, null on error\\n\\n**Example:**\\n```ucode\\nif (memdump(\"/tmp/memory.dump\")) {\\n    print(\"Memory dump written\");\\n}\\n```'],
+    
+    ['traceback', '**traceback([level])** - Generate a stack trace from the current execution point.\\n\\n**Parameters:**\\n- `level` (number, optional): Stack frame level to start from (default: 1)\\n\\n**Returns:** `module:debug.StackTraceEntry[]` - Array of stack trace entries\\n\\n**Example:**\\n```ucode\\nlet trace = traceback(1);\\nfor (let frame in trace) {\\n    print(\"Function:\", frame.function, \"Line:\", frame.line);\\n}\\n```'],
+    
+    ['sourcepos', '**sourcepos()** - Get the current source position information.\\n\\n**Returns:** `module:debug.SourcePosition | null` - Source position object or null\\n\\n**Example:**\\n```ucode\\nlet pos = sourcepos();\\nif (pos) {\\n    print(\"File:\", pos.filename, \"Line:\", pos.line);\\n}\\n```'],
+    
+    ['getinfo', '**getinfo(value)** - Get detailed information about a value.\\n\\n**Parameters:**\\n- `value` (any): The value to inspect\\n\\n**Returns:** `module:debug.ValueInformation | null` - Value information object or null\\n\\n**Example:**\\n```ucode\\nlet info = getinfo(myFunction);\\nif (info) {\\n    print(\"Type:\", info.type, \"Address:\", info.address);\\n}\\n```'],
+    
+    ['getlocal', '**getlocal([level], variable)** - Get the value of a local variable.\\n\\n**Parameters:**\\n- `level` (number, optional): Stack frame level (default: 1)\\n- `variable` (string | number): Variable name or index\\n\\n**Returns:** `module:debug.LocalInfo | null` - Local variable information or null\\n\\n**Example:**\\n```ucode\\nlet localInfo = getlocal(1, \"myVar\");\\nif (localInfo) {\\n    print(\"Value:\", localInfo.value);\\n}\\n```'],
+    
+    ['setlocal', '**setlocal([level], variable, [value])** - Set the value of a local variable.\\n\\n**Parameters:**\\n- `level` (number, optional): Stack frame level (default: 1)\\n- `variable` (string | number): Variable name or index\\n- `value` (any, optional): New value to set (default: null)\\n\\n**Returns:** `module:debug.LocalInfo | null` - Updated local variable information or null\\n\\n**Example:**\\n```ucode\\nlet result = setlocal(1, \"myVar\", \"new value\");\\nif (result) {\\n    print(\"Variable updated:\", result.name);\\n}\\n```'],
+    
+    ['getupval', '**getupval(target, variable)** - Get the value of an upvalue (closure variable).\\n\\n**Parameters:**\\n- `target` (function | number): Target function or stack level\\n- `variable` (string | number): Variable name or index\\n\\n**Returns:** `module:debug.UpvalInfo | null` - Upvalue information or null\\n\\n**Example:**\\n```ucode\\nlet upval = getupval(myFunction, \"closureVar\");\\nif (upval) {\\n    print(\"Upvalue:\", upval.value);\\n}\\n```'],
+    
+    ['setupval', '**setupval(target, variable, value)** - Set the value of an upvalue (closure variable).\\n\\n**Parameters:**\\n- `target` (function | number): Target function or stack level\\n- `variable` (string | number): Variable name or index\\n- `value` (any): New value to set\\n\\n**Returns:** `module:debug.UpvalInfo | null` - Updated upvalue information or null\\n\\n**Example:**\\n```ucode\\nlet result = setupval(myFunction, \"closureVar\", \"new value\");\\nif (result) {\\n    print(\"Upvalue updated:\", result.name);\\n}\\n```']
+]);
+
+// Merge all builtins for completion
+export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions]);

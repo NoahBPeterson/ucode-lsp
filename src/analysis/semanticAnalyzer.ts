@@ -601,21 +601,16 @@ export class SemanticAnalyzer extends BaseVisitor {
         const funcName = (callNode.callee as IdentifierNode).name;
         
         // Map fs functions to their return types
-        console.log(`[SEMANTIC] Checking fs function: ${funcName}`);
         switch (funcName) {
           case 'open':
           case 'fdopen':
           case 'mkstemp':
-            console.log(`[SEMANTIC] Detected fs.file function: ${funcName}`);
             return FsObjectType.FS_FILE;
           case 'opendir':
-            console.log(`[SEMANTIC] Detected fs.dir function: ${funcName}`);
             return FsObjectType.FS_DIR;
           case 'popen':
-            console.log(`[SEMANTIC] Detected fs.proc function: ${funcName}`);
             return FsObjectType.FS_PROC;
           default:
-            console.log(`[SEMANTIC] Not an fs function: ${funcName}`);
             return null;
         }
       }

@@ -7,6 +7,7 @@ import { UcodeLexer, TokenType, isKeyword } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType } from './analysis';
 import { typeToString } from './analysis/symbolTable';
+import { debugTypeRegistry } from './analysis/debugTypes';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -45,6 +46,22 @@ export function handleHover(
                 // For now, fall through to regular symbol analysis
             }
             
+            // 0. Check if this is a debug module function FIRST (before symbol table)
+            connection.console.log('Checking if debug function: ' + word);
+            if (debugTypeRegistry.isDebugFunction(word)) {
+                connection.console.log('Found debug function: ' + word);
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: debugTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
             // 1. Check for user-defined symbols using the analysis cache
             if (analysisResult) {
                 const symbol = analysisResult.symbolTable.lookup(word);
@@ -63,7 +80,12 @@ export function handleHover(
                             hoverText = `(module) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
                             break;
                         case SymbolType.IMPORTED:
-                            hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
+                            // Special handling for debug module imports
+                            if (symbol.importedFrom === 'debug') {
+                                hoverText = getDebugModuleDocumentation();
+                            } else {
+                                hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
+                            }
                             break;
                     }
                     
@@ -79,7 +101,7 @@ export function handleHover(
                 }
             }
             
-            // 2. Fallback to built-in functions and keywords
+            // 3. Fallback to built-in functions and keywords
             const documentation = allBuiltinFunctions.get(word);
             if (documentation) {
                 connection.console.log('Found documentation for: ' + word);
@@ -116,6 +138,21 @@ export function handleHover(
         
         const word = text.substring(wordRange.start, wordRange.end);
         connection.console.log('Hover word (fallback): ' + word);
+        
+        // Check if this is a debug module function
+        connection.console.log('Fallback checking if debug function: ' + word);
+        if (debugTypeRegistry.isDebugFunction(word)) {
+            return {
+                contents: {
+                    kind: MarkupKind.Markdown,
+                    value: debugTypeRegistry.getFunctionDocumentation(word)
+                },
+                range: {
+                    start: document.positionAt(wordRange.start),
+                    end: document.positionAt(wordRange.end)
+                }
+            };
+        }
         
         const documentation = allBuiltinFunctions.get(word);
         if (documentation) {
@@ -192,4 +229,49 @@ function getWordRangeAtPosition(text: string, offset: number): { start: number; 
     }
     
     return undefined;
+}
+
+function getDebugModuleDocumentation(): string {
+    return `## Debug Module
+
+**Runtime debug functionality for ucode scripts**
+
+The debug module provides comprehensive debugging and introspection capabilities for ucode applications.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { memdump, traceback } from 'debug';
+
+let stacktrace = traceback(1);
+memdump("/tmp/dump.txt");
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as debug from 'debug';
+
+let stacktrace = debug.traceback(1);
+debug.memdump("/tmp/dump.txt");
+\`\`\`
+
+### Available Functions
+
+- **\`memdump()\`** - Write memory dump report to file
+- **\`traceback()\`** - Generate stack trace from execution point  
+- **\`sourcepos()\`** - Get current source position information
+- **\`getinfo()\`** - Get detailed information about a value
+- **\`getlocal()\`** - Get the value of a local variable
+- **\`setlocal()\`** - Set the value of a local variable
+- **\`getupval()\`** - Get the value of an upvalue (closure variable)
+- **\`setupval()\`** - Set the value of an upvalue (closure variable)
+
+### Environment Variables
+
+- **\`UCODE_DEBUG_MEMDUMP_ENABLED\`** - Enable/disable automatic memory dumps (default: enabled)
+- **\`UCODE_DEBUG_MEMDUMP_SIGNAL\`** - Signal for triggering memory dumps (default: SIGUSR2)
+- **\`UCODE_DEBUG_MEMDUMP_PATH\`** - Output directory for memory dumps (default: /tmp)
+
+*Hover over individual function names for detailed parameter and return type information.*`;
 }

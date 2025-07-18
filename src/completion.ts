@@ -9,6 +9,7 @@ import { UcodeLexer, TokenType } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult } from './analysis';
 import { fsTypeRegistry } from './analysis/fsTypes';
+import { debugTypeRegistry } from './analysis/debugTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -46,6 +47,14 @@ export function handleCompletion(
                 connection.console.log(`Returning ${fsCompletions.length} fs object completions for ${objectName}`);
                 return fsCompletions;
             }
+            
+            // Check if this is a debug module with completions available
+            const debugCompletions = getDebugModuleCompletions(objectName, analysisResult);
+            if (debugCompletions.length > 0) {
+                connection.console.log(`Returning ${debugCompletions.length} debug module completions for ${objectName}`);
+                return debugCompletions;
+            }
+            
             
             // For member expressions, return empty array - never show builtin functions
             connection.console.log(`No specific completions for object: ${objectName}`);
@@ -144,6 +153,53 @@ function getFsObjectCompletions(objectName: string, analysisResult?: SemanticAna
     }
 
     return completions;
+}
+
+function getDebugModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        console.log(`[DEBUG_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
+        return [];
+    }
+
+    // Look up the symbol in the symbol table
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        console.log(`[DEBUG_COMPLETION] Symbol not found: ${objectName}`);
+        return [];
+    }
+
+    console.log(`[DEBUG_COMPLETION] Symbol found: ${objectName}, type: ${symbol.type}`);
+
+    // Check if this is a debug module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'debug') {
+        console.log(`[DEBUG_COMPLETION] Debug module detected for ${objectName}`);
+        
+        // Get all debug function names
+        const functionNames = debugTypeRegistry.getFunctionNames();
+        const completions: CompletionItem[] = [];
+        
+        // Create completion items for each debug function
+        for (const functionName of functionNames) {
+            const signature = debugTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'debug module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: debugTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
 }
 
 function createGeneralCompletions(): CompletionItem[] {
