@@ -16,6 +16,7 @@ import { Diagnostic, DiagnosticSeverity, TextDocument } from 'vscode-languageser
 import { allBuiltinFunctions } from '../builtins';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
 import { logTypeRegistry } from './logTypes';
+import { mathTypeRegistry } from './mathTypes';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -210,6 +211,19 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (!logTypeRegistry.isValidLogImport(importedName)) {
         this.addDiagnostic(
           `'${importedName}' is not exported by the log module. Available exports: ${logTypeRegistry.getValidLogImports().join(', ')}`,
+          specifier.imported.start,
+          specifier.imported.end,
+          DiagnosticSeverity.Error
+        );
+        return; // Don't add invalid import to symbol table
+      }
+    }
+    
+    // Validate math module imports
+    if (source === 'math' && specifier.type === 'ImportSpecifier') {
+      if (!mathTypeRegistry.isValidMathImport(importedName)) {
+        this.addDiagnostic(
+          `'${importedName}' is not exported by the math module. Available exports: ${mathTypeRegistry.getValidMathImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
           DiagnosticSeverity.Error

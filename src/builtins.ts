@@ -207,5 +207,34 @@ export const logBuiltinFunctions = new Map<string, string>([
     ['ERR', '**ERR(format, ...args)** - Convenience wrapper for ulog(LOG_ERR, ...).\\n\\n**Parameters:**\\n- `format` (any): The sprintf-like format string or value to log\\n- `...args` (any, optional): Arguments for format string\\n\\n**Returns:** `boolean` - true if message was logged, false on error\\n\\n**Example:**\\n```ucode\\nERR("Failed to connect to database");\\nERR("Invalid configuration: %s", errorMessage);\\n```']
 ]);
 
+// ============================================================================
+// Math Built-in Functions (from math.c global_fns[])
+// These are global functions, not methods of a math module object
+// ============================================================================
+
+export const mathBuiltinFunctions = new Map<string, string>([
+    ['abs', '**abs(number)** - Returns the absolute value of the given numeric value.\\n\\n**Parameters:**\\n- `number` (number): The number to return the absolute value for\\n\\n**Returns:** `number` - The absolute value or NaN if the argument cannot be converted to a number\\n\\n**Example:**\\n```ucode\\nabs(-42);    // 42\\nabs(3.14);   // 3.14\\nabs("abc");  // NaN\\n```'],
+    
+    ['atan2', '**atan2(y, x)** - Calculates the principal value of the arc tangent of y/x.\\n\\n**Parameters:**\\n- `y` (number): The y value\\n- `x` (number): The x value\\n\\n**Returns:** `number` - The arc tangent result in radians (range [-π, π])\\n\\n**Example:**\\n```ucode\\natan2(1, 1);   // π/4 (45 degrees)\\natan2(0, 1);   // 0\\natan2(1, 0);   // π/2\\n```'],
+    
+    ['cos', '**cos(x)** - Calculates the cosine of x, where x is given in radians.\\n\\n**Parameters:**\\n- `x` (number): Radians value to calculate cosine for\\n\\n**Returns:** `number` - The cosine value or NaN if x cannot be converted to a number\\n\\n**Example:**\\n```ucode\\ncos(0);      // 1\\ncos(3.14159/2);  // ~0 (cos(π/2))\\ncos(3.14159);    // -1 (cos(π))\\n```'],
+    
+    ['exp', '**exp(x)** - Calculates e (base of natural logarithms) raised to the power of x.\\n\\n**Parameters:**\\n- `x` (number): Power to raise e to\\n\\n**Returns:** `number` - The exponential value or NaN if x cannot be converted to a number\\n\\n**Example:**\\n```ucode\\nexp(0);     // 1 (e^0)\\nexp(1);     // ~2.718 (e^1)\\nexp(2);     // ~7.389 (e^2)\\n```'],
+    
+    ['log', '**log(x)** - Calculates the natural logarithm of x.\\n\\n**Parameters:**\\n- `x` (number): Value to calculate natural logarithm of\\n\\n**Returns:** `number` - The natural logarithm or NaN if x cannot be converted to a number or is negative\\n\\n**Example:**\\n```ucode\\nlog(1);      // 0 (ln(1))\\nlog(2.718);  // ~1 (ln(e))\\nlog(10);     // ~2.303\\n```'],
+    
+    ['sin', '**sin(x)** - Calculates the sine of x, where x is given in radians.\\n\\n**Parameters:**\\n- `x` (number): Radians value to calculate sine for\\n\\n**Returns:** `number` - The sine value or NaN if x cannot be converted to a number\\n\\n**Example:**\\n```ucode\\nsin(0);          // 0\\nsin(3.14159/2);  // 1 (sin(π/2))\\nsin(3.14159);    // ~0 (sin(π))\\n```'],
+    
+    ['sqrt', '**sqrt(x)** - Calculates the nonnegative square root of x.\\n\\n**Parameters:**\\n- `x` (number): Value to calculate square root for\\n\\n**Returns:** `number` - The square root or NaN if x cannot be converted to a number or is negative\\n\\n**Example:**\\n```ucode\\nsqrt(4);     // 2\\nsqrt(9);     // 3\\nsqrt(-1);    // NaN\\n```'],
+    
+    ['pow', '**pow(x, y)** - Calculates the value of x raised to the power of y.\\n\\n**Parameters:**\\n- `x` (number): The base value\\n- `y` (number): The power value\\n\\n**Returns:** `number` - The result of x^y or NaN if either argument cannot be converted to a number\\n\\n**Example:**\\n```ucode\\npow(2, 3);   // 8 (2^3)\\npow(4, 0.5); // 2 (4^0.5 = √4)\\npow(10, 2);  // 100\\n```'],
+    
+    ['rand', '**rand()** - Produces a pseudo-random positive integer.\\n\\n**Returns:** `number` - A random integer in the range 0 to RAND_MAX (at least 32767)\\n\\n**Example:**\\n```ucode\\nrand();  // e.g., 1804\\nrand();  // e.g., 25667\\n// Note: Use srand() to seed the generator\\n```'],
+    
+    ['srand', '**srand(seed)** - Seeds the pseudo-random number generator.\\n\\n**Parameters:**\\n- `seed` (number): The seed value for the random number generator\\n\\n**Returns:** `null`\\n\\n**Example:**\\n```ucode\\nsrand(42);   // Seed with 42\\nrand();      // Predictable sequence\\nsrand(42);   // Same seed\\nrand();      // Same first value\\n```'],
+    
+    ['isnan', '**isnan(x)** - Tests whether x is a NaN (not a number) double value.\\n\\n**Parameters:**\\n- `x` (number): The value to test\\n\\n**Returns:** `boolean` - true if the value is NaN, otherwise false\\n\\n**Example:**\\n```ucode\\nisnan(42);        // false\\nisnan(sqrt(-1));  // true\\nisnan(0/0);       // true\\n```']
+]);
+
 // Merge all builtins for completion
-export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions]);
+export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions]);

@@ -205,8 +205,11 @@ export class LogTypeRegistry {
     return [...Array.from(logFunctions.keys()), ...Array.from(logConstants)];
   }
 
-  getConstantDocumentation(name: string): string | undefined {
-    return logConstantDocs.get(name);
+  getConstantDocumentation(name: string): string {
+    const constant = logConstantDocs.get(name);
+    if (!constant) return '';
+
+    return constant;
   }
 
   formatFunctionSignature(name: string): string {

@@ -12,6 +12,7 @@ import { fsTypeRegistry } from './analysis/fsTypes';
 import { debugTypeRegistry } from './analysis/debugTypes';
 import { digestTypeRegistry } from './analysis/digestTypes';
 import { logTypeRegistry } from './analysis/logTypes';
+import { mathTypeRegistry } from './analysis/mathTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -69,6 +70,13 @@ export function handleCompletion(
             if (logCompletions.length > 0) {
                 connection.console.log(`Returning ${logCompletions.length} log module completions for ${objectName}`);
                 return logCompletions;
+            }
+            
+            // Check if this is a math module with completions available
+            const mathCompletions = getMathModuleCompletions(objectName, analysisResult);
+            if (mathCompletions.length > 0) {
+                connection.console.log(`Returning ${mathCompletions.length} math module completions for ${objectName}`);
+                return mathCompletions;
             }
             
             
@@ -290,6 +298,44 @@ function getLogModuleCompletions(objectName: string, analysisResult?: SemanticAn
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: logTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
+}
+
+function getMathModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a math module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'math') {
+        const functionNames = mathTypeRegistry.getFunctionNames();
+        const completions: CompletionItem[] = [];
+        
+        for (const functionName of functionNames) {
+            const signature = mathTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'math module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: mathTypeRegistry.getFunctionDocumentation(functionName)
                     },
                     insertText: `${functionName}($1)`,
                     insertTextFormat: InsertTextFormat.Snippet

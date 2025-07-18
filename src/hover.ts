@@ -10,6 +10,7 @@ import { typeToString } from './analysis/symbolTable';
 import { debugTypeRegistry } from './analysis/debugTypes';
 import { digestTypeRegistry } from './analysis/digestTypes';
 import { logTypeRegistry } from './analysis/logTypes';
+import { mathTypeRegistry } from './analysis/mathTypes';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -72,6 +73,20 @@ export function handleHover(
                 }
             }
             
+            // Check if this is a math module function FIRST (before symbol table)
+            if (mathTypeRegistry.isMathFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: mathTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
             // Check if this is a digest module function FIRST (before symbol table)
             if (digestTypeRegistry.isDigestFunction(word)) {
                 return {
@@ -120,11 +135,39 @@ export function handleHover(
                         case SymbolType.IMPORTED:
                             // Special handling for module imports
                             if (symbol.importedFrom === 'debug') {
-                                hoverText = getDebugModuleDocumentation();
+                                // Check if this is a specific debug function (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (debugTypeRegistry.isDebugFunction(originalName)) {
+                                    hoverText = debugTypeRegistry.getFunctionDocumentation(originalName);
+                                } else {
+                                    hoverText = getDebugModuleDocumentation();
+                                }
                             } else if (symbol.importedFrom === 'digest') {
-                                hoverText = getDigestModuleDocumentation();
+                                // Check if this is a specific digest function (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (digestTypeRegistry.isDigestFunction(originalName)) {
+                                    hoverText = digestTypeRegistry.getFunctionDocumentation(originalName);
+                                } else {
+                                    hoverText = getDigestModuleDocumentation();
+                                }
                             } else if (symbol.importedFrom === 'log') {
-                                hoverText = getLogModuleDocumentation();
+                                // Check if this is a specific log function or constant (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (logTypeRegistry.isLogFunction(originalName)) {
+                                    hoverText = logTypeRegistry.getFunctionDocumentation(originalName);
+                                } else if (logTypeRegistry.isLogConstant(originalName)) {
+                                    hoverText = logTypeRegistry.getConstantDocumentation(originalName);
+                                } else {
+                                    hoverText = getLogModuleDocumentation();
+                                }
+                            } else if (symbol.importedFrom === 'math') {
+                                // Check if this is a specific math function (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (mathTypeRegistry.isMathFunction(originalName)) {
+                                    hoverText = mathTypeRegistry.getFunctionDocumentation(originalName);
+                                } else {
+                                    hoverText = getMathModuleDocumentation();
+                                }
                             } else {
                                 hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
                             }
@@ -208,6 +251,20 @@ export function handleHover(
                     }
                 };
             }
+        }
+        
+        // Check if this is a math module function
+        if (mathTypeRegistry.isMathFunction(word)) {
+            return {
+                contents: {
+                    kind: MarkupKind.Markdown,
+                    value: mathTypeRegistry.getFunctionDocumentation(word)
+                },
+                range: {
+                    start: document.positionAt(wordRange.start),
+                    end: document.positionAt(wordRange.end)
+                }
+            };
         }
         
         // Check if this is a digest module function
@@ -477,6 +534,68 @@ log.ulog(log.LOG_INFO, "The current epoch is %d", time());
 **Log priorities:** LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG
 
 **Ulog channels:** ULOG_KMSG, ULOG_STDIO, ULOG_SYSLOG
+
+*Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getMathModuleDocumentation(): string {
+    return `## Math Module
+
+**Mathematical and trigonometric functions for ucode scripts**
+
+The math module provides comprehensive mathematical operations including basic arithmetic, trigonometry, logarithms, and random number generation.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { sin, cos, pow, sqrt, abs } from 'math';
+
+let angle = 3.14159 / 4;  // 45 degrees in radians
+let x = cos(angle);       // ~0.707
+let y = sin(angle);       // ~0.707
+let hypotenuse = sqrt(pow(x, 2) + pow(y, 2));  // ~1.0
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as math from 'math';
+
+let angle = 3.14159 / 4;  // 45 degrees in radians
+let x = math.cos(angle);  // ~0.707
+let y = math.sin(angle);  // ~0.707
+let hypotenuse = math.sqrt(math.pow(x, 2) + math.pow(y, 2));  // ~1.0
+\`\`\`
+
+### Available Functions
+
+**Basic operations:**
+- **\`abs()\`** - Absolute value
+- **\`pow()\`** - Exponentiation (x^y)
+- **\`sqrt()\`** - Square root
+
+**Trigonometric functions:**
+- **\`sin()\`** - Sine (radians)
+- **\`cos()\`** - Cosine (radians)
+- **\`atan2()\`** - Arc tangent of y/x (radians)
+
+**Logarithmic and exponential:**
+- **\`log()\`** - Natural logarithm
+- **\`exp()\`** - e raised to the power of x
+
+**Random number generation:**
+- **\`rand()\`** - Generate pseudo-random integer
+- **\`srand()\`** - Seed the random number generator
+
+**Utility functions:**
+- **\`isnan()\`** - Test if value is NaN (not a number)
+
+### Notes
+
+- All trigonometric functions use radians, not degrees
+- Functions return NaN for invalid inputs
+- \`rand()\` returns integers in range [0, RAND_MAX] (at least 32767)
+- \`srand()\` can be used to create reproducible random sequences
 
 *Hover over individual function names for detailed parameter and return type information.*`;
 }

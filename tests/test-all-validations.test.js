@@ -47,7 +47,10 @@ const testFiles = [
     'tests/test-validations-only.js',
     'tests/test-log-module.js',
     'tests/test-log-import-validation.js',
-    'tests/test-log-constant-hover.js'
+    'tests/test-log-constant-hover.js',
+    'tests/test-math-module.js',
+    'tests/test-math-import-validation.js',
+    'tests/test-math-alias-hover.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
@@ -135,6 +138,9 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('✅ Module refactoring and code organization patterns working correctly');
         console.log('✅ New validation implementations and parameter type checking working correctly');
         console.log('✅ Validation-only mode and isolated validation engine working correctly');
+        console.log('✅ Math module support working correctly');
+        console.log('✅ Math module import validation working correctly');
+        console.log('✅ Math module aliased import hover working correctly');
     } else {
         console.log('\n❌ Some test suites failed. Please review the output above.');
     }
