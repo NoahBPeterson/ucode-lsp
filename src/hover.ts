@@ -13,7 +13,6 @@ import { digestTypeRegistry } from './analysis/digestTypes';
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
     documents: any,
-    connection: any,
     analysisResult?: SemanticAnalysisResult
 ): Hover | undefined {
     const document = documents.get(textDocumentPositionParams.textDocument.uri);

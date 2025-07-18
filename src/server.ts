@@ -135,7 +135,7 @@ connection.onDidChangeWatchedFiles((_change: DidChangeWatchedFilesParams) => {
 connection.onHover((params) => {
     const cacheEntry = analysisCache.get(params.textDocument.uri);
     const analysisResult = cacheEntry?.result;
-    return handleHover(params, documents, connection, analysisResult);
+    return handleHover(params, documents, analysisResult);
 });
 
 connection.onCompletion(async (params) => {
