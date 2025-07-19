@@ -11,6 +11,7 @@ import { debugTypeRegistry } from './analysis/debugTypes';
 import { digestTypeRegistry } from './analysis/digestTypes';
 import { logTypeRegistry } from './analysis/logTypes';
 import { mathTypeRegistry } from './analysis/mathTypes';
+import { nl80211TypeRegistry } from './analysis/nl80211Types';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -85,6 +86,37 @@ export function handleHover(
                         end: document.positionAt(token.end)
                     }
                 };
+            }
+            
+            // Check if this is a nl80211 module function FIRST (before symbol table)
+            if (nl80211TypeRegistry.isNl80211Function(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: nl80211TypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a nl80211 module constant FIRST (before symbol table)
+            if (nl80211TypeRegistry.isNl80211Constant(word)) {
+                const constantDoc = nl80211TypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
             }
             
             // Check if this is a digest module function FIRST (before symbol table)
@@ -167,6 +199,16 @@ export function handleHover(
                                     hoverText = mathTypeRegistry.getFunctionDocumentation(originalName);
                                 } else {
                                     hoverText = getMathModuleDocumentation();
+                                }
+                            } else if (symbol.importedFrom === 'nl80211') {
+                                // Check if this is a specific nl80211 function or constant (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (nl80211TypeRegistry.isNl80211Function(originalName)) {
+                                    hoverText = nl80211TypeRegistry.getFunctionDocumentation(originalName);
+                                } else if (nl80211TypeRegistry.isNl80211Constant(originalName)) {
+                                    hoverText = nl80211TypeRegistry.getConstantDocumentation(originalName);
+                                } else {
+                                    hoverText = getNl80211ModuleDocumentation();
                                 }
                             } else {
                                 hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
@@ -265,6 +307,37 @@ export function handleHover(
                     end: document.positionAt(wordRange.end)
                 }
             };
+        }
+        
+        // Check if this is a nl80211 module function
+        if (nl80211TypeRegistry.isNl80211Function(word)) {
+            return {
+                contents: {
+                    kind: MarkupKind.Markdown,
+                    value: nl80211TypeRegistry.getFunctionDocumentation(word)
+                },
+                range: {
+                    start: document.positionAt(wordRange.start),
+                    end: document.positionAt(wordRange.end)
+                }
+            };
+        }
+        
+        // Check if this is a nl80211 module constant
+        if (nl80211TypeRegistry.isNl80211Constant(word)) {
+            const constantDoc = nl80211TypeRegistry.getConstantDocumentation(word);
+            if (constantDoc) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: constantDoc
+                    },
+                    range: {
+                        start: document.positionAt(wordRange.start),
+                        end: document.positionAt(wordRange.end)
+                    }
+                };
+            }
         }
         
         // Check if this is a digest module function
@@ -598,4 +671,63 @@ let hypotenuse = math.sqrt(math.pow(x, 2) + math.pow(y, 2));  // ~1.0
 - \`srand()\` can be used to create reproducible random sequences
 
 *Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getNl80211ModuleDocumentation(): string {
+    return `## NL80211 Module
+
+**WiFi/802.11 networking interface for ucode scripts**
+
+The nl80211 module provides access to the Linux kernel's nl80211 subsystem for managing WiFi interfaces and wireless networking operations.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { request, waitfor, listener, error } from 'nl80211';
+import { NL80211_CMD_GET_WIPHY, NL80211_CMD_TRIGGER_SCAN } from 'nl80211';
+
+// Request wireless interface information
+let result = request(NL80211_CMD_GET_WIPHY, NLM_F_DUMP);
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as nl80211 from 'nl80211';
+
+// Trigger a scan and wait for results
+let result = nl80211.request(nl80211.NL80211_CMD_TRIGGER_SCAN, nl80211.NLM_F_ACK);
+let scanResults = nl80211.waitfor([nl80211.NL80211_CMD_NEW_SCAN_RESULTS], 10000);
+\`\`\`
+
+### Available Functions
+
+**Core operations:**
+- **\`request()\`** - Send netlink request to nl80211 subsystem
+- **\`waitfor()\`** - Wait for specific nl80211 events
+- **\`listener()\`** - Create event listener for nl80211 messages
+- **\`error()\`** - Get last error information
+
+### Available Constants
+
+**Netlink flags:**
+- **NLM_F_*** - Request flags (ACK, DUMP, CREATE, etc.)
+
+**NL80211 commands:**
+- **NL80211_CMD_*** - WiFi interface commands (GET_WIPHY, TRIGGER_SCAN, etc.)
+
+**Interface types:**
+- **NL80211_IFTYPE_*** - WiFi interface types (STATION, AP, MONITOR, etc.)
+
+**Hardware simulator:**
+- **HWSIM_CMD_*** - Commands for mac80211_hwsim testing
+
+### Notes
+
+- Requires root privileges or appropriate capabilities
+- Used for WiFi interface management, scanning, and monitoring
+- Integrates with OpenWrt's wireless configuration system
+- Event-driven architecture for asynchronous operations
+
+*Hover over individual function names and constants for detailed parameter and return type information.*`;
 }

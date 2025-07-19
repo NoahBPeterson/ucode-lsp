@@ -25,6 +25,7 @@ export abstract class ParseRules extends ParserUtils {
   protected abstract parseAssignment(left: any): any;
   protected abstract parseConditional(left: any): any;
   protected abstract parseDelete(): any;
+  protected abstract parseFunctionExpression(): any;
   protected abstract parseArrowFunction(left: any): any;
 
   protected initializeParseRules(): void {
@@ -173,6 +174,12 @@ export abstract class ParseRules extends ParserUtils {
     // Delete operator
     this.rules.set(TokenType.TK_DELETE, { 
       prefix: () => this.parseDelete(), 
+      precedence: Precedence.NONE 
+    });
+
+    // Function expressions
+    this.rules.set(TokenType.TK_FUNC, { 
+      prefix: () => this.parseFunctionExpression(), 
       precedence: Precedence.NONE 
     });
 

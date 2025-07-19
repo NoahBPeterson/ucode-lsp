@@ -4,7 +4,7 @@
  */
 
 import { TokenType } from '../../lexer';
-import { AstNode, IdentifierNode, LiteralNode, ThisExpressionNode } from '../../ast/nodes';
+import { AstNode, IdentifierNode, LiteralNode, ThisExpressionNode, FunctionExpressionNode, BlockStatementNode } from '../../ast/nodes';
 import { ParseRules } from '../parseRules';
 
 export abstract class PrimaryExpressions extends ParseRules {
@@ -104,6 +104,43 @@ export abstract class PrimaryExpressions extends ParseRules {
     return expr;
   }
 
-  // Abstract method that must be implemented by subclasses
+  protected parseFunctionExpression(): FunctionExpressionNode | null {
+    const start = this.previous()!.pos;
+
+    // Function expressions can be anonymous, so ID is optional
+    let id: IdentifierNode | null = null;
+    if (this.check(TokenType.TK_LABEL)) {
+      id = this.parseIdentifierName();
+    }
+
+    this.consume(TokenType.TK_LPAREN, "Expected '(' after 'function'");
+
+    const params: IdentifierNode[] = [];
+    if (!this.check(TokenType.TK_RPAREN)) {
+      do {
+        const param = this.parseIdentifierName();
+        if (param) {
+          params.push(param);
+        }
+      } while (this.match(TokenType.TK_COMMA));
+    }
+
+    this.consume(TokenType.TK_RPAREN, "Expected ')' after parameters");
+
+    const openingBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' to start function body");
+    const body = this.parseBlockStatement(openingBrace, "function expression body");
+
+    return {
+      type: 'FunctionExpression',
+      start,
+      end: body.end,
+      id,
+      params,
+      body
+    };
+  }
+
+  // Abstract methods that must be implemented by subclasses
   protected abstract parseExpression(precedence?: any): AstNode | null;
+  protected abstract parseBlockStatement(openingBrace: any, context: string): BlockStatementNode;
 }

@@ -13,6 +13,8 @@ import { debugTypeRegistry } from './analysis/debugTypes';
 import { digestTypeRegistry } from './analysis/digestTypes';
 import { logTypeRegistry } from './analysis/logTypes';
 import { mathTypeRegistry } from './analysis/mathTypes';
+import { nl80211TypeRegistry } from './analysis/nl80211Types';
+import { nl80211ObjectRegistry } from './analysis/nl80211Types';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -51,6 +53,13 @@ export function handleCompletion(
                 return fsCompletions;
             }
             
+            // Check if this is an nl80211 object with completions available
+            const nl80211ObjectCompletions = getNl80211ObjectCompletions(objectName, analysisResult);
+            if (nl80211ObjectCompletions.length > 0) {
+                connection.console.log(`Returning ${nl80211ObjectCompletions.length} nl80211 object completions for ${objectName}`);
+                return nl80211ObjectCompletions;
+            }
+            
             // Check if this is a debug module with completions available
             const debugCompletions = getDebugModuleCompletions(objectName, analysisResult);
             if (debugCompletions.length > 0) {
@@ -77,6 +86,13 @@ export function handleCompletion(
             if (mathCompletions.length > 0) {
                 connection.console.log(`Returning ${mathCompletions.length} math module completions for ${objectName}`);
                 return mathCompletions;
+            }
+            
+            // Check if this is a nl80211 module with completions available
+            const nl80211Completions = getNl80211ModuleCompletions(objectName, analysisResult);
+            if (nl80211Completions.length > 0) {
+                connection.console.log(`Returning ${nl80211Completions.length} nl80211 module completions for ${objectName}`);
+                return nl80211Completions;
             }
             
             
@@ -169,6 +185,55 @@ function getFsObjectCompletions(objectName: string, analysisResult?: SemanticAna
                 documentation: {
                     kind: MarkupKind.Markdown,
                     value: methodSignature.description || `${methodName}() method for ${fsType}`
+                },
+                insertText: `${methodName}($1)`,
+                insertTextFormat: InsertTextFormat.Snippet
+            });
+        }
+    }
+
+    return completions;
+}
+
+function getNl80211ObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        console.log(`[NL80211_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
+        return [];
+    }
+
+    // Look up the symbol in the symbol table
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        console.log(`[NL80211_COMPLETION] Symbol not found: ${objectName}`);
+        return [];
+    }
+
+    console.log(`[NL80211_COMPLETION] Symbol found: ${objectName}, dataType: ${JSON.stringify(symbol.dataType)}`);
+
+    // Check if this is an nl80211 object type
+    const nl80211Type = nl80211ObjectRegistry.isVariableOfNl80211Type(symbol.dataType);
+    if (!nl80211Type) {
+        console.log(`[NL80211_COMPLETION] Not an nl80211 type: ${objectName}`);
+        return [];
+    }
+
+    console.log(`[NL80211_COMPLETION] NL80211 type detected: ${nl80211Type} for ${objectName}`);
+
+    // Get the methods for this nl80211 type
+    const methods = nl80211ObjectRegistry.getMethodsForType(nl80211Type);
+    const completions: CompletionItem[] = [];
+
+    // Create completion items for each method
+    for (const methodName of methods) {
+        const methodSignature = nl80211ObjectRegistry.getNl80211Method(nl80211Type, methodName);
+        if (methodSignature) {
+            completions.push({
+                label: methodName,
+                kind: CompletionItemKind.Method,
+                detail: `${nl80211Type} method`,
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: methodSignature.description || `${methodName}() method for ${nl80211Type}`
                 },
                 insertText: `${methodName}($1)`,
                 insertTextFormat: InsertTextFormat.Snippet
@@ -339,6 +404,64 @@ function getMathModuleCompletions(objectName: string, analysisResult?: SemanticA
                     },
                     insertText: `${functionName}($1)`,
                     insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
+}
+
+function getNl80211ModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a nl80211 module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'nl80211') {
+        const functionNames = nl80211TypeRegistry.getFunctionNames();
+        const constantNames = nl80211TypeRegistry.getConstantNames();
+        const completions: CompletionItem[] = [];
+        
+        // Add function completions
+        for (const functionName of functionNames) {
+            const signature = nl80211TypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'nl80211 module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: nl80211TypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        // Add constant completions
+        for (const constantName of constantNames) {
+            const constant = nl80211TypeRegistry.getConstant(constantName);
+            if (constant) {
+                completions.push({
+                    label: constantName,
+                    kind: CompletionItemKind.Constant,
+                    detail: 'nl80211 module constant',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: nl80211TypeRegistry.getConstantDocumentation(constantName)
+                    },
+                    insertText: constantName,
+                    insertTextFormat: InsertTextFormat.PlainText
                 });
             }
         }

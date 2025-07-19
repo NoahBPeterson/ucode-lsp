@@ -236,5 +236,88 @@ export const mathBuiltinFunctions = new Map<string, string>([
     ['isnan', '**isnan(x)** - Tests whether x is a NaN (not a number) double value.\\n\\n**Parameters:**\\n- `x` (number): The value to test\\n\\n**Returns:** `boolean` - true if the value is NaN, otherwise false\\n\\n**Example:**\\n```ucode\\nisnan(42);        // false\\nisnan(sqrt(-1));  // true\\nisnan(0/0);       // true\\n```']
 ]);
 
+// ============================================================================
+// NL80211 Built-in Functions (from nl80211.c global_fns[])
+// These are global functions, not methods of a nl80211 module object
+// ============================================================================
+
+export const nl80211BuiltinFunctions = new Map<string, string>([
+    ['error', '**error()** - Returns the last nl80211 error message, or null if no error occurred.\\n\\n**Returns:** `string | null` - The error message or null\\n\\n**Example:**\\n```ucode\\nlet result = request(NL80211_CMD_GET_WIPHY, NLM_F_DUMP);\\nif (!result) {\\n    let errorMsg = error();\\n    printf("NL80211 error: %s\\n", errorMsg);\\n}\\n```'],
+    
+    ['request', '**request(cmd, flags?, payload?)** - Sends a netlink request to the nl80211 subsystem.\\n\\n**Parameters:**\\n- `cmd` (integer): The NL80211_CMD_* command to execute\\n- `flags` (integer, optional): Request flags (NLM_F_*)\\n- `payload` (object, optional): Command-specific attributes\\n\\n**Returns:** `object | null` - The response object or null on error\\n\\n**Example:**\\n```ucode\\n// Get all wireless interfaces\\nlet interfaces = request(NL80211_CMD_GET_INTERFACE, NLM_F_DUMP);\\n```'],
+    
+    ['waitfor', '**waitfor(cmds, timeout?)** - Waits for specific nl80211 commands to be received.\\n\\n**Parameters:**\\n- `cmds` (array): Array of NL80211_CMD_* constants to wait for\\n- `timeout` (integer, optional): Maximum wait time in milliseconds\\n\\n**Returns:** `object | null` - The received message object or null on timeout\\n\\n**Example:**\\n```ucode\\n// Wait for scan results with 10 second timeout\\nlet scanResults = waitfor([NL80211_CMD_NEW_SCAN_RESULTS], 10000);\\n```'],
+    
+    ['listener', '**listener(callback, cmds)** - Creates an event listener for nl80211 messages.\\n\\n**Parameters:**\\n- `callback` (function): Function called when events are received\\n- `cmds` (array): Array of NL80211_CMD_* constants to listen for\\n\\n**Returns:** `nl80211.listener` - Listener object with set_commands() and close() methods\\n\\n**Example:**\\n```ucode\\nlet l = listener(function(msg) {\\n    printf("WiFi event: %J\\n", msg);\\n}, [NL80211_CMD_NEW_STATION, NL80211_CMD_DEL_STATION]);\\n```']
+]);
+
+// ============================================================================
+// NL80211 Built-in Constants (from nl80211.c register_constants())
+// These are global constants available without imports
+// ============================================================================
+
+export const nl80211BuiltinConstants = new Map<string, string>([
+    // Netlink Message Flags
+    ['NLM_F_ACK', 'Request an acknowledgment on errors'],
+    ['NLM_F_ACK_TLVS', 'Extended ACK TLVs were included'],
+    ['NLM_F_APPEND', 'Append the new entry to the end of the list'],
+    ['NLM_F_ATOMIC', 'Use atomic operations'],
+    ['NLM_F_CAPPED', 'Dump was capped'],
+    ['NLM_F_CREATE', 'Create if it does not exist'],
+    ['NLM_F_DUMP', 'Dump the table'],
+    ['NLM_F_DUMP_FILTERED', 'Dump was filtered'],
+    ['NLM_F_DUMP_INTR', 'Dump was interrupted'],
+    ['NLM_F_ECHO', 'Echo this request'],
+    ['NLM_F_EXCL', 'Do not touch, if it exists'],
+    ['NLM_F_MATCH', 'Dump all matching entries'],
+    ['NLM_F_MULTI', 'Multipart message'],
+    ['NLM_F_NONREC', 'Do not delete recursively'],
+    ['NLM_F_REPLACE', 'Replace existing matching object'],
+    ['NLM_F_REQUEST', 'This message is a request'],
+    ['NLM_F_ROOT', 'Specify tree root'],
+
+    // WiFi Interface Types
+    ['NL80211_IFTYPE_ADHOC', 'Ad-hoc network interface type'],
+    ['NL80211_IFTYPE_STATION', 'Station (client) interface type'],
+    ['NL80211_IFTYPE_AP', 'Access Point interface type'],
+    ['NL80211_IFTYPE_AP_VLAN', 'Access Point VLAN interface type'],
+    ['NL80211_IFTYPE_WDS', 'Wireless Distribution System interface type'],
+    ['NL80211_IFTYPE_MONITOR', 'Monitor interface type (packet capture)'],
+    ['NL80211_IFTYPE_MESH_POINT', 'Mesh point interface type'],
+    ['NL80211_IFTYPE_P2P_CLIENT', 'P2P client interface type'],
+    ['NL80211_IFTYPE_P2P_GO', 'P2P Group Owner interface type'],
+    ['NL80211_IFTYPE_P2P_DEVICE', 'P2P device interface type'],
+    ['NL80211_IFTYPE_OCB', 'Outside Context of a BSS interface type'],
+
+    // Common NL80211 Commands
+    ['NL80211_CMD_GET_WIPHY', 'Get wireless physical device information'],
+    ['NL80211_CMD_SET_WIPHY', 'Set wireless physical device configuration'],
+    ['NL80211_CMD_NEW_WIPHY', 'Create new wireless physical device'],
+    ['NL80211_CMD_DEL_WIPHY', 'Delete wireless physical device'],
+    ['NL80211_CMD_GET_INTERFACE', 'Get wireless interface information'],
+    ['NL80211_CMD_SET_INTERFACE', 'Set wireless interface configuration'],
+    ['NL80211_CMD_NEW_INTERFACE', 'Create new wireless interface'],
+    ['NL80211_CMD_DEL_INTERFACE', 'Delete wireless interface'],
+    ['NL80211_CMD_GET_STATION', 'Get station information'],
+    ['NL80211_CMD_SET_STATION', 'Set station configuration'],
+    ['NL80211_CMD_NEW_STATION', 'Create new station'],
+    ['NL80211_CMD_DEL_STATION', 'Delete station'],
+    ['NL80211_CMD_GET_SCAN', 'Get scan results'],
+    ['NL80211_CMD_TRIGGER_SCAN', 'Trigger a scan'],
+    ['NL80211_CMD_NEW_SCAN_RESULTS', 'New scan results available'],
+    ['NL80211_CMD_CONNECT', 'Connect to an access point'],
+    ['NL80211_CMD_DISCONNECT', 'Disconnect from an access point'],
+    ['NL80211_CMD_START_AP', 'Start access point mode'],
+    ['NL80211_CMD_STOP_AP', 'Stop access point mode'],
+
+    // Hardware Simulator Commands
+    ['HWSIM_CMD_REGISTER', 'Register with the wireless hardware simulator'],
+    ['HWSIM_CMD_FRAME', 'Send a frame through the hardware simulator'],
+    ['HWSIM_CMD_TX_INFO_FRAME', 'Send transmission info frame'],
+    ['HWSIM_CMD_NEW_RADIO', 'Create new simulated radio'],
+    ['HWSIM_CMD_DEL_RADIO', 'Delete simulated radio'],
+    ['HWSIM_CMD_GET_RADIO', 'Get simulated radio information']
+]);
+
 // Merge all builtins for completion
-export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions]);
+export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants]);

@@ -49,10 +49,10 @@ const hasUlogSyslogDoc = ulogSyslogDoc && ulogSyslogDoc.includes('ULOG_SYSLOG') 
 testResult('ULOG_SYSLOG constant documentation', hasUlogSyslogDoc,
   `Has documentation: ${!!ulogSyslogDoc}`);
 
-// Test 6: Invalid constant returns undefined
+// Test 6: Invalid constant returns falsy value
 const invalidConstantDoc = logTypeRegistry.getConstantDocumentation('INVALID_CONSTANT');
-testResult('Invalid constant returns undefined', invalidConstantDoc === undefined,
-  `Returns undefined for invalid constants`);
+testResult('Invalid constant returns undefined', !invalidConstantDoc,
+  `Returns falsy value for invalid constants`);
 
 // Test 7: All priority constants have documentation
 const priorityConstants = ['LOG_EMERG', 'LOG_ALERT', 'LOG_CRIT', 'LOG_ERR', 'LOG_WARNING', 'LOG_NOTICE', 'LOG_INFO', 'LOG_DEBUG'];

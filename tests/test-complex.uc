@@ -106,6 +106,7 @@ let status = user.isActive ?
     (user.isVerified ? "active-verified" : "active-unverified") :
     (user.isSuspended ? "suspended" : "inactive");
 
+    let data = "";
 // Complex array and object operations
 let filtered = data
     .filter(function(item) { return item.score > 80; })

@@ -4,7 +4,7 @@
  */
 
 import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode, 
-         FunctionDeclarationNode, IdentifierNode, CallExpressionNode,
+         FunctionDeclarationNode, FunctionExpressionNode, IdentifierNode, CallExpressionNode,
          BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
          ContinueStatementNode, AssignmentExpressionNode, ImportDeclarationNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
@@ -17,6 +17,8 @@ import { allBuiltinFunctions } from '../builtins';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
 import { logTypeRegistry } from './logTypes';
 import { mathTypeRegistry } from './mathTypes';
+import { nl80211TypeRegistry, nl80211ObjectRegistry } from './nl80211Types';
+import { Nl80211ObjectType, createNl80211ObjectDataType } from './nl80211Types';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -56,6 +58,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       enableShadowingWarnings: true,
       ...options
     };
+    
   }
 
   analyze(ast: AstNode): SemanticAnalysisResult {
@@ -153,7 +156,16 @@ export class SemanticAnalyzer extends BaseVisitor {
               // For fs object variables, also force declaration in global scope to ensure completion access
               this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
             } else {
-              symbol.dataType = initType as UcodeDataType;
+              // Check if this is an nl80211 function call and assign the appropriate nl80211 type
+              const nl80211Type = this.inferNl80211Type(node.init);
+              if (nl80211Type) {
+                const dataType = createNl80211ObjectDataType(nl80211Type);
+                symbol.dataType = dataType;
+                // For nl80211 object variables, also force declaration in global scope to ensure completion access
+                this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+              } else {
+                symbol.dataType = initType as UcodeDataType;
+              }
             }
           }
         }
@@ -232,6 +244,19 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
     }
     
+    // Validate nl80211 module imports
+    if (source === 'nl80211' && specifier.type === 'ImportSpecifier') {
+      if (!nl80211TypeRegistry.isValidImport(importedName)) {
+        this.addDiagnostic(
+          `'${importedName}' is not exported by the nl80211 module. Available exports: ${nl80211TypeRegistry.getValidImports().join(', ')}`,
+          specifier.imported.start,
+          specifier.imported.end,
+          DiagnosticSeverity.Error
+        );
+        return; // Don't add invalid import to symbol table
+      }
+    }
+    
     // Add imported symbol to symbol table
     if (!this.symbolTable.declare(localName, SymbolType.IMPORTED, UcodeType.UNKNOWN as UcodeDataType, specifier.local)) {
       this.addDiagnostic(
@@ -298,6 +323,43 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.currentFunctionNode = previousFunction;
     } else {
       super.visitFunctionDeclaration(node);
+    }
+  }
+
+  visitFunctionExpression(node: FunctionExpressionNode): void {
+    if (this.options.enableScopeAnalysis) {
+      // For function expressions, we don't declare them in the outer scope
+      // since they're anonymous (even if they have a name, it's only available inside the function)
+
+      // Set context for nested return statement analysis.
+      const previousFunction = this.currentFunctionNode;
+      this.currentFunctionNode = node as any; // Type compatibility - both have id, params, body
+      this.functionReturnTypes.set(node as any, []);
+
+      // Enter function scope
+      this.symbolTable.enterScope();
+      this.functionScopes.push(this.symbolTable.getCurrentScope());
+
+      // If the function has a name (named function expression), declare it in the function's own scope
+      if (node.id) {
+        this.symbolTable.declare(node.id.name, SymbolType.FUNCTION, UcodeType.UNKNOWN as UcodeDataType, node.id);
+      }
+
+      // Declare parameters in the function scope
+      for (const param of node.params) {
+        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
+      }
+
+      // Visit the function body
+      this.visit(node.body);
+
+      // Exit function scope
+      this.symbolTable.exitScope();
+      this.functionScopes.pop();
+      this.currentFunctionNode = previousFunction;
+    } else {
+      // Fallback: just visit the function body if scope analysis is disabled
+      this.visit(node.body);
     }
   }
 
@@ -412,6 +474,14 @@ export class SemanticAnalyzer extends BaseVisitor {
             // Don't visit the property name as it's not a variable reference
             return;
           }
+
+          // If the object is an nl80211 type, don't visit the property as it's a method name
+          const nl80211Type = nl80211ObjectRegistry.isVariableOfNl80211Type(symbol.dataType);
+          if (nl80211Type) {
+            // This is an nl80211 object method access (e.g., eventListener.set_commands)
+            // Don't visit the property name as it's not a variable reference
+            return;
+          }
         }
       }
       
@@ -462,9 +532,15 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (fsType) {
           dataType = createFsObjectDataType(fsType);
         } else {
-          // Use the inferred type from the right-hand side
-          const rightType = this.typeChecker.checkNode(node.right);
-          dataType = rightType as UcodeDataType;
+          // Check if this is an nl80211 function call and assign the appropriate nl80211 type
+          const nl80211Type = this.inferNl80211Type(node.right);
+          if (nl80211Type) {
+            dataType = createNl80211ObjectDataType(nl80211Type);
+          } else {
+            // Use the inferred type from the right-hand side
+            const rightType = this.typeChecker.checkNode(node.right);
+            dataType = rightType as UcodeDataType;
+          }
         }
         
         if (symbol && symbol.type === SymbolType.VARIABLE) {
@@ -659,6 +735,40 @@ export class SemanticAnalyzer extends BaseVisitor {
               return FsObjectType.FS_DIR;
             case 'popen':
               return FsObjectType.FS_PROC;
+          }
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  private inferNl80211Type(node: AstNode): Nl80211ObjectType | null {
+    // Check if this is a call expression that returns an nl80211 object
+    if (node.type === 'CallExpression') {
+      const callNode = node as CallExpressionNode;
+      if (callNode.callee.type === 'Identifier') {
+        const funcName = (callNode.callee as IdentifierNode).name;
+        
+        // Map nl80211 functions to their return types
+        switch (funcName) {
+          case 'listener':
+            return Nl80211ObjectType.NL80211_LISTENER;
+          default:
+            return null;
+        }
+      }
+      // Handle module member calls like nl80211.listener()
+      else if (callNode.callee.type === 'MemberExpression') {
+        const memberNode = callNode.callee as MemberExpressionNode;
+        if (memberNode.object.type === 'Identifier' && 
+            (memberNode.object as IdentifierNode).name === 'nl80211' &&
+            memberNode.property.type === 'Identifier') {
+          const methodName = (memberNode.property as IdentifierNode).name;
+          
+          switch (methodName) {
+            case 'listener':
+              return Nl80211ObjectType.NL80211_LISTENER;
           }
         }
       }
