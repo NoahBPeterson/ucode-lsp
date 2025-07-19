@@ -19,6 +19,7 @@ import { logTypeRegistry } from './logTypes';
 import { mathTypeRegistry } from './mathTypes';
 import { nl80211TypeRegistry, nl80211ObjectRegistry } from './nl80211Types';
 import { Nl80211ObjectType, createNl80211ObjectDataType } from './nl80211Types';
+import { resolvTypeRegistry } from './resolvTypes';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -249,6 +250,19 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (!nl80211TypeRegistry.isValidImport(importedName)) {
         this.addDiagnostic(
           `'${importedName}' is not exported by the nl80211 module. Available exports: ${nl80211TypeRegistry.getValidImports().join(', ')}`,
+          specifier.imported.start,
+          specifier.imported.end,
+          DiagnosticSeverity.Error
+        );
+        return; // Don't add invalid import to symbol table
+      }
+    }
+    
+    // Validate resolv module imports
+    if (source === 'resolv' && specifier.type === 'ImportSpecifier') {
+      if (!resolvTypeRegistry.isValidImport(importedName)) {
+        this.addDiagnostic(
+          `'${importedName}' is not exported by the resolv module. Available exports: ${resolvTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
           DiagnosticSeverity.Error

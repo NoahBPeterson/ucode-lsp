@@ -15,6 +15,7 @@ import { logTypeRegistry } from './analysis/logTypes';
 import { mathTypeRegistry } from './analysis/mathTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { nl80211ObjectRegistry } from './analysis/nl80211Types';
+import { resolvTypeRegistry } from './analysis/resolvTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -95,6 +96,12 @@ export function handleCompletion(
                 return nl80211Completions;
             }
             
+            // Check if this is a resolv module with completions available
+            const resolvCompletions = getResolvModuleCompletions(objectName, analysisResult);
+            if (resolvCompletions.length > 0) {
+                connection.console.log(`Returning ${resolvCompletions.length} resolv module completions for ${objectName}`);
+                return resolvCompletions;
+            }
             
             // For member expressions, return empty array - never show builtin functions
             connection.console.log(`No specific completions for object: ${objectName}`);
@@ -462,6 +469,44 @@ function getNl80211ModuleCompletions(objectName: string, analysisResult?: Semant
                     },
                     insertText: constantName,
                     insertTextFormat: InsertTextFormat.PlainText
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
+}
+
+function getResolvModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a resolv module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'resolv') {
+        const functionNames = resolvTypeRegistry.getFunctionNames();
+        const completions: CompletionItem[] = [];
+        
+        for (const functionName of functionNames) {
+            const signature = resolvTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'resolv module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: resolvTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
                 });
             }
         }

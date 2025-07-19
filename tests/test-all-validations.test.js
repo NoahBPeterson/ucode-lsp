@@ -51,7 +51,9 @@ const testFiles = [
     'tests/test-math-module.js',
     'tests/test-math-import-validation.js',
     'tests/test-math-alias-hover.js',
-    'tests/test-nl80211-module.js'
+    'tests/test-nl80211-module.js',
+    'tests/test-resolv-module.js',
+    'tests/test-resolv-import-validation.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

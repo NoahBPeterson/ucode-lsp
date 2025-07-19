@@ -12,6 +12,7 @@ import { digestTypeRegistry } from './analysis/digestTypes';
 import { logTypeRegistry } from './analysis/logTypes';
 import { mathTypeRegistry } from './analysis/mathTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
+import { resolvTypeRegistry } from './analysis/resolvTypes';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -133,6 +134,20 @@ export function handleHover(
                 };
             }
             
+            // Check if this is a resolv module function FIRST (before symbol table)
+            if (resolvTypeRegistry.isResolvFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: resolvTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
             // 1. Check if this is a debug module function FIRST (before symbol table)
             if (debugTypeRegistry.isDebugFunction(word)) {
                 return {
@@ -209,6 +224,14 @@ export function handleHover(
                                     hoverText = nl80211TypeRegistry.getConstantDocumentation(originalName);
                                 } else {
                                     hoverText = getNl80211ModuleDocumentation();
+                                }
+                            } else if (symbol.importedFrom === 'resolv') {
+                                // Check if this is a specific resolv function (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (resolvTypeRegistry.isResolvFunction(originalName)) {
+                                    hoverText = resolvTypeRegistry.getFunctionDocumentation(originalName);
+                                } else {
+                                    hoverText = getResolvModuleDocumentation();
                                 }
                             } else {
                                 hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
@@ -346,6 +369,20 @@ export function handleHover(
                 contents: {
                     kind: MarkupKind.Markdown,
                     value: digestTypeRegistry.getFunctionDocumentation(word)
+                },
+                range: {
+                    start: document.positionAt(wordRange.start),
+                    end: document.positionAt(wordRange.end)
+                }
+            };
+        }
+        
+        // Check if this is a resolv module function
+        if (resolvTypeRegistry.isResolvFunction(word)) {
+            return {
+                contents: {
+                    kind: MarkupKind.Markdown,
+                    value: resolvTypeRegistry.getFunctionDocumentation(word)
                 },
                 range: {
                     start: document.positionAt(wordRange.start),
@@ -730,4 +767,93 @@ let scanResults = nl80211.waitfor([nl80211.NL80211_CMD_NEW_SCAN_RESULTS], 10000)
 - Event-driven architecture for asynchronous operations
 
 *Hover over individual function names and constants for detailed parameter and return type information.*`;
+}
+
+function getResolvModuleDocumentation(): string {
+    return `## Resolv Module
+
+**DNS resolution functionality for ucode scripts**
+
+The resolv module provides DNS resolution functionality for ucode, allowing you to perform DNS queries for various record types and handle responses.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { query, error } from 'resolv';
+
+let result = query('example.com', { type: ['A'] });
+if (!result) {
+    let err = error();
+    print('DNS error: ', err, '\\n');
+}
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as resolv from 'resolv';
+
+let result = resolv.query('example.com', { type: ['A'] });
+if (!result) {
+    let err = resolv.error();
+    print('DNS error: ', err, '\\n');
+}
+\`\`\`
+
+### Available Functions
+
+**Core operations:**
+- **\`query()\`** - Perform DNS queries for specified domain names
+- **\`error()\`** - Get the last error message from DNS operations
+
+### Supported DNS Record Types
+
+- **A** - IPv4 address record
+- **AAAA** - IPv6 address record
+- **CNAME** - Canonical name record
+- **MX** - Mail exchange record
+- **NS** - Name server record
+- **PTR** - Pointer record (reverse DNS)
+- **SOA** - Start of authority record
+- **SRV** - Service record
+- **TXT** - Text record
+- **ANY** - Any available record type
+
+### Response Codes
+
+- **NOERROR** - Query successful
+- **FORMERR** - Format error in query
+- **SERVFAIL** - Server failure
+- **NXDOMAIN** - Non-existent domain
+- **NOTIMP** - Not implemented
+- **REFUSED** - Query refused
+- **TIMEOUT** - Query timed out
+
+### Examples
+
+Basic A record lookup:
+\`\`\`ucode
+const result = query(['example.com']);
+\`\`\`
+
+Specific record type query:
+\`\`\`ucode
+const mxRecords = query(['example.com'], { type: ['MX'] });
+\`\`\`
+
+Multiple domains with custom nameserver:
+\`\`\`ucode
+const results = query(['example.com', 'google.com'], {
+    type: ['A', 'MX'],
+    nameserver: ['8.8.8.8', '1.1.1.1'],
+    timeout: 10000
+});
+\`\`\`
+
+Reverse DNS lookup:
+\`\`\`ucode
+const ptrResult = query(['192.0.2.1'], { type: ['PTR'] });
+\`\`\`
+
+*Hover over individual function names for detailed parameter and return type information.*`;
 }

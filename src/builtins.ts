@@ -319,5 +319,16 @@ export const nl80211BuiltinConstants = new Map<string, string>([
     ['HWSIM_CMD_GET_RADIO', 'Get simulated radio information']
 ]);
 
+// ============================================================================
+// Resolv Built-in Functions (from resolv.c global_fns[])
+// These are global functions, not methods of a resolv module object
+// ============================================================================
+
+export const resolvBuiltinFunctions = new Map<string, string>([
+    ['query', '**query(names, options?)** - Perform DNS queries for specified domain names.\\n\\n**Parameters:**\\n- `names` (string | string[]): Domain name(s) to query. Can be a single domain name string or an array of domain name strings. IP addresses can also be provided for reverse DNS lookups\\n- `options` (object, optional): Query options object with properties:\\n  - `type` (string[], optional): Array of DNS record types: \'A\', \'AAAA\', \'CNAME\', \'MX\', \'NS\', \'PTR\', \'SOA\', \'SRV\', \'TXT\', \'ANY\'\\n  - `nameserver` (string[], optional): Array of DNS nameserver addresses (e.g., \'8.8.8.8#53\')\\n  - `timeout` (number, optional, default: 5000): Total timeout in milliseconds\\n  - `retries` (number, optional, default: 2): Number of retry attempts\\n  - `edns_maxsize` (number, optional, default: 4096): Maximum UDP packet size for EDNS\\n\\n**Returns:** `object` - Object containing DNS query results organized by domain name\\n\\n**Example:**\\n```ucode\\n// Basic lookup\\nconst result = query([\"example.com\"]);\\n\\n// Specific record types\\nconst mx = query([\"example.com\"], { type: [\"MX\"] });\\n\\n// Reverse DNS\\nconst ptr = query([\"192.0.2.1\"], { type: [\"PTR\"] });\\n```'],
+    
+    ['error', '**error()** - Get the last error message from DNS operations.\\n\\n**Returns:** `string | null` - A descriptive error message for the last failed operation, or null if no error occurred\\n\\n**Example:**\\n```ucode\\nconst result = query(\"example.org\", { nameserver: [\"invalid.server\"] });\\nconst err = error();\\nif (err) {\\n    print(\"DNS query failed: \", err, \"\\n\");\\n}\\n```']
+]);
+
 // Merge all builtins for completion
-export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants]);
+export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants, ...resolvBuiltinFunctions]);
