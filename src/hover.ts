@@ -13,6 +13,7 @@ import { logTypeRegistry } from './analysis/logTypes';
 import { mathTypeRegistry } from './analysis/mathTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { resolvTypeRegistry } from './analysis/resolvTypes';
+import { socketTypeRegistry } from './analysis/socketTypes';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -148,6 +149,37 @@ export function handleHover(
                 };
             }
             
+            // Check if this is a socket module function FIRST (before symbol table)
+            if (socketTypeRegistry.isSocketFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: socketTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a socket module constant FIRST (before symbol table)
+            if (socketTypeRegistry.isSocketConstant(word)) {
+                const constantDoc = socketTypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+            }
+            
             // 1. Check if this is a debug module function FIRST (before symbol table)
             if (debugTypeRegistry.isDebugFunction(word)) {
                 return {
@@ -232,6 +264,16 @@ export function handleHover(
                                     hoverText = resolvTypeRegistry.getFunctionDocumentation(originalName);
                                 } else {
                                     hoverText = getResolvModuleDocumentation();
+                                }
+                            } else if (symbol.importedFrom === 'socket') {
+                                // Check if this is a specific socket function or constant (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (socketTypeRegistry.isSocketFunction(originalName)) {
+                                    hoverText = socketTypeRegistry.getFunctionDocumentation(originalName);
+                                } else if (socketTypeRegistry.isSocketConstant(originalName)) {
+                                    hoverText = socketTypeRegistry.getConstantDocumentation(originalName);
+                                } else {
+                                    hoverText = getSocketModuleDocumentation();
                                 }
                             } else {
                                 hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
@@ -389,6 +431,37 @@ export function handleHover(
                     end: document.positionAt(wordRange.end)
                 }
             };
+        }
+        
+        // Check if this is a socket module function
+        if (socketTypeRegistry.isSocketFunction(word)) {
+            return {
+                contents: {
+                    kind: MarkupKind.Markdown,
+                    value: socketTypeRegistry.getFunctionDocumentation(word)
+                },
+                range: {
+                    start: document.positionAt(wordRange.start),
+                    end: document.positionAt(wordRange.end)
+                }
+            };
+        }
+        
+        // Check if this is a socket module constant
+        if (socketTypeRegistry.isSocketConstant(word)) {
+            const constantDoc = socketTypeRegistry.getConstantDocumentation(word);
+            if (constantDoc) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: constantDoc
+                    },
+                    range: {
+                        start: document.positionAt(wordRange.start),
+                        end: document.positionAt(wordRange.end)
+                    }
+                };
+            }
         }
         
         // Check if this is a debug module function
@@ -856,4 +929,98 @@ const ptrResult = query(['192.0.2.1'], { type: ['PTR'] });
 \`\`\`
 
 *Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getSocketModuleDocumentation(): string {
+    return `## Socket Module
+
+**Network socket functionality for ucode scripts**
+
+The socket module provides comprehensive network socket functionality for creating TCP/UDP connections, listening for incoming connections, and handling network communication.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { create, connect, listen, AF_INET, SOCK_STREAM } from 'socket';
+
+// Create a TCP socket
+let sock = create(AF_INET, SOCK_STREAM);
+let result = connect(sock, "192.168.1.1", "80");
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as socket from 'socket';
+
+// Create a UDP socket
+let sock = socket.create(socket.AF_INET, socket.SOCK_DGRAM);
+let result = socket.connect(sock, "8.8.8.8", "53");
+\`\`\`
+
+### Available Functions
+
+**Socket creation and connection:**
+- **\`create()\`** - Create a new socket with specified domain, type, and protocol
+- **\`connect()\`** - Connect socket to a remote address
+- **\`listen()\`** - Listen for incoming connections on a socket
+
+**Address resolution:**
+- **\`sockaddr()\`** - Create socket address structures
+- **\`addrinfo()\`** - Resolve hostnames and service names to addresses
+- **\`nameinfo()\`** - Convert addresses back to hostnames
+
+**I/O operations:**
+- **\`poll()\`** - Wait for events on multiple sockets
+
+**Error handling:**
+- **\`error()\`** - Get socket error information
+- **\`strerror()\`** - Convert error codes to human-readable strings
+
+### Socket Constants
+
+**Address Families:**
+- **AF_INET** - IPv4 Internet protocols
+- **AF_INET6** - IPv6 Internet protocols  
+- **AF_UNIX** - Unix domain sockets
+
+**Socket Types:**
+- **SOCK_STREAM** - TCP (reliable, connection-oriented)
+- **SOCK_DGRAM** - UDP (unreliable, connectionless)
+- **SOCK_RAW** - Raw sockets
+
+**Socket Options:**
+- **SOL_SOCKET**, **SO_REUSEADDR**, **SO_KEEPALIVE**, etc.
+
+**Message Flags:**
+- **MSG_DONTWAIT**, **MSG_NOSIGNAL**, **MSG_PEEK**, etc.
+
+**Protocols:**
+- **IPPROTO_TCP**, **IPPROTO_UDP**, **IPPROTO_IP**, etc.
+
+**Poll Events:**
+- **POLLIN**, **POLLOUT**, **POLLERR**, **POLLHUP**, etc.
+
+### Examples
+
+Create and connect TCP socket:
+\`\`\`ucode
+let sock = create(AF_INET, SOCK_STREAM);
+if (connect(sock, "example.com", "80") == 0) {
+    print("Connected successfully\\n");
+}
+\`\`\`
+
+Create UDP server:
+\`\`\`ucode
+let sock = create(AF_INET, SOCK_DGRAM);
+listen(sock, "0.0.0.0", "8080");
+\`\`\`
+
+Wait for socket events:
+\`\`\`ucode
+let result = poll([{fd: sock, events: POLLIN}], 5000);
+\`\`\`
+
+*Hover over individual function names and constants for detailed parameter and return type information.*`;
 }

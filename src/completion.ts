@@ -16,6 +16,7 @@ import { mathTypeRegistry } from './analysis/mathTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { nl80211ObjectRegistry } from './analysis/nl80211Types';
 import { resolvTypeRegistry } from './analysis/resolvTypes';
+import { socketTypeRegistry } from './analysis/socketTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -101,6 +102,13 @@ export function handleCompletion(
             if (resolvCompletions.length > 0) {
                 connection.console.log(`Returning ${resolvCompletions.length} resolv module completions for ${objectName}`);
                 return resolvCompletions;
+            }
+            
+            // Check if this is a socket module with completions available
+            const socketCompletions = getSocketModuleCompletions(objectName, analysisResult);
+            if (socketCompletions.length > 0) {
+                connection.console.log(`Returning ${socketCompletions.length} socket module completions for ${objectName}`);
+                return socketCompletions;
             }
             
             // For member expressions, return empty array - never show builtin functions
@@ -507,6 +515,64 @@ function getResolvModuleCompletions(objectName: string, analysisResult?: Semanti
                     },
                     insertText: `${functionName}($1)`,
                     insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
+}
+
+function getSocketModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a socket module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'socket') {
+        const functionNames = socketTypeRegistry.getFunctionNames();
+        const constantNames = socketTypeRegistry.getConstantNames();
+        const completions: CompletionItem[] = [];
+        
+        // Add function completions
+        for (const functionName of functionNames) {
+            const signature = socketTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'socket module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: socketTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        // Add constant completions
+        for (const constantName of constantNames) {
+            const constant = socketTypeRegistry.getConstant(constantName);
+            if (constant) {
+                completions.push({
+                    label: constantName,
+                    kind: CompletionItemKind.Constant,
+                    detail: 'socket module constant',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: socketTypeRegistry.getConstantDocumentation(constantName)
+                    },
+                    insertText: constantName,
+                    insertTextFormat: InsertTextFormat.PlainText
                 });
             }
         }

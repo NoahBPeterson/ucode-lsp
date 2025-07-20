@@ -55,6 +55,28 @@ function test() {
 }
 ```
 
+### Module Support
+Complete IntelliSense for built-in modules:
+```ucode
+import { create, connect, AF_INET, SOCK_STREAM } from 'socket';
+import * as math from 'math';
+import { query } from 'resolv';
+
+let sock = create(AF_INET, SOCK_STREAM);  // ✅ Full autocomplete
+let result = connect(sock, "example.com", "80");
+let sqrt_val = math.sqrt(16);             // ✅ Namespace imports
+```
+
+**Supported Modules:**
+- **socket** - Network socket functionality (create, connect, listen, etc.)
+- **math** - Mathematical functions (sin, cos, sqrt, etc.)
+- **log** - System logging (syslog, ulog functions)
+- **resolv** - DNS resolution (query, error functions)
+- **nl80211** - WiFi/802.11 networking
+- **debug** - Runtime debugging and introspection
+- **digest** - Cryptographic hash functions
+- **fs** - File system operations
+
 ### Code Navigation
 ```ucode
 import { run_command } from '../lib/commands.uc';
