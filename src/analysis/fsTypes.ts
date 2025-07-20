@@ -53,7 +53,7 @@ export class FsTypeRegistry {
         name: 'read',
         parameters: [UcodeType.UNKNOWN], // number | "line" | "all" | single char
         returnType: UcodeType.STRING,
-        description: 'Read data from the process handle'
+        description: 'Read data from the process handle. Parameter can be: a number (bytes to read), "line" (read until newline), "all" (read until EOF), or a single character (read until that character). Returns a string containing the read data, empty string on EOF, or null on error.'
       }],
       ['write', {
         name: 'write', 
@@ -145,7 +145,7 @@ export class FsTypeRegistry {
         name: 'read',
         parameters: [UcodeType.UNKNOWN], // number | "line" | "all" | single char
         returnType: UcodeType.STRING,
-        description: 'Read data from the file handle'
+        description: 'Read data from the file handle. Parameter can be: a number (bytes to read), "line" (read until newline), "all" (read until EOF), or a single character (read until that character). Returns a string containing the read data, empty string on EOF, or null on error.'
       }],
       ['write', {
         name: 'write',

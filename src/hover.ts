@@ -14,6 +14,8 @@ import { mathTypeRegistry } from './analysis/mathTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { resolvTypeRegistry } from './analysis/resolvTypes';
 import { socketTypeRegistry } from './analysis/socketTypes';
+import { fsTypeRegistry } from './analysis/fsTypes';
+import { fsModuleFunctions } from './fsBuiltins';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -41,8 +43,20 @@ export function handleHover(
             // Check if this is part of a member expression (e.g., fs.open)
             const memberExpressionInfo = detectMemberExpression(offset, tokens);
             if (memberExpressionInfo && analysisResult) {
-                // For member expressions, we could add object-specific hover here
-                // For now, fall through to regular symbol analysis
+                // Handle fs object method hover
+                const fsMethodHover = getFsMethodHover(memberExpressionInfo, analysisResult);
+                if (fsMethodHover) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: fsMethodHover
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
             }
             
             // Check if this is a log module function FIRST (before symbol table)
@@ -264,6 +278,15 @@ export function handleHover(
                                     hoverText = resolvTypeRegistry.getFunctionDocumentation(originalName);
                                 } else {
                                     hoverText = getResolvModuleDocumentation();
+                                }
+                            } else if (symbol.importedFrom === 'fs') {
+                                // Check if this is a specific fs function (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                const fsDoc = fsModuleFunctions.get(originalName);
+                                if (fsDoc) {
+                                    hoverText = `**${symbol.name}** (fs module function)\n\n${fsDoc}`;
+                                } else {
+                                    hoverText = getFsModuleDocumentation();
                                 }
                             } else if (symbol.importedFrom === 'socket') {
                                 // Check if this is a specific socket function or constant (could be aliased)
@@ -1023,4 +1046,143 @@ let result = poll([{fd: sock, events: POLLIN}], 5000);
 \`\`\`
 
 *Hover over individual function names and constants for detailed parameter and return type information.*`;
+}
+
+function getFsMethodHover(memberInfo: { objectName: string; propertyName: string }, analysisResult: SemanticAnalysisResult): string | null {
+    const { objectName, propertyName } = memberInfo;
+    
+    // Look up the object in the symbol table
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return null;
+    }
+    
+    // Check if this is an fs object type
+    const fsType = fsTypeRegistry.isVariableOfFsType(symbol.dataType);
+    if (!fsType) {
+        return null;
+    }
+    
+    // Get the method signature for this fs type
+    const methodSignature = fsTypeRegistry.getFsMethod(fsType, propertyName);
+    if (!methodSignature) {
+        return null;
+    }
+    
+    // Format the hover documentation
+    let documentation = `**${propertyName}()** - ${fsType} method\n\n`;
+    
+    if (methodSignature.description) {
+        documentation += methodSignature.description + '\n\n';
+    }
+    
+    // Add parameter information
+    if (methodSignature.parameters.length > 0) {
+        documentation += '**Parameters:**\n';
+        methodSignature.parameters.forEach((param, index) => {
+            const paramName = getParameterName(propertyName, index);
+            const isOptional = (methodSignature.minParams !== undefined && index >= methodSignature.minParams) ||
+                             (methodSignature.maxParams !== undefined && index >= methodSignature.maxParams);
+            documentation += `- **${paramName}**: \`${param}\`${isOptional ? ' (optional)' : ''}\n`;
+        });
+        documentation += '\n';
+    }
+    
+    // Add return type information
+    documentation += `**Returns:** \`${methodSignature.returnType}\`\n\n`;
+    
+    // Add specific examples for read method
+    if (propertyName === 'read') {
+        documentation += '**Examples:**\n';
+        documentation += '```ucode\n';
+        documentation += `${objectName}.read(10);        // Read 10 bytes\n`;
+        documentation += `${objectName}.read("line");    // Read until newline\n`;
+        documentation += `${objectName}.read("all");     // Read until EOF\n`;
+        documentation += `${objectName}.read(":");       // Read until colon\n`;
+        documentation += '```\n';
+    }
+    
+    return documentation;
+}
+
+function getParameterName(methodName: string, paramIndex: number): string {
+    const paramMappings: { [key: string]: string[] } = {
+        'read': ['length'],
+        'write': ['data'],
+        'seek': ['offset', 'position'],
+        'truncate': ['offset'],
+        'lock': ['operation'],
+        'ioctl': ['direction', 'type', 'num', 'value']
+    };
+    
+    const params = paramMappings[methodName];
+    if (params && paramIndex < params.length) {
+        return params[paramIndex]!;
+    }
+    
+    return `param${paramIndex + 1}`;
+}
+
+function getFsModuleDocumentation(): string {
+    return `## FS Module
+
+**File system operations for ucode scripts**
+
+The fs module provides comprehensive file system functionality for reading, writing, and manipulating files and directories.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { open, readlink, stat } from 'fs';
+
+let file = open("file.txt", "r");
+let target = readlink("/sys/class/net/eth0");
+let info = stat("/etc/passwd");
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as fs from 'fs';
+
+let file = fs.open("file.txt", "r");
+let content = file.read("all");
+file.close();
+\`\`\`
+
+### Available Functions
+
+**File operations:**
+- **\`open()\`** - Open files for reading/writing
+- **\`fdopen()\`** - Associate file descriptor with handle
+- **\`popen()\`** - Execute commands and handle I/O
+
+**Directory operations:**
+- **\`opendir()\`** - Open directories for reading
+- **\`mkdir()\`** - Create directories
+- **\`rmdir()\`** - Remove directories
+
+**File system information:**
+- **\`stat()\`** - Get file/directory information
+- **\`lstat()\`** - Get info without following symlinks
+- **\`readlink()\`** - Read symbolic link targets
+
+**File manipulation:**
+- **\`unlink()\`** - Remove files
+- **\`symlink()\`** - Create symbolic links
+- **\`chmod()\`** - Change file permissions
+- **\`chown()\`** - Change file ownership
+
+**Utility functions:**
+- **\`error()\`** - Get last error information
+- **\`getcwd()\`** - Get current working directory
+- **\`chdir()\`** - Change current directory
+
+### File Handle Objects
+
+- **\`fs.file\`** - File handles with read/write/seek methods
+- **\`fs.proc\`** - Process handles for command execution
+- **\`fs.dir\`** - Directory handles for listing entries
+
+*Hover over individual function names for detailed parameter and return type information.*`;
 }
