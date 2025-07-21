@@ -13,7 +13,7 @@ import {
   CatchClauseNode, SwitchStatementNode, SwitchCaseNode, ConditionalExpressionNode,
   ForInStatementNode, EmptyStatementNode, ThisExpressionNode, DeleteExpressionNode,
   ImportDeclarationNode, ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
-  ArrowFunctionExpressionNode
+  ArrowFunctionExpressionNode, ExportNamedDeclarationNode, ExportDefaultDeclarationNode
 } from '../ast/nodes';
 
 export interface VisitorMethods {
@@ -53,6 +53,8 @@ export interface VisitorMethods {
   visitImportDefaultSpecifier?(node: ImportDefaultSpecifierNode): void;
   visitImportNamespaceSpecifier?(node: ImportNamespaceSpecifierNode): void;
   visitArrowFunctionExpression?(node: ArrowFunctionExpressionNode): void;
+  visitExportNamedDeclaration?(node: ExportNamedDeclarationNode): void;
+  visitExportDefaultDeclaration?(node: ExportDefaultDeclarationNode): void;
 }
 
 export class BaseVisitor implements VisitorMethods {
@@ -165,6 +167,12 @@ export class BaseVisitor implements VisitorMethods {
         break;
       case 'ArrowFunctionExpression':
         this.visitArrowFunctionExpression(node as ArrowFunctionExpressionNode);
+        break;
+      case 'ExportNamedDeclaration':
+        this.visitExportNamedDeclaration(node as ExportNamedDeclarationNode);
+        break;
+      case 'ExportDefaultDeclaration':
+        this.visitExportDefaultDeclaration(node as ExportDefaultDeclarationNode);
         break;
     }
   }
@@ -385,5 +393,25 @@ export class BaseVisitor implements VisitorMethods {
     }
     // Visit body
     this.visit(node.body);
+  }
+
+  visitExportNamedDeclaration(node: ExportNamedDeclarationNode): void {
+    // Visit the declaration if present
+    if (node.declaration) {
+      this.visit(node.declaration);
+    }
+    
+    // Visit export specifiers
+    for (const specifier of node.specifiers) {
+      this.visit(specifier.local);
+      this.visit(specifier.exported);
+    }
+  }
+
+  visitExportDefaultDeclaration(node: ExportDefaultDeclarationNode): void {
+    // Visit the declaration
+    if (node.declaration) {
+      this.visit(node.declaration);
+    }
   }
 }

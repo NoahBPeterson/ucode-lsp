@@ -8,7 +8,8 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
          ContinueStatementNode, AssignmentExpressionNode, ImportDeclarationNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
-         PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode } from '../ast/nodes';
+         PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
+         ExportNamedDeclarationNode, ExportDefaultDeclarationNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -17,8 +18,7 @@ import { allBuiltinFunctions } from '../builtins';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
 import { logTypeRegistry } from './logTypes';
 import { mathTypeRegistry } from './mathTypes';
-import { nl80211TypeRegistry, nl80211ObjectRegistry } from './nl80211Types';
-import { Nl80211ObjectType, createNl80211ObjectDataType } from './nl80211Types';
+import { nl80211TypeRegistry, Nl80211ObjectType, createNl80211ObjectDataType } from './nl80211Types';
 import { resolvTypeRegistry } from './resolvTypes';
 import { socketTypeRegistry } from './socketTypes';
 
@@ -490,40 +490,17 @@ export class SemanticAnalyzer extends BaseVisitor {
         this.symbolTable.markUsed(objectName, node.object.start);
       }
       
-      // For non-computed member access (obj.prop), check if it's a namespace import, module, or fs object
-      if (!node.computed && node.object.type === 'Identifier') {
-        const objectName = (node.object as IdentifierNode).name;
-        const symbol = this.symbolTable.lookup(objectName);
-        
-        // If the object is a namespace import, don't visit the property as it's not a variable
-        if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importSpecifier === '*') {
-          // This is a namespace import member access (e.g., constants.DT_HOSTINFO_FINAL_PATH)
-          // Don't visit the property name as it's not a variable reference
-          return;
-        }
-        
-        // If the object is an fs type, don't visit the property as it's a method name
-        if (symbol && symbol.type === SymbolType.VARIABLE && symbol.dataType) {
-          const { fsTypeRegistry } = require('./fsTypes');
-          const fsType = fsTypeRegistry.isVariableOfFsType(symbol.dataType);
-          if (fsType) {
-            // This is an fs object method access (e.g., file_content.write)
-            // Don't visit the property name as it's not a variable reference
-            return;
-          }
-
-          // If the object is an nl80211 type, don't visit the property as it's a method name
-          const nl80211Type = nl80211ObjectRegistry.isVariableOfNl80211Type(symbol.dataType);
-          if (nl80211Type) {
-            // This is an nl80211 object method access (e.g., eventListener.set_commands)
-            // Don't visit the property name as it's not a variable reference
-            return;
-          }
-        }
+      // For non-computed member access (obj.prop), don't visit the property as it's a property name, not a variable
+      // For computed access (obj[prop]), visit the property as it's an expression/variable
+      if (node.computed) {
+        // Computed access: obj[prop] - the property is an expression/variable
+        this.visit(node.property);
+      } else {
+        // Non-computed access: obj.prop - the property is a literal property name, not a variable
+        // Don't visit the property to avoid "Undefined variable" errors
+        // This allows property access on any object type (unknown, object, etc.)
+        return;
       }
-      
-      // For computed access (obj[prop]) or other member access, visit the property
-      this.visit(node.property);
     } else {
       // If scope analysis is disabled, use default behavior
       super.visitMemberExpression(node);
@@ -531,6 +508,15 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   visitCallExpression(node: CallExpressionNode): void {
+    // Always handle scope analysis for function calls
+    if (this.options.enableScopeAnalysis) {
+      // Mark function callee as used if it's an identifier
+      if (node.callee.type === 'Identifier') {
+        const functionName = (node.callee as IdentifierNode).name;
+        this.symbolTable.markUsed(functionName, node.callee.start);
+      }
+    }
+    
     if (this.options.enableTypeChecking) {
       // Reset errors before type checking this call expression
       this.typeChecker.resetErrors();
@@ -812,6 +798,30 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
     
     return null;
+  }
+
+  visitExportNamedDeclaration(node: ExportNamedDeclarationNode): void {
+    // For export function declarations like: export function foo() {}
+    if (node.declaration) {
+      // Visit the actual declaration (function, variable, etc.)
+      this.visit(node.declaration);
+    }
+    
+    // Handle export specifiers if present (export { name })
+    for (const specifier of node.specifiers) {
+      if (this.options.enableScopeAnalysis) {
+        // Mark the exported identifier as used
+        this.symbolTable.markUsed(specifier.local.name, specifier.local.start);
+      }
+    }
+  }
+
+  visitExportDefaultDeclaration(node: ExportDefaultDeclarationNode): void {
+    // For export default declarations like: export default function() {}
+    if (node.declaration) {
+      // Visit the actual declaration
+      this.visit(node.declaration);
+    }
   }
 
   private addDiagnostic(message: string, start: number, end: number, severity: DiagnosticSeverity): void {
