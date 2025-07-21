@@ -481,6 +481,15 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Visit the object part (e.g., 'constants' in 'constants.DT_HOSTINFO_FINAL_PATH')
       this.visit(node.object);
       
+      // IMPORTANT: Ensure the object identifier is marked as used for member expressions
+      // This fixes the issue where variables like file_content are marked as unused
+      // even when used in member expressions like file_content.read()
+      if (!node.computed && node.object.type === 'Identifier') {
+        const objectName = (node.object as IdentifierNode).name;
+        // Explicitly mark the object identifier as used
+        this.symbolTable.markUsed(objectName, node.object.start);
+      }
+      
       // For non-computed member access (obj.prop), check if it's a namespace import, module, or fs object
       if (!node.computed && node.object.type === 'Identifier') {
         const objectName = (node.object as IdentifierNode).name;

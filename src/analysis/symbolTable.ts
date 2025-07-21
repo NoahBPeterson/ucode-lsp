@@ -313,6 +313,27 @@ export class SymbolTable {
       return;
     }
     
+    // Look for existing symbol in other scopes to preserve position information
+    const existingSymbol = this.lookup(name);
+    let nodeToUse: AstNode;
+    let declaredAtPos: number;
+    
+    if (existingSymbol) {
+      // Preserve the original node and position information
+      nodeToUse = existingSymbol.node;
+      declaredAtPos = existingSymbol.declaredAt;
+      console.log(`[SYMBOL_FORCE] Preserving position info from existing symbol: start=${nodeToUse.start}, declaredAt=${declaredAtPos}`);
+    } else {
+      // Fallback to fake node only if no existing symbol found
+      nodeToUse = {
+        type: 'Identifier',
+        start: 0,
+        end: 0,
+        name: name
+      } as IdentifierNode;
+      declaredAtPos = 0;
+    }
+    
     // Create new symbol in global scope
     const symbol: Symbol = {
       name,
@@ -320,21 +341,15 @@ export class SymbolTable {
       dataType,
       scope: 0,
       declared: true,
-      used: false,
-      node: {
-        type: 'Identifier',
-        start: 0,
-        end: 0,
-        name: name
-      } as IdentifierNode,
-      declaredAt: 0,
-      usedAt: []
+      used: existingSymbol ? existingSymbol.used : false, // Preserve usage state
+      node: nodeToUse,
+      declaredAt: declaredAtPos,
+      usedAt: existingSymbol ? existingSymbol.usedAt : [] // Preserve usage positions
     };
     globalScope.set(name, symbol);
-    console.log(`[SYMBOL_FORCE] Created ${name} in global scope with type ${JSON.stringify(dataType)}`);
+    console.log(`[SYMBOL_FORCE] Created ${name} in global scope with type ${JSON.stringify(dataType)}, preserving position ${declaredAtPos}`);
     
     // Also update any existing symbols in other scopes
-    const existingSymbol = this.lookup(name);
     if (existingSymbol && existingSymbol.scope !== 0) {
       existingSymbol.dataType = dataType;
       console.log(`[SYMBOL_FORCE] Also updated existing ${name} in scope ${existingSymbol.scope} to type ${JSON.stringify(dataType)}`);
@@ -342,13 +357,21 @@ export class SymbolTable {
   }
 
   markUsed(name: string, position: number): boolean {
-    const symbol = this.lookup(name);
-    if (symbol) {
-      symbol.used = true;
-      symbol.usedAt.push(position);
-      return true;
+    let foundAny = false;
+    
+    // Mark ALL symbols with this name as used across all scopes
+    // This handles cases where the same variable exists in multiple scopes
+    // (e.g., declared in function scope and force-declared in global scope)
+    for (const scopeMap of this.scopes) {
+      const symbol = scopeMap.get(name);
+      if (symbol) {
+        symbol.used = true;
+        symbol.usedAt.push(position);
+        foundAny = true;
+      }
     }
-    return false;
+    
+    return foundAny;
   }
 
   // Check for variable shadowing
