@@ -9,7 +9,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          ContinueStatementNode, AssignmentExpressionNode, ImportDeclarationNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
-         ExportNamedDeclarationNode, ExportDefaultDeclarationNode } from '../ast/nodes';
+         ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -167,6 +167,10 @@ export class SemanticAnalyzer extends BaseVisitor {
                 this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
               } else {
                 symbol.dataType = initType as UcodeDataType;
+                // Debug logging for arrow function variables
+                if (node.init.type === 'ArrowFunctionExpression') {
+                  console.log(`[SEMANTIC] Variable ${name} assigned arrow function, type: ${initType}`);
+                }
               }
             }
           }
@@ -388,6 +392,37 @@ export class SemanticAnalyzer extends BaseVisitor {
     } else {
       // Fallback: just visit the function body if scope analysis is disabled
       this.visit(node.body);
+    }
+  }
+
+  visitArrowFunctionExpression(node: ArrowFunctionExpressionNode): void {
+    if (this.options.enableScopeAnalysis) {
+      // Arrow functions are always anonymous and don't get declared in outer scope
+      
+      // Set context for nested return statement analysis
+      const previousFunction = this.currentFunctionNode;
+      this.currentFunctionNode = node as any; // Type compatibility for analysis
+      this.functionReturnTypes.set(node as any, []);
+
+      // Enter function scope for parameters
+      this.symbolTable.enterScope();
+      this.functionScopes.push(this.symbolTable.getCurrentScope());
+
+      // Declare parameters in the function scope
+      for (const param of node.params) {
+        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
+      }
+
+      // Visit the function body
+      this.visit(node.body);
+
+      // Exit function scope
+      this.symbolTable.exitScope();
+      this.functionScopes.pop();
+      this.currentFunctionNode = previousFunction;
+    } else {
+      // Fallback: use default visitor behavior
+      super.visitArrowFunctionExpression(node);
     }
   }
 

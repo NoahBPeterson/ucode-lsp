@@ -6,7 +6,8 @@
 import { 
   AstNode, LiteralNode, IdentifierNode, BinaryExpressionNode, UnaryExpressionNode,
   CallExpressionNode, MemberExpressionNode, AssignmentExpressionNode, ArrayExpressionNode,
-  ObjectExpressionNode, ConditionalExpressionNode
+  ObjectExpressionNode, ConditionalExpressionNode, ArrowFunctionExpressionNode, 
+  FunctionExpressionNode
 } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes } from './symbolTable';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
@@ -187,6 +188,10 @@ export class TypeChecker {
         return this.checkObjectExpression(node as ObjectExpressionNode);
       case 'ConditionalExpression':
         return this.checkConditionalExpression(node as ConditionalExpressionNode);
+      case 'ArrowFunctionExpression':
+        return this.checkArrowFunctionExpression(node as any);
+      case 'FunctionExpression':
+        return this.checkFunctionExpression(node as any);
       default:
         return UcodeType.UNKNOWN;
     }
@@ -357,19 +362,37 @@ export class TypeChecker {
       if (signature) {
         return this.validateBuiltinCall(node, signature);
       } else {
-        // Check if it's a user-defined function or imported function
+        // Check if it's a user-defined function, imported function, or variable containing a function
         const symbol = this.symbolTable.lookup(funcName);
-        if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
-          // Convert UcodeDataType to UcodeType for backwards compatibility
-          if (typeof symbol.dataType === 'string') {
-            return symbol.dataType as UcodeType;
-          } else if (isUnionType(symbol.dataType)) {
-            // For union types, return the first type or UNKNOWN
-            const types = getUnionTypes(symbol.dataType);
-            return types[0] || UcodeType.UNKNOWN;
-          } else {
-            // For other complex types like ModuleType, return UNKNOWN
-            return UcodeType.UNKNOWN;
+        if (symbol) {
+          // Check for functions and imported functions
+          if (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED) {
+            // Convert UcodeDataType to UcodeType for backwards compatibility
+            if (typeof symbol.dataType === 'string') {
+              return symbol.dataType as UcodeType;
+            } else if (isUnionType(symbol.dataType)) {
+              // For union types, return the first type or UNKNOWN
+              const types = getUnionTypes(symbol.dataType);
+              return types[0] || UcodeType.UNKNOWN;
+            } else {
+              // For other complex types like ModuleType, return UNKNOWN
+              return UcodeType.UNKNOWN;
+            }
+          }
+          // Check for variables that might contain functions (e.g., arrow functions)
+          else if (symbol.type === SymbolType.VARIABLE) {
+            // Check if the variable's data type is function or if it could be callable
+            console.log(`[TYPE-CHECKER] Call to ${funcName}: symbol.dataType = ${JSON.stringify(symbol.dataType)}, type: ${typeof symbol.dataType}`);
+            if (typeof symbol.dataType === 'string') {
+              if (symbol.dataType === UcodeType.FUNCTION) {
+                console.log(`[TYPE-CHECKER] Variable ${funcName} has FUNCTION data type - allowing call`);
+                return UcodeType.UNKNOWN; // Function calls return unknown by default
+              } else if (symbol.dataType === UcodeType.UNKNOWN) {
+                // For variables with unknown type (like arrow functions), assume they might be callable
+                // This prevents false positives for arrow functions assigned to variables
+                return UcodeType.UNKNOWN;
+              }
+            }
           }
         }
         
@@ -585,6 +608,19 @@ export class TypeChecker {
     const alternateType = this.checkNode(node.alternate);
 
     return this.typeCompatibility.getTernaryResultType(consequentType, alternateType);
+  }
+
+  private checkArrowFunctionExpression(_node: ArrowFunctionExpressionNode): UcodeType {
+    // Arrow functions are callable, so they have function type
+    // For now, we don't analyze parameter types or return type inference
+    // This is sufficient to prevent "Undefined function" errors for arrow functions
+    console.log(`[TYPE-CHECKER] Arrow function expression detected, returning FUNCTION type`);
+    return UcodeType.FUNCTION;
+  }
+
+  private checkFunctionExpression(_node: FunctionExpressionNode): UcodeType {
+    // Function expressions are also callable
+    return UcodeType.FUNCTION;
   }
 
   getCommonReturnType(types: UcodeType[]): UcodeDataType {

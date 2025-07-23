@@ -99,9 +99,84 @@ export abstract class PrimaryExpressions extends ParseRules {
   }
 
   protected parseGrouping(): AstNode | null {
-    const expr = this.parseExpression();
-    this.consume(TokenType.TK_RPAREN, "Expected ')' after expression");
-    return expr;
+    // Check if this might be arrow function parameters by looking ahead
+    const checkpoint = this.current;
+    let isArrowParams = false;
+    
+    // Try to detect if this is an arrow function parameter list
+    // Look for pattern: (identifier [, identifier]* ) =>
+    if (this.check(TokenType.TK_LABEL)) {
+      this.advance(); // consume first identifier
+      
+      // Check if there's a comma (multi-param) or closing paren followed by arrow
+      if (this.check(TokenType.TK_COMMA)) {
+        // Multiple parameters - likely arrow function
+        while (this.check(TokenType.TK_COMMA)) {
+          this.advance(); // consume comma
+          if (this.check(TokenType.TK_LABEL)) {
+            this.advance(); // consume next identifier
+          } else {
+            break; // Invalid parameter list
+          }
+        }
+        if (this.check(TokenType.TK_RPAREN)) {
+          this.advance(); // consume closing paren
+          if (this.check(TokenType.TK_ARROW)) {
+            isArrowParams = true;
+          }
+        }
+      } else if (this.check(TokenType.TK_RPAREN)) {
+        this.advance(); // consume closing paren
+        if (this.check(TokenType.TK_ARROW)) {
+          isArrowParams = true;
+        }
+      }
+    }
+    
+    // Reset position
+    this.current = checkpoint;
+    
+    if (isArrowParams) {
+      // Parse as parameter list for arrow function
+      const params: IdentifierNode[] = [];
+      
+      if (!this.check(TokenType.TK_RPAREN)) {
+        do {
+          if (this.check(TokenType.TK_LABEL)) {
+            const token = this.advance()!;
+            params.push({
+              type: 'Identifier',
+              start: token.pos,
+              end: token.end,
+              name: token.value as string
+            });
+          }
+        } while (this.match(TokenType.TK_COMMA));
+      }
+      
+      this.consume(TokenType.TK_RPAREN, "Expected ')' after arrow function parameters");
+      
+      // Create a fake CallExpression node with parameters as arguments
+      // This is what the arrow function parser expects
+      const prevToken = this.previous();
+      return {
+        type: 'CallExpression',
+        start: params.length > 0 ? params[0]!.start : (prevToken?.pos || 0),
+        end: prevToken?.end || 0,
+        callee: {
+          type: 'Identifier',
+          start: 0,
+          end: 0,
+          name: '__arrow_params__'
+        } as IdentifierNode,
+        arguments: params
+      } as any;
+    } else {
+      // Parse as regular grouped expression
+      const expr = this.parseExpression();
+      this.consume(TokenType.TK_RPAREN, "Expected ')' after expression");
+      return expr;
+    }
   }
 
   protected parseFunctionExpression(): FunctionExpressionNode | null {
