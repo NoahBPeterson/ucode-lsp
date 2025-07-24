@@ -730,7 +730,25 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
     
-    super.visitForInStatement(node);
+    if (this.options.enableScopeAnalysis) {
+      // Handle the iterator variable (left side) - it's implicitly declared by the for...in loop
+      if (node.left && node.left.type === 'Identifier') {
+        const iteratorName = node.left.name;
+        // Declare the iterator variable in the current scope
+        this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, UcodeType.STRING as UcodeDataType, node.left);
+        // Mark it as used immediately since it's used by the loop construct itself
+        this.symbolTable.markUsed(iteratorName, node.left.start);
+      }
+      
+      // Visit the right side (the object being iterated over)
+      this.visit(node.right);
+      
+      // Visit the loop body
+      this.visit(node.body);
+    } else {
+      // Fallback to default behavior if scope analysis is disabled
+      super.visitForInStatement(node);
+    }
     
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.pop();
