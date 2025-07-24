@@ -382,10 +382,8 @@ export class TypeChecker {
           // Check for variables that might contain functions (e.g., arrow functions)
           else if (symbol.type === SymbolType.VARIABLE) {
             // Check if the variable's data type is function or if it could be callable
-            console.log(`[TYPE-CHECKER] Call to ${funcName}: symbol.dataType = ${JSON.stringify(symbol.dataType)}, type: ${typeof symbol.dataType}`);
             if (typeof symbol.dataType === 'string') {
               if (symbol.dataType === UcodeType.FUNCTION) {
-                console.log(`[TYPE-CHECKER] Variable ${funcName} has FUNCTION data type - allowing call`);
                 return UcodeType.UNKNOWN; // Function calls return unknown by default
               } else if (symbol.dataType === UcodeType.UNKNOWN) {
                 // For variables with unknown type (like arrow functions), assume they might be callable
@@ -614,7 +612,6 @@ export class TypeChecker {
     // Arrow functions are callable, so they have function type
     // For now, we don't analyze parameter types or return type inference
     // This is sufficient to prevent "Undefined function" errors for arrow functions
-    console.log(`[TYPE-CHECKER] Arrow function expression detected, returning FUNCTION type`);
     return UcodeType.FUNCTION;
   }
 

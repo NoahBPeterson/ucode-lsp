@@ -169,8 +169,7 @@ export class SemanticAnalyzer extends BaseVisitor {
                 symbol.dataType = initType as UcodeDataType;
                 // Debug logging for arrow function variables
                 if (node.init.type === 'ArrowFunctionExpression') {
-                  console.log(`[SEMANTIC] Variable ${name} assigned arrow function, type: ${initType}`);
-                }
+                          }
               }
             }
           }
@@ -409,7 +408,9 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.functionScopes.push(this.symbolTable.getCurrentScope());
 
       // Declare parameters in the function scope
+      console.log(`[ARROW-DEBUG] Arrow function with ${node.params.length} parameters at scope ${this.symbolTable.getCurrentScope()}`);
       for (const param of node.params) {
+        console.log(`[ARROW-DEBUG] Declaring parameter: ${param.name} in scope ${this.symbolTable.getCurrentScope()}`);
         this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
       }
 
@@ -493,6 +494,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (this.options.enableScopeAnalysis) {
       // Check if identifier is defined
       const symbol = this.symbolTable.lookup(node.name);
+      console.log(`[ARROW-DEBUG] Looking up identifier '${node.name}' at scope ${this.symbolTable.getCurrentScope()}, found: ${!!symbol}`);
       if (!symbol) {
         // Check if it's a builtin function before reporting as undefined
         const isBuiltin = allBuiltinFunctions.has(node.name);
@@ -606,15 +608,12 @@ export class SemanticAnalyzer extends BaseVisitor {
           symbol.dataType = dataType;
           // Also force update in case it's in a different scope
           this.symbolTable.updateSymbolType(variableName, dataType);
-          console.log(`[SEMANTIC] Updated variable: ${variableName} to type: ${JSON.stringify(dataType)}`);
         } else if (!symbol) {
           // Create new symbol for undeclared variable (implicit declaration)
           this.symbolTable.declare(variableName, SymbolType.VARIABLE, dataType, node.left as IdentifierNode);
-          console.log(`[SEMANTIC] Created new variable: ${variableName} with type: ${JSON.stringify(dataType)}`);
         } else {
           // Symbol exists but wrong type, try to update it anyway
           this.symbolTable.updateSymbolType(variableName, dataType);
-          console.log(`[SEMANTIC] Force updated variable: ${variableName} to type: ${JSON.stringify(dataType)}`);
         }
         
         // For fs object variables, also force declaration in global scope to ensure completion access
@@ -718,7 +717,29 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
     
-    super.visitForStatement(node);
+    if (this.options.enableScopeAnalysis) {
+      // Create a new scope for the for loop to properly handle loop variable declarations
+      // This ensures that 'for (let i = 0; ...)' variables don't conflict between different loops
+      this.symbolTable.enterScope();
+      
+      // Visit the loop components in the new scope
+      if (node.init) {
+        this.visit(node.init);
+      }
+      if (node.test) {
+        this.visit(node.test);
+      }
+      if (node.update) {
+        this.visit(node.update);
+      }
+      this.visit(node.body);
+      
+      // Exit the for loop scope
+      this.symbolTable.exitScope();
+    } else {
+      // Fallback to default behavior if scope analysis is disabled
+      super.visitForStatement(node);
+    }
     
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.pop();
@@ -726,24 +747,42 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   visitForInStatement(node: any): void {
+    
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
     
     if (this.options.enableScopeAnalysis) {
       // Handle the iterator variable (left side) - it's implicitly declared by the for...in loop
+      // We declare it in the current scope so it's accessible to the loop body
+      let iteratorName: string | null = null;
+      let iteratorNode: any = null;
+      
       if (node.left && node.left.type === 'Identifier') {
-        const iteratorName = node.left.name;
+        // Simple case: for (var_name in ...)
+        iteratorName = node.left.name;
+        iteratorNode = node.left;
+      } else if (node.left && node.left.type === 'VariableDeclaration' && node.left.declarations.length > 0) {
+        // Declaration case: for (let var_name in ...)
+        const declarator = node.left.declarations[0];
+        if (declarator.id && declarator.id.type === 'Identifier') {
+          iteratorName = declarator.id.name;
+          iteratorNode = declarator.id;
+        }
+      }
+      
+      if (iteratorName && iteratorNode) {
         // Declare the iterator variable in the current scope
-        this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, UcodeType.STRING as UcodeDataType, node.left);
+        this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, UcodeType.STRING as UcodeDataType, iteratorNode);
         // Mark it as used immediately since it's used by the loop construct itself
-        this.symbolTable.markUsed(iteratorName, node.left.start);
+        this.symbolTable.markUsed(iteratorName, iteratorNode.start);
+      } else {
       }
       
       // Visit the right side (the object being iterated over)
       this.visit(node.right);
       
-      // Visit the loop body
+      // Visit the loop body (which may create its own block scope)
       this.visit(node.body);
     } else {
       // Fallback to default behavior if scope analysis is disabled
