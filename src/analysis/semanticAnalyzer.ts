@@ -408,9 +408,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.functionScopes.push(this.symbolTable.getCurrentScope());
 
       // Declare parameters in the function scope
-      console.log(`[ARROW-DEBUG] Arrow function with ${node.params.length} parameters at scope ${this.symbolTable.getCurrentScope()}`);
       for (const param of node.params) {
-        console.log(`[ARROW-DEBUG] Declaring parameter: ${param.name} in scope ${this.symbolTable.getCurrentScope()}`);
         this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
       }
 
@@ -494,7 +492,6 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (this.options.enableScopeAnalysis) {
       // Check if identifier is defined
       const symbol = this.symbolTable.lookup(node.name);
-      console.log(`[ARROW-DEBUG] Looking up identifier '${node.name}' at scope ${this.symbolTable.getCurrentScope()}, found: ${!!symbol}`);
       if (!symbol) {
         // Check if it's a builtin function before reporting as undefined
         const isBuiltin = allBuiltinFunctions.has(node.name);

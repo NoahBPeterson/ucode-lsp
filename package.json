@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.3.33",
+  "version": "0.3.34",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
@@ -80,6 +80,7 @@
     "@types/node": "24.0.14",
     "@types/vscode": "^1.86.0",
     "@vscode/vsce": "^3.6.0",
+    "mocha": "^11.7.1",
     "ts-loader": "^9.5.2",
     "typescript": "^5.8.3",
     "webpack": "^5.100.1",

@@ -55,7 +55,10 @@ const testFiles = [
     'tests/test-resolv-module.js',
     'tests/test-resolv-import-validation.js',
     'tests/test-socket-module.js',
-    'tests/test-socket-import-validation.js'
+    'tests/test-socket-import-validation.js',
+    'tests/test-string-method-validation.js',
+    'tests/test-missing-builtins-validation.js',
+    'tests/test-fuzz-integration.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
@@ -77,14 +80,25 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('-'.repeat(50));
         
         try {
-            const output = execSync(`bun ${testFile}`, { encoding: 'utf8' });
+            // Use different command for mocha tests
+            const isMochaTest = testFile.includes('test-string-method-validation.js') || 
+                               testFile.includes('test-missing-builtins-validation.js');
+            const timeout = testFile.includes('test-missing-builtins-validation.js') ? '20000' : '15000';
+            const command = isMochaTest 
+                ? `./node_modules/.bin/mocha ${testFile} --timeout ${timeout}`
+                : `bun ${testFile}`;
+            
+            const output = execSync(command, { encoding: 'utf8' });
             console.log(output);
             
-            // Parse test results from output
-            const passedMatch = output.match(/(\d+)\/(\d+) tests passed/);
-            if (passedMatch) {
-                const passed = parseInt(passedMatch[1]);
-                const total = parseInt(passedMatch[2]);
+            // Parse test results from output - handle both bun and mocha formats
+            const bunPassedMatch = output.match(/(\d+)\/(\d+) tests passed/);
+            const mochaPassedMatch = output.match(/(\d+) passing/);
+            const mochaFailedMatch = output.match(/(\d+) failing/);
+            
+            if (bunPassedMatch) {
+                const passed = parseInt(bunPassedMatch[1]);
+                const total = parseInt(bunPassedMatch[2]);
                 totalTestCount += total;
                 
                 if (passed === total) {
@@ -92,6 +106,18 @@ test('Comprehensive Validation Test Suite', async () => {
                     console.log(`✅ Suite ${index + 1} PASSED: ${passed}/${total} tests`);
                 } else {
                     console.log(`❌ Suite ${index + 1} FAILED: ${passed}/${total} tests`);
+                }
+            } else if (mochaPassedMatch) {
+                const passed = parseInt(mochaPassedMatch[1]);
+                const failed = mochaFailedMatch ? parseInt(mochaFailedMatch[1]) : 0;
+                const total = passed + failed;
+                totalTestCount += total;
+                
+                if (failed === 0) {
+                    passedSuites++;
+                    console.log(`✅ Suite ${index + 1} PASSED: ${passed} tests`);
+                } else {
+                    console.log(`❌ Suite ${index + 1} FAILED: ${passed} passed, ${failed} failed`);
                 }
             } else {
                 console.log(`✅ Suite ${index + 1} completed (format may vary)`);
@@ -146,6 +172,12 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('✅ Math module support working correctly');
         console.log('✅ Math module import validation working correctly');
         console.log('✅ Math module aliased import hover working correctly');
+        console.log('✅ String method validation working correctly');
+        console.log('✅ Invalid string methods (toUpperCase, toLowerCase, etc.) properly detected');
+        console.log('✅ String property validation (only length allowed) working correctly');
+        console.log('✅ Missing builtin functions validation working correctly');
+        console.log('✅ All 14 newly added builtin functions provide hover documentation');
+        console.log('✅ Builtin function hover includes parameters, return types, and examples');
     } else {
         console.log('\n❌ Some test suites failed. Please review the output above.');
     }
@@ -159,4 +191,4 @@ test('Comprehensive Validation Test Suite', async () => {
     // Assert that all test suites passed
     expect(passedSuites).toBe(totalSuites);
     expect(totalTestCount).toBeGreaterThan(0);
-});
+}, { timeout: 60000 });
