@@ -21,6 +21,7 @@ import { mathTypeRegistry } from './mathTypes';
 import { nl80211TypeRegistry, Nl80211ObjectType, createNl80211ObjectDataType } from './nl80211Types';
 import { resolvTypeRegistry } from './resolvTypes';
 import { socketTypeRegistry } from './socketTypes';
+import { structTypeRegistry } from './structTypes';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -280,6 +281,19 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (!socketTypeRegistry.isValidImport(importedName)) {
         this.addDiagnostic(
           `'${importedName}' is not exported by the socket module. Available exports: ${socketTypeRegistry.getValidImports().join(', ')}`,
+          specifier.imported.start,
+          specifier.imported.end,
+          DiagnosticSeverity.Error
+        );
+        return; // Don't add invalid import to symbol table
+      }
+    }
+    
+    // Validate struct module imports
+    if (source === 'struct' && specifier.type === 'ImportSpecifier') {
+      if (!structTypeRegistry.isValidImport(importedName)) {
+        this.addDiagnostic(
+          `'${importedName}' is not exported by the struct module. Available exports: ${structTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
           DiagnosticSeverity.Error

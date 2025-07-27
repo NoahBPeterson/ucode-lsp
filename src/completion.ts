@@ -17,6 +17,7 @@ import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { nl80211ObjectRegistry } from './analysis/nl80211Types';
 import { resolvTypeRegistry } from './analysis/resolvTypes';
 import { socketTypeRegistry } from './analysis/socketTypes';
+import { structTypeRegistry } from './analysis/structTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -109,6 +110,13 @@ export function handleCompletion(
             if (socketCompletions.length > 0) {
                 connection.console.log(`Returning ${socketCompletions.length} socket module completions for ${objectName}`);
                 return socketCompletions;
+            }
+            
+            // Check if this is a struct module with completions available
+            const structCompletions = getStructModuleCompletions(objectName, analysisResult);
+            if (structCompletions.length > 0) {
+                connection.console.log(`Returning ${structCompletions.length} struct module completions for ${objectName}`);
+                return structCompletions;
             }
             
             // For member expressions, return empty array - never show builtin functions
@@ -573,6 +581,45 @@ function getSocketModuleCompletions(objectName: string, analysisResult?: Semanti
                     },
                     insertText: constantName,
                     insertTextFormat: InsertTextFormat.PlainText
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
+}
+
+function getStructModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a struct module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'struct') {
+        const functionNames = structTypeRegistry.getFunctionNames();
+        const completions: CompletionItem[] = [];
+        
+        // Add function completions
+        for (const functionName of functionNames) {
+            const signature = structTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'struct module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: structTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
                 });
             }
         }

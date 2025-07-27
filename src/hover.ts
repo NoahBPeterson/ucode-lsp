@@ -14,6 +14,7 @@ import { mathTypeRegistry } from './analysis/mathTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { resolvTypeRegistry } from './analysis/resolvTypes';
 import { socketTypeRegistry } from './analysis/socketTypes';
+import { structTypeRegistry } from './analysis/structTypes';
 import { fsTypeRegistry } from './analysis/fsTypes';
 import { fsModuleFunctions } from './fsBuiltins';
 
@@ -194,6 +195,20 @@ export function handleHover(
                 }
             }
             
+            // Check if this is a struct module function FIRST (before symbol table)
+            if (structTypeRegistry.isStructFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: structTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
             // 1. Check if this is a debug module function FIRST (before symbol table)
             if (debugTypeRegistry.isDebugFunction(word)) {
                 return {
@@ -297,6 +312,14 @@ export function handleHover(
                                     hoverText = socketTypeRegistry.getConstantDocumentation(originalName);
                                 } else {
                                     hoverText = getSocketModuleDocumentation();
+                                }
+                            } else if (symbol.importedFrom === 'struct') {
+                                // Check if this is a specific struct function (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (structTypeRegistry.isStructFunction(originalName)) {
+                                    hoverText = structTypeRegistry.getFunctionDocumentation(originalName);
+                                } else {
+                                    hoverText = getStructModuleDocumentation();
                                 }
                             } else {
                                 hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
@@ -485,6 +508,20 @@ export function handleHover(
                     }
                 };
             }
+        }
+        
+        // Check if this is a struct module function
+        if (structTypeRegistry.isStructFunction(word)) {
+            return {
+                contents: {
+                    kind: MarkupKind.Markdown,
+                    value: structTypeRegistry.getFunctionDocumentation(word)
+                },
+                range: {
+                    start: document.positionAt(wordRange.start),
+                    end: document.positionAt(wordRange.end)
+                }
+            };
         }
         
         // Check if this is a debug module function
@@ -1183,6 +1220,76 @@ file.close();
 - **\`fs.file\`** - File handles with read/write/seek methods
 - **\`fs.proc\`** - Process handles for command execution
 - **\`fs.dir\`** - Directory handles for listing entries
+
+*Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getStructModuleDocumentation(): string {
+    return `## Struct Module
+
+**Binary data packing/unpacking module for ucode scripts**
+
+The struct module provides routines for interpreting byte strings as packed binary data, similar to Python's struct module.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { pack, unpack } from 'struct';
+
+let buffer = pack('bhl', -13, 1234, 444555666);
+let values = unpack('bhl', buffer);
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as struct from 'struct';
+
+let buffer = struct.pack('bhl', -13, 1234, 444555666);
+let values = struct.unpack('bhl', buffer);
+\`\`\`
+
+### Available Functions
+
+**Core functions:**
+- **\`pack()\`** - Pack values into binary string according to format
+- **\`unpack()\`** - Unpack binary string into values according to format
+- **\`new()\`** - Create precompiled format instance for efficiency
+- **\`buffer()\`** - Create struct buffer for incremental operations
+
+### Format String Syntax
+
+**Format characters:**
+- **\`b/B\`** - signed/unsigned char (1 byte)
+- **\`h/H\`** - signed/unsigned short (2 bytes)
+- **\`i/I\`** - signed/unsigned int (4 bytes)
+- **\`l/L\`** - signed/unsigned long (4 bytes)
+- **\`q/Q\`** - signed/unsigned long long (8 bytes)
+- **\`f\`** - float (4 bytes)
+- **\`d\`** - double (8 bytes)
+- **\`s\`** - string
+- **\`?\`** - boolean
+
+**Byte order prefixes:**
+- **\`@\`** - native (default)
+- **\`<\`** - little-endian
+- **\`>\`** - big-endian
+- **\`!\`** - network (big-endian)
+
+### Examples
+
+\`\`\`ucode
+// Pack three integers as network byte order
+let data = pack('!III', 1, 2, 3);
+
+// Unpack the same data
+let [a, b, c] = unpack('!III', data);
+
+// Use precompiled format for efficiency
+let fmt = struct.new('!III');
+let packed = fmt.pack(1, 2, 3);
+let unpacked = fmt.unpack(packed);
+\`\`\`
 
 *Hover over individual function names for detailed parameter and return type information.*`;
 }
