@@ -16,6 +16,7 @@ import { resolvTypeRegistry } from './analysis/resolvTypes';
 import { socketTypeRegistry } from './analysis/socketTypes';
 import { structTypeRegistry } from './analysis/structTypes';
 import { ubusTypeRegistry } from './analysis/ubusTypes';
+import { uciTypeRegistry } from './analysis/uciTypes';
 import { fsTypeRegistry } from './analysis/fsTypes';
 import { fsModuleFunctions } from './fsBuiltins';
 
@@ -171,6 +172,20 @@ export function handleHover(
                     contents: {
                         kind: MarkupKind.Markdown,
                         value: ubusTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a uci module function FIRST (before symbol table)
+            if (uciTypeRegistry.isUciFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: uciTypeRegistry.getFunctionDocumentation(word)
                     },
                     range: {
                         start: document.positionAt(token.pos),
@@ -354,6 +369,14 @@ export function handleHover(
                                     hoverText = ubusTypeRegistry.getConstantDocumentation(originalName);
                                 } else {
                                     hoverText = getUbusModuleDocumentation();
+                                }
+                            } else if (symbol.importedFrom === 'uci') {
+                                // Check if this is a specific uci function (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (uciTypeRegistry.isUciFunction(originalName)) {
+                                    hoverText = uciTypeRegistry.getFunctionDocumentation(originalName);
+                                } else {
+                                    hoverText = getUciModuleDocumentation();
                                 }
                             } else if (symbol.importedFrom === 'struct') {
                                 // Check if this is a specific struct function (could be aliased)
@@ -1433,6 +1456,68 @@ Once connected, the connection object provides methods like:
 ### Additional Information
 
 The ubus module is specifically designed for OpenWrt systems and requires the ubus daemon to be running. It provides both synchronous and asynchronous communication patterns for maximum flexibility.
+
+*Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getUciModuleDocumentation(): string {
+    return `## UCI Module
+
+**OpenWrt UCI configuration interface for ucode scripts**
+
+The uci module provides access to the native OpenWrt libuci API for reading and manipulating UCI configuration files.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { cursor } from 'uci';
+
+let ctx = cursor();
+let hostname = ctx.get_first('system', 'system', 'hostname');
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as uci from 'uci';
+
+let ctx = uci.cursor();
+let hostname = ctx.get_first('system', 'system', 'hostname');
+\`\`\`
+
+### Available Functions
+
+- **\`error()\`** - Query error information
+- **\`cursor()\`** - Instantiate uci cursor for configuration manipulation
+
+### UCI Cursor Methods
+
+The cursor object provides comprehensive methods for configuration management:
+
+- **Configuration Management**: \`load()\`, \`unload()\`, \`configs()\`
+- **Data Access**: \`get()\`, \`get_all()\`, \`get_first()\`, \`foreach()\`
+- **Data Modification**: \`add()\`, \`set()\`, \`delete()\`, \`rename()\`, \`reorder()\`
+- **List Operations**: \`list_append()\`, \`list_remove()\`
+- **Change Management**: \`save()\`, \`commit()\`, \`revert()\`, \`changes()\`
+
+### Configuration Files
+
+UCI configurations are stored in \`/etc/config/\` and can be manipulated through the cursor interface:
+
+\`\`\`ucode
+let ctx = cursor();
+
+// Read configuration values
+let hostname = ctx.get('system', '@system[0]', 'hostname');
+
+// Modify configuration
+ctx.set('system', '@system[0]', 'hostname', 'new-hostname');
+ctx.commit('system');
+\`\`\`
+
+### Additional Information
+
+The uci module is specifically designed for OpenWrt systems and provides safe, transactional access to system configuration files with support for delta records and change tracking.
 
 *Hover over individual function names for detailed parameter and return type information.*`;
 }

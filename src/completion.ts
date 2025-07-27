@@ -19,6 +19,7 @@ import { resolvTypeRegistry } from './analysis/resolvTypes';
 import { socketTypeRegistry } from './analysis/socketTypes';
 import { structTypeRegistry } from './analysis/structTypes';
 import { ubusTypeRegistry } from './analysis/ubusTypes';
+import { uciTypeRegistry } from './analysis/uciTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -118,6 +119,13 @@ export function handleCompletion(
             if (ubusCompletions.length > 0) {
                 connection.console.log(`Returning ${ubusCompletions.length} ubus module completions for ${objectName}`);
                 return ubusCompletions;
+            }
+            
+            // Check if this is a uci module with completions available
+            const uciCompletions = getUciModuleCompletions(objectName, analysisResult);
+            if (uciCompletions.length > 0) {
+                connection.console.log(`Returning ${uciCompletions.length} uci module completions for ${objectName}`);
+                return uciCompletions;
             }
             
             // Check if this is a struct module with completions available
@@ -725,6 +733,45 @@ function createGeneralCompletions(): CompletionItem[] {
     }
     
     return completions;
+}
+
+function getUciModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a uci module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'uci') {
+        const functionNames = uciTypeRegistry.getFunctionNames();
+        const completions: CompletionItem[] = [];
+        
+        // Add function completions
+        for (const functionName of functionNames) {
+            const signature = uciTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'uci module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: uciTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
 }
 
 export function handleCompletionResolve(item: CompletionItem): CompletionItem {

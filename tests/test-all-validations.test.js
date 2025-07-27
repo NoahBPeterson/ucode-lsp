@@ -58,6 +58,7 @@ const testFiles = [
     'tests/test-socket-import-validation.js',
     'tests/test-struct-module.js',
     'tests/test-ubus-module.js',
+    'tests/test-uci-module.js',
     'tests/test-string-method-validation.js',
     'tests/test-missing-builtins-validation.js',
     'tests/test-filter-builtin-validation.js',

@@ -23,6 +23,7 @@ import { resolvTypeRegistry } from './resolvTypes';
 import { socketTypeRegistry } from './socketTypes';
 import { structTypeRegistry } from './structTypes';
 import { ubusTypeRegistry } from './ubusTypes';
+import { uciTypeRegistry } from './uciTypes';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -295,6 +296,21 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (!ubusTypeRegistry.isValidImport(importedName)) {
         this.addDiagnostic(
           `'${importedName}' is not exported by the ubus module. Available exports: ${ubusTypeRegistry.getValidImports().join(', ')}`,
+          specifier.imported.start,
+          specifier.imported.end,
+          DiagnosticSeverity.Error
+        );
+        return; // Don't add invalid import to symbol table
+      }
+    }
+
+    // Validate uci module imports
+    if (source === 'uci' && specifier.type === 'ImportSpecifier') {
+      if (!uciTypeRegistry.isValidImport(importedName)) {
+        this.addDiagnostic(
+          `'${importedName}' is not exported by the uci module. Available exports: ${
+            uciTypeRegistry.getValidImports().join(', ')
+          }`,
           specifier.imported.start,
           specifier.imported.end,
           DiagnosticSeverity.Error

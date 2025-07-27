@@ -384,5 +384,16 @@ export const ubusBuiltinFunctions = new Map<string, string>([
     ['guard', '**guard(handler?)** - Set or get the global ubus exception handler.\n\n**Parameters:**\n- `handler` (function, optional): Exception handler function to set\n\n**Returns:** `function | boolean` - Current handler if no arguments, true if handler was set successfully\n\n**Example:**\n```ucode\nimport { guard } from "ubus";\n// Set exception handler\nguard(function(ex) {\n    print("ubus exception:", ex.message);\n});\n\n// Get current handler\nlet currentHandler = guard();\n```']
 ]);
 
+// ============================================================================
+// UCI Built-in Functions (from uci.c global_fns[])
+// These are global functions, not methods of a uci module object
+// ============================================================================
+
+export const uciBuiltinFunctions = new Map<string, string>([
+    ['error', '**error()** - Query error information.\n\n**Returns:** `string | null` - Description of the last occurred error or null if there is no error information\n\n**Example:**\n```ucode\n// Trigger error\nconst ctx = cursor();\nctx.set("not_existing_config", "test", "1");\n\n// Print error (should yield "Entry not found")\nprint(error(), "\\n");\n```'],
+    
+    ['cursor', '**cursor([config_dir], [delta_dir], [config2_dir], [flags])** - Instantiate uci cursor.\n\n**Parameters:**\n- `config_dir` (string, optional): The directory to search for configuration files (default: "/etc/config")\n- `delta_dir` (string, optional): The directory to save delta records in (default: "/tmp/.uci")\n- `config2_dir` (string, optional): The directory to keep override config files in (default: "/var/run/uci")\n- `flags` (object, optional): Parser flags object with properties "strict" and "print_errors"\n\n**Returns:** `uci.cursor | null` - The instantiated cursor on success, null on error\n\n**Example:**\n```ucode\nimport { cursor } from "uci";\n\nlet ctx = cursor();\nlet hostname = ctx.get_first("system", "system", "hostname");\n\n// Custom configuration\nlet custom_ctx = cursor("/tmp/config", "/tmp/delta");\n```']
+]);
+
 // Merge all builtins for completion
-export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants, ...resolvBuiltinFunctions, ...socketBuiltinFunctions, ...ubusBuiltinFunctions]);
+export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants, ...resolvBuiltinFunctions, ...socketBuiltinFunctions, ...ubusBuiltinFunctions, ...uciBuiltinFunctions]);

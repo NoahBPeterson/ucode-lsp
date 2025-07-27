@@ -240,7 +240,11 @@ export class TypeChecker {
       { name: 'error', parameters: [UcodeType.BOOLEAN], returnType: UcodeType.UNKNOWN, minParams: 0, maxParams: 1 },
       { name: 'connect', parameters: [UcodeType.STRING, UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 2 },
       { name: 'open_channel', parameters: [UcodeType.INTEGER, UcodeType.FUNCTION, UcodeType.FUNCTION, UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 4 },
-      { name: 'guard', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, minParams: 0, maxParams: 1 }
+      { name: 'guard', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, minParams: 0, maxParams: 1 },
+
+      // UCI builtin functions (from uci.c global_fns[])
+      { name: 'error', parameters: [], returnType: UcodeType.UNKNOWN },  // Returns string | null
+      { name: 'cursor', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING, UcodeType.OBJECT], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 4 }  // Returns uci.cursor | null
     ];
 
     for (const builtin of builtins) {
