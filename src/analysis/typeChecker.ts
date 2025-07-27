@@ -86,6 +86,7 @@ export class TypeChecker {
       { name: 'pop', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN },
       { name: 'shift', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN },
       { name: 'unshift', parameters: [UcodeType.ARRAY], returnType: UcodeType.INTEGER, variadic: true },
+      { name: 'filter', parameters: [UcodeType.ARRAY, UcodeType.FUNCTION], returnType: UcodeType.ARRAY },
       { name: 'index', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
       { name: 'rindex', parameters: [UcodeType.STRING, UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
       { name: 'require', parameters: [UcodeType.STRING], returnType: UcodeType.UNKNOWN },
@@ -544,8 +545,19 @@ export class TypeChecker {
     
     const objectType = this.checkNode(node.object);
     
-    if (objectType === UcodeType.ARRAY) {
-      return this.typeCompatibility.getArrayElementType(objectType);
+    // Check for array type (with TypeScript workaround)
+    if ((objectType as any) === UcodeType.ARRAY && !node.computed) {
+      // Arrays in ucode have no properties or methods at all
+      const propertyName = (node.property as IdentifierNode).name;
+      
+      // Invalid property/method access on array
+      this.errors.push({
+        message: `Property '${propertyName}' does not exist on array type. Arrays in ucode have no properties or methods. Use builtin functions instead (e.g., length(array), filter(array, callback)).`,
+        start: node.property.start,
+        end: node.property.end,
+        severity: 'error'
+      });
+      return UcodeType.UNKNOWN;
     }
     
     if (objectType === UcodeType.OBJECT) {
@@ -569,6 +581,7 @@ export class TypeChecker {
       
       return propertyType;
     }
+
 
     return UcodeType.UNKNOWN;
   }

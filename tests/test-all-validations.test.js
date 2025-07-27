@@ -58,6 +58,7 @@ const testFiles = [
     'tests/test-socket-import-validation.js',
     'tests/test-string-method-validation.js',
     'tests/test-missing-builtins-validation.js',
+    'tests/test-filter-builtin-validation.js',
     'tests/test-fuzz-integration.js'
 ];
 
@@ -82,7 +83,8 @@ test('Comprehensive Validation Test Suite', async () => {
         try {
             // Use different command for mocha tests
             const isMochaTest = testFile.includes('test-string-method-validation.js') || 
-                               testFile.includes('test-missing-builtins-validation.js');
+                               testFile.includes('test-missing-builtins-validation.js') ||
+                               testFile.includes('test-filter-builtin-validation.js');
             const timeout = testFile.includes('test-missing-builtins-validation.js') ? '20000' : '15000';
             const command = isMochaTest 
                 ? `./node_modules/.bin/mocha ${testFile} --timeout ${timeout}`

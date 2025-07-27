@@ -529,15 +529,31 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (node.computed) {
         // Computed access: obj[prop] - the property is an expression/variable
         this.visit(node.property);
-      } else {
-        // Non-computed access: obj.prop - the property is a literal property name, not a variable
-        // Don't visit the property to avoid "Undefined variable" errors
-        // This allows property access on any object type (unknown, object, etc.)
-        return;
       }
+      // Note: For non-computed access, don't visit the property to avoid "Undefined variable" errors
     } else {
       // If scope analysis is disabled, use default behavior
       super.visitMemberExpression(node);
+    }
+    
+    // IMPORTANT: Always run type checking for member expressions to validate array/string methods
+    if (this.options.enableTypeChecking) {
+      // Reset errors before type checking this member expression
+      this.typeChecker.resetErrors();
+      
+      // Type check the member expression for invalid array/string methods
+      this.typeChecker.checkNode(node);
+      const result = this.typeChecker.getResult();
+      
+      // Add type errors to diagnostics
+      for (const error of result.errors) {
+        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error);
+      }
+      
+      // Add type warnings to diagnostics
+      for (const warning of result.warnings) {
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
+      }
     }
   }
 
