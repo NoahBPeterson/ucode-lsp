@@ -234,7 +234,13 @@ export class TypeChecker {
       { name: 'connect', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 4 },
       { name: 'listen', parameters: [], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 5 },
       { name: 'sockaddr', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT },
-      { name: 'nameinfo', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 }
+      { name: 'nameinfo', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
+
+      // ubus builtin functions (from ubus.c global_fns[])
+      { name: 'error', parameters: [UcodeType.BOOLEAN], returnType: UcodeType.UNKNOWN, minParams: 0, maxParams: 1 },
+      { name: 'connect', parameters: [UcodeType.STRING, UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 2 },
+      { name: 'open_channel', parameters: [UcodeType.INTEGER, UcodeType.FUNCTION, UcodeType.FUNCTION, UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 4 },
+      { name: 'guard', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, minParams: 0, maxParams: 1 }
     ];
 
     for (const builtin of builtins) {

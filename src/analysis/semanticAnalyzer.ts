@@ -22,6 +22,7 @@ import { nl80211TypeRegistry, Nl80211ObjectType, createNl80211ObjectDataType } f
 import { resolvTypeRegistry } from './resolvTypes';
 import { socketTypeRegistry } from './socketTypes';
 import { structTypeRegistry } from './structTypes';
+import { ubusTypeRegistry } from './ubusTypes';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -289,6 +290,19 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
     }
     
+    // Validate ubus module imports
+    if (source === 'ubus' && specifier.type === 'ImportSpecifier') {
+      if (!ubusTypeRegistry.isValidImport(importedName)) {
+        this.addDiagnostic(
+          `'${importedName}' is not exported by the ubus module. Available exports: ${ubusTypeRegistry.getValidImports().join(', ')}`,
+          specifier.imported.start,
+          specifier.imported.end,
+          DiagnosticSeverity.Error
+        );
+        return; // Don't add invalid import to symbol table
+      }
+    }
+
     // Validate struct module imports
     if (source === 'struct' && specifier.type === 'ImportSpecifier') {
       if (!structTypeRegistry.isValidImport(importedName)) {

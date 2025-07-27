@@ -15,6 +15,7 @@ import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { resolvTypeRegistry } from './analysis/resolvTypes';
 import { socketTypeRegistry } from './analysis/socketTypes';
 import { structTypeRegistry } from './analysis/structTypes';
+import { ubusTypeRegistry } from './analysis/ubusTypes';
 import { fsTypeRegistry } from './analysis/fsTypes';
 import { fsModuleFunctions } from './fsBuiltins';
 
@@ -162,6 +163,37 @@ export function handleHover(
                         end: document.positionAt(token.end)
                     }
                 };
+            }
+            
+            // Check if this is a ubus module function FIRST (before symbol table)
+            if (ubusTypeRegistry.isUbusFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: ubusTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a ubus module constant FIRST (before symbol table)
+            if (ubusTypeRegistry.isUbusConstant(word)) {
+                const constantDoc = ubusTypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
             }
             
             // Check if this is a socket module function FIRST (before symbol table)
@@ -312,6 +344,16 @@ export function handleHover(
                                     hoverText = socketTypeRegistry.getConstantDocumentation(originalName);
                                 } else {
                                     hoverText = getSocketModuleDocumentation();
+                                }
+                            } else if (symbol.importedFrom === 'ubus') {
+                                // Check if this is a specific ubus function or constant (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (ubusTypeRegistry.isUbusFunction(originalName)) {
+                                    hoverText = ubusTypeRegistry.getFunctionDocumentation(originalName);
+                                } else if (ubusTypeRegistry.isUbusConstant(originalName)) {
+                                    hoverText = ubusTypeRegistry.getConstantDocumentation(originalName);
+                                } else {
+                                    hoverText = getUbusModuleDocumentation();
                                 }
                             } else if (symbol.importedFrom === 'struct') {
                                 // Check if this is a specific struct function (could be aliased)
@@ -477,6 +519,37 @@ export function handleHover(
                     end: document.positionAt(wordRange.end)
                 }
             };
+        }
+        
+        // Check if this is a ubus module function
+        if (ubusTypeRegistry.isUbusFunction(word)) {
+            return {
+                contents: {
+                    kind: MarkupKind.Markdown,
+                    value: ubusTypeRegistry.getFunctionDocumentation(word)
+                },
+                range: {
+                    start: document.positionAt(wordRange.start),
+                    end: document.positionAt(wordRange.end)
+                }
+            };
+        }
+        
+        // Check if this is a ubus module constant
+        if (ubusTypeRegistry.isUbusConstant(word)) {
+            const constantDoc = ubusTypeRegistry.getConstantDocumentation(word);
+            if (constantDoc) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: constantDoc
+                    },
+                    range: {
+                        start: document.positionAt(wordRange.start),
+                        end: document.positionAt(wordRange.end)
+                    }
+                };
+            }
         }
         
         // Check if this is a socket module function
@@ -1290,6 +1363,76 @@ let fmt = struct.new('!III');
 let packed = fmt.pack(1, 2, 3);
 let unpacked = fmt.unpack(packed);
 \`\`\`
+
+*Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getUbusModuleDocumentation(): string {
+    return `## ubus Module
+
+**OpenWrt unified bus communication for ucode scripts**
+
+The ubus module provides comprehensive access to the OpenWrt unified bus (ubus) system, enabling communication with system services and daemons.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { connect, error, STATUS_OK } from 'ubus';
+
+let conn = connect();
+if (conn) {
+    let objects = conn.list();
+    print("Available objects:", length(objects));
+} else {
+    print("Connection failed:", error());
+}
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as ubus from 'ubus';
+
+let conn = ubus.connect();
+if (conn) {
+    let result = conn.call("system", "info", {});
+    print("System info:", result);
+}
+\`\`\`
+
+### Available Functions
+
+- **\`connect()\`** - Establish connection to ubus daemon
+- **\`error()\`** - Retrieve last ubus error information
+- **\`open_channel()\`** - Create bidirectional ubus channel
+- **\`guard()\`** - Set/get global ubus exception handler
+
+### Status Constants
+
+- **\`STATUS_OK\`** - Operation completed successfully
+- **\`STATUS_INVALID_COMMAND\`** - Invalid or unknown command
+- **\`STATUS_INVALID_ARGUMENT\`** - Invalid argument provided
+- **\`STATUS_METHOD_NOT_FOUND\`** - Requested method not found
+- **\`STATUS_NOT_FOUND\`** - Requested object not found
+- **\`STATUS_NO_DATA\`** - No data available
+- **\`STATUS_PERMISSION_DENIED\`** - Access denied
+- **\`STATUS_TIMEOUT\`** - Operation timed out
+- **\`STATUS_NOT_SUPPORTED\`** - Operation not supported
+- **\`STATUS_UNKNOWN_ERROR\`** - Unknown error occurred
+- **\`STATUS_CONNECTION_FAILED\`** - Connection failed
+
+### Connection Methods
+
+Once connected, the connection object provides methods like:
+- **\`list()\`** - List available ubus objects
+- **\`call()\`** - Call methods on ubus objects
+- **\`publish()\`** - Publish ubus objects
+- **\`listener()\`** - Register event listeners
+- **\`subscriber()\`** - Create subscriptions
+
+### Additional Information
+
+The ubus module is specifically designed for OpenWrt systems and requires the ubus daemon to be running. It provides both synchronous and asynchronous communication patterns for maximum flexibility.
 
 *Hover over individual function names for detailed parameter and return type information.*`;
 }

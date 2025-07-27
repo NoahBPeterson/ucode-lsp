@@ -369,5 +369,20 @@ export const socketBuiltinFunctions = new Map<string, string>([
     ['strerror', '**strerror(code)** - Returns a string containing a description of the error code.\\n\\n**Parameters:**\\n- `code` (number): Error code (positive for errno, negative for EAI_* constants)\\n\\n**Returns:** `string | null` - Error description or null for unknown codes\\n\\n**Example:**\\n```ucode\\nprint(strerror(-2));  // "Name or service not known"\\nprint(strerror(113)); // "No route to host"\\n```']
 ]);
 
+// ============================================================================
+// ubus Built-in Functions (from ubus.c global_fns[])
+// These are global functions, not methods of a ubus module object
+// ============================================================================
+
+export const ubusBuiltinFunctions = new Map<string, string>([
+    ['error', '**error(numeric?)** - Retrieve the last ubus error.\n\n**Parameters:**\n- `numeric` (boolean, optional): Return error code as integer if true, otherwise return formatted error message\n\n**Returns:** `integer | string | null` - Error code, error message, or null if no error occurred\n\n**Example:**\n```ucode\nimport { connect, error } from "ubus";\nlet conn = connect("/invalid/socket");\nif (!conn) {\n    print("Error:", error());\n    print("Code:", error(true));\n}\n```'],
+    
+    ['connect', '**connect(socket?, timeout?)** - Establish a connection to the ubus daemon.\n\n**Parameters:**\n- `socket` (string, optional): Path to ubus socket (default: system socket)\n- `timeout` (integer, optional): Connection timeout in seconds (default: 30)\n\n**Returns:** `object` - Connection object for further ubus operations\n\n**Example:**\n```ucode\nimport { connect } from "ubus";\nlet conn = connect();\nif (conn) {\n    let objects = conn.list();\n    print("Available objects:", length(objects));\n}\n```'],
+    
+    ['open_channel', '**open_channel(fd, cb?, disconnect_cb?, timeout?)** - Create a ubus channel connection using an existing file descriptor.\n\n**Parameters:**\n- `fd` (integer): File descriptor for the channel\n- `cb` (function, optional): Callback function for incoming requests\n- `disconnect_cb` (function, optional): Callback function for disconnect events\n- `timeout` (integer, optional): Timeout in seconds (default: 30)\n\n**Returns:** `object` - Channel object for bidirectional communication\n\n**Example:**\n```ucode\nimport { open_channel } from "ubus";\nlet channel = open_channel(socket_fd, function(req) {\n    print("Received request:", req.method);\n});\n```'],
+    
+    ['guard', '**guard(handler?)** - Set or get the global ubus exception handler.\n\n**Parameters:**\n- `handler` (function, optional): Exception handler function to set\n\n**Returns:** `function | boolean` - Current handler if no arguments, true if handler was set successfully\n\n**Example:**\n```ucode\nimport { guard } from "ubus";\n// Set exception handler\nguard(function(ex) {\n    print("ubus exception:", ex.message);\n});\n\n// Get current handler\nlet currentHandler = guard();\n```']
+]);
+
 // Merge all builtins for completion
-export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants, ...resolvBuiltinFunctions, ...socketBuiltinFunctions]);
+export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants, ...resolvBuiltinFunctions, ...socketBuiltinFunctions, ...ubusBuiltinFunctions]);

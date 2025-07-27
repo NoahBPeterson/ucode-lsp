@@ -18,6 +18,7 @@ import { nl80211ObjectRegistry } from './analysis/nl80211Types';
 import { resolvTypeRegistry } from './analysis/resolvTypes';
 import { socketTypeRegistry } from './analysis/socketTypes';
 import { structTypeRegistry } from './analysis/structTypes';
+import { ubusTypeRegistry } from './analysis/ubusTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -110,6 +111,13 @@ export function handleCompletion(
             if (socketCompletions.length > 0) {
                 connection.console.log(`Returning ${socketCompletions.length} socket module completions for ${objectName}`);
                 return socketCompletions;
+            }
+            
+            // Check if this is a ubus module with completions available
+            const ubusCompletions = getUbusModuleCompletions(objectName, analysisResult);
+            if (ubusCompletions.length > 0) {
+                connection.console.log(`Returning ${ubusCompletions.length} ubus module completions for ${objectName}`);
+                return ubusCompletions;
             }
             
             // Check if this is a struct module with completions available
@@ -581,6 +589,63 @@ function getSocketModuleCompletions(objectName: string, analysisResult?: Semanti
                     },
                     insertText: constantName,
                     insertTextFormat: InsertTextFormat.PlainText
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
+}
+
+function getUbusModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a ubus module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'ubus') {
+        const functionNames = ubusTypeRegistry.getFunctionNames();
+        const constantNames = ubusTypeRegistry.getConstantNames();
+        const completions: CompletionItem[] = [];
+        
+        // Add function completions
+        for (const functionName of functionNames) {
+            const signature = ubusTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'ubus module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: ubusTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        // Add constant completions
+        for (const constantName of constantNames) {
+            const constant = ubusTypeRegistry.getConstant(constantName);
+            if (constant) {
+                completions.push({
+                    label: constantName,
+                    kind: CompletionItemKind.Constant,
+                    detail: 'ubus module constant',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: ubusTypeRegistry.getConstantDocumentation(constantName)
+                    },
+                    insertText: constantName
                 });
             }
         }
