@@ -123,6 +123,19 @@ export class TypeChecker {
       { name: 'clock', parameters: [], returnType: UcodeType.DOUBLE },
       { name: 'sourcepath', parameters: [], returnType: UcodeType.STRING },
       { name: 'gc', parameters: [], returnType: UcodeType.NULL },
+      { name: 'die', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },
+      { name: 'exists', parameters: [UcodeType.OBJECT, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
+      { name: 'exit', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },
+      { name: 'getenv', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'map', parameters: [UcodeType.ARRAY, UcodeType.FUNCTION], returnType: UcodeType.ARRAY },
+      { name: 'reverse', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
+      { name: 'sort', parameters: [UcodeType.ARRAY], returnType: UcodeType.ARRAY, minParams: 1, maxParams: 2 },
+      { name: 'splice', parameters: [UcodeType.ARRAY, UcodeType.INTEGER], returnType: UcodeType.ARRAY, variadic: true },
+      { name: 'slice', parameters: [UcodeType.UNKNOWN, UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 2, maxParams: 3 },
+      { name: 'warn', parameters: [], returnType: UcodeType.NULL, variadic: true },
+      { name: 'trace', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },
+      { name: 'proto', parameters: [UcodeType.OBJECT], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
+      { name: 'render', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
       
       // File System builtin functions (from fs.c global_fns[])
       { name: 'error', parameters: [], returnType: UcodeType.STRING },
@@ -151,7 +164,77 @@ export class TypeChecker {
       { name: 'readfile', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
       { name: 'writefile', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.INTEGER },
       { name: 'realpath', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'pipe', parameters: [], returnType: UcodeType.ARRAY }
+      { name: 'pipe', parameters: [], returnType: UcodeType.ARRAY },
+      
+      // Math builtin functions (from math.c global_fns[])
+      { name: 'abs', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
+      { name: 'atan2', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.DOUBLE },
+      { name: 'cos', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.DOUBLE },
+      { name: 'exp', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.DOUBLE },
+      { name: 'log', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.DOUBLE },
+      { name: 'sin', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.DOUBLE },
+      { name: 'sqrt', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.DOUBLE },
+      { name: 'pow', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.DOUBLE },
+      { name: 'rand', parameters: [], returnType: UcodeType.INTEGER },
+      { name: 'srand', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.NULL },
+      { name: 'isnan', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN },
+      
+      // Digest builtin functions (from digest.c global_fns[])
+      { name: 'md5', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'sha1', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'sha256', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'md5_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'sha1_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'sha256_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      
+      // Extended digest builtin functions (from digest.c global_fns[])
+      { name: 'md2', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'md4', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'sha384', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'sha512', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'md2_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'md4_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'sha384_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'sha512_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      
+      // Debug builtin functions (from debug.c global_fns[])
+      { name: 'memdump', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN },
+      { name: 'traceback', parameters: [UcodeType.INTEGER], returnType: UcodeType.ARRAY, minParams: 0, maxParams: 1 },
+      { name: 'sourcepos', parameters: [], returnType: UcodeType.OBJECT },
+      { name: 'getinfo', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT },
+      { name: 'getlocal', parameters: [UcodeType.INTEGER, UcodeType.UNKNOWN], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
+      { name: 'setlocal', parameters: [UcodeType.INTEGER, UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.OBJECT, minParams: 2, maxParams: 3 },
+      { name: 'getupval', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.OBJECT },
+      { name: 'setupval', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.OBJECT },
+      
+      // Log builtin functions (from log.c global_fns[])
+      { name: 'openlog', parameters: [UcodeType.STRING, UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, minParams: 0, maxParams: 3 },
+      { name: 'syslog', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 2 },
+      { name: 'closelog', parameters: [], returnType: UcodeType.NULL },
+      { name: 'ulog_open', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN, UcodeType.STRING], returnType: UcodeType.BOOLEAN, minParams: 0, maxParams: 3 },
+      { name: 'ulog', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 2 },
+      { name: 'ulog_close', parameters: [], returnType: UcodeType.NULL },
+      { name: 'ulog_threshold', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, minParams: 0, maxParams: 1 },
+      { name: 'INFO', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 1 },
+      { name: 'NOTE', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 1 },
+      { name: 'WARN', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 1 },
+      { name: 'ERR', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 1 },
+      
+      // NL80211 builtin functions (from nl80211.c global_fns[])
+      // Note: There may be a name collision with fs error() function
+      { name: 'request', parameters: [UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 3 },
+      { name: 'waitfor', parameters: [UcodeType.ARRAY], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
+      { name: 'listener', parameters: [UcodeType.FUNCTION, UcodeType.ARRAY], returnType: UcodeType.OBJECT },
+      
+      // Resolv builtin functions (from resolv.c global_fns[])
+      { name: 'query', parameters: [UcodeType.STRING, UcodeType.ARRAY, UcodeType.OBJECT], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
+      
+      // Socket builtin functions (from socket.c global_fns[])
+      { name: 'create', parameters: [], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 3 },
+      { name: 'connect', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 4 },
+      { name: 'listen', parameters: [], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 5 },
+      { name: 'sockaddr', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT },
+      { name: 'nameinfo', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 }
     ];
 
     for (const builtin of builtins) {
