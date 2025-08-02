@@ -318,9 +318,6 @@ export class BaseVisitor implements VisitorMethods {
     if (node.handler) {
       this.visit(node.handler);
     }
-    if (node.finalizer) {
-      this.visit(node.finalizer);
-    }
   }
 
   visitCatchClause(node: CatchClauseNode): void {

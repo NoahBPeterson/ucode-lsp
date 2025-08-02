@@ -242,7 +242,6 @@ export interface TryStatementNode extends AstNode {
   type: 'TryStatement';
   block: BlockStatementNode;
   handler: CatchClauseNode | null;
-  finalizer: BlockStatementNode | null;
 }
 
 export interface CatchClauseNode extends AstNode {

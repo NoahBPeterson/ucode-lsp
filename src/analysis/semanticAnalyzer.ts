@@ -522,10 +522,6 @@ export class SemanticAnalyzer extends BaseVisitor {
         this.visit(node.handler);
       }
       
-      // Visit the finally block if present
-      if (node.finalizer) {
-        this.visit(node.finalizer);
-      }
     } else {
       super.visit(node);
     }

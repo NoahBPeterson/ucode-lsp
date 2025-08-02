@@ -104,40 +104,8 @@ export enum TokenType {
     TK_TEMPLATE,      // Template literal
     TK_COMMENT,       // Comment
     TK_NEWLINE,       // New line
-    TK_FINALLY,       // 'finally'
-    TK_THROW,         // 'throw'
-    TK_TYPEOF,        // 'typeof'
-    TK_INSTANCEOF,    // 'instanceof'
-    TK_VOID,          // 'void'
-    TK_ARGUMENTS,     // 'arguments'
-    TK_SUPER,         // 'super'
-    TK_YIELD,         // 'yield'
-    TK_ASYNC,         // 'async'
-    TK_AWAIT,         // 'await'
-    TK_STATIC,        // 'static'
-    TK_EXTENDS,       // 'extends'
-    TK_CLASS,         // 'class'
-    TK_INTERFACE,     // 'interface'
-    TK_IMPLEMENTS,    // 'implements'
-    TK_ENUM,          // 'enum'
-    TK_NAMESPACE,     // 'namespace'
-    TK_MODULE,        // 'module'
-    TK_DECLARE,       // 'declare'
-    TK_ABSTRACT,      // 'abstract'
-    TK_PRIVATE,       // 'private'
-    TK_PROTECTED,     // 'protected'
-    TK_PUBLIC,        // 'public'
-    TK_READONLY,      // 'readonly'
-    TK_OVERRIDE,      // 'override'
-    TK_DEBUGGER,      // 'debugger'
-    TK_WITH,          // 'with'
-    TK_DO,            // 'do'
-    TK_PACKAGE,       // 'package'
-    TK_IMPLEMENTS_OP, // 'implements'
-    TK_INTERFACE_OP,  // 'interface'
     TK_LET,           // 'let'
     TK_VAR,           // 'var'
-    TK_INOUT,         // 'inout'
     TK_EOF,           // End of file
     TK_ERROR,         // Error token
     TK_UNKNOWN,       // Unknown token
@@ -188,42 +156,12 @@ export const Keywords: Record<string, TokenType> = {
     'delete': TokenType.TK_DELETE,
     'try': TokenType.TK_TRY,
     'catch': TokenType.TK_CATCH,
-    'finally': TokenType.TK_FINALLY,
-    'throw': TokenType.TK_THROW,
     'switch': TokenType.TK_SWITCH,
     'case': TokenType.TK_CASE,
     'default': TokenType.TK_DEFAULT,
-    'typeof': TokenType.TK_TYPEOF,
-    'instanceof': TokenType.TK_INSTANCEOF,
-    'void': TokenType.TK_VOID,
-    'arguments': TokenType.TK_ARGUMENTS,
-    'super': TokenType.TK_SUPER,
-    'yield': TokenType.TK_YIELD,
-    'async': TokenType.TK_ASYNC,
-    'await': TokenType.TK_AWAIT,
-    'static': TokenType.TK_STATIC,
-    'extends': TokenType.TK_EXTENDS,
-    'class': TokenType.TK_CLASS,
-    'interface': TokenType.TK_INTERFACE,
-    'implements': TokenType.TK_IMPLEMENTS,
-    'enum': TokenType.TK_ENUM,
-    'namespace': TokenType.TK_NAMESPACE,
-    'module': TokenType.TK_MODULE,
-    'declare': TokenType.TK_DECLARE,
-    'abstract': TokenType.TK_ABSTRACT,
-    'private': TokenType.TK_PRIVATE,
-    'protected': TokenType.TK_PROTECTED,
-    'public': TokenType.TK_PUBLIC,
-    'readonly': TokenType.TK_READONLY,
-    'override': TokenType.TK_OVERRIDE,
-    'debugger': TokenType.TK_DEBUGGER,
-    'with': TokenType.TK_WITH,
-    'do': TokenType.TK_DO,
-    'package': TokenType.TK_PACKAGE,
     'export': TokenType.TK_EXPORT,
     'import': TokenType.TK_IMPORT,
     'from': TokenType.TK_FROM,
-    'inout': TokenType.TK_INOUT,
 };
 
 // Operator mapping

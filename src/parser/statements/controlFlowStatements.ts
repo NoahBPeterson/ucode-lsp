@@ -8,7 +8,7 @@ import {
   AstNode, IfStatementNode, WhileStatementNode, ForStatementNode, 
   ForInStatementNode, ReturnStatementNode, BreakStatementNode, 
   ContinueStatementNode, TryStatementNode, CatchClauseNode, 
-  SwitchStatementNode, SwitchCaseNode, BlockStatementNode, 
+  SwitchStatementNode, SwitchCaseNode, 
   IdentifierNode, VariableDeclarationNode, VariableDeclaratorNode
 } from '../../ast/nodes';
 import { DeclarationStatements } from './declarationStatements';
@@ -260,24 +260,17 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
       };
     }
     
-    let finalizer: BlockStatementNode | null = null;
-    if (this.match(TokenType.TK_FINALLY)) {
-      const finallyBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' after 'finally'");
-      finalizer = this.parseBlockStatement(finallyBrace, "finally block");
-    }
-    
-    if (!handler && !finalizer) {
-      this.error("Missing catch or finally after try");
+    if (!handler) {
+      this.error("Missing catch after try");
       return null;
     }
     
     return {
       type: 'TryStatement',
       start,
-      end: (finalizer || handler || block).end,
+      end: (handler || block).end,
       block,
-      handler,
-      finalizer
+      handler
     };
   }
 
