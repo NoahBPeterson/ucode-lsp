@@ -602,6 +602,10 @@ export class TypeChecker {
         return this.builtinValidator.validateRindexFunction(node);
       case 'match':
         return this.builtinValidator.validateMatchFunction(node);
+      case 'split':
+        return this.builtinValidator.validateSplitFunction(node);
+      case 'replace':
+        return this.builtinValidator.validateReplaceFunction(node);
       default:
         return false;
     }

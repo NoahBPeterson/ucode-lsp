@@ -148,4 +148,79 @@ describe('Uloop Type Inference Tests', () => {
         console.log('✅ Timer methods:', timerMethods);
         console.log('✅ Handle methods:', handleMethods);
     });
+
+    it('should provide hover information for delete() methods on uloop objects', () => {
+        // Test the uloop object registry directly to verify delete methods exist
+        const { uloopObjectRegistry } = require('../out/analysis/uloopTypes');
+        
+        // Test that delete methods are properly defined for each uloop object type
+        const handleDeleteMethod = uloopObjectRegistry.getUloopMethod('uloop.handle', 'delete');
+        const processDeleteMethod = uloopObjectRegistry.getUloopMethod('uloop.process', 'delete');
+        const signalDeleteMethod = uloopObjectRegistry.getUloopMethod('uloop.signal', 'delete');
+
+        assert(handleDeleteMethod, 'handle.delete() method should be defined');
+        assert(processDeleteMethod, 'process.delete() method should be defined');  
+        assert(signalDeleteMethod, 'signal.delete() method should be defined');
+
+        assert(handleDeleteMethod.name === 'delete', 'handle delete method name should be "delete"');
+        assert(handleDeleteMethod.description.includes('Unregisters the uloop handle'), 'handle delete should have correct description');
+        assert(handleDeleteMethod.returnType === 'null', 'handle delete should return null');
+
+        assert(processDeleteMethod.name === 'delete', 'process delete method name should be "delete"');
+        assert(processDeleteMethod.description.includes('Unregisters the process'), 'process delete should have correct description');
+        assert(processDeleteMethod.returnType === 'boolean', 'process delete should return boolean');
+
+        assert(signalDeleteMethod.name === 'delete', 'signal delete method name should be "delete"');
+        assert(signalDeleteMethod.description.includes('Uninstalls the signal handler'), 'signal delete should have correct description');
+        assert(signalDeleteMethod.returnType === 'boolean', 'signal delete should return boolean');
+
+        console.log('✅ Handle delete() method:', handleDeleteMethod.description);
+        console.log('✅ Process delete() method:', processDeleteMethod.description);
+        console.log('✅ Signal delete() method:', signalDeleteMethod.description);
+    });
+
+    it('should infer correct return types for uloop method calls', () => {
+        const code = `
+            import * as uloop from 'uloop';
+            let handle = uloop.handle(3, () => {}, uloop.ULOOP_READ);
+            let process = uloop.process("/bin/sleep", ["1"], {}, (exitCode) => {});
+            let signal = uloop.signal("SIGUSR1", () => {});
+            
+            let fd = handle.fileno();
+            let fileHandle = handle.handle();
+            let pid = process.pid();
+            let signo = signal.signo();
+        `;
+
+        const lexer = new UcodeLexer(code);
+        const tokens = lexer.tokenize();
+        const parser = new UcodeParser(tokens);
+        const ast = parser.parse();
+        const result = analyzer.analyze(ast);
+
+        // Check that variables assigned from method calls have proper types
+        const fdSymbol = result.symbolTable.lookup('fd');
+        const fileHandleSymbol = result.symbolTable.lookup('fileHandle');
+        const pidSymbol = result.symbolTable.lookup('pid');  
+        const signoSymbol = result.symbolTable.lookup('signo');
+
+        assert(fdSymbol, 'fd symbol should exist');
+        assert(pidSymbol, 'pid symbol should exist');
+        assert(signoSymbol, 'signo symbol should exist');
+        assert(fileHandleSymbol, 'fileHandle symbol should exist');
+
+        // fd, pid, signo should be integers (not "unknown")
+        assert(fdSymbol.dataType === 'integer' || fdSymbol.dataType === 'number', 'fd should have integer type');
+        assert(pidSymbol.dataType === 'integer' || pidSymbol.dataType === 'number', 'pid should have integer type');
+        assert(signoSymbol.dataType === 'integer' || signoSymbol.dataType === 'number', 'signo should have integer type');
+        
+        // fileHandle should have fs.file type for autocomplete
+        assert(typeof fileHandleSymbol.dataType === 'object', 'fileHandle should have object dataType');
+        assert(fileHandleSymbol.dataType.moduleName === 'fs.file', 'fileHandle should have fs.file type');
+
+        console.log('✅ fd type:', fdSymbol.dataType);
+        console.log('✅ pid type:', pidSymbol.dataType);
+        console.log('✅ signo type:', signoSymbol.dataType);
+        console.log('✅ fileHandle type:', JSON.stringify(fileHandleSymbol.dataType));
+    });
 });

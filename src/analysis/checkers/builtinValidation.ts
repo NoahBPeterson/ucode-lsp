@@ -153,6 +153,126 @@ export class BuiltinValidator {
     return true;
   }
 
+  validateSplitFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length < 2 || node.arguments.length > 3) {
+      this.errors.push({
+        message: `Function 'split' expects 2-3 arguments, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const textArg = node.arguments[0];
+    const separatorArg = node.arguments[1];
+    
+    if (textArg) {
+      const textType = this.getNodeType(textArg);
+      
+      if (textType !== UcodeType.STRING && textType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `Function 'split' expects string as first argument, got ${textType}`,
+          start: textArg.start,
+          end: textArg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    if (separatorArg) {
+      const separatorType = this.getNodeType(separatorArg);
+      
+      // In ucode, split() can accept string or regex pattern as separator
+      if (separatorType !== UcodeType.STRING && separatorType !== UcodeType.OBJECT && separatorType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `Function 'split' expects string or regex pattern as second argument, got ${separatorType}`,
+          start: separatorArg.start,
+          end: separatorArg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    // Optional third argument (limit) should be a number
+    if (node.arguments.length === 3) {
+      const limitArg = node.arguments[2];
+      if (limitArg) {
+        const limitType = this.getNodeType(limitArg);
+        
+        if (limitType !== UcodeType.INTEGER && limitType !== UcodeType.UNKNOWN) {
+          this.errors.push({
+            message: `Function 'split' expects integer as third argument, got ${limitType}`,
+            start: limitArg.start,
+            end: limitArg.end,
+            severity: 'error'
+          });
+        }
+      }
+    }
+
+    return true;
+  }
+
+  validateReplaceFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 3) {
+      this.errors.push({
+        message: `Function 'replace' expects 3 arguments, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const textArg = node.arguments[0];
+    const searchArg = node.arguments[1];
+    const replacementArg = node.arguments[2];
+    
+    if (textArg) {
+      const textType = this.getNodeType(textArg);
+      
+      if (textType !== UcodeType.STRING && textType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `Function 'replace' expects string as first argument, got ${textType}`,
+          start: textArg.start,
+          end: textArg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    if (searchArg) {
+      const searchType = this.getNodeType(searchArg);
+      
+      // In ucode, replace() can accept string or regex pattern as search parameter
+      if (searchType !== UcodeType.STRING && searchType !== UcodeType.OBJECT && searchType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `Function 'replace' expects string or regex pattern as second argument, got ${searchType}`,
+          start: searchArg.start,
+          end: searchArg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    if (replacementArg) {
+      const replacementType = this.getNodeType(replacementArg);
+      
+      // Third argument should be string or function
+      if (replacementType !== UcodeType.STRING && replacementType !== UcodeType.FUNCTION && replacementType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `Function 'replace' expects string or function as third argument, got ${replacementType}`,
+          start: replacementArg.start,
+          end: replacementArg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    return true;
+  }
+
   getErrors(): TypeError[] {
     return this.errors;
   }

@@ -135,6 +135,12 @@ connection.onDidChangeWatchedFiles((_change: DidChangeWatchedFilesParams) => {
 connection.onHover((params) => {
     const cacheEntry = analysisCache.get(params.textDocument.uri);
     const analysisResult = cacheEntry?.result;
+    
+    if (!analysisResult) {
+        console.error(`[SERVER_DEBUG] No analysis result available for hover`);
+        return null;
+    }
+    
     return handleHover(params, documents, analysisResult);
 });
 
