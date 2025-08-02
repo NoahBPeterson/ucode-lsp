@@ -13,6 +13,7 @@ import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnio
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
 import { allBuiltinFunctions } from '../builtins';
 import { fsTypeRegistry } from './fsTypes';
+import { uloopObjectRegistry } from './uloopTypes';
 
 export interface FunctionSignature {
   name: string;
@@ -628,6 +629,40 @@ export class TypeChecker {
         // Method not found on fs type
         this.errors.push({
           message: `Method '${methodName}' does not exist on ${fsType}`,
+          start: node.start,
+          end: node.end,
+          severity: 'error'
+        });
+        return UcodeType.UNKNOWN;
+      }
+
+      // Check if this is a uloop object with a specific type
+      const uloopType = uloopObjectRegistry.isVariableOfUloopType(symbol.dataType);
+      if (uloopType && !node.computed) {
+        const methodName = (node.property as IdentifierNode).name;
+        const method = uloopObjectRegistry.getUloopMethod(uloopType, methodName);
+        if (method) {
+          // Convert return type string to UcodeType
+          switch (method.returnType) {
+            case 'integer':
+              return UcodeType.INTEGER;
+            case 'string | null':
+            case 'string':
+              return UcodeType.STRING;
+            case 'boolean | null':
+            case 'boolean':
+              return UcodeType.BOOLEAN;
+            case 'null':
+              return UcodeType.NULL;
+            case 'fs.file | fs.proc | socket.socket':
+              return UcodeType.OBJECT;
+            default:
+              return UcodeType.UNKNOWN;
+          }
+        }
+        // Method not found on uloop type
+        this.errors.push({
+          message: `Method '${methodName}' does not exist on ${uloopType}`,
           start: node.start,
           end: node.end,
           severity: 'error'

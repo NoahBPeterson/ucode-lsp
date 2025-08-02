@@ -17,6 +17,7 @@ import { socketTypeRegistry } from './analysis/socketTypes';
 import { structTypeRegistry } from './analysis/structTypes';
 import { ubusTypeRegistry } from './analysis/ubusTypes';
 import { uciTypeRegistry } from './analysis/uciTypes';
+import { uloopTypeRegistry, uloopObjectRegistry } from './analysis/uloopTypes';
 import { fsTypeRegistry } from './analysis/fsTypes';
 import { fsModuleFunctions } from './fsBuiltins';
 
@@ -53,6 +54,21 @@ export function handleHover(
                         contents: {
                             kind: MarkupKind.Markdown,
                             value: fsMethodHover
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+                
+                // Handle uloop module function hover (namespace access like uloop.init)
+                const uloopMethodHover = getUloopMethodHover(memberExpressionInfo, analysisResult);
+                if (uloopMethodHover) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: uloopMethodHover
                         },
                         range: {
                             start: document.positionAt(token.pos),
@@ -256,6 +272,37 @@ export function handleHover(
                 };
             }
             
+            // Check if this is a uloop module function FIRST (before symbol table)
+            if (uloopTypeRegistry.isUloopFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: uloopTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a uloop module constant FIRST (before symbol table)
+            if (uloopTypeRegistry.isUloopConstant(word)) {
+                const constantDoc = uloopTypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+            }
+            
             // 1. Check if this is a debug module function FIRST (before symbol table)
             if (debugTypeRegistry.isDebugFunction(word)) {
                 return {
@@ -377,6 +424,16 @@ export function handleHover(
                                     hoverText = uciTypeRegistry.getFunctionDocumentation(originalName);
                                 } else {
                                     hoverText = getUciModuleDocumentation();
+                                }
+                            } else if (symbol.importedFrom === 'uloop') {
+                                // Check if this is a specific uloop function or constant (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (uloopTypeRegistry.isUloopFunction(originalName)) {
+                                    hoverText = uloopTypeRegistry.getFunctionDocumentation(originalName);
+                                } else if (uloopTypeRegistry.isUloopConstant(originalName)) {
+                                    hoverText = uloopTypeRegistry.getConstantDocumentation(originalName);
+                                } else {
+                                    hoverText = getUloopModuleDocumentation();
                                 }
                             } else if (symbol.importedFrom === 'struct') {
                                 // Check if this is a specific struct function (could be aliased)
@@ -1518,6 +1575,119 @@ ctx.commit('system');
 ### Additional Information
 
 The uci module is specifically designed for OpenWrt systems and provides safe, transactional access to system configuration files with support for delta records and change tracking.
+
+*Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getUloopMethodHover(memberInfo: { objectName: string; propertyName: string }, analysisResult: SemanticAnalysisResult): string | null {
+    const { objectName, propertyName } = memberInfo;
+    
+    // Look up the object in the symbol table
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return null;
+    }
+    
+    // Check if this is a uloop namespace import (import * as uloop from 'uloop')
+    if (symbol.type === 'imported' && symbol.importedFrom === 'uloop') {
+        // Check if the property is a valid uloop function
+        if (uloopTypeRegistry.isUloopFunction(propertyName)) {
+            return uloopTypeRegistry.getFunctionDocumentation(propertyName);
+        }
+        
+        // Check if the property is a valid uloop constant
+        if (uloopTypeRegistry.isUloopConstant(propertyName)) {
+            return uloopTypeRegistry.getConstantDocumentation(propertyName);
+        }
+    }
+    
+    // Check if this is a uloop object type with methods
+    const uloopType = uloopObjectRegistry.isVariableOfUloopType(symbol.dataType);
+    if (uloopType) {
+        // Get the method signature for this uloop object type
+        const methodSignature = uloopObjectRegistry.getUloopMethod(uloopType, propertyName);
+        if (methodSignature) {
+            const params = methodSignature.parameters.map(p => {
+                if (p.optional && p.defaultValue !== undefined) {
+                    return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
+                } else if (p.optional) {
+                    return `[${p.name}: ${p.type}]`;
+                } else {
+                    return `${p.name}: ${p.type}`;
+                }
+            }).join(', ');
+            
+            let doc = `**${methodSignature.name}(${params}): ${methodSignature.returnType}**\n\n${methodSignature.description}\n\n`;
+            
+            if (methodSignature.parameters.length > 0) {
+                doc += '**Parameters:**\n';
+                methodSignature.parameters.forEach(param => {
+                    const optional = param.optional ? ' (optional)' : '';
+                    const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
+                    doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
+                });
+                doc += '\n';
+            }
+            
+            doc += `**Returns:** \`${methodSignature.returnType}\``;
+            
+            return doc;
+        }
+    }
+    
+    return null;
+}
+
+function getUloopModuleDocumentation(): string {
+    return `**uloop** - OpenWrt uloop event loop module
+
+Provides event-driven programming capabilities for handling timers, file descriptors, processes, signals, and background tasks.
+
+### Core Functions
+
+- **\`init()\`** - Initialize the event loop
+- **\`run([timeout])\`** - Run the event loop  
+- **\`end()\`** - Stop the event loop
+- **\`done()\`** - Stop and cleanup the event loop
+
+### Event Objects
+
+- **\`timer(timeout, callback)\`** - Create timer objects
+- **\`handle(fd, callback, events)\`** - Monitor file descriptors
+- **\`process(cmd, args, env, callback)\`** - Execute external processes  
+- **\`task(taskFunc, outputCb, inputCb)\`** - Run background tasks
+- **\`interval(timeout, callback)\`** - Create repeating timers
+- **\`signal(signal, callback)\`** - Handle Unix signals
+
+### Constants
+
+- **\`ULOOP_READ\`** (1) - Monitor for read events
+- **\`ULOOP_WRITE\`** (2) - Monitor for write events  
+- **\`ULOOP_EDGE_TRIGGER\`** (4) - Use edge-triggered mode
+- **\`ULOOP_BLOCKING\`** (8) - Keep descriptor blocking
+
+### Usage Examples
+
+\`\`\`ucode
+import * as uloop from 'uloop';
+
+uloop.init();
+
+// Create a timer
+let timer = uloop.timer(1000, () => {
+    printf("Timer fired!\\n");
+});
+
+// Monitor a file descriptor  
+let handle = uloop.handle(fd, (events) => {
+    if (events & uloop.ULOOP_READ) {
+        // Handle read event
+    }
+}, uloop.ULOOP_READ);
+
+// Run the event loop
+uloop.run();
+\`\`\`
 
 *Hover over individual function names for detailed parameter and return type information.*`;
 }

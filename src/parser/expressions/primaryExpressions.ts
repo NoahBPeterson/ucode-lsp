@@ -104,8 +104,17 @@ export abstract class PrimaryExpressions extends ParseRules {
     let isArrowParams = false;
     
     // Try to detect if this is an arrow function parameter list
-    // Look for pattern: (identifier [, identifier]* ) =>
-    if (this.check(TokenType.TK_LABEL)) {
+    // Look for patterns: () => or (identifier [, identifier]* ) =>
+    
+    // Check for empty parameter list: () =>
+    if (this.check(TokenType.TK_RPAREN)) {
+      this.advance(); // consume closing paren
+      if (this.check(TokenType.TK_ARROW)) {
+        isArrowParams = true;
+      }
+    }
+    // Check for parameter list with identifiers: (identifier [, identifier]* ) =>
+    else if (this.check(TokenType.TK_LABEL)) {
       this.advance(); // consume first identifier
       
       // Check if there's a comma (multi-param) or closing paren followed by arrow

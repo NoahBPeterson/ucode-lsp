@@ -20,6 +20,8 @@ import { socketTypeRegistry } from './analysis/socketTypes';
 import { structTypeRegistry } from './analysis/structTypes';
 import { ubusTypeRegistry } from './analysis/ubusTypes';
 import { uciTypeRegistry } from './analysis/uciTypes';
+import { uloopTypeRegistry } from './analysis/uloopTypes';
+import { uloopObjectRegistry } from './analysis/uloopTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -63,6 +65,13 @@ export function handleCompletion(
             if (nl80211ObjectCompletions.length > 0) {
                 connection.console.log(`Returning ${nl80211ObjectCompletions.length} nl80211 object completions for ${objectName}`);
                 return nl80211ObjectCompletions;
+            }
+            
+            // Check if this is a uloop object with completions available
+            const uloopObjectCompletions = getUloopObjectCompletions(objectName, analysisResult);
+            if (uloopObjectCompletions.length > 0) {
+                connection.console.log(`Returning ${uloopObjectCompletions.length} uloop object completions for ${objectName}`);
+                return uloopObjectCompletions;
             }
             
             // Check if this is a debug module with completions available
@@ -126,6 +135,13 @@ export function handleCompletion(
             if (uciCompletions.length > 0) {
                 connection.console.log(`Returning ${uciCompletions.length} uci module completions for ${objectName}`);
                 return uciCompletions;
+            }
+            
+            // Check if this is a uloop module with completions available
+            const uloopCompletions = getUloopModuleCompletions(objectName, analysisResult);
+            if (uloopCompletions.length > 0) {
+                connection.console.log(`Returning ${uloopCompletions.length} uloop module completions for ${objectName}`);
+                return uloopCompletions;
             }
             
             // Check if this is a struct module with completions available
@@ -280,6 +296,56 @@ function getNl80211ObjectCompletions(objectName: string, analysisResult?: Semant
         }
     }
 
+    return completions;
+}
+
+function getUloopObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        console.log(`[ULOOP_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
+        return [];
+    }
+
+    // Look up the symbol in the symbol table
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        console.log(`[ULOOP_COMPLETION] Symbol not found: ${objectName}`);
+        return [];
+    }
+
+    console.log(`[ULOOP_COMPLETION] Symbol found: ${objectName}, dataType: ${JSON.stringify(symbol.dataType)}`);
+
+    // Check if this is a uloop object type
+    const uloopType = uloopObjectRegistry.isVariableOfUloopType(symbol.dataType);
+    if (!uloopType) {
+        console.log(`[ULOOP_COMPLETION] Not a uloop type: ${objectName}`);
+        return [];
+    }
+
+    console.log(`[ULOOP_COMPLETION] Uloop type detected: ${uloopType} for ${objectName}`);
+
+    // Get the methods for this uloop type
+    const methods = uloopObjectRegistry.getMethodsForType(uloopType);
+    const completions: CompletionItem[] = [];
+
+    // Create completion items for each method
+    for (const methodName of methods) {
+        const methodSignature = uloopObjectRegistry.getUloopMethod(uloopType, methodName);
+        if (methodSignature) {
+            completions.push({
+                label: methodName,
+                kind: CompletionItemKind.Method,
+                detail: `${uloopType} method`,
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: methodSignature.description || `${methodName}() method for ${uloopType}`
+                },
+                insertText: `${methodName}($1)`,
+                insertTextFormat: InsertTextFormat.Snippet
+            });
+        }
+    }
+
+    console.log(`[ULOOP_COMPLETION] Generated ${completions.length} completions for ${uloopType}: ${methods.join(', ')}`);
     return completions;
 }
 
@@ -654,6 +720,64 @@ function getUbusModuleCompletions(objectName: string, analysisResult?: SemanticA
                         value: ubusTypeRegistry.getConstantDocumentation(constantName)
                     },
                     insertText: constantName
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
+}
+
+function getUloopModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a uloop module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'uloop') {
+        const functionNames = uloopTypeRegistry.getFunctionNames();
+        const constantNames = uloopTypeRegistry.getConstantNames();
+        const completions: CompletionItem[] = [];
+        
+        // Add function completions
+        for (const functionName of functionNames) {
+            const signature = uloopTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'uloop module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: uloopTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        // Add constant completions
+        for (const constantName of constantNames) {
+            const constant = uloopTypeRegistry.getConstant(constantName);
+            if (constant) {
+                completions.push({
+                    label: constantName,
+                    kind: CompletionItemKind.Constant,
+                    detail: 'uloop module constant',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: uloopTypeRegistry.getConstantDocumentation(constantName)
+                    },
+                    insertText: constantName,
+                    insertTextFormat: InsertTextFormat.PlainText
                 });
             }
         }

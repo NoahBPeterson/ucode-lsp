@@ -59,6 +59,7 @@ const testFiles = [
     'tests/test-struct-module.js',
     'tests/test-ubus-module.js',
     'tests/test-uci-module.js',
+    'tests/test-uloop-module.js',
     'tests/test-string-method-validation.js',
     'tests/test-missing-builtins-validation.js',
     'tests/test-filter-builtin-validation.js',
@@ -87,7 +88,8 @@ test('Comprehensive Validation Test Suite', async () => {
             // Use different command for mocha tests
             const isMochaTest = testFile.includes('test-string-method-validation.js') || 
                                testFile.includes('test-missing-builtins-validation.js') ||
-                               testFile.includes('test-filter-builtin-validation.js');
+                               testFile.includes('test-filter-builtin-validation.js') ||
+                               testFile.includes('test-uloop-module.js');
             const timeout = testFile.includes('test-missing-builtins-validation.js') ? '20000' : '15000';
             const command = isMochaTest 
                 ? `./node_modules/.bin/mocha ${testFile} --timeout ${timeout}`
@@ -177,6 +179,9 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('✅ Math module support working correctly');
         console.log('✅ Math module import validation working correctly');
         console.log('✅ Math module aliased import hover working correctly');
+        console.log('✅ Uloop module support working correctly');
+        console.log('✅ Uloop module import validation working correctly');
+        console.log('✅ Uloop object type inference and method completion working correctly');
         console.log('✅ String method validation working correctly');
         console.log('✅ Invalid string methods (toUpperCase, toLowerCase, etc.) properly detected');
         console.log('✅ String property validation (only length allowed) working correctly');

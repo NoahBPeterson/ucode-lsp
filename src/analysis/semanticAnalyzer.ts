@@ -24,6 +24,7 @@ import { socketTypeRegistry } from './socketTypes';
 import { structTypeRegistry } from './structTypes';
 import { ubusTypeRegistry } from './ubusTypes';
 import { uciTypeRegistry } from './uciTypes';
+import { uloopTypeRegistry, UloopObjectType, createUloopObjectDataType, uloopObjectRegistry } from './uloopTypes';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -169,10 +170,20 @@ export class SemanticAnalyzer extends BaseVisitor {
                 // For nl80211 object variables, also force declaration in global scope to ensure completion access
                 this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
               } else {
-                symbol.dataType = initType as UcodeDataType;
-                // Debug logging for arrow function variables
-                if (node.init.type === 'ArrowFunctionExpression') {
-                          }
+                // Check if this is a uloop function call and assign the appropriate uloop type
+                const uloopType = this.inferUloopType(node.init);
+                if (uloopType) {
+                  const dataType = createUloopObjectDataType(uloopType);
+                  symbol.dataType = dataType;
+                  // For uloop object variables, also force declaration in global scope to ensure completion access
+                  this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+                } else {
+                  symbol.dataType = initType as UcodeDataType;
+                  // Debug logging for arrow function variables
+                  if (node.init.type === 'ArrowFunctionExpression') {
+                    // Function type detected
+                  }
+                }
               }
             }
           }
@@ -310,6 +321,21 @@ export class SemanticAnalyzer extends BaseVisitor {
         this.addDiagnostic(
           `'${importedName}' is not exported by the uci module. Available exports: ${
             uciTypeRegistry.getValidImports().join(', ')
+          }`,
+          specifier.imported.start,
+          specifier.imported.end,
+          DiagnosticSeverity.Error
+        );
+        return; // Don't add invalid import to symbol table
+      }
+    }
+
+    // Validate uloop module imports
+    if (source === 'uloop' && specifier.type === 'ImportSpecifier') {
+      if (!uloopTypeRegistry.isValidImport(importedName)) {
+        this.addDiagnostic(
+          `'${importedName}' is not exported by the uloop module. Available exports: ${
+            uloopTypeRegistry.getValidImports().join(', ')
           }`,
           specifier.imported.start,
           specifier.imported.end,
@@ -644,15 +670,21 @@ export class SemanticAnalyzer extends BaseVisitor {
         
         // Check if this is an fs function call and assign the appropriate fs type
         const fsType = this.inferFsType(node.right);
+        const nl80211Type = this.inferNl80211Type(node.right);
+        const uloopType = this.inferUloopType(node.right);
         let dataType: UcodeDataType;
         
         if (fsType) {
           dataType = createFsObjectDataType(fsType);
+        } else if (nl80211Type) {
+          dataType = createNl80211ObjectDataType(nl80211Type);
+        } else if (uloopType) {
+          dataType = createUloopObjectDataType(uloopType);
         } else {
-          // Check if this is an nl80211 function call and assign the appropriate nl80211 type
-          const nl80211Type = this.inferNl80211Type(node.right);
-          if (nl80211Type) {
-            dataType = createNl80211ObjectDataType(nl80211Type);
+          // Check if this is a method call that returns a specific type
+          const methodReturnType = this.inferMethodReturnType(node.right);
+          if (methodReturnType) {
+            dataType = methodReturnType;
           } else {
             // Use the inferred type from the right-hand side
             const rightType = this.typeChecker.checkNode(node.right);
@@ -675,6 +707,11 @@ export class SemanticAnalyzer extends BaseVisitor {
         
         // For fs object variables, also force declaration in global scope to ensure completion access
         if (fsType) {
+          this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
+        }
+        
+        // For uloop object variables, also force declaration in global scope to ensure completion access
+        if (uloopType) {
           this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
         }
       }
@@ -941,6 +978,101 @@ export class SemanticAnalyzer extends BaseVisitor {
           switch (methodName) {
             case 'listener':
               return Nl80211ObjectType.NL80211_LISTENER;
+          }
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  private inferUloopType(node: AstNode): UloopObjectType | null {
+    // Check if this is a call expression that returns a uloop object
+    if (node.type === 'CallExpression') {
+      const callNode = node as CallExpressionNode;
+      
+      if (callNode.callee.type === 'Identifier') {
+        const funcName = (callNode.callee as IdentifierNode).name;
+        
+        // Map uloop functions to their return types
+        switch (funcName) {
+          case 'timer':
+            return UloopObjectType.ULOOP_TIMER;
+          case 'handle':
+            return UloopObjectType.ULOOP_HANDLE;
+          case 'process':
+            return UloopObjectType.ULOOP_PROCESS;
+          case 'task':
+            return UloopObjectType.ULOOP_TASK;
+          case 'interval':
+            return UloopObjectType.ULOOP_INTERVAL;
+          case 'signal':
+            return UloopObjectType.ULOOP_SIGNAL;
+          default:
+            return null;
+        }
+      }
+      // Handle module member calls like uloop.timer()
+      else if (callNode.callee.type === 'MemberExpression') {
+        const memberNode = callNode.callee as MemberExpressionNode;
+        
+        if (memberNode.object.type === 'Identifier') {
+          const objectName = (memberNode.object as IdentifierNode).name;
+          
+          if (objectName === 'uloop' && memberNode.property.type === 'Identifier') {
+            const methodName = (memberNode.property as IdentifierNode).name;
+            
+            switch (methodName) {
+              case 'timer':
+                return UloopObjectType.ULOOP_TIMER;
+              case 'handle':
+                return UloopObjectType.ULOOP_HANDLE;
+              case 'process':
+                return UloopObjectType.ULOOP_PROCESS;
+              case 'task':
+                return UloopObjectType.ULOOP_TASK;
+              case 'interval':
+                return UloopObjectType.ULOOP_INTERVAL;
+              case 'signal':
+                return UloopObjectType.ULOOP_SIGNAL;
+              default:
+                return null;
+            }
+          }
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  private inferMethodReturnType(node: AstNode): UcodeDataType | null {
+    // Check if this is a call expression on a member expression (method call)
+    if (node.type === 'CallExpression') {
+      const callNode = node as CallExpressionNode;
+      
+      if (callNode.callee.type === 'MemberExpression') {
+        const memberNode = callNode.callee as MemberExpressionNode;
+        
+        if (memberNode.object.type === 'Identifier' && memberNode.property.type === 'Identifier') {
+          const objectName = (memberNode.object as IdentifierNode).name;
+          const methodName = (memberNode.property as IdentifierNode).name;
+          
+          // Look up the object in the symbol table
+          const symbol = this.symbolTable.lookup(objectName);
+          if (symbol) {
+            // Check if this is a uloop object method call
+            const uloopType = uloopObjectRegistry.isVariableOfUloopType(symbol.dataType);
+            if (uloopType) {
+              const method = uloopObjectRegistry.getUloopMethod(uloopType, methodName);
+              if (method) {
+                // Special handling for methods that return fs objects
+                if (method.returnType === 'fs.file | fs.proc | socket.socket') {
+                  // Return fs.file type for autocomplete
+                  return createFsObjectDataType(FsObjectType.FS_FILE);
+                }
+              }
+            }
           }
         }
       }
