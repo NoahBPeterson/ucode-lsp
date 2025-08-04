@@ -533,6 +533,9 @@ export class UcodeLexer {
         // Update noRegexp flag based on the token type
         this.updateNoRegexpFlag(type);
         
+        // Update noKeyword flag based on the token type
+        this.updateNoKeywordFlag(type);
+        
         return {
             type,
             value: value || '',
@@ -595,6 +598,17 @@ export class UcodeLexer {
             this.noRegexp = false; // Allow regex but lookahead will catch stray slashes
         }
         // For other tokens, don't change the flag
+    }
+
+    private updateNoKeywordFlag(tokenType: TokenType): void {
+        // After TK_DOT, the next identifier should be treated as TK_LABEL (member access)
+        if (tokenType === TokenType.TK_DOT) {
+            this.noKeyword = true;
+        } 
+        // Reset flag after consuming one identifier following a dot
+        else if (tokenType === TokenType.TK_LABEL && this.noKeyword) {
+            this.noKeyword = false;
+        }
     }
 
     private emitBuffer(type: TokenType, stripTrailingChars?: string): Token | null {
