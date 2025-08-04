@@ -25,6 +25,7 @@ import { structTypeRegistry } from './structTypes';
 import { ubusTypeRegistry } from './ubusTypes';
 import { uciTypeRegistry } from './uciTypes';
 import { uloopTypeRegistry, UloopObjectType, createUloopObjectDataType, uloopObjectRegistry } from './uloopTypes';
+import { createExceptionObjectDataType } from './exceptionTypes';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -532,9 +533,12 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Enter catch scope
       this.symbolTable.enterScope();
       
-      // Declare the catch parameter if present
+      // Declare the catch parameter as an exception object if present
       if (node.param) {
-        if (!this.symbolTable.declare(node.param.name, SymbolType.PARAMETER, UcodeType.STRING as UcodeDataType, node.param)) {
+        // Create exception object type with standard properties
+        const exceptionObjectType = createExceptionObjectDataType();
+        
+        if (!this.symbolTable.declare(node.param.name, SymbolType.PARAMETER, exceptionObjectType, node.param)) {
           this.addDiagnostic(
             `Parameter '${node.param.name}' is already declared in this scope`,
             node.param.start,

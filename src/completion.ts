@@ -22,6 +22,7 @@ import { ubusTypeRegistry } from './analysis/ubusTypes';
 import { uciTypeRegistry } from './analysis/uciTypes';
 import { uloopTypeRegistry } from './analysis/uloopTypes';
 import { uloopObjectRegistry } from './analysis/uloopTypes';
+import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -149,6 +150,13 @@ export function handleCompletion(
             if (structCompletions.length > 0) {
                 connection.console.log(`Returning ${structCompletions.length} struct module completions for ${objectName}`);
                 return structCompletions;
+            }
+
+            // Check if this is an exception object with completions available
+            const exceptionCompletions = getExceptionObjectCompletions(objectName, analysisResult, text, offset);
+            if (exceptionCompletions.length > 0) {
+                connection.console.log(`Returning ${exceptionCompletions.length} exception object completions for ${objectName}`);
+                return exceptionCompletions;
             }
             
             // For member expressions, return empty array - never show builtin functions
@@ -896,6 +904,127 @@ function getUciModuleCompletions(objectName: string, analysisResult?: SemanticAn
     }
 
     return [];
+}
+
+function getExceptionObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, documentText?: string, cursorOffset?: number): CompletionItem[] {
+    console.log(`[EXCEPTION_COMPLETION] Checking exception completion for: ${objectName}`);
+    
+    // First, try the symbol table approach for properly scoped catch parameters
+    if (analysisResult && analysisResult.symbolTable) {
+        const symbol = analysisResult.symbolTable.lookup(objectName);
+        if (symbol) {
+            console.log(`[EXCEPTION_COMPLETION] Symbol found: ${objectName}, dataType: ${JSON.stringify(symbol.dataType)}`);
+            
+            // Check if this is an exception object (has moduleName 'exception')
+            if (symbol.dataType && typeof symbol.dataType === 'object' && 
+                'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'exception') {
+                
+                console.log(`[EXCEPTION_COMPLETION] Exception object detected via symbol table for ${objectName}`);
+                return createExceptionPropertyCompletions();
+            }
+        } else {
+            console.log(`[EXCEPTION_COMPLETION] Symbol not found in symbol table: ${objectName}`);
+        }
+    }
+    
+    // Fallback: Check if we're in a catch block context using context analysis
+    if (documentText && cursorOffset !== undefined && isCatchParameterCompletion(objectName, documentText, cursorOffset)) {
+        console.log(`[EXCEPTION_COMPLETION] Exception object detected via context analysis for ${objectName}`);
+        return createExceptionPropertyCompletions();
+    }
+    
+    console.log(`[EXCEPTION_COMPLETION] No exception completion found for ${objectName}`);
+    return [];
+}
+
+function createExceptionPropertyCompletions(): CompletionItem[] {
+    const propertyNames = exceptionTypeRegistry.getPropertyNames();
+    const completions: CompletionItem[] = [];
+    
+    for (const propertyName of propertyNames) {
+        const property = exceptionTypeRegistry.getProperty(propertyName);
+        if (property) {
+            completions.push({
+                label: propertyName,
+                kind: CompletionItemKind.Property,
+                detail: `exception property: ${property.type}`,
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: exceptionTypeRegistry.getPropertyDocumentation(propertyName)
+                },
+                insertText: propertyName
+            });
+        }
+    }
+    
+    return completions;
+}
+
+/**
+ * Check if we're trying to complete a catch parameter (exception object)
+ * by analyzing the document context around the cursor position
+ */
+function isCatchParameterCompletion(objectName: string, documentText: string, cursorOffset: number): boolean {
+    console.log(`[CATCH_CONTEXT] Analyzing context for '${objectName}' at offset ${cursorOffset}`);
+    
+    // Get text before cursor to analyze context
+    const textBeforeCursor = documentText.substring(0, cursorOffset);
+    
+    // Simple heuristic: Look for catch block patterns before the current position
+    // Look for catch (paramName) { ... and check if objectName matches paramName
+    const catchPattern = /catch\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\)\s*\{[^}]*$/;
+    const match = textBeforeCursor.match(catchPattern);
+    
+    if (match) {
+        const catchParameterName = match[1];
+        console.log(`[CATCH_CONTEXT] Found catch parameter: '${catchParameterName}'`);
+        
+        if (catchParameterName === objectName) {
+            console.log(`[CATCH_CONTEXT] Match! '${objectName}' is a catch parameter`);
+            return true;
+        }
+    }
+    
+    // Alternative approach: Look for catch blocks and check if we're inside one
+    // This is more complex but more accurate
+    const reversedText = textBeforeCursor.split('').reverse().join('');
+    
+    // Look for } catch ( paramName ) in reverse
+    let braceCount = 0;
+    let inCatchBlock = false;
+    let catchParamName = '';
+    
+    for (let i = 0; i < reversedText.length; i++) {
+        const char = reversedText[i];
+        
+        if (char === '}') {
+            braceCount++;
+        } else if (char === '{') {
+            braceCount--;
+            
+            // If we're at brace level 0, we might be at the start of a catch block
+            if (braceCount === 0 && !inCatchBlock) {
+                // Look for catch (param) pattern before this brace
+                const beforeBrace = reversedText.substring(i + 1);
+                const catchMatch = beforeBrace.match(/^\s*\)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(\s*hctac/); // "catch" in reverse
+                
+                if (catchMatch && catchMatch[1]) {
+                    catchParamName = catchMatch[1].split('').reverse().join(''); // reverse back
+                    inCatchBlock = true;
+                    console.log(`[CATCH_CONTEXT] Found catch block with parameter: '${catchParamName}'`);
+                    break;
+                }
+            }
+        }
+    }
+    
+    if (inCatchBlock && catchParamName === objectName) {
+        console.log(`[CATCH_CONTEXT] Context match! '${objectName}' is in catch block`);
+        return true;
+    }
+    
+    console.log(`[CATCH_CONTEXT] No catch context found for '${objectName}'`);
+    return false;
 }
 
 export function handleCompletionResolve(item: CompletionItem): CompletionItem {

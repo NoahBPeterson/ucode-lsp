@@ -20,6 +20,7 @@ import { uciTypeRegistry } from './analysis/uciTypes';
 import { uloopTypeRegistry, uloopObjectRegistry } from './analysis/uloopTypes';
 import { fsTypeRegistry } from './analysis/fsTypes';
 import { fsModuleFunctions } from './fsBuiltins';
+import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -301,6 +302,20 @@ export function handleHover(
                         }
                     };
                 }
+            }
+
+            // Check if this is an exception property FIRST (before symbol table)
+            if (exceptionTypeRegistry.isExceptionProperty(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: exceptionTypeRegistry.getPropertyDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
             }
             
             // 1. Check if this is a debug module function FIRST (before symbol table)
