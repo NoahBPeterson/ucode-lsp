@@ -867,7 +867,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       
       if (iteratorName && iteratorNode) {
         // Declare the iterator variable in the current scope
-        this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, UcodeType.STRING as UcodeDataType, iteratorNode);
+        // For-in loop iterators should have unknown type since we can't reliably infer the element type
+        this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType, iteratorNode);
         // Mark it as used immediately since it's used by the loop construct itself
         this.symbolTable.markUsed(iteratorName, iteratorNode.start);
       } else {
