@@ -153,7 +153,7 @@ describe('String Method Validation Tests', function() {
 
   describe('String Method Validation on test-string-methods.uc', function() {
     let diagnostics;
-    const testFilePath = path.join(__dirname, '..', 'test-string-methods.uc');
+    const testFilePath = path.join(__dirname, 'test-string-methods.uc');
 
     before(async function() {
       // Ensure the test file exists
