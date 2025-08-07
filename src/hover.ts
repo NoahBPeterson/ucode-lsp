@@ -21,6 +21,7 @@ import { uloopTypeRegistry, uloopObjectRegistry } from './analysis/uloopTypes';
 import { fsTypeRegistry } from './analysis/fsTypes';
 import { fsModuleFunctions } from './fsBuiltins';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
+import { zlibTypeRegistry } from './analysis/zlibTypes';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -304,6 +305,37 @@ export function handleHover(
                 }
             }
 
+            // Check if this is a zlib module function FIRST (before symbol table)
+            if (zlibTypeRegistry.isZlibFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: zlibTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+
+            // Check if this is a zlib module constant FIRST (before symbol table)
+            if (zlibTypeRegistry.isZlibConstant(word)) {
+                const constantDoc = zlibTypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+            }
+
             // Check if this is an exception property FIRST (before symbol table)
             if (exceptionTypeRegistry.isExceptionProperty(word)) {
                 return {
@@ -463,6 +495,16 @@ export function handleHover(
                                     hoverText = structTypeRegistry.getFunctionDocumentation(originalName);
                                 } else {
                                     hoverText = getStructModuleDocumentation();
+                                }
+                            } else if (symbol.importedFrom === 'zlib') {
+                                // Check if this is a specific zlib function or constant (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (zlibTypeRegistry.isZlibFunction(originalName)) {
+                                    hoverText = zlibTypeRegistry.getFunctionDocumentation(originalName);
+                                } else if (zlibTypeRegistry.isZlibConstant(originalName)) {
+                                    hoverText = zlibTypeRegistry.getConstantDocumentation(originalName);
+                                } else {
+                                    hoverText = getZlibModuleDocumentation();
                                 }
                             } else {
                                 hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
@@ -1709,6 +1751,65 @@ let handle = uloop.handle(fd, (events) => {
 // Run the event loop
 uloop.run();
 \`\`\`
+
+*Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getZlibModuleDocumentation(): string {
+    return `## Zlib Module
+
+**Data compression and decompression module**
+
+The zlib module provides single-call and stream-oriented functions for interacting with zlib data compression.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { deflate, inflate, Z_BEST_SPEED, Z_NO_FLUSH } from 'zlib';
+
+const compressed = deflate("Hello World!", true, Z_BEST_SPEED);
+const decompressed = inflate(compressed);
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as zlib from 'zlib';
+
+const compressed = zlib.deflate("Hello World!");
+const decompressed = zlib.inflate(compressed);
+
+// Streaming compression
+const deflater = zlib.deflater(false, zlib.Z_DEFAULT_COMPRESSION);
+deflater.write("data chunk", zlib.Z_NO_FLUSH);
+const result = deflater.read();
+\`\`\`
+
+### Available Functions
+
+- **\`deflate()\`** - Compresses data in Zlib or gzip format
+- **\`inflate()\`** - Decompresses data in Zlib or gzip format  
+- **\`deflater()\`** - Initialize a deflate stream for streaming compression
+- **\`inflater()\`** - Initialize an inflate stream for streaming decompression
+
+### Compression Levels
+
+- **\`Z_NO_COMPRESSION\`** (0) - No compression
+- **\`Z_BEST_SPEED\`** (1) - Fastest compression
+- **\`Z_BEST_COMPRESSION\`** (9) - Maximum compression
+- **\`Z_DEFAULT_COMPRESSION\`** (-1) - Default balance of speed/compression
+
+### Flush Options
+
+- **\`Z_NO_FLUSH\`** (0) - No flushing, accumulate data
+- **\`Z_PARTIAL_FLUSH\`** (1) - Partial flush without closing stream  
+- **\`Z_SYNC_FLUSH\`** (2) - Sync flush, align to byte boundary
+- **\`Z_FULL_FLUSH\`** (3) - Full flush, reset compression state
+- **\`Z_FINISH\`** (4) - Finish stream, no more input expected
+
+### Additional Information
+
+Supports both single-call compression/decompression and streaming operations. The streaming API allows processing large amounts of data in chunks without loading everything into memory.
 
 *Hover over individual function names for detailed parameter and return type information.*`;
 }

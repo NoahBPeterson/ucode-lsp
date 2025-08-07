@@ -23,6 +23,7 @@ import { uciTypeRegistry } from './analysis/uciTypes';
 import { uloopTypeRegistry } from './analysis/uloopTypes';
 import { uloopObjectRegistry } from './analysis/uloopTypes';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
+import { zlibTypeRegistry } from './analysis/zlibTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -150,6 +151,13 @@ export function handleCompletion(
             if (structCompletions.length > 0) {
                 connection.console.log(`Returning ${structCompletions.length} struct module completions for ${objectName}`);
                 return structCompletions;
+            }
+
+            // Check if this is a zlib module with completions available
+            const zlibCompletions = getZlibModuleCompletions(objectName, analysisResult);
+            if (zlibCompletions.length > 0) {
+                connection.console.log(`Returning ${zlibCompletions.length} zlib module completions for ${objectName}`);
+                return zlibCompletions;
             }
 
             // Check if this is an exception object with completions available
@@ -896,6 +904,62 @@ function getUciModuleCompletions(objectName: string, analysisResult?: SemanticAn
                     },
                     insertText: `${functionName}($1)`,
                     insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        return completions;
+    }
+
+    return [];
+}
+
+function getZlibModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a zlib module import (namespace import)
+    if (symbol.type === 'imported' && symbol.importedFrom === 'zlib') {
+        const functionNames = zlibTypeRegistry.getFunctionNames();
+        const constantNames = zlibTypeRegistry.getConstantNames();
+        const completions: CompletionItem[] = [];
+        
+        // Add function completions
+        for (const functionName of functionNames) {
+            const signature = zlibTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'zlib module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: zlibTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        // Add constant completions
+        for (const constantName of constantNames) {
+            const constant = zlibTypeRegistry.getConstant(constantName);
+            if (constant) {
+                completions.push({
+                    label: constantName,
+                    kind: CompletionItemKind.Constant,
+                    detail: `zlib constant: ${constant.type}`,
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: zlibTypeRegistry.getConstantDocumentation(constantName)
+                    }
                 });
             }
         }

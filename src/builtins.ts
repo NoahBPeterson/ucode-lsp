@@ -334,6 +334,21 @@ export const nl80211BuiltinConstants = new Map<string, string>([
 ]);
 
 // ============================================================================
+// Zlib Built-in Functions (from zlib.c global_fns[])
+// These are global functions, not methods of a zlib module object
+// ============================================================================
+
+export const zlibBuiltinFunctions = new Map<string, string>([
+    ['deflate', '**deflate(str_or_resource, gzip?, level?)** - Compresses data in Zlib or gzip format.\n\n**Parameters:**\n- `str_or_resource` (string | object): The string or resource object to be compressed. If an object with a read() method is given, it will be read in chunks for incremental compression\n- `gzip` (boolean, optional, default: false): Add a gzip header if true (creates gzip-compliant output), otherwise defaults to Zlib format\n- `level` (number, optional, default: Z_DEFAULT_COMPRESSION): The compression level (0-9) where 0=no compression, 1=fastest, 9=best compression\n\n**Returns:** `string | null` - The compressed data as a string, or null on error\n\n**Example:**\n```ucode\n// deflate content using default compression\nconst deflated = deflate(content);\n\n// deflate content with gzip format and fastest compression\nconst deflated = deflate(content, true, Z_BEST_SPEED);\n```'],
+
+    ['inflate', '**inflate(str_or_resource)** - Decompresses data in Zlib or gzip format.\n\n**Parameters:**\n- `str_or_resource` (string | object): The string or resource object to be decompressed. If an object with a read() method is given, it will be read in chunks for incremental decompression\n\n**Returns:** `string | null` - The decompressed data as a string, or null on error\n\n**Example:**\n```ucode\n// inflate compressed data\nconst inflated = inflate(compressed_data);\n```'],
+
+    ['deflater', '**deflater(gzip?, level?)** - Initializes a deflate stream for streaming compression.\n\n**Parameters:**\n- `gzip` (boolean, optional, default: false): Add a gzip header if true (creates gzip-compliant output), otherwise defaults to Zlib format\n- `level` (number, optional, default: Z_DEFAULT_COMPRESSION): The compression level (0-9)\n\n**Returns:** `zlib.deflate | null` - A stream handle that can be used with write() and read() methods, or null on error\n\n**Example:**\n```ucode\n// create streaming deflate\nconst zstrmd = deflater(true, Z_BEST_SPEED);\nzstrmd.write("data", Z_NO_FLUSH);\nconst compressed = zstrmd.read();\n```'],
+
+    ['inflater', '**inflater()** - Initializes an inflate stream for streaming decompression.\n\n**Returns:** `zlib.inflate | null` - A stream handle that can be used with write() and read() methods for streaming decompression. Can process either Zlib or gzip data, or null on error\n\n**Example:**\n```ucode\n// create streaming inflate\nconst zstrmi = inflater();\nzstrmi.write(compressed_data, Z_NO_FLUSH);\nconst decompressed = zstrmi.read();\n```']
+]);
+
+// ============================================================================
 // Resolv Built-in Functions (from resolv.c global_fns[])
 // These are global functions, not methods of a resolv module object
 // ============================================================================
@@ -396,4 +411,4 @@ export const uciBuiltinFunctions = new Map<string, string>([
 ]);
 
 // Merge all builtins for completion
-export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants, ...resolvBuiltinFunctions, ...socketBuiltinFunctions, ...ubusBuiltinFunctions, ...uciBuiltinFunctions]);
+export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants, ...resolvBuiltinFunctions, ...socketBuiltinFunctions, ...ubusBuiltinFunctions, ...uciBuiltinFunctions, ...zlibBuiltinFunctions]);

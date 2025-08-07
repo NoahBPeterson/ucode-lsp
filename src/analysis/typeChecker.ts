@@ -245,7 +245,13 @@ export class TypeChecker {
 
       // UCI builtin functions (from uci.c global_fns[])
       { name: 'error', parameters: [], returnType: UcodeType.UNKNOWN },  // Returns string | null
-      { name: 'cursor', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING, UcodeType.OBJECT], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 4 }  // Returns uci.cursor | null
+      { name: 'cursor', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING, UcodeType.OBJECT], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 4 },  // Returns uci.cursor | null
+
+      // Zlib builtin functions (from zlib.c global_fns[])
+      { name: 'deflate', parameters: [UcodeType.UNKNOWN, UcodeType.BOOLEAN, UcodeType.INTEGER], returnType: UcodeType.STRING, minParams: 1, maxParams: 3 },  // str_or_resource, gzip?, level? -> string | null
+      { name: 'inflate', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.STRING, minParams: 1, maxParams: 1 },  // str_or_resource -> string | null
+      { name: 'deflater', parameters: [UcodeType.BOOLEAN, UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 2 },  // gzip?, level? -> zlib.deflate | null
+      { name: 'inflater', parameters: [], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 0 }  // () -> zlib.inflate | null
     ];
 
     for (const builtin of builtins) {
