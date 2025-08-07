@@ -123,6 +123,77 @@ export class SemanticAnalyzer extends BaseVisitor {
       let symbolType = SymbolType.VARIABLE;
       let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
       
+      // Special handling for require() calls
+      if (node.init && node.init.type === 'CallExpression') {
+        const callExpr = node.init as any; // CallExpressionNode
+        if (callExpr.callee && callExpr.callee.type === 'Identifier' && callExpr.callee.name === 'require') {
+          // Check if it's requiring a known module
+          if (callExpr.arguments && callExpr.arguments.length === 1) {
+            const arg = callExpr.arguments[0];
+            if (arg.type === 'Literal' && typeof arg.value === 'string') {
+              const moduleName = arg.value;
+              // Handle known modules
+              switch (moduleName) {
+                case 'fs':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'fs' };
+                  break;
+                case 'debug':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'debug' };
+                  break;
+                case 'log':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'log' };
+                  break;
+                case 'math':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'math' };
+                  break;
+                case 'ubus':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'ubus' };
+                  break;
+                case 'uci':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'uci' };
+                  break;
+                case 'uloop':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'uloop' };
+                  break;
+                case 'digest':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'digest' };
+                  break;
+                case 'nl80211':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'nl80211' };
+                  break;
+                case 'resolv':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'resolv' };
+                  break;
+                case 'rtnl':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'rtnl' };
+                  break;
+                case 'socket':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'socket' };
+                  break;
+                case 'struct':
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName: 'struct' };
+                  break;
+                default:
+                  break;
+              }
+            }
+          }
+        }
+      }
+      
       // Check for redeclaration in current scope
       if (!this.symbolTable.declare(name, symbolType, dataType, node.id)) {
         this.addDiagnostic(
@@ -179,10 +250,13 @@ export class SemanticAnalyzer extends BaseVisitor {
                   // For uloop object variables, also force declaration in global scope to ensure completion access
                   this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
                 } else {
-                  symbol.dataType = initType as UcodeDataType;
-                  // Debug logging for arrow function variables
-                  if (node.init.type === 'ArrowFunctionExpression') {
-                    // Function type detected
+                  // Don't overwrite module types that were set during declaration
+                  if (symbol.type !== SymbolType.MODULE) {
+                    symbol.dataType = initType as UcodeDataType;
+                    // Debug logging for arrow function variables
+                    if (node.init.type === 'ArrowFunctionExpression') {
+                      // Function type detected
+                    }
                   }
                 }
               }
@@ -625,6 +699,62 @@ export class SemanticAnalyzer extends BaseVisitor {
         this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
       }
     }
+    
+    // Validate fs module method calls
+    this.validateFsModuleMethod(node);
+  }
+  
+  private validateFsModuleMethod(node: MemberExpressionNode): void {
+    // Only check non-computed member expressions (obj.method)
+    if (node.computed || node.property.type !== 'Identifier') {
+      return;
+    }
+    
+    // Check if this is a call on the fs module object
+    if (node.object.type === 'Identifier') {
+      const objectName = (node.object as IdentifierNode).name;
+      const methodName = (node.property as IdentifierNode).name;
+      
+      // Look up the object symbol
+      const symbol = this.symbolTable.lookup(objectName);
+      if (!symbol) {
+        return;
+      }
+      
+      // Check if this is an fs module object
+      if (symbol.type === SymbolType.MODULE && 
+          typeof symbol.dataType === 'object' && 
+          symbol.dataType.type === UcodeType.OBJECT &&
+          'moduleName' in symbol.dataType &&
+          symbol.dataType.moduleName === 'fs') {
+        
+        // Check if the method is valid for the fs module
+        if (!this.isValidFsModuleMethod(methodName)) {
+          this.addDiagnostic(
+            `Method '${methodName}' is not available on the fs module. Did you mean to call this on a file handle? Use fs.open() first.`,
+            node.property.start,
+            node.property.end,
+            DiagnosticSeverity.Error
+          );
+          return;
+        }
+      }
+    }
+  }
+  
+  private isValidFsModuleMethod(methodName: string): boolean {
+    // Valid fs module methods from the C code
+    const validFsMethods = new Set([
+      'error', 'open', 'fdopen', 'opendir', 'popen', 'readlink', 
+      'stat', 'lstat', 'mkdir', 'rmdir', 'symlink', 'unlink', 
+      'getcwd', 'chdir', 'chmod', 'chown', 'rename', 'glob', 
+      'dirname', 'basename', 'lsdir', 'mkstemp', 'access', 
+      'readfile', 'writefile', 'realpath', 'pipe',
+      // Pre-defined handles
+      'stdin', 'stdout', 'stderr'
+    ]);
+    
+    return validFsMethods.has(methodName);
   }
 
   visitCallExpression(node: CallExpressionNode): void {

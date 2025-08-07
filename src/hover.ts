@@ -334,7 +334,13 @@ export function handleHover(
             
             // 1. Check for user-defined symbols using the analysis cache
             if (analysisResult) {
-                const symbol = analysisResult.symbolTable.lookup(word);
+                let symbol = analysisResult.symbolTable.lookup(word);
+                
+                // If regular lookup fails, try position-aware lookup for scope-sensitive symbols
+                if (!symbol) {
+                    symbol = analysisResult.symbolTable.lookupAtPosition(word, offset);
+                }
+                
                 if (symbol) {
                     let hoverText = '';
                     switch (symbol.type) {

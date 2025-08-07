@@ -74,10 +74,15 @@ export function typeToString(type: UcodeDataType): string {
     return type.types.join(' | ');
   }
   
-  // Handle fs object types (ModuleType)
+  // Handle module types (ModuleType)
   if (typeof type === 'object' && type.type === UcodeType.OBJECT && 'moduleName' in type) {
     const moduleType = type as ModuleType;
-    return moduleType.moduleName; // Returns "fs.file", "fs.dir", or "fs.proc"
+    // For actual fs objects, return the specific type (fs.file, fs.dir, fs.proc)
+    if (moduleType.moduleName.startsWith('fs.')) {
+      return moduleType.moduleName;
+    }
+    // For module references, return a more descriptive format
+    return `${moduleType.moduleName} module`;
   }
   
   return type as string;
@@ -257,6 +262,24 @@ export class SymbolTable {
         const symbol = scope.get(name);
         if (symbol) {
           return symbol;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Position-aware lookup that searches all scopes for symbols that contain the given position
+  lookupAtPosition(name: string, position: number): Symbol | null {
+    // Search all scopes for symbols with the given name
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      const scope = this.scopes[i];
+      if (scope) {
+        const symbol = scope.get(name);
+        if (symbol) {
+          // Check if the symbol is accessible from this position (symbol was declared before this position)
+          if (symbol.declaredAt !== undefined && symbol.declaredAt <= position) {
+            return symbol;
+          }
         }
       }
     }
