@@ -51,6 +51,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private loopScopes: number[] = []; // Track loop scope levels
   private currentFunctionNode: FunctionDeclarationNode | null = null;
   private functionReturnTypes = new Map<FunctionDeclarationNode, UcodeType[]>();
+  private processingFunctionCallCallee = false; // Track when processing function call callee
 
   constructor(textDocument: TextDocument, options: SemanticAnalysisOptions = {}) {
     super();
@@ -639,7 +640,10 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (!symbol) {
         // Check if it's a builtin function before reporting as undefined
         const isBuiltin = allBuiltinFunctions.has(node.name);
-        if (!isBuiltin) {
+        
+        // Don't report "Undefined variable" if this identifier is a function call callee
+        // The TypeChecker will handle "Undefined function" diagnostic for function calls
+        if (!isBuiltin && !this.processingFunctionCallCallee) {
           this.addDiagnostic(
             `Undefined variable: ${node.name}`,
             node.start,
@@ -786,8 +790,17 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
     }
 
-    // Continue with default traversal
-    super.visitCallExpression(node);
+    // Visit the callee with special context to prevent "Undefined variable" for function calls
+    this.processingFunctionCallCallee = true;
+    this.visit(node.callee);
+    this.processingFunctionCallCallee = false;
+    
+    // Visit arguments normally
+    for (const arg of node.arguments) {
+      this.visit(arg);
+    }
+    
+    // DON'T call super.visitCallExpression() to avoid double traversal
   }
 
   visitAssignmentExpression(node: AssignmentExpressionNode): void {
