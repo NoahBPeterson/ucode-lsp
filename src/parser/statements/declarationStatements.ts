@@ -74,7 +74,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     };
   }
 
-  protected parseFunctionDeclaration(): FunctionDeclarationNode | null {
+  protected parseFunctionDeclaration(isExported: boolean = false): FunctionDeclarationNode | null {
     const start = this.previous()!.pos;
 
     if (!this.check(TokenType.TK_LABEL)) {
@@ -106,14 +106,15 @@ export abstract class DeclarationStatements extends ExpressionParser {
     const hadSemicolon = this.check(TokenType.TK_SCOL);
     if (hadSemicolon) {
       this.advance();
-    } else {
-      // Record error but continue parsing
-      this.errorAt("Functions must end with a semicolon ';'", 
+    } else if (isExported) {
+      // Only exported functions MUST end with semicolon
+      this.errorAt("Exported functions must end with a semicolon ';'", 
                    body.end, 
                    body.end);
       // Reset panic mode for missing semicolon
       this.panicMode = false;
     }
+    // Regular (non-exported) functions don't require semicolons
 
     return {
       type: 'FunctionDeclaration',
@@ -249,7 +250,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
       let declaration: AstNode | null = null;
       
       if (this.match(TokenType.TK_FUNC)) {
-        declaration = this.parseFunctionDeclaration();
+        declaration = this.parseFunctionDeclaration(true); // Exported function
       } else if (this.match(TokenType.TK_LOCAL, TokenType.TK_CONST)) {
         declaration = this.parseVariableDeclaration();
       }
@@ -273,7 +274,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
   private parseExportDefaultDeclaration(): AstNode | null {
     // For export default, we can export a function or expression
     if (this.match(TokenType.TK_FUNC)) {
-      return this.parseFunctionDeclaration();
+      return this.parseFunctionDeclaration(true); // Exported function
     } else {
       // Parse as expression
       const expr = this.parseExpression();
