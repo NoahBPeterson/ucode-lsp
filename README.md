@@ -1,14 +1,20 @@
 # ucode Language Server Protocol (LSP)
 
-A comprehensive Language Server Protocol implementation for the [ucode scripting language](https://github.com/jow-/ucode), providing syntax highlighting, function definition go-to, basic type inference, and syntax error diagnostics.
+A comprehensive Language Server Protocol implementation for the [ucode scripting language](https://github.com/jow-/ucode), providing autocompletion of known module functions and builtins, syntax highlighting, function definition go-to, basic type inference, and syntax error diagnostics.
 
 ## Features
 
-### Syntax Analysis
+### Autocompletion
+- Context-aware completions for builtin functions, variables, and module members
+- Module-specific completions (e.g., `fs.open()`, `fs.readfile()`)
+- Variable name suggestions from current scope including imported modules
+- Function signature hints and parameter information
+
+### Error Detection & Diagnostics
 - Precise error reporting with line/column positions. No more vague "left-hand side is not a function" errors.
-- Context-aware diagnostics: 
-- Basic Type Inference with union types (`integer | string | null`), so you are at least vaguely aware of what data types you are working with before deploying your code to an OpenWRT router.
-- Function call validation against known signatures
+- Context-aware diagnostics
+- Basic Type Inference with union types (`integer | string | null`), so you are aware of what data types you are working with before deploying your code.
+- Function call validation against known signatures with proper argument count checking
 - Scope analysis detecting undefined variables and shadowing
 
 ### Code Navigation
@@ -52,19 +58,29 @@ let x = 5;
 function test() {
     print(y);               // Error: 'y' is not defined
     let x = 10;             // Warning: shadows outer 'x'
+    let e = open();         // Error: Undefined function: open
+};
+
+function myFunc() {         // Error: Functions must end with a semicolon ';'
+    return 42;
 }
 ```
 
-### Module Support
+### Module Support & Autocompletion
 Complete IntelliSense for built-in modules:
 ```ucode
 import { create, connect, AF_INET, SOCK_STREAM } from 'socket';
 import * as math from 'math';
 import { query } from 'resolv';
+const fs = require('fs');
 
 let sock = create(AF_INET, SOCK_STREAM);  // ✅ Full autocomplete
 let result = connect(sock, "example.com", "80");
 let sqrt_val = math.sqrt(16);             // ✅ Namespace imports
+
+// Smart module-specific completions
+let file = fs.open("test.txt", "r");      // ✅ fs.open(), fs.readfile(), fs.writefile()...
+let content = fs.readfile("data.txt");    // ✅ All 27 fs module functions available
 ```
 
 **Supported Modules:**
@@ -75,7 +91,9 @@ let sqrt_val = math.sqrt(16);             // ✅ Namespace imports
 - **nl80211** - WiFi/802.11 networking
 - **debug** - Runtime debugging and introspection
 - **digest** - Cryptographic hash functions
-- **fs** - File system operations
+- **fs** - File system operations with comprehensive autocompletion for all 27 functions (open, readfile, writefile, stat, access, etc.)
+- **uci** - OpenWrt UCI configuration management
+- **uloop** - Event loop and timer functionality
 
 ### Code Navigation
 ```ucode
@@ -119,14 +137,13 @@ function process() {
 
 ### Testing
 ```bash
+# Primary testing with Bun
 bun test
-```
 
-### Adding New Features
-1. Update AST nodes in `src/ast/nodes.ts`
-2. Extend parser rules in `src/parser/parser.ts`
-3. Add semantic analysis in `src/analysis/`
-4. Update documentation
+# For Bun compatibility issues, use Node.js fallback:
+npx mocha tests/test-real-double-diagnostic-fix.test.js
+node tests/specific-test-file.js
+```
 
 ## License
 
