@@ -138,34 +138,7 @@ export class TypeChecker {
       { name: 'proto', parameters: [UcodeType.OBJECT], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
       { name: 'render', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
       
-      // File System builtin functions (from fs.c global_fns[])
-      { name: 'error', parameters: [], returnType: UcodeType.STRING },
-      { name: 'open', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.OBJECT, minParams: 2, maxParams: 3 },
-      { name: 'fdopen', parameters: [UcodeType.INTEGER, UcodeType.STRING], returnType: UcodeType.OBJECT },
-      { name: 'opendir', parameters: [UcodeType.STRING], returnType: UcodeType.OBJECT },
-      { name: 'popen', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.OBJECT },
-      { name: 'readlink', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'stat', parameters: [UcodeType.STRING], returnType: UcodeType.OBJECT },
-      { name: 'lstat', parameters: [UcodeType.STRING], returnType: UcodeType.OBJECT },
-      { name: 'mkdir', parameters: [UcodeType.STRING], returnType: UcodeType.BOOLEAN, minParams: 1, maxParams: 2 },
-      { name: 'rmdir', parameters: [UcodeType.STRING], returnType: UcodeType.BOOLEAN },
-      { name: 'symlink', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
-      { name: 'unlink', parameters: [UcodeType.STRING], returnType: UcodeType.BOOLEAN },
-      { name: 'getcwd', parameters: [], returnType: UcodeType.STRING },
-      { name: 'chdir', parameters: [UcodeType.STRING], returnType: UcodeType.BOOLEAN },
-      { name: 'chmod', parameters: [UcodeType.STRING, UcodeType.INTEGER], returnType: UcodeType.BOOLEAN },
-      { name: 'chown', parameters: [UcodeType.STRING, UcodeType.INTEGER, UcodeType.INTEGER], returnType: UcodeType.BOOLEAN },
-      { name: 'rename', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
-      { name: 'glob', parameters: [UcodeType.STRING], returnType: UcodeType.ARRAY },
-      { name: 'dirname', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'basename', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'lsdir', parameters: [UcodeType.STRING], returnType: UcodeType.ARRAY },
-      { name: 'mkstemp', parameters: [UcodeType.STRING], returnType: UcodeType.OBJECT },
-      { name: 'access', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
-      { name: 'readfile', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'writefile', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.INTEGER },
-      { name: 'realpath', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'pipe', parameters: [], returnType: UcodeType.ARRAY },
+      // NOTE: File System functions (error, open, readfile, etc.) are now fs.* module functions only
       
       // Math builtin functions (from math.c global_fns[])
       { name: 'abs', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
@@ -514,16 +487,18 @@ export class TypeChecker {
       }
     }
 
-    // For other callees
-    const calleeType = this.checkNode(node.callee);
-    if (!this.typeCompatibility.isValidCallTarget(calleeType)) {
-      this.errors.push({
-        message: `Cannot call ${calleeType} as function`,
-        start: node.start,
-        end: node.end,
-        severity: 'error'
-      });
-      return UcodeType.UNKNOWN;
+    // For other callees (but not Identifiers, which we already handled above)
+    if (node.callee.type !== 'Identifier') {
+      const calleeType = this.checkNode(node.callee);
+      if (!this.typeCompatibility.isValidCallTarget(calleeType)) {
+        this.errors.push({
+          message: `Cannot call ${calleeType} as function`,
+          start: node.start,
+          end: node.end,
+          severity: 'error'
+        });
+        return UcodeType.UNKNOWN;
+      }
     }
 
     return UcodeType.UNKNOWN;
@@ -532,7 +507,7 @@ export class TypeChecker {
   private validateBuiltinCall(node: CallExpressionNode, signature: FunctionSignature): UcodeType {
     // First check special cases
     if (this.validateSpecialBuiltins(node, signature)) {
-      return this.getReturnTypeForFsFunction(signature.name);
+      return signature.returnType;
     }
 
     const argCount = node.arguments.length;
@@ -574,27 +549,9 @@ export class TypeChecker {
       }
     }
 
-    return this.getReturnTypeForFsFunction(signature.name);
+    return signature.returnType;
   }
 
-  private getReturnTypeForFsFunction(functionName: string): UcodeType {
-    // Return specific fs object types for fs functions
-    switch (functionName) {
-      case 'open':
-      case 'fdopen':
-      case 'mkstemp':
-        return UcodeType.OBJECT; // Will be treated as fs.file by symbol table
-      case 'opendir':
-        return UcodeType.OBJECT; // Will be treated as fs.dir by symbol table
-      case 'popen':
-        return UcodeType.OBJECT; // Will be treated as fs.proc by symbol table
-      case 'pipe':
-        return UcodeType.ARRAY; // Array of fs.file objects
-      default:
-        const signature = this.builtinFunctions.get(functionName);
-        return signature?.returnType || UcodeType.UNKNOWN;
-    }
-  }
 
   private validateSpecialBuiltins(node: CallExpressionNode, signature: FunctionSignature): boolean {
     const funcName = signature.name;

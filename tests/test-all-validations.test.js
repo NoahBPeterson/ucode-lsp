@@ -146,7 +146,7 @@ test('Comprehensive Validation Test Suite', async () => {
 
     if (passedSuites === totalSuites) {
         console.log('\n🎉 ALL VALIDATION TEST SUITES PASSED! 🎉');
-        console.log('✅ String analysis validations working correctly');
+        /*console.log('✅ String analysis validations working correctly');
         console.log('✅ Array function validations working correctly'); 
         console.log('✅ Object function validations working correctly');
         console.log('✅ Number conversion validations working correctly');
@@ -190,7 +190,7 @@ test('Comprehensive Validation Test Suite', async () => {
         console.log('✅ String property validation (only length allowed) working correctly');
         console.log('✅ Missing builtin functions validation working correctly');
         console.log('✅ All 14 newly added builtin functions provide hover documentation');
-        console.log('✅ Builtin function hover includes parameters, return types, and examples');
+        console.log('✅ Builtin function hover includes parameters, return types, and examples');*/
     } else {
         console.log('\n❌ Some test suites failed. Please review the output above.');
     }

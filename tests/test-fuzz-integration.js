@@ -168,6 +168,7 @@ try {
 }
 
 // Summary
+/*
 console.log('\n📊 Fuzz Test Integration Summary:');
 console.log('✅ Module alias testing available');
 console.log('✅ For-in loop edge case testing available');
@@ -218,3 +219,4 @@ console.log('   1. Open any .uc file from fuzz-tests/ in VS Code');
 console.log('   2. Test completion, hover, and diagnostic features');
 console.log('   3. Validate real-world usage patterns work correctly');
 console.log('   4. Use these files as examples for new feature development');
+*/

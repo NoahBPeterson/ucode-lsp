@@ -49,7 +49,7 @@ connection.onInitialize((params: InitializeParams) => {
             completionProvider: {
                 resolveProvider: true,
                 triggerCharacters: ['.'],
-                allCommitCharacters: ['.', '(', '['],
+                allCommitCharacters: ['(', '['],
                 completionItem: {
                     labelDetailsSupport: true
                 }

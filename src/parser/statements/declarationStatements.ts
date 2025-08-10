@@ -102,10 +102,23 @@ export abstract class DeclarationStatements extends ExpressionParser {
     const openingBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' to start function body");
     const body = this.parseBlockStatement(openingBrace, "function body");
 
+    // Check for semicolon after function declaration
+    const hadSemicolon = this.check(TokenType.TK_SCOL);
+    if (hadSemicolon) {
+      this.advance();
+    } else {
+      // Record error but continue parsing
+      this.errorAt("Functions must end with a semicolon ';'", 
+                   body.end, 
+                   body.end);
+      // Reset panic mode for missing semicolon
+      this.panicMode = false;
+    }
+
     return {
       type: 'FunctionDeclaration',
       start,
-      end: body.end,
+      end: hadSemicolon ? this.previous()!.end : body.end,
       id,
       params,
       body

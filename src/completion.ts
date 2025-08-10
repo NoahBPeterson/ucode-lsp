@@ -24,6 +24,7 @@ import { uloopTypeRegistry } from './analysis/uloopTypes';
 import { uloopObjectRegistry } from './analysis/uloopTypes';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 import { zlibTypeRegistry } from './analysis/zlibTypes';
+import { fsModuleTypeRegistry } from './analysis/fsModuleTypes';
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -34,7 +35,7 @@ export function handleCompletion(
     const document = documents.get(textDocumentPositionParams.textDocument.uri);
     if (!document) {
         connection.console.log(`[COMPLETION] No document found for URI: ${textDocumentPositionParams.textDocument.uri}`);
-        return createGeneralCompletions();
+        return createGeneralCompletions(analysisResult, connection);
     }
     
     connection.console.log(`[COMPLETION] Document found, analysisResult: ${!!analysisResult}`);
@@ -160,11 +161,25 @@ export function handleCompletion(
                 return zlibCompletions;
             }
 
+            // Check if this is an fs module with completions available
+            const fsModuleCompletions = getFsModuleCompletions(objectName, analysisResult);
+            if (fsModuleCompletions.length > 0) {
+                connection.console.log(`Returning ${fsModuleCompletions.length} fs module completions for ${objectName}`);
+                return fsModuleCompletions;
+            }
+
             // Check if this is an exception object with completions available
             const exceptionCompletions = getExceptionObjectCompletions(objectName, analysisResult, text, offset);
             if (exceptionCompletions.length > 0) {
                 connection.console.log(`Returning ${exceptionCompletions.length} exception object completions for ${objectName}`);
                 return exceptionCompletions;
+            }
+            
+            // Check if this is a variable with generic object properties
+            const variableCompletions = getVariableCompletions(objectName, analysisResult);
+            if (variableCompletions.length > 0) {
+                connection.console.log(`Returning ${variableCompletions.length} variable completions for ${objectName}`);
+                return variableCompletions;
             }
             
             // For member expressions, return empty array - never show builtin functions
@@ -173,11 +188,11 @@ export function handleCompletion(
         }
         
         // Only show general completions when NOT in a member expression context
-        return createGeneralCompletions();
+        return createGeneralCompletions(analysisResult, connection);
         
     } catch (error) {
         connection.console.log('Completion error: ' + error);
-        return createGeneralCompletions();
+        return createGeneralCompletions(analysisResult, connection);
     }
 }
 
@@ -257,8 +272,7 @@ function getFsObjectCompletions(objectName: string, analysisResult?: SemanticAna
                     kind: MarkupKind.Markdown,
                     value: methodSignature.description || `${methodName}() method for ${fsType}`
                 },
-                insertText: `${methodName}($1)`,
-                insertTextFormat: InsertTextFormat.Snippet
+                insertText: methodName
             });
         }
     }
@@ -306,8 +320,7 @@ function getNl80211ObjectCompletions(objectName: string, analysisResult?: Semant
                     kind: MarkupKind.Markdown,
                     value: methodSignature.description || `${methodName}() method for ${nl80211Type}`
                 },
-                insertText: `${methodName}($1)`,
-                insertTextFormat: InsertTextFormat.Snippet
+                insertText: methodName
             });
         }
     }
@@ -355,8 +368,7 @@ function getUloopObjectCompletions(objectName: string, analysisResult?: Semantic
                     kind: MarkupKind.Markdown,
                     value: methodSignature.description || `${methodName}() method for ${uloopType}`
                 },
-                insertText: `${methodName}($1)`,
-                insertTextFormat: InsertTextFormat.Snippet
+                insertText: methodName
             });
         }
     }
@@ -400,8 +412,7 @@ function getDebugModuleCompletions(objectName: string, analysisResult?: Semantic
                         kind: MarkupKind.Markdown,
                         value: debugTypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -447,8 +458,7 @@ function getDigestModuleCompletions(objectName: string, analysisResult?: Semanti
                         kind: MarkupKind.Markdown,
                         value: digestTypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -485,8 +495,7 @@ function getLogModuleCompletions(objectName: string, analysisResult?: SemanticAn
                         kind: MarkupKind.Markdown,
                         value: logTypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -523,8 +532,7 @@ function getMathModuleCompletions(objectName: string, analysisResult?: SemanticA
                         kind: MarkupKind.Markdown,
                         value: mathTypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -563,8 +571,7 @@ function getNl80211ModuleCompletions(objectName: string, analysisResult?: Semant
                         kind: MarkupKind.Markdown,
                         value: nl80211TypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -619,8 +626,7 @@ function getResolvModuleCompletions(objectName: string, analysisResult?: Semanti
                         kind: MarkupKind.Markdown,
                         value: resolvTypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -659,8 +665,7 @@ function getSocketModuleCompletions(objectName: string, analysisResult?: Semanti
                         kind: MarkupKind.Markdown,
                         value: socketTypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -717,8 +722,7 @@ function getUbusModuleCompletions(objectName: string, analysisResult?: SemanticA
                         kind: MarkupKind.Markdown,
                         value: ubusTypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -774,8 +778,7 @@ function getUloopModuleCompletions(objectName: string, analysisResult?: Semantic
                         kind: MarkupKind.Markdown,
                         value: uloopTypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -831,8 +834,7 @@ function getStructModuleCompletions(objectName: string, analysisResult?: Semanti
                         kind: MarkupKind.Markdown,
                         value: structTypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -843,8 +845,13 @@ function getStructModuleCompletions(objectName: string, analysisResult?: Semanti
     return [];
 }
 
-function createGeneralCompletions(): CompletionItem[] {
+function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, connection?: any): CompletionItem[] {
     const completions: CompletionItem[] = [];
+    
+    // Debug: Check if we have analysis result
+    if (connection && !analysisResult) {
+        connection.console.log(`[WARNING] No analysisResult passed to createGeneralCompletions`);
+    }
     
     // Add built-in functions (including fs functions)
     for (const [functionName, documentation] of allBuiltinFunctions.entries()) {
@@ -856,8 +863,9 @@ function createGeneralCompletions(): CompletionItem[] {
                 kind: MarkupKind.Markdown,
                 value: documentation
             },
-            insertText: `${functionName}($1)`,
-            insertTextFormat: InsertTextFormat.Snippet
+            insertText: functionName,
+            sortText: `1${functionName}`, // Sort builtin functions first
+            filterText: functionName
         });
     }
     
@@ -868,8 +876,67 @@ function createGeneralCompletions(): CompletionItem[] {
             label: keyword,
             kind: CompletionItemKind.Keyword,
             detail: 'ucode keyword',
-            insertText: keyword
+            insertText: keyword,
+            sortText: `2${keyword}`, // Sort keywords after builtins
+            filterText: keyword
         });
+    }
+    
+    // Add variables from symbol table
+    if (analysisResult && analysisResult.symbolTable) {
+        const variables = analysisResult.symbolTable.getAllSymbols();
+        if (connection) {
+            connection.console.log(`[INFO] Found ${variables.length} symbols in symbol table`);
+        }
+        for (const symbol of variables) {
+            const varName = symbol.name;
+            // Skip builtin functions (already added above)
+            if (allBuiltinFunctions.has(varName)) {
+                continue;
+            }
+            
+            let kind: CompletionItemKind;
+            let detail: string;
+            
+            switch (symbol.type) {
+                case 'variable':
+                    kind = CompletionItemKind.Variable;
+                    detail = 'variable';
+                    break;
+                case 'parameter':
+                    kind = CompletionItemKind.Variable;
+                    detail = 'parameter';
+                    break;
+                case 'function':
+                    kind = CompletionItemKind.Function;
+                    detail = 'user function';
+                    break;
+                case 'imported':
+                    kind = CompletionItemKind.Module;
+                    detail = `imported from ${symbol.importedFrom || 'module'}`;
+                    break;
+                default:
+                    kind = CompletionItemKind.Variable;
+                    detail = 'identifier';
+                    break;
+            }
+            
+            completions.push({
+                label: varName,
+                kind: kind,
+                detail: detail,
+                insertText: varName,
+                sortText: `0${varName}`, // Sort variables first (before builtins)
+                filterText: varName
+            });
+            if (connection) {
+                connection.console.log(`[INFO] Added variable to completions: ${varName} (${detail})`);
+            }
+        }
+    }
+    
+    if (connection) {
+        connection.console.log(`[INFO] createGeneralCompletions returning ${completions.length} completions total`);
     }
     
     return completions;
@@ -902,8 +969,7 @@ function getUciModuleCompletions(objectName: string, analysisResult?: SemanticAn
                         kind: MarkupKind.Markdown,
                         value: uciTypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -942,8 +1008,7 @@ function getZlibModuleCompletions(objectName: string, analysisResult?: SemanticA
                         kind: MarkupKind.Markdown,
                         value: zlibTypeRegistry.getFunctionDocumentation(functionName)
                     },
-                    insertText: `${functionName}($1)`,
-                    insertTextFormat: InsertTextFormat.Snippet
+                    insertText: functionName
                 });
             }
         }
@@ -967,6 +1032,76 @@ function getZlibModuleCompletions(objectName: string, analysisResult?: SemanticA
         return completions;
     }
 
+    return [];
+}
+
+function getFsModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        console.log(`[FS_MODULE_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        console.log(`[FS_MODULE_COMPLETION] Symbol not found: ${objectName}`);
+        return [];
+    }
+
+    console.log(`[FS_MODULE_COMPLETION] Symbol found: ${objectName}, type: ${symbol.type}, dataType: ${JSON.stringify(symbol.dataType)}`);
+
+    // Check if this is an fs module (from require('fs') or import * as fs from 'fs')
+    const isFsModule = (
+        // Direct fs module import: import * as fs from 'fs'
+        (symbol.type === 'imported' && symbol.importedFrom === 'fs') ||
+        
+        // Module symbol from require: const fs = require('fs')
+        (symbol.type === 'module' && symbol.dataType && 
+         typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType && 
+         symbol.dataType.moduleName === 'fs')
+    );
+
+    if (isFsModule) {
+        console.log(`[FS_MODULE_COMPLETION] FS module detected for ${objectName}`);
+        const functionNames = fsModuleTypeRegistry.getFunctionNames();
+        const completions: CompletionItem[] = [];
+        
+        // Add function completions
+        for (const functionName of functionNames) {
+            const signature = fsModuleTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'fs module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: fsModuleTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: functionName
+                });
+            }
+        }
+        
+        console.log(`[FS_MODULE_COMPLETION] Generated ${completions.length} fs module completions: ${functionNames.join(', ')}`);
+        return completions;
+    }
+
+    console.log(`[FS_MODULE_COMPLETION] Not an fs module: ${objectName}`);
+    return [];
+}
+
+function getVariableCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Only provide completions for variables with known specific types
+    // For generic variables, return empty array - do not add arbitrary properties
     return [];
 }
 

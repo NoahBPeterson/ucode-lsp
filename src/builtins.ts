@@ -73,8 +73,9 @@ export const builtinFunctions = new Map<string, string>([
 ]);
 
 // ============================================================================
-// File System Built-in Functions (from fs.c global_fns[])
-// These are global functions, not methods of an fs module object
+// File System Functions (from fs.c global_fns[])
+// These are now fs.* module functions only, NOT global functions
+// Available as: fs.open(), fs.readfile(), etc.
 // ============================================================================
 
 export const fsBuiltinFunctions = new Map<string, string>([
@@ -411,4 +412,5 @@ export const uciBuiltinFunctions = new Map<string, string>([
 ]);
 
 // Merge all builtins for completion
-export const allBuiltinFunctions = new Map([...builtinFunctions, ...fsBuiltinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants, ...resolvBuiltinFunctions, ...socketBuiltinFunctions, ...ubusBuiltinFunctions, ...uciBuiltinFunctions, ...zlibBuiltinFunctions]);
+// NOTE: fsBuiltinFunctions are now fs.* module functions only, not global
+export const allBuiltinFunctions = new Map([...builtinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants, ...resolvBuiltinFunctions, ...socketBuiltinFunctions, ...ubusBuiltinFunctions, ...uciBuiltinFunctions, ...zlibBuiltinFunctions]);
