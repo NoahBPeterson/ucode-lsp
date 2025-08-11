@@ -238,6 +238,46 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     parameters: [],
     returnType: "array | null",
     description: "Creates a pipe and returns an array with read and write file handles"
+  }],
+  ["getcwd", {
+    name: "getcwd",
+    parameters: [],
+    returnType: "string | null",
+    description: "Gets the current working directory path"
+  }],
+  ["chdir", {
+    name: "chdir", 
+    parameters: [
+      { name: "path", type: "string", optional: false }
+    ],
+    returnType: "boolean | null",
+    description: "Changes the current working directory"
+  }],
+  ["rename", {
+    name: "rename",
+    parameters: [
+      { name: "oldpath", type: "string", optional: false },
+      { name: "newpath", type: "string", optional: false }
+    ],
+    returnType: "boolean | null",
+    description: "Renames a file or directory"
+  }],
+  ["symlink", {
+    name: "symlink",
+    parameters: [
+      { name: "target", type: "string", optional: false },
+      { name: "linkpath", type: "string", optional: false }
+    ],
+    returnType: "boolean | null",
+    description: "Creates a symbolic link"
+  }],
+  ["glob", {
+    name: "glob",
+    parameters: [
+      { name: "patterns", type: "string", optional: false }
+    ],
+    returnType: "array | null",
+    description: "Matches file paths using glob patterns (variadic function)"
   }]
 ]);
 
@@ -259,6 +299,10 @@ export class FsModuleTypeRegistry {
 
   getFunction(name: string): FsModuleFunctionSignature | undefined {
     return fsModuleFunctions.get(name);
+  }
+
+  isFsModuleFunction(name: string): boolean {
+    return fsModuleFunctions.has(name);
   }
 
   getFunctionDocumentation(name: string): string {

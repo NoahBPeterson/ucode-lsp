@@ -1,7 +1,5 @@
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const assert = require('assert');
+import { spawn } from 'node:child_process';
+import assert from 'node:assert';
 
 describe('Missing Builtins Validation Tests', function() {
   this.timeout(15000); // 15 second timeout for LSP tests

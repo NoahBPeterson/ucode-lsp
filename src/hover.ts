@@ -22,6 +22,7 @@ import { fsTypeRegistry } from './analysis/fsTypes';
 import { fsModuleFunctions } from './fsBuiltins';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 import { zlibTypeRegistry } from './analysis/zlibTypes';
+import { fsModuleTypeRegistry } from './analysis/fsModuleTypes';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -71,6 +72,21 @@ export function handleHover(
                         contents: {
                             kind: MarkupKind.Markdown,
                             value: uloopMethodHover
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+                
+                // Handle fs module function hover (namespace access like fs.opendir)
+                const fsModuleMethodHover = getFsModuleMethodHover(memberExpressionInfo, analysisResult);
+                if (fsModuleMethodHover) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: fsModuleMethodHover
                         },
                         range: {
                             start: document.positionAt(token.pos),
@@ -1812,4 +1828,34 @@ const result = deflater.read();
 Supports both single-call compression/decompression and streaming operations. The streaming API allows processing large amounts of data in chunks without loading everything into memory.
 
 *Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getFsModuleMethodHover(memberInfo: { objectName: string; propertyName: string }, analysisResult: SemanticAnalysisResult): string | null {
+    const { objectName, propertyName } = memberInfo;
+    
+    // Look up the object in the symbol table
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return null;
+    }
+    
+    // Check if this is an fs module (from require('fs') or import * as fs from 'fs')
+    const isFsModule = (
+        // Direct fs module import: import * as fs from 'fs'
+        (symbol.type === 'imported' && symbol.importedFrom === 'fs') ||
+        
+        // Module symbol from require: const fs = require('fs')
+        (symbol.type === 'module' && symbol.dataType && 
+         typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType && 
+         symbol.dataType.moduleName === 'fs')
+    );
+    
+    if (isFsModule) {
+        // Check if the property is a valid fs module function
+        if (fsModuleTypeRegistry.isFsModuleFunction(propertyName)) {
+            return fsModuleTypeRegistry.getFunctionDocumentation(propertyName);
+        }
+    }
+    
+    return null;
 }
