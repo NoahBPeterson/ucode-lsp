@@ -19,6 +19,7 @@ import { FsObjectType, createFsObjectDataType } from './fsTypes';
 import { logTypeRegistry } from './logTypes';
 import { mathTypeRegistry } from './mathTypes';
 import { nl80211TypeRegistry, Nl80211ObjectType, createNl80211ObjectDataType } from './nl80211Types';
+import { rtnlTypeRegistry } from './rtnlTypes';
 import { resolvTypeRegistry } from './resolvTypes';
 import { socketTypeRegistry } from './socketTypes';
 import { structTypeRegistry } from './structTypes';
@@ -341,7 +342,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     
     // Validate nl80211 module imports
     if (source === 'nl80211' && specifier.type === 'ImportSpecifier') {
-      if (!nl80211TypeRegistry.isValidImport(importedName)) {
+      if (!nl80211TypeRegistry.isValidNl80211Import(importedName)) {
         this.addDiagnostic(
           `'${importedName}' is not exported by the nl80211 module. Available exports: ${nl80211TypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
@@ -357,6 +358,19 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (!resolvTypeRegistry.isValidImport(importedName)) {
         this.addDiagnostic(
           `'${importedName}' is not exported by the resolv module. Available exports: ${resolvTypeRegistry.getValidImports().join(', ')}`,
+          specifier.imported.start,
+          specifier.imported.end,
+          DiagnosticSeverity.Error
+        );
+        return; // Don't add invalid import to symbol table
+      }
+    }
+    
+    // Validate rtnl module imports
+    if (source === 'rtnl' && specifier.type === 'ImportSpecifier') {
+      if (!rtnlTypeRegistry.isValidRtnlImport(importedName)) {
+        this.addDiagnostic(
+          `'${importedName}' is not exported by the rtnl module. Available exports: ${rtnlTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
           DiagnosticSeverity.Error
@@ -434,8 +448,32 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
     }
     
+    // Create appropriate data type for special imports
+    let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
+    
+    // Special case: importing 'const' from nl80211 creates a constants object
+    if (source === 'nl80211' && importedName === 'const') {
+      dataType = {
+        type: UcodeType.OBJECT,
+        moduleName: 'nl80211-const'
+      };
+    }
+    
+    // Special case: importing 'const' from rtnl creates a constants object
+    if (source === 'rtnl' && importedName === 'const') {
+      dataType = {
+        type: UcodeType.OBJECT,
+        moduleName: 'rtnl-const'
+      };
+    }
+    
+    // Special case: importing rtnl functions - set proper function type  
+    if (source === 'rtnl' && rtnlTypeRegistry.getFunctionNames().includes(importedName)) {
+      dataType = UcodeType.FUNCTION as UcodeDataType;
+    }
+    
     // Add imported symbol to symbol table
-    if (!this.symbolTable.declare(localName, SymbolType.IMPORTED, UcodeType.UNKNOWN as UcodeDataType, specifier.local)) {
+    if (!this.symbolTable.declare(localName, SymbolType.IMPORTED, dataType, specifier.local)) {
       this.addDiagnostic(
         `Imported symbol '${localName}' is already declared in current scope`,
         specifier.local.start,

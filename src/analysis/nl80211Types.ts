@@ -210,7 +210,11 @@ export class Nl80211TypeRegistry {
   }
 
   getValidImports(): string[] {
-    return [...this.getFunctionNames(), ...this.getConstantNames()];
+    return [...this.getFunctionNames(), ...this.getConstantNames(), 'const'];
+  }
+
+  isValidNl80211Import(name: string): boolean {
+    return this.getValidImports().includes(name);
   }
 }
 

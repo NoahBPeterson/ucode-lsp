@@ -135,7 +135,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
       // Named imports: import { name1, name2 } from 'module'
       if (!this.check(TokenType.TK_RBRACE)) {
         do {
-          const imported = this.parseIdentifierName();
+          const imported = this.parseImportSpecifierName();
           if (!imported) continue;
 
           let local = imported;

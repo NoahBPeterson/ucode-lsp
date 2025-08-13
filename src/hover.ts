@@ -13,6 +13,7 @@ import { logTypeRegistry } from './analysis/logTypes';
 import { mathTypeRegistry } from './analysis/mathTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { resolvTypeRegistry } from './analysis/resolvTypes';
+import { rtnlTypeRegistry } from './analysis/rtnlTypes';
 import { socketTypeRegistry } from './analysis/socketTypes';
 import { structTypeRegistry } from './analysis/structTypes';
 import { ubusTypeRegistry } from './analysis/ubusTypes';
@@ -96,291 +97,7 @@ export function handleHover(
                 }
             }
             
-            // Check if this is a log module function FIRST (before symbol table)
-            if (logTypeRegistry.isLogFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: logTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a log module constant FIRST (before symbol table)
-            if (logTypeRegistry.isLogConstant(word)) {
-                const constantDoc = logTypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
-            
-            // Check if this is a math module function FIRST (before symbol table)
-            if (mathTypeRegistry.isMathFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: mathTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a nl80211 module function FIRST (before symbol table)
-            if (nl80211TypeRegistry.isNl80211Function(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: nl80211TypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a nl80211 module constant FIRST (before symbol table)
-            if (nl80211TypeRegistry.isNl80211Constant(word)) {
-                const constantDoc = nl80211TypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
-            
-            // Check if this is a digest module function FIRST (before symbol table)
-            if (digestTypeRegistry.isDigestFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: digestTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a resolv module function FIRST (before symbol table)
-            if (resolvTypeRegistry.isResolvFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: resolvTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a ubus module function FIRST (before symbol table)
-            if (ubusTypeRegistry.isUbusFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: ubusTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a uci module function FIRST (before symbol table)
-            if (uciTypeRegistry.isUciFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: uciTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a ubus module constant FIRST (before symbol table)
-            if (ubusTypeRegistry.isUbusConstant(word)) {
-                const constantDoc = ubusTypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
-            
-            // Check if this is a socket module function FIRST (before symbol table)
-            if (socketTypeRegistry.isSocketFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: socketTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a socket module constant FIRST (before symbol table)
-            if (socketTypeRegistry.isSocketConstant(word)) {
-                const constantDoc = socketTypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
-            
-            // Check if this is a struct module function FIRST (before symbol table)
-            if (structTypeRegistry.isStructFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: structTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a uloop module function FIRST (before symbol table)
-            if (uloopTypeRegistry.isUloopFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: uloopTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a uloop module constant FIRST (before symbol table)
-            if (uloopTypeRegistry.isUloopConstant(word)) {
-                const constantDoc = uloopTypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
-
-            // Check if this is a zlib module function FIRST (before symbol table)
-            if (zlibTypeRegistry.isZlibFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: zlibTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-
-            // Check if this is a zlib module constant FIRST (before symbol table)
-            if (zlibTypeRegistry.isZlibConstant(word)) {
-                const constantDoc = zlibTypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
-
-            // Check if this is an exception property FIRST (before symbol table)
-            if (exceptionTypeRegistry.isExceptionProperty(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: exceptionTypeRegistry.getPropertyDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // 1. Check if this is a debug module function FIRST (before symbol table)
-            if (debugTypeRegistry.isDebugFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: debugTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // 1. Check for user-defined symbols using the analysis cache
+            // 1. Check for user-defined symbols using the analysis cache (PRIORITY OVER GLOBAL FUNCTIONS)
             if (analysisResult) {
                 let symbol = analysisResult.symbolTable.lookup(word);
                 
@@ -456,6 +173,16 @@ export function handleHover(
                                     hoverText = resolvTypeRegistry.getFunctionDocumentation(originalName);
                                 } else {
                                     hoverText = getResolvModuleDocumentation();
+                                }
+                            } else if (symbol.importedFrom === 'rtnl') {
+                                // Check if this is a specific rtnl function or constant (could be aliased)
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (rtnlTypeRegistry.getFunctionNames().includes(originalName)) {
+                                    hoverText = rtnlTypeRegistry.getFunctionDocumentation(originalName);
+                                } else if (rtnlTypeRegistry.getConstant(originalName)) {
+                                    hoverText = rtnlTypeRegistry.getConstantDocumentation(originalName);
+                                } else {
+                                    hoverText = getRtnlModuleDocumentation();
                                 }
                             } else if (symbol.importedFrom === 'fs') {
                                 // Check if this is a specific fs function (could be aliased)
@@ -539,6 +266,293 @@ export function handleHover(
                     }
                 }
             }
+            
+            // 2. Fallback to global module function checks (if not found in symbol table)
+            // Check if this is a log module function
+            if (logTypeRegistry.isLogFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: logTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a log module constant
+            if (logTypeRegistry.isLogConstant(word)) {
+                const constantDoc = logTypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+            }
+            
+            // Check if this is a math module function
+            if (mathTypeRegistry.isMathFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: mathTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a nl80211 module function
+            if (nl80211TypeRegistry.isNl80211Function(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: nl80211TypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a nl80211 module constant
+            if (nl80211TypeRegistry.isNl80211Constant(word)) {
+                const constantDoc = nl80211TypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+            }
+            
+            // Check if this is a digest module function
+            if (digestTypeRegistry.isDigestFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: digestTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a resolv module function
+            if (resolvTypeRegistry.isResolvFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: resolvTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a ubus module function
+            if (ubusTypeRegistry.isUbusFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: ubusTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a uci module function
+            if (uciTypeRegistry.isUciFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: uciTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a ubus module constant
+            if (ubusTypeRegistry.isUbusConstant(word)) {
+                const constantDoc = ubusTypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+            }
+            
+            // Check if this is a socket module function
+            if (socketTypeRegistry.isSocketFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: socketTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a socket module constant
+            if (socketTypeRegistry.isSocketConstant(word)) {
+                const constantDoc = socketTypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+            }
+            
+            // Check if this is a struct module function
+            if (structTypeRegistry.isStructFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: structTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a uloop module function
+            if (uloopTypeRegistry.isUloopFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: uloopTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+            
+            // Check if this is a uloop module constant
+            if (uloopTypeRegistry.isUloopConstant(word)) {
+                const constantDoc = uloopTypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+            }
+
+            // Check if this is a zlib module function
+            if (zlibTypeRegistry.isZlibFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: zlibTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+
+            // Check if this is a zlib module constant
+            if (zlibTypeRegistry.isZlibConstant(word)) {
+                const constantDoc = zlibTypeRegistry.getConstantDocumentation(word);
+                if (constantDoc) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: constantDoc
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+            }
+                
+            // 1. Check if this is a debug module function
+            if (debugTypeRegistry.isDebugFunction(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: debugTypeRegistry.getFunctionDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+
+            // Check if this is an exception property
+            if (exceptionTypeRegistry.isExceptionProperty(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: exceptionTypeRegistry.getPropertyDocumentation(word)
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+                        
+            // Symbol table lookup moved to BEFORE global function checks for correct priority
             
             // 3. Fallback to built-in functions and keywords
             const documentation = allBuiltinFunctions.get(word);
@@ -1221,6 +1235,60 @@ const ptrResult = query(['192.0.2.1'], { type: ['PTR'] });
 \`\`\`
 
 *Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getRtnlModuleDocumentation(): string {
+    return `## RTNL Module
+**Routing Netlink functionality for ucode scripts**
+
+The rtnl module provides routing netlink functionality for ucode, allowing you to interact with the Linux kernel's routing and network interface subsystem.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { request, listener, error } from 'rtnl';
+// Send routing request
+let result = request(RTM_GETROUTE, NLM_F_DUMP);
+\`\`\`
+
+**Constants import syntax:**
+\`\`\`ucode
+import { 'const' as rtnlconst } from 'rtnl';
+let routeType = rtnlconst.RTN_UNICAST;
+let tableId = rtnlconst.RT_TABLE_MAIN;
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as rtnl from 'rtnl';
+let result = rtnl.request(rtnl.RTM_GETROUTE, rtnl.NLM_F_DUMP);
+\`\`\`
+
+### Available Functions
+
+**Core operations:**
+- **\`request()\`** - Send netlink request to routing subsystem
+- **\`listener()\`** - Create event listener for routing messages  
+- **\`error()\`** - Get last error information
+
+### Available Constants
+
+**Route types:**
+- **RTN_UNICAST** - Gateway or direct route
+- **RTN_LOCAL** - Accept locally
+- **RTN_BROADCAST** - Accept locally as broadcast
+
+**Route tables:**
+- **RT_TABLE_UNSPEC** - Unspecified table
+- **RT_TABLE_MAIN** - Main routing table
+- **RT_TABLE_LOCAL** - Local routing table
+
+**Bridge flags:**
+- **BRIDGE_FLAGS_MASTER** - Bridge master flag
+- **BRIDGE_FLAGS_SELF** - Bridge self flag
+
+*Hover over individual function and constant names for detailed information.*`;
 }
 
 function getSocketModuleDocumentation(): string {

@@ -40,6 +40,25 @@ export abstract class PrimaryExpressions extends ParseRules {
     };
   }
 
+  protected parseImportSpecifierName(): IdentifierNode | null {
+    // Import specifiers can be either identifiers (regular names) or string literals (quoted reserved words)
+    if (this.check(TokenType.TK_LABEL)) {
+      return this.parseIdentifierName();
+    } else if (this.check(TokenType.TK_STRING)) {
+      const token = this.advance()!;
+      // Convert string literal to identifier for import specifier
+      return {
+        type: 'Identifier',
+        start: token.pos,
+        end: token.end,
+        name: token.value as string // Remove quotes from string value
+      };
+    } else {
+      this.error("Expected identifier or string literal in import specifier");
+      return null;
+    }
+  }
+
   protected parseLiteral(literalType: string): LiteralNode {
     const token = this.previous()!;
     let value: string | number | boolean | null;

@@ -413,4 +413,8 @@ export const uciBuiltinFunctions = new Map<string, string>([
 
 // Merge all builtins for completion
 // NOTE: fsBuiltinFunctions are now fs.* module functions only, not global
-export const allBuiltinFunctions = new Map([...builtinFunctions, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...nl80211BuiltinFunctions, ...nl80211BuiltinConstants, ...resolvBuiltinFunctions, ...socketBuiltinFunctions, ...ubusBuiltinFunctions, ...uciBuiltinFunctions, ...zlibBuiltinFunctions]);
+// Module-specific functions should NOT be included in global builtins
+// They are available only when importing from their respective modules:
+// - nl80211BuiltinConstants: only via import from 'nl80211'
+// - rtnl functions: only via import from 'rtnl' (when implemented)
+export const allBuiltinFunctions = new Map([...builtinFunctions]); //, ...debugBuiltinFunctions, ...digestBuiltinFunctions, ...logBuiltinFunctions, ...mathBuiltinFunctions, ...resolvBuiltinFunctions, ...socketBuiltinFunctions, ...ubusBuiltinFunctions, ...uciBuiltinFunctions, ...zlibBuiltinFunctions]);

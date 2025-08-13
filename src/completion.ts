@@ -15,6 +15,7 @@ import { logTypeRegistry } from './analysis/logTypes';
 import { mathTypeRegistry } from './analysis/mathTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { nl80211ObjectRegistry } from './analysis/nl80211Types';
+import { rtnlTypeRegistry } from './analysis/rtnlTypes';
 import { resolvTypeRegistry } from './analysis/resolvTypes';
 import { socketTypeRegistry } from './analysis/socketTypes';
 import { structTypeRegistry } from './analysis/structTypes';
@@ -173,6 +174,20 @@ export function handleCompletion(
             if (exceptionCompletions.length > 0) {
                 connection.console.log(`Returning ${exceptionCompletions.length} exception object completions for ${objectName}`);
                 return exceptionCompletions;
+            }
+            
+            // Check if this is an nl80211 constants object with completions available
+            const nl80211ConstCompletions = getNl80211ConstObjectCompletions(objectName, analysisResult);
+            if (nl80211ConstCompletions.length > 0) {
+                connection.console.log(`Returning ${nl80211ConstCompletions.length} nl80211 constants completions for ${objectName}`);
+                return nl80211ConstCompletions;
+            }
+            
+            // Check if this is an rtnl constants object with completions available
+            const rtnlConstCompletions = getRtnlConstObjectCompletions(objectName, analysisResult);
+            if (rtnlConstCompletions.length > 0) {
+                connection.console.log(`Returning ${rtnlConstCompletions.length} rtnl constants completions for ${objectName}`);
+                return rtnlConstCompletions;
             }
             
             // Check if this is a variable with generic object properties
@@ -554,7 +569,9 @@ function getNl80211ModuleCompletions(objectName: string, analysisResult?: Semant
     }
 
     // Check if this is a nl80211 module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'nl80211') {
+    // Exclude constants objects which should only show constants, not functions
+    if (symbol.type === 'imported' && symbol.importedFrom === 'nl80211' && 
+        !(symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'nl80211-const')) {
         const functionNames = nl80211TypeRegistry.getFunctionNames();
         const constantNames = nl80211TypeRegistry.getConstantNames();
         const completions: CompletionItem[] = [];
@@ -895,6 +912,17 @@ function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, conne
                 continue;
             }
             
+            // Skip module constants objects to prevent constants from leaking globally
+            // But we DO want to show the variables themselves (wlconst, rtconst) in completions
+            // The issue is we're filtering out the variable, not individual constants
+            if (symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
+                const moduleName = symbol.dataType.moduleName;
+                if (moduleName === 'nl80211-const' || moduleName === 'rtnl-const') {
+                    // Actually, let's NOT filter these out - they are valid variables
+                    // The constants leak protection should happen elsewhere
+                }
+            }
+            
             let kind: CompletionItemKind;
             let detail: string;
             
@@ -1224,6 +1252,104 @@ function isCatchParameterCompletion(objectName: string, documentText: string, cu
     
     console.log(`[CATCH_CONTEXT] No catch context found for '${objectName}'`);
     return false;
+}
+
+function getNl80211ConstObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    console.log(`[NL80211_CONST_COMPLETION] Checking nl80211 constants completion for: ${objectName}`);
+    
+    if (!analysisResult || !analysisResult.symbolTable) {
+        console.log(`[NL80211_CONST_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        console.log(`[NL80211_CONST_COMPLETION] Symbol not found: ${objectName}`);
+        return [];
+    }
+
+    console.log(`[NL80211_CONST_COMPLETION] Symbol found: ${objectName}, dataType: ${JSON.stringify(symbol.dataType)}`);
+
+    // Check if this is an nl80211 constants object (imported as 'const' from nl80211)
+    if (symbol.dataType && typeof symbol.dataType === 'object' && 
+        'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'nl80211-const') {
+        
+        console.log(`[NL80211_CONST_COMPLETION] NL80211 constants object detected for ${objectName}`);
+        
+        // Import nl80211TypeRegistry
+        const { nl80211TypeRegistry } = require('./analysis/nl80211Types');
+        
+        const constantNames = nl80211TypeRegistry.getConstantNames();
+        const completions: CompletionItem[] = [];
+        
+        for (const constantName of constantNames) {
+            const signature = nl80211TypeRegistry.getConstant(constantName);
+            if (signature) {
+                completions.push({
+                    label: constantName,
+                    kind: CompletionItemKind.Constant,
+                    detail: `nl80211 constant: ${signature.type}`,
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: nl80211TypeRegistry.getConstantDocumentation(constantName)
+                    },
+                    insertText: constantName
+                });
+            }
+        }
+        
+        console.log(`[NL80211_CONST_COMPLETION] Generated ${completions.length} nl80211 constants completions: ${constantNames.slice(0, 5).join(', ')}...`);
+        return completions;
+    }
+
+    console.log(`[NL80211_CONST_COMPLETION] Not an nl80211 constants object: ${objectName}`);
+    return [];
+}
+
+function getRtnlConstObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    console.log(`[RTNL_CONST_COMPLETION] Checking rtnl constants completion for: ${objectName}`);
+    
+    if (!analysisResult || !analysisResult.symbolTable) {
+        console.log(`[RTNL_CONST_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
+        return [];
+    }
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        console.log(`[RTNL_CONST_COMPLETION] Symbol not found: ${objectName}`);
+        return [];
+    }
+    console.log(`[RTNL_CONST_COMPLETION] Symbol found: ${objectName}, dataType: ${JSON.stringify(symbol.dataType)}`);
+    
+    // Check if this is an rtnl constants object (imported as 'const' from rtnl)
+    if (symbol.dataType && typeof symbol.dataType === 'object' && 
+        'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'rtnl-const') {
+        
+        console.log(`[RTNL_CONST_COMPLETION] RTNL constants object detected for ${objectName}`);
+        
+        const constantNames = rtnlTypeRegistry.getConstantNames();
+        const completions: CompletionItem[] = [];
+        
+        for (const constantName of constantNames) {
+            const signature = rtnlTypeRegistry.getConstant(constantName);
+            if (signature) {
+                completions.push({
+                    label: constantName,
+                    kind: CompletionItemKind.Constant,
+                    detail: `rtnl constant: ${signature.type}`,
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: rtnlTypeRegistry.getConstantDocumentation(constantName)
+                    },
+                    insertText: constantName
+                });
+            }
+        }
+        
+        console.log(`[RTNL_CONST_COMPLETION] Generated ${completions.length} rtnl constants completions: ${constantNames.slice(0, 5).join(', ')}...`);
+        return completions;
+    }
+    console.log(`[RTNL_CONST_COMPLETION] Not an rtnl constants object: ${objectName}`);
+    return [];
 }
 
 export function handleCompletionResolve(item: CompletionItem): CompletionItem {

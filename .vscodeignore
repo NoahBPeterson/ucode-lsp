@@ -1,5 +1,7 @@
 out/**
 src/**
+fuzz-tests/**
+tests/**
 node_modules/**
 webpack.config.js
 tsconfig.json
@@ -18,3 +20,7 @@ ucode_gotchas.md
 bun.lock
 !dist/**
 !icons/**
+!README.md
+**/*.md
+**/*.py
+**/*.uc
