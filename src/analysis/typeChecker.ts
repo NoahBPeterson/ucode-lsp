@@ -121,7 +121,7 @@ export class TypeChecker {
       { name: 'assert', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
       { name: 'call', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, variadic: true },
       { name: 'signal', parameters: [UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
-      { name: 'clock', parameters: [], returnType: UcodeType.DOUBLE },
+      { name: 'clock', parameters: [UcodeType.BOOLEAN], returnType: UcodeType.ARRAY, minParams: 0, maxParams: 1 },
       { name: 'sourcepath', parameters: [], returnType: UcodeType.STRING },
       { name: 'gc', parameters: [], returnType: UcodeType.NULL },
       { name: 'die', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },

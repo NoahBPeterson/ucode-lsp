@@ -65,7 +65,8 @@ const testFiles = [
     'tests/test-filter-builtin-validation.js',
     'tests/test-split-regex-validation.js',
     'tests/test-fuzz-integration.js',
-    'tests/test-zlib-module.js'
+    'tests/test-zlib-module.js',
+    'tests/test-clock-function.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
