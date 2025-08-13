@@ -16,6 +16,12 @@ export abstract class CallExpressions extends OperatorExpressions {
   protected parseCall(left: AstNode): CallExpressionNode {
     const start = left.start;
     const args: AstNode[] = [];
+    
+    // Check if this is an optional call ?.( by looking at the previous token
+    // Note: For optional calls, we need to check if the token before the current position was TK_QLPAREN
+    // The current implementation assumes parseCall is called after consuming the opening paren
+    const prevToken = this.previous();
+    const optional = prevToken?.type === TokenType.TK_QLPAREN;
 
     if (!this.check(TokenType.TK_RPAREN)) {
       do {
@@ -31,7 +37,8 @@ export abstract class CallExpressions extends OperatorExpressions {
       start,
       end: this.previous()!.end,
       callee: left,
-      arguments: args
+      arguments: args,
+      optional
     };
   }
 

@@ -108,7 +108,8 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
 
   protected parseMemberAccess(left: AstNode): MemberExpressionNode | null {
     const operatorToken = this.previous()!;
-    const computed = operatorToken.type === TokenType.TK_LBRACK;
+    const computed = operatorToken.type === TokenType.TK_LBRACK || operatorToken.type === TokenType.TK_QLBRACK;
+    const optional = operatorToken.type === TokenType.TK_QDOT || operatorToken.type === TokenType.TK_QLBRACK;
     
     let property: AstNode;
     
@@ -117,7 +118,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
       this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property");
     } else {
       if (!this.check(TokenType.TK_LABEL)) {
-        this.error("Expected property name after '.'");
+        this.error("Expected property name after '.' or '?.'");
         return null;
       }
       property = this.parseIdentifierName() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
@@ -129,7 +130,8 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
       end: property.end,
       object: left,
       property,
-      computed
+      computed,
+      optional
     };
   }
 }

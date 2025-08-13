@@ -164,6 +164,20 @@ export abstract class ParseRules extends ParserUtils {
       infix: (left) => this.parseMemberAccess(left),
       precedence: Precedence.CALL 
     });
+    
+    // Optional chaining operators
+    this.rules.set(TokenType.TK_QDOT, { 
+      infix: (left) => this.parseMemberAccess(left),
+      precedence: Precedence.CALL 
+    });
+    this.rules.set(TokenType.TK_QLBRACK, { 
+      infix: (left) => this.parseMemberAccess(left),
+      precedence: Precedence.CALL 
+    });
+    this.rules.set(TokenType.TK_QLPAREN, { 
+      infix: (left) => this.parseCall(left),
+      precedence: Precedence.CALL 
+    });
 
     // Conditional operator
     this.rules.set(TokenType.TK_QMARK, { 
