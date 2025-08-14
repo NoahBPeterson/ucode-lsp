@@ -70,6 +70,12 @@ export interface CallExpressionNode extends AstNode {
   optional?: boolean; // for optional chaining ?.()
 }
 
+// Spread elements: ...args
+export interface SpreadElementNode extends AstNode {
+  type: 'SpreadElement';
+  argument: AstNode;
+}
+
 // Property access: obj.prop or obj[prop]
 export interface MemberExpressionNode extends AstNode {
   type: 'MemberExpression';
@@ -200,6 +206,7 @@ export interface FunctionDeclarationNode extends AstNode {
   type: 'FunctionDeclaration';
   id: IdentifierNode;
   params: IdentifierNode[];
+  restParam?: IdentifierNode; // for ...args parameters
   body: BlockStatementNode;
 }
 
@@ -208,6 +215,7 @@ export interface FunctionExpressionNode extends AstNode {
   type: 'FunctionExpression';
   id: IdentifierNode | null;
   params: IdentifierNode[];
+  restParam?: IdentifierNode; // for ...args parameters
   body: BlockStatementNode;
 }
 
@@ -215,6 +223,7 @@ export interface FunctionExpressionNode extends AstNode {
 export interface ArrowFunctionExpressionNode extends AstNode {
   type: 'ArrowFunctionExpression';
   params: IdentifierNode[];
+  restParam?: IdentifierNode; // for ...args parameters
   body: AstNode; // can be BlockStatement or Expression
   expression: boolean; // true if body is expression, false if block
 }
@@ -351,6 +360,7 @@ export type Expression =
   | UnaryExpressionNode
   | AssignmentExpressionNode
   | CallExpressionNode
+  | SpreadElementNode
   | MemberExpressionNode
   | ArrayExpressionNode
   | ObjectExpressionNode
@@ -394,7 +404,7 @@ export type AstNodeType = ProgramNode | Expression | Statement |
 export function isExpression(node: AstNode): node is Expression {
   return [
     'Literal', 'Identifier', 'BinaryExpression', 'UnaryExpression',
-    'AssignmentExpression', 'CallExpression', 'MemberExpression',
+    'AssignmentExpression', 'CallExpression', 'SpreadElement', 'MemberExpression',
     'ArrayExpression', 'ObjectExpression', 'ConditionalExpression',
     'LogicalExpression', 'ThisExpression', 'TemplateLiteral',
     'FunctionExpression', 'ArrowFunctionExpression', 'DeleteExpression'

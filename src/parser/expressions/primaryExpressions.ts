@@ -219,11 +219,23 @@ export abstract class PrimaryExpressions extends ParseRules {
     this.consume(TokenType.TK_LPAREN, "Expected '(' after 'function'");
 
     const params: IdentifierNode[] = [];
+    let restParam: IdentifierNode | undefined = undefined;
+    
     if (!this.check(TokenType.TK_RPAREN)) {
       do {
-        const param = this.parseIdentifierName();
-        if (param) {
-          params.push(param);
+        // Check for rest parameter (...)
+        if (this.match(TokenType.TK_ELLIP)) {
+          const param = this.parseIdentifierName();
+          if (param) {
+            restParam = param;
+            // Rest parameter must be the last parameter
+            break;
+          }
+        } else {
+          const param = this.parseIdentifierName();
+          if (param) {
+            params.push(param);
+          }
         }
       } while (this.match(TokenType.TK_COMMA));
     }
@@ -233,7 +245,7 @@ export abstract class PrimaryExpressions extends ParseRules {
     const openingBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' to start function body");
     const body = this.parseBlockStatement(openingBrace, "function expression body");
 
-    return {
+    const result: FunctionExpressionNode = {
       type: 'FunctionExpression',
       start,
       end: body.end,
@@ -241,6 +253,12 @@ export abstract class PrimaryExpressions extends ParseRules {
       params,
       body
     };
+    
+    if (restParam) {
+      result.restParam = restParam;
+    }
+    
+    return result;
   }
 
   // Abstract methods that must be implemented by subclasses

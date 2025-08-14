@@ -88,11 +88,23 @@ export abstract class DeclarationStatements extends ExpressionParser {
     this.consume(TokenType.TK_LPAREN, "Expected '(' after function name");
 
     const params: IdentifierNode[] = [];
+    let restParam: IdentifierNode | undefined = undefined;
+    
     if (!this.check(TokenType.TK_RPAREN)) {
       do {
-        const param = this.parseIdentifierName();
-        if (param) {
-          params.push(param);
+        // Check for rest parameter (...)
+        if (this.match(TokenType.TK_ELLIP)) {
+          const param = this.parseIdentifierName();
+          if (param) {
+            restParam = param;
+            // Rest parameter must be the last parameter
+            break;
+          }
+        } else {
+          const param = this.parseIdentifierName();
+          if (param) {
+            params.push(param);
+          }
         }
       } while (this.match(TokenType.TK_COMMA));
     }
@@ -116,7 +128,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     }
     // Regular (non-exported) functions don't require semicolons
 
-    return {
+    const result: FunctionDeclarationNode = {
       type: 'FunctionDeclaration',
       start,
       end: hadSemicolon ? this.previous()!.end : body.end,
@@ -124,6 +136,12 @@ export abstract class DeclarationStatements extends ExpressionParser {
       params,
       body
     };
+    
+    if (restParam) {
+      result.restParam = restParam;
+    }
+    
+    return result;
   }
 
   protected parseImportDeclaration(): ImportDeclarationNode | null {

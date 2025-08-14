@@ -6,7 +6,7 @@
 import { TokenType } from '../../lexer';
 import { 
   AstNode, CallExpressionNode, ConditionalExpressionNode, 
-  DeleteExpressionNode 
+  DeleteExpressionNode, SpreadElementNode 
 } from '../../ast/nodes';
 import { Precedence } from '../types';
 import { OperatorExpressions } from './operatorExpressions';
@@ -25,8 +25,22 @@ export abstract class CallExpressions extends OperatorExpressions {
 
     if (!this.check(TokenType.TK_RPAREN)) {
       do {
-        const arg = this.parseExpression();
-        if (arg) args.push(arg);
+        // Check for spread element (...args)
+        if (this.match(TokenType.TK_ELLIP)) {
+          const argument = this.parseExpression();
+          if (argument) {
+            const spreadElement: SpreadElementNode = {
+              type: 'SpreadElement',
+              start: this.previous()!.pos,
+              end: argument.end,
+              argument
+            };
+            args.push(spreadElement);
+          }
+        } else {
+          const arg = this.parseExpression();
+          if (arg) args.push(arg);
+        }
       } while (this.match(TokenType.TK_COMMA));
     }
 

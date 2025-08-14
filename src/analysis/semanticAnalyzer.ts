@@ -9,7 +9,8 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          ContinueStatementNode, AssignmentExpressionNode, ImportDeclarationNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
-         ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode } from '../ast/nodes';
+         ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
+         SpreadElementNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -518,6 +519,11 @@ export class SemanticAnalyzer extends BaseVisitor {
       for (const param of node.params) {
         this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
       }
+      
+      // Declare rest parameter if present (as array type)
+      if (node.restParam) {
+        this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
+      }
 
       // Visit the function body to find all return statements.
       this.visit(node.body);
@@ -565,6 +571,11 @@ export class SemanticAnalyzer extends BaseVisitor {
         this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
       }
 
+      // Declare rest parameter if present (as array type)
+      if (node.restParam) {
+        this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
+      }
+
       // Visit the function body
       this.visit(node.body);
 
@@ -594,6 +605,11 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Declare parameters in the function scope
       for (const param of node.params) {
         this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
+      }
+
+      // Declare rest parameter if present (as array type)
+      if (node.restParam) {
+        this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
       }
 
       // Visit the function body
@@ -839,6 +855,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
     
     // DON'T call super.visitCallExpression() to avoid double traversal
+  }
+
+  visitSpreadElement(node: SpreadElementNode): void {
+    // Visit the spread argument to ensure it's properly analyzed
+    this.visit(node.argument);
+    // No additional analysis needed for spread elements themselves
   }
 
   visitAssignmentExpression(node: AssignmentExpressionNode): void {
