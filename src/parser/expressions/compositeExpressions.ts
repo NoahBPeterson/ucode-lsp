@@ -6,7 +6,7 @@
 import { TokenType } from '../../lexer';
 import { 
   AstNode, IdentifierNode, ArrayExpressionNode, ObjectExpressionNode, 
-  PropertyNode, MemberExpressionNode, LiteralNode 
+  PropertyNode, MemberExpressionNode, LiteralNode, SpreadElementNode
 } from '../../ast/nodes';
 import { PrimaryExpressions } from './primaryExpressions';
 
@@ -20,6 +20,19 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
       do {
         if (this.check(TokenType.TK_COMMA)) {
           elements.push(null);
+        } else if (this.match(TokenType.TK_ELLIP)) {
+          // Handle spread element: ...expression
+          const spreadStart = this.previous()!.pos;
+          const argument = this.parseExpression();
+          if (argument) {
+            const spreadElement: SpreadElementNode = {
+              type: 'SpreadElement',
+              start: spreadStart,
+              end: argument.end,
+              argument
+            };
+            elements.push(spreadElement);
+          }
         } else {
           const expr = this.parseExpression();
           elements.push(expr);
