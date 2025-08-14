@@ -178,7 +178,7 @@ export class SymbolTable {
       { name: 'b64enc', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
       { name: 'b64dec', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
       { name: 'hexenc', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
-      { name: 'hexdec', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
+      { name: 'hexdec', returnType: UcodeType.STRING, params: [UcodeType.STRING, UcodeType.STRING] },
       { name: 'hex', returnType: UcodeType.STRING, params: [UcodeType.INTEGER] },
       { name: 'uchr', returnType: UcodeType.STRING, params: [UcodeType.INTEGER] },
       { name: 'iptoarr', returnType: UcodeType.ARRAY, params: [UcodeType.STRING] },

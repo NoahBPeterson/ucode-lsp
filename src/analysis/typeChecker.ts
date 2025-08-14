@@ -108,7 +108,7 @@ export class TypeChecker {
       { name: 'b64enc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
       { name: 'b64dec', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
       { name: 'hexenc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'hexdec', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'hexdec', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
       { name: 'hex', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
       { name: 'uchr', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
       { name: 'iptoarr', parameters: [UcodeType.STRING], returnType: UcodeType.ARRAY },

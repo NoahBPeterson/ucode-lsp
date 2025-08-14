@@ -40,7 +40,7 @@ export const builtinFunctions = new Map<string, string>([
     ['b64enc', 'Encode string to Base64.\n\n**Parameters:**\n- `string` - String to encode\n\n**Returns:** `string` - Base64 encoded string'],
     ['b64dec', 'Decode Base64 string.\n\n**Parameters:**\n- `string` - Base64 string to decode\n\n**Returns:** `string` - Decoded string'],
     ['hexenc', 'Encode string to hexadecimal.\n\n**Parameters:**\n- `string` - String to encode\n\n**Returns:** `string` - Hexadecimal encoded string'],
-    ['hexdec', 'Decode hexadecimal string.\n\n**Parameters:**\n- `string` - Hexadecimal string to decode\n\n**Returns:** `string` - Decoded string'],
+    ['hexdec', 'Decode hexadecimal string.\n\n**Parameters:**\n- `hexstring` (string) - Hexadecimal string to decode\n- `skipchars` (string) *optional* - Characters to skip during decoding (default: " \\t\\n")\n\n**Returns:** `string` - Decoded string, or null if invalid\n\n**Examples:**\n```ucode\nhexdec("48656c6c6f20776f726c64210a");  // "Hello world!\\n"\nhexdec("44:55:66:77:33:44", ":");      // "DUfw3D"\n```'],
     ['hex', 'Convert number to hexadecimal string.\n\n**Parameters:**\n- `number` - Number to convert\n\n**Returns:** `string` - Hexadecimal representation'],
     ['uchr', 'Convert Unicode code point to character.\n\n**Parameters:**\n- `code` - Unicode code point\n\n**Returns:** `string` - The Unicode character'],
     ['iptoarr', 'Convert IP address string to array of components.\n\n**Parameters:**\n- `ipString` - IP address string (IPv4 or IPv6)\n\n**Returns:** `array` - Array of IP address components\n\n**Example:**\n```ucode\niptoarr("192.168.1.1")  // [192, 168, 1, 1]\n```'],
