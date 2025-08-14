@@ -124,6 +124,10 @@
           "match": "\\b0[xX][0-9a-fA-F]+\\b"
         },
         {
+          "name": "constant.numeric.binary.ucode",
+          "match": "\\b0[bB][01]+\\b"
+        },
+        {
           "name": "constant.numeric.decimal.ucode",
           "match": "\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b"
         }

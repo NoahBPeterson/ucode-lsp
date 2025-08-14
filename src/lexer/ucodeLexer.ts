@@ -5,7 +5,8 @@
 
 import { TokenType, Token, Keywords, Operators, 
          isKeyword, isIdentifierStart, isIdentifierPart, isDigit, 
-         isHexDigit, isWhitespace, isLineBreak } from './tokenTypes';
+         isHexDigit, isWhitespace, isLineBreak, 
+         isBinaryDigit} from './tokenTypes';
 
 export enum LexState {
     UC_LEX_IDENTIFY_BLOCK,
@@ -305,6 +306,18 @@ export class UcodeLexer {
             }
             
             return this.emitToken(TokenType.TK_NUMBER, parseInt(value, 16), startPos);
+        }
+
+        // Handle binary numbers
+        if (this.peekChar() === '0' && (this.peekChar(1) === 'b' || this.peekChar(1) === 'B')) {
+            value += this.nextChar(); // '0'
+            value += this.nextChar(); // 'x' or 'X'
+            
+            while (isBinaryDigit(this.peekChar())) {
+                value += this.nextChar();
+            }
+            
+            return this.emitToken(TokenType.TK_NUMBER, parseInt(value, 2), startPos);
         }
 
         // Handle decimal numbers
