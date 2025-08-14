@@ -156,6 +156,11 @@ export class UcodeLexer {
     }
 
     private identifyToken(): Token | null {
+        // Handle shebang line if it's the first line and we're at the beginning
+        if (this.line === 1 && this.column === 1 && this.peekChar() === '#' && this.peekChar(1) === '!') {
+            return this.parseShebang();
+        }
+        
         this.skipWhitespace();
         
         if (this.pos >= this.source.length) {
@@ -517,6 +522,23 @@ export class UcodeLexer {
         }
         
         return this.emitToken(TokenType.TK_ERROR, 'Unterminated comment', startPos);
+    }
+
+    private parseShebang(): Token | null {
+        const startPos = this.pos;
+        
+        // Skip to the end of the line
+        while (this.pos < this.source.length && !isLineBreak(this.peekChar())) {
+            this.nextChar();
+        }
+        
+        // Skip the line break if present
+        if (this.pos < this.source.length && isLineBreak(this.peekChar())) {
+            this.updatePosition(this.nextChar());
+        }
+        
+        // Return a comment token (which will be filtered out by default)
+        return this.emitToken(TokenType.TK_COMMENT, 'shebang', startPos);
     }
 
     private parseIdentifier(): Token | null {
