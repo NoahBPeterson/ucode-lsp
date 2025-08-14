@@ -4,7 +4,7 @@
  */
 
 import { TokenType } from '../../lexer';
-import { AstNode, IdentifierNode, LiteralNode, ThisExpressionNode, FunctionExpressionNode, BlockStatementNode } from '../../ast/nodes';
+import { AstNode, IdentifierNode, LiteralNode, ThisExpressionNode, FunctionExpressionNode, BlockStatementNode, TemplateLiteralNode, TemplateElementNode } from '../../ast/nodes';
 import { ParseRules } from '../parseRules';
 
 export abstract class PrimaryExpressions extends ParseRules {
@@ -259,6 +259,32 @@ export abstract class PrimaryExpressions extends ParseRules {
     }
     
     return result;
+  }
+
+  protected parseTemplateLiteral(): TemplateLiteralNode {
+    const token = this.previous()!;
+    const templateValue = String(token.value);
+    
+    // For now, parse the template literal as a single quasi without expressions
+    // TODO: Implement proper parsing of embedded expressions ${...}
+    const quasi: TemplateElementNode = {
+      type: 'TemplateElement',
+      start: token.pos,
+      end: token.end,
+      value: {
+        raw: templateValue,
+        cooked: templateValue // For now, just use the raw value
+      },
+      tail: true // This is the only/last quasi
+    };
+
+    return {
+      type: 'TemplateLiteral',
+      start: token.pos,
+      end: token.end,
+      expressions: [], // No embedded expressions for now
+      quasis: [quasi]
+    };
   }
 
   // Abstract methods that must be implemented by subclasses

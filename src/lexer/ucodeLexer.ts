@@ -196,6 +196,11 @@ export class UcodeLexer {
         if (ch === '"' || ch === "'") {
             return this.parseString(ch);
         }
+        
+        // Template literals
+        if (ch === '`') {
+            return this.parseTemplateLiteral();
+        }
 
         // Comments (must come before regex parsing)
         if (ch === '/' && this.peekChar(1) === '/') {
@@ -368,6 +373,60 @@ export class UcodeLexer {
         }
         
         return this.emitToken(TokenType.TK_ERROR, 'Unterminated string', startPos);
+    }
+
+    private parseTemplateLiteral(): Token | null {
+        const startPos = this.pos;
+        let value = '';
+        
+        this.nextChar(); // consume opening backtick
+        
+        while (this.pos < this.source.length) {
+            const ch = this.peekChar();
+            
+            // End of template literal
+            if (ch === '`') {
+                this.nextChar(); // consume closing backtick
+                return this.emitToken(TokenType.TK_TEMPLATE, value, startPos);
+            }
+            
+            // Handle escape sequences
+            if (ch === '\\') {
+                this.nextChar(); // consume backslash
+                const escaped = this.nextChar();
+                
+                switch (escaped) {
+                    case 'n': value += '\n'; break;
+                    case 't': value += '\t'; break;
+                    case 'r': value += '\r'; break;
+                    case '\\': value += '\\'; break;
+                    case '`': value += '`'; break;
+                    case '$': value += '$'; break;
+                    default: value += escaped; break;
+                }
+            } 
+            // Handle template interpolations ${...}
+            else if (ch === '$' && this.peekChar(1) === '{') {
+                // For now, include the ${...} as literal text
+                // TODO: Implement proper template interpolation tokenizing
+                value += this.nextChar(); // consume '$'
+                value += this.nextChar(); // consume '{'
+                
+                // Find the matching closing brace
+                let braceCount = 1;
+                while (this.pos < this.source.length && braceCount > 0) {
+                    const braceCh = this.nextChar();
+                    value += braceCh;
+                    if (braceCh === '{') braceCount++;
+                    else if (braceCh === '}') braceCount--;
+                }
+            } 
+            else {
+                value += this.nextChar();
+            }
+        }
+        
+        return this.emitToken(TokenType.TK_ERROR, 'Unterminated template literal', startPos);
     }
 
     private parseRegex(): Token | null {

@@ -10,7 +10,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
-         SpreadElementNode } from '../ast/nodes';
+         SpreadElementNode, TemplateLiteralNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -861,6 +861,15 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Visit the spread argument to ensure it's properly analyzed
     this.visit(node.argument);
     // No additional analysis needed for spread elements themselves
+  }
+
+  visitTemplateLiteral(node: TemplateLiteralNode): void {
+    // Visit all embedded expressions in the template literal
+    for (const expression of node.expressions) {
+      this.visit(expression);
+    }
+    // Template quasis (the string parts) don't need visiting as they're just text
+    // The template literal itself will be typed as string by the type checker
   }
 
   visitAssignmentExpression(node: AssignmentExpressionNode): void {

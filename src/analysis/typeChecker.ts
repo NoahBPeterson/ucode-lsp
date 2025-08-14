@@ -266,6 +266,8 @@ export class TypeChecker {
         return this.checkArrowFunctionExpression(node as any);
       case 'FunctionExpression':
         return this.checkFunctionExpression(node as any);
+      case 'TemplateLiteral':
+        return UcodeType.STRING;
       default:
         return UcodeType.UNKNOWN;
     }

@@ -27,6 +27,7 @@ export abstract class ParseRules extends ParserUtils {
   protected abstract parseDelete(): any;
   protected abstract parseFunctionExpression(): any;
   protected abstract parseArrowFunction(left: any): any;
+  protected abstract parseTemplateLiteral(): any;
 
   protected initializeParseRules(): void {
     // Primary expressions
@@ -52,6 +53,10 @@ export abstract class ParseRules extends ParserUtils {
     });
     this.rules.set(TokenType.TK_NULL, { 
       prefix: () => this.parseLiteral('null'), 
+      precedence: Precedence.NONE 
+    });
+    this.rules.set(TokenType.TK_TEMPLATE, { 
+      prefix: () => this.parseTemplateLiteral(), 
       precedence: Precedence.NONE 
     });
     this.rules.set(TokenType.TK_LABEL, { 
