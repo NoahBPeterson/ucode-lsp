@@ -146,8 +146,8 @@ export class SymbolTable {
       { name: 'split', returnType: UcodeType.ARRAY, params: [UcodeType.STRING, UcodeType.STRING] },
       { name: 'join', returnType: UcodeType.STRING, params: [UcodeType.STRING, UcodeType.ARRAY] },
       { name: 'trim', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
-      { name: 'ltrim', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
-      { name: 'rtrim', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
+      { name: 'ltrim', returnType: UcodeType.STRING, params: [UcodeType.STRING, UcodeType.STRING] },
+      { name: 'rtrim', returnType: UcodeType.STRING, params: [UcodeType.STRING, UcodeType.STRING] },
       { name: 'chr', returnType: UcodeType.STRING, params: [UcodeType.INTEGER] },
       { name: 'ord', returnType: UcodeType.INTEGER, params: [UcodeType.STRING] },
       { name: 'uc', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
@@ -192,7 +192,7 @@ export class SymbolTable {
       { name: 'call', returnType: UcodeType.UNKNOWN, params: [UcodeType.FUNCTION, UcodeType.UNKNOWN] },
       { name: 'signal', returnType: UcodeType.UNKNOWN, params: [UcodeType.INTEGER, UcodeType.FUNCTION] },
       { name: 'clock', returnType: UcodeType.DOUBLE, params: [] },
-      { name: 'sourcepath', returnType: UcodeType.STRING, params: [] },
+      { name: 'sourcepath', returnType: UcodeType.STRING, params: [UcodeType.INTEGER, UcodeType.BOOLEAN] },
       { name: 'gc', returnType: UcodeType.NULL, params: [] }
     ];
 
