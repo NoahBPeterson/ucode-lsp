@@ -95,7 +95,7 @@ export class TypeChecker {
       { name: 'json', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
       { name: 'match', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.ARRAY },
       { name: 'replace', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'system', parameters: [UcodeType.STRING], returnType: UcodeType.INTEGER },
+      { name: 'system', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.INTEGER, minParams: 1, maxParams: 2 },
       { name: 'time', parameters: [], returnType: UcodeType.INTEGER },
       { name: 'sleep', parameters: [UcodeType.INTEGER], returnType: UcodeType.NULL },
       { name: 'localtime', parameters: [], returnType: UcodeType.ARRAY, minParams: 0, maxParams: 1 },
