@@ -380,7 +380,26 @@ export class TypeChecker {
 
       case '&&':
       case '||':
-        return this.typeCompatibility.getLogicalResultType();
+        // Logical operators in ucode implement short-circuiting and return the actual value
+        // that stopped evaluation, not a boolean. This is similar to JavaScript behavior.
+        // - a || b: returns a if truthy, otherwise returns b
+        // - a && b: returns a if falsy, otherwise returns b
+        // Logical operators return the actual value, not boolean.
+        // For ucode's || and && operators:
+        // - a || b: returns a if truthy, otherwise b
+        // - a && b: returns a if falsy, otherwise b
+        //
+        // If both operands have the same type, return that type.
+        // Otherwise, return UNKNOWN since we can't represent union types 
+        // in the current UcodeType system.
+        if (leftType === rightType) {
+          return leftType;
+        }
+        
+        // For different types, we ideally want a union type, but since
+        // the current architecture only supports UcodeType, return UNKNOWN
+        // TODO: Update type system to support UcodeDataType throughout
+        return UcodeType.UNKNOWN;
 
       case '&':
       case '|':
