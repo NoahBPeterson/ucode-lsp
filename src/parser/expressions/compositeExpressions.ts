@@ -56,6 +56,23 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
 
     if (!this.check(TokenType.TK_RBRACE)) {
       do {
+        // Handle spread element in objects: ...expression
+        if (this.match(TokenType.TK_ELLIP)) {
+          const spreadStart = this.previous()!.pos;
+          const argument = this.parseExpression();
+          if (argument) {
+            const spreadElement: SpreadElementNode = {
+              type: 'SpreadElement',
+              start: spreadStart,
+              end: argument.end,
+              argument
+            };
+            // Add spread element as a special property
+            properties.push(spreadElement as any);
+          }
+          continue; // Skip regular property parsing
+        }
+
         let key: AstNode;
         let computed = false;
 

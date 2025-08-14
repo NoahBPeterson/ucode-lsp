@@ -69,7 +69,10 @@ const testFiles = [
     'tests/test-clock-function.js',
     'tests/test-optional-chaining-lexer.js',
     'tests/test-optional-chaining-statements.js',
-    'tests/test-regex-flags.js'
+    'tests/test-regex-flags.js',
+    'tests/test-complex-syntax-validation.js',
+    'tests/test-object-spread-parsing.js',
+    'tests/test-comprehensive-array-validation.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
