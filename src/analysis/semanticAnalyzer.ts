@@ -1062,38 +1062,68 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
     
     if (this.options.enableScopeAnalysis) {
-      // Handle the iterator variable (left side) - it's implicitly declared by the for...in loop
-      // We declare it in the current scope so it's accessible to the loop body
-      let iteratorName: string | null = null;
-      let iteratorNode: any = null;
+      // Create a new scope for the for-in loop that will contain the iterator variables
+      // This scope encompasses the entire loop body
+      this.symbolTable.enterScope();
+      
+      // Handle iterator variables (left side) - for...in loops can have 1 or 2 variables
+      // Single variable: for (let item in array) - item gets the value
+      // Two variables: for (let i, item in array) - i gets the index, item gets the value
       
       if (node.left && node.left.type === 'Identifier') {
         // Simple case: for (var_name in ...)
-        iteratorName = node.left.name;
-        iteratorNode = node.left;
-      } else if (node.left && node.left.type === 'VariableDeclaration' && node.left.declarations.length > 0) {
-        // Declaration case: for (let var_name in ...)
-        const declarator = node.left.declarations[0];
-        if (declarator.id && declarator.id.type === 'Identifier') {
-          iteratorName = declarator.id.name;
-          iteratorNode = declarator.id;
-        }
-      }
-      
-      if (iteratorName && iteratorNode) {
-        // Declare the iterator variable in the current scope
-        // For-in loop iterators should have unknown type since we can't reliably infer the element type
+        const iteratorName = node.left.name;
+        const iteratorNode = node.left;
+        
         this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType, iteratorNode);
-        // Mark it as used immediately since it's used by the loop construct itself
         this.symbolTable.markUsed(iteratorName, iteratorNode.start);
-      } else {
+      } else if (node.left && node.left.type === 'VariableDeclaration' && node.left.declarations.length > 0) {
+        // Declaration case: for (let var_name in ...) or for (let i, item in ...)
+        const declarations = node.left.declarations;
+        
+        if (declarations.length === 1) {
+          // Single variable: gets the value
+          const declarator = declarations[0];
+          if (declarator.id && declarator.id.type === 'Identifier') {
+            const iteratorName = declarator.id.name;
+            const iteratorNode = declarator.id;
+            
+            this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType, iteratorNode);
+            this.symbolTable.markUsed(iteratorName, iteratorNode.start);
+          }
+        } else if (declarations.length === 2) {
+          // Two variables: first gets the index (number), second gets the value
+          const indexDeclarator = declarations[0];
+          const valueDeclarator = declarations[1];
+          
+          if (indexDeclarator.id && indexDeclarator.id.type === 'Identifier') {
+            const indexName = indexDeclarator.id.name;
+            const indexNode = indexDeclarator.id;
+            
+            // Index variable should be typed as number
+            this.symbolTable.declare(indexName, SymbolType.VARIABLE, UcodeType.INTEGER as UcodeDataType, indexNode);
+            this.symbolTable.markUsed(indexName, indexNode.start);
+          }
+          
+          if (valueDeclarator.id && valueDeclarator.id.type === 'Identifier') {
+            const valueName = valueDeclarator.id.name;
+            const valueNode = valueDeclarator.id;
+            
+            // Value variable type depends on the array element type
+            this.symbolTable.declare(valueName, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType, valueNode);
+            this.symbolTable.markUsed(valueName, valueNode.start);
+          }
+        }
       }
       
       // Visit the right side (the object being iterated over)
       this.visit(node.right);
       
-      // Visit the loop body (which may create its own block scope)
+      // Visit the loop body (iterator variables are now in scope)
       this.visit(node.body);
+      
+      // Exit the for-in loop scope
+      this.symbolTable.exitScope();
     } else {
       // Fallback to default behavior if scope analysis is disabled
       super.visitForInStatement(node);

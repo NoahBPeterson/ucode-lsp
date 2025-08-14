@@ -8,12 +8,45 @@ import {
   AstNode, IfStatementNode, WhileStatementNode, ForStatementNode, 
   ForInStatementNode, ReturnStatementNode, BreakStatementNode, 
   ContinueStatementNode, TryStatementNode, CatchClauseNode, 
-  SwitchStatementNode, SwitchCaseNode, 
+  SwitchStatementNode, SwitchCaseNode, BlockStatementNode,
   IdentifierNode, VariableDeclarationNode, VariableDeclaratorNode
 } from '../../ast/nodes';
 import { DeclarationStatements } from './declarationStatements';
 
 export abstract class ControlFlowStatements extends DeclarationStatements {
+
+  /**
+   * Parse a colon-end block (e.g., : statements endfor)
+   * Used by for-in, while, if statements when using colon syntax
+   */
+  protected parseColonEndBlock(endToken: TokenType, endKeyword: string): BlockStatementNode | null {
+    const start = this.peek()?.pos || 0;
+    
+    this.consume(TokenType.TK_COLON, `Expected ':' for ${endKeyword} block`);
+    
+    const statements: AstNode[] = [];
+    
+    // Parse statements until we hit the end token
+    while (!this.check(endToken) && !this.isAtEnd()) {
+      const stmt = this.parseStatement();
+      if (stmt) {
+        statements.push(stmt);
+      } else {
+        // If we can't parse a statement, skip this token and try again
+        this.advance();
+      }
+    }
+    
+    this.consume(endToken, `Expected '${endKeyword}' to close block`);
+    
+    // Return a block statement containing all the statements
+    return {
+      type: 'BlockStatement',
+      start,
+      end: this.previous()!.end,
+      body: statements
+    } as BlockStatementNode;
+  }
 
   protected parseIfStatement(): IfStatementNode | null {
     const start = this.previous()!.pos;
@@ -68,26 +101,34 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     const kind = this.previous()!.type === TokenType.TK_CONST ? 'const' : 'let';
     const declarations: VariableDeclaratorNode[] = [];
 
-    // Parse only a single variable declarator for for-in loops
-    if (this.check(TokenType.TK_LABEL)) {
-      const idStart = this.peek()?.pos || 0;
-      const name = this.advance()!.value as string;
-      
-      const declarator: VariableDeclaratorNode = {
-        type: 'VariableDeclarator',
-        start: idStart,
-        end: this.previous()!.end,
-        id: {
-          type: 'Identifier',
+    // Parse variable declarators for for-in loops (supports 1 or 2 variables)
+    do {
+      if (this.check(TokenType.TK_LABEL)) {
+        const idStart = this.peek()?.pos || 0;
+        const name = this.advance()!.value as string;
+        
+        const declarator: VariableDeclaratorNode = {
+          type: 'VariableDeclarator',
           start: idStart,
           end: this.previous()!.end,
-          name
-        },
-        init: null // No initialization in for-in loops
-      };
+          id: {
+            type: 'Identifier',
+            start: idStart,
+            end: this.previous()!.end,
+            name
+          },
+          init: null // No initialization in for-in loops
+        };
+        
+        declarations.push(declarator);
+      }
       
-      declarations.push(declarator);
-    }
+      // Support for two-variable syntax: let i, item in array
+      // Break if we encounter 'in' or if we've parsed 2 variables already
+      if (this.check(TokenType.TK_IN) || declarations.length >= 2) {
+        break;
+      }
+    } while (this.match(TokenType.TK_COMMA));
 
     // No semicolon expected in for-in loop declarations
     return {
@@ -123,7 +164,15 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
         if (!right) return null;
 
         this.consume(TokenType.TK_RPAREN, "Expected ')' after for-in");
-        const body = this.parseStatement();
+        
+        // Check for colon-endfor syntax vs regular statement/block
+        let body: AstNode | null = null;
+        if (this.check(TokenType.TK_COLON)) {
+          body = this.parseColonEndBlock(TokenType.TK_ENDFOR, "endfor");
+        } else {
+          body = this.parseStatement();
+        }
+        
         if (!body) return null;
 
         return {
