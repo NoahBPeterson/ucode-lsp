@@ -214,6 +214,24 @@ export class SymbolTable {
         usedAt: []
       });
     }
+    
+    // Add global variables
+    this.globalScope.set('ARGV', {
+      name: 'ARGV',
+      type: SymbolType.VARIABLE,
+      dataType: UcodeType.ARRAY as UcodeDataType,
+      scope: 0,
+      declared: true,
+      used: false,
+      node: {
+        type: 'Identifier',
+        start: 0,
+        end: 0,
+        name: 'ARGV'
+      } as IdentifierNode,
+      declaredAt: 0,
+      usedAt: []
+    });
   }
 
   enterScope(): void {
