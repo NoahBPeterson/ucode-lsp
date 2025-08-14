@@ -51,16 +51,51 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
           key = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
           this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property key");
         } else if (this.check(TokenType.TK_LABEL)) {
-          // Accept labels as property keys - treat them as string literals, not identifiers
+          // Handle identifier property keys - could be shorthand or regular
           const token = this.advance()!;
-          key = {
-            type: 'Literal',
-            start: token.pos,
-            end: token.end,
-            value: token.value as string,
-            raw: token.value as string,
-            literalType: 'string'
-          } as LiteralNode;
+          const identifierName = token.value as string;
+          
+          // Check for shorthand property syntax (no colon after identifier)
+          if (!this.check(TokenType.TK_COLON)) {
+            // Shorthand property: { name } becomes { name: name }
+            key = {
+              type: 'Literal',
+              start: token.pos,
+              end: token.end,
+              value: identifierName,
+              raw: identifierName,
+              literalType: 'string'
+            } as LiteralNode;
+            
+            // Value is the same identifier reference
+            const value: IdentifierNode = {
+              type: 'Identifier',
+              start: token.pos,
+              end: token.end,
+              name: identifierName
+            };
+            
+            properties.push({
+              type: 'Property',
+              start: key.start,
+              end: value.end,
+              key,
+              value,
+              computed: false
+            });
+            
+            continue; // Skip the regular property parsing below
+          } else {
+            // Regular property with colon: treat key as string literal
+            key = {
+              type: 'Literal',
+              start: token.pos,
+              end: token.end,
+              value: identifierName,
+              raw: identifierName,
+              literalType: 'string'
+            } as LiteralNode;
+          }
         } else if (this.check(TokenType.TK_NUMBER) || this.check(TokenType.TK_DOUBLE)) {
           // Accept numbers as property keys (they become string keys)
           const token = this.advance()!;
