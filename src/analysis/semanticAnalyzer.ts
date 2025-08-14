@@ -10,7 +10,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
-         SpreadElementNode, TemplateLiteralNode } from '../ast/nodes';
+         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -52,6 +52,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private options: SemanticAnalysisOptions;
   private functionScopes: number[] = []; // Track function scope levels
   private loopScopes: number[] = []; // Track loop scope levels
+  private switchScopes: number[] = []; // Track switch statement scope levels
   private currentFunctionNode: FunctionDeclarationNode | null = null;
   private functionReturnTypes = new Map<FunctionDeclarationNode, UcodeType[]>();
   private processingFunctionCallCallee = false; // Track when processing function call callee
@@ -76,6 +77,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.diagnostics = [];
     this.functionScopes = [];
     this.loopScopes = [];
+    this.switchScopes = [];
     this.currentFunctionNode = null;
     this.functionReturnTypes.clear();
 
@@ -974,10 +976,10 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   visitBreakStatement(node: BreakStatementNode): void {
     if (this.options.enableControlFlowAnalysis) {
-      // Check if break is inside a loop
-      if (this.loopScopes.length === 0) {
+      // Check if break is inside a loop or switch statement
+      if (this.loopScopes.length === 0 && this.switchScopes.length === 0) {
         this.addDiagnostic(
-          'Break statement outside loop',
+          'Break statement outside loop or switch',
           node.start,
           node.end,
           DiagnosticSeverity.Error
@@ -1099,6 +1101,21 @@ export class SemanticAnalyzer extends BaseVisitor {
     
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.pop();
+    }
+  }
+
+  visitSwitchStatement(node: SwitchStatementNode): void {
+    if (this.options.enableControlFlowAnalysis) {
+      // Track that we're entering a switch statement
+      this.switchScopes.push(this.symbolTable.getCurrentScope());
+    }
+
+    // Continue with default traversal
+    super.visitSwitchStatement(node);
+
+    if (this.options.enableControlFlowAnalysis) {
+      // Pop the switch scope when exiting
+      this.switchScopes.pop();
     }
   }
 
