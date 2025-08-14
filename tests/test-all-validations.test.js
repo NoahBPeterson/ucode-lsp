@@ -68,7 +68,8 @@ const testFiles = [
     'tests/test-zlib-module.js',
     'tests/test-clock-function.js',
     'tests/test-optional-chaining-lexer.js',
-    'tests/test-optional-chaining-statements.js'
+    'tests/test-optional-chaining-statements.js',
+    'tests/test-regex-flags.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

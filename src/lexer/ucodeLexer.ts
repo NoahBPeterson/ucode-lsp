@@ -460,9 +460,22 @@ export class UcodeLexer {
             if (ch === '/') {
                 value += this.nextChar(); // consume closing /
                 
-                // Handle regex flags
-                while (this.pos < this.source.length && /[gimuy]/.test(this.peekChar())) {
-                    value += this.nextChar();
+                // Handle regex flags (ucode supports: g, i, s)
+                const supportedFlags = new Set(['g', 'i', 's']);
+                while (this.pos < this.source.length && /[a-zA-Z]/.test(this.peekChar())) {
+                    const flag = this.peekChar();
+                    if (supportedFlags.has(flag)) {
+                        value += this.nextChar();
+                    } else {
+                        // Found unsupported flag - generate error
+                        const errorPos = this.pos;
+                        this.nextChar(); // consume the invalid flag
+                        return this.emitToken(
+                            TokenType.TK_ERROR,
+                            `Unsupported regex flag '${flag}'. Supported flags are: g, i, s`,
+                            errorPos
+                        );
+                    }
                 }
                 
                 return this.emitToken(TokenType.TK_REGEXP, value, startPos);
