@@ -14,7 +14,8 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
-import { Diagnostic, DiagnosticSeverity, TextDocument } from 'vscode-languageserver/node';
+import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
+import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
 import { logTypeRegistry } from './logTypes';
