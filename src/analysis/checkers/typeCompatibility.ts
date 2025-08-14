@@ -124,13 +124,6 @@ export class TypeCompatibilityChecker {
     return UcodeType.UNKNOWN;
   }
 
-  getStringPropertyType(propertyName: string): UcodeType {
-    if (propertyName === 'length') {
-      return UcodeType.INTEGER;
-    }
-    return UcodeType.UNKNOWN;
-  }
-
   isIterableType(type: UcodeType): boolean {
     return type === UcodeType.ARRAY || type === UcodeType.OBJECT || type === UcodeType.STRING;
   }

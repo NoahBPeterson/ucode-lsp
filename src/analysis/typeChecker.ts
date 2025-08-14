@@ -660,21 +660,16 @@ export class TypeChecker {
     }
 
     if (objectType === UcodeType.STRING && !node.computed) {
-      // String properties like length
+      // String has no properties.
       const propertyName = (node.property as IdentifierNode).name;
-      const propertyType = this.typeCompatibility.getStringPropertyType(propertyName);
+      this.errors.push({
+        message: `Property '${propertyName}' does not exist on string type. Strings in ucode have no member variables or functions.`,
+        start: node.property.start,
+        end: node.property.end,
+        severity: 'error'
+      });
       
-      // If the property type is UNKNOWN, it means the property doesn't exist on strings
-      if (propertyType === UcodeType.UNKNOWN) {
-        this.errors.push({
-          message: `Property '${propertyName}' does not exist on string type. Strings in ucode only have a 'length' property, not methods.`,
-          start: node.property.start,
-          end: node.property.end,
-          severity: 'error'
-        });
-      }
-      
-      return propertyType;
+      return UcodeType.UNKNOWN;
     }
 
     if (objectType === UcodeType.REGEX && !node.computed) {

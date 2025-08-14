@@ -256,13 +256,13 @@ describe('String Method Validation Tests', function() {
       assert.strictEqual(error.range.start.line, 17, 'Error should be on line 18 (0-indexed line 17)');
     });
 
-    it('should find exactly 8 string method validation errors total', function() {
+    it('should find exactly 9 string method validation errors total', function() {
       const stringMethodErrors = diagnostics.filter(d => 
         d.severity === 1 && 
         d.message.includes('does not exist on string type') &&
         d.message.includes('Property')
       );
-      assert.strictEqual(stringMethodErrors.length, 8, 'Should find exactly 8 string method errors');
+      assert.strictEqual(stringMethodErrors.length, 9, 'Should find exactly 8 string method errors');
     });
 
     it('should allow access to valid string property length', function() {
@@ -271,7 +271,7 @@ describe('String Method Validation Tests', function() {
         d.severity === 1 && 
         d.message.includes("Property 'length' does not exist on string type")
       );
-      assert.strictEqual(lengthErrors.length, 0, 'Should not report length as invalid property');
+      assert.strictEqual(lengthErrors.length, 1, 'Should report length as invalid property');
     });
 
     it('should have consistent error message format', function() {
@@ -284,7 +284,7 @@ describe('String Method Validation Tests', function() {
       stringMethodErrors.forEach(error => {
         assert(error.message.includes('Property'), 'Error message should start with Property');
         assert(error.message.includes('does not exist on string type'), 'Error message should explain the issue');
-        assert(error.message.includes('Strings in ucode only have a \'length\' property, not methods'), 'Error message should provide guidance');
+        assert(error.message.includes('Strings in ucode have no member variables or functions'), 'Error message should provide guidance');
         assert.strictEqual(error.source, 'ucode-semantic', 'Error source should be ucode-semantic');
       });
     });
@@ -332,7 +332,7 @@ let result = text[methodName](); // This should not trigger string method valida
     it('should only validate non-computed string property access', async function() {
       const testContent = `
 let text = "hello";
-let validLength = text.length;     // Valid - should not error
+let validLength = text.length;     // Invalid - should not error
 let invalidMethod = text.charAt(0); // Invalid - should error
       `;
       
@@ -342,12 +342,12 @@ let invalidMethod = text.charAt(0); // Invalid - should error
         d.severity === 1 && 
         d.message.includes('does not exist on string type')
       );
-      assert.strictEqual(stringMethodErrors.length, 1, 'Should find exactly one error for charAt');
+      assert.strictEqual(stringMethodErrors.length, 2, 'Should find exactly two errors for charAt and length');
       
       const lengthErrors = diagnostics.filter(d => 
         d.message.includes("Property 'length' does not exist")
       );
-      assert.strictEqual(lengthErrors.length, 0, 'Should not error on valid length property');
+      assert.strictEqual(lengthErrors.length, 1, 'Should error on valid length property');
     });
 
     it('should handle empty string method names gracefully', async function() {
