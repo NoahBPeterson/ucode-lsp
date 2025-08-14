@@ -117,7 +117,7 @@ export class TypeChecker {
       { name: 'loadstring', parameters: [UcodeType.STRING], returnType: UcodeType.FUNCTION },
       { name: 'loadfile', parameters: [UcodeType.STRING], returnType: UcodeType.FUNCTION },
       { name: 'wildcard', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
-      { name: 'regexp', parameters: [UcodeType.STRING], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
+      { name: 'regexp', parameters: [UcodeType.STRING], returnType: UcodeType.REGEX, minParams: 1, maxParams: 2 },
       { name: 'assert', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
       { name: 'call', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, variadic: true },
       { name: 'signal', parameters: [UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
@@ -296,7 +296,7 @@ export class TypeChecker {
       case 'null':
         return UcodeType.NULL;
       case 'regexp':
-        return UcodeType.OBJECT; // Regex literals are objects in ucode
+        return UcodeType.REGEX; // Regex literals are independent types
       default:
         return UcodeType.UNKNOWN;
     }
@@ -677,6 +677,19 @@ export class TypeChecker {
       return propertyType;
     }
 
+    if (objectType === UcodeType.REGEX && !node.computed) {
+      // Regex objects have no properties or methods at all
+      const propertyName = (node.property as IdentifierNode).name;
+      
+      // Invalid property/method access on regex
+      this.errors.push({
+        message: `Property '${propertyName}' does not exist on regex type. Regular expressions in ucode have no properties or methods. Use builtin functions instead (e.g., match(string, regex), replace(string, regex, replacement)).`,
+        start: node.property.start,
+        end: node.property.end,
+        severity: 'error'
+      });
+      return UcodeType.UNKNOWN;
+    }
 
     return UcodeType.UNKNOWN;
   }

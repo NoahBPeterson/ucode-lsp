@@ -24,6 +24,7 @@ import { fsModuleFunctions } from './fsBuiltins';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 import { zlibTypeRegistry } from './analysis/zlibTypes';
 import { fsModuleTypeRegistry } from './analysis/fsModuleTypes';
+import { regexTypeRegistry } from './analysis/regexTypes';
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -574,6 +575,23 @@ export function handleHover(
                     contents: {
                         kind: MarkupKind.Markdown,
                         value: `**${word}** (ucode keyword)`
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+        }
+        
+        // Handle regex literals
+        if (token && token.type === TokenType.TK_REGEXP) {
+            const regexInfo = regexTypeRegistry.extractPattern(token.value);
+            if (regexInfo.pattern) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: regexTypeRegistry.getRegexDocumentation(regexInfo.pattern, regexInfo.flags)
                     },
                     range: {
                         start: document.positionAt(token.pos),

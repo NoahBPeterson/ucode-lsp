@@ -22,6 +22,7 @@ export enum UcodeType {
   ARRAY = 'array',
   OBJECT = 'object',
   FUNCTION = 'function',
+  REGEX = 'regex',
   NULL = 'null',
   UNKNOWN = 'unknown',
   UNION = 'union'
@@ -186,7 +187,7 @@ export class SymbolTable {
       { name: 'loadstring', returnType: UcodeType.FUNCTION, params: [UcodeType.STRING] },
       { name: 'loadfile', returnType: UcodeType.FUNCTION, params: [UcodeType.STRING] },
       { name: 'wildcard', returnType: UcodeType.BOOLEAN, params: [UcodeType.STRING, UcodeType.STRING] },
-      { name: 'regexp', returnType: UcodeType.OBJECT, params: [UcodeType.STRING, UcodeType.STRING] },
+      { name: 'regexp', returnType: UcodeType.REGEX, params: [UcodeType.STRING, UcodeType.STRING] },
       { name: 'assert', returnType: UcodeType.UNKNOWN, params: [UcodeType.UNKNOWN, UcodeType.STRING] },
       { name: 'call', returnType: UcodeType.UNKNOWN, params: [UcodeType.FUNCTION, UcodeType.UNKNOWN] },
       { name: 'signal', returnType: UcodeType.UNKNOWN, params: [UcodeType.INTEGER, UcodeType.FUNCTION] },

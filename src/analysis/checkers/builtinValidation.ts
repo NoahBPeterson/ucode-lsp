@@ -140,7 +140,7 @@ export class BuiltinValidator {
       const patternType = this.getNodeType(patternArg);
       
       // In ucode, match() can accept string or regex pattern
-      if (patternType !== UcodeType.STRING && patternType !== UcodeType.OBJECT && patternType !== UcodeType.UNKNOWN) {
+      if (patternType !== UcodeType.STRING && patternType !== UcodeType.REGEX && patternType !== UcodeType.UNKNOWN) {
         this.errors.push({
           message: `Function 'match' expects string or regex pattern as second argument, got ${patternType}`,
           start: patternArg.start,
@@ -184,7 +184,7 @@ export class BuiltinValidator {
       const separatorType = this.getNodeType(separatorArg);
       
       // In ucode, split() can accept string or regex pattern as separator
-      if (separatorType !== UcodeType.STRING && separatorType !== UcodeType.OBJECT && separatorType !== UcodeType.UNKNOWN) {
+      if (separatorType !== UcodeType.STRING && separatorType !== UcodeType.REGEX && separatorType !== UcodeType.UNKNOWN) {
         this.errors.push({
           message: `Function 'split' expects string or regex pattern as second argument, got ${separatorType}`,
           start: separatorArg.start,
@@ -246,7 +246,7 @@ export class BuiltinValidator {
       const searchType = this.getNodeType(searchArg);
       
       // In ucode, replace() can accept string or regex pattern as search parameter
-      if (searchType !== UcodeType.STRING && searchType !== UcodeType.OBJECT && searchType !== UcodeType.UNKNOWN) {
+      if (searchType !== UcodeType.STRING && searchType !== UcodeType.REGEX && searchType !== UcodeType.UNKNOWN) {
         this.errors.push({
           message: `Function 'replace' expects string or regex pattern as second argument, got ${searchType}`,
           start: searchArg.start,
