@@ -200,7 +200,7 @@ export class SymbolTable {
       this.globalScope.set(builtin.name, {
         name: builtin.name,
         type: SymbolType.BUILTIN,
-        dataType: builtin.returnType,
+        dataType: UcodeType.FUNCTION, // Builtin functions should be typed as FUNCTION, not their return type
         scope: 0,
         declared: true,
         used: false,

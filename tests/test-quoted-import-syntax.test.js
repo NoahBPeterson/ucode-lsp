@@ -1,5 +1,6 @@
 const assert = require('assert');
 const { UcodeParser } = require('../src/parser/ucodeParser.ts');
+const { UcodeLexer } = require('../src/lexer/ucodeLexer.ts');
 const { SemanticAnalyzer } = require('../src/analysis/semanticAnalyzer.ts');
 
 /**
@@ -22,7 +23,9 @@ describe('Quoted Import Syntax Support', function() {
         validCases.forEach((code, index) => {
             console.log(`Testing valid case ${index + 1}: ${code}`);
             try {
-                const parser = new UcodeParser(code);
+                const lexer = new UcodeLexer(code, { rawMode: true });
+                const tokens = lexer.tokenize();
+                const parser = new UcodeParser(tokens, code);
                 const result = parser.parse();
                 
                 // Handle parser result structure { ast: {...}, errors: [...], warnings: [...] }
@@ -76,11 +79,15 @@ describe('Quoted Import Syntax Support', function() {
         invalidCases.forEach((code, index) => {
             console.log(`Testing invalid case ${index + 1}: ${code}`);
             try {
-                const parser = new UcodeParser(code);
+                const lexer = new UcodeLexer(code, { rawMode: true });
+                const tokens = lexer.tokenize();
+                const parser = new UcodeParser(tokens, code);
                 const ast = parser.parse();
                 
                 // Should parse syntactically but semantic analysis should catch invalid imports
-                const analyzer = new SemanticAnalyzer();
+                const { TextDocument } = require('vscode-languageserver-textdocument');
+                const textDocument = TextDocument.create('file:///test.uc', 'ucode', 1, code);
+                const analyzer = new SemanticAnalyzer(textDocument);
                 const analysisResult = analyzer.analyze(ast);
                 
                 // Should have semantic errors for invalid string imports
@@ -126,10 +133,14 @@ describe('Quoted Import Syntax Support', function() {
         `;
         
         try {
-            const parser = new UcodeParser(code);
+            const lexer = new UcodeLexer(code, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, code);
             const ast = parser.parse();
             
-            const analyzer = new SemanticAnalyzer();
+            const { TextDocument } = require('vscode-languageserver-textdocument');
+            const textDocument = TextDocument.create('file:///test.uc', 'ucode', 1, code);
+            const analyzer = new SemanticAnalyzer(textDocument);
             const analysisResult = analyzer.analyze(ast);
             
             // Should have no errors for valid const object usage
@@ -153,7 +164,9 @@ describe('Quoted Import Syntax Support', function() {
         const testCase = "import { request as rtrequest, 'const' as rtconst } from 'rtnl';";
         
         try {
-            const parser = new UcodeParser(testCase);
+            const lexer = new UcodeLexer(testCase, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, testCase);
             const result = parser.parse();
             
             // Handle parser result structure { ast: {...}, errors: [...], warnings: [...] }
