@@ -65,7 +65,7 @@ export class TypeCompatibilityChecker {
   }
 
   canUseInOperator(_leftType: UcodeType, rightType: UcodeType): boolean {
-    return rightType === UcodeType.OBJECT || rightType === UcodeType.ARRAY;
+    return rightType === UcodeType.OBJECT || rightType === UcodeType.ARRAY || rightType === UcodeType.UNKNOWN;
   }
 
   getArithmeticResultType(leftType: UcodeType, rightType: UcodeType, operator: string): UcodeType {
