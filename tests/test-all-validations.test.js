@@ -72,7 +72,8 @@ const testFiles = [
     'tests/test-regex-flags.js',
     'tests/test-complex-syntax-validation.js',
     'tests/test-object-spread-parsing.js',
-    'tests/test-comprehensive-array-validation.js'
+    'tests/test-comprehensive-array-validation.js',
+    'tests/test-trailing-comma.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

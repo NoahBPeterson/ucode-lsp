@@ -141,6 +141,10 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
           this.advance();
           key = this.parseLiteral('string');
         } else {
+          // Check for trailing comma: if we encounter closing brace, break silently
+          if (this.check(TokenType.TK_RBRACE)) {
+            break; // Allow trailing comma before closing brace
+          }
           this.error("Expected property name");
           break;
         }
