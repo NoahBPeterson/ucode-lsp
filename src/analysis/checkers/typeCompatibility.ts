@@ -44,15 +44,24 @@ export class TypeCompatibilityChecker {
     if (leftType === UcodeType.STRING || rightType === UcodeType.STRING) {
       return true;
     }
+    // Allow addition with unknown types (could be numeric or string concatenation)
+    if (leftType === UcodeType.UNKNOWN || rightType === UcodeType.UNKNOWN) {
+      return true;
+    }
     return false;
   }
 
   canPerformArithmetic(leftType: UcodeType, rightType: UcodeType): boolean {
-    return this.isNumericType(leftType) && this.isNumericType(rightType);
+    // Allow arithmetic if both types are numeric OR if either type is unknown (dynamic typing)
+    const leftOk = this.isNumericType(leftType) || leftType === UcodeType.UNKNOWN;
+    const rightOk = this.isNumericType(rightType) || rightType === UcodeType.UNKNOWN;
+    return leftOk && rightOk;
   }
 
-  canPerformBitwiseOp(leftType: UcodeType, rightType: UcodeType): boolean {
-    return this.isIntegerType(leftType) && this.isIntegerType(rightType);
+  canPerformBitwiseOp(_leftType: UcodeType, _rightType: UcodeType): boolean {
+    // ucode allows bitwise operations on any types with implicit conversion
+    // Examples: true ^ false → 1, "lol" ^ 5 → 5
+    return true;
   }
 
   canUseInOperator(_leftType: UcodeType, rightType: UcodeType): boolean {

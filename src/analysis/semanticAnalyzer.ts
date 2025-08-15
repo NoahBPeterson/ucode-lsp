@@ -6,7 +6,7 @@
 import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode, 
          FunctionDeclarationNode, FunctionExpressionNode, IdentifierNode, CallExpressionNode,
          BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
-         ContinueStatementNode, AssignmentExpressionNode, ImportDeclarationNode,
+         ContinueStatementNode, AssignmentExpressionNode, BinaryExpressionNode, ImportDeclarationNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
@@ -950,6 +950,30 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     // Continue with default traversal
     super.visitAssignmentExpression(node);
+  }
+
+  visitBinaryExpression(node: BinaryExpressionNode): void {
+    // Continue with default traversal first to ensure child nodes are visited
+    super.visitBinaryExpression(node);
+
+    if (this.options.enableTypeChecking) {
+      // Reset errors before type checking this binary expression
+      this.typeChecker.resetErrors();
+      
+      // Type check the binary expression for type warnings
+      this.typeChecker.checkNode(node);
+      const result = this.typeChecker.getResult();
+      
+      // Add type errors to diagnostics
+      for (const error of result.errors) {
+        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error);
+      }
+      
+      // Add type warnings to diagnostics
+      for (const warning of result.warnings) {
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
+      }
+    }
   }
 
   visitReturnStatement(node: ReturnStatementNode): void {

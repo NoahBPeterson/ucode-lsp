@@ -406,15 +406,19 @@ export class TypeChecker {
       case '^':
       case '<<':
       case '>>':
-        if (!this.typeCompatibility.canPerformBitwiseOp(leftType, rightType)) {
-          this.errors.push({
-            message: `Bitwise operations require integers, got ${leftType} and ${rightType}`,
+        // Add warning for unexpected types (but still allow the operation)
+        const isLeftExpected = leftType === UcodeType.BOOLEAN || leftType === UcodeType.INTEGER || leftType === UcodeType.UNKNOWN;
+        const isRightExpected = rightType === UcodeType.BOOLEAN || rightType === UcodeType.INTEGER || rightType === UcodeType.UNKNOWN;
+        
+        if (!isLeftExpected || !isRightExpected) {
+          this.warnings.push({
+            message: `Bitwise operation on unexpected types: ${leftType} ${node.operator} ${rightType}. Consider using boolean or integer types for clarity.`,
             start: node.start,
             end: node.end,
-            severity: 'error'
+            severity: 'warning'
           });
-          return UcodeType.UNKNOWN;
         }
+        
         return this.typeCompatibility.getBitwiseResultType();
 
       case 'in':
