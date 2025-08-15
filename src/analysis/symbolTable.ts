@@ -232,6 +232,92 @@ export class SymbolTable {
       declaredAt: 0,
       usedAt: []
     });
+
+    // Add global constants
+    this.globalScope.set('NaN', {
+      name: 'NaN',
+      type: SymbolType.VARIABLE,
+      dataType: UcodeType.DOUBLE as UcodeDataType,
+      scope: 0,
+      declared: true,
+      used: false,
+      node: {
+        type: 'Identifier',
+        start: 0,
+        end: 0,
+        name: 'NaN'
+      } as IdentifierNode,
+      declaredAt: 0,
+      usedAt: []
+    });
+
+    this.globalScope.set('Infinity', {
+      name: 'Infinity',
+      type: SymbolType.VARIABLE,
+      dataType: UcodeType.DOUBLE as UcodeDataType,
+      scope: 0,
+      declared: true,
+      used: false,
+      node: {
+        type: 'Identifier',
+        start: 0,
+        end: 0,
+        name: 'Infinity'
+      } as IdentifierNode,
+      declaredAt: 0,
+      usedAt: []
+    });
+
+    this.globalScope.set('REQUIRE_SEARCH_PATH', {
+      name: 'REQUIRE_SEARCH_PATH',
+      type: SymbolType.VARIABLE,
+      dataType: UcodeType.ARRAY as UcodeDataType,
+      scope: 0,
+      declared: true,
+      used: false,
+      node: {
+        type: 'Identifier',
+        start: 0,
+        end: 0,
+        name: 'REQUIRE_SEARCH_PATH'
+      } as IdentifierNode,
+      declaredAt: 0,
+      usedAt: []
+    });
+
+    this.globalScope.set('modules', {
+      name: 'modules',
+      type: SymbolType.VARIABLE,
+      dataType: UcodeType.OBJECT as UcodeDataType,
+      scope: 0,
+      declared: true,
+      used: false,
+      node: {
+        type: 'Identifier',
+        start: 0,
+        end: 0,
+        name: 'modules'
+      } as IdentifierNode,
+      declaredAt: 0,
+      usedAt: []
+    });
+
+    this.globalScope.set('global', {
+      name: 'global',
+      type: SymbolType.VARIABLE,
+      dataType: UcodeType.OBJECT as UcodeDataType,
+      scope: 0,
+      declared: true,
+      used: false,
+      node: {
+        type: 'Identifier',
+        start: 0,
+        end: 0,
+        name: 'global'
+      } as IdentifierNode,
+      declaredAt: 0,
+      usedAt: []
+    });
   }
 
   enterScope(): void {

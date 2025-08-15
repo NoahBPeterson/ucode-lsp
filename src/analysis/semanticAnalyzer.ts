@@ -1153,7 +1153,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     const unusedVariables = this.symbolTable.getUnusedVariables();
     
     // Global VM variables that should not trigger unused warnings
-    const globalVMVariables = new Set(['ARGV']);
+    const globalVMVariables = new Set(['ARGV', 'NaN', 'Infinity', 'REQUIRE_SEARCH_PATH', 'modules', 'global']);
     
     for (const symbol of unusedVariables) {
       // Don't warn about unused parameters, builtins, or global VM variables
