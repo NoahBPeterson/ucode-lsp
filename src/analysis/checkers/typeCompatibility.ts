@@ -89,13 +89,20 @@ export class TypeCompatibilityChecker {
     switch (operator) {
       case '+':
       case '-':
+        // If operand is unknown, assume it might be numeric and allow the operation
+        if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
         return this.isNumericType(operandType) ? operandType : UcodeType.UNKNOWN;
       case '!':
+        // Logical NOT can be applied to any type (truthy/falsy evaluation)
         return UcodeType.BOOLEAN;
       case '~':
+        // If operand is unknown, assume it might be integer and allow the operation
+        if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
         return this.isIntegerType(operandType) ? UcodeType.INTEGER : UcodeType.UNKNOWN;
       case '++':
       case '--':
+        // If operand is unknown, assume it might be numeric and allow the operation
+        if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
         return this.isNumericType(operandType) ? operandType : UcodeType.UNKNOWN;
       default:
         return UcodeType.UNKNOWN;

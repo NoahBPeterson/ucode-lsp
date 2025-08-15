@@ -437,16 +437,44 @@ export class TypeChecker {
     const argType = this.checkNode(node.argument);
     const resultType = this.typeCompatibility.getUnaryResultType(argType, node.operator);
     
-    if (resultType === UcodeType.UNKNOWN) {
-      this.errors.push({
-        message: `Cannot apply ${node.operator} to ${argType}`,
-        start: node.start,
-        end: node.end,
-        severity: 'error'
-      });
+    // Only throw error if we get UNKNOWN result from a known non-compatible type
+    // Don't throw error if operand is UNKNOWN (parameters, variables) - allow dynamic typing
+    if (resultType === UcodeType.UNKNOWN && argType !== UcodeType.UNKNOWN) {
+      // Only error on definitely invalid operations (e.g., applying ~ to string)
+      const isDefinitelyInvalid = this.isDefinitelyInvalidUnaryOperation(argType, node.operator);
+      if (isDefinitelyInvalid) {
+        this.errors.push({
+          message: `Cannot apply ${node.operator} to ${argType}`,
+          start: node.start,
+          end: node.end,
+          severity: 'error'
+        });
+      }
     }
     
     return resultType;
+  }
+
+  private isDefinitelyInvalidUnaryOperation(operandType: UcodeType, operator: string): boolean {
+    switch (operator) {
+      case '+':
+      case '-':
+      case '++':
+      case '--':
+        // These require numeric types
+        return operandType === UcodeType.STRING || operandType === UcodeType.BOOLEAN || 
+               operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT;
+      case '~':
+        // Bitwise complement requires integer type
+        return operandType === UcodeType.STRING || operandType === UcodeType.BOOLEAN ||
+               operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT ||
+               operandType === UcodeType.DOUBLE; // doubles can't be used with bitwise ops
+      case '!':
+        // Logical NOT can be applied to any type (truthy/falsy)
+        return false;
+      default:
+        return false;
+    }
   }
 
   private checkCallExpression(node: CallExpressionNode): UcodeType {
