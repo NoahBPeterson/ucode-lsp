@@ -36,24 +36,25 @@ export type Diagnostic = ParseError | ParseWarning;
 // Based on ucode compiler's precedence rules
 export enum Precedence {
   NONE = 0,
-  ASSIGNMENT = 1,     // = += -= *= /= %= **= <<= >>= &= ^= |= &&= ||= ??=
-  CONDITIONAL = 2,    // ?:
-  NULLISH = 3,        // ??
-  LOGICAL_OR = 4,     // ||
-  LOGICAL_AND = 5,    // &&
-  BITWISE_OR = 6,     // |
-  BITWISE_XOR = 7,    // ^
-  BITWISE_AND = 8,    // &
-  EQUALITY = 9,       // == != === !==
-  RELATIONAL = 10,    // < > <= >= in
-  SHIFT = 11,         // << >>
-  ADDITIVE = 12,      // + -
-  MULTIPLICATIVE = 13, // * / %
-  EXPONENTIAL = 14,   // **
-  UNARY = 15,         // ! ~ + - ++ --
-  POSTFIX = 16,       // ++ --
-  CALL = 17,          // () [] . ?.
-  PRIMARY = 18        // literals, identifiers, parentheses
+  COMMA = 1,          // ,
+  ASSIGNMENT = 2,     // = += -= *= /= %= **= <<= >>= &= ^= |= &&= ||= ??=
+  CONDITIONAL = 3,    // ?:
+  NULLISH = 4,        // ??
+  LOGICAL_OR = 5,     // ||
+  LOGICAL_AND = 6,    // &&
+  BITWISE_OR = 7,     // |
+  BITWISE_XOR = 8,    // ^
+  BITWISE_AND = 9,    // &
+  EQUALITY = 10,      // == != === !==
+  RELATIONAL = 11,    // < > <= >= in
+  SHIFT = 12,         // << >>
+  ADDITIVE = 13,      // + -
+  MULTIPLICATIVE = 14, // * / %
+  EXPONENTIAL = 15,   // **
+  UNARY = 16,         // ! ~ + - ++ --
+  POSTFIX = 17,       // ++ --
+  CALL = 18,          // () [] . ?.
+  PRIMARY = 19        // literals, identifiers, parentheses
 }
 
 // Parser rule for each token type - maps to Pratt parser approach

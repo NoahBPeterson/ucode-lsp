@@ -40,6 +40,7 @@ export class ParserUtils {
       [TokenType.TK_LSHIFT]: '<<',
       [TokenType.TK_RSHIFT]: '>>',
       [TokenType.TK_IN]: 'in',
+      [TokenType.TK_COMMA]: ',',
       [TokenType.TK_NULLISH]: '??',
       [TokenType.TK_NOT]: '!',
       [TokenType.TK_COMPL]: '~',

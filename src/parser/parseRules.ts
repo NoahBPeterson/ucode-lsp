@@ -146,6 +146,9 @@ export abstract class ParseRules extends ParserUtils {
     this.addBinaryRule(TokenType.TK_AND, Precedence.LOGICAL_AND);
     this.addBinaryRule(TokenType.TK_OR, Precedence.LOGICAL_OR);
     this.addBinaryRule(TokenType.TK_NULLISH, Precedence.NULLISH);
+    
+    // Comma operator (lowest precedence)
+    this.addBinaryRule(TokenType.TK_COMMA, Precedence.COMMA);
 
     // Assignment operators
     this.addAssignmentRule(TokenType.TK_ASSIGN);

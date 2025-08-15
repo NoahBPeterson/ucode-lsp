@@ -6,6 +6,7 @@
 import { TokenType } from '../../lexer';
 import { AstNode, IdentifierNode, LiteralNode, ThisExpressionNode, FunctionExpressionNode, BlockStatementNode, TemplateLiteralNode, TemplateElementNode } from '../../ast/nodes';
 import { ParseRules } from '../parseRules';
+import { Precedence } from '../types';
 
 export abstract class PrimaryExpressions extends ParseRules {
 
@@ -200,8 +201,8 @@ export abstract class PrimaryExpressions extends ParseRules {
         arguments: params
       } as any;
     } else {
-      // Parse as regular grouped expression
-      const expr = this.parseExpression();
+      // Parse as regular grouped expression with comma operator support
+      const expr = this.parseExpression(Precedence.COMMA);
       this.consume(TokenType.TK_RPAREN, "Expected ')' after expression");
       return expr;
     }

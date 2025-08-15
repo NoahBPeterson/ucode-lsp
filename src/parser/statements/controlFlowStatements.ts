@@ -12,6 +12,7 @@ import {
   IdentifierNode, VariableDeclarationNode, VariableDeclaratorNode
 } from '../../ast/nodes';
 import { DeclarationStatements } from './declarationStatements';
+import { Precedence } from '../types';
 
 export abstract class ControlFlowStatements extends DeclarationStatements {
 
@@ -209,7 +210,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
 
     let update: AstNode | null = null;
     if (!this.check(TokenType.TK_RPAREN)) {
-      update = this.parseExpression();
+      update = this.parseExpression(Precedence.COMMA);
     }
     this.consume(TokenType.TK_RPAREN, "Expected ')' after for loop");
 
