@@ -1124,8 +1124,20 @@ export class SemanticAnalyzer extends BaseVisitor {
             const indexName = indexDeclarator.id.name;
             const indexNode = indexDeclarator.id;
             
-            // Index variable should be typed as number
-            this.symbolTable.declare(indexName, SymbolType.VARIABLE, UcodeType.INTEGER as UcodeDataType, indexNode);
+            // Index variable type depends on what's being iterated over
+            // For objects: key is string, for arrays: index is integer, for unknown: unknown
+            const rightType = this.typeChecker.checkNode(node.right);
+            let keyType: UcodeDataType;
+            
+            if (rightType === UcodeType.OBJECT) {
+              keyType = UcodeType.STRING as UcodeDataType;  // Object keys are strings
+            } else if (rightType === UcodeType.ARRAY) {
+              keyType = UcodeType.INTEGER as UcodeDataType; // Array indices are integers
+            } else {
+              keyType = UcodeType.UNKNOWN as UcodeDataType; // Unknown type being iterated
+            }
+            
+            this.symbolTable.declare(indexName, SymbolType.VARIABLE, keyType, indexNode);
             this.symbolTable.markUsed(indexName, indexNode.start);
           }
           
