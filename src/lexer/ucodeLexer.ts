@@ -316,13 +316,25 @@ export class UcodeLexer {
         // Handle binary numbers
         if (this.peekChar() === '0' && (this.peekChar(1) === 'b' || this.peekChar(1) === 'B')) {
             value += this.nextChar(); // '0'
-            value += this.nextChar(); // 'x' or 'X'
+            value += this.nextChar(); // 'b' or 'B'
             
             while (isBinaryDigit(this.peekChar())) {
                 value += this.nextChar();
             }
             
             return this.emitToken(TokenType.TK_NUMBER, parseInt(value, 2), startPos);
+        }
+
+        // Handle octal numbers
+        if (this.peekChar() === '0' && (this.peekChar(1) === 'o' || this.peekChar(1) === 'O')) {
+            value += this.nextChar(); // '0'
+            value += this.nextChar(); // 'o' or 'O'
+            
+            while (isDigit(this.peekChar()) && parseInt(this.peekChar()) < 8) {
+                value += this.nextChar();
+            }
+            
+            return this.emitToken(TokenType.TK_NUMBER, parseInt(value, 8), startPos);
         }
 
         // Handle decimal numbers

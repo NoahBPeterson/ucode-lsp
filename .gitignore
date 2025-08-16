@@ -1,5 +1,6 @@
 /node_modules
 /payload_processor_ucode
+/linguist-proposal
 out/*
 dist/*
 .claude/
@@ -8,3 +9,4 @@ ucode_gotchas.md
 .vscode/settings.json
 .vscode/settings.json
 BUILTIN_FUNCTIONS_VALIDATION.md
+fuzz-tests/*
