@@ -14,6 +14,8 @@ import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
 import { allBuiltinFunctions } from '../builtins';
 import { fsTypeRegistry } from './fsTypes';
 import { uloopObjectRegistry } from './uloopTypes';
+import { rtnlTypeRegistry } from './rtnlTypes';
+import { nl80211TypeRegistry } from './nl80211Types';
 
 export interface FunctionSignature {
   name: string;
@@ -688,6 +690,38 @@ export class TypeChecker {
           severity: 'error'
         });
         return UcodeType.UNKNOWN;
+      }
+      
+      // Check if this is an rtnl constants object with a specific property
+      if (symbol.dataType && typeof symbol.dataType === 'object' && 
+          'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'rtnl-const' && !node.computed) {
+        const propertyName = (node.property as IdentifierNode).name;
+        if (!rtnlTypeRegistry.isRtnlConstant(propertyName)) {
+          this.errors.push({
+            message: `Property '${propertyName}' does not exist on rtnl constants object. Available constants: ${rtnlTypeRegistry.getConstantNames().join(', ')}`,
+            start: node.property.start,
+            end: node.property.end,
+            severity: 'error'
+          });
+          return UcodeType.UNKNOWN;
+        }
+        return UcodeType.INTEGER; // RTNL constants are integers
+      }
+      
+      // Check if this is an nl80211 constants object with a specific property
+      if (symbol.dataType && typeof symbol.dataType === 'object' && 
+          'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'nl80211-const' && !node.computed) {
+        const propertyName = (node.property as IdentifierNode).name;
+        if (!nl80211TypeRegistry.isNl80211Constant(propertyName)) {
+          this.errors.push({
+            message: `Property '${propertyName}' does not exist on nl80211 constants object. Available constants: ${nl80211TypeRegistry.getConstantNames().join(', ')}`,
+            start: node.property.start,
+            end: node.property.end,
+            severity: 'error'
+          });
+          return UcodeType.UNKNOWN;
+        }
+        return UcodeType.INTEGER; // NL80211 constants are integers
       }
     }
     

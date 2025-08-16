@@ -15,8 +15,8 @@ import { logTypeRegistry } from './analysis/logTypes';
 import { mathTypeRegistry } from './analysis/mathTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { nl80211ObjectRegistry } from './analysis/nl80211Types';
-import { rtnlTypeRegistry } from './analysis/rtnlTypes';
 import { resolvTypeRegistry } from './analysis/resolvTypes';
+import { rtnlTypeRegistry } from './analysis/rtnlTypes';
 import { socketTypeRegistry } from './analysis/socketTypes';
 import { structTypeRegistry } from './analysis/structTypes';
 import { ubusTypeRegistry } from './analysis/ubusTypes';
@@ -51,6 +51,10 @@ export function handleCompletion(
         
         // Check if we're in a member expression context (e.g., "fs.")
         const memberContext = detectMemberCompletionContext(offset, tokens);
+        // Debug for position 65 specifically
+        if (offset === 65) {
+            require('fs').appendFileSync('/tmp/debug-completion.log', `offset=65: context=${JSON.stringify(memberContext)}, text="${text.substring(60, 70)}"\n`);
+        }
         if (memberContext) {
             // We're definitely in a member expression context (obj.something)
             // Never show builtin functions or keywords for member expressions
@@ -220,7 +224,7 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
     // Find the most recent DOT token before or at the cursor
     for (let i = tokens.length - 1; i >= 0; i--) {
         const token = tokens[i];
-        if (token.type === TokenType.TK_DOT && token.pos < offset) {
+        if (token.type === TokenType.TK_DOT && token.pos <= offset) {
             dotTokenIndex = i;
             break;
         }
@@ -233,8 +237,8 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
         
         // Check if previous token is a LABEL and it's immediately before the dot
         if (prevToken.type === TokenType.TK_LABEL && prevToken.end === dotToken.pos) {
-            // Make sure the cursor is after or at the dot (for completion)
-            if (offset >= dotToken.end) {
+            // Make sure the cursor is after the dot or right at it (for completion)
+            if (offset >= dotToken.pos && offset <= dotToken.end) {
                 return {
                     objectName: prevToken.value as string
                 };
@@ -913,15 +917,16 @@ function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, conne
             }
             
             // Skip module constants objects to prevent constants from leaking globally
-            // But we DO want to show the variables themselves (wlconst, rtconst) in completions
+            // But we DO want to show the variables themselves (wlconst, rtconst) in completions  
             // The issue is we're filtering out the variable, not individual constants
             if (symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
-                const moduleName = symbol.dataType.moduleName;
-                if (moduleName === 'nl80211-const' || moduleName === 'rtnl-const') {
-                    // Actually, let's NOT filter these out - they are valid variables
-                    // The constants leak protection should happen elsewhere
-                }
+              const moduleName = symbol.dataType.moduleName;
+              if (moduleName === 'nl80211-const' || moduleName === 'rtnl-const') {
+                // Actually, let's NOT filter these out - they are valid variables
+                // The constants leak protection should happen elsewhere
+              }
             }
+            
             
             let kind: CompletionItemKind;
             let detail: string;
@@ -1330,18 +1335,22 @@ function getRtnlConstObjectCompletions(objectName: string, analysisResult?: Sema
         const completions: CompletionItem[] = [];
         
         for (const constantName of constantNames) {
-            const signature = rtnlTypeRegistry.getConstant(constantName);
-            if (signature) {
-                completions.push({
-                    label: constantName,
-                    kind: CompletionItemKind.Constant,
-                    detail: `rtnl constant: ${signature.type}`,
-                    documentation: {
-                        kind: MarkupKind.Markdown,
-                        value: rtnlTypeRegistry.getConstantDocumentation(constantName)
-                    },
-                    insertText: constantName
-                });
+            try {
+                const signature = rtnlTypeRegistry.getConstant(constantName);
+                if (signature) {
+                    completions.push({
+                        label: constantName,
+                        kind: CompletionItemKind.Constant,
+                        detail: `rtnl constant: ${signature.type}`,
+                        documentation: {
+                            kind: MarkupKind.Markdown,
+                            value: rtnlTypeRegistry.getConstantDocumentation(constantName)
+                        },
+                        insertText: constantName
+                    });
+                }
+            } catch (error) {
+                console.log(`[RTNL_CONST_COMPLETION] Error creating completion for ${constantName}:`, error);
             }
         }
         

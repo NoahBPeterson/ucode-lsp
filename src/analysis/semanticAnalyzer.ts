@@ -318,6 +318,30 @@ export class SemanticAnalyzer extends BaseVisitor {
       importedName = '*';
     }
     
+    // Create appropriate data type for special imports first
+    let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
+    
+    // Special case: importing 'const' from nl80211 creates a constants object
+    if (source === 'nl80211' && importedName === 'const') {
+      dataType = {
+        type: UcodeType.OBJECT,
+        moduleName: 'nl80211-const'
+      };
+    }
+    
+    // Special case: importing 'const' from rtnl creates a constants object
+    if (source === 'rtnl' && importedName === 'const') {
+      dataType = {
+        type: UcodeType.OBJECT,
+        moduleName: 'rtnl-const'
+      };
+    }
+    
+    // Special case: importing rtnl functions - set proper function type  
+    if (source === 'rtnl' && rtnlTypeRegistry.getFunctionNames().includes(importedName)) {
+      dataType = UcodeType.FUNCTION as UcodeDataType;
+    }
+    
     // Validate log module imports
     if (source === 'log' && specifier.type === 'ImportSpecifier') {
       if (!logTypeRegistry.isValidLogImport(importedName)) {
@@ -450,30 +474,6 @@ export class SemanticAnalyzer extends BaseVisitor {
         );
         return; // Don't add invalid import to symbol table
       }
-    }
-    
-    // Create appropriate data type for special imports
-    let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
-    
-    // Special case: importing 'const' from nl80211 creates a constants object
-    if (source === 'nl80211' && importedName === 'const') {
-      dataType = {
-        type: UcodeType.OBJECT,
-        moduleName: 'nl80211-const'
-      };
-    }
-    
-    // Special case: importing 'const' from rtnl creates a constants object
-    if (source === 'rtnl' && importedName === 'const') {
-      dataType = {
-        type: UcodeType.OBJECT,
-        moduleName: 'rtnl-const'
-      };
-    }
-    
-    // Special case: importing rtnl functions - set proper function type  
-    if (source === 'rtnl' && rtnlTypeRegistry.getFunctionNames().includes(importedName)) {
-      dataType = UcodeType.FUNCTION as UcodeDataType;
     }
     
     // Add imported symbol to symbol table

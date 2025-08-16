@@ -170,12 +170,12 @@ export class RtnlTypeRegistry {
       func.parameters.forEach(param => {
         const optional = param.optional ? ' (optional)' : '';
         const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \\`${param.name}\\` (${param.type}${optional}${defaultVal})\\n`;
+        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\\n`;
       });
       doc += '\\n';
     }
     
-    doc += `**Returns:** \\`${func.returnType}\\`\\n\\n`;
+    doc += `**Returns:** \`${func.returnType}\`\\n\\n`;
     
     // Add usage examples
     if (name === 'request') {
@@ -193,7 +193,7 @@ export class RtnlTypeRegistry {
     const constant = this.getConstant(name);
     if (!constant) return '';
     
-    return `**${constant.name}** = \\`${constant.value}\\`\\n\\n*${constant.type}*\\n\\n${constant.description}`;
+    return `**${constant.name}** = \`${constant.value}\`\\n\\n*${constant.type}*\\n\\n${constant.description}`;
   }
 
   // Import validation methods
