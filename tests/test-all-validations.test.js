@@ -77,7 +77,8 @@ const testFiles = [
     'tests/test-comma-operator-parsing.js',
     'tests/test-comma-operator-lsp.js',
     'tests/test-rtnl-constants.js',
-    'tests/test-combined-lsp-validations.js'
+    'tests/test-combined-lsp-validations.js',
+    'tests/test-fs-import-validation.js'
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
@@ -107,7 +108,8 @@ test('Comprehensive Validation Test Suite', async () => {
                                testFile.includes('test-uloop-module.js') ||
                                testFile.includes('test-comma-operator-lsp.js') ||
                                testFile.includes('test-rtnl-constants.js') ||
-                               testFile.includes('test-combined-lsp-validations.js');
+                               testFile.includes('test-combined-lsp-validations.js') ||
+                               testFile.includes('test-fs-import-validation.js');
             const timeout = testFile.includes('test-missing-builtins-validation.js') ? '20000' : '15000';
             const command = isMochaTest 
                 ? `./node_modules/.bin/mocha ${testFile} --timeout ${timeout}`

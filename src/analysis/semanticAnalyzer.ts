@@ -779,6 +779,15 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Look up the object symbol
       const symbol = this.symbolTable.lookup(objectName);
       if (!symbol) {
+        // Check if this looks like a module usage without import
+        if (this.isKnownModuleName(objectName)) {
+          this.addDiagnostic(
+            `Cannot use '${objectName}' module without importing it first. Add: import { ${methodName} } from '${objectName}'; or import * as ${objectName} from '${objectName}';`,
+            node.object.start,
+            node.object.end,
+            DiagnosticSeverity.Error
+          );
+        }
         return;
       }
       
@@ -816,6 +825,28 @@ export class SemanticAnalyzer extends BaseVisitor {
     ]);
     
     return validFsMethods.has(methodName);
+  }
+
+  private isKnownModuleName(objectName: string): boolean {
+    // List of known ucode modules that require import
+    const knownModules = new Set([
+      'fs',      // File system operations
+      'debug',   // Debug and profiling
+      'log',     // Logging functions  
+      'math',    // Mathematical operations
+      'digest',  // Cryptographic hash functions
+      'nl80211', // WiFi/802.11 networking
+      'resolv',  // DNS resolution
+      'socket',  // Network socket operations
+      'struct',  // Binary data structure packing
+      'ubus',    // OpenWrt unified bus
+      'uci',     // OpenWrt unified configuration
+      'uloop',   // Event loop operations
+      'zlib',    // Data compression
+      'rtnl'     // Routing netlink
+    ]);
+    
+    return knownModules.has(objectName);
   }
 
   visitCallExpression(node: CallExpressionNode): void {

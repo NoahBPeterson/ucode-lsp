@@ -382,6 +382,37 @@ describe('Combined LSP Validation Tests', function() {
     });
   });
 
+  describe('FS Module Import Validation', function() {
+    it('should show error when fs is used without import', async function() {
+      const testContent = `fs.chmod("lol", 0o644);`;
+      
+      const diagnostics = await getDiagnostics(testContent, '/tmp/test-fs-no-import.uc');
+      
+      const importErrors = diagnostics.filter(d => 
+        d.severity === 1 && 
+        d.message.includes("Cannot use 'fs' module without importing it first")
+      );
+      
+      assert(importErrors.length > 0, 'Should show fs import error');
+    });
+
+    it('should NOT show error when fs is properly imported', async function() {
+      const testContent = `
+        import * as fs from 'fs';
+        fs.chmod("/file", 0o644);
+      `;
+      
+      const diagnostics = await getDiagnostics(testContent, '/tmp/test-fs-with-import.uc');
+      
+      const importErrors = diagnostics.filter(d => 
+        d.severity === 1 && 
+        d.message.includes("Cannot use 'fs' module without importing it first")
+      );
+      
+      assert.strictEqual(importErrors.length, 0, 'Should not show import error when fs is imported');
+    });
+  });
+
   describe('Edge Cases and Integration', function() {
     it('should handle complex mixed scenarios', async function() {
       const testContent = `
@@ -393,7 +424,8 @@ describe('Combined LSP Validation Tests', function() {
         // Comma operator
         let result = (permissions = 0o644, len + 10);
         
-        // Function call with octal
+        // Valid import and usage
+        import * as fs from 'fs';
         fs.chmod("/file", 0o644);
         
         // Import with constants
@@ -402,16 +434,17 @@ describe('Combined LSP Validation Tests', function() {
       
       const diagnostics = await getDiagnostics(testContent, '/tmp/test-complex-integration.uc');
       
-      // Should not have critical parsing errors
+      // Should not have critical parsing errors or import errors
       const criticalErrors = diagnostics.filter(d => 
         d.severity === 1 && 
         (d.message.includes("Cannot parse this token") ||
          d.message.includes("Unexpected character") ||
-         d.message.includes("Expected ')' after expression"))
+         d.message.includes("Expected ')' after expression") ||
+         d.message.includes("Cannot use 'fs' module without importing"))
       );
       
       assert.strictEqual(criticalErrors.length, 0, 
-        `Should not have critical parsing errors in complex scenarios. Found: ${criticalErrors.map(e => e.message).join(', ')}`);
+        `Should not have critical parsing or import errors in complex scenarios. Found: ${criticalErrors.map(e => e.message).join(', ')}`);
     });
 
     it('should have reasonable performance with shared server', async function() {
