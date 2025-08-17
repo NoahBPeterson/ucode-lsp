@@ -11,9 +11,13 @@ import {
     TextDocumentChangeEvent,
     Diagnostic,
     DiagnosticSeverity,
+    FileChangeType,
+    DidChangeWatchedFilesNotification,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import * as fs from 'fs';
+import * as path from 'path';
 // import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
@@ -29,8 +33,119 @@ const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 // Analysis cache for storing semantic analysis results with timestamps
 const analysisCache = new Map<string, {result: SemanticAnalysisResult, timestamp: number}>();
 
+// Workspace folders for directory scanning
+let workspaceFolders: string[] = [];
 let hasConfigurationCapability = false;
 let hasWorkspaceFolderCapability = false;
+
+// Simple URI to file path conversion for file:// URIs
+function uriToFilePath(uri: string): string {
+    if (uri.startsWith('file://')) {
+        return decodeURIComponent(uri.slice(7)); // Remove 'file://' prefix
+    }
+    return uri;
+}
+
+// Simple file path to URI conversion
+function filePathToUri(filePath: string): string {
+    // Simple conversion for file:// protocol
+    const normalized = path.normalize(filePath);
+    return 'file://' + encodeURIComponent(normalized).replace(/%2F/g, '/');
+}
+
+// Directory scanning functionality
+async function scanWorkspaceForUcodeFiles(workspaceFolders: string[]): Promise<string[]> {
+    const ucodeFiles: string[] = [];
+    
+    for (const folder of workspaceFolders) {
+        try {
+            await scanDirectoryRecursively(folder, ucodeFiles);
+        } catch (error) {
+            connection.console.error(`Error scanning workspace folder ${folder}: ${error}`);
+        }
+    }
+    
+    connection.console.log(`Found ${ucodeFiles.length} .uc files in workspace`);
+    return ucodeFiles;
+}
+
+async function scanDirectoryRecursively(dir: string, ucodeFiles: string[]): Promise<void> {
+    try {
+        const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+        
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            
+            if (entry.isDirectory()) {
+                // Skip common directories that shouldn't contain relevant .uc files
+                if (shouldSkipDirectory(entry.name)) {
+                    continue;
+                }
+                await scanDirectoryRecursively(fullPath, ucodeFiles);
+            } else if (entry.isFile() && entry.name.endsWith('.uc')) {
+                ucodeFiles.push(fullPath);
+            }
+        }
+    } catch (error) {
+        // Silently ignore permission errors and continue scanning
+        if ((error as any).code !== 'EACCES' && (error as any).code !== 'EPERM') {
+            connection.console.warn(`Error reading directory ${dir}: ${error}`);
+        }
+    }
+}
+
+function shouldSkipDirectory(dirName: string): boolean {
+    const skipDirs = [
+        'node_modules',
+        '.git',
+        '.vscode',
+        'dist',
+        'out',
+        '.nyc_output',
+        'coverage',
+        '__pycache__',
+        '.pytest_cache',
+        'build',
+        'target'
+    ];
+    return skipDirs.includes(dirName) || dirName.startsWith('.');
+}
+
+async function analyzeDiscoveredFiles(filePaths: string[]): Promise<void> {
+    connection.console.log(`Analyzing ${filePaths.length} discovered .uc files...`);
+    
+    for (const filePath of filePaths) {
+        try {
+            const uri = filePathToUri(filePath);
+            const content = await fs.promises.readFile(filePath, 'utf8');
+            
+            // Create a virtual text document for analysis
+            const textDocument = TextDocument.create(uri, 'ucode', 1, content);
+            
+            // Analyze the document and cache the results
+            await validateAndAnalyzeDocument(textDocument);
+            
+        } catch (error) {
+            connection.console.warn(`Error analyzing file ${filePath}: ${error}`);
+        }
+    }
+    
+    connection.console.log(`Completed analysis of workspace .uc files`);
+}
+
+async function scanAndAnalyzeWorkspace(): Promise<void> {
+    if (workspaceFolders.length === 0) {
+        connection.console.log('No workspace folders to scan');
+        return;
+    }
+    
+    connection.console.log(`Starting workspace scan of ${workspaceFolders.length} folders...`);
+    const ucodeFiles = await scanWorkspaceForUcodeFiles(workspaceFolders);
+    
+    if (ucodeFiles.length > 0) {
+        await analyzeDiscoveredFiles(ucodeFiles);
+    }
+}
 
 connection.onInitialize((params: InitializeParams) => {
     connection.console.log('ucode language server initializing...');
@@ -42,6 +157,18 @@ connection.onInitialize((params: InitializeParams) => {
     hasWorkspaceFolderCapability = !!(
         capabilities.workspace && !!capabilities.workspace.workspaceFolders
     );
+
+    // Initialize workspace folders
+    if (params.workspaceFolders) {
+        workspaceFolders = params.workspaceFolders.map(folder => uriToFilePath(folder.uri));
+        connection.console.log(`Initialized with ${workspaceFolders.length} workspace folders: ${workspaceFolders.join(', ')}`);
+    } else if (params.rootUri) {
+        workspaceFolders = [uriToFilePath(params.rootUri)];
+        connection.console.log(`Initialized with root URI: ${workspaceFolders[0]}`);
+    } else if (params.rootPath) {
+        workspaceFolders = [params.rootPath];
+        connection.console.log(`Initialized with root path: ${workspaceFolders[0]}`);
+    }
 
     const result: InitializeResult = {
         capabilities: {
@@ -61,22 +188,63 @@ connection.onInitialize((params: InitializeParams) => {
     if (hasWorkspaceFolderCapability) {
         result.capabilities.workspace = {
             workspaceFolders: {
-                supported: true
+                supported: true,
+                changeNotifications: true
             }
         };
     }
     return result;
 });
 
-connection.onInitialized(() => {
+connection.onInitialized(async () => {
     if (hasConfigurationCapability) {
         connection.client.register(DidChangeConfigurationNotification.type, undefined);
     }
     if (hasWorkspaceFolderCapability) {
-        connection.workspace.onDidChangeWorkspaceFolders((_event: WorkspaceFoldersChangeEvent) => {
+        connection.workspace.onDidChangeWorkspaceFolders(async (event: WorkspaceFoldersChangeEvent) => {
             connection.console.log('Workspace folder change event received.');
+            
+            // Update workspace folders
+            for (const removed of event.removed) {
+                const removedPath = uriToFilePath(removed.uri);
+                const index = workspaceFolders.indexOf(removedPath);
+                if (index > -1) {
+                    workspaceFolders.splice(index, 1);
+                    connection.console.log(`Removed workspace folder: ${removedPath}`);
+                }
+            }
+            
+            for (const added of event.added) {
+                const addedPath = uriToFilePath(added.uri);
+                if (!workspaceFolders.includes(addedPath)) {
+                    workspaceFolders.push(addedPath);
+                    connection.console.log(`Added workspace folder: ${addedPath}`);
+                }
+            }
+            
+            // Re-scan workspace after changes
+            await scanAndAnalyzeWorkspace();
         });
     }
+
+    // Register file watcher for .uc files
+    try {
+        await connection.client.register(DidChangeWatchedFilesNotification.type, {
+            watchers: [
+                {
+                    globPattern: '**/*.uc',
+                    kind: 7 // Create | Change | Delete
+                }
+            ]
+        });
+        connection.console.log('File watcher registered for .uc files');
+    } catch (error) {
+        connection.console.warn(`Failed to register file watcher: ${error}`);
+    }
+
+    // Perform initial workspace scan
+    connection.console.log('Performing initial workspace scan...');
+    await scanAndAnalyzeWorkspace();
 });
 
 documents.onDidClose((_e: TextDocumentChangeEvent<TextDocument>) => {
@@ -128,8 +296,45 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
 }
 
-connection.onDidChangeWatchedFiles((_change: DidChangeWatchedFilesParams) => {
-    connection.console.log('We received an file change event');
+connection.onDidChangeWatchedFiles(async (params: DidChangeWatchedFilesParams) => {
+    connection.console.log(`Received ${params.changes.length} file change events`);
+    
+    for (const change of params.changes) {
+        const filePath = uriToFilePath(change.uri);
+        
+        if (!filePath.endsWith('.uc')) {
+            continue;
+        }
+        
+        const changeTypeString = change.type === FileChangeType.Created ? 'Created' :
+                                change.type === FileChangeType.Changed ? 'Changed' : 'Deleted';
+        connection.console.log(`File ${changeTypeString}: ${filePath}`);
+        
+        switch (change.type) {
+            case FileChangeType.Created:
+            case FileChangeType.Changed:
+                try {
+                    // Re-analyze the changed/created file
+                    const content = await fs.promises.readFile(filePath, 'utf8');
+                    const textDocument = TextDocument.create(change.uri, 'ucode', 1, content);
+                    await validateAndAnalyzeDocument(textDocument);
+                    connection.console.log(`Re-analyzed file: ${filePath}`);
+                } catch (error) {
+                    connection.console.warn(`Error re-analyzing file ${filePath}: ${error}`);
+                    // If file doesn't exist, remove from cache
+                    analysisCache.delete(change.uri);
+                }
+                break;
+                
+            case FileChangeType.Deleted:
+                // Remove from analysis cache
+                if (analysisCache.has(change.uri)) {
+                    analysisCache.delete(change.uri);
+                    connection.console.log(`Removed deleted file from cache: ${filePath}`);
+                }
+                break;
+        }
+    }
 });
 
 connection.onHover((params) => {
