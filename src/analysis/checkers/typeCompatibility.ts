@@ -10,6 +10,11 @@ export class TypeCompatibilityChecker {
     return type === UcodeType.INTEGER || type === UcodeType.DOUBLE;
   }
 
+  // Check if type can be used in arithmetic operations (includes boolean coercion to integer)
+  isArithmeticType(type: UcodeType): boolean {
+    return type === UcodeType.INTEGER || type === UcodeType.DOUBLE || type === UcodeType.BOOLEAN;
+  }
+
   isIntegerType(type: UcodeType): boolean {
     return type === UcodeType.INTEGER;
   }
@@ -37,8 +42,8 @@ export class TypeCompatibilityChecker {
   }
 
   canAddTypes(leftType: UcodeType, rightType: UcodeType): boolean {
-    // Addition: numbers or string concatenation
-    if (this.isNumericType(leftType) && this.isNumericType(rightType)) {
+    // Addition: numbers (including boolean coercion) or string concatenation
+    if (this.isArithmeticType(leftType) && this.isArithmeticType(rightType)) {
       return true;
     }
     if (leftType === UcodeType.STRING || rightType === UcodeType.STRING) {
@@ -52,9 +57,9 @@ export class TypeCompatibilityChecker {
   }
 
   canPerformArithmetic(leftType: UcodeType, rightType: UcodeType): boolean {
-    // Allow arithmetic if both types are numeric OR if either type is unknown (dynamic typing)
-    const leftOk = this.isNumericType(leftType) || leftType === UcodeType.UNKNOWN;
-    const rightOk = this.isNumericType(rightType) || rightType === UcodeType.UNKNOWN;
+    // Allow arithmetic if both types are arithmetic-compatible (includes boolean coercion) OR if either type is unknown (dynamic typing)
+    const leftOk = this.isArithmeticType(leftType) || leftType === UcodeType.UNKNOWN;
+    const rightOk = this.isArithmeticType(rightType) || rightType === UcodeType.UNKNOWN;
     return leftOk && rightOk;
   }
 
@@ -75,8 +80,17 @@ export class TypeCompatibilityChecker {
       }
     }
     
-    if (this.isNumericType(leftType) && this.isNumericType(rightType)) {
-      return this.getNumericResultType(leftType, rightType);
+    // Handle arithmetic operations with boolean coercion
+    if (this.isArithmeticType(leftType) && this.isArithmeticType(rightType)) {
+      // Boolean values are coerced to integers (true = 1, false = 0)
+      // If either operand is a double, result is double
+      // If either operand is boolean, it's treated as integer
+      // So boolean + integer = integer, boolean + double = double
+      if (leftType === UcodeType.DOUBLE || rightType === UcodeType.DOUBLE) {
+        return UcodeType.DOUBLE;
+      }
+      // All other combinations (integer + integer, boolean + integer, boolean + boolean) = integer
+      return UcodeType.INTEGER;
     }
     
     return UcodeType.UNKNOWN;
@@ -100,19 +114,33 @@ export class TypeCompatibilityChecker {
       case '-':
         // If operand is unknown, assume it might be numeric and allow the operation
         if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
-        return this.isNumericType(operandType) ? operandType : UcodeType.UNKNOWN;
+        // Allow unary arithmetic on numeric types and booleans (booleans coerce to integers)
+        if (this.isArithmeticType(operandType)) {
+          // Boolean operand becomes integer, others stay the same
+          return operandType === UcodeType.BOOLEAN ? UcodeType.INTEGER : operandType;
+        }
+        return UcodeType.UNKNOWN;
       case '!':
         // Logical NOT can be applied to any type (truthy/falsy evaluation)
         return UcodeType.BOOLEAN;
       case '~':
         // If operand is unknown, assume it might be integer and allow the operation
         if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
-        return this.isIntegerType(operandType) ? UcodeType.INTEGER : UcodeType.UNKNOWN;
+        // Allow bitwise complement on integers and booleans (booleans coerce to integers)
+        if (operandType === UcodeType.INTEGER || operandType === UcodeType.BOOLEAN) {
+          return UcodeType.INTEGER;
+        }
+        return UcodeType.UNKNOWN;
       case '++':
       case '--':
         // If operand is unknown, assume it might be numeric and allow the operation
         if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
-        return this.isNumericType(operandType) ? operandType : UcodeType.UNKNOWN;
+        // Allow increment/decrement on numeric types and booleans (booleans coerce to integers)
+        if (this.isArithmeticType(operandType)) {
+          // Boolean operand becomes integer, others stay the same
+          return operandType === UcodeType.BOOLEAN ? UcodeType.INTEGER : operandType;
+        }
+        return UcodeType.UNKNOWN;
       default:
         return UcodeType.UNKNOWN;
     }

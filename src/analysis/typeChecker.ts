@@ -467,12 +467,12 @@ export class TypeChecker {
       case '-':
       case '++':
       case '--':
-        // These require numeric types
-        return operandType === UcodeType.STRING || operandType === UcodeType.BOOLEAN || 
+        // These require numeric types or booleans (which coerce to integers)
+        return operandType === UcodeType.STRING || 
                operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT;
       case '~':
-        // Bitwise complement requires integer type
-        return operandType === UcodeType.STRING || operandType === UcodeType.BOOLEAN ||
+        // Bitwise complement requires integer type or booleans (which coerce to integers)
+        return operandType === UcodeType.STRING ||
                operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT ||
                operandType === UcodeType.DOUBLE; // doubles can't be used with bitwise ops
       case '!':
