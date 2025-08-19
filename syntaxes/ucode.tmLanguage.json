@@ -145,7 +145,11 @@
         },
         {
           "name": "storage.type.ucode",
-          "match": "\\b(let|const|function|endfunction|delete)\\b"
+          "match": "\\b(let|const|function|endfunction)\\b"
+        },
+        {
+          "name": "keyword.operator.delete.ucode",
+          "match": "\\b(delete)\\b(?!\\s*\\()"
         },
         {
           "name": "keyword.control.module.ucode",

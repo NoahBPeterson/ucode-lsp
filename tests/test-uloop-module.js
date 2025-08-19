@@ -221,7 +221,7 @@ uloop.timer(1000, () => {});
 uloop.handle(3, () => {}, uloop.ULOOP_READ);`;
 
     it('should provide hover information for uloop.init() function', async function() {
-      const hover = await getHoverInfo(testContent, '/tmp/test-uloop-init.uc', 1, 6);
+      const hover = await getHoverInfo(testContent, '/tmp/test-uloop-init.uc', 1, 7);
       
       assert(hover, 'Should return hover information');
       assert(hover.contents && hover.contents.value, 'Should have hover content');
@@ -231,7 +231,7 @@ uloop.handle(3, () => {}, uloop.ULOOP_READ);`;
     });
 
     it('should provide hover information for uloop.timer() function', async function() {
-      const hover = await getHoverInfo(testContent, '/tmp/test-uloop-timer.uc', 2, 6);
+      const hover = await getHoverInfo(testContent, '/tmp/test-uloop-timer.uc', 2, 7);
       
       assert(hover, 'Should return hover information');
       assert(hover.contents && hover.contents.value, 'Should have hover content');
@@ -242,7 +242,7 @@ uloop.handle(3, () => {}, uloop.ULOOP_READ);`;
     });
 
     it('should provide hover information for uloop.handle() function', async function() {
-      const hover = await getHoverInfo(testContent, '/tmp/test-uloop-handle.uc', 3, 6);
+      const hover = await getHoverInfo(testContent, '/tmp/test-uloop-handle.uc', 3, 7);
       
       assert(hover, 'Should return hover information');
       assert(hover.contents && hover.contents.value, 'Should have hover content');
@@ -376,7 +376,7 @@ proc.`;
 uloop.timer(1000, () => {});`;
 
     it('should provide comprehensive documentation with examples', async function() {
-      const hover = await getHoverInfo(testContent, '/tmp/test-uloop-comprehensive.uc', 1, 6);
+      const hover = await getHoverInfo(testContent, '/tmp/test-uloop-comprehensive.uc', 1, 7);
       
       assert(hover, 'Should return hover information');
       assert(hover.contents && hover.contents.value, 'Should have hover content');
@@ -390,7 +390,7 @@ uloop.timer(1000, () => {});`;
     });
 
     it('should have consistent markdown formatting', async function() {
-      const hover = await getHoverInfo(testContent, '/tmp/test-uloop-formatting.uc', 1, 6);
+      const hover = await getHoverInfo(testContent, '/tmp/test-uloop-formatting.uc', 1, 7);
       
       assert(hover, 'Should return hover information');
       assert(hover.contents.kind === 'markdown', 'Should use markdown format');
