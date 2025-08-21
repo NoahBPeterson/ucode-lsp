@@ -860,7 +860,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     
     return null;
   }
-
+/*
   private inferImportedRtnlFunctionReturnType(node: AstNode): UcodeDataType | null {
     // Check if this is a call expression to an imported rtnl function
     if (node.type === 'CallExpression') {
@@ -881,7 +881,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
     
     return null;
-  }
+  }*/
 
   private parseReturnTypeString(returnTypeStr: string): UcodeDataType {
     // Handle union types like "boolean | null"
