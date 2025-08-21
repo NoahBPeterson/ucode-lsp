@@ -4,9 +4,9 @@
  */
 
 import {
-    Diagnostic,
-    TextDocument
+    Diagnostic
 } from 'vscode-languageserver/node';
+import { TextDocument } from 'vscode-languageserver-textdocument';
 import { validateWithLexer } from './lexer';
 import { validateWithAst, ValidationOptions } from './ast-validator';
 

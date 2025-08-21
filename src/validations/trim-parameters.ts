@@ -1,8 +1,8 @@
 import {
     Diagnostic,
-    DiagnosticSeverity,
-    TextDocument
+    DiagnosticSeverity
 } from 'vscode-languageserver/node';
+import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
 
 export function validateTrimParameters(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {

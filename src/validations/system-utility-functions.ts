@@ -1,7 +1,7 @@
 import {
-    Diagnostic,
-    TextDocument
+    Diagnostic
 } from 'vscode-languageserver/node';
+import { TextDocument } from 'vscode-languageserver-textdocument';
 import { Token } from '../lexer';
 
 export function validateSystemUtilityFunctions(_textDocument: TextDocument, _tokens: Token[], _diagnostics: Diagnostic[]): void {

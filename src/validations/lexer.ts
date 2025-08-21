@@ -1,8 +1,8 @@
 import {
     Diagnostic,
-    DiagnosticSeverity,
-    TextDocument
+    DiagnosticSeverity
 } from 'vscode-languageserver/node';
+import { TextDocument } from 'vscode-languageserver-textdocument';
 import { UcodeLexer, TokenType } from '../lexer';
 import { validateMethodCalls } from './method-calls';
 import { validateVariableDeclarations } from './variable-declarations';

@@ -1,8 +1,8 @@
 import {
     Diagnostic,
     DiagnosticSeverity,
-    TextDocument
 } from 'vscode-languageserver/node';
+import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
 
 function isNumericToken(token: Token): boolean {

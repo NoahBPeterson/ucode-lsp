@@ -1,8 +1,8 @@
 import {
     Diagnostic,
-    DiagnosticSeverity,
-    TextDocument
+    DiagnosticSeverity
 } from 'vscode-languageserver/node';
+import { TextDocument } from 'vscode-languageserver-textdocument';
 
 export function validateWithRegex(textDocument: TextDocument): Diagnostic[] {
     const text = textDocument.getText();

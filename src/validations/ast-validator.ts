@@ -5,9 +5,9 @@
 
 import {
     Diagnostic,
-    DiagnosticSeverity,
-    TextDocument
+    DiagnosticSeverity
 } from 'vscode-languageserver/node';
+import { TextDocument } from 'vscode-languageserver-textdocument';
 import { UcodeLexer } from '../lexer';
 import { UcodeParser } from '../parser';
 import { AstNode } from '../ast';
