@@ -252,6 +252,19 @@ export const mathBuiltinFunctions = new Map<string, string>([
 ]);
 
 // ============================================================================
+// RTNL Built-in Functions (from rtnl.c global_fns[])
+// These are global functions, not methods of a rtnl module object
+// ============================================================================
+
+export const rtnlBuiltinFunctions = new Map<string, string>([
+    ['request', '**request(cmd, flags?, payload?)** - Send a netlink request to the routing subsystem.\\n\\n**Parameters:**\\n- `cmd` (integer): The RTM_* command to execute\\n- `flags` (integer, optional): Request flags (NLM_F_*)\\n- `payload` (object, optional): Command-specific attributes\\n\\n**Returns:** `object | null` - The response object or null on error\\n\\n**Example:**\\n```ucode\\n// Get all routes\\nlet routes = request(RTM_GETROUTE, NLM_F_DUMP);\\n\\n// Add a new route\\nlet result = request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, {\\n    dst: "192.168.1.0/24",\\n    gateway: "192.168.1.1",\\n    oif: 2\\n});\\n```'],
+    
+    ['listener', '**listener(callback, cmds?, groups?)** - Create an event listener for routing netlink messages.\\n\\n**Parameters:**\\n- `callback` (function): Function called when events are received\\n- `cmds` (array, optional): Array of RTM_* command constants to listen for\\n- `groups` (array, optional): Array of multicast groups to join\\n\\n**Returns:** `rtnl.listener` - Listener object\\n\\n**Example:**\\n```ucode\\n// Listen for route changes\\nlet l = listener(function(msg) {\\n    printf("Route event: %J\\\\n", msg);\\n}, [RTM_NEWROUTE, RTM_DELROUTE]);\\n\\n// Listen for link changes\\nlet linkListener = listener(function(msg) {\\n    printf("Link event: %J\\\\n", msg);\\n}, [RTM_NEWLINK, RTM_DELLINK]);\\n```'],
+    
+    ['error', '**error()** - Returns the last rtnl error message, or null if no error occurred.\\n\\n**Returns:** `string | null` - The error message or null\\n\\n**Example:**\\n```ucode\\nlet result = request(RTM_GETROUTE, NLM_F_DUMP);\\nif (!result) {\\n    let errorMsg = error();\\n    printf("RTNL error: %s\\\\n", errorMsg);\\n}\\n```']
+]);
+
+// ============================================================================
 // NL80211 Built-in Functions (from nl80211.c global_fns[])
 // These are global functions, not methods of a nl80211 module object
 // ============================================================================

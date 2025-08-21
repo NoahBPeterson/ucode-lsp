@@ -2,9 +2,44 @@
  * Type compatibility checker for ucode
  */
 
-import { UcodeType, UcodeDataType, createUnionType } from '../symbolTable';
+import { UcodeType, UcodeDataType, createUnionType, isUnionType, getUnionTypes } from '../symbolTable';
 
 export class TypeCompatibilityChecker {
+  
+  // Union type utility methods
+  private isUnionTypeCompatibleWith(unionType: UcodeDataType, targetType: UcodeType): boolean {
+    if (!isUnionType(unionType)) {
+      return this.isTypeCompatible(unionType as UcodeType, targetType);
+    }
+    
+    // Union type is compatible with target if ANY member type is compatible
+    const unionTypes = getUnionTypes(unionType);
+    return unionTypes.some(memberType => this.isTypeCompatible(memberType, targetType));
+  }
+
+  private isTypeCompatibleWithUnion(sourceType: UcodeType, unionType: UcodeDataType): boolean {
+    if (!isUnionType(unionType)) {
+      return this.isTypeCompatible(sourceType, unionType as UcodeType);
+    }
+    
+    // Source type is compatible with union if it's compatible with ANY member type
+    const unionTypes = getUnionTypes(unionType);
+    return unionTypes.some(memberType => this.isTypeCompatible(sourceType, memberType));
+  }
+
+  private areUnionTypesCompatible(sourceUnion: UcodeDataType, targetUnion: UcodeDataType): boolean {
+    if (!isUnionType(sourceUnion) || !isUnionType(targetUnion)) {
+      return false;
+    }
+    
+    // All source types must be assignable to at least one target type
+    const sourceTypes = getUnionTypes(sourceUnion);
+    const targetTypes = getUnionTypes(targetUnion);
+    
+    return sourceTypes.every(sourceType =>
+      targetTypes.some(targetType => this.isTypeCompatible(sourceType, targetType))
+    );
+  }
   
   isNumericType(type: UcodeType): boolean {
     return type === UcodeType.INTEGER || type === UcodeType.DOUBLE;
@@ -26,7 +61,37 @@ export class TypeCompatibilityChecker {
     return UcodeType.INTEGER;
   }
 
-  isTypeCompatible(actual: UcodeType, expected: UcodeType): boolean {
+  // Enhanced type compatibility with union type support
+  isTypeCompatible(actual: UcodeType | UcodeDataType, expected: UcodeType | UcodeDataType): boolean {
+    // Handle union types
+    if (isUnionType(actual) && isUnionType(expected)) {
+      return this.areUnionTypesCompatible(actual, expected);
+    }
+    
+    if (isUnionType(actual)) {
+      return this.isUnionTypeCompatibleWith(actual, expected as UcodeType);
+    }
+    
+    if (isUnionType(expected)) {
+      return this.isTypeCompatibleWithUnion(actual as UcodeType, expected);
+    }
+    
+    // Convert to simple types for compatibility check
+    const actualType = actual as UcodeType;
+    const expectedType = expected as UcodeType;
+    
+    if (actualType === expectedType) return true;
+    if (expectedType === UcodeType.UNKNOWN) return true;
+    if (actualType === UcodeType.UNKNOWN) return true;
+    
+    // Allow integer to double conversion
+    if (actualType === UcodeType.INTEGER && expectedType === UcodeType.DOUBLE) return true;
+    
+    return false;
+  }
+
+  // Legacy method for simple UcodeType compatibility
+  isSimpleTypeCompatible(actual: UcodeType, expected: UcodeType): boolean {
     if (actual === expected) return true;
     if (expected === UcodeType.UNKNOWN) return true;
     if (actual === UcodeType.UNKNOWN) return true;
@@ -172,11 +237,13 @@ export class TypeCompatibilityChecker {
     return type === UcodeType.ARRAY || type === UcodeType.OBJECT || type === UcodeType.STRING;
   }
 
-  getTernaryResultType(consequentType: UcodeType, alternateType: UcodeType): UcodeType {
+  getTernaryResultType(consequentType: UcodeType, alternateType: UcodeType): UcodeDataType {
     if (consequentType === alternateType) {
       return consequentType;
     }
-    return UcodeType.UNKNOWN;
+    
+    // Create union type for different types
+    return createUnionType([consequentType, alternateType]);
   }
 
   getCommonType(types: UcodeType[]): UcodeDataType {

@@ -20,6 +20,8 @@ const testFiles = [
     'tests/test-remaining-utility-functions.js',
     'tests/test-system-utility-functions.js',
     'tests/test-union-types-programmatic.js',
+    'tests/test-union-types-logic.js',
+    'tests/test-union-types-enhanced.js',
     'tests/test-unknown-return-types.js',
     'tests/test-arrow-function-parsing.js',
     'tests/test-for-in-bare-fix.js',

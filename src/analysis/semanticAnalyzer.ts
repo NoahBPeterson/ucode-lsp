@@ -11,13 +11,14 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
+import { fsModuleTypeRegistry } from './fsModuleTypes';
 import { logTypeRegistry } from './logTypes';
 import { mathTypeRegistry } from './mathTypes';
 import { nl80211TypeRegistry, Nl80211ObjectType, createNl80211ObjectDataType } from './nl80211Types';
@@ -124,11 +125,11 @@ export class SemanticAnalyzer extends BaseVisitor {
   visitVariableDeclarator(node: VariableDeclaratorNode, _kind: string = 'let'): void {
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
-      
+
       // Standard variable declaration
       let symbolType = SymbolType.VARIABLE;
       let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
-      
+
       // Special handling for require() calls
       if (node.init && node.init.type === 'CallExpression') {
         const callExpr = node.init as any; // CallExpressionNode
@@ -199,7 +200,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           }
         }
       }
-      
+
       // Check for redeclaration in current scope
       if (!this.symbolTable.declare(name, symbolType, dataType, node.id)) {
         this.addDiagnostic(
@@ -226,7 +227,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Process initializer
       if (node.init) {
         this.visit(node.init);
-        
+
         // Type inference if type checking is enabled
         if (this.options.enableTypeChecking) {
           const initType = this.typeChecker.checkNode(node.init);
@@ -256,12 +257,18 @@ export class SemanticAnalyzer extends BaseVisitor {
                   // For uloop object variables, also force declaration in global scope to ensure completion access
                   this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
                 } else {
-                  // Don't overwrite module types that were set during declaration
-                  if (symbol.type !== SymbolType.MODULE) {
-                    symbol.dataType = initType as UcodeDataType;
-                    // Debug logging for arrow function variables
-                    if (node.init.type === 'ArrowFunctionExpression') {
-                      // Function type detected
+                  // Check if this is an imported fs function call and assign the proper union return type
+                  const importedFsReturnType = this.inferImportedFsFunctionReturnType(node.init);
+                  if (importedFsReturnType) {
+                    symbol.dataType = importedFsReturnType;
+                  } else {
+                    // Don't overwrite module types that were set during declaration
+                    if (symbol.type !== SymbolType.MODULE) {
+                      symbol.dataType = initType as UcodeDataType;
+                      // Debug logging for arrow function variables
+                      if (node.init.type === 'ArrowFunctionExpression') {
+                        // Function type detected
+                      }
                     }
                   }
                 }
@@ -274,7 +281,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       super.visitVariableDeclarator(node);
     }
   }
-
+       
   visitImportDeclaration(node: ImportDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
       // For now, just add imported symbols to the symbol table
@@ -339,6 +346,11 @@ export class SemanticAnalyzer extends BaseVisitor {
     
     // Special case: importing rtnl functions - set proper function type  
     if (source === 'rtnl' && rtnlTypeRegistry.getFunctionNames().includes(importedName)) {
+      dataType = UcodeType.FUNCTION as UcodeDataType;
+    }
+    
+    // Special case: importing fs functions - set proper function type
+    if (source === 'fs' && fsModuleTypeRegistry.getFunctionNames().includes(importedName)) {
       dataType = UcodeType.FUNCTION as UcodeDataType;
     }
     
@@ -825,6 +837,116 @@ export class SemanticAnalyzer extends BaseVisitor {
     ]);
     
     return validFsMethods.has(methodName);
+  }
+
+  private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
+    // Check if this is a call expression to an imported fs function
+    if (node.type === 'CallExpression') {
+      const callExpr = node as any; // CallExpressionNode
+      if (callExpr.callee && callExpr.callee.type === 'Identifier') {
+        const functionName = callExpr.callee.name;
+        
+        // Look up the function in the symbol table to check if it's an imported fs function
+        const symbol = this.symbolTable.lookup(functionName);
+        if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'fs') {
+          // Get the function signature from the fs module registry
+          const fsFunction = fsModuleTypeRegistry.getFunction(functionName);
+          if (fsFunction) {
+            return this.parseReturnTypeString(fsFunction.returnType);
+          }
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  private inferImportedRtnlFunctionReturnType(node: AstNode): UcodeDataType | null {
+    // Check if this is a call expression to an imported rtnl function
+    if (node.type === 'CallExpression') {
+      const callExpr = node as any; // CallExpressionNode
+      if (callExpr.callee && callExpr.callee.type === 'Identifier') {
+        const functionName = callExpr.callee.name;
+        
+        // Look up the function in the symbol table to check if it's an imported rtnl function
+        const symbol = this.symbolTable.lookup(functionName);
+        if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'rtnl') {
+          // Get the function signature from the rtnl module registry
+          const rtnlFunction = rtnlTypeRegistry.getFunction(functionName);
+          if (rtnlFunction) {
+            return this.parseReturnTypeString(rtnlFunction.returnType);
+          }
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  private parseReturnTypeString(returnTypeStr: string): UcodeDataType {
+    // Handle union types like "boolean | null"
+    if (returnTypeStr.includes(' | ')) {
+      const typeStrings = returnTypeStr.split(' | ').map(s => s.trim());
+      const types: UcodeType[] = [];
+      
+      for (const typeStr of typeStrings) {
+        switch (typeStr) {
+          case 'boolean':
+            types.push(UcodeType.BOOLEAN);
+            break;
+          case 'string':
+            types.push(UcodeType.STRING);
+            break;
+          case 'number':
+          case 'integer':
+            types.push(UcodeType.INTEGER);
+            break;
+          case 'double':
+            types.push(UcodeType.DOUBLE);
+            break;
+          case 'object':
+            types.push(UcodeType.OBJECT);
+            break;
+          case 'array':
+            types.push(UcodeType.ARRAY);
+            break;
+          case 'null':
+            types.push(UcodeType.NULL);
+            break;
+          case 'function':
+            types.push(UcodeType.FUNCTION);
+            break;
+          default:
+            types.push(UcodeType.UNKNOWN);
+            break;
+        }
+      }
+      
+      return createUnionType(types);
+    }
+    
+    // Handle single types
+    switch (returnTypeStr) {
+      case 'boolean':
+        return UcodeType.BOOLEAN;
+      case 'string':
+        return UcodeType.STRING;
+      case 'number':
+      case 'integer':
+        return UcodeType.INTEGER;
+      case 'double':
+        return UcodeType.DOUBLE;
+      case 'object':
+        return UcodeType.OBJECT;
+      case 'array':
+        return UcodeType.ARRAY;
+      case 'null':
+        return UcodeType.NULL;
+      case 'function':
+        return UcodeType.FUNCTION;
+      default:
+        return UcodeType.UNKNOWN;
+    }
   }
 
   private isKnownModuleName(objectName: string): boolean {

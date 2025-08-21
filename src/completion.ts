@@ -173,6 +173,13 @@ export function handleCompletion(
                 return fsModuleCompletions;
             }
 
+            // Check if this is an rtnl module with completions available
+            const rtnlModuleCompletions = getRtnlModuleCompletions(objectName, analysisResult);
+            if (rtnlModuleCompletions.length > 0) {
+                connection.console.log(`Returning ${rtnlModuleCompletions.length} rtnl module completions for ${objectName}`);
+                return rtnlModuleCompletions;
+            }
+
             // Check if this is an exception object with completions available
             const exceptionCompletions = getExceptionObjectCompletions(objectName, analysisResult, text, offset);
             if (exceptionCompletions.length > 0) {
@@ -1135,6 +1142,61 @@ function getVariableCompletions(objectName: string, analysisResult?: SemanticAna
 
     // Only provide completions for variables with known specific types
     // For generic variables, return empty array - do not add arbitrary properties
+    return [];
+}
+
+function getRtnlModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        console.log(`[RTNL_MODULE_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        console.log(`[RTNL_MODULE_COMPLETION] Symbol not found: ${objectName}`);
+        return [];
+    }
+
+    console.log(`[RTNL_MODULE_COMPLETION] Symbol found: ${objectName}, type: ${symbol.type}, dataType: ${JSON.stringify(symbol.dataType)}`);
+
+    // Check if this is an rtnl module (from require('rtnl') or import * as rtnl from 'rtnl')
+    const isRtnlModule = (
+        // Direct rtnl module import: import * as rtnl from 'rtnl'
+        (symbol.type === 'imported' && symbol.importedFrom === 'rtnl') ||
+        
+        // Module symbol from require: const rtnl = require('rtnl')
+        (symbol.type === 'module' && symbol.dataType && 
+         typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType && 
+         symbol.dataType.moduleName === 'rtnl')
+    );
+
+    if (isRtnlModule) {
+        console.log(`[RTNL_MODULE_COMPLETION] RTNL module detected for ${objectName}`);
+        const functionNames = rtnlTypeRegistry.getFunctionNames();
+        const completions: CompletionItem[] = [];
+        
+        // Add function completions
+        for (const functionName of functionNames) {
+            const signature = rtnlTypeRegistry.getFunction(functionName);
+            if (signature) {
+                completions.push({
+                    label: functionName,
+                    kind: CompletionItemKind.Function,
+                    detail: 'rtnl module function',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: rtnlTypeRegistry.getFunctionDocumentation(functionName)
+                    },
+                    insertText: `${functionName}($1)`,
+                    insertTextFormat: InsertTextFormat.Snippet
+                });
+            }
+        }
+        
+        console.log(`[RTNL_MODULE_COMPLETION] Generated ${completions.length} rtnl module completions: ${functionNames.join(', ')}`);
+        return completions;
+    }
+
     return [];
 }
 

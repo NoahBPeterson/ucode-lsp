@@ -135,7 +135,7 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
       { name: "path", type: "string", optional: false },
       { name: "mode", type: "number", optional: false }
     ],
-    returnType: "boolean",
+    returnType: "boolean | null",
     description: "Changes file permissions. Returns true on success, false on failure"
   }],
   ["chown", {
@@ -145,8 +145,8 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
       { name: "uid", type: "number", optional: false },
       { name: "gid", type: "number", optional: false }
     ],
-    returnType: "boolean",
-    description: "Changes file ownership. Returns true on success, false on failure"
+    returnType: "boolean | null",
+    description: "Changes file ownership. Returns true on success, null on failure"
   }],
   ["rename", {
     name: "rename",

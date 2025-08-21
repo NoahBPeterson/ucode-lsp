@@ -188,7 +188,7 @@ export class SymbolTable {
       { name: 'loadfile', returnType: UcodeType.FUNCTION, params: [UcodeType.STRING] },
       { name: 'wildcard', returnType: UcodeType.BOOLEAN, params: [UcodeType.STRING, UcodeType.STRING] },
       { name: 'regexp', returnType: UcodeType.REGEX, params: [UcodeType.STRING, UcodeType.STRING] },
-      { name: 'assert', returnType: UcodeType.UNKNOWN, params: [UcodeType.UNKNOWN, UcodeType.STRING] },
+      { name: 'assert', returnType: UcodeType.NULL, params: [UcodeType.UNKNOWN, UcodeType.STRING] },
       { name: 'call', returnType: UcodeType.UNKNOWN, params: [UcodeType.FUNCTION, UcodeType.UNKNOWN] },
       { name: 'signal', returnType: UcodeType.UNKNOWN, params: [UcodeType.INTEGER, UcodeType.FUNCTION] },
       { name: 'clock', returnType: UcodeType.DOUBLE, params: [] },

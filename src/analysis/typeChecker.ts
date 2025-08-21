@@ -9,10 +9,13 @@ import {
   ObjectExpressionNode, ConditionalExpressionNode, ArrowFunctionExpressionNode, 
   FunctionExpressionNode
 } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes, createUnionType } from './symbolTable';
+import { logicalTypeInference } from './logicalTypeInference';
+import { arithmeticTypeInference } from './arithmeticTypeInference';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
 import { allBuiltinFunctions } from '../builtins';
 import { fsTypeRegistry } from './fsTypes';
+import { fsModuleTypeRegistry } from './fsModuleTypes';
 import { uloopObjectRegistry } from './uloopTypes';
 import { rtnlTypeRegistry } from './rtnlTypes';
 import { nl80211TypeRegistry } from './nl80211Types';
@@ -196,6 +199,11 @@ export class TypeChecker {
       { name: 'WARN', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 1 },
       { name: 'ERR', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 1 },
       
+      // RTNL builtin functions (from rtnl.c global_fns[])
+      { name: 'request', parameters: [UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 3 },
+      { name: 'listener', parameters: [UcodeType.FUNCTION, UcodeType.ARRAY, UcodeType.ARRAY], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 3 },
+      { name: 'error', parameters: [], returnType: UcodeType.STRING },
+      
       // NL80211 builtin functions (from nl80211.c global_fns[])
       // Note: There may be a name collision with fs error() function
       { name: 'request', parameters: [UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 3 },
@@ -344,31 +352,15 @@ export class TypeChecker {
     // Type checking for binary operators
     switch (node.operator) {
       case '+':
-        if (this.typeCompatibility.canAddTypes(leftType, rightType)) {
-          return this.typeCompatibility.getArithmeticResultType(leftType, rightType, '+');
-        }
-        this.errors.push({
-          message: `Cannot add ${leftType} and ${rightType}`,
-          start: node.start,
-          end: node.end,
-          severity: 'error'
-        });
-        return UcodeType.UNKNOWN;
+        // Use enhanced addition type inference
+        return arithmeticTypeInference.inferAdditionType(leftType, rightType);
 
       case '-':
       case '*':
       case '/':
       case '%':
-        if (!this.typeCompatibility.canPerformArithmetic(leftType, rightType)) {
-          this.errors.push({
-            message: `Cannot perform ${node.operator} on ${leftType} and ${rightType}`,
-            start: node.start,
-            end: node.end,
-            severity: 'error'
-          });
-          return UcodeType.UNKNOWN;
-        }
-        return this.typeCompatibility.getArithmeticResultType(leftType, rightType, node.operator);
+        // Use enhanced arithmetic type inference (no errors - ucode is permissive)
+        return arithmeticTypeInference.inferArithmeticType(leftType, rightType, node.operator);
 
       case '==':
       case '!=':
@@ -382,26 +374,22 @@ export class TypeChecker {
 
       case '&&':
       case '||':
-        // Logical operators in ucode implement short-circuiting and return the actual value
-        // that stopped evaluation, not a boolean. This is similar to JavaScript behavior.
-        // - a || b: returns a if truthy, otherwise returns b
-        // - a && b: returns a if falsy, otherwise returns b
-        // Logical operators return the actual value, not boolean.
-        // For ucode's || and && operators:
-        // - a || b: returns a if truthy, otherwise b
-        // - a && b: returns a if falsy, otherwise b
-        //
-        // If both operands have the same type, return that type.
-        // Otherwise, return UNKNOWN since we can't represent union types 
-        // in the current UcodeType system.
-        if (leftType === rightType) {
-          return leftType;
+        // Use accurate logical operator type inference based on runtime behavior
+        let logicalResultType: UcodeDataType;
+        
+        if (node.operator === '||') {
+          logicalResultType = logicalTypeInference.inferLogicalOrType(leftType, rightType);
+        } else {
+          logicalResultType = logicalTypeInference.inferLogicalAndType(leftType, rightType);
         }
         
-        // For different types, we ideally want a union type, but since
-        // the current architecture only supports UcodeType, return UNKNOWN
-        // TODO: Update type system to support UcodeDataType throughout
-        return UcodeType.UNKNOWN;
+        // Convert union type back to UcodeType for backward compatibility
+        // The actual union type information is preserved in symbol table operations
+        if (isUnionType(logicalResultType)) {
+          return UcodeType.UNKNOWN;
+        }
+        
+        return logicalResultType as UcodeType;
 
       case '&':
       case '|':
@@ -483,6 +471,72 @@ export class TypeChecker {
     }
   }
 
+  private parseReturnType(returnTypeStr: string): UcodeDataType {
+    // Handle union types like "boolean | null"
+    if (returnTypeStr.includes(' | ')) {
+      const typeStrings = returnTypeStr.split(' | ').map(s => s.trim());
+      const types: UcodeType[] = [];
+      
+      for (const typeStr of typeStrings) {
+        switch (typeStr) {
+          case 'boolean':
+            types.push(UcodeType.BOOLEAN);
+            break;
+          case 'string':
+            types.push(UcodeType.STRING);
+            break;
+          case 'number':
+          case 'integer':
+            types.push(UcodeType.INTEGER);
+            break;
+          case 'double':
+            types.push(UcodeType.DOUBLE);
+            break;
+          case 'object':
+            types.push(UcodeType.OBJECT);
+            break;
+          case 'array':
+            types.push(UcodeType.ARRAY);
+            break;
+          case 'null':
+            types.push(UcodeType.NULL);
+            break;
+          case 'function':
+            types.push(UcodeType.FUNCTION);
+            break;
+          default:
+            types.push(UcodeType.UNKNOWN);
+            break;
+        }
+      }
+      
+      return createUnionType(types);
+    }
+    
+    // Handle single types
+    switch (returnTypeStr) {
+      case 'boolean':
+        return UcodeType.BOOLEAN;
+      case 'string':
+        return UcodeType.STRING;
+      case 'number':
+      case 'integer':
+        return UcodeType.INTEGER;
+      case 'double':
+        return UcodeType.DOUBLE;
+      case 'object':
+        return UcodeType.OBJECT;
+      case 'array':
+        return UcodeType.ARRAY;
+      case 'null':
+        return UcodeType.NULL;
+      case 'function':
+        return UcodeType.FUNCTION;
+      default:
+        return UcodeType.UNKNOWN;
+    }
+  }
+
   private checkCallExpression(node: CallExpressionNode): UcodeType {
     if (node.callee.type === 'Identifier') {
       const funcName = (node.callee as IdentifierNode).name;
@@ -496,15 +550,32 @@ export class TypeChecker {
         if (symbol) {
           // Check for functions and imported functions
           if (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED) {
-            // Convert UcodeDataType to UcodeType for backwards compatibility
+            // Special handling for imported fs functions
+            if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'fs') {
+              const fsFunction = fsModuleTypeRegistry.getFunction(funcName);
+              if (fsFunction) {
+                const returnTypeData = this.parseReturnType(fsFunction.returnType);
+                // Convert UcodeDataType back to UcodeType for compatibility
+                if (typeof returnTypeData === 'string') {
+                  return returnTypeData as UcodeType;
+                } else if (isUnionType(returnTypeData)) {
+                  // For union types, we need to return a union type, but the interface expects UcodeType
+                  // For now, return the first type - this needs to be improved in the future
+                  const types = getUnionTypes(returnTypeData);
+                  return types[0] || UcodeType.UNKNOWN;
+                } else {
+                  return UcodeType.UNKNOWN;
+                }
+              }
+            }
+            
+            // For other imported functions or when fs lookup fails, use default handling
             if (typeof symbol.dataType === 'string') {
               return symbol.dataType as UcodeType;
             } else if (isUnionType(symbol.dataType)) {
-              // For union types, return the first type or UNKNOWN
               const types = getUnionTypes(symbol.dataType);
               return types[0] || UcodeType.UNKNOWN;
             } else {
-              // For other complex types like ModuleType, return UNKNOWN
               return UcodeType.UNKNOWN;
             }
           }
@@ -820,7 +891,9 @@ export class TypeChecker {
     const consequentType = this.checkNode(node.consequent);
     const alternateType = this.checkNode(node.alternate);
 
-    return this.typeCompatibility.getTernaryResultType(consequentType, alternateType);
+    const resultType = this.typeCompatibility.getTernaryResultType(consequentType, alternateType);
+    
+    return resultType as UcodeType;
   }
 
   private checkArrowFunctionExpression(_node: ArrowFunctionExpressionNode): UcodeType {
