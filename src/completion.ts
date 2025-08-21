@@ -595,6 +595,7 @@ function getNl80211ModuleCompletions(objectName: string, analysisResult?: Semant
                     label: functionName,
                     kind: CompletionItemKind.Function,
                     detail: 'nl80211 module function',
+                    sortText: `0_${functionName}`, // Functions first
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: nl80211TypeRegistry.getFunctionDocumentation(functionName)
@@ -612,6 +613,7 @@ function getNl80211ModuleCompletions(objectName: string, analysisResult?: Semant
                     label: constantName,
                     kind: CompletionItemKind.Constant,
                     detail: 'nl80211 module constant',
+                    sortText: `1_${constantName}`, // Constants second
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: nl80211TypeRegistry.getConstantDocumentation(constantName)
@@ -689,6 +691,7 @@ function getSocketModuleCompletions(objectName: string, analysisResult?: Semanti
                     label: functionName,
                     kind: CompletionItemKind.Function,
                     detail: 'socket module function',
+                    sortText: `0_${functionName}`, // Functions first
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: socketTypeRegistry.getFunctionDocumentation(functionName)
@@ -706,6 +709,7 @@ function getSocketModuleCompletions(objectName: string, analysisResult?: Semanti
                     label: constantName,
                     kind: CompletionItemKind.Constant,
                     detail: 'socket module constant',
+                    sortText: `1_${constantName}`, // Constants second
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: socketTypeRegistry.getConstantDocumentation(constantName)
@@ -746,6 +750,7 @@ function getUbusModuleCompletions(objectName: string, analysisResult?: SemanticA
                     label: functionName,
                     kind: CompletionItemKind.Function,
                     detail: 'ubus module function',
+                    sortText: `0_${functionName}`, // Functions first
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: ubusTypeRegistry.getFunctionDocumentation(functionName)
@@ -763,6 +768,7 @@ function getUbusModuleCompletions(objectName: string, analysisResult?: SemanticA
                     label: constantName,
                     kind: CompletionItemKind.Constant,
                     detail: 'ubus module constant',
+                    sortText: `1_${constantName}`, // Constants second
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: ubusTypeRegistry.getConstantDocumentation(constantName)
@@ -802,6 +808,7 @@ function getUloopModuleCompletions(objectName: string, analysisResult?: Semantic
                     label: functionName,
                     kind: CompletionItemKind.Function,
                     detail: 'uloop module function',
+                    sortText: `0_${functionName}`, // Functions first
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: uloopTypeRegistry.getFunctionDocumentation(functionName)
@@ -819,6 +826,7 @@ function getUloopModuleCompletions(objectName: string, analysisResult?: Semantic
                     label: constantName,
                     kind: CompletionItemKind.Constant,
                     detail: 'uloop module constant',
+                    sortText: `1_${constantName}`, // Constants second
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: uloopTypeRegistry.getConstantDocumentation(constantName)
@@ -1044,6 +1052,7 @@ function getZlibModuleCompletions(objectName: string, analysisResult?: SemanticA
                     label: functionName,
                     kind: CompletionItemKind.Function,
                     detail: 'zlib module function',
+                    sortText: `0_${functionName}`, // Functions first
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: zlibTypeRegistry.getFunctionDocumentation(functionName)
@@ -1061,10 +1070,13 @@ function getZlibModuleCompletions(objectName: string, analysisResult?: SemanticA
                     label: constantName,
                     kind: CompletionItemKind.Constant,
                     detail: `zlib constant: ${constant.type}`,
+                    sortText: `1_${constantName}`, // Constants second
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: zlibTypeRegistry.getConstantDocumentation(constantName)
-                    }
+                    },
+                    insertText: constantName,
+                    insertTextFormat: InsertTextFormat.PlainText
                 });
             }
         }
@@ -1184,6 +1196,7 @@ function getRtnlModuleCompletions(objectName: string, analysisResult?: SemanticA
                     label: functionName,
                     kind: CompletionItemKind.Function,
                     detail: 'rtnl module function',
+                    sortText: `0_${functionName}`, // Functions first
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: rtnlTypeRegistry.getFunctionDocumentation(functionName)
@@ -1202,6 +1215,7 @@ function getRtnlModuleCompletions(objectName: string, analysisResult?: SemanticA
                     label: constantName,
                     kind: CompletionItemKind.Constant,
                     detail: `rtnl constant: ${constant.type}`,
+                    sortText: `1_${constantName}`, // Constants second
                     documentation: {
                         kind: MarkupKind.Markdown,
                         value: rtnlTypeRegistry.getConstantDocumentation(constantName)
