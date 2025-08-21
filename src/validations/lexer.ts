@@ -27,7 +27,6 @@ import { validateModuleFunctions } from './module-functions';
 import { validateRemainingUtilityFunctions } from './remaining-utility-functions';
 import { validateJSONUtilityFunctions } from './json-utility-functions';
 import { validateSystemUtilityFunctions } from './system-utility-functions';
-import { validateWithRegex } from './regex';
 
 export function validateWithLexer(textDocument: TextDocument, connection: any): Diagnostic[] {
     const text = textDocument.getText();
@@ -78,7 +77,8 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         
     } catch (error) {
         connection.console.log(`Lexer failed with error: ${error}`);
-        return validateWithRegex(textDocument);
+        // If lexer fails, return empty diagnostics - let the parser/semantic analyzer handle it
+        return [];
     }
     
     return diagnostics;
