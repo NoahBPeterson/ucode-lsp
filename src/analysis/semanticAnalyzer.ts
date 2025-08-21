@@ -839,7 +839,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     return validFsMethods.has(methodName);
   }
 
-  private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
+private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // Check if this is a call expression to an imported fs function
     if (node.type === 'CallExpression') {
       const callExpr = node as any; // CallExpressionNode
@@ -860,7 +860,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     
     return null;
   }
-/*
+
   private inferImportedRtnlFunctionReturnType(node: AstNode): UcodeDataType | null {
     // Check if this is a call expression to an imported rtnl function
     if (node.type === 'CallExpression') {
@@ -881,7 +881,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
     
     return null;
-  }*/
+  }
 
   private parseReturnTypeString(returnTypeStr: string): UcodeDataType {
     // Handle union types like "boolean | null"
@@ -1040,6 +1040,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         const fsType = this.inferFsType(node.right);
         const nl80211Type = this.inferNl80211Type(node.right);
         const uloopType = this.inferUloopType(node.right);
+        const rtnlFunctionReturnType = this.inferImportedRtnlFunctionReturnType(node.right);
         let dataType: UcodeDataType;
         
         if (fsType) {
@@ -1048,6 +1049,8 @@ export class SemanticAnalyzer extends BaseVisitor {
           dataType = createNl80211ObjectDataType(nl80211Type);
         } else if (uloopType) {
           dataType = createUloopObjectDataType(uloopType);
+        } else if (rtnlFunctionReturnType) {
+          dataType = rtnlFunctionReturnType;
         } else {
           // Check if this is a method call that returns a specific type
           const methodReturnType = this.inferMethodReturnType(node.right);

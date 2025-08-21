@@ -1173,6 +1173,7 @@ function getRtnlModuleCompletions(objectName: string, analysisResult?: SemanticA
     if (isRtnlModule) {
         console.log(`[RTNL_MODULE_COMPLETION] RTNL module detected for ${objectName}`);
         const functionNames = rtnlTypeRegistry.getFunctionNames();
+        const constantNames = rtnlTypeRegistry.getConstantNames();
         const completions: CompletionItem[] = [];
         
         // Add function completions
@@ -1193,7 +1194,25 @@ function getRtnlModuleCompletions(objectName: string, analysisResult?: SemanticA
             }
         }
         
-        console.log(`[RTNL_MODULE_COMPLETION] Generated ${completions.length} rtnl module completions: ${functionNames.join(', ')}`);
+        // Add constant completions
+        for (const constantName of constantNames) {
+            const constant = rtnlTypeRegistry.getConstant(constantName);
+            if (constant) {
+                completions.push({
+                    label: constantName,
+                    kind: CompletionItemKind.Constant,
+                    detail: `rtnl constant: ${constant.type}`,
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: rtnlTypeRegistry.getConstantDocumentation(constantName)
+                    },
+                    insertText: constantName,
+                    insertTextFormat: InsertTextFormat.PlainText
+                });
+            }
+        }
+        
+        console.log(`[RTNL_MODULE_COMPLETION] Generated ${completions.length} rtnl module completions: ${functionNames.length} functions + ${constantNames.length} constants`);
         return completions;
     }
 
