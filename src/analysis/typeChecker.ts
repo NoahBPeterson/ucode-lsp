@@ -637,7 +637,7 @@ export class TypeChecker {
     }
 
     const argCount = node.arguments.length;
-    const minParams = signature.minParams || signature.parameters.length;
+    const minParams = signature.minParams || 0; // || signature.parameters.length;
     const maxParams = signature.maxParams || (signature.variadic ? Infinity : signature.parameters.length);
 
     // Check argument count
