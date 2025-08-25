@@ -23,7 +23,7 @@ import { nl80211TypeRegistry } from './nl80211Types';
 export interface FunctionSignature {
   name: string;
   parameters: UcodeType[];
-  returnType: UcodeType;
+  returnType: UcodeDataType;
   variadic?: boolean;
   minParams?: number;
   maxParams?: number;
@@ -200,9 +200,9 @@ export class TypeChecker {
       { name: 'ERR', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 1 },
       
       // RTNL builtin functions (from rtnl.c global_fns[])
-      { name: 'request', parameters: [UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 3 },
+      { name: 'request', parameters: [UcodeType.INTEGER], returnType: createUnionType([UcodeType.OBJECT, UcodeType.NULL]), minParams: 1, maxParams: 3 },
       { name: 'listener', parameters: [UcodeType.FUNCTION, UcodeType.ARRAY, UcodeType.ARRAY], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 3 },
-      { name: 'error', parameters: [], returnType: UcodeType.STRING },
+      { name: 'error', parameters: [], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
       
       // NL80211 builtin functions (from nl80211.c global_fns[])
       // Note: There may be a name collision with fs error() function
@@ -633,7 +633,7 @@ export class TypeChecker {
   private validateBuiltinCall(node: CallExpressionNode, signature: FunctionSignature): UcodeType {
     // First check special cases
     if (this.validateSpecialBuiltins(node, signature)) {
-      return signature.returnType;
+      return this.dataTypeToUcodeType(signature.returnType);
     }
 
     const argCount = node.arguments.length;
@@ -675,9 +675,32 @@ export class TypeChecker {
       }
     }
 
-    return signature.returnType;
+    return this.dataTypeToUcodeType(signature.returnType);
   }
 
+
+  private dataTypeToUcodeType(dataType: UcodeDataType): UcodeType {
+    // Handle string type (UcodeType)
+    if (typeof dataType === 'string') {
+      return dataType as UcodeType;
+    }
+    
+    // Handle complex types (UnionType, ModuleType)
+    const complexType = dataType as any;
+    if (complexType.type === UcodeType.UNION) {
+      // For union types, return UNKNOWN for now to maintain compatibility
+      // This could be enhanced later to return a more specific type
+      return UcodeType.UNKNOWN;
+    }
+    if (complexType.type === UcodeType.OBJECT && 'moduleName' in complexType) {
+      return UcodeType.OBJECT;
+    }
+    if (complexType.type) {
+      return complexType.type;
+    }
+    
+    return UcodeType.UNKNOWN;
+  }
 
   private validateSpecialBuiltins(node: CallExpressionNode, signature: FunctionSignature): boolean {
     const funcName = signature.name;

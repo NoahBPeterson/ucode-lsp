@@ -23,7 +23,7 @@ describe('FS Import Validation Tests', function() {
   before(function(done) {
     console.log('🚀 Starting LSP server for fs import validation tests...');
     
-    serverProcess = spawn('bun', ['dist/server.js', '--stdio'], {
+    serverProcess = spawn('node', ['dist/server.js', '--stdio'], {
       stdio: ['pipe', 'pipe', 'inherit']
     });
 

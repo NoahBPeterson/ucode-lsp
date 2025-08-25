@@ -24,7 +24,7 @@ describe('Combined LSP Validation Tests', function() {
   before(function(done) {
     console.log('🚀 Starting shared LSP server for combined validation tests...');
     
-    serverProcess = spawn('bun', ['dist/server.js', '--stdio'], {
+    serverProcess = spawn('node', ['dist/server.js', '--stdio'], {
       stdio: ['pipe', 'pipe', 'inherit']
     });
 

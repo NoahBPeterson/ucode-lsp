@@ -26,6 +26,58 @@ import { zlibTypeRegistry } from './analysis/zlibTypes';
 import { fsModuleTypeRegistry } from './analysis/fsModuleTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 
+function detectMemberHoverContext(position: any, tokens: any[], document: any): { objectName: string, memberName: string, memberTokenPos: number, memberTokenEnd: number } | undefined {
+    // Look for pattern: LABEL DOT LABEL (where cursor is over the second LABEL)
+    // We want to find tokens that match this pattern at the hover position
+    
+    const offset = document.offsetAt(position);
+    
+    // Find the token at the hover position
+    let hoverTokenIndex = -1;
+    for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i];
+        if (token.pos <= offset && offset <= token.end) {
+            hoverTokenIndex = i;
+            break;
+        }
+    }
+    
+    if (hoverTokenIndex === -1) {
+        return undefined;
+    }
+    
+    const hoverToken = tokens[hoverTokenIndex];
+    
+    // Check if we're hovering over a LABEL token
+    if (hoverToken.type !== TokenType.TK_LABEL) {
+        return undefined;
+    }
+    
+    // Check if there's a DOT token immediately before this LABEL
+    if (hoverTokenIndex < 2) {
+        return undefined;
+    }
+    
+    const dotToken = tokens[hoverTokenIndex - 1];
+    const objectToken = tokens[hoverTokenIndex - 2];
+    
+    // Verify the pattern: LABEL DOT LABEL
+    if (dotToken.type === TokenType.TK_DOT && 
+        objectToken.type === TokenType.TK_LABEL &&
+        objectToken.end === dotToken.pos &&
+        dotToken.end === hoverToken.pos) {
+        
+        return {
+            objectName: objectToken.value as string,
+            memberName: hoverToken.value as string,
+            memberTokenPos: hoverToken.pos,
+            memberTokenEnd: hoverToken.end
+        };
+    }
+    
+    return undefined;
+}
+
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
     documents: any,
@@ -43,6 +95,79 @@ export function handleHover(
     try {
         const lexer = new UcodeLexer(text, { rawMode: true });
         const tokens = lexer.tokenize();
+        
+        // First check if we're hovering over a member expression (e.g., "rtnl.request")
+        const memberContext = detectMemberHoverContext(textDocumentPositionParams.position, tokens, document);
+        if (memberContext) {
+            const { objectName, memberName } = memberContext;
+            console.log(`[HOVER] Member expression detected: ${objectName}.${memberName}`);
+            
+            // Look up the object in the symbol table to determine its module
+            if (analysisResult && analysisResult.symbolTable) {
+                const symbol = analysisResult.symbolTable.lookup(objectName);
+                if (symbol && symbol.type === SymbolType.IMPORTED) {
+                    console.log(`[HOVER] Found imported symbol: ${objectName} from ${symbol.importedFrom}`);
+                    
+                    // Get module-specific documentation for the member
+                    const moduleName = symbol.importedFrom;
+                    let hoverText: string | undefined;
+                    
+                    if (moduleName === 'nl80211' && nl80211TypeRegistry.isNl80211Function(memberName)) {
+                        hoverText = nl80211TypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'nl80211' && nl80211TypeRegistry.isNl80211Constant(memberName)) {
+                        hoverText = nl80211TypeRegistry.getConstantDocumentation(memberName);
+                    } else if (moduleName === 'rtnl' && rtnlTypeRegistry.isRtnlFunction(memberName)) {
+                        hoverText = rtnlTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'rtnl' && rtnlTypeRegistry.isRtnlConstant(memberName)) {
+                        hoverText = rtnlTypeRegistry.getConstantDocumentation(memberName);
+                    } else if (moduleName === 'socket' && socketTypeRegistry.isSocketFunction(memberName)) {
+                        hoverText = socketTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'socket' && socketTypeRegistry.isSocketConstant(memberName)) {
+                        hoverText = socketTypeRegistry.getConstantDocumentation(memberName);
+                    } else if (moduleName === 'ubus' && ubusTypeRegistry.isUbusFunction(memberName)) {
+                        hoverText = ubusTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'ubus' && ubusTypeRegistry.isUbusConstant(memberName)) {
+                        hoverText = ubusTypeRegistry.getConstantDocumentation(memberName);
+                    } else if (moduleName === 'uloop' && uloopTypeRegistry.isUloopFunction(memberName)) {
+                        hoverText = uloopTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'uloop' && uloopTypeRegistry.isUloopConstant(memberName)) {
+                        hoverText = uloopTypeRegistry.getConstantDocumentation(memberName);
+                    } else if (moduleName === 'zlib' && zlibTypeRegistry.isZlibFunction(memberName)) {
+                        hoverText = zlibTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'zlib' && zlibTypeRegistry.isZlibConstant(memberName)) {
+                        hoverText = zlibTypeRegistry.getConstantDocumentation(memberName);
+                    } else if (moduleName === 'debug' && debugTypeRegistry.isDebugFunction(memberName)) {
+                        hoverText = debugTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'digest' && digestTypeRegistry.isDigestFunction(memberName)) {
+                        hoverText = digestTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'log' && logTypeRegistry.isLogFunction(memberName)) {
+                        hoverText = logTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'log' && logTypeRegistry.isLogConstant(memberName)) {
+                        hoverText = logTypeRegistry.getConstantDocumentation(memberName);
+                    } else if (moduleName === 'math' && mathTypeRegistry.isMathFunction(memberName)) {
+                        hoverText = mathTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'resolv' && resolvTypeRegistry.isResolvFunction(memberName)) {
+                        hoverText = resolvTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'struct' && structTypeRegistry.isStructFunction(memberName)) {
+                        hoverText = structTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'uci' && uciTypeRegistry.isUciFunction(memberName)) {
+                        hoverText = uciTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'fs' && fsModuleTypeRegistry.isFsModuleFunction(memberName)) {
+                        hoverText = fsModuleTypeRegistry.getFunctionDocumentation(memberName);
+                    }
+                    
+                    if (hoverText) {
+                        return {
+                            contents: { kind: MarkupKind.Markdown, value: hoverText },
+                            range: {
+                                start: document.positionAt(memberContext.memberTokenPos),
+                                end: document.positionAt(memberContext.memberTokenEnd)
+                            }
+                        };
+                    }
+                }
+            }
+        }
         
         const token = tokens.find(t => t.pos <= offset && offset <= t.end);
         
@@ -268,278 +393,8 @@ export function handleHover(
                 }
             }
             
-            // 2. Fallback to global module function checks (if not found in symbol table)
-            // Check if this is a log module function
-            if (logTypeRegistry.isLogFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: logTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a log module constant
-            if (logTypeRegistry.isLogConstant(word)) {
-                const constantDoc = logTypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
-            
-            // Check if this is a math module function
-            if (mathTypeRegistry.isMathFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: mathTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a nl80211 module function
-            if (nl80211TypeRegistry.isNl80211Function(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: nl80211TypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a nl80211 module constant
-            if (nl80211TypeRegistry.isNl80211Constant(word)) {
-                const constantDoc = nl80211TypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
-            
-            // Check if this is a digest module function
-            if (digestTypeRegistry.isDigestFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: digestTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a resolv module function
-            if (resolvTypeRegistry.isResolvFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: resolvTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a ubus module function
-            if (ubusTypeRegistry.isUbusFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: ubusTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a uci module function
-            if (uciTypeRegistry.isUciFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: uciTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a ubus module constant
-            if (ubusTypeRegistry.isUbusConstant(word)) {
-                const constantDoc = ubusTypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
-            
-            // Check if this is a socket module function
-            if (socketTypeRegistry.isSocketFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: socketTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a socket module constant
-            if (socketTypeRegistry.isSocketConstant(word)) {
-                const constantDoc = socketTypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
-            
-            // Check if this is a struct module function
-            if (structTypeRegistry.isStructFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: structTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a uloop module function
-            if (uloopTypeRegistry.isUloopFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: uloopTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-            
-            // Check if this is a uloop module constant
-            if (uloopTypeRegistry.isUloopConstant(word)) {
-                const constantDoc = uloopTypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
 
-            // Check if this is a zlib module function
-            if (zlibTypeRegistry.isZlibFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: zlibTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-
-            // Check if this is a zlib module constant
-            if (zlibTypeRegistry.isZlibConstant(word)) {
-                const constantDoc = zlibTypeRegistry.getConstantDocumentation(word);
-                if (constantDoc) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: constantDoc
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-            }
-                
-            // 1. Check if this is a debug module function
-            if (debugTypeRegistry.isDebugFunction(word)) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: debugTypeRegistry.getFunctionDocumentation(word)
-                    },
-                    range: {
-                        start: document.positionAt(token.pos),
-                        end: document.positionAt(token.end)
-                    }
-                };
-            }
-
-            // Check if this is an exception property
+            // Check if this is an exception property FIRST (before symbol table)
             if (exceptionTypeRegistry.isExceptionProperty(word)) {
                 return {
                     contents: {
@@ -622,185 +477,6 @@ export function handleHover(
             };
         }
         
-        // Check if this is a log module constant
-        if (logTypeRegistry.isLogConstant(word)) {
-            const constantDoc = logTypeRegistry.getConstantDocumentation(word);
-            if (constantDoc) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: constantDoc
-                    },
-                    range: {
-                        start: document.positionAt(wordRange.start),
-                        end: document.positionAt(wordRange.end)
-                    }
-                };
-            }
-        }
-        
-        // Check if this is a math module function
-        if (mathTypeRegistry.isMathFunction(word)) {
-            return {
-                contents: {
-                    kind: MarkupKind.Markdown,
-                    value: mathTypeRegistry.getFunctionDocumentation(word)
-                },
-                range: {
-                    start: document.positionAt(wordRange.start),
-                    end: document.positionAt(wordRange.end)
-                }
-            };
-        }
-        
-        // Check if this is a nl80211 module function
-        if (nl80211TypeRegistry.isNl80211Function(word)) {
-            return {
-                contents: {
-                    kind: MarkupKind.Markdown,
-                    value: nl80211TypeRegistry.getFunctionDocumentation(word)
-                },
-                range: {
-                    start: document.positionAt(wordRange.start),
-                    end: document.positionAt(wordRange.end)
-                }
-            };
-        }
-        
-        // Check if this is a nl80211 module constant
-        if (nl80211TypeRegistry.isNl80211Constant(word)) {
-            const constantDoc = nl80211TypeRegistry.getConstantDocumentation(word);
-            if (constantDoc) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: constantDoc
-                    },
-                    range: {
-                        start: document.positionAt(wordRange.start),
-                        end: document.positionAt(wordRange.end)
-                    }
-                };
-            }
-        }
-        
-        // Check if this is a digest module function
-        if (digestTypeRegistry.isDigestFunction(word)) {
-            return {
-                contents: {
-                    kind: MarkupKind.Markdown,
-                    value: digestTypeRegistry.getFunctionDocumentation(word)
-                },
-                range: {
-                    start: document.positionAt(wordRange.start),
-                    end: document.positionAt(wordRange.end)
-                }
-            };
-        }
-        
-        // Check if this is a resolv module function
-        if (resolvTypeRegistry.isResolvFunction(word)) {
-            return {
-                contents: {
-                    kind: MarkupKind.Markdown,
-                    value: resolvTypeRegistry.getFunctionDocumentation(word)
-                },
-                range: {
-                    start: document.positionAt(wordRange.start),
-                    end: document.positionAt(wordRange.end)
-                }
-            };
-        }
-        
-        // Check if this is a ubus module function
-        if (ubusTypeRegistry.isUbusFunction(word)) {
-            return {
-                contents: {
-                    kind: MarkupKind.Markdown,
-                    value: ubusTypeRegistry.getFunctionDocumentation(word)
-                },
-                range: {
-                    start: document.positionAt(wordRange.start),
-                    end: document.positionAt(wordRange.end)
-                }
-            };
-        }
-        
-        // Check if this is a ubus module constant
-        if (ubusTypeRegistry.isUbusConstant(word)) {
-            const constantDoc = ubusTypeRegistry.getConstantDocumentation(word);
-            if (constantDoc) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: constantDoc
-                    },
-                    range: {
-                        start: document.positionAt(wordRange.start),
-                        end: document.positionAt(wordRange.end)
-                    }
-                };
-            }
-        }
-        
-        // Check if this is a socket module function
-        if (socketTypeRegistry.isSocketFunction(word)) {
-            return {
-                contents: {
-                    kind: MarkupKind.Markdown,
-                    value: socketTypeRegistry.getFunctionDocumentation(word)
-                },
-                range: {
-                    start: document.positionAt(wordRange.start),
-                    end: document.positionAt(wordRange.end)
-                }
-            };
-        }
-        
-        // Check if this is a socket module constant
-        if (socketTypeRegistry.isSocketConstant(word)) {
-            const constantDoc = socketTypeRegistry.getConstantDocumentation(word);
-            if (constantDoc) {
-                return {
-                    contents: {
-                        kind: MarkupKind.Markdown,
-                        value: constantDoc
-                    },
-                    range: {
-                        start: document.positionAt(wordRange.start),
-                        end: document.positionAt(wordRange.end)
-                    }
-                };
-            }
-        }
-        
-        // Check if this is a struct module function
-        if (structTypeRegistry.isStructFunction(word)) {
-            return {
-                contents: {
-                    kind: MarkupKind.Markdown,
-                    value: structTypeRegistry.getFunctionDocumentation(word)
-                },
-                range: {
-                    start: document.positionAt(wordRange.start),
-                    end: document.positionAt(wordRange.end)
-                }
-            };
-        }
-        
-        // Check if this is a debug module function
-        if (debugTypeRegistry.isDebugFunction(word)) {
-            return {
-                contents: {
-                    kind: MarkupKind.Markdown,
-                    value: debugTypeRegistry.getFunctionDocumentation(word)
-                },
-                range: {
-                    start: document.positionAt(wordRange.start),
-                    end: document.positionAt(wordRange.end)
-                }
-            };
-        }
         
         const documentation = allBuiltinFunctions.get(word);
         if (documentation) {

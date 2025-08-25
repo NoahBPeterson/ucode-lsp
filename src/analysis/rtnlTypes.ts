@@ -163,27 +163,27 @@ export class RtnlTypeRegistry {
     if (!func) return '';
     
     const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\\n\\n${func.description}\\n\\n`;
+    let doc = `**${signature}**\n\n${func.description}\n\n`;
     
     if (func.parameters.length > 0) {
-      doc += '**Parameters:**\\n';
+      doc += '**Parameters:**\n';
       func.parameters.forEach(param => {
         const optional = param.optional ? ' (optional)' : '';
         const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\\n`;
+        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
       });
-      doc += '\\n';
+      doc += '\n';
     }
     
-    doc += `**Returns:** \`${func.returnType}\`\\n\\n`;
+    doc += `**Returns:** \`${func.returnType}\`\n\n`;
     
     // Add usage examples
     if (name === 'request') {
-      doc += '**Example:**\\n```ucode\\n// Get all routes\\nlet routes = request(RTM_GETROUTE, NLM_F_DUMP);\\n\\n// Add a new route\\nlet result = request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, {\\n    dst: "192.168.1.0/24",\\n    gateway: "192.168.1.1",\\n    oif: 2\\n});\\n```';
+      doc += '**Example:**\n```ucode\n// Get all routes\nlet routes = request(RTM_GETROUTE, NLM_F_DUMP);\n\n// Add a new route\nlet result = request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, {\n    dst: "192.168.1.0/24",\n    gateway: "192.168.1.1",\n    oif: 2\n});\n```';
     } else if (name === 'listener') {
-      doc += '**Example:**\\n```ucode\\n// Listen for route changes\\nlet l = listener(function(msg) {\\n  printf("Route event: %J\\\\n", msg);\\n}, [RTM_NEWROUTE, RTM_DELROUTE]);\\n\\n// Listen for link changes\\nlet linkListener = listener(function(msg) {\\n  printf("Link event: %J\\\\n", msg);\\n}, [RTM_NEWLINK, RTM_DELLINK]);\\n```';
+      doc += '**Example:**\n```ucode\n// Listen for route changes\nlet l = listener(function(msg) {\n  printf("Route event: %J\\n", msg);\n}, [RTM_NEWROUTE, RTM_DELROUTE]);\n\n// Listen for link changes\nlet linkListener = listener(function(msg) {\n  printf("Link event: %J\\n", msg);\n}, [RTM_NEWLINK, RTM_DELLINK]);\n```';
     } else if (name === 'error') {
-      doc += '**Example:**\\n```ucode\\nlet result = request(RTM_GETROUTE, NLM_F_DUMP);\\nif (!result) {\\n    let errorMsg = error();\\n    printf("RTNL error: %s\\\\n", errorMsg);\\n}\\n```';
+      doc += '**Example:**\n```ucode\nlet result = request(RTM_GETROUTE, NLM_F_DUMP);\nif (!result) {\n    let errorMsg = error();\n    printf("RTNL error: %s\\n", errorMsg);\n}\n```';
     }
     
     return doc;
@@ -193,7 +193,7 @@ export class RtnlTypeRegistry {
     const constant = this.getConstant(name);
     if (!constant) return '';
     
-    return `**${constant.name}** = \`${constant.value}\`\\n\\n*${constant.type}*\\n\\n${constant.description}`;
+    return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
   }
 
   // Import validation methods

@@ -19,7 +19,7 @@ describe('Comma Operator Parsing LSP Tests', function() {
 
   // Start shared server process
   before(function(done) {
-    serverProcess = spawn('bun', ['dist/server.js', '--stdio'], {
+    serverProcess = spawn('node', ['dist/server.js', '--stdio'], {
       stdio: ['pipe', 'pipe', 'inherit']
     });
 
