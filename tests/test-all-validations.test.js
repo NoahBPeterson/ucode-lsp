@@ -48,6 +48,7 @@ const testFiles = [
     'tests/test-new-validations.js',
     'tests/test-validations-only.js',
     'tests/test-log-module.js',
+    'tests/test-error-constants.js',
     'tests/test-log-import-validation.js',
     'tests/test-log-constant-hover.js',
     'tests/test-math-module.js',
@@ -80,7 +81,29 @@ const testFiles = [
     'tests/test-comma-operator-lsp.js',
     'tests/test-rtnl-constants.js',
     'tests/test-combined-lsp-validations.js',
-    'tests/test-fs-import-validation.js'
+    'tests/test-fs-import-validation.js',
+    'tests/test-error-code-integration.js',
+    'tests/test-disable-comments.js',
+    'tests/test-auto-fix-code-actions.js',
+    'tests/test-disable-parser-diagnostics.js',
+    'tests/test-nlresult-specific.js',
+];
+
+const mochaFiles = [  // New entries still need to be added to the testFiles array
+    'test-string-method-validation.js',
+    'test-missing-builtins-validation.js',
+    'test-filter-builtin-validation.js',
+    'test-split-regex-validation.js',
+    'test-uloop-module.js',
+    'test-comma-operator-lsp.js',
+    'test-rtnl-constants.js',
+    'test-combined-lsp-validations.js',
+    'test-fs-import-validation.js',
+    'test-error-code-integration.js',
+    'test-disable-comments.js',
+    'test-auto-fix-code-actions.js',
+    'test-disable-parser-diagnostics.js',
+    'test-nlresult-specific.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
@@ -103,22 +126,14 @@ test('Comprehensive Validation Test Suite', async () => {
         
         try {
             // Use different command for mocha tests
-            const isMochaTest = testFile.includes('test-string-method-validation.js') || 
-                               testFile.includes('test-missing-builtins-validation.js') ||
-                               testFile.includes('test-filter-builtin-validation.js') ||
-                               testFile.includes('test-split-regex-validation.js') ||
-                               testFile.includes('test-uloop-module.js') ||
-                               testFile.includes('test-comma-operator-lsp.js') ||
-                               testFile.includes('test-rtnl-constants.js') ||
-                               testFile.includes('test-combined-lsp-validations.js') ||
-                               testFile.includes('test-fs-import-validation.js');
+            const isMochaTest = mochaFiles.includes(testFile.substring(testFile.indexOf('/')+1));
             const timeout = testFile.includes('test-missing-builtins-validation.js') ? '20000' : '15000';
             const command = isMochaTest 
                 ? `./node_modules/.bin/mocha ${testFile} --timeout ${timeout}`
                 : `bun ${testFile}`;
             
             const output = execSync(command, { encoding: 'utf8' });
-            console.log(output);
+            //console.log(output);
             
             // Parse test results from output - handle both bun and mocha formats
             const bunPassedMatch = output.match(/(\d+)\/(\d+) tests passed/);
@@ -134,6 +149,7 @@ test('Comprehensive Validation Test Suite', async () => {
                     passedSuites++;
                     console.log(`✅ Suite ${index + 1} PASSED: ${passed}/${total} tests`);
                 } else {
+                    console.log(output);
                     console.log(`❌ Suite ${index + 1} FAILED: ${passed}/${total} tests`);
                 }
             } else if (mochaPassedMatch) {
@@ -146,6 +162,7 @@ test('Comprehensive Validation Test Suite', async () => {
                     passedSuites++;
                     console.log(`✅ Suite ${index + 1} PASSED: ${passed} tests`);
                 } else {
+                    console.log(output);
                     console.log(`❌ Suite ${index + 1} FAILED: ${passed} passed, ${failed} failed`);
                 }
             } else {
@@ -165,51 +182,6 @@ test('Comprehensive Validation Test Suite', async () => {
 
     if (passedSuites === totalSuites) {
         console.log('\n🎉 ALL VALIDATION TEST SUITES PASSED! 🎉');
-        /*console.log('✅ String analysis validations working correctly');
-        console.log('✅ Array function validations working correctly'); 
-        console.log('✅ Object function validations working correctly');
-        console.log('✅ Number conversion validations working correctly');
-        console.log('✅ Character function validations working correctly');
-        console.log('✅ String function validations working correctly');
-        console.log('✅ Real trim function validations with actual LSP logic working correctly');
-        console.log('✅ Both TK_NUMBER and TK_DOUBLE tokens handled correctly');
-        console.log('✅ Union type system working correctly');
-        console.log('✅ Type inference for function returns working correctly');
-        console.log('✅ Dynamic typing with union types working correctly');
-        console.log('✅ Unknown return types preserved in union inference');
-        console.log('✅ Arrow function parsing implemented correctly');
-        console.log('✅ For-in loop parsing with bare identifiers fixed');
-        console.log('✅ Imported function recognition in type checker fixed');
-        console.log('✅ Object property keys no longer show undefined variable errors');
-        console.log('✅ Parser creates LiteralNode for property keys instead of IdentifierNode');
-        console.log('✅ Namespace import member access (import * as name) working correctly');
-        console.log('✅ Namespace import validation logic tests passing');
-        console.log('✅ Built-in fs module support working correctly');
-        console.log('✅ Only one diagnostic per undefined fs reference (no duplicates)');
-        console.log('✅ Member expression completion detection working correctly');
-        console.log('✅ fs module autocomplete/IntelliSense logic working correctly');
-        console.log('✅ TK_IN token recognition and for-in loop parsing working correctly');
-        console.log('✅ Lexer tokenization patterns and position tracking working correctly');
-        console.log('✅ Parser AST node creation and validation working correctly');
-        console.log('✅ Go to Definition functionality for imported and local symbols working correctly');
-        console.log('✅ Import statement parsing (named and namespace imports) working correctly');
-        console.log('✅ Export statement parsing and module system support working correctly');
-        console.log('✅ For-in loop parsing with bare identifiers working correctly');
-        console.log('✅ Module refactoring and code organization patterns working correctly');
-        console.log('✅ New validation implementations and parameter type checking working correctly');
-        console.log('✅ Validation-only mode and isolated validation engine working correctly');
-        console.log('✅ Math module support working correctly');
-        console.log('✅ Math module import validation working correctly');
-        console.log('✅ Math module aliased import hover working correctly');
-        console.log('✅ Uloop module support working correctly');
-        console.log('✅ Uloop module import validation working correctly');
-        console.log('✅ Uloop object type inference and method completion working correctly');
-        console.log('✅ String method validation working correctly');
-        console.log('✅ Invalid string methods (toUpperCase, toLowerCase, etc.) properly detected');
-        console.log('✅ String property validation (only length allowed) working correctly');
-        console.log('✅ Missing builtin functions validation working correctly');
-        console.log('✅ All 14 newly added builtin functions provide hover documentation');
-        console.log('✅ Builtin function hover includes parameters, return types, and examples');*/
     } else {
         console.log('\n❌ Some test suites failed. Please review the output above.');
     }

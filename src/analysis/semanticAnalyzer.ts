@@ -30,6 +30,7 @@ import { ubusTypeRegistry } from './ubusTypes';
 import { uciTypeRegistry } from './uciTypes';
 import { uloopTypeRegistry, UloopObjectType, createUloopObjectDataType, uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
+import { UcodeErrorCode, UcodeErrorConstants } from './errorConstants';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -57,6 +58,8 @@ export class SemanticAnalyzer extends BaseVisitor {
   private currentFunctionNode: FunctionDeclarationNode | null = null;
   private functionReturnTypes = new Map<FunctionDeclarationNode, UcodeType[]>();
   private processingFunctionCallCallee = false; // Track when processing function call callee
+  private disabledLines: Set<number> = new Set(); // Track lines with disable comments
+  private disabledRanges: Array<{ start: number; end: number }> = []; // Track disabled multi-line ranges
 
   constructor(textDocument: TextDocument, options: SemanticAnalysisOptions = {}) {
     super();
@@ -81,8 +84,13 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.switchScopes = [];
     this.currentFunctionNode = null;
     this.functionReturnTypes.clear();
+    this.disabledLines.clear();
+    this.disabledRanges = [];
 
     try {
+      // Parse disable comments before analysis
+      this.parseDisableComments();
+
       // Visit the AST to perform semantic analysis
       this.visit(ast);
 
@@ -204,10 +212,11 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Check for redeclaration in current scope
       if (!this.symbolTable.declare(name, symbolType, dataType, node.id)) {
         this.addDiagnostic(
-          `Variable '${name}' is already declared in this scope`,
+          UcodeErrorCode.VARIABLE_REDECLARATION,
           node.id.start,
           node.id.end,
-          DiagnosticSeverity.Error
+          DiagnosticSeverity.Error,
+          name
         );
       }
 
@@ -216,10 +225,11 @@ export class SemanticAnalyzer extends BaseVisitor {
         const shadowedSymbol = this.symbolTable.checkShadowing(name);
         if (shadowedSymbol) {
           this.addDiagnostic(
-            `Variable '${name}' shadows declaration from outer scope`,
+            UcodeErrorCode.VARIABLE_SHADOWING,
             node.id.start,
             node.id.end,
-            DiagnosticSeverity.Warning
+            DiagnosticSeverity.Warning,
+            name
           );
         }
       }
@@ -358,10 +368,13 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'log' && specifier.type === 'ImportSpecifier') {
       if (!logTypeRegistry.isValidLogImport(importedName)) {
         this.addDiagnostic(
-          `'${importedName}' is not exported by the log module. Available exports: ${logTypeRegistry.getValidLogImports().join(', ')}`,
+          UcodeErrorCode.INVALID_IMPORT,
           specifier.imported.start,
           specifier.imported.end,
-          DiagnosticSeverity.Error
+          DiagnosticSeverity.Error,
+          importedName,
+          'log',
+          logTypeRegistry.getValidLogImports().join(', ')
         );
         return; // Don't add invalid import to symbol table
       }
@@ -684,10 +697,11 @@ export class SemanticAnalyzer extends BaseVisitor {
         
         if (!this.symbolTable.declare(node.param.name, SymbolType.PARAMETER, exceptionObjectType, node.param)) {
           this.addDiagnostic(
-            `Parameter '${node.param.name}' is already declared in this scope`,
+            UcodeErrorCode.PARAMETER_REDECLARATION,
             node.param.start,
             node.param.end,
-            DiagnosticSeverity.Error
+            DiagnosticSeverity.Error,
+            node.param.name
           );
         }
       }
@@ -714,10 +728,11 @@ export class SemanticAnalyzer extends BaseVisitor {
         // The TypeChecker will handle "Undefined function" diagnostic for function calls
         if (!isBuiltin && !this.processingFunctionCallCallee) {
           this.addDiagnostic(
-            `Undefined variable: ${node.name}`,
+            UcodeErrorCode.UNDEFINED_VARIABLE,
             node.start,
             node.end,
-            DiagnosticSeverity.Error
+            DiagnosticSeverity.Error,
+            node.name
           );
         }
       } else {
@@ -1358,10 +1373,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
 
       this.addDiagnostic(
-        `Variable '${symbol.name}' is declared but never used`,
+        UcodeErrorCode.UNUSED_VARIABLE,
         symbol.node.start,
         symbol.node.end,
-        DiagnosticSeverity.Warning
+        DiagnosticSeverity.Warning,
+        symbol.name
       );
     }
   }
@@ -1565,14 +1581,48 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  private addDiagnostic(message: string, start: number, end: number, severity: DiagnosticSeverity): void {
+  private addDiagnostic(
+    codeOrMessage: UcodeErrorCode | string, 
+    start: number, 
+    end: number, 
+    severity?: DiagnosticSeverity,
+    ...params: string[]
+  ): void {
+    let message: string;
+    let finalSeverity: DiagnosticSeverity;
+    let errorCode: string | undefined;
+
+    if (typeof codeOrMessage === 'string' && !Object.values(UcodeErrorCode).includes(codeOrMessage as UcodeErrorCode)) {
+      // Legacy string message support
+      message = codeOrMessage;
+      finalSeverity = severity || DiagnosticSeverity.Error;
+    } else {
+      // New error code support
+      errorCode = codeOrMessage as string;
+      message = UcodeErrorConstants.formatMessage(codeOrMessage as UcodeErrorCode, ...params);
+      
+      // Determine severity from error definition
+      if (severity) {
+        finalSeverity = severity;
+      } else {
+        finalSeverity = UcodeErrorConstants.isWarning(codeOrMessage as UcodeErrorCode) 
+          ? DiagnosticSeverity.Warning 
+          : DiagnosticSeverity.Error;
+      }
+    }
+
+    // Check if diagnostic should be suppressed by disable comment
+    if (this.shouldSuppressDiagnostic(start, end)) {
+      return; // Suppress this diagnostic
+    }
+
     // Check for duplicate diagnostics to prevent multiple identical errors
     const startPos = this.textDocument.positionAt(start);
     const endPos = this.textDocument.positionAt(end);
     
     const isDuplicate = this.diagnostics.some(existing => 
       existing.message === message &&
-      existing.severity === severity &&
+      existing.severity === finalSeverity &&
       existing.range.start.line === startPos.line &&
       existing.range.start.character === startPos.character &&
       existing.range.end.line === endPos.line &&
@@ -1580,15 +1630,122 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     );
     
     if (!isDuplicate) {
-      this.diagnostics.push({
-        severity,
+      const diagnostic: Diagnostic = {
+        severity: finalSeverity,
         range: {
           start: startPos,
           end: endPos
         },
         message,
         source: 'ucode-semantic'
-      });
+      };
+
+      // Add error code if available
+      if (errorCode) {
+        diagnostic.code = errorCode;
+      }
+
+      this.diagnostics.push(diagnostic);
     }
+  }
+
+  /**
+   * Parse disable comments from the document
+   */
+  private parseDisableComments(): void {
+    const text = this.textDocument.getText();
+    const lines = text.split(/\r?\n/);
+
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      const line = lines[lineIndex];
+      
+      // Check if line contains "// ucode-lsp disable" comment
+      if (line && line.includes('// ucode-lsp disable')) {
+        this.disabledLines.add(lineIndex);
+        
+        // For multi-line statements, we need to find the statement boundaries
+        // This is a simplified approach - look for statements that start on this line
+        // and extend to multiple lines (like function calls with multiple arguments)
+        const statementEnd = this.findStatementEnd(text, lineIndex);
+        
+        if (statementEnd > lineIndex) {
+          this.disabledRanges.push({
+            start: lineIndex,
+            end: statementEnd
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Find the end line of a multi-line statement starting at the given line
+   */
+  private findStatementEnd(text: string, startLine: number): number {
+    let braceDepth = 0;
+    let parenDepth = 0;
+    let currentLine = startLine;
+    
+    // Get the line with the disable comment
+    const lines = text.split(/\r?\n/);
+    const commentLine = lines[startLine];
+    
+    if (!commentLine) {
+      return startLine;
+    }
+    
+    // Look for opening braces or parentheses on the comment line
+    for (const char of commentLine) {
+      if (char === '(') parenDepth++;
+      if (char === ')') parenDepth--;
+      if (char === '{') braceDepth++;
+      if (char === '}') braceDepth--;
+    }
+    
+    // If we have unclosed parentheses or braces, find where they close
+    if (parenDepth > 0 || braceDepth > 0) {
+      for (let i = startLine + 1; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line) continue;
+        
+        for (const char of line) {
+          if (char === '(') parenDepth++;
+          if (char === ')') parenDepth--;
+          if (char === '{') braceDepth++;
+          if (char === '}') braceDepth--;
+        }
+        
+        currentLine = i;
+        
+        // If all parentheses and braces are closed, we found the end
+        if (parenDepth <= 0 && braceDepth <= 0) {
+          break;
+        }
+      }
+    }
+    
+    return currentLine;
+  }
+
+  /**
+   * Check if a diagnostic should be suppressed based on disable comments
+   */
+  private shouldSuppressDiagnostic(start: number, end: number): boolean {
+    const startPos = this.textDocument.positionAt(start);
+    const endPos = this.textDocument.positionAt(end);
+    
+    // Check if the diagnostic is on a disabled line
+    if (this.disabledLines.has(startPos.line)) {
+      return true;
+    }
+    
+    // Check if the diagnostic is within a disabled range
+    for (const range of this.disabledRanges) {
+      if (startPos.line >= range.start && endPos.line <= range.end) {
+        return true;
+      }
+    }
+    
+    return false;
   }
 }

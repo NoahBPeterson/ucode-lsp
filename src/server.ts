@@ -13,6 +13,10 @@ import {
     DiagnosticSeverity,
     FileChangeType,
     DidChangeWatchedFilesNotification,
+    CodeActionParams,
+    CodeAction,
+    CodeActionKind,
+    TextEdit,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -182,7 +186,10 @@ connection.onInitialize((params: InitializeParams) => {
                 }
             },
             hoverProvider: true,
-            definitionProvider: true
+            definitionProvider: true,
+            codeActionProvider: {
+                codeActionKinds: [CodeActionKind.QuickFix]
+            }
         }
     };
     if (hasWorkspaceFolderCapability) {
@@ -259,6 +266,26 @@ documents.onDidOpen(async (change: TextDocumentChangeEvent<TextDocument>) => {
     await validateAndAnalyzeDocument(change.document);
 });
 
+// Helper function to check if a diagnostic should be suppressed by disable comments
+function shouldSuppressDiagnosticByDisableComment(textDocument: TextDocument, diagnostic: Diagnostic): boolean {
+    const text = textDocument.getText();
+    const lines = text.split(/\r?\n/);
+    const startLine = diagnostic.range.start.line;
+    const endLine = diagnostic.range.end.line;
+    
+    // Check if any line in the diagnostic range has a disable comment
+    for (let lineIndex = startLine; lineIndex <= endLine; lineIndex++) {
+        if (lineIndex < lines.length) {
+            const line = lines[lineIndex];
+            if (line && line.includes('// ucode-lsp disable')) {
+                return true;
+            }
+        }
+    }
+    
+    return false;
+}
+
 async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<void> {
     const text = textDocument.getText();
     const lexer = new UcodeLexer(text, { rawMode: true });
@@ -274,7 +301,7 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
         },
         message: err.message,
         source: 'ucode-parser'
-    }));
+    })).filter(diagnostic => !shouldSuppressDiagnosticByDisableComment(textDocument, diagnostic));
 
     if (parseResult.ast) {
         const analyzer = new SemanticAnalyzer(textDocument, {
@@ -287,6 +314,8 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
         const analysisResult = analyzer.analyze(parseResult.ast);
         analysisCache.set(textDocument.uri, {result: analysisResult, timestamp: Date.now()});
         connection.console.log(`[ANALYSIS] Cached analysis result for: ${textDocument.uri}`);
+        
+        // Semantic analysis diagnostics are already filtered by the SemanticAnalyzer itself
         diagnostics.push(...analysisResult.diagnostics);
     } else {
         analysisCache.delete(textDocument.uri);
@@ -370,6 +399,55 @@ connection.onCompletion(async (params) => {
 
 connection.onCompletionResolve((item) => {
     return handleCompletionResolve(item);
+});
+
+connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) {
+        return [];
+    }
+
+    const codeActions: CodeAction[] = [];
+
+    // Get diagnostics for the current range
+    const diagnostics = params.context.diagnostics;
+
+    for (const diagnostic of diagnostics) {
+        // Only provide fix for ucode-semantic diagnostics (our diagnostics)
+        if (diagnostic.source === 'ucode-semantic') {
+            const line = diagnostic.range.start.line;
+            const lineText = document.getText({
+                start: { line: line, character: 0 },
+                end: { line: line + 1, character: 0 }
+            }).replace(/\r?\n$/, ''); // Remove trailing newline
+
+            // Check if line already has disable comment
+            if (lineText.includes('// ucode-lsp disable')) {
+                continue; // Skip if already has disable comment
+            }
+
+            // Create code action to add disable comment
+            const codeAction: CodeAction = {
+                title: 'Disable ucode-lsp for this line',
+                kind: CodeActionKind.QuickFix,
+                diagnostics: [diagnostic],
+                edit: {
+                    changes: {
+                        [params.textDocument.uri]: [
+                            TextEdit.insert(
+                                { line: line, character: lineText.length },
+                                ' // ucode-lsp disable'
+                            )
+                        ]
+                    }
+                }
+            };
+
+            codeActions.push(codeAction);
+        }
+    }
+
+    return codeActions;
 });
 
 connection.onDefinition((params) => {
