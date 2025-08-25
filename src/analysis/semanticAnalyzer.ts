@@ -1137,6 +1137,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     super.visitReturnStatement(node);
 
     if (this.options.enableControlFlowAnalysis) {
+      /*
       if (this.functionScopes.length === 0) {
         this.addDiagnostic(
           'Return statement outside function',
@@ -1144,7 +1145,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           node.end,
           DiagnosticSeverity.Error
         );
-      } else if (this.currentFunctionNode) {
+      } else */
+      if (this.currentFunctionNode) {
         // Determine the type of the returned value.
         const returnType = node.argument ? this.typeChecker.checkNode(node.argument) : UcodeType.NULL;
         
