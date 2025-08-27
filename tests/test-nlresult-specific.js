@@ -145,7 +145,17 @@ describe('NLResult Specific Test', function() {
       console.log(`  [${i}] Line ${d.range.start.line}: "${d.message}" (severity: ${d.severity}, source: ${d.source})`);
     });
     
-    // Should have no diagnostics because the disable comment should suppress all errors on this line
-    assert.strictEqual(diagnostics.length, 0, `Expected no diagnostics, but got ${diagnostics.length}: ${JSON.stringify(diagnostics.map(d => d.message))}`);
+    // Should have diagnostics converted to warnings (severity 2), not errors (severity 1)
+    const errorDiagnostics = diagnostics.filter(d => d.severity === 1);
+    const warningDiagnostics = diagnostics.filter(d => d.severity === 2);
+    
+    assert.strictEqual(errorDiagnostics.length, 0, `Expected no error-level diagnostics, but got ${errorDiagnostics.length}: ${JSON.stringify(errorDiagnostics.map(d => d.message))}`);
+    
+    // Should have some diagnostics converted to lower severity levels
+    if (diagnostics.length > 0) {
+      // Could have warnings (converted from errors) or information (converted from warnings)
+      const lowSeverityDiagnostics = diagnostics.filter(d => d.severity >= 2);
+      assert(lowSeverityDiagnostics.length > 0, 'Should have warning or information level diagnostics (converted from higher severity)');
+    }
   });
 });

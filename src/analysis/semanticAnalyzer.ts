@@ -60,6 +60,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private processingFunctionCallCallee = false; // Track when processing function call callee
   private disabledLines: Set<number> = new Set(); // Track lines with disable comments
   private disabledRanges: Array<{ start: number; end: number }> = []; // Track disabled multi-line ranges
+  private linesWithSuppressedDiagnostics: Set<number> = new Set(); // Track lines where diagnostics were suppressed
 
   constructor(textDocument: TextDocument, options: SemanticAnalysisOptions = {}) {
     super();
@@ -86,6 +87,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.functionReturnTypes.clear();
     this.disabledLines.clear();
     this.disabledRanges = [];
+    this.linesWithSuppressedDiagnostics.clear();
 
     try {
       // Parse disable comments before analysis
@@ -98,6 +100,9 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (this.options.enableUnusedVariableDetection) {
         this.checkUnusedVariables();
       }
+      
+      // Check for unnecessary disable comments
+      this.checkUnnecessaryDisableComments();
 
     } catch (error) {
       this.addDiagnostic(
@@ -1611,9 +1616,20 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
     }
 
-    // Check if diagnostic should be suppressed by disable comment
-    if (this.shouldSuppressDiagnostic(start, end)) {
-      return; // Suppress this diagnostic
+    // Check if diagnostic should be converted to lower severity by disable comment
+    if (this.shouldReduceSeverity(start, end)) {
+      // Convert errors to warnings, warnings to information
+      if (finalSeverity === DiagnosticSeverity.Error) {
+        finalSeverity = DiagnosticSeverity.Warning;
+        // Track that this line had an error that was suppressed
+        const startPos = this.textDocument.positionAt(start);
+        this.linesWithSuppressedDiagnostics.add(startPos.line);
+      } else if (finalSeverity === DiagnosticSeverity.Warning) {
+        finalSeverity = DiagnosticSeverity.Information;
+        // Track that this line had a warning that was suppressed
+        const startPos = this.textDocument.positionAt(start);
+        this.linesWithSuppressedDiagnostics.add(startPos.line);
+      }
     }
 
     // Check for duplicate diagnostics to prevent multiple identical errors
@@ -1728,9 +1744,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   /**
-   * Check if a diagnostic should be suppressed based on disable comments
+   * Check if a diagnostic should be converted to lower severity based on disable comments
    */
-  private shouldSuppressDiagnostic(start: number, end: number): boolean {
+  private shouldReduceSeverity(start: number, end: number): boolean {
     const startPos = this.textDocument.positionAt(start);
     const endPos = this.textDocument.positionAt(end);
     
@@ -1747,5 +1763,34 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
     
     return false;
+  }
+
+  /**
+   * Check for disable comments that don't suppress any diagnostics
+   */
+  private checkUnnecessaryDisableComments(): void {
+    for (const lineNumber of this.disabledLines) {
+      // If this line has a disable comment but no diagnostics were suppressed on it
+      if (!this.linesWithSuppressedDiagnostics.has(lineNumber)) {
+        const lineText = this.textDocument.getText({
+          start: { line: lineNumber, character: 0 },
+          end: { line: lineNumber + 1, character: 0 }
+        }).replace(/\r?\n$/, ''); // Remove trailing newline
+
+        // Find the position of the disable comment
+        const commentIndex = lineText.indexOf('// ucode-lsp disable');
+        if (commentIndex >= 0) {
+          const start = this.textDocument.offsetAt({ line: lineNumber, character: commentIndex });
+          const end = this.textDocument.offsetAt({ line: lineNumber, character: commentIndex + '// ucode-lsp disable'.length });
+
+          this.addDiagnostic(
+            'No diagnostic disabled by this comment',
+            start,
+            end,
+            DiagnosticSeverity.Error
+          );
+        }
+      }
+    }
   }
 }

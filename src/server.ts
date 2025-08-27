@@ -266,8 +266,8 @@ documents.onDidOpen(async (change: TextDocumentChangeEvent<TextDocument>) => {
     await validateAndAnalyzeDocument(change.document);
 });
 
-// Helper function to check if a diagnostic should be suppressed by disable comments
-function shouldSuppressDiagnosticByDisableComment(textDocument: TextDocument, diagnostic: Diagnostic): boolean {
+// Helper function to check if a diagnostic should be converted to lower severity by disable comments
+function shouldReduceDiagnosticSeverity(textDocument: TextDocument, diagnostic: Diagnostic): boolean {
     const text = textDocument.getText();
     const lines = text.split(/\r?\n/);
     const startLine = diagnostic.range.start.line;
@@ -293,15 +293,28 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
     const parser = new UcodeParser(tokens, text);
     const parseResult = parser.parse();
 
-    let diagnostics: Diagnostic[] = parseResult.errors.map(err => ({
-        severity: DiagnosticSeverity.Error,
-        range: {
-            start: textDocument.positionAt(err.start),
-            end: textDocument.positionAt(err.end),
-        },
-        message: err.message,
-        source: 'ucode-parser'
-    })).filter(diagnostic => !shouldSuppressDiagnosticByDisableComment(textDocument, diagnostic));
+    let diagnostics: Diagnostic[] = parseResult.errors.map(err => {
+        const diagnostic: Diagnostic = {
+            severity: DiagnosticSeverity.Error,
+            range: {
+                start: textDocument.positionAt(err.start),
+                end: textDocument.positionAt(err.end),
+            },
+            message: err.message,
+            source: 'ucode-parser'
+        };
+        
+        // Convert to lower severity if there's a disable comment
+        if (shouldReduceDiagnosticSeverity(textDocument, diagnostic)) {
+            if (diagnostic.severity === DiagnosticSeverity.Error) {
+                diagnostic.severity = DiagnosticSeverity.Warning;
+            } else if (diagnostic.severity === DiagnosticSeverity.Warning) {
+                diagnostic.severity = DiagnosticSeverity.Information;
+            }
+        }
+        
+        return diagnostic;
+    });
 
     if (parseResult.ast) {
         const analyzer = new SemanticAnalyzer(textDocument, {

@@ -330,17 +330,10 @@ export class TypeChecker {
         return UcodeType.OBJECT;
       }
     } else {
-      // Check if it's a builtin function before reporting as undefined
+      // Check if it's a builtin function
       const isBuiltin = allBuiltinFunctions.has(node.name);
-      if (!isBuiltin) {
-        this.errors.push({
-          message: `Undefined variable: ${node.name}`,
-          start: node.start,
-          end: node.end,
-          severity: 'error'
-        });
-      }
       // Return FUNCTION type for builtin functions, UNKNOWN for truly undefined variables
+      // Note: The SemanticAnalyzer will handle "Undefined variable" diagnostics
       return isBuiltin ? UcodeType.FUNCTION : UcodeType.UNKNOWN;
     }
   }

@@ -87,6 +87,7 @@ const testFiles = [
     'tests/test-auto-fix-code-actions.js',
     'tests/test-disable-parser-diagnostics.js',
     'tests/test-nlresult-specific.js',
+    'tests/test-disable-comments-warnings.js',
 ];
 
 const mochaFiles = [  // New entries still need to be added to the testFiles array
@@ -104,6 +105,7 @@ const mochaFiles = [  // New entries still need to be added to the testFiles arr
     'test-auto-fix-code-actions.js',
     'test-disable-parser-diagnostics.js',
     'test-nlresult-specific.js',
+    'test-disable-comments-warnings.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

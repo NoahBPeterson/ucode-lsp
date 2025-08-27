@@ -211,14 +211,6 @@ export const nl80211Constants: Map<string, Nl80211ConstantSignature> = new Map([
   ["NDUSEROPT_UNSPEC", { name: "NDUSEROPT_UNSPEC", value: 0, type: "integer", description: "Unspecified neighbor discovery user option" }],
   ["NDUSEROPT_SRCADDR", { name: "NDUSEROPT_SRCADDR", value: 1, type: "integer", description: "Neighbor discovery source address option" }],
 
-
-  // Address Family Constants
-  ["AF_UNSPEC", { name: "AF_UNSPEC", value: 0, type: "integer", description: "Unspecified address family" }],
-  ["AF_INET", { name: "AF_INET", value: 2, type: "integer", description: "IPv4 address family" }],
-  ["AF_INET6", { name: "AF_INET6", value: 10, type: "integer", description: "IPv6 address family" }],
-  ["AF_MPLS", { name: "AF_MPLS", value: 28, type: "integer", description: "MPLS address family" }],
-  ["AF_BRIDGE", { name: "AF_BRIDGE", value: 7, type: "integer", description: "Bridge address family" }],
-
   // GRE Constants
   ["GRE_CSUM", { name: "GRE_CSUM", value: "GRE_CSUM", type: "integer", description: "GRE checksum flag" }],
   ["GRE_ROUTING", { name: "GRE_ROUTING", value: "GRE_ROUTING", type: "integer", description: "GRE routing flag" }],

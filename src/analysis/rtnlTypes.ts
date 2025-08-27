@@ -92,6 +92,13 @@ export const rtnlConstants: Map<string, RtnlConstantSignature> = new Map([
   ["NLM_F_EXCL", { name: "NLM_F_EXCL", value: 512, type: "integer", description: "Do not touch, if it exists" }],
   ["NLM_F_REPLACE", { name: "NLM_F_REPLACE", value: 256, type: "integer", description: "Replace existing matching object" }],
 
+  // Address Family Constants
+  ["AF_UNSPEC", { name: "AF_UNSPEC", value: 0, type: "integer", description: "Unspecified address family" }],
+  ["AF_INET", { name: "AF_INET", value: 2, type: "integer", description: "IPv4 address family" }],
+  ["AF_INET6", { name: "AF_INET6", value: 10, type: "integer", description: "IPv6 address family" }],
+  ["AF_MPLS", { name: "AF_MPLS", value: 28, type: "integer", description: "MPLS address family" }],
+  ["AF_BRIDGE", { name: "AF_BRIDGE", value: 7, type: "integer", description: "Bridge address family" }],
+
   // RTM Commands
   ["RTM_NEWLINK", { name: "RTM_NEWLINK", value: 16, type: "integer", description: "Create new network interface" }],
   ["RTM_DELLINK", { name: "RTM_DELLINK", value: 17, type: "integer", description: "Delete network interface" }],
