@@ -227,8 +227,8 @@ export class TypeChecker {
       { name: 'guard', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, minParams: 0, maxParams: 1 },
 
       // UCI builtin functions (from uci.c global_fns[])
-      { name: 'error', parameters: [], returnType: UcodeType.UNKNOWN },  // Returns string | null
-      { name: 'cursor', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING, UcodeType.OBJECT], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 4 },  // Returns uci.cursor | null
+      { name: 'error', parameters: [], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
+      { name: 'cursor', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING, UcodeType.OBJECT], returnType: createUnionType([UcodeType.OBJECT, UcodeType.NULL]), minParams: 0, maxParams: 4 },
 
       // Zlib builtin functions (from zlib.c global_fns[])
       { name: 'deflate', parameters: [UcodeType.UNKNOWN, UcodeType.BOOLEAN, UcodeType.INTEGER], returnType: UcodeType.STRING, minParams: 1, maxParams: 3 },  // str_or_resource, gzip?, level? -> string | null

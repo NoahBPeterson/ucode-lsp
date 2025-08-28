@@ -3,6 +3,8 @@
  * Based on ucode/lib/uci.c
  */
 
+import { UcodeDataType, ModuleType, UcodeType } from './symbolTable';
+
 export interface UciFunctionSignature {
   name: string;
   parameters: Array<{
@@ -209,6 +211,38 @@ export const uciCursorMethods: Map<string, UciFunctionSignature> = new Map([
     description: "Query error information. Returns a string containing a description of the last occurred error or null if there is no error information."
   }]
 ]);
+
+export enum UciObjectType {
+  UCI_CURSOR = 'uci.cursor',
+}
+
+export function createUciObjectDataType(type: UciObjectType): ModuleType {
+  return {
+    type: UcodeType.OBJECT,
+    moduleName: type,
+  };
+}
+
+class UciCursorObjectRegistry {
+  isVariableOfUciType(dataType: UcodeDataType): UciObjectType | null {
+    if (typeof dataType === 'object' && 'moduleName' in dataType) {
+      const moduleName = (dataType as ModuleType).moduleName;
+      if (moduleName === UciObjectType.UCI_CURSOR) {
+        return UciObjectType.UCI_CURSOR;
+      }
+    }
+    return null;
+  }
+
+  getUciMethod(type: UciObjectType, methodName: string): UciFunctionSignature | undefined {
+    if (type === UciObjectType.UCI_CURSOR) {
+      return uciCursorMethods.get(methodName);
+    }
+    return undefined;
+  }
+}
+
+export const uciCursorObjectRegistry = new UciCursorObjectRegistry();
 
 export class UciTypeRegistry {
   getFunctionNames(): string[] {

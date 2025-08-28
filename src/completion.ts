@@ -20,7 +20,7 @@ import { rtnlTypeRegistry } from './analysis/rtnlTypes';
 import { socketTypeRegistry } from './analysis/socketTypes';
 import { structTypeRegistry } from './analysis/structTypes';
 import { ubusTypeRegistry } from './analysis/ubusTypes';
-import { uciTypeRegistry } from './analysis/uciTypes';
+import { uciTypeRegistry, uciCursorObjectRegistry } from './analysis/uciTypes';
 import { uloopTypeRegistry } from './analysis/uloopTypes';
 import { uloopObjectRegistry } from './analysis/uloopTypes';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
@@ -80,6 +80,13 @@ export function handleCompletion(
             if (uloopObjectCompletions.length > 0) {
                 connection.console.log(`Returning ${uloopObjectCompletions.length} uloop object completions for ${objectName}`);
                 return uloopObjectCompletions;
+            }
+
+            // Check if this is a uci object with completions available
+            const uciObjectCompletions = getUciObjectCompletions(objectName, analysisResult);
+            if (uciObjectCompletions.length > 0) {
+                connection.console.log(`Returning ${uciObjectCompletions.length} uci object completions for ${objectName}`);
+                return uciObjectCompletions;
             }
             
             // Check if this is a debug module with completions available
@@ -400,6 +407,44 @@ function getUloopObjectCompletions(objectName: string, analysisResult?: Semantic
     }
 
     console.log(`[ULOOP_COMPLETION] Generated ${completions.length} completions for ${uloopType}: ${methods.join(', ')}`);
+    return completions;
+}
+
+function getUciObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    const uciType = uciCursorObjectRegistry.isVariableOfUciType(symbol.dataType);
+    if (!uciType) {
+        return [];
+    }
+
+    const methods = uciTypeRegistry.getCursorMethodNames();
+    const completions: CompletionItem[] = [];
+
+    for (const methodName of methods) {
+        const methodSignature = uciTypeRegistry.getCursorMethod(methodName);
+        if (methodSignature) {
+            completions.push({
+                label: methodName,
+                kind: CompletionItemKind.Method,
+                detail: `${uciType} method`,
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: uciTypeRegistry.getCursorMethodDocumentation(methodName)
+                },
+                insertText: `${methodName}($1)`,
+                insertTextFormat: InsertTextFormat.Snippet
+            });
+        }
+    }
+
     return completions;
 }
 
@@ -1171,9 +1216,9 @@ function getRtnlModuleCompletions(objectName: string, analysisResult?: SemanticA
 
     console.log(`[RTNL_MODULE_COMPLETION] Symbol found: ${objectName}, type: ${symbol.type}, dataType: ${JSON.stringify(symbol.dataType)}`);
 
-    // Check if this is an rtnl module (from require('rtnl') or import * as rtnl from 'rtnl')
+    // Check if this is an rtnl module (from require('rtnl') or import * asrtnl from 'rtnl')
     const isRtnlModule = (
-        // Direct rtnl module import: import * as rtnl from 'rtnl'
+        // Direct rtnl module import: import * asrtnl from 'rtnl'
         (symbol.type === 'imported' && symbol.importedFrom === 'rtnl') ||
         
         // Module symbol from require: const rtnl = require('rtnl')

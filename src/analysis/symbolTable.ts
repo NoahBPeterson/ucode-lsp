@@ -79,7 +79,7 @@ export function typeToString(type: UcodeDataType): string {
   if (typeof type === 'object' && type.type === UcodeType.OBJECT && 'moduleName' in type) {
     const moduleType = type as ModuleType;
     // For actual fs objects, return the specific type (fs.file, fs.dir, fs.proc)
-    if (moduleType.moduleName.startsWith('fs.')) {
+    if (moduleType.moduleName.startsWith('fs.') || moduleType.moduleName.startsWith('uci.')) {
       return moduleType.moduleName;
     }
     // For module references, return a more descriptive format

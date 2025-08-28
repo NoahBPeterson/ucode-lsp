@@ -27,7 +27,7 @@ import { resolvTypeRegistry } from './resolvTypes';
 import { socketTypeRegistry } from './socketTypes';
 import { structTypeRegistry } from './structTypes';
 import { ubusTypeRegistry } from './ubusTypes';
-import { uciTypeRegistry } from './uciTypes';
+import { uciTypeRegistry, UciObjectType, createUciObjectDataType } from './uciTypes';
 import { uloopTypeRegistry, UloopObjectType, createUloopObjectDataType, uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode, UcodeErrorConstants } from './errorConstants';
@@ -272,17 +272,24 @@ export class SemanticAnalyzer extends BaseVisitor {
                   // For uloop object variables, also force declaration in global scope to ensure completion access
                   this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
                 } else {
-                  // Check if this is an imported fs function call and assign the proper union return type
-                  const importedFsReturnType = this.inferImportedFsFunctionReturnType(node.init);
-                  if (importedFsReturnType) {
-                    symbol.dataType = importedFsReturnType;
+                  const uciType = this.inferUciType(node.init);
+                  if (uciType) {
+                    const dataType = createUciObjectDataType(uciType);
+                    symbol.dataType = dataType;
+                    this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
                   } else {
-                    // Don't overwrite module types that were set during declaration
-                    if (symbol.type !== SymbolType.MODULE) {
-                      symbol.dataType = initType as UcodeDataType;
-                      // Debug logging for arrow function variables
-                      if (node.init.type === 'ArrowFunctionExpression') {
-                        // Function type detected
+                    // Check if this is an imported fs function call and assign the proper union return type
+                    const importedFsReturnType = this.inferImportedFsFunctionReturnType(node.init);
+                    if (importedFsReturnType) {
+                      symbol.dataType = importedFsReturnType;
+                    } else {
+                      // Don't overwrite module types that were set during declaration
+                      if (symbol.type !== SymbolType.MODULE) {
+                        symbol.dataType = initType as UcodeDataType;
+                        // Debug logging for arrow function variables
+                        if (node.init.type === 'ArrowFunctionExpression') {
+                          // Function type detected
+                        }
                       }
                     }
                   }
@@ -467,7 +474,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'uci' && specifier.type === 'ImportSpecifier') {
       if (!uciTypeRegistry.isValidImport(importedName)) {
         this.addDiagnostic(
-          `'${importedName}' is not exported by the uci module. Available exports: ${
+          `'${importedName}' is not exported by the uci module. Available exports: ${ 
             uciTypeRegistry.getValidImports().join(', ')
           }`,
           specifier.imported.start,
@@ -482,7 +489,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'uloop' && specifier.type === 'ImportSpecifier') {
       if (!uloopTypeRegistry.isValidImport(importedName)) {
         this.addDiagnostic(
-          `'${importedName}' is not exported by the uloop module. Available exports: ${
+          `'${importedName}' is not exported by the uloop module. Available exports: ${ 
             uloopTypeRegistry.getValidImports().join(', ')
           }`,
           specifier.imported.start,
@@ -1459,6 +1466,40 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           switch (methodName) {
             case 'listener':
               return Nl80211ObjectType.NL80211_LISTENER;
+          }
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  private inferUciType(node: AstNode): UciObjectType | null {
+    // Check if this is a call expression that returns a uci object
+    if (node.type === 'CallExpression') {
+      const callNode = node as CallExpressionNode;
+      if (callNode.callee.type === 'Identifier') {
+        const funcName = (callNode.callee as IdentifierNode).name;
+        
+        // Map uci functions to their return types
+        switch (funcName) {
+          case 'cursor':
+            return UciObjectType.UCI_CURSOR;
+          default:
+            return null;
+        }
+      }
+      // Handle module member calls like uci.cursor()
+      else if (callNode.callee.type === 'MemberExpression') {
+        const memberNode = callNode.callee as MemberExpressionNode;
+        if (memberNode.object.type === 'Identifier' && 
+            (memberNode.object as IdentifierNode).name === 'uci' &&
+            memberNode.property.type === 'Identifier') {
+          const methodName = (memberNode.property as IdentifierNode).name;
+          
+          switch (methodName) {
+            case 'cursor':
+              return UciObjectType.UCI_CURSOR;
           }
         }
       }
