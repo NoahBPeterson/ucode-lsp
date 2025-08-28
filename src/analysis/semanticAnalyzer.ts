@@ -245,58 +245,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
         // Type inference if type checking is enabled
         if (this.options.enableTypeChecking) {
-          const initType = this.typeChecker.checkNode(node.init);
-          const symbol = this.symbolTable.lookup(name);
-          if (symbol) {
-            // Check if this is an fs function call and assign the appropriate fs type
-            const fsType = this.inferFsType(node.init);
-            if (fsType) {
-              const dataType = createFsObjectDataType(fsType);
-              symbol.dataType = dataType;
-              // For fs object variables, also force declaration in global scope to ensure completion access
-              this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
-            } else {
-              // Check if this is an nl80211 function call and assign the appropriate nl80211 type
-              const nl80211Type = this.inferNl80211Type(node.init);
-              if (nl80211Type) {
-                const dataType = createNl80211ObjectDataType(nl80211Type);
-                symbol.dataType = dataType;
-                // For nl80211 object variables, also force declaration in global scope to ensure completion access
-                this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
-              } else {
-                // Check if this is a uloop function call and assign the appropriate uloop type
-                const uloopType = this.inferUloopType(node.init);
-                if (uloopType) {
-                  const dataType = createUloopObjectDataType(uloopType);
-                  symbol.dataType = dataType;
-                  // For uloop object variables, also force declaration in global scope to ensure completion access
-                  this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
-                } else {
-                  const uciType = this.inferUciType(node.init);
-                  if (uciType) {
-                    const dataType = createUciObjectDataType(uciType);
-                    symbol.dataType = dataType;
-                    this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
-                  } else {
-                    // Check if this is an imported fs function call and assign the proper union return type
-                    const importedFsReturnType = this.inferImportedFsFunctionReturnType(node.init);
-                    if (importedFsReturnType) {
-                      symbol.dataType = importedFsReturnType;
-                    } else {
-                      // Don't overwrite module types that were set during declaration
-                      if (symbol.type !== SymbolType.MODULE) {
-                        symbol.dataType = initType as UcodeDataType;
-                        // Debug logging for arrow function variables
-                        if (node.init.type === 'ArrowFunctionExpression') {
-                          // Function type detected
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
+          this.processInitializerTypeInference(node, name);
         }
       }
     } else {
@@ -1601,6 +1550,71 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
     
     return null;
+  }
+
+  private processInitializerTypeInference(node: VariableDeclaratorNode, name: string): void {
+    if (!node.init) {
+      return;
+    }
+    
+    const initType = this.typeChecker.checkNode(node.init);
+    const symbol = this.symbolTable.lookup(name);
+    if (symbol) {
+      // Check if this is an fs function call and assign the appropriate fs type
+      const fsType = this.inferFsType(node.init!);
+      if (fsType) {
+        const dataType = createFsObjectDataType(fsType);
+        symbol.dataType = dataType;
+        // For fs object variables, also force declaration in global scope to ensure completion access
+        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+        return;
+      }
+
+      // Check if this is an nl80211 function call and assign the appropriate nl80211 type
+      const nl80211Type = this.inferNl80211Type(node.init!);
+      if (nl80211Type) {
+        const dataType = createNl80211ObjectDataType(nl80211Type);
+        symbol.dataType = dataType;
+        // For nl80211 object variables, also force declaration in global scope to ensure completion access
+        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+        return;
+      }
+
+      // Check if this is a uloop function call and assign the appropriate uloop type
+      const uloopType = this.inferUloopType(node.init!);
+      if (uloopType) {
+        const dataType = createUloopObjectDataType(uloopType);
+        symbol.dataType = dataType;
+        // For uloop object variables, also force declaration in global scope to ensure completion access
+        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+        return;
+      }
+
+      // Check if this is a uci function call and assign the appropriate uci type
+      const uciType = this.inferUciType(node.init!);
+      if (uciType) {
+        const dataType = createUciObjectDataType(uciType);
+        symbol.dataType = dataType;
+        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+        return;
+      }
+
+      // Check if this is an imported fs function call and assign the proper union return type
+      const importedFsReturnType = this.inferImportedFsFunctionReturnType(node.init!);
+      if (importedFsReturnType) {
+        symbol.dataType = importedFsReturnType;
+        return;
+      }
+
+      // Don't overwrite module types that were set during declaration
+      if (symbol.type !== SymbolType.MODULE) {
+        symbol.dataType = initType as UcodeDataType;
+        // Debug logging for arrow function variables
+        if (node.init.type === 'ArrowFunctionExpression') {
+          // Function type detected
+        }
+      }
+    }
   }
 
   visitExportNamedDeclaration(node: ExportNamedDeclarationNode): void {
