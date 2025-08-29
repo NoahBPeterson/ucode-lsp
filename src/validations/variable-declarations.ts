@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateVariableDeclarations(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
     const declarations = new Map<string, { type: 'const' | 'let' | 'var', line: number, pos: number }>();
@@ -29,6 +30,7 @@ export function validateVariableDeclarations(textDocument: TextDocument, tokens:
                 
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
+                    code: UcodeErrorCode.VARIABLE_REDECLARATION,
                     range: {
                         start: textDocument.positionAt(nameToken.pos),
                         end: textDocument.positionAt(Math.min(nameToken.end, nameToken.pos + nameToken.value.length))

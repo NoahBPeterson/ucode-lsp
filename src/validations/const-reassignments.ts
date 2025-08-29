@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateConstReassignments(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
     const constDeclarations = new Set<string>();
@@ -50,6 +51,7 @@ export function validateConstReassignments(textDocument: TextDocument, tokens: T
             
             const diagnostic: Diagnostic = {
                 severity: DiagnosticSeverity.Error,
+                code: UcodeErrorCode.SYNTAX_ERROR,
                 range: {
                     start: textDocument.positionAt(varToken.pos),
                     end: textDocument.positionAt(varToken.end)

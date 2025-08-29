@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateMethodCalls(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
     const problematicMethods = [
@@ -33,6 +34,7 @@ export function validateMethodCalls(textDocument: TextDocument, tokens: Token[],
             
             const diagnostic: Diagnostic = {
                 severity: DiagnosticSeverity.Error,
+                code: UcodeErrorCode.INVALID_METHOD_CALL,
                 range: {
                     start: textDocument.positionAt(dotToken.pos),
                     end: textDocument.positionAt(parenToken.pos)

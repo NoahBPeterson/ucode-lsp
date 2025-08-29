@@ -12,6 +12,7 @@ import { UcodeLexer } from '../lexer';
 import { UcodeParser } from '../parser';
 import { AstNode } from '../ast';
 import { SemanticAnalyzer } from '../analysis';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 interface ValidationOptions {
     enableAstValidation?: boolean;
@@ -50,6 +51,7 @@ export function validateWithAst(
         for (const error of parseResult.errors) {
             diagnostics.push({
                 severity: DiagnosticSeverity.Error,
+                code: UcodeErrorCode.PARSER_ERROR,
                 range: {
                     start: textDocument.positionAt(error.start),
                     end: textDocument.positionAt(error.end)
@@ -141,6 +143,7 @@ function runSemanticAnalysis(
     } catch (error) {
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
+            code: UcodeErrorCode.ANALYSIS_ERROR,
             range: {
                 start: textDocument.positionAt(ast.start),
                 end: textDocument.positionAt(ast.end)

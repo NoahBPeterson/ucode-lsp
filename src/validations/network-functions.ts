@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 function isStringToken(token: Token): boolean {
     return token.type === TokenType.TK_STRING;
@@ -29,6 +30,7 @@ export function validateNetworkFunctions(textDocument: TextDocument, tokens: Tok
                 if (firstParamToken && isNumericToken(firstParamToken)) {
                     const diagnostic: Diagnostic = {
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                         range: {
                             start: textDocument.positionAt(firstParamToken.pos),
                             end: textDocument.positionAt(firstParamToken.end)
@@ -46,6 +48,7 @@ export function validateNetworkFunctions(textDocument: TextDocument, tokens: Tok
                 if (firstParamToken && (isStringToken(firstParamToken) || isNumericToken(firstParamToken))) {
                     const diagnostic: Diagnostic = {
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                         range: {
                             start: textDocument.positionAt(firstParamToken.pos),
                             end: textDocument.positionAt(firstParamToken.end)

@@ -163,7 +163,7 @@ export class SymbolTable {
       { name: 'require', returnType: UcodeType.UNKNOWN, params: [UcodeType.STRING] },
       { name: 'include', returnType: UcodeType.UNKNOWN, params: [UcodeType.STRING] },
       { name: 'json', returnType: UcodeType.UNKNOWN, params: [UcodeType.UNKNOWN] },
-      { name: 'match', returnType: UcodeType.ARRAY, params: [UcodeType.STRING, UcodeType.STRING] },
+      { name: 'match', returnType: UcodeType.ARRAY, params: [UcodeType.STRING, UcodeType.REGEX] },
       { name: 'replace', returnType: UcodeType.STRING, params: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING] },
       { name: 'system', returnType: UcodeType.INTEGER, params: [UcodeType.STRING] },
       { name: 'time', returnType: UcodeType.INTEGER, params: [] },

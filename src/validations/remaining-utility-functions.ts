@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 function isNumericToken(token: Token): boolean {
     return token.type === TokenType.TK_NUMBER || token.type === TokenType.TK_DOUBLE;
@@ -36,6 +37,7 @@ export function validateRemainingUtilityFunctions(textDocument: TextDocument, to
                     
                     const diagnostic: Diagnostic = {
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                         range: {
                             start: textDocument.positionAt(firstParamToken.pos),
                             end: textDocument.positionAt(endToken.end)
@@ -56,6 +58,7 @@ export function validateRemainingUtilityFunctions(textDocument: TextDocument, to
                         
                         const diagnostic: Diagnostic = {
                             severity: DiagnosticSeverity.Error,
+                            code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                             range: {
                                 start: textDocument.positionAt(secondParamToken.pos),
                                 end: textDocument.positionAt(endToken.end)
@@ -71,12 +74,14 @@ export function validateRemainingUtilityFunctions(textDocument: TextDocument, to
             // Handle regexp function: regexp(pattern, flags?)
             if (funcToken.value === 'regexp') {
                 const firstParamToken = tokens[i + 2];
+                
                 if (firstParamToken && (isNumericToken(firstParamToken) || isArrayToken(firstParamToken) || isObjectToken(firstParamToken))) {
                     let paramType = getParamType(firstParamToken);
                     let endToken = getFullTokenRange(tokens, i + 2, firstParamToken);
                     
                     const diagnostic: Diagnostic = {
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                         range: {
                             start: textDocument.positionAt(firstParamToken.pos),
                             end: textDocument.positionAt(endToken.end)

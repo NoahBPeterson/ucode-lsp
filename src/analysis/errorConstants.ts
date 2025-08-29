@@ -42,6 +42,7 @@ export enum UcodeErrorCode {
   SYNTAX_ERROR = 'UC6001',
   UNEXPECTED_TOKEN = 'UC6002',
   MISSING_SEMICOLON = 'UC6003',
+  PARSER_ERROR = 'UC6004',
 
   // System and internal errors (9000-9999)
   INTERNAL_ERROR = 'UC9001',

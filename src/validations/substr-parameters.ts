@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateSubstrParametersSimple(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
     for (let i = 0; i < tokens.length - 6; i++) {
@@ -38,6 +39,7 @@ export function validateSubstrParametersSimple(textDocument: TextDocument, token
                 
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
+                    code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                     range: {
                         start: textDocument.positionAt(secondParamToken.pos),
                         end: textDocument.positionAt(secondParamToken.end)
@@ -56,6 +58,7 @@ export function validateSubstrParametersSimple(textDocument: TextDocument, token
                 
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
+                    code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                     range: {
                         start: textDocument.positionAt(thirdParamToken.pos),
                         end: textDocument.positionAt(thirdParamToken.end)

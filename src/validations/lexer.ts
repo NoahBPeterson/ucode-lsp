@@ -27,6 +27,7 @@ import { validateModuleFunctions } from './module-functions';
 import { validateRemainingUtilityFunctions } from './remaining-utility-functions';
 import { validateJSONUtilityFunctions } from './json-utility-functions';
 import { validateSystemUtilityFunctions } from './system-utility-functions';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateWithLexer(textDocument: TextDocument, connection: any): Diagnostic[] {
     const text = textDocument.getText();
@@ -40,6 +41,7 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
             if (token.type === TokenType.TK_ERROR) {
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
+                    code: UcodeErrorCode.UNEXPECTED_TOKEN,
                     range: {
                         start: textDocument.positionAt(token.pos),
                         end: textDocument.positionAt(token.end)

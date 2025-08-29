@@ -140,9 +140,9 @@ export class BuiltinValidator {
       const patternType = this.getNodeType(patternArg);
       
       // In ucode, match() can accept string or regex pattern
-      if (patternType !== UcodeType.STRING && patternType !== UcodeType.REGEX && patternType !== UcodeType.UNKNOWN) {
+      if (patternType !== UcodeType.REGEX && patternType !== UcodeType.UNKNOWN) {
         this.errors.push({
-          message: `Function 'match' expects string or regex pattern as second argument, got ${patternType}`,
+          message: `Function 'match' expects regex pattern as second argument, got ${patternType}`,
           start: patternArg.start,
           end: patternArg.end,
           severity: 'error'

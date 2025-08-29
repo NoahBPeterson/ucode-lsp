@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 function isNumericToken(token: Token): boolean {
     return token.type === TokenType.TK_NUMBER || token.type === TokenType.TK_DOUBLE;
@@ -209,6 +210,7 @@ export function validateArrayFunctions(textDocument: TextDocument, tokens: Token
                 if (!paramValidation.valid && paramValidation.invalidToken && paramValidation.reason) {
                     const diagnostic: Diagnostic = {
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                         range: {
                             start: textDocument.positionAt(paramValidation.invalidToken.pos),
                             end: textDocument.positionAt(paramValidation.invalidToken.end)
@@ -229,6 +231,7 @@ export function validateArrayFunctions(textDocument: TextDocument, tokens: Token
                     if (!paramValidation.valid && paramValidation.invalidToken && paramValidation.reason) {
                         const diagnostic: Diagnostic = {
                             severity: DiagnosticSeverity.Error,
+                            code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                             range: {
                                 start: textDocument.positionAt(paramValidation.invalidToken.pos),
                                 end: textDocument.positionAt(paramValidation.invalidToken.end)
@@ -264,6 +267,7 @@ function validateSliceParameters(textDocument: TextDocument, tokens: Token[], di
         
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
+            code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
             range: {
                 start: textDocument.positionAt(secondParamToken.pos),
                 end: textDocument.positionAt(secondParamToken.end)
@@ -284,6 +288,7 @@ function validateSliceParameters(textDocument: TextDocument, tokens: Token[], di
         
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
+            code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
             range: {
                 start: textDocument.positionAt(thirdParamToken.pos),
                 end: textDocument.positionAt(thirdParamToken.end)
@@ -306,6 +311,7 @@ function validateSpliceParameters(textDocument: TextDocument, tokens: Token[], d
         
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
+            code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
             range: {
                 start: textDocument.positionAt(secondParamToken.pos),
                 end: textDocument.positionAt(secondParamToken.end)
@@ -326,6 +332,7 @@ function validateSpliceParameters(textDocument: TextDocument, tokens: Token[], d
         
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
+            code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
             range: {
                 start: textDocument.positionAt(thirdParamToken.pos),
                 end: textDocument.positionAt(thirdParamToken.end)
@@ -349,6 +356,7 @@ function validateFilterMapParameters(textDocument: TextDocument, tokens: Token[]
         
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
+            code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
             range: {
                 start: textDocument.positionAt(secondParamToken.pos),
                 end: textDocument.positionAt(secondParamToken.end)

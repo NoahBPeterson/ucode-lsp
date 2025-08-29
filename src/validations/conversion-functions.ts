@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 function isArrayToken(token: Token): boolean {
     return token.type === TokenType.TK_LBRACK;
@@ -53,6 +54,7 @@ export function validateConversionFunctions(textDocument: TextDocument, tokens: 
                     
                     const diagnostic: Diagnostic = {
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                         range: {
                             start: textDocument.positionAt(firstParamToken.pos),
                             end: textDocument.positionAt(endToken.end)
