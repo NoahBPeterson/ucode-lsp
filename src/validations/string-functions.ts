@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateStringFunctions(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
     const stringFunctions = ['uc', 'lc'];
@@ -19,14 +20,18 @@ export function validateStringFunctions(textDocument: TextDocument, tokens: Toke
             parenToken.type === TokenType.TK_LPAREN) {
             
             const firstParamToken = tokens[i + 2];
-            if (firstParamToken && firstParamToken.type === TokenType.TK_NUMBER) {
+            if (firstParamToken && 
+                firstParamToken.type !== TokenType.TK_STRING &&
+                firstParamToken.type !== TokenType.TK_LABEL
+            ) {
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
+                    code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                     range: {
                         start: textDocument.positionAt(firstParamToken.pos),
                         end: textDocument.positionAt(firstParamToken.end)
                     },
-                    message: `${funcToken.value}() parameter should be a string, not a number. Use ${funcToken.value}(string) instead.`,
+                    message: `${funcToken.value}() parameter should be a string. Use ${funcToken.value}(string) instead.`,
                     source: 'ucode'
                 };
                 diagnostics.push(diagnostic);

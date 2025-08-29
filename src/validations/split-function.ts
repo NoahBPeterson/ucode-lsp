@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateSplitFunction(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
     for (let i = 0; i < tokens.length - 4; i++) {
@@ -17,14 +18,18 @@ export function validateSplitFunction(textDocument: TextDocument, tokens: Token[
             
             // Check first parameter (should be string)
             const firstParamToken = tokens[i + 2];
-            if (firstParamToken && firstParamToken.type === TokenType.TK_NUMBER) {
+            if (firstParamToken &&
+                firstParamToken.type !== TokenType.TK_STRING &&
+                firstParamToken.type !== TokenType.TK_LABEL
+            ) {
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
+                    code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                     range: {
                         start: textDocument.positionAt(firstParamToken.pos),
                         end: textDocument.positionAt(firstParamToken.end)
                     },
-                    message: `split() first parameter should be a string, not a number. Use split(string, separator).`,
+                    message: `split() first parameter should be a string. Use split(string, separator).`,
                     source: 'ucode'
                 };
                 diagnostics.push(diagnostic);
@@ -35,15 +40,18 @@ export function validateSplitFunction(textDocument: TextDocument, tokens: Token[
             const secondParamToken = tokens[i + 4];
             if (commaToken && secondParamToken &&
                 commaToken.type === TokenType.TK_COMMA &&
-                secondParamToken.type === TokenType.TK_NUMBER) {
+                secondParamToken.type !== TokenType.TK_STRING &&
+                secondParamToken.type !== TokenType.TK_REGEXP &&
+                secondParamToken.type !== TokenType.TK_LABEL) {
                 
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
+                    code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                     range: {
                         start: textDocument.positionAt(secondParamToken.pos),
                         end: textDocument.positionAt(secondParamToken.end)
                     },
-                    message: `split() second parameter should be a string or regex, not a number.`,
+                    message: `split() second parameter should be a string or regex.`,
                     source: 'ucode'
                 };
                 diagnostics.push(diagnostic);

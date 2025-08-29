@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateReplaceFunction(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
     for (let i = 0; i < tokens.length - 6; i++) {
@@ -17,14 +18,17 @@ export function validateReplaceFunction(textDocument: TextDocument, tokens: Toke
             
             // Check first parameter (should be string)
             const firstParamToken = tokens[i + 2];
-            if (firstParamToken && firstParamToken.type === TokenType.TK_NUMBER) {
+            if (firstParamToken && firstParamToken.type !== TokenType.TK_STRING &&
+                firstParamToken.type !== TokenType.TK_LABEL
+            ) {
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
+                    code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                     range: {
                         start: textDocument.positionAt(firstParamToken.pos),
                         end: textDocument.positionAt(firstParamToken.end)
                     },
-                    message: `replace() first parameter should be a string, not a number. Use replace(string, search, replacement).`,
+                    message: `replace() first parameter should be a string. Use replace(string, search, replacement).`,
                     source: 'ucode'
                 };
                 diagnostics.push(diagnostic);
@@ -35,15 +39,18 @@ export function validateReplaceFunction(textDocument: TextDocument, tokens: Toke
             const secondParamToken = tokens[i + 4];
             if (commaToken1 && secondParamToken &&
                 commaToken1.type === TokenType.TK_COMMA &&
-                secondParamToken.type === TokenType.TK_NUMBER) {
+                secondParamToken.type !== TokenType.TK_STRING &&
+                secondParamToken.type !== TokenType.TK_REGEXP &&
+                secondParamToken.type !== TokenType.TK_LABEL) {
                 
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
+                    code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                     range: {
                         start: textDocument.positionAt(secondParamToken.pos),
                         end: textDocument.positionAt(secondParamToken.end)
                     },
-                    message: `replace() second parameter should be a string or regex, not a number.`,
+                    message: `replace() second parameter should be a string or regex.`,
                     source: 'ucode'
                 };
                 diagnostics.push(diagnostic);
@@ -54,15 +61,18 @@ export function validateReplaceFunction(textDocument: TextDocument, tokens: Toke
             const thirdParamToken = tokens[i + 6];
             if (commaToken2 && thirdParamToken &&
                 commaToken2.type === TokenType.TK_COMMA &&
-                thirdParamToken.type === TokenType.TK_NUMBER) {
+                thirdParamToken.type !== TokenType.TK_STRING &&
+                thirdParamToken.type !== TokenType.TK_LABEL
+        ) {
                 
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
+                    code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                     range: {
                         start: textDocument.positionAt(thirdParamToken.pos),
                         end: textDocument.positionAt(thirdParamToken.end)
                     },
-                    message: `replace() third parameter should be a string, not a number.`,
+                    message: `replace() third parameter should be a string.`,
                     source: 'ucode'
                 };
                 diagnostics.push(diagnostic);

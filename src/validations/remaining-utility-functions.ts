@@ -102,6 +102,7 @@ export function validateRemainingUtilityFunctions(textDocument: TextDocument, to
                         
                         const diagnostic: Diagnostic = {
                             severity: DiagnosticSeverity.Error,
+                            code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                             range: {
                                 start: textDocument.positionAt(secondParamToken.pos),
                                 end: textDocument.positionAt(endToken.end)

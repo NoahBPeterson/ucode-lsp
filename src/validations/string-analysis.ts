@@ -4,6 +4,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 function isNumericToken(token: Token): boolean {
     return token.type === TokenType.TK_NUMBER || token.type === TokenType.TK_DOUBLE;
@@ -25,6 +26,7 @@ export function validateStringAnalysisFunctions(textDocument: TextDocument, toke
                 if (firstParamToken && isNumericToken(firstParamToken)) {
                     const diagnostic: Diagnostic = {
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                         range: {
                             start: textDocument.positionAt(firstParamToken.pos),
                             end: textDocument.positionAt(firstParamToken.end)
@@ -47,6 +49,7 @@ export function validateStringAnalysisFunctions(textDocument: TextDocument, toke
                 if (firstParamToken && isNumericToken(firstParamToken)) {
                     const diagnostic: Diagnostic = {
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                         range: {
                             start: textDocument.positionAt(firstParamToken.pos),
                             end: textDocument.positionAt(firstParamToken.end)
@@ -61,14 +64,18 @@ export function validateStringAnalysisFunctions(textDocument: TextDocument, toke
             // Handle rindex function: rindex(string, needle)
             if (funcToken.value === 'rindex') {
                 const firstParamToken = tokens[i + 2];
-                if (firstParamToken && isNumericToken(firstParamToken)) {
+                if (firstParamToken &&
+                    firstParamToken.type !== TokenType.TK_STRING &&
+                    firstParamToken.type !== TokenType.TK_LABEL
+                ) {
                     const diagnostic: Diagnostic = {
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                         range: {
                             start: textDocument.positionAt(firstParamToken.pos),
                             end: textDocument.positionAt(firstParamToken.end)
                         },
-                        message: `rindex() first parameter should be a string, not a number.`,
+                        message: `rindex() first parameter should be a string.`,
                         source: 'ucode'
                     };
                     diagnostics.push(diagnostic);
@@ -81,14 +88,18 @@ export function validateStringAnalysisFunctions(textDocument: TextDocument, toke
 function validateMatchFunction(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[], startIndex: number): void {
     // match(string, regex) - first param should be string
     const firstParamToken = tokens[startIndex + 2];
-    if (firstParamToken && isNumericToken(firstParamToken)) {
+    if (firstParamToken && 
+        firstParamToken.type !== TokenType.TK_STRING &&
+        firstParamToken.type !== TokenType.TK_LABEL
+    ) {
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
+            code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
             range: {
                 start: textDocument.positionAt(firstParamToken.pos),
                 end: textDocument.positionAt(firstParamToken.end)
             },
-            message: `match() first parameter should be a string, not a number.`,
+            message: `match() first parameter should be a string.`,
             source: 'ucode'
         };
         diagnostics.push(diagnostic);
@@ -99,15 +110,19 @@ function validateMatchFunction(textDocument: TextDocument, tokens: Token[], diag
     const secondParamToken = tokens[startIndex + 4];
     if (commaToken && secondParamToken &&
         commaToken.type === TokenType.TK_COMMA &&
-        isNumericToken(secondParamToken)) {
+        secondParamToken.type !== TokenType.TK_STRING &&
+        secondParamToken.type !== TokenType.TK_REGEXP &&
+        secondParamToken.type !== TokenType.TK_LABEL
+    ) {
         
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
+            code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
             range: {
                 start: textDocument.positionAt(secondParamToken.pos),
                 end: textDocument.positionAt(secondParamToken.end)
             },
-            message: `match() second parameter should be a regex or string pattern, not a number.`,
+            message: `match() second parameter should be a regex or string pattern.`,
             source: 'ucode'
         };
         diagnostics.push(diagnostic);

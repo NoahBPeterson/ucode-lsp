@@ -17,15 +17,19 @@ export function validateSubstrParametersSimple(textDocument: TextDocument, token
             parenToken.type === TokenType.TK_LPAREN) {
             
             const firstParamToken = tokens[i + 2];
-            if (firstParamToken && firstParamToken.type === TokenType.TK_NUMBER) {
+            if (firstParamToken && 
+                firstParamToken.type !== TokenType.TK_STRING &&
+                firstParamToken.type !== TokenType.TK_LABEL
+            ) {
                 
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
+                    code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
                     range: {
                         start: textDocument.positionAt(firstParamToken.pos),
                         end: textDocument.positionAt(firstParamToken.end)
                     },
-                    message: `substr() first parameter should be a string, not a number. Use substr(string, ${firstParamToken.value}).`,
+                    message: `substr() first parameter should be a string. Use substr(string, ${firstParamToken.value}).`,
                     source: 'ucode'
                 };
                 diagnostics.push(diagnostic);
@@ -35,7 +39,9 @@ export function validateSubstrParametersSimple(textDocument: TextDocument, token
             const secondParamToken = tokens[i + 4];
             if (commaToken && secondParamToken &&
                 commaToken.type === TokenType.TK_COMMA &&
-                secondParamToken.type === TokenType.TK_STRING) {
+                secondParamToken.type !== TokenType.TK_NUMBER &&
+                secondParamToken.type !== TokenType.TK_LABEL
+            ) {
                 
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
@@ -44,7 +50,7 @@ export function validateSubstrParametersSimple(textDocument: TextDocument, token
                         start: textDocument.positionAt(secondParamToken.pos),
                         end: textDocument.positionAt(secondParamToken.end)
                     },
-                    message: `substr() second parameter should be a number (start position), not a string.`,
+                    message: `substr() second parameter should be a number (start position).`,
                     source: 'ucode'
                 };
                 diagnostics.push(diagnostic);
@@ -54,7 +60,9 @@ export function validateSubstrParametersSimple(textDocument: TextDocument, token
             const thirdParamToken = tokens[i + 6];
             if (comma2Token && thirdParamToken &&
                 comma2Token.type === TokenType.TK_COMMA &&
-                thirdParamToken.type === TokenType.TK_STRING) {
+                thirdParamToken.type !== TokenType.TK_NUMBER &&
+                thirdParamToken.type !== TokenType.TK_LABEL
+            ) {
                 
                 const diagnostic: Diagnostic = {
                     severity: DiagnosticSeverity.Error,
@@ -63,7 +71,7 @@ export function validateSubstrParametersSimple(textDocument: TextDocument, token
                         start: textDocument.positionAt(thirdParamToken.pos),
                         end: textDocument.positionAt(thirdParamToken.end)
                     },
-                    message: `substr() third parameter should be a number (length), not a string.`,
+                    message: `substr() third parameter should be a number (length).`,
                     source: 'ucode'
                 };
                 diagnostics.push(diagnostic);

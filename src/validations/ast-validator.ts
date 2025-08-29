@@ -195,6 +195,7 @@ function validateAstStructure(ast: AstNode, textDocument: TextDocument): Diagnos
                 if (!varDecl.declarations || varDecl.declarations.length === 0) {
                     diagnostics.push({
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.SYNTAX_ERROR,
                         range: {
                             start: textDocument.positionAt(node.start),
                             end: textDocument.positionAt(node.end)
@@ -210,6 +211,7 @@ function validateAstStructure(ast: AstNode, textDocument: TextDocument): Diagnos
                 if (!funcDecl.id || !funcDecl.id.name) {
                     diagnostics.push({
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.SYNTAX_ERROR,
                         range: {
                             start: textDocument.positionAt(node.start),
                             end: textDocument.positionAt(node.end)
@@ -225,6 +227,7 @@ function validateAstStructure(ast: AstNode, textDocument: TextDocument): Diagnos
                 if (!callExpr.callee) {
                     diagnostics.push({
                         severity: DiagnosticSeverity.Error,
+                        code: UcodeErrorCode.SYNTAX_ERROR,
                         range: {
                             start: textDocument.positionAt(node.start),
                             end: textDocument.positionAt(node.end)
