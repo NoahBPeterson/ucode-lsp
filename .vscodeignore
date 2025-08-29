@@ -20,7 +20,7 @@ payload_processor_ucode/**
 ucode_gotchas.md
 .claude/**
 bun.lock
-!dist/**
+!dist/*.js
 !icons/**
 !README.md
 **/*.md
@@ -28,3 +28,4 @@ bun.lock
 **/*.uc
 *.txt
 *.js
+dist/*.map
