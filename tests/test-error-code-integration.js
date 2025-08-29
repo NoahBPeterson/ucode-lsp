@@ -136,7 +136,7 @@ describe('Error Code Integration Tests', function() {
 
   describe('Error Code Diagnostics', function() {
     let diagnostics;
-    const testFilePath = path.join(__dirname, '..', 'test-error-codes.uc');
+    const testFilePath = path.join(__dirname, 'test-error-codes.uc');
 
     before(async function() {
       if (!fs.existsSync(testFilePath)) {

@@ -181,7 +181,7 @@ describe('Auto-Fix Code Actions Tests', function() {
 
   describe('Auto-Fix Code Actions', function() {
     let diagnostics;
-    const testFilePath = path.join(__dirname, '..', 'test-auto-fix.uc');
+    const testFilePath = path.join(__dirname, 'test-auto-fix.uc');
 
     before(async function() {
       if (!fs.existsSync(testFilePath)) {

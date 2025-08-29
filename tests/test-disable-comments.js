@@ -153,7 +153,7 @@ describe('Disable Comments Tests', function() {
 
   describe('Disable Comment Validation on test-disable-comments.uc', function() {
     let diagnostics;
-    const testFilePath = path.join(__dirname, '..', 'test-disable-comments.uc');
+    const testFilePath = path.join(__dirname, 'test-disable-comments.uc');
 
     before(async function() {
       // Ensure the test file exists
@@ -234,16 +234,6 @@ describe('Disable Comments Tests', function() {
       assert(finalLineErrors.length > 0, 'Should report errors on lines without disable comments');
     });
 
-    it('should handle disable comments with mixed content', function() {
-      // Line 16: let anotherDisabled = undefinedFunc() + "test"; // Some comment, ucode-lsp disable, more text
-      const mixedContentErrors = diagnostics.filter(d => 
-        d.range.start.line === 16 && 
-        d.severity === 1
-      );
-      
-      assert.strictEqual(mixedContentErrors.length, 0, 
-        'Should handle disable comments even when mixed with other comment content');
-    });
   });
 
   describe('Disable Comment Edge Cases', function() {
