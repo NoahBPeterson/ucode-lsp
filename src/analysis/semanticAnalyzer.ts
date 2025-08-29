@@ -530,7 +530,8 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Declare the function first with an UNKNOWN return type to handle recursion.
       if (!this.symbolTable.declare(name, SymbolType.FUNCTION, UcodeType.UNKNOWN as UcodeDataType, node.id)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.FUNCTION_REDECLARATION,
           `Function '${name}' is already declared in this scope`,
           node.id.start,
           node.id.end,
@@ -831,7 +832,8 @@ export class SemanticAnalyzer extends BaseVisitor {
         
         // Check if the method is valid for the fs module
         if (!this.isValidFsModuleMethod(methodName)) {
-          this.addDiagnostic(
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.INVALID_IMPORT,
             `Method '${methodName}' is not available on the fs module. Did you mean to call this on a file handle? Use fs.open() first.`,
             node.property.start,
             node.property.end,
@@ -1156,15 +1158,6 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     super.visitReturnStatement(node);
 
     if (this.options.enableControlFlowAnalysis) {
-      /*
-      if (this.functionScopes.length === 0) {
-        this.addDiagnostic(
-          'Return statement outside function',
-          node.start,
-          node.end,
-          DiagnosticSeverity.Error
-        );
-      } else */
       if (this.currentFunctionNode) {
         // Determine the type of the returned value.
         const returnType = node.argument ? this.typeChecker.checkNode(node.argument) : UcodeType.NULL;
@@ -1179,7 +1172,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (this.options.enableControlFlowAnalysis) {
       // Check if break is inside a loop or switch statement
       if (this.loopScopes.length === 0 && this.switchScopes.length === 0) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.SYNTAX_ERROR,
           'Break statement outside loop or switch',
           node.start,
           node.end,
@@ -1196,7 +1190,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (this.options.enableControlFlowAnalysis) {
       // Check if continue is inside a loop
       if (this.loopScopes.length === 0) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.SYNTAX_ERROR,
           'Continue statement outside loop',
           node.start,
           node.end,
@@ -1891,7 +1886,7 @@ private addDiagnostic(
     
     return false;
   }
-
+  
   /**
    * Check for disable comments that don't suppress any diagnostics
    */
