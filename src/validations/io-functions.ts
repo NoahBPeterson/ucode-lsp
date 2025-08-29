@@ -6,10 +6,6 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { TokenType, Token } from '../lexer';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 
-function isNumericToken(token: Token): boolean {
-    return token.type === TokenType.TK_NUMBER || token.type === TokenType.TK_DOUBLE;
-}
-
 export function validateIOFunctions(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
     for (let i = 0; i < tokens.length - 2; i++) {
         const funcToken = tokens[i];
@@ -23,7 +19,10 @@ export function validateIOFunctions(textDocument: TextDocument, tokens: Token[],
             // Handle printf function: printf(format_string, ...args)
             if (funcToken.value === 'printf') {
                 const firstParamToken = tokens[i + 2];
-                if (firstParamToken && isNumericToken(firstParamToken)) {
+                if (firstParamToken &&
+                    firstParamToken.type !== TokenType.TK_STRING &&
+                    firstParamToken.type !== TokenType.TK_LABEL
+                ) {
                     const diagnostic: Diagnostic = {
                         severity: DiagnosticSeverity.Error,
                         code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
@@ -41,7 +40,10 @@ export function validateIOFunctions(textDocument: TextDocument, tokens: Token[],
             // Handle sprintf function: sprintf(format_string, ...args)
             if (funcToken.value === 'sprintf') {
                 const firstParamToken = tokens[i + 2];
-                if (firstParamToken && isNumericToken(firstParamToken)) {
+                if (firstParamToken &&                     
+                    firstParamToken.type !== TokenType.TK_STRING &&
+                    firstParamToken.type !== TokenType.TK_LABEL
+                ) {
                     const diagnostic: Diagnostic = {
                         severity: DiagnosticSeverity.Error,
                         code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
@@ -49,7 +51,7 @@ export function validateIOFunctions(textDocument: TextDocument, tokens: Token[],
                             start: textDocument.positionAt(firstParamToken.pos),
                             end: textDocument.positionAt(firstParamToken.end)
                         },
-                        message: `sprintf() first parameter should be a format string, not a number.`,
+                        message: `sprintf() first parameter should be a format string.`,
                         source: 'ucode'
                     };
                     diagnostics.push(diagnostic);

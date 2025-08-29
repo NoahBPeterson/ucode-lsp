@@ -263,8 +263,9 @@ function validateSliceParameters(textDocument: TextDocument, tokens: Token[], di
     
     if (commaToken1 && secondParamToken &&
         commaToken1.type === TokenType.TK_COMMA &&
-        secondParamToken.type === TokenType.TK_STRING) {
-        
+        !isNumericToken(secondParamToken) &&
+        secondParamToken.type !== TokenType.TK_LABEL
+    ) {
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
             code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
@@ -272,7 +273,7 @@ function validateSliceParameters(textDocument: TextDocument, tokens: Token[], di
                 start: textDocument.positionAt(secondParamToken.pos),
                 end: textDocument.positionAt(secondParamToken.end)
             },
-            message: `slice() second parameter (start index) should be a number, not a string.`,
+            message: `slice() second parameter (start index) should be a number.`,
             source: 'ucode'
         };
         diagnostics.push(diagnostic);
@@ -284,8 +285,9 @@ function validateSliceParameters(textDocument: TextDocument, tokens: Token[], di
     
     if (commaToken2 && thirdParamToken &&
         commaToken2.type === TokenType.TK_COMMA &&
-        thirdParamToken.type === TokenType.TK_STRING) {
-        
+        !isNumericToken(thirdParamToken) &&
+        thirdParamToken.type !== TokenType.TK_LABEL
+    ) { 
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
             code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
@@ -293,7 +295,7 @@ function validateSliceParameters(textDocument: TextDocument, tokens: Token[], di
                 start: textDocument.positionAt(thirdParamToken.pos),
                 end: textDocument.positionAt(thirdParamToken.end)
             },
-            message: `slice() third parameter (end index) should be a number, not a string.`,
+            message: `slice() third parameter (end index) should be a number.`,
             source: 'ucode'
         };
         diagnostics.push(diagnostic);
@@ -307,8 +309,9 @@ function validateSpliceParameters(textDocument: TextDocument, tokens: Token[], d
     
     if (commaToken1 && secondParamToken &&
         commaToken1.type === TokenType.TK_COMMA &&
-        secondParamToken.type === TokenType.TK_STRING) {
-        
+        !isNumericToken(secondParamToken) &&
+        secondParamToken.type !== TokenType.TK_LABEL
+    ) {
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
             code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
@@ -316,7 +319,7 @@ function validateSpliceParameters(textDocument: TextDocument, tokens: Token[], d
                 start: textDocument.positionAt(secondParamToken.pos),
                 end: textDocument.positionAt(secondParamToken.end)
             },
-            message: `splice() second parameter (start index) should be a number, not a string.`,
+            message: `splice() second parameter (start index) should be a number.`,
             source: 'ucode'
         };
         diagnostics.push(diagnostic);
@@ -328,8 +331,9 @@ function validateSpliceParameters(textDocument: TextDocument, tokens: Token[], d
     
     if (commaToken2 && thirdParamToken &&
         commaToken2.type === TokenType.TK_COMMA &&
-        thirdParamToken.type === TokenType.TK_STRING) {
-        
+        !isNumericToken(thirdParamToken) &&
+        thirdParamToken.type !== TokenType.TK_LABEL
+    ) {
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
             code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
@@ -337,7 +341,7 @@ function validateSpliceParameters(textDocument: TextDocument, tokens: Token[], d
                 start: textDocument.positionAt(thirdParamToken.pos),
                 end: textDocument.positionAt(thirdParamToken.end)
             },
-            message: `splice() third parameter (delete count) should be a number, not a string.`,
+            message: `splice() third parameter (delete count) should be a number.`,
             source: 'ucode'
         };
         diagnostics.push(diagnostic);
