@@ -305,6 +305,8 @@ export class SemanticAnalyzer extends BaseVisitor {
         type: UcodeType.OBJECT,
         moduleName: 'nl80211-const'
       };
+    } else if (source === 'nl80211' && nl80211TypeRegistry.getFunctionNames().includes(importedName)) {
+      dataType = UcodeType.FUNCTION as UcodeDataType;
     }
     
     // Special case: importing 'const' from rtnl creates a constants object
@@ -319,9 +321,42 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'rtnl' && rtnlTypeRegistry.getFunctionNames().includes(importedName)) {
       dataType = UcodeType.FUNCTION as UcodeDataType;
     }
+
+    // import { 'const' as rtnlconst } from 'rtnl';
+    // How do you handle this?
+    // Validate rtnl module imports
+    if (source === 'rtnl' && specifier.type === 'ImportSpecifier' && importedName !== 'const') {
+      if (!rtnlTypeRegistry.getFunctionNames().includes(importedName)) {
+        let exports = (rtnlTypeRegistry.getFunctionNames().concat(rtnlTypeRegistry.getConstantNames())).join(', ');
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
+          `'${importedName}' is not exported by the rtnl module. Available exports: ${exports}`,
+          specifier.imported.start,
+          specifier.imported.end,
+          DiagnosticSeverity.Error,
+        );
+        return; // Don't add invalid import to symbol table
+      }
+      dataType = UcodeType.FUNCTION as UcodeDataType;
+    }
     
     // Special case: importing fs functions - set proper function type
-    if (source === 'fs' && fsModuleTypeRegistry.getFunctionNames().includes(importedName)) {
+    /*if (source === 'fs' && fsModuleTypeRegistry.getFunctionNames().includes(importedName)) {
+      dataType = UcodeType.FUNCTION as UcodeDataType;
+    }*/
+
+    // Validate fs module imports
+    if (source === 'fs' && specifier.type === 'ImportSpecifier') {
+      if (!fsModuleTypeRegistry.getFunctionNames().includes(importedName)) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
+          `'${importedName}' is not exported by the fs module. Available exports: ${fsModuleTypeRegistry.getFunctionNames().join(', ')}`,
+          specifier.imported.start,
+          specifier.imported.end,
+          DiagnosticSeverity.Error,
+        );
+        return; // Don't add invalid import to symbol table
+      }
       dataType = UcodeType.FUNCTION as UcodeDataType;
     }
     
@@ -342,7 +377,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Validate math module imports
     if (source === 'math' && specifier.type === 'ImportSpecifier') {
       if (!mathTypeRegistry.isValidMathImport(importedName)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
           `'${importedName}' is not exported by the math module. Available exports: ${mathTypeRegistry.getValidMathImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -353,9 +389,10 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
     
     // Validate nl80211 module imports
-    if (source === 'nl80211' && specifier.type === 'ImportSpecifier') {
+    if (source === 'nl80211' && specifier.type === 'ImportSpecifier' && importedName !== 'const') {
       if (!nl80211TypeRegistry.isValidNl80211Import(importedName)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
           `'${importedName}' is not exported by the nl80211 module. Available exports: ${nl80211TypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -368,7 +405,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Validate resolv module imports
     if (source === 'resolv' && specifier.type === 'ImportSpecifier') {
       if (!resolvTypeRegistry.isValidImport(importedName)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
           `'${importedName}' is not exported by the resolv module. Available exports: ${resolvTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -381,7 +419,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Validate rtnl module imports
     if (source === 'rtnl' && specifier.type === 'ImportSpecifier') {
       if (!rtnlTypeRegistry.isValidRtnlImport(importedName)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
           `'${importedName}' is not exported by the rtnl module. Available exports: ${rtnlTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -394,7 +433,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Validate socket module imports
     if (source === 'socket' && specifier.type === 'ImportSpecifier') {
       if (!socketTypeRegistry.isValidImport(importedName)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
           `'${importedName}' is not exported by the socket module. Available exports: ${socketTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -407,7 +447,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Validate ubus module imports
     if (source === 'ubus' && specifier.type === 'ImportSpecifier') {
       if (!ubusTypeRegistry.isValidImport(importedName)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
           `'${importedName}' is not exported by the ubus module. Available exports: ${ubusTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -420,7 +461,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Validate uci module imports
     if (source === 'uci' && specifier.type === 'ImportSpecifier') {
       if (!uciTypeRegistry.isValidImport(importedName)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
           `'${importedName}' is not exported by the uci module. Available exports: ${ 
             uciTypeRegistry.getValidImports().join(', ')
           }`,
@@ -435,7 +477,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Validate uloop module imports
     if (source === 'uloop' && specifier.type === 'ImportSpecifier') {
       if (!uloopTypeRegistry.isValidImport(importedName)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
           `'${importedName}' is not exported by the uloop module. Available exports: ${ 
             uloopTypeRegistry.getValidImports().join(', ')
           }`,
@@ -450,7 +493,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Validate struct module imports
     if (source === 'struct' && specifier.type === 'ImportSpecifier') {
       if (!structTypeRegistry.isValidImport(importedName)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
           `'${importedName}' is not exported by the struct module. Available exports: ${structTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -462,7 +506,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     
     // Add imported symbol to symbol table
     if (!this.symbolTable.declare(localName, SymbolType.IMPORTED, dataType, specifier.local)) {
-      this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
         `Imported symbol '${localName}' is already declared in current scope`,
         specifier.local.start,
         specifier.local.end,
