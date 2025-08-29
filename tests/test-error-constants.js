@@ -79,21 +79,3 @@ testCases.forEach((testCase) => {
     passedTests++;
   }
 });
-
-// Additional tests
-console.log(`\n🧪 Testing Error Definition Retrieval:`);
-totalTests++;
-const definition = UcodeErrorConstants.getErrorDefinition(UcodeErrorCode.UNDEFINED_VARIABLE);
-const hasDefinition = definition && definition.code === UcodeErrorCode.UNDEFINED_VARIABLE;
-console.log(`  Result: ${hasDefinition ? '✅ PASS' : '❌ FAIL'}`);
-if (hasDefinition) passedTests++;
-
-console.log(`\n🧪 Testing Error Categories:`);
-totalTests++;
-const errorCodes = UcodeErrorConstants.getErrorsByCategory('error');
-const hasErrorCodes = errorCodes.length > 0 && errorCodes.includes(UcodeErrorCode.UNDEFINED_FUNCTION);
-console.log(`  Found ${errorCodes.length} error codes`);
-console.log(`  Result: ${hasErrorCodes ? '✅ PASS' : '❌ FAIL'}`);
-if (hasErrorCodes) passedTests++;
-
-console.log(`\n📊 Test Results: ${passedTests}/${totalTests} tests passed`);

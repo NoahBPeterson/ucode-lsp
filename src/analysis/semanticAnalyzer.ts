@@ -30,7 +30,7 @@ import { ubusTypeRegistry } from './ubusTypes';
 import { uciTypeRegistry, UciObjectType, createUciObjectDataType } from './uciTypes';
 import { uloopTypeRegistry, UloopObjectType, createUloopObjectDataType, uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
-import { UcodeErrorCode, UcodeErrorConstants } from './errorConstants';
+import { UcodeErrorCode } from './errorConstants';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -216,12 +216,12 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Check for redeclaration in current scope
       if (!this.symbolTable.declare(name, symbolType, dataType, node.id)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
           UcodeErrorCode.VARIABLE_REDECLARATION,
+          `Variable '${name}' is already declared in this scope`,
           node.id.start,
           node.id.end,
           DiagnosticSeverity.Error,
-          name
         );
       }
 
@@ -229,12 +229,12 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (this.options.enableShadowingWarnings) {
         const shadowedSymbol = this.symbolTable.checkShadowing(name);
         if (shadowedSymbol) {
-          this.addDiagnostic(
+          this.addDiagnosticErrorCode(
             UcodeErrorCode.VARIABLE_SHADOWING,
+            `Variable '${name}' shadows declaration from outer scope`,
             node.id.start,
             node.id.end,
             DiagnosticSeverity.Warning,
-            name
           );
         }
       }
@@ -328,14 +328,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Validate log module imports
     if (source === 'log' && specifier.type === 'ImportSpecifier') {
       if (!logTypeRegistry.isValidLogImport(importedName)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
           UcodeErrorCode.INVALID_IMPORT,
+          `'${importedName}' is not exported by the log module. Available exports: ${logTypeRegistry.getValidLogImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
           DiagnosticSeverity.Error,
-          importedName,
-          'log',
-          logTypeRegistry.getValidLogImports().join(', ')
         );
         return; // Don't add invalid import to symbol table
       }
@@ -657,12 +655,12 @@ export class SemanticAnalyzer extends BaseVisitor {
         const exceptionObjectType = createExceptionObjectDataType();
         
         if (!this.symbolTable.declare(node.param.name, SymbolType.PARAMETER, exceptionObjectType, node.param)) {
-          this.addDiagnostic(
+          this.addDiagnosticErrorCode(
             UcodeErrorCode.PARAMETER_REDECLARATION,
+            `Parameter '${node.param.name}' is already declared in this scope`,
             node.param.start,
             node.param.end,
             DiagnosticSeverity.Error,
-            node.param.name
           );
         }
       }
@@ -688,12 +686,12 @@ export class SemanticAnalyzer extends BaseVisitor {
         // Don't report "Undefined variable" if this identifier is a function call callee
         // The TypeChecker will handle "Undefined function" diagnostic for function calls
         if (!isBuiltin && !this.processingFunctionCallCallee) {
-          this.addDiagnostic(
+          this.addDiagnosticErrorCode(
             UcodeErrorCode.UNDEFINED_VARIABLE,
+            `Undefined variable: ${node.name}`,
             node.start,
             node.end,
             DiagnosticSeverity.Error,
-            node.name
           );
         }
       } else {
@@ -1333,12 +1331,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         continue;
       }
 
-      this.addDiagnostic(
+      this.addDiagnosticErrorCode(
         UcodeErrorCode.UNUSED_VARIABLE,
+        `Variable '${symbol.name}' is declared but never used`,
         symbol.node.start,
         symbol.node.end,
         DiagnosticSeverity.Warning,
-        symbol.name
       );
     }
   }
@@ -1641,35 +1639,69 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  private addDiagnostic(
-    codeOrMessage: UcodeErrorCode | string, 
+  private addDiagnosticErrorCode(
+    errorCode: UcodeErrorCode,
+    message: string,
     start: number, 
     end: number, 
-    severity?: DiagnosticSeverity,
-    ...params: string[]
+    severity: DiagnosticSeverity
   ): void {
-    let message: string;
-    let finalSeverity: DiagnosticSeverity;
-    let errorCode: string | undefined;
-
-    if (typeof codeOrMessage === 'string' && !Object.values(UcodeErrorCode).includes(codeOrMessage as UcodeErrorCode)) {
-      // Legacy string message support
-      message = codeOrMessage;
-      finalSeverity = severity || DiagnosticSeverity.Error;
-    } else {
-      // New error code support
-      errorCode = codeOrMessage as string;
-      message = UcodeErrorConstants.formatMessage(codeOrMessage as UcodeErrorCode, ...params);
-      
-      // Determine severity from error definition
-      if (severity) {
-        finalSeverity = severity;
-      } else {
-        finalSeverity = UcodeErrorConstants.isWarning(codeOrMessage as UcodeErrorCode) 
-          ? DiagnosticSeverity.Warning 
-          : DiagnosticSeverity.Error;
+    // Check if diagnostic should be converted to lower severity by disable comment
+    if (this.shouldReduceSeverity(start, end)) {
+      // Convert errors to warnings, warnings to information
+      if (severity === DiagnosticSeverity.Error) {
+        severity = DiagnosticSeverity.Warning;
+        // Track that this line had an error that was suppressed
+        const startPos = this.textDocument.positionAt(start);
+        this.linesWithSuppressedDiagnostics.add(startPos.line);
+      } else if (severity === DiagnosticSeverity.Warning) {
+        severity = DiagnosticSeverity.Information;
+        // Track that this line had a warning that was suppressed
+        const startPos = this.textDocument.positionAt(start);
+        this.linesWithSuppressedDiagnostics.add(startPos.line);
       }
     }
+
+    // Check for duplicate diagnostics to prevent multiple identical errors
+    const startPos = this.textDocument.positionAt(start);
+    const endPos = this.textDocument.positionAt(end);
+    
+    const isDuplicate = this.diagnostics.some(existing => 
+      existing.message === message &&
+      existing.severity === severity &&
+      existing.range.start.line === startPos.line &&
+      existing.range.start.character === startPos.character &&
+      existing.range.end.line === endPos.line &&
+      existing.range.end.character === endPos.character
+    );
+    
+    if (!isDuplicate) {
+      const diagnostic: Diagnostic = {
+        severity: severity,
+        range: {
+          start: startPos,
+          end: endPos
+        },
+        message,
+        source: 'ucode-semantic'
+      };
+
+      // Add error code if available
+      if (errorCode) {
+        diagnostic.code = errorCode;
+      }
+
+      this.diagnostics.push(diagnostic);
+    }
+  }
+
+private addDiagnostic(
+    message: string, 
+    start: number, 
+    end: number, 
+    severity?: DiagnosticSeverity
+  ): void {
+    let finalSeverity: DiagnosticSeverity = severity || DiagnosticSeverity.Error;
 
     // Check if diagnostic should be converted to lower severity by disable comment
     if (this.shouldReduceSeverity(start, end)) {
@@ -1710,11 +1742,6 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         message,
         source: 'ucode-semantic'
       };
-
-      // Add error code if available
-      if (errorCode) {
-        diagnostic.code = errorCode;
-      }
 
       this.diagnostics.push(diagnostic);
     }
