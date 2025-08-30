@@ -725,6 +725,10 @@ export class TypeChecker {
         return this.builtinValidator.validateCallFunction(node);
       case 'signal':
         return this.builtinValidator.validateSignalFunction(node);
+      case 'system':
+        return this.builtinValidator.validateSystemFunction(node);
+      case 'sleep':
+        return this.builtinValidator.validateSleepFunction(node);
       default:
         return false;
     }

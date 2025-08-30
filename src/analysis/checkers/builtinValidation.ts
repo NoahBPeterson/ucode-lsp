@@ -15,10 +15,61 @@ const VALID_SIGNAL_NAMES = new Set([
 
 const UNHANDLABLE_SIGNALS = new Set(['KILL', 'STOP']);
 
+function isNumberLikeString(s: string): boolean {
+  const trimmed = s.trim();
+  if (trimmed === '') return false;
+
+  // Regular expression to match ucode's number parsing behavior
+  // Supports decimal, hex (0x), binary (0b), and octal (0, 0o)
+  const numberLikeRegex = /^[+-]?(\d*\.?\d+([eE][+-]?\d+)?|0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO]?[0-7]+)$/;
+  return numberLikeRegex.test(trimmed);
+}
+
+function isNumericConvertibleType(type: UcodeType): boolean {
+  const allowedTypes = [
+    UcodeType.NULL, UcodeType.BOOLEAN, UcodeType.INTEGER,
+    UcodeType.DOUBLE, UcodeType.STRING, UcodeType.UNKNOWN
+  ];
+  return allowedTypes.includes(type);
+}
+
 export class BuiltinValidator {
   private errors: TypeError[] = [];
 
   constructor() {}
+
+  private validateNumericArgument(arg: CallExpressionNode['arguments'][0] | undefined, funcName: string, argPosition: number): boolean {
+    if (!arg) {
+      return true; // No argument, no error
+    }
+
+    const argType = this.getNodeType(arg);
+
+    if (!isNumericConvertibleType(argType)) {
+      this.errors.push({
+        message: `Argument ${argPosition} of ${funcName}() cannot be a ${argType.toLowerCase()}. It must be a value convertible to a number.`,
+        start: arg.start,
+        end: arg.end,
+        severity: 'error'
+      });
+      return false;
+    }
+
+    if (argType === UcodeType.STRING && arg.type === 'Literal') {
+      const literal = arg as LiteralNode;
+      if (typeof literal.value === 'string' && !isNumberLikeString(literal.value)) {
+        this.errors.push({
+          message: `String "${literal.value}" cannot be converted to a number for ${funcName}() argument ${argPosition}.`,
+          start: arg.start,
+          end: arg.end,
+          severity: 'error'
+        });
+        return false;
+      }
+    }
+
+    return true;
+  }
 
   validateLengthFunction(node: CallExpressionNode): boolean {
     if (node.arguments.length !== 1) {
@@ -586,6 +637,65 @@ export class BuiltinValidator {
       }
     }
 
+    return true;
+  }
+
+  validateSystemFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length < 1) {
+      this.errors.push({
+        message: `Function 'system' expects at least 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    // Validate command argument (string or array)
+    const commandArg = node.arguments[0];
+    if (commandArg) {
+      const commandType = this.getNodeType(commandArg);
+      if (commandType !== UcodeType.STRING && commandType !== UcodeType.ARRAY && commandType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `system() first argument must be a string or an array, but got ${commandType.toLowerCase()}`,
+          start: commandArg.start,
+          end: commandArg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    // Validate timeout argument (number)
+    if (node.arguments.length === 2) {
+      const timeoutArg = node.arguments[1];
+      if (timeoutArg) {
+        const timeoutType = this.getNodeType(timeoutArg);
+        if (timeoutType !== UcodeType.INTEGER && timeoutType !== UcodeType.DOUBLE && timeoutType !== UcodeType.UNKNOWN) {
+          this.errors.push({
+            message: `system() timeout must be a number, but got ${timeoutType.toLowerCase()}`,
+            start: timeoutArg.start,
+            end: timeoutArg.end,
+            severity: 'error'
+          });
+        }
+      }
+    }
+
+    return true;
+  }
+
+  validateSleepFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length < 1) {
+      this.errors.push({
+        message: `Function 'sleep' expects at least 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    this.validateNumericArgument(node.arguments[0], 'sleep', 1);
     return true;
   }
 
