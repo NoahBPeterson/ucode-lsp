@@ -723,6 +723,11 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   visitIdentifier(node: IdentifierNode): void {
     if (this.options.enableScopeAnalysis) {
+      // Guard against empty or invalid identifier names
+      if (!node.name || typeof node.name !== 'string' || node.name.trim() === '') {
+        return; // Skip processing invalid identifier nodes
+      }
+
       // Check if identifier is defined
       const symbol = this.symbolTable.lookup(node.name);
       if (!symbol) {

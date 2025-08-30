@@ -728,6 +728,11 @@ export class UcodeLexer {
         else if (tokenType === TokenType.TK_LABEL && this.noKeyword) {
             this.noKeyword = false;
         }
+        // Reset flag if we encounter any non-identifier token while expecting member access
+        // This handles cases like "a.;" where the dot is not followed by an identifier
+        else if (this.noKeyword && tokenType !== TokenType.TK_LABEL) {
+            this.noKeyword = false;
+        }
     }
 
     private emitBuffer(type: TokenType, stripTrailingChars?: string): Token | null {
