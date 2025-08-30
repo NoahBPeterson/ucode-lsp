@@ -20,5 +20,4 @@ export { validateNetworkFunctions } from './network-functions';
 export { validateConversionFunctions } from './conversion-functions';
 export { validateModuleFunctions } from './module-functions';
 export { validateRemainingUtilityFunctions } from './remaining-utility-functions';
-export { validateJSONUtilityFunctions } from './json-utility-functions';
 export { validateSystemUtilityFunctions } from './system-utility-functions';

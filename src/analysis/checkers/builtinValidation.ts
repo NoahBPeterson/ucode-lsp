@@ -2,9 +2,18 @@
  * Built-in function validation for ucode semantic analysis
  */
 
-import { CallExpressionNode } from '../../ast/nodes';
+import { CallExpressionNode, LiteralNode } from '../../ast/nodes';
 import { UcodeType } from '../symbolTable';
 import { TypeError } from '../types';
+
+const VALID_SIGNAL_NAMES = new Set([
+  'INT', 'ILL', 'ABRT', 'FPE', 'SEGV', 'TERM', 'HUP', 'QUIT', 'TRAP', 
+  'KILL', 'PIPE', 'ALRM', 'STKFLT', 'PWR', 'BUS', 'SYS', 'URG', 'STOP', 
+  'TSTP', 'CONT', 'CHLD', 'TTIN', 'TTOU', 'POLL', 'XFSZ', 'XCPU', 
+  'VTALRM', 'PROF', 'USR1', 'USR2'
+]);
+
+const UNHANDLABLE_SIGNALS = new Set(['KILL', 'STOP']);
 
 export class BuiltinValidator {
   private errors: TypeError[] = [];
@@ -383,6 +392,197 @@ export class BuiltinValidator {
           end: arrayArg.end,
           severity: 'error'
         });
+      }
+    }
+
+    return true;
+  }
+
+  validateJsonFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `Function 'json' expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arg = node.arguments[0];
+    if (arg) {
+      const argType = this.getNodeType(arg);
+      
+      if (argType !== UcodeType.STRING && argType !== UcodeType.OBJECT && argType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `Function 'json' expects string or object as argument, got ${argType.toLowerCase()}`,
+          start: arg.start,
+          end: arg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    return true;
+  }
+
+  validateCallFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length < 1) {
+      this.errors.push({
+        message: `Function 'call' expects at least 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const functionArg = node.arguments[0];
+    if (functionArg) {
+      const functionType = this.getNodeType(functionArg);
+      
+      if (functionType !== UcodeType.FUNCTION && functionType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `call() first parameter should be a function, not a ${functionType.toLowerCase()}`,
+          start: functionArg.start,
+          end: functionArg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    if (node.arguments.length >= 3) {
+      const scopeArg = node.arguments[2];
+      if (scopeArg) {
+        const scopeType = this.getNodeType(scopeArg);
+
+        if (scopeType !== UcodeType.OBJECT && scopeType !== UcodeType.NULL && scopeType !== UcodeType.UNKNOWN) {
+          this.errors.push({
+            message: `call() third parameter (scope) should be an object, not a ${scopeType.toLowerCase()}`,
+            start: scopeArg.start,
+            end: scopeArg.end,
+            severity: 'error'
+          });
+        }
+      }
+    }
+
+    return true;
+  }
+
+  validateSignalFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length < 1 || node.arguments.length > 2) {
+      this.errors.push({
+        message: `Function 'signal' expects 1-2 arguments, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const signalArg = node.arguments[0];
+    let signalValue: string | number | null = null;
+
+    if (signalArg) {
+      const signalType = this.getNodeType(signalArg);
+      
+      if (signalArg.type === 'Literal') {
+        const literal = signalArg as LiteralNode;
+        
+        if (literal.value === null) return true; // Cannot validate null literals further
+
+        signalValue = literal.value as string | number;
+
+        if (signalType === UcodeType.INTEGER) {
+          if (typeof literal.value === 'number' && (literal.value < 1 || literal.value > 31)) {
+            this.errors.push({
+              message: `Signal number must be between 1 and 31, got ${literal.value}`,
+              start: signalArg.start,
+              end: signalArg.end,
+              severity: 'error'
+            });
+          }
+        } else if (signalType === UcodeType.STRING) {
+          if (typeof literal.value === 'string') {
+            let sigStr = literal.value.toUpperCase();
+            if (sigStr.substring(0, 3) === 'SIG') {
+              sigStr = sigStr.substring(3);
+            }
+            if (!VALID_SIGNAL_NAMES.has(sigStr) && !UNHANDLABLE_SIGNALS.has(sigStr)) {
+              this.errors.push({
+                message: `Invalid signal name "${literal.value}"`,
+                start: signalArg.start,
+                end: signalArg.end,
+                severity: 'error'
+              });
+            }
+          }
+        } else if (signalType === UcodeType.DOUBLE) {
+            this.errors.push({
+                message: `signal() first parameter cannot be a double, use an integer for signal numbers`,
+                start: signalArg.start,
+                end: signalArg.end,
+                severity: 'error'
+            });
+        } else if (signalType !== UcodeType.UNKNOWN) {
+          this.errors.push({
+            message: `signal() first parameter should be a signal number or name (string), not a ${signalType.toLowerCase()}`,
+            start: signalArg.start,
+            end: signalArg.end,
+            severity: 'error'
+          });
+        }
+      } else { // It's a variable or expression
+        if (signalType !== UcodeType.INTEGER && signalType !== UcodeType.STRING && signalType !== UcodeType.UNKNOWN) {
+          this.errors.push({
+            message: `signal() first parameter should be a signal number or name (string), not a ${signalType.toLowerCase()}`,
+            start: signalArg.start,
+            end: signalArg.end,
+            severity: 'error'
+          });
+        }
+      }
+    }
+
+    if (node.arguments.length === 2) {
+      const handlerArg = node.arguments[1];
+      if (handlerArg) {
+        const handlerType = this.getNodeType(handlerArg);
+        
+        if (handlerType === UcodeType.STRING && handlerArg.type === 'Literal') {
+          const literal = handlerArg as LiteralNode;
+          if (typeof literal.value === 'string' && literal.value !== 'ignore' && literal.value !== 'default') {
+            this.errors.push({
+              message: `Invalid signal handler string "${literal.value}". Did you mean 'ignore' or 'default'?`,
+              start: handlerArg.start,
+              end: handlerArg.end,
+              severity: 'warning'
+            });
+          }
+        } else if (handlerType !== UcodeType.FUNCTION && handlerType !== UcodeType.STRING && handlerType !== UcodeType.UNKNOWN) {
+          this.errors.push({
+            message: `signal() second parameter should be a handler function or string ('ignore' or 'default'), not a ${handlerType.toLowerCase()}`,
+            start: handlerArg.start,
+            end: handlerArg.end,
+            severity: 'error'
+          });
+        }
+
+        if (signalValue && signalArg) {
+            let sigStr = String(signalValue).toUpperCase();
+            if (sigStr.substring(0, 3) === 'SIG') {
+              sigStr = sigStr.substring(3);
+            }
+            if (UNHANDLABLE_SIGNALS.has(sigStr)) {
+                this.errors.push({
+                    message: `Signal '${signalValue}' cannot be caught or ignored.`,
+                    start: signalArg.start, // error on the signal, not the handler
+                    end: signalArg.end,
+                    severity: 'warning'
+                });
+            }
+        }
       }
     }
 

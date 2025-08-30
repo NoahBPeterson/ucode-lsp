@@ -39,7 +39,7 @@ export interface TypeError {
   message: string;
   start: number;
   end: number;
-  severity: 'error';
+  severity: 'error' | 'warning';
 }
 
 export interface TypeWarning {
@@ -719,6 +719,12 @@ export class TypeChecker {
         return this.builtinValidator.validateTimelocalFunction(node);
       case 'timegm':
         return this.builtinValidator.validateTimegmFunction(node);
+      case 'json':
+        return this.builtinValidator.validateJsonFunction(node);
+      case 'call':
+        return this.builtinValidator.validateCallFunction(node);
+      case 'signal':
+        return this.builtinValidator.validateSignalFunction(node);
       default:
         return false;
     }
