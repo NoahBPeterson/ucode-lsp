@@ -20,7 +20,6 @@ import { validateNumberConversions } from './number-conversions';
 import { validateIOFunctions } from './io-functions';
 import { validateSystemFunctions } from './system-functions';
 import { validateUtilityFunctions } from './utility-functions';
-import { validateDateTimeFunctions } from './datetime-functions';
 import { validateNetworkFunctions } from './network-functions';
 import { validateConversionFunctions } from './conversion-functions';
 import { validateModuleFunctions } from './module-functions';
@@ -69,7 +68,6 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateIOFunctions(textDocument, tokens, diagnostics);
         validateSystemFunctions(textDocument, tokens, diagnostics);
         validateUtilityFunctions(textDocument, tokens, diagnostics);
-        validateDateTimeFunctions(textDocument, tokens, diagnostics);
         validateNetworkFunctions(textDocument, tokens, diagnostics);
         validateConversionFunctions(textDocument, tokens, diagnostics);
         validateModuleFunctions(textDocument, tokens, diagnostics);

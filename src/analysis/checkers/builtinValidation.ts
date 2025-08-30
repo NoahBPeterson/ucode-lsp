@@ -273,6 +273,122 @@ export class BuiltinValidator {
     return true;
   }
 
+  validateLocaltimeFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length > 1) {
+      this.errors.push({
+        message: `Function 'localtime' expects 0 or 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    if (node.arguments.length === 1) {
+      const timestampArg = node.arguments[0];
+      if (timestampArg) {
+        const timestampType = this.getNodeType(timestampArg);
+        
+        if (timestampType !== UcodeType.INTEGER && timestampType !== UcodeType.DOUBLE && timestampType !== UcodeType.UNKNOWN) {
+          this.errors.push({
+            message: `Function 'localtime' expects Unix epoch (number) as argument, got ${timestampType}`,
+            start: timestampArg.start,
+            end: timestampArg.end,
+            severity: 'error'
+          });
+        }
+      }
+    }
+
+    return true;
+  }
+
+  validateGmtimeFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length > 1) {
+      this.errors.push({
+        message: `Function 'gmtime' expects 0 or 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    if (node.arguments.length === 1) {
+      const timestampArg = node.arguments[0];
+      if (timestampArg) {
+        const timestampType = this.getNodeType(timestampArg);
+        
+        if (timestampType !== UcodeType.INTEGER && timestampType !== UcodeType.DOUBLE && timestampType !== UcodeType.UNKNOWN) {
+          this.errors.push({
+            message: `Function 'gmtime' expects Unix epoch (number) as argument, got ${timestampType}`,
+            start: timestampArg.start,
+            end: timestampArg.end,
+            severity: 'error'
+          });
+        }
+      }
+    }
+
+    return true;
+  }
+
+  validateTimelocalFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `Function 'timelocal' expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arrayArg = node.arguments[0];
+    if (arrayArg) {
+      const arrayType = this.getNodeType(arrayArg);
+      
+      if (arrayType !== UcodeType.ARRAY && arrayType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `Function 'timelocal' expects an array of time components as argument, got ${arrayType}`,
+          start: arrayArg.start,
+          end: arrayArg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    return true;
+  }
+
+  validateTimegmFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `Function 'timegm' expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arrayArg = node.arguments[0];
+    if (arrayArg) {
+      const arrayType = this.getNodeType(arrayArg);
+      
+      if (arrayType !== UcodeType.ARRAY && arrayType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `Function 'timegm' expects an array of time components as argument, got ${arrayType}`,
+          start: arrayArg.start,
+          end: arrayArg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    return true;
+  }
+
   getErrors(): TypeError[] {
     return this.errors;
   }

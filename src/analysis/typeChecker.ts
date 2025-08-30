@@ -711,6 +711,14 @@ export class TypeChecker {
         return this.builtinValidator.validateSplitFunction(node);
       case 'replace':
         return this.builtinValidator.validateReplaceFunction(node);
+      case 'localtime':
+        return this.builtinValidator.validateLocaltimeFunction(node);
+      case 'gmtime':
+        return this.builtinValidator.validateGmtimeFunction(node);
+      case 'timelocal':
+        return this.builtinValidator.validateTimelocalFunction(node);
+      case 'timegm':
+        return this.builtinValidator.validateTimegmFunction(node);
       default:
         return false;
     }
