@@ -26,7 +26,8 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     name: "open",
     parameters: [
       { name: "path", type: "string", optional: false },
-      { name: "mode", type: "string", optional: true, defaultValue: "r" }
+      { name: "mode", type: "string", optional: true, defaultValue: "r" },
+      { name: "perm", type: "number", optional: true, defaultValue: 0o666 }
     ],
     returnType: "fs.file | null",
     description: "Opens a file and returns a file handle. Mode can be 'r' (read), 'w' (write), 'a' (append), etc."
