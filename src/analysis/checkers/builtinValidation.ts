@@ -33,6 +33,22 @@ function isNumericConvertibleType(type: UcodeType): boolean {
   return allowedTypes.includes(type);
 }
 
+export function isStringCastableType(_type: UcodeType): boolean {
+  // Based on ucv_to_stringbuf_formatted - all types can be cast to string
+  // NULL -> "null"
+  // BOOLEAN -> "true"/"false"  
+  // INTEGER -> number representation
+  // DOUBLE -> number representation (including NaN, Infinity)
+  // STRING -> unchanged
+  // ARRAY -> JSON-like representation "[...]"
+  // OBJECT -> JSON-like representation "{...}"
+  // REGEX -> "/pattern/flags"
+  // FUNCTION -> "function name(...) { ... }"
+  // RESOURCE -> "<resource type pointer>"
+  // UNKNOWN -> assumed castable
+  return true; // All ucode types are castable to string
+}
+
 export class BuiltinValidator {
   private errors: TypeError[] = [];
 
@@ -128,13 +144,14 @@ export class BuiltinValidator {
 
   validateRindexFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'rindex', 2)) return true;
+    // First argument is converted to a string, so no type check is needed.
     this.validateArgumentType(node.arguments[0], 'rindex', 1, [UcodeType.STRING, UcodeType.ARRAY]);
     return true;
   }
 
   validateMatchFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'match', 2)) return true;
-    this.validateArgumentType(node.arguments[0], 'match', 1, [UcodeType.STRING]);
+    // First argument is converted to a string, so no type check is needed.
     this.validateArgumentType(node.arguments[1], 'match', 2, [UcodeType.REGEX]);
     return true;
   }
@@ -193,11 +210,79 @@ export class BuiltinValidator {
 
   validateReplaceFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'replace', 3)) return true;
-    this.validateArgumentType(node.arguments[0], 'replace', 1, [UcodeType.STRING]);
+    // First argument is converted to string, so no type check is needed.
+    // Second argument can be string or regex.
     this.validateArgumentType(node.arguments[1], 'replace', 2, [UcodeType.STRING, UcodeType.REGEX]);
     this.validateArgumentType(node.arguments[2], 'replace', 3, [UcodeType.STRING, UcodeType.FUNCTION]);
     return true;
   }
+
+  validateDieFunction(_node: CallExpressionNode): boolean {
+    // First argument is converted to a string, so no type check is needed.
+    return true;
+  }
+
+  validateLcFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'lc', 1)) return true;
+    // First argument is converted to string - all types are valid
+    return true;
+  }
+
+  validateUcFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'uc', 1)) return true;
+    // First argument is converted to string - all types are valid
+    return true;
+  }
+
+  validateLoadstringFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'loadstring', 1)) return true;
+    // First argument is converted to string - all types are valid
+    return true;
+  }
+
+  validateHexencFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'hexenc', 1)) return true;
+    // First argument is converted to string - all types are valid
+    return true;
+  }
+
+  validateJoinFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'join', 2)) return true;
+    // First argument (separator) is converted to string - all types are valid
+    this.validateArgumentType(node.arguments[1], 'join', 2, [UcodeType.ARRAY]);
+    return true;
+  }
+
+  validatePrintFunction(_node: CallExpressionNode): boolean {
+    // All arguments are converted to strings - no type validation needed
+    return true;
+  }
+
+  validateExistsFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'exists', 2)) return true;
+    this.validateArgumentType(node.arguments[0], 'exists', 1, [UcodeType.OBJECT]);
+    // Second argument is converted to a string, so no type check is needed.
+    return true;
+  }
+
+  validateAssertFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'assert', 1)) return true;
+    // First argument is any type, second is converted to string. No checks needed.
+    return true;
+  }
+
+  validateRegexpFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'regexp', 1)) return true;
+    // First and second (optional) arguments are converted to string. No checks needed.
+    return true;
+  }
+
+  validateWildcardFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'wildcard', 2)) return true;
+    // First and second arguments are converted to string. No checks needed.
+    return true;
+  }
+
 
   validateLocaltimeFunction(node: CallExpressionNode): boolean {
     // 0 or 1 arguments, no check needed
@@ -306,6 +391,7 @@ export class BuiltinValidator {
 
   validateSystemFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'system', 1)) return true;
+    // First argument can be string or array. If array, all elements are converted to strings.
     this.validateArgumentType(node.arguments[0], 'system', 1, [UcodeType.STRING, UcodeType.ARRAY]);
     if (node.arguments.length > 1) {
         this.validateArgumentType(node.arguments[1], 'system', 2, [UcodeType.INTEGER, UcodeType.DOUBLE]);
