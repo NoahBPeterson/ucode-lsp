@@ -19,7 +19,6 @@ import { validateObjectFunctions } from './object-functions';
 import { validateNumberConversions } from './number-conversions';
 import { validateIOFunctions } from './io-functions';
 
-import { validateUtilityFunctions } from './utility-functions';
 import { validateNetworkFunctions } from './network-functions';
 import { validateConversionFunctions } from './conversion-functions';
 import { validateModuleFunctions } from './module-functions';
@@ -66,7 +65,6 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateNumberConversions(textDocument, tokens, diagnostics);
         validateIOFunctions(textDocument, tokens, diagnostics);
         
-        validateUtilityFunctions(textDocument, tokens, diagnostics);
         validateNetworkFunctions(textDocument, tokens, diagnostics);
         validateConversionFunctions(textDocument, tokens, diagnostics);
         validateModuleFunctions(textDocument, tokens, diagnostics);

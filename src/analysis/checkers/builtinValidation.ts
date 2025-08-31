@@ -405,6 +405,26 @@ export class BuiltinValidator {
     return true;
   }
 
+  validateMinFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'min', 1)) return true;
+    // min() accepts all types and compares using ucode's comparison rules
+    // Examples: min(5, 2.1, "abc", 0.3) -> 0.3, min("def", "abc") -> "abc"
+    return true;
+  }
+
+  validateMaxFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'max', 1)) return true;
+    // max() accepts all types and compares using ucode's comparison rules
+    // Examples: max(5, 2.1, "abc", 0.3) -> 5, max("def", "abc", "ghi") -> "ghi"
+    return true;
+  }
+
+  validateUniqFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'uniq', 1)) return true;
+    this.validateArgumentType(node.arguments[0], 'uniq', 1, [UcodeType.ARRAY]);
+    return true;
+  }
+
   getErrors(): TypeError[] {
     return this.errors;
   }

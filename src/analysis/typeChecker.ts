@@ -729,6 +729,12 @@ export class TypeChecker {
         return this.builtinValidator.validateSystemFunction(node);
       case 'sleep':
         return this.builtinValidator.validateSleepFunction(node);
+      case 'min':
+        return this.builtinValidator.validateMinFunction(node);
+      case 'max':
+        return this.builtinValidator.validateMaxFunction(node);
+      case 'uniq':
+        return this.builtinValidator.validateUniqFunction(node);
       default:
         return false;
     }
