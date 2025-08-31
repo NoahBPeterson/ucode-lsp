@@ -80,6 +80,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   analyze(ast: AstNode): SemanticAnalysisResult {
     this.diagnostics = [];
+    this.typeChecker.resetErrors();
     this.functionScopes = [];
     this.loopScopes = [];
     this.switchScopes = [];
@@ -780,9 +781,6 @@ export class SemanticAnalyzer extends BaseVisitor {
     
     // IMPORTANT: Always run type checking for member expressions to validate array/string methods
     if (this.options.enableTypeChecking) {
-      // Reset errors before type checking this member expression
-      this.typeChecker.resetErrors();
-      
       // Type check the member expression for invalid array/string methods
       this.typeChecker.checkNode(node);
       const result = this.typeChecker.getResult();
@@ -1008,9 +1006,6 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
     
     if (this.options.enableTypeChecking) {
-      // Reset errors before type checking this call expression
-      this.typeChecker.resetErrors();
-      
       // Type check the function call
       this.typeChecker.checkNode(node);
       const result = this.typeChecker.getResult();
@@ -1139,9 +1134,6 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     super.visitBinaryExpression(node);
 
     if (this.options.enableTypeChecking) {
-      // Reset errors before type checking this binary expression
-      this.typeChecker.resetErrors();
-      
       // Type check the binary expression for type warnings
       this.typeChecker.checkNode(node);
       const result = this.typeChecker.getResult();

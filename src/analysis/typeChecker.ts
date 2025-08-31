@@ -127,7 +127,8 @@ export class TypeChecker {
       { name: 'call', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, variadic: true },
       { name: 'signal', parameters: [UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
       { name: 'clock', parameters: [UcodeType.BOOLEAN], returnType: UcodeType.ARRAY, minParams: 0, maxParams: 1 },
-      { name: 'sourcepath', parameters: [UcodeType.INTEGER, UcodeType.BOOLEAN], returnType: UcodeType.STRING, minParams: 0, maxParams:2 },
+      
+      { name: 'sourcepath', parameters: [UcodeType.INTEGER, UcodeType.BOOLEAN], minParams: 0, maxParams: 2, returnType: UcodeType.STRING },
       { name: 'gc', parameters: [], returnType: UcodeType.NULL },
       { name: 'die', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },
       { name: 'exists', parameters: [UcodeType.OBJECT, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
@@ -753,6 +754,16 @@ export class TypeChecker {
         return this.builtinValidator.validateOrdFunction(node);
       case 'uchr':
         return this.builtinValidator.validateUchrFunction(node);
+      case 'require':
+        return this.builtinValidator.validateRequireFunction(node);
+      case 'include':
+        return this.builtinValidator.validateIncludeFunction(node);
+      case 'loadfile':
+        return this.builtinValidator.validateLoadfileFunction(node);
+      case 'loadstring':
+        return this.builtinValidator.validateLoadstringFunction(node);
+      case 'sourcepath':
+        return this.builtinValidator.validateSourcepathFunction(node);
       default:
         return false;
     }

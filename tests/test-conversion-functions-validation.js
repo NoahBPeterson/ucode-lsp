@@ -197,16 +197,16 @@ describe('Conversion Functions Validation Tests', function() {
   });
 
   describe('hex() function validation', () => {
-    it('should accept number parameter', async () => {
+    it('should reject number parameter', async () => {
       const diagnostics = await getDiagnostics(`
         print(hex(255));
       `);
       const errors = diagnostics.filter(d => d.severity === 1);
       assert.strictEqual(errors.length, 1, 'Should have error for invalid number parameter');
-        assert.match(errors[0].message, /hex\(\) expects string, got number/);
+        assert.match(errors[0].message, /hex\(\) expects string, got integer/);
     });
 
-    it('should reject string parameter', async () => {
+    it('should accept string parameter', async () => {
       const diagnostics = await getDiagnostics(`
         print(hex("255"));
       `);
@@ -233,13 +233,12 @@ describe('Conversion Functions Validation Tests', function() {
       assert.strictEqual(errors.length, 0, 'Should not have errors for valid number parameter');
     });
 
-    it('chr should reject string parameter', async () => {
+    it('chr should accept string parameter', async () => {
       const diagnostics = await getDiagnostics(`
         print(chr("65"));
       `);
       const errors = diagnostics.filter(d => d.severity === 1);
-      assert.strictEqual(errors.length, 1, 'Should have error for string parameter');
-      assert.match(errors[0].message, /chr\(\) expects number, got string/);
+      assert.strictEqual(errors.length, 0, 'Should not have error for string parameter (chr accepts both)');
     });
 
     it('ord should accept string parameter', async () => {

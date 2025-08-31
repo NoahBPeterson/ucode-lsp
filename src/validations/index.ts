@@ -14,6 +14,5 @@ export { validateStringAnalysisFunctions } from './string-analysis';
 export { validateObjectFunctions } from './object-functions';
 export { validateNumberConversions } from './number-conversions';
 export { validateConversionFunctions } from './conversion-functions';
-export { validateModuleFunctions } from './module-functions';
 export { validateRemainingUtilityFunctions } from './remaining-utility-functions';
 export { validateSystemUtilityFunctions } from './system-utility-functions';

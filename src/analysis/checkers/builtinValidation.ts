@@ -235,8 +235,30 @@ export class BuiltinValidator {
   }
 
   validateLoadstringFunction(node: CallExpressionNode): boolean {
-    if (!this.checkArgumentCount(node, 'loadstring', 1)) return true;
-    // First argument is converted to string - all types are valid
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `loadstring() expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arg = node.arguments[0];
+    if (!arg) return true;
+    
+    const argType = this.getNodeType(arg);
+
+    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
+      this.errors.push({
+        message: `loadstring() expects string, got ${argType.toLowerCase()}`,
+        start: arg.start,
+        end: arg.end,
+        severity: 'error'
+      });
+    }
+
     return true;
   }
 
@@ -526,9 +548,11 @@ export class BuiltinValidator {
     
     const argType = this.getNodeType(arg);
 
-    if (argType !== UcodeType.INTEGER && argType !== UcodeType.DOUBLE && argType !== UcodeType.UNKNOWN) {
+    // chr() should accept both strings and numbers (real testing shows both work)
+    if (argType !== UcodeType.STRING && argType !== UcodeType.INTEGER && 
+        argType !== UcodeType.DOUBLE && argType !== UcodeType.UNKNOWN) {
       this.errors.push({
-        message: `chr() expects number, got ${argType.toLowerCase()}`,
+        message: `chr() expects string or number, got ${argType.toLowerCase()}`,
         start: arg.start,
         end: arg.end,
         severity: 'error'
@@ -582,7 +606,6 @@ export class BuiltinValidator {
     
     const argType = this.getNodeType(arg);
 
-    // uchr() accepts both string and number parameters
     if (argType !== UcodeType.STRING && argType !== UcodeType.INTEGER && 
         argType !== UcodeType.DOUBLE && argType !== UcodeType.UNKNOWN) {
       this.errors.push({
@@ -592,6 +615,109 @@ export class BuiltinValidator {
         severity: 'error'
       });
     }
+
+    return true;
+  }
+
+  validateRequireFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `require() expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arg = node.arguments[0];
+    if (!arg) return true;
+    
+    const argType = this.getNodeType(arg);
+
+    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
+      this.errors.push({
+        message: `require() expects string, got ${argType.toLowerCase()}`,
+        start: arg.start,
+        end: arg.end,
+        severity: 'error'
+      });
+    }
+
+    return true;
+  }
+
+  validateIncludeFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `include() expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arg = node.arguments[0];
+    if (!arg) return true;
+    
+    const argType = this.getNodeType(arg);
+
+    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
+      this.errors.push({
+        message: `include() expects string, got ${argType.toLowerCase()}`,
+        start: arg.start,
+        end: arg.end,
+        severity: 'error'
+      });
+    }
+
+    return true;
+  }
+
+  validateLoadfileFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `loadfile() expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arg = node.arguments[0];
+    if (!arg) return true;
+    
+    const argType = this.getNodeType(arg);
+
+    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
+      this.errors.push({
+        message: `loadfile() expects string, got ${argType.toLowerCase()}`,
+        start: arg.start,
+        end: arg.end,
+        severity: 'error'
+      });
+    }
+
+    return true;
+  }
+
+  validateSourcepathFunction(node: CallExpressionNode): boolean {
+    const argCount = node.arguments.length;
+    
+    // sourcepath(depth?: number, dironly?: boolean)
+    // Both parameters are optional
+
+    // ucode is permissive with argument counts, extra arguments are ignored.
+
+    // Validate first parameter (depth) if present - should be number
+    if (argCount >= 1) {
+      this.validateNumericArgument(node.arguments[0], 'sourcepath', 1);
+    }
+
+    // No validation for the second parameter (dironly) because any type can be
+    // evaluated as truthy or falsy at runtime in ucode.
 
     return true;
   }
