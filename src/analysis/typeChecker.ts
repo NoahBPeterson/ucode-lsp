@@ -735,6 +735,10 @@ export class TypeChecker {
         return this.builtinValidator.validateMaxFunction(node);
       case 'uniq':
         return this.builtinValidator.validateUniqFunction(node);
+      case 'printf':
+        return this.builtinValidator.validatePrintfFunction(node);
+      case 'sprintf':
+        return this.builtinValidator.validateSprintfFunction(node);
       default:
         return false;
     }

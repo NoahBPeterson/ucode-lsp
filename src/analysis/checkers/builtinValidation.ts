@@ -425,6 +425,20 @@ export class BuiltinValidator {
     return true;
   }
 
+  validatePrintfFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'printf', 1)) return true;
+    // First argument should be a format string, but string conversion is allowed
+    this.validateArgumentType(node.arguments[0], 'printf', 1, [UcodeType.STRING]);
+    return true;
+  }
+
+  validateSprintfFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'sprintf', 1)) return true;
+    // First argument should be a format string, but string conversion is allowed
+    this.validateArgumentType(node.arguments[0], 'sprintf', 1, [UcodeType.STRING]);
+    return true;
+  }
+
   getErrors(): TypeError[] {
     return this.errors;
   }
