@@ -439,6 +439,20 @@ export class BuiltinValidator {
     return true;
   }
 
+  validateIptoarrFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'iptoarr', 1)) return true;
+    // First argument must be a string (IP address), returns null if not
+    this.validateArgumentType(node.arguments[0], 'iptoarr', 1, [UcodeType.STRING]);
+    return true;
+  }
+
+  validateArrtoipFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'arrtoip', 1)) return true;
+    // First argument must be an array (IP components), returns null if not
+    this.validateArgumentType(node.arguments[0], 'arrtoip', 1, [UcodeType.ARRAY]);
+    return true;
+  }
+
   getErrors(): TypeError[] {
     return this.errors;
   }

@@ -739,6 +739,10 @@ export class TypeChecker {
         return this.builtinValidator.validatePrintfFunction(node);
       case 'sprintf':
         return this.builtinValidator.validateSprintfFunction(node);
+      case 'iptoarr':
+        return this.builtinValidator.validateIptoarrFunction(node);
+      case 'arrtoip':
+        return this.builtinValidator.validateArrtoipFunction(node);
       default:
         return false;
     }
