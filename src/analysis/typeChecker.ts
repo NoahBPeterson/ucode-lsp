@@ -743,6 +743,16 @@ export class TypeChecker {
         return this.builtinValidator.validateIptoarrFunction(node);
       case 'arrtoip':
         return this.builtinValidator.validateArrtoipFunction(node);
+      case 'int':
+        return this.builtinValidator.validateIntFunction(node);
+      case 'hex':
+        return this.builtinValidator.validateHexFunction(node);
+      case 'chr':
+        return this.builtinValidator.validateChrFunction(node);
+      case 'ord':
+        return this.builtinValidator.validateOrdFunction(node);
+      case 'uchr':
+        return this.builtinValidator.validateUchrFunction(node);
       default:
         return false;
     }

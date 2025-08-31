@@ -453,6 +453,149 @@ export class BuiltinValidator {
     return true;
   }
 
+  validateIntFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `int() expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arg = node.arguments[0];
+    if (!arg) return true;
+    
+    const argType = this.getNodeType(arg);
+
+    if (argType !== UcodeType.STRING && argType !== UcodeType.INTEGER && 
+        argType !== UcodeType.DOUBLE && argType !== UcodeType.UNKNOWN) {
+      this.errors.push({
+        message: `int() expects string or number, got ${argType.toLowerCase()}`,
+        start: arg.start,
+        end: arg.end,
+        severity: 'error'
+      });
+    }
+
+    return true;
+  }
+
+  validateHexFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `hex() expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arg = node.arguments[0];
+    if (!arg) return true;
+    
+    const argType = this.getNodeType(arg);
+
+    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
+      this.errors.push({
+        message: `hex() expects string, got ${argType.toLowerCase()}`,
+        start: arg.start,
+        end: arg.end,
+        severity: 'error'
+      });
+    }
+
+    return true;
+  }
+
+  validateChrFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `chr() expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arg = node.arguments[0];
+    if (!arg) return true;
+    
+    const argType = this.getNodeType(arg);
+
+    if (argType !== UcodeType.INTEGER && argType !== UcodeType.DOUBLE && argType !== UcodeType.UNKNOWN) {
+      this.errors.push({
+        message: `chr() expects number, got ${argType.toLowerCase()}`,
+        start: arg.start,
+        end: arg.end,
+        severity: 'error'
+      });
+    }
+
+    return true;
+  }
+
+  validateOrdFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `ord() expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arg = node.arguments[0];
+    if (!arg) return true;
+    
+    const argType = this.getNodeType(arg);
+
+    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
+      this.errors.push({
+        message: `ord() expects string, got ${argType.toLowerCase()}`,
+        start: arg.start,
+        end: arg.end,
+        severity: 'error'
+      });
+    }
+
+    return true;
+  }
+
+  validateUchrFunction(node: CallExpressionNode): boolean {
+    if (node.arguments.length !== 1) {
+      this.errors.push({
+        message: `uchr() expects 1 argument, got ${node.arguments.length}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return true;
+    }
+
+    const arg = node.arguments[0];
+    if (!arg) return true;
+    
+    const argType = this.getNodeType(arg);
+
+    // uchr() accepts both string and number parameters
+    if (argType !== UcodeType.STRING && argType !== UcodeType.INTEGER && 
+        argType !== UcodeType.DOUBLE && argType !== UcodeType.UNKNOWN) {
+      this.errors.push({
+        message: `uchr() expects string or number, got ${argType.toLowerCase()}`,
+        start: arg.start,
+        end: arg.end,
+        severity: 'error'
+      });
+    }
+
+    return true;
+  }
+
   getErrors(): TypeError[] {
     return this.errors;
   }
