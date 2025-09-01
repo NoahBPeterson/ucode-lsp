@@ -39,7 +39,7 @@ export interface TypeError {
   message: string;
   start: number;
   end: number;
-  severity: 'error' | 'warning';
+  severity: 'error' | 'warning' | 'info';
 }
 
 export interface TypeWarning {
@@ -123,7 +123,7 @@ export class TypeChecker {
       { name: 'loadfile', parameters: [UcodeType.STRING], returnType: UcodeType.FUNCTION },
       { name: 'wildcard', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
       { name: 'regexp', parameters: [UcodeType.STRING], returnType: UcodeType.REGEX, minParams: 1, maxParams: 2 },
-      { name: 'assert', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
+      { name: 'assert', parameters: [], returnType: UcodeType.UNKNOWN, variadic: true, minParams: 0 }, // Returns first argument (reflective) - accepts any truish types
       { name: 'call', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, variadic: true },
       { name: 'signal', parameters: [UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
       { name: 'clock', parameters: [UcodeType.BOOLEAN], returnType: UcodeType.ARRAY, minParams: 0, maxParams: 1 },
@@ -631,8 +631,8 @@ export class TypeChecker {
     }
 
     const argCount = node.arguments.length;
-    const minParams = signature.minParams || 0; // || signature.parameters.length;
-    const maxParams = signature.maxParams || (signature.variadic ? Infinity : signature.parameters.length);
+    const minParams = signature.minParams ?? signature.parameters.length;
+    const maxParams = signature.maxParams ?? (signature.variadic ? Infinity : signature.parameters.length);
 
     // Check argument count
     if (argCount < minParams) {
@@ -764,6 +764,13 @@ export class TypeChecker {
         return this.builtinValidator.validateLoadstringFunction(node);
       case 'sourcepath':
         return this.builtinValidator.validateSourcepathFunction(node);
+      case 'regexp':
+        return this.builtinValidator.validateRegexpFunction(node);
+      case 'wildcard':
+        return this.builtinValidator.validateWildcardFunction(node);
+      case 'assert':
+        return this.builtinValidator.validateAssertFunction(node);
+      
       default:
         return false;
     }

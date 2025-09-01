@@ -17,7 +17,7 @@ const testFiles = [
     'tests/test-conversion-functions.js',
     'tests/test-module-functions.js',
     'tests/test-json-utility-functions.js',
-    'tests/test-remaining-utility-functions.js',
+    'tests/test-utility-functions-ast.test.js',
     'tests/test-system-utility-functions.js',
     'tests/test-union-types-programmatic.js',
     'tests/test-union-types-logic.js',

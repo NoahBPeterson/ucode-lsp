@@ -2,7 +2,7 @@
  * Built-in function validation for ucode semantic analysis
  */
 
-import { CallExpressionNode, LiteralNode } from '../../ast/nodes';
+import { AstNode, CallExpressionNode, LiteralNode } from '../../ast/nodes';
 import { UcodeType } from '../symbolTable';
 import { TypeError } from '../types';
 
@@ -127,6 +127,34 @@ export class BuiltinValidator {
       return false;
     }
 
+    return true;
+  }
+
+  private isKnownTruish(node: AstNode): boolean {
+    if (node.type === 'Literal') {
+      const literal = node as any;
+      switch (literal.literalType) {
+        case 'null':
+          // UC_NULL: always false
+          return false;
+        case 'boolean':
+          // UC_BOOLEAN: return the boolean value
+          return literal.value === true;
+        case 'number':
+          // UC_INTEGER: false if 0, true otherwise
+          return literal.value !== 0;
+        case 'string':
+          // UC_STRING: false if empty string, true otherwise
+          return literal.value !== '';
+        case 'double':
+          // UC_DOUBLE: false if 0 or NaN, true otherwise
+          return literal.value !== 0 && !isNaN(literal.value);
+        default:
+          // UC_ARRAY, UC_OBJECT, UC_REGEXP, UC_CFUNCTION, UC_CLOSURE, etc: always true (default case)
+          return true;
+      }
+    }
+    // For non-literals, we can't determine truthiness statically, assume truish
     return true;
   }
 
@@ -288,23 +316,290 @@ export class BuiltinValidator {
   }
 
   validateAssertFunction(node: CallExpressionNode): boolean {
-    if (!this.checkArgumentCount(node, 'assert', 1)) return true;
-    // First argument is any type, second is converted to string. No checks needed.
+    // Assert accepts any number of arguments (including 0)
+    // Empty assert() will just show as failing assertion
+    // All argument types are accepted - no validation needed
+    
+    if (node.arguments.length === 0) {
+      this.errors.push({
+        message: `Empty assert() will always fail - consider adding a condition`,
+        start: node.start,
+        end: node.end,
+        severity: 'warning'
+      });
+    } else {
+      // Check if the first argument is known to be falsy
+      const firstArg = node.arguments[0];
+      if (firstArg && !this.isKnownTruish(firstArg)) {
+        this.errors.push({
+          message: `assert() with falsy value will always fail - consider adding a condition`,
+          start: firstArg.start,
+          end: firstArg.end,
+          severity: 'warning'
+        });
+      }
+    }
+    
     return true;
   }
 
   validateRegexpFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'regexp', 1)) return true;
-    // First and second (optional) arguments are converted to string. No checks needed.
+    
+    this.validateArgumentType(node.arguments[0], 'regexp', 1, [UcodeType.STRING]);
+    
+    if (node.arguments.length > 1) {
+      if (this.validateArgumentType(node.arguments[1], 'regexp', 2, [UcodeType.STRING])) {
+        // Validate flags string - only 'i', 's', 'g' are allowed
+        const flagsArg = node.arguments[1];
+        if (flagsArg && flagsArg.type === 'Literal') {
+          const literal = flagsArg as any;
+          if (literal.literalType === 'string') {
+            const flags = literal.value as string;
+            const validFlags = new Set(['i', 's', 'g']);
+            const invalidChars: string[] = [];
+            
+            for (const char of flags) {
+              if (!validFlags.has(char)) {
+                invalidChars.push(char);
+              }
+            }
+            
+            if (invalidChars.length > 0) {
+              const uniqueInvalid = [...new Set(invalidChars)];
+              this.errors.push({
+                message: `Unrecognized flag characters: ${uniqueInvalid.map(c => `'${c}'`).join(', ')}`,
+                start: flagsArg.start,
+                end: flagsArg.end,
+                severity: 'error'
+              });
+            }
+          }
+        }
+      }
+    }
+    
     return true;
   }
 
   validateWildcardFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'wildcard', 2)) return true;
-    // First and second arguments are converted to string. No checks needed.
+
+    // 1st arg: any; because everything is convertible to string.
+    // 2nd arg: must be string
+    this.validateArgumentType(node.arguments[1], 'wildcard', 2, [UcodeType.STRING]);
+
+    const patternArg = node.arguments[1];
+
+    // Third argument detection for future use (case-insensitive flag)
+    // Currently not used in validation but available for enhancement
+
+    if (patternArg && patternArg.type === 'Literal') {
+      const lit = patternArg as any;
+      if (lit.literalType === 'string') {
+        const pattern: string = String(lit.value ?? '');
+        const valueStart: number = (lit.valueStart ?? (patternArg.start + 1));
+        const valueEnd: number   = (lit.valueEnd   ?? (patternArg.end - 1));
+
+        type Sev = 'error' | 'warning' | 'info';
+        let hadError = false;
+        let sawWildcard = false;
+
+        const pushDiag = (sev: Sev, msg: string, relStart: number, relEnd?: number) => {
+          hadError ||= (sev === 'error');
+          const start = Math.min(valueEnd, Math.max(valueStart, valueStart + relStart));
+          const end   = Math.min(valueEnd, Math.max(start, valueStart + (relEnd ?? relStart + 1)));
+          this.errors.push({ message: msg, start, end, severity: sev });
+        };
+
+        const POSIX_CLASSES = new Set([
+          'alnum','alpha','blank','cntrl','digit','graph','lower',
+          'print','punct','space','upper','xdigit'
+        ]);
+
+        // Non-fatal style nudge: "**" is usually accidental.
+        for (let i = 0; i + 1 < pattern.length; i++) {
+          if (pattern[i] === '*' && pattern[i + 1] === '*') {
+            pushDiag('warning',
+              `Redundant '*' at position ${i}. Prefer a single '*' unless you truly want back-to-back globs.`,
+              i, i + 2);
+          }
+        }
+
+        const escapesEnabled = true; // Only FNM_CASEFOLD is supported; escapes behave like OpenBSD.
+        let i = 0;
+
+        while (i < pattern.length) {
+          const ch = pattern[i];
+
+          if (escapesEnabled && ch === '\\') {
+            if (i + 1 < pattern.length) { i += 2; continue; }
+            pushDiag('warning',
+              `Trailing backslash escapes nothing and is treated as a literal '\\'. If you intended to escape a character, add it after the '\\'.`,
+              i);
+            i += 1;
+            continue;
+          }
+
+          if (ch === '*' || ch === '?') {
+            sawWildcard = true;
+            i += 1;
+            continue;
+          }
+
+          if (ch === '[') {
+            const openPos = i;
+            let j = i + 1;
+            let hadItemBeforeDash = false;
+            let lastLiteralForRange: string | null = null;
+
+            if (j < pattern.length && (pattern[j] === '!' || pattern[j] === '^')) j++;
+            if (j < pattern.length && pattern[j] === ']') { // leading ']'
+              hadItemBeforeDash = true;
+              lastLiteralForRange = ']';
+              j++;
+            }
+
+            let closed = false;
+            while (j < pattern.length) {
+              if (escapesEnabled && pattern[j] === '\\') {
+                if (j + 1 < pattern.length && pattern[j + 1]) {
+                  hadItemBeforeDash = true;
+                  lastLiteralForRange = pattern[j + 1] ?? null;
+                  j += 2;
+                  continue;
+                } else { j += 1; continue; }
+              }
+
+              // Character class [:name:]
+              if (pattern[j] === '[' && j + 1 < pattern.length && pattern[j + 1] === ':') {
+                const classStart = j + 2;
+                let k = classStart, found = false;
+                while (k + 1 < pattern.length) {
+                  if (pattern[k] === ':' && pattern[k + 1] === ']') { found = true; break; }
+                  k++;
+                }
+                if (!found) {
+                  pushDiag('error',
+                    `Unterminated character class. Expected ':]' to close '[:class:]'. Add ':]' to close the class.`,
+                    j, Math.min(j + 2, pattern.length));
+                  j += 1;
+                  continue;
+                } else {
+                  const name = pattern.slice(classStart, k);
+                  if (!POSIX_CLASSES.has(name)) {
+                    const lower = name.toLowerCase();
+                    const suggestion = POSIX_CLASSES.has(lower) ? ` Did you mean '[:${lower}:]'?` : '';
+                    pushDiag('error',
+                      `Unknown POSIX character class '[:${name}:]'. Allowed: ${Array.from(POSIX_CLASSES).join(', ')}.` + suggestion,
+                      j, k + 2);
+                  }
+                  hadItemBeforeDash = true;
+                  lastLiteralForRange = null;
+                  j = k + 2;
+                  continue;
+                }
+              }
+
+              if (pattern[j] === ']') { closed = true; j++; break; }
+
+              if (pattern[j] === '-') {
+                const hasLeft = hadItemBeforeDash;
+                // Probe right endpoint (must exist and not be ']' unless escaped/class)
+                let k = j + 1;
+                let rightChar: string | null = null;
+                let rightExists = false;
+                if (k < pattern.length) {
+                  if (escapesEnabled && pattern[k] === '\\' && k + 1 < pattern.length) {
+                    rightExists = (pattern[k + 1] !== ']');
+                    rightChar = rightExists ? (pattern[k + 1] ?? null) : null;
+                  } else if (pattern[k] !== ']') {
+                    rightExists = true;
+                    if (!(pattern[k] === '[' && k + 1 < pattern.length && pattern[k + 1] === ':')) {
+                      rightChar = pattern[k] ?? null;
+                    } else {
+                      rightChar = null; // class endpoint; fine for syntax
+                    }
+                  }
+                }
+
+                if (!hasLeft || !rightExists) {
+                  pushDiag('error',
+                    `Malformed range: '-' must have a character on both sides inside '[...]'. Move '-' to the start/end to make it literal (e.g., '[-a]' or '[a-]'), or provide both endpoints (e.g., 'a-z').`,
+                    j);
+                  hadItemBeforeDash = true;
+                  lastLiteralForRange = '-';
+                  j += 1;
+                  continue;
+                } else {
+                  if (lastLiteralForRange && rightChar) {
+                    const L = lastLiteralForRange.charCodeAt(0);
+                    const R = rightChar.charCodeAt(0);
+                    const isSuspiciousAlphaSpan =
+                      ((lastLiteralForRange >= 'A' && lastLiteralForRange <= 'Z') &&
+                      (rightChar          >= 'a' && rightChar          <= 'z') && L < R);
+                    if (isSuspiciousAlphaSpan) {
+                      pushDiag('warning',
+                        `Suspicious range '${lastLiteralForRange}-${rightChar}' spans punctuation (between 'Z' and 'a'). Prefer '[A-Za-z]'.`,
+                        j - 1, j + 2);
+                    }
+                  }
+                  j += 1; // on '-'
+                  if (escapesEnabled && pattern[j] === '\\' && j + 1 < pattern.length) {
+                    j += 2;
+                  } else if (pattern[j] === '[' && j + 1 < pattern.length && pattern[j + 1] === ':') {
+                    let m = j + 2, found = false;
+                    while (m + 1 < pattern.length) {
+                      if (pattern[m] === ':' && pattern[m + 1] === ']') { found = true; break; }
+                      m++;
+                    }
+                    j = found ? m + 2 : j + 1;
+                  } else {
+                    j += 1;
+                  }
+                  hadItemBeforeDash = true;
+                  lastLiteralForRange = null;
+                  continue;
+                }
+              }
+
+              // Ordinary literal
+              hadItemBeforeDash = true;
+              lastLiteralForRange = pattern[j] ?? null;
+              j += 1;
+            } // end bracket scan
+
+            if (!closed) {
+              pushDiag('error',
+                `Unclosed bracket expression. Add a matching ']' to close the '[' opened here.`,
+                openPos);
+              i = openPos + 1;
+              continue;
+            } else {
+              sawWildcard = true; // wildcard is []; we know this because the [ is closed.
+              i = j;
+              continue;
+            }
+          }
+
+          // ordinary literal
+          i += 1;
+        }
+
+        if (!hadError && !sawWildcard) {
+          this.errors.push({
+            message: `Wildcard pattern '${pattern}' contains no wildcard characters. Consider adding '*', '?' or a bracket expression '[...]' if you intended a pattern.`,
+            start: patternArg.start,
+            end: patternArg.end,
+            severity: 'warning'
+          });
+        }
+      }
+    }
+
+    // 3rd arg: CASEFOLD flag — no *syntax* validation required.
     return true;
   }
-
 
   validateLocaltimeFunction(node: CallExpressionNode): boolean {
     // 0 or 1 arguments, no check needed

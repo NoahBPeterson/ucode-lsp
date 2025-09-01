@@ -1,6 +1,6 @@
 /**
  * Test file to reproduce parser error on wrong location
- */ /
+ */
     
 // More code here
 function helper() {
@@ -24,4 +24,4 @@ export function generate_bandwidth_overrides() {
         timestamp: timestamp,
         data: data
     };
-}
+};
