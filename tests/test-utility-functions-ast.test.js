@@ -1,5 +1,6 @@
 const { spawn } = require('child_process');
 const assert = require('assert');
+const { errorMonitor } = require('events');
 
 async function runTests() {
   let serverProcess;
@@ -193,19 +194,20 @@ async function runTests() {
         {
             name: 'assert() with no arguments',
             code: 'assert();',
-            expectedErrors: 1,
+            expectedWarnings: 1,
             errorMessage: "Empty assert() will always fail - consider adding a condition"
         },
         {
             name: 'assert() with false literal',
             code: 'assert(false);',
-            expectedErrors: 1,
+            expectedWarnings: 1,
             errorMessage: "assert() with falsy value will always fail - consider adding a condition"
         },
         {
             name: 'assert() with zero literal',
             code: 'assert(0);',
-            expectedErrors: 1,
+            expectedWarnings: 1,
+            expectedErrors: 0,
             errorMessage: "assert() with falsy value will always fail - consider adding a condition"
         },
         {
@@ -217,7 +219,8 @@ async function runTests() {
         {
             name: 'assert() with null literal',
             code: 'assert(null);',
-            expectedErrors: 1,
+            expectedWarnings: 1,
+            expectedErrors: 0,
             errorMessage: "assert() with falsy value will always fail - consider adding a condition"
         },
         {
@@ -272,31 +275,45 @@ async function runTests() {
         {
             name: 'wildcard() with redundant asterisks',
             code: 'wildcard("file.txt", "**/*.txt");',
-            expectedErrors: 1,
+            expectedWarnings: 1,
+            expectedErrors: 0,
             errorMessage: "Redundant '*' at position 0"
         },
         {
             name: 'wildcard() with trailing backslash',
             code: 'wildcard("file.txt", "*.txt\\\\");',
-            expectedErrors: 1,
+            expectedWarnings: 1,
+            expectedErrors: 0,
             errorMessage: "Trailing backslash escapes nothing"
         },
         {
             name: 'wildcard() with unclosed bracket',
             code: 'wildcard("file.txt", "[a-z*.txt");',
-            expectedErrors: 1,
+            expectedErrors: 2,
             errorMessage: "Unclosed bracket expression"
         },
         {
-            name: 'wildcard() with malformed range',
+            name: 'wildcard() with hyphen literal',
             code: 'wildcard("file.txt", "[a-].txt");',
-            expectedErrors: 1,
-            errorMessage: "Malformed range"
+            expectedErrors: 0,
+        },
+        {
+            name: 'wildcard() with hyphen literal',
+            code: 'wildcard("file.txt", "[-a].txt");',
+            expectedErrors: 0,
+        },
+        {
+            name: 'wildcard() with descending range',
+            code: 'wildcard("file.txt", "[z-a].txt");',
+            expectedWarnings: 1,
+            expectedErrors: 0,
+            errorMessage: "Descending range 'z-a'"
         },
         {
             name: 'wildcard() with suspicious range A-z',
             code: 'wildcard("file.txt", "[A-z]*.txt");',
-            expectedErrors: 1,
+            expectedWarnings: 1,
+            expectedErrors: 0,
             errorMessage: "Suspicious range 'A-z' spans punctuation"
         },
         {
@@ -311,10 +328,28 @@ async function runTests() {
             expectedErrors: 0
         },
         {
+            name: 'wildcard() with question mark in brackets',
+            code: 'wildcard("file.txt", "[file?]*.txt");',
+            expectedErrors: 1,
+            errorMessage: "'?' is literal"
+        },
+        {
+            name: 'wildcard() with asterisk in brackets',
+            code: 'wildcard("file.txt", "[file*]*.txt");',
+            expectedErrors: 1,
+            errorMessage: "'*' is literal"
+        },
+        {
             name: 'wildcard() with unterminated character class',
             code: 'wildcard("file.txt", "[[:alpha]*.txt");',
             expectedErrors: 1,
             errorMessage: "Unterminated character class"
+        },
+        {
+            name: 'wildcard() with unterminated character class',
+            code: 'wildcard("file.txt", "[:alpha:]*.txt");',
+            expectedErrors: 1,
+            errorMessage: "POSIX character class used without outer brackets."
         },
         {
             name: 'wildcard() with non-string pattern',
@@ -349,9 +384,16 @@ async function runTests() {
     for (const testCase of testCases) {
         const diagnostics = await getDiagnostics(testCase.code, `/tmp/test-${Math.random()}.uc`);
         try {
-            assert.strictEqual(diagnostics.length, testCase.expectedErrors, `Failed: ${testCase.name} - Expected ${testCase.expectedErrors} errors but got ${diagnostics.length}`);
-            if (testCase.expectedErrors > 0) {
-                assert(diagnostics.some(d => d.message.includes(testCase.errorMessage)), `Failed: ${testCase.name} - Error message should include '${testCase.errorMessage}'`);
+            if (typeof testCase.expectedWarnings === 'number') {
+                assert.strictEqual(diagnostics.length, testCase.expectedWarnings, `Failed: ${testCase.name} - Expected ${testCase.expectedWarnings} but got ${diagnostics.length}`);
+                if (testCase.expectedWarnings > 0) {
+                    assert(diagnostics.some(d => d.message.includes(testCase.errorMessage)), `Failed: ${testCase.name} - Warning message should include '${testCase.errorMessage} - instead, is this: ${diagnostics[0].message}'`);
+                }
+            } else {
+                assert.strictEqual(diagnostics.length, testCase.expectedErrors, `Failed: ${testCase.name} - Expected ${testCase.expectedErrors} but got ${diagnostics.length}`);
+                if (testCase.expectedErrors > 0) {
+                    assert(diagnostics.some(d => d.message.includes(testCase.errorMessage)), `Failed: ${testCase.name} - Error message should include '${testCase.errorMessage} - instead, is this: ${diagnostics[0].message}'`);
+                }
             }
             passed++;
         } catch (e) {

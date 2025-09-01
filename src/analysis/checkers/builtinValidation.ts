@@ -4,7 +4,7 @@
 
 import { AstNode, CallExpressionNode, LiteralNode } from '../../ast/nodes';
 import { UcodeType } from '../symbolTable';
-import { TypeError } from '../types';
+import { TypeError, TypeWarning } from '../types';
 
 const VALID_SIGNAL_NAMES = new Set([
   'INT', 'ILL', 'ABRT', 'FPE', 'SEGV', 'TERM', 'HUP', 'QUIT', 'TRAP', 
@@ -51,6 +51,7 @@ export function isStringCastableType(_type: UcodeType): boolean {
 
 export class BuiltinValidator {
   private errors: TypeError[] = [];
+  private warnings: TypeWarning[] = [];
 
   constructor() {}
 
@@ -321,7 +322,7 @@ export class BuiltinValidator {
     // All argument types are accepted - no validation needed
     
     if (node.arguments.length === 0) {
-      this.errors.push({
+      this.warnings.push({
         message: `Empty assert() will always fail - consider adding a condition`,
         start: node.start,
         end: node.end,
@@ -331,7 +332,7 @@ export class BuiltinValidator {
       // Check if the first argument is known to be falsy
       const firstArg = node.arguments[0];
       if (firstArg && !this.isKnownTruish(firstArg)) {
-        this.errors.push({
+        this.warnings.push({
           message: `assert() with falsy value will always fail - consider adding a condition`,
           start: firstArg.start,
           end: firstArg.end,
@@ -409,7 +410,10 @@ export class BuiltinValidator {
           hadError ||= (sev === 'error');
           const start = Math.min(valueEnd, Math.max(valueStart, valueStart + relStart));
           const end   = Math.min(valueEnd, Math.max(start, valueStart + (relEnd ?? relStart + 1)));
-          this.errors.push({ message: msg, start, end, severity: sev });
+          if (sev === 'warning')
+            this.warnings.push({ message: msg, start, end, severity: sev });
+          else if (sev === 'error')
+            this.errors.push({ message: msg, start, end, severity: sev });
         };
 
         const POSIX_CLASSES = new Set([
@@ -501,10 +505,26 @@ export class BuiltinValidator {
                 }
               }
 
+              // '*' and '?' are literals inside bracket expressions
+              if ((pattern[j] === '*' || pattern[j] === '?') && pattern[j]) {
+                pushDiag('warning', `'${pattern[j]}' is literal inside '[...]', not a wildcard.`, j);
+                hadItemBeforeDash = true;
+                lastLiteralForRange = pattern[j] ?? null;
+                j += 1;
+                continue;
+              }
+
               if (pattern[j] === ']') { closed = true; j++; break; }
 
               if (pattern[j] === '-') {
-                const hasLeft = hadItemBeforeDash;
+                // Edge '-' is literal: at start of items (no left endpoint)
+                // or immediately before a closing ']' (no right endpoint).
+                if (!hadItemBeforeDash || j + 1 >= pattern.length || pattern[j + 1] === ']') {
+                  hadItemBeforeDash = true;
+                  lastLiteralForRange = '-';
+                  j += 1;
+                  continue;
+                }
                 // Probe right endpoint (must exist and not be ']' unless escaped/class)
                 let k = j + 1;
                 let rightChar: string | null = null;
@@ -523,8 +543,8 @@ export class BuiltinValidator {
                   }
                 }
 
-                if (!hasLeft || !rightExists) {
-                  pushDiag('error',
+                if (!rightExists) {
+                    pushDiag('error',
                     `Malformed range: '-' must have a character on both sides inside '[...]'. Move '-' to the start/end to make it literal (e.g., '[-a]' or '[a-]'), or provide both endpoints (e.g., 'a-z').`,
                     j);
                   hadItemBeforeDash = true;
@@ -543,6 +563,12 @@ export class BuiltinValidator {
                         `Suspicious range '${lastLiteralForRange}-${rightChar}' spans punctuation (between 'Z' and 'a'). Prefer '[A-Za-z]'.`,
                         j - 1, j + 2);
                     }
+                    // Descending/empty range like 'r-i': valid but usually unintended.
+                    if (L > R) {
+                      pushDiag('warning',
+                        `Descending range '${lastLiteralForRange}-${rightChar}' likely matches nothing under byte collation. Did you mean '${rightChar}-${lastLiteralForRange}' or escape '-' as '\\-'?`,
+                        j - 1, j + 2);
+1                    }
                   }
                   j += 1; // on '-'
                   if (escapesEnabled && pattern[j] === '\\' && j + 1 < pattern.length) {
@@ -577,6 +603,16 @@ export class BuiltinValidator {
               continue;
             } else {
               sawWildcard = true; // wildcard is []; we know this because the [ is closed.
+              // Naked POSIX class like '[:alpha:]' (no inner leading '[') — likely intent was '[[:alpha:]]'
+              const inner = pattern.slice(openPos + 1, j - 1);
+              const m = /^:([A-Za-z]+):$/.exec(inner);
+              if (m && m[1] && POSIX_CLASSES.has(m[1])) {
+                pushDiag(
+                  'warning',
+                  `POSIX character class used without outer brackets. Use '[[:${m[1]}:]]', not '[:${m[1]}:]'.`,
+                  openPos, j
+                );
+              }
               i = j;
               continue;
             }
@@ -587,7 +623,7 @@ export class BuiltinValidator {
         }
 
         if (!hadError && !sawWildcard) {
-          this.errors.push({
+          this.warnings.push({
             message: `Wildcard pattern '${pattern}' contains no wildcard characters. Consider adding '*', '?' or a bracket expression '[...]' if you intended a pattern.`,
             start: patternArg.start,
             end: patternArg.end,
@@ -688,7 +724,7 @@ export class BuiltinValidator {
         if (handlerType === UcodeType.STRING && handlerArg.type === 'Literal') {
           const literal = handlerArg as LiteralNode;
           if (typeof literal.value === 'string' && literal.value !== 'ignore' && literal.value !== 'default') {
-            this.errors.push({ message: `Invalid signal handler string "${literal.value}". Did you mean 'ignore' or 'default'?`, start: handlerArg.start, end: handlerArg.end, severity: 'warning' });
+            this.warnings.push({ message: `Invalid signal handler string "${literal.value}". Did you mean 'ignore' or 'default'?`, start: handlerArg.start, end: handlerArg.end, severity: 'warning' });
           }
         } else {
             this.validateArgumentType(handlerArg, 'signal', 2, [UcodeType.FUNCTION, UcodeType.STRING]);
@@ -697,7 +733,7 @@ export class BuiltinValidator {
         if (signalValue && signalArg) {
             let sigStr = String(signalValue).toUpperCase().replace(/^SIG/, '');
             if (UNHANDLABLE_SIGNALS.has(sigStr)) {
-                this.errors.push({ message: `Signal '${sigStr}' cannot be caught or ignored.`, start: signalArg.start, end: signalArg.end, severity: 'warning' });
+                this.warnings.push({ message: `Signal '${sigStr}' cannot be caught or ignored.`, start: signalArg.start, end: signalArg.end, severity: 'warning' });
             }
         }
       }
@@ -1023,6 +1059,14 @@ export class BuiltinValidator {
 
   resetErrors(): void {
     this.errors = [];
+  }
+
+  getWarnings(): TypeWarning[] {
+    return this.warnings;
+  }
+
+  resetWarnings(): void {
+    this.warnings = [];
   }
 
   // This method should be implemented by the type checker that uses this validator

@@ -39,7 +39,7 @@ export interface TypeError {
   message: string;
   start: number;
   end: number;
-  severity: 'error' | 'warning' | 'info';
+  severity: 'error';
 }
 
 export interface TypeWarning {
@@ -287,11 +287,12 @@ export class TypeChecker {
   getResult(): TypeCheckResult {
     // Collect errors from builtin validator
     const builtinErrors = this.builtinValidator.getErrors();
+    const builtinWarnings = this.builtinValidator.getWarnings();
     
     return {
       type: UcodeType.UNKNOWN,
       errors: [...this.errors, ...builtinErrors],
-      warnings: this.warnings
+      warnings: [...this.warnings, ...builtinWarnings],
     };
   }
 
