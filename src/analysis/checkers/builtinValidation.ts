@@ -478,29 +478,30 @@ export class BuiltinValidator {
               // Character class [:name:]
               if (pattern[j] === '[' && j + 1 < pattern.length && pattern[j + 1] === ':') {
                 const classStart = j + 2;
-                let k = classStart, found = false;
-                while (k + 1 < pattern.length) {
-                  if (pattern[k] === ':' && pattern[k + 1] === ']') { found = true; break; }
-                  k++;
-                }
-                if (!found) {
-                  pushDiag('error',
+                const end = pattern.indexOf(':]', classStart);
+                if (end === -1) {
+                  pushDiag(
+                    'error',
                     `Unterminated character class. Expected ':]' to close '[:class:]'. Add ':]' to close the class.`,
-                    j, Math.min(j + 2, pattern.length));
+                    j, Math.min(j + 2, pattern.length)
+                  );
                   j += 1;
                   continue;
                 } else {
-                  const name = pattern.slice(classStart, k);
-                  if (!POSIX_CLASSES.has(name)) {
+                  const name = pattern.slice(classStart, end);
+                  const isKnown = POSIX_CLASSES.has(name) || POSIX_CLASSES.has(name.toLowerCase());
+                  if (!isKnown) {
                     const lower = name.toLowerCase();
                     const suggestion = POSIX_CLASSES.has(lower) ? ` Did you mean '[:${lower}:]'?` : '';
-                    pushDiag('error',
+                    pushDiag(
+                      'error',
                       `Unknown POSIX character class '[:${name}:]'. Allowed: ${Array.from(POSIX_CLASSES).join(', ')}.` + suggestion,
-                      j, k + 2);
+                      j, end + 2
+                    );
                   }
                   hadItemBeforeDash = true;
                   lastLiteralForRange = null;
-                  j = k + 2;
+                  j = end + 2; // skip past ':]'
                   continue;
                 }
               }
@@ -603,15 +604,25 @@ export class BuiltinValidator {
               continue;
             } else {
               sawWildcard = true; // wildcard is []; we know this because the [ is closed.
-              // Naked POSIX class like '[:alpha:]' (no inner leading '[') — likely intent was '[[:alpha:]]'
+              // Naked POSIX-ish token like '[:alpha:]' (missing inner '[' of [[:alpha:]])
               const inner = pattern.slice(openPos + 1, j - 1);
               const m = /^:([A-Za-z]+):$/.exec(inner);
-              if (m && m[1] && POSIX_CLASSES.has(m[1])) {
-                pushDiag(
-                  'warning',
-                  `POSIX character class used without outer brackets. Use '[[:${m[1]}:]]', not '[:${m[1]}:]'.`,
-                  openPos, j
-                );
+              if (m && m[1]) {
+                const name = m[1];
+                const lower = name.toLowerCase();
+                if (POSIX_CLASSES.has(name) || POSIX_CLASSES.has(lower)) {
+                  pushDiag(
+                    'error',
+                    `POSIX character class used without outer brackets. Use '[[:${lower}:]]', not '[:${name}:]'.`,
+                    openPos, j
+                  );
+                } else {
+                  pushDiag(
+                    'warning',
+                    `Looks like a POSIX character class '[:${name}:]' used without outer brackets, but '${name}' is not a standard POSIX class. Allowed: ${Array.from(POSIX_CLASSES).join(', ')}.`,
+                    openPos, j
+                  );
+                }
               }
               i = j;
               continue;

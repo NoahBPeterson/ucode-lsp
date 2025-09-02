@@ -96,6 +96,51 @@ async function runTests() {
     const testCases = [
         // wildcard() tests - original tests updated for new validation
         {
+            name: 'wildcard() naked POSIX class (should be [[:alpha:]])',
+            code: 'wildcard("image.jpeg", "image.[:alpha:]");',
+            expectedErrors: 1,
+            errorMessage: "POSIX character class used without outer brackets"
+        },
+        {
+            name: 'wildcard() unknown POSIX class',
+            code: 'wildcard("image.jpeg", "image.[[:foo:]]");',
+            expectedErrors: 1,
+            errorMessage: "Unknown POSIX character class"
+        },
+        {
+            name: 'wildcard() unterminated POSIX class',
+            code: 'wildcard("text.txt", "text.[[:alnum]]");',
+            expectedErrors: 1,
+            errorMessage: "Unterminated character class"
+        },
+        {
+            name: 'wildcard() unclosed bracket',
+            code: 'wildcard("archive.zip", "archive.[zip");',
+            expectedErrors: 1,
+            errorMessage: "Unclosed bracket expression"
+        },
+        {
+            name: 'wildcard() redundant star',
+            code: 'wildcard("data.log", "data**log");',
+            expectedWarnings: 1,
+            expectedErrors: 0,
+            errorMessage: "Redundant '*'"
+        },
+        {
+            name: 'wildcard() trailing backslash literal',
+            code: `wildcard("config.json", "config.json\\\\");`,
+            expectedWarnings: 2,
+            expectedErrors: 0,
+            errorMessage: "Trailing backslash escapes nothing"
+        },
+        {
+            name: 'wildcard() no wildcard characters',
+            code: 'wildcard("README.md", "README.md");',
+            expectedWarnings: 1,
+            expectedErrors: 0,
+            errorMessage: "contains no wildcard characters"
+        },
+        {
             name: 'wildcard() with two valid string arguments',
             code: 'wildcard("test.uc", "*.uc");',
             expectedErrors: 0
@@ -397,7 +442,7 @@ async function runTests() {
             }
             passed++;
         } catch (e) {
-            console.error(e.message);
+            console.error(e.message, diagnostics);
         }
     }
 
