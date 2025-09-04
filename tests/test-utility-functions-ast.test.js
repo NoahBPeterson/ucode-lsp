@@ -111,7 +111,7 @@ async function runTests() {
             name: 'wildcard() unterminated POSIX class',
             code: 'wildcard("text.txt", "text.[[:alnum]]");',
             expectedErrors: 1,
-            errorMessage: "Unterminated character class"
+            errorMessage: "POSIX character class appears to be missing the trailing ':]'. Did you mean '[[:alnum:]]'?"
         },
         {
             name: 'wildcard() unclosed bracket',
@@ -388,7 +388,7 @@ async function runTests() {
             name: 'wildcard() with unterminated character class',
             code: 'wildcard("file.txt", "[[:alpha]*.txt");',
             expectedErrors: 1,
-            errorMessage: "Unterminated character class"
+            errorMessage: "POSIX character class appears to be missing the trailing ':]'. Did you mean '[[:alpha:]]'?"
         },
         {
             name: 'wildcard() with unterminated character class',

@@ -1,155 +1,25 @@
-const { spawn } = require('child_process');
+const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const assert = require('assert');
+const { createLSPTestServer } = require('./lsp-test-helpers');
 
 describe('String Method Validation Tests', function() {
-  this.timeout(10000); // 10 second timeout for LSP tests
+  this.timeout(15000); // 15 second timeout for LSP tests
 
-  let serverProcess;
-  let requestId = 1;
-  let buffer = '';
-  let pendingRequests = new Map();
+  let lspServer;
+  let getDiagnostics;
 
-  // Helper function to create LSP message with Content-Length header
-  function createLSPMessage(obj) {
-    const content = JSON.stringify(obj);
-    return `Content-Length: ${Buffer.byteLength(content)}\r\n\r\n${content}`;
-  }
-
-  // Start shared server process
-  before(function(done) {
-    serverProcess = spawn('node', ['dist/server.js', '--stdio'], {
-      stdio: ['pipe', 'pipe', 'inherit']
-    });
-
-    serverProcess.stdout.on('data', (data) => {
-      buffer += data.toString();
-      
-      // Process complete LSP messages
-      while (true) {
-        const headerEnd = buffer.indexOf('\r\n\r\n');
-        if (headerEnd === -1) break;
-        
-        const header = buffer.slice(0, headerEnd);
-        const contentLengthMatch = header.match(/Content-Length: (\d+)/);
-        
-        if (!contentLengthMatch) {
-          buffer = buffer.slice(headerEnd + 4);
-          continue;
-        }
-        
-        const contentLength = parseInt(contentLengthMatch[1]);
-        const messageStart = headerEnd + 4;
-        
-        if (buffer.length < messageStart + contentLength) {
-          break; // Wait for more data
-        }
-        
-        const messageContent = buffer.slice(messageStart, messageStart + contentLength);
-        buffer = buffer.slice(messageStart + contentLength);
-        
-        try {
-          const message = JSON.parse(messageContent);
-          
-          // Handle publishDiagnostics notifications
-          if (message.method === 'textDocument/publishDiagnostics') {
-            const uri = message.params.uri;
-            if (pendingRequests.has(uri)) {
-              const { resolve, timeout } = pendingRequests.get(uri);
-              clearTimeout(timeout);
-              pendingRequests.delete(uri);
-              resolve(message.params.diagnostics);
-            }
-          }
-          
-          // Handle responses with IDs
-          if (message.id && pendingRequests.has(message.id)) {
-            const { resolve, timeout } = pendingRequests.get(message.id);
-            clearTimeout(timeout);
-            pendingRequests.delete(message.id);
-            resolve(message.result);
-          }
-        } catch (e) {
-          // Ignore parse errors, continue processing
-        }
-      }
-    });
-
-    serverProcess.on('error', (error) => {
-      console.error('Server error:', error);
-      done(error);
-    });
-
-    // Initialize the server
-    const initialize = {
-      jsonrpc: '2.0',
-      id: requestId++,
-      method: 'initialize',
-      params: {
-        processId: process.pid,
-        clientInfo: { name: 'test-client', version: '1.0.0' },
-        capabilities: {}
-      }
-    };
-
-    const initialized = {
-      jsonrpc: '2.0',
-      method: 'initialized',
-      params: {}
-    };
-
-    // Wait for initialization response
-    pendingRequests.set(initialize.id, {
-      resolve: () => {
-        // Send initialized notification
-        serverProcess.stdin.write(createLSPMessage(initialized));
-        done();
-      },
-      timeout: setTimeout(() => {
-        done(new Error('Server initialization timeout'));
-      }, 5000)
-    });
-
-    serverProcess.stdin.write(createLSPMessage(initialize));
+  before(async function() {
+    lspServer = createLSPTestServer();
+    await lspServer.initialize();
+    getDiagnostics = lspServer.getDiagnostics;
   });
 
-  // Clean up server process
   after(function() {
-    if (serverProcess) {
-      serverProcess.kill();
+    if (lspServer) {
+      lspServer.shutdown();
     }
   });
-
-  // Helper function to get diagnostics using shared server
-  function getDiagnostics(testContent, testFilePath) {
-    return new Promise((resolve, reject) => {
-      const didOpen = {
-        jsonrpc: '2.0',
-        method: 'textDocument/didOpen',
-        params: {
-          textDocument: {
-            uri: `file://${testFilePath}`,
-            languageId: 'ucode',
-            version: 1,
-            text: testContent
-          }
-        }
-      };
-
-      const timeout = setTimeout(() => {
-        if (pendingRequests.has(`file://${testFilePath}`)) {
-          pendingRequests.delete(`file://${testFilePath}`);
-          reject(new Error('Timeout waiting for diagnostics'));
-        }
-      }, 6000);
-
-      pendingRequests.set(`file://${testFilePath}`, { resolve, timeout });
-
-      // Send didOpen message
-      serverProcess.stdin.write(createLSPMessage(didOpen));
-    });
-  }
 
   describe('String Method Validation on test-string-methods.uc', function() {
     let diagnostics;
@@ -319,7 +189,7 @@ let methodName = "toUpperCase";
 let result = text[methodName](); // This should not trigger string method validation
       `;
       
-      const diagnostics = await getDiagnostics(testContent, '/tmp/test-computed.uc');
+      const diagnostics = await getDiagnostics(testContent, `/tmp/test-computed-${Date.now()}.uc`);
       
       // Should not report string method errors for computed access
       const stringMethodErrors = diagnostics.filter(d => 
@@ -336,7 +206,7 @@ let validLength = text.length;     // Invalid - should not error
 let invalidMethod = text.charAt(0); // Invalid - should error
       `;
       
-      const diagnostics = await getDiagnostics(testContent, '/tmp/test-mixed.uc');
+      const diagnostics = await getDiagnostics(testContent, `/tmp/test-mixed-${Date.now()}.uc`);
       
       const stringMethodErrors = diagnostics.filter(d => 
         d.severity === 1 && 
@@ -357,7 +227,7 @@ let text = "hello";
 // This is syntactically invalid but shouldn't crash the validator
       `;
       
-      const diagnostics = await getDiagnostics(testContent, '/tmp/test-empty.uc');
+      const diagnostics = await getDiagnostics(testContent, `/tmp/test-empty-${Date.now()}.uc`);
       
       // Should not crash and should return some diagnostics (even if empty)
       assert(Array.isArray(diagnostics), 'Should return diagnostics array');

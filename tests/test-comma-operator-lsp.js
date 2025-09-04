@@ -1,155 +1,25 @@
-const { spawn } = require('child_process');
+const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const assert = require('assert');
+const { createLSPTestServer } = require('./lsp-test-helpers');
 
 describe('Comma Operator Parsing LSP Tests', function() {
   this.timeout(15000); // 15 second timeout for LSP tests
 
-  let serverProcess;
-  let requestId = 1;
-  let buffer = '';
-  let pendingRequests = new Map();
+  let lspServer;
+  let getDiagnostics;
 
-  // Helper function to create LSP message with Content-Length header
-  function createLSPMessage(obj) {
-    const content = JSON.stringify(obj);
-    return `Content-Length: ${Buffer.byteLength(content)}\r\n\r\n${content}`;
-  }
-
-  // Start shared server process
-  before(function(done) {
-    serverProcess = spawn('node', ['dist/server.js', '--stdio'], {
-      stdio: ['pipe', 'pipe', 'inherit']
-    });
-
-    serverProcess.stdout.on('data', (data) => {
-      buffer += data.toString();
-      
-      // Process complete LSP messages
-      while (true) {
-        const headerEnd = buffer.indexOf('\r\n\r\n');
-        if (headerEnd === -1) break;
-        
-        const header = buffer.slice(0, headerEnd);
-        const contentLengthMatch = header.match(/Content-Length: (\d+)/);
-        
-        if (!contentLengthMatch) {
-          buffer = buffer.slice(headerEnd + 4);
-          continue;
-        }
-        
-        const contentLength = parseInt(contentLengthMatch[1]);
-        const messageStart = headerEnd + 4;
-        
-        if (buffer.length < messageStart + contentLength) {
-          break; // Wait for more data
-        }
-        
-        const messageContent = buffer.slice(messageStart, messageStart + contentLength);
-        buffer = buffer.slice(messageStart + contentLength);
-        
-        try {
-          const message = JSON.parse(messageContent);
-          
-          // Handle publishDiagnostics notifications
-          if (message.method === 'textDocument/publishDiagnostics') {
-            const uri = message.params.uri;
-            if (pendingRequests.has(uri)) {
-              const { resolve, timeout } = pendingRequests.get(uri);
-              clearTimeout(timeout);
-              pendingRequests.delete(uri);
-              resolve(message.params.diagnostics);
-            }
-          }
-          
-          // Handle responses with IDs
-          if (message.id && pendingRequests.has(message.id)) {
-            const { resolve, timeout } = pendingRequests.get(message.id);
-            clearTimeout(timeout);
-            pendingRequests.delete(message.id);
-            resolve(message.result);
-          }
-        } catch (e) {
-          // Ignore parse errors, continue processing
-        }
-      }
-    });
-
-    serverProcess.on('error', (error) => {
-      console.error('Server error:', error);
-      done(error);
-    });
-
-    // Initialize the server
-    const initialize = {
-      jsonrpc: '2.0',
-      id: requestId++,
-      method: 'initialize',
-      params: {
-        processId: process.pid,
-        clientInfo: { name: 'test-client', version: '1.0.0' },
-        capabilities: {}
-      }
-    };
-
-    const initialized = {
-      jsonrpc: '2.0',
-      method: 'initialized',
-      params: {}
-    };
-
-    // Wait for initialization response
-    pendingRequests.set(initialize.id, {
-      resolve: () => {
-        // Send initialized notification
-        serverProcess.stdin.write(createLSPMessage(initialized));
-        done();
-      },
-      timeout: setTimeout(() => {
-        done(new Error('Server initialization timeout'));
-      }, 10000)
-    });
-
-    serverProcess.stdin.write(createLSPMessage(initialize));
+  before(async function() {
+    lspServer = createLSPTestServer();
+    await lspServer.initialize();
+    getDiagnostics = lspServer.getDiagnostics;
   });
 
-  // Clean up server process
   after(function() {
-    if (serverProcess) {
-      serverProcess.kill();
+    if (lspServer) {
+      lspServer.shutdown();
     }
   });
-
-  // Helper function to get diagnostics using shared server
-  function getDiagnostics(testContent, testFilePath) {
-    return new Promise((resolve, reject) => {
-      const didOpen = {
-        jsonrpc: '2.0',
-        method: 'textDocument/didOpen',
-        params: {
-          textDocument: {
-            uri: `file://${testFilePath}`,
-            languageId: 'ucode',
-            version: 1,
-            text: testContent
-          }
-        }
-      };
-
-      const timeout = setTimeout(() => {
-        if (pendingRequests.has(`file://${testFilePath}`)) {
-          pendingRequests.delete(`file://${testFilePath}`);
-          reject(new Error('Timeout waiting for diagnostics'));
-        }
-      }, 8000);
-
-      pendingRequests.set(`file://${testFilePath}`, { resolve, timeout });
-
-      // Send didOpen message
-      serverProcess.stdin.write(createLSPMessage(didOpen));
-    });
-  }
 
   describe('Comma Operator Parsing on test-comma-operator-lsp.uc', function() {
     let diagnostics;
@@ -269,7 +139,7 @@ let flag = true;
 let result = flag ? (a = 1, a + 2) : (b = 2, b * 2);
       `;
       
-      const diagnostics = await getDiagnostics(testContent, '/tmp/test-conditional-comma.uc');
+      const diagnostics = await getDiagnostics(testContent, `/tmp/test-conditional-comma-${Date.now()}.uc`);
       
       // Should not report comma operator parsing errors
       const commaErrors = diagnostics.filter(d => 
@@ -285,7 +155,7 @@ let result = flag ? (a = 1, a + 2) : (b = 2, b * 2);
 let arr = [(x = 1, x + 1), (y = 2, y * 2)];
       `;
       
-      const diagnostics = await getDiagnostics(testContent, '/tmp/test-array-comma.uc');
+      const diagnostics = await getDiagnostics(testContent, `/tmp/test-array-comma-${Date.now()}.uc`);
       
       // Should not report comma operator parsing errors
       const commaErrors = diagnostics.filter(d => 
@@ -301,7 +171,7 @@ let arr = [(x = 1, x + 1), (y = 2, y * 2)];
 let result = (a = (b = 5, b + 1), c = (a + 2, a * 2));
       `;
       
-      const diagnostics = await getDiagnostics(testContent, '/tmp/test-nested-comma.uc');
+      const diagnostics = await getDiagnostics(testContent, `/tmp/test-nested-comma-${Date.now()}.uc`);
       
       // Should not report comma operator parsing errors
       const commaErrors = diagnostics.filter(d => 
@@ -317,7 +187,7 @@ let result = (a = (b = 5, b + 1), c = (a + 2, a * 2));
 let result = (console.log('test'), getValue());
       `;
       
-      const diagnostics = await getDiagnostics(testContent, '/tmp/test-function-comma.uc');
+      const diagnostics = await getDiagnostics(testContent, `/tmp/test-function-comma-${Date.now()}.uc`);
       
       // Should not report comma operator parsing errors
       const commaErrors = diagnostics.filter(d => 

@@ -1,183 +1,41 @@
-const { spawn } = require('child_process');
+const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const assert = require('assert');
+const { createLSPTestServer } = require('./lsp-test-helpers');
 
 describe('Auto-Fix Code Actions Tests', function() {
-  this.timeout(10000);
+  this.timeout(15000); // 15 second timeout for LSP tests
 
-  let serverProcess;
-  let requestId = 1;
-  let buffer = '';
-  let pendingRequests = new Map();
+  let lspServer;
+  let getDiagnostics;
+  let getCodeActions;
 
-  function createLSPMessage(obj) {
-    const content = JSON.stringify(obj);
-    return `Content-Length: ${Buffer.byteLength(content)}\r\n\r\n${content}`;
-  }
-
-  before(function(done) {
-    serverProcess = spawn('node', ['dist/server.js', '--stdio'], {
-      stdio: ['pipe', 'pipe', 'inherit']
-    });
-
-    serverProcess.stdout.on('data', (data) => {
-      buffer += data.toString();
-      
-      while (true) {
-        const headerEnd = buffer.indexOf('\r\n\r\n');
-        if (headerEnd === -1) break;
-        
-        const header = buffer.slice(0, headerEnd);
-        const contentLengthMatch = header.match(/Content-Length: (\d+)/);
-        
-        if (!contentLengthMatch) {
-          buffer = buffer.slice(headerEnd + 4);
-          continue;
-        }
-        
-        const contentLength = parseInt(contentLengthMatch[1]);
-        const messageStart = headerEnd + 4;
-        
-        if (buffer.length < messageStart + contentLength) {
-          break;
-        }
-        
-        const messageContent = buffer.slice(messageStart, messageStart + contentLength);
-        buffer = buffer.slice(messageStart + contentLength);
-        
-        try {
-          const message = JSON.parse(messageContent);
-          
-          if (message.method === 'textDocument/publishDiagnostics') {
-            const uri = message.params.uri;
-            if (pendingRequests.has(`diagnostics:${uri}`)) {
-              const { resolve, timeout } = pendingRequests.get(`diagnostics:${uri}`);
-              clearTimeout(timeout);
-              pendingRequests.delete(`diagnostics:${uri}`);
-              resolve(message.params.diagnostics);
-            }
-          }
-          
-          if (message.id && pendingRequests.has(message.id)) {
-            const { resolve, timeout } = pendingRequests.get(message.id);
-            clearTimeout(timeout);
-            pendingRequests.delete(message.id);
-            resolve(message.result);
-          }
-        } catch (e) {
-          // Ignore parse errors
-        }
-      }
-    });
-
-    const initialize = {
-      jsonrpc: '2.0',
-      id: requestId++,
-      method: 'initialize',
-      params: {
-        processId: process.pid,
-        clientInfo: { name: 'test-client', version: '1.0.0' },
-        capabilities: {
-          textDocument: {
-            codeAction: {
-              dynamicRegistration: false,
-              codeActionLiteralSupport: {
-                codeActionKind: {
-                  valueSet: ['quickfix']
-                }
+  before(async function() {
+    lspServer = createLSPTestServer({
+      capabilities: {
+        textDocument: {
+          codeAction: {
+            dynamicRegistration: false,
+            codeActionLiteralSupport: {
+              codeActionKind: {
+                valueSet: ['quickfix']
               }
             }
           }
         }
       }
-    };
-
-    const initialized = {
-      jsonrpc: '2.0',
-      method: 'initialized',
-      params: {}
-    };
-
-    pendingRequests.set(initialize.id, {
-      resolve: () => {
-        serverProcess.stdin.write(createLSPMessage(initialized));
-        done();
-      },
-      timeout: setTimeout(() => {
-        done(new Error('Server initialization timeout'));
-      }, 5000)
     });
-
-    serverProcess.stdin.write(createLSPMessage(initialize));
+    await lspServer.initialize();
+    getDiagnostics = lspServer.getDiagnostics;
+    
+    getCodeActions = lspServer.getCodeActions;
   });
 
   after(function() {
-    if (serverProcess) {
-      serverProcess.kill();
+    if (lspServer) {
+      lspServer.shutdown();
     }
   });
-
-  function getDiagnostics(testContent, testFilePath) {
-    return new Promise((resolve, reject) => {
-      const didOpen = {
-        jsonrpc: '2.0',
-        method: 'textDocument/didOpen',
-        params: {
-          textDocument: {
-            uri: `file://${testFilePath}`,
-            languageId: 'ucode',
-            version: 1,
-            text: testContent
-          }
-        }
-      };
-
-      const timeout = setTimeout(() => {
-        if (pendingRequests.has(`diagnostics:file://${testFilePath}`)) {
-          pendingRequests.delete(`diagnostics:file://${testFilePath}`);
-          reject(new Error('Timeout waiting for diagnostics'));
-        }
-      }, 6000);
-
-      pendingRequests.set(`diagnostics:file://${testFilePath}`, { resolve, timeout });
-      serverProcess.stdin.write(createLSPMessage(didOpen));
-    });
-  }
-
-  function getCodeActions(testFilePath, diagnostics, line, character) {
-    return new Promise((resolve, reject) => {
-      const currentRequestId = requestId++;
-      
-      const codeAction = {
-        jsonrpc: '2.0',
-        id: currentRequestId,
-        method: 'textDocument/codeAction',
-        params: {
-          textDocument: {
-            uri: `file://${testFilePath}`
-          },
-          range: {
-            start: { line: line, character: character },
-            end: { line: line, character: character + 1 }
-          },
-          context: {
-            diagnostics: diagnostics
-          }
-        }
-      };
-
-      const timeout = setTimeout(() => {
-        if (pendingRequests.has(currentRequestId)) {
-          pendingRequests.delete(currentRequestId);
-          reject(new Error('Timeout waiting for code actions'));
-        }
-      }, 6000);
-
-      pendingRequests.set(currentRequestId, { resolve, timeout });
-      serverProcess.stdin.write(createLSPMessage(codeAction));
-    });
-  }
 
   describe('Auto-Fix Code Actions', function() {
     let diagnostics;
@@ -248,14 +106,15 @@ let errorVar = undefinedFunc(); // ucode-lsp disable
 let anotherError = undefinedVar2();
       `;
       
-      const diagnosticsWithDisable = await getDiagnostics(testContentWithDisable, '/tmp/test-with-disable.uc');
+      const uniqueFileName = `/tmp/test-with-disable-${Date.now()}.uc`;
+      const diagnosticsWithDisable = await getDiagnostics(testContentWithDisable, uniqueFileName);
       
       // Find diagnostic on line with disable comment (should be none due to suppression)
       // But if any exist from other sources, code action should not be provided
       const line0Diagnostics = diagnosticsWithDisable.filter(d => d.range.start.line === 1);
       
       if (line0Diagnostics.length > 0) {
-        const codeActions = await getCodeActions('/tmp/test-with-disable.uc', line0Diagnostics, 1, 0);
+        const codeActions = await getCodeActions(uniqueFileName, line0Diagnostics, 1, 0);
         
         const disableActions = codeActions.filter(action => action.title === 'Disable ucode-lsp for this line');
         assert.strictEqual(disableActions.length, 0, 'Should not provide disable action for line that already has disable comment');
