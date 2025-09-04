@@ -428,7 +428,7 @@ export class SymbolTable {
     // Always ensure the symbol exists in global scope (scope 0) for completion access
     const globalScope = this.scopes[0];
     if (!globalScope) {
-      console.log(`[SYMBOL_FORCE] ERROR: No global scope available for ${name}`);
+      //console.log(`[SYMBOL_FORCE] ERROR: No global scope available for ${name}`);
       return;
     }
     
@@ -437,7 +437,7 @@ export class SymbolTable {
     if (globalSymbol) {
       // Update existing global symbol
       globalSymbol.dataType = dataType;
-      console.log(`[SYMBOL_FORCE] Updated existing global ${name} to type ${JSON.stringify(dataType)}`);
+      //console.log(`[SYMBOL_FORCE] Updated existing global ${name} to type ${JSON.stringify(dataType)}`);
       return;
     }
     
@@ -450,7 +450,7 @@ export class SymbolTable {
       // Preserve the original node and position information
       nodeToUse = existingSymbol.node;
       declaredAtPos = existingSymbol.declaredAt;
-      console.log(`[SYMBOL_FORCE] Preserving position info from existing symbol: start=${nodeToUse.start}, declaredAt=${declaredAtPos}`);
+      //console.log(`[SYMBOL_FORCE] Preserving position info from existing symbol: start=${nodeToUse.start}, declaredAt=${declaredAtPos}`);
     } else {
       // Fallback to fake node only if no existing symbol found
       nodeToUse = {
@@ -475,12 +475,12 @@ export class SymbolTable {
       usedAt: existingSymbol ? existingSymbol.usedAt : [] // Preserve usage positions
     };
     globalScope.set(name, symbol);
-    console.log(`[SYMBOL_FORCE] Created ${name} in global scope with type ${JSON.stringify(dataType)}, preserving position ${declaredAtPos}`);
+    //console.log(`[SYMBOL_FORCE] Created ${name} in global scope with type ${JSON.stringify(dataType)}, preserving position ${declaredAtPos}`);
     
     // Also update any existing symbols in other scopes
     if (existingSymbol && existingSymbol.scope !== 0) {
       existingSymbol.dataType = dataType;
-      console.log(`[SYMBOL_FORCE] Also updated existing ${name} in scope ${existingSymbol.scope} to type ${JSON.stringify(dataType)}`);
+      //console.log(`[SYMBOL_FORCE] Also updated existing ${name} in scope ${existingSymbol.scope} to type ${JSON.stringify(dataType)}`);
     }
   }
 

@@ -424,6 +424,12 @@ async function runTests() {
             expectedErrors: 0
         },
         {
+            name: 'wildcard() with []',
+            code: 'wildcard("file.txt", "[]");',
+            expectedErrors: 1,
+            errorMessage: "Empty bracket expression '[]' is invalid."
+        },
+        {
             name: 'gc() with no arguments',
             code: 'gc();',
             expectedErrors: 0

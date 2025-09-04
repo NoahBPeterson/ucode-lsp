@@ -452,11 +452,20 @@ export class BuiltinValidator {
             let hadItemBeforeDash = false;
             let lastLiteralForRange: string | null = null;
 
-            if (j < pattern.length && (pattern[j] === '!' || pattern[j] === '^')) j++;
-            if (j < pattern.length && pattern[j] === ']') { // leading ']'
-              hadItemBeforeDash = true;
-              lastLiteralForRange = ']';
-              j++;
+            // NEW: remember whether it's a negated set
+            const negated = (j < pattern.length && (pattern[j] === '!' || pattern[j] === '^'));
+            if (negated) j++;
+
+            // CHANGED: treat a leading ']' as literal ONLY if there's another ']' to close later
+            if (j < pattern.length && pattern[j] === ']') {
+              const hasAnotherClosing = pattern.indexOf(']', j + 1) !== -1;
+              if (hasAnotherClosing) {
+                hadItemBeforeDash = true;
+                lastLiteralForRange = ']';
+                j++;
+              }
+              // else: don't consume it here; it will act as the closer below,
+              // which will make the set empty and we'll issue a specific error
             }
 
             let closed = false;
@@ -472,9 +481,33 @@ export class BuiltinValidator {
 
               // Character class [:name:]
               if (pattern[j] === '[' && j + 1 < pattern.length && pattern[j + 1] === ':') {
-                const classStart = j + 2;
+                const classStart = j + 2;               // points at first char of the name
                 const end = pattern.indexOf(':]', classStart);
+
                 if (end === -1) {
+                  // See if the user likely wrote "[[:name]]" (missing the second ':')
+                  const plainClose = pattern.indexOf(']', j + 2);
+                  if (plainClose !== -1) {
+                    const name = pattern.slice(classStart, plainClose);
+                    const lower = name.toLowerCase();
+                    const isKnown = POSIX_CLASSES.has(name) || POSIX_CLASSES.has(lower);
+
+                    if (isKnown) {
+                      pushDiag(
+                        'error',
+                        `POSIX character class appears to be missing the trailing ':]'.` +
+                        (isKnown ? ` Did you mean '[[:${lower}:]]'?` : ` Use the form '[[:class:]]'.`),
+                        j, plainClose + 1
+                      );
+                    }
+
+
+                    // keep scanning; let ']' be handled by the normal closer
+                    j += 1;
+                    continue;
+                  }
+
+                  // no ']' at all → truly unterminated
                   pushDiag(
                     'error',
                     `Unterminated character class. Expected ':]' to close '[:class:]'. Add ':]' to close the class.`,
@@ -500,6 +533,7 @@ export class BuiltinValidator {
                   continue;
                 }
               }
+
 
               // '*' and '?' are literals inside bracket expressions
               if ((pattern[j] === '*' || pattern[j] === '?') && pattern[j]) {
@@ -564,7 +598,7 @@ export class BuiltinValidator {
                       pushDiag('warning',
                         `Descending range '${lastLiteralForRange}-${rightChar}' likely matches nothing under byte collation. Did you mean '${rightChar}-${lastLiteralForRange}' or escape '-' as '\\-'?`,
                         j - 1, j + 2);
-1                    }
+                    }
                   }
                   j += 1; // on '-'
                   if (escapesEnabled && pattern[j] === '\\' && j + 1 < pattern.length) {
@@ -589,17 +623,38 @@ export class BuiltinValidator {
               hadItemBeforeDash = true;
               lastLiteralForRange = pattern[j] ?? null;
               j += 1;
-            } // end bracket scan
+            } // end while
 
             if (!closed) {
+              // keep your existing "unclosed" handling for truly unterminated cases
               pushDiag('error',
                 `Unclosed bracket expression. Add a matching ']' to close the '[' opened here.`,
                 openPos);
               i = openPos + 1;
               continue;
             } else {
-              sawWildcard = true; // wildcard is []; we know this because the [ is closed.
-              // Naked POSIX-ish token like '[:alpha:]' (missing inner '[' of [[:alpha:]])
+              // NEW: empty-content checks after a successful close
+              if (!hadItemBeforeDash) {
+                if (negated) {
+                  // e.g. "[!]" or "[^]"
+                  pushDiag(
+                    'error',
+                    `Negated bracket expression has no items. Add at least one character, range, or class (e.g., '[!a-z]', '[^[:digit:]]'). To exclude only ']', write '[!]]' or '[^]]'.`,
+                    openPos, j
+                  );
+                } else {
+                  // e.g. "[]"
+                  pushDiag(
+                    'error',
+                    `Empty bracket expression '[]' is invalid. To match a literal ']', use '[]]' (']' as the first item), or escape ']' outside brackets as '\\]'.`,
+                    openPos, j
+                  );
+                }
+              }
+
+              sawWildcard = true;
+
+              // keep your existing naked POSIX token check
               const inner = pattern.slice(openPos + 1, j - 1);
               const m = /^:([A-Za-z]+):$/.exec(inner);
               if (m && m[1]) {
@@ -619,6 +674,7 @@ export class BuiltinValidator {
                   );
                 }
               }
+              console.log(lastLiteralForRange);
               i = j;
               continue;
             }
@@ -1083,7 +1139,7 @@ export class BuiltinValidator {
     // ucode is permissive with argument counts, extra arguments are ignored.
 
     // Validate first parameter (depth) if present - should be number
-    if (argCount >= 1 && node.arguments[0]) {
+    if (argCount >= 1 && node.arguments[0] && node.arguments[0].type === "Literal") {
       const literalCommand = node.arguments[0] as LiteralNode;
       if (typeof literalCommand.value === 'string' && 
         literalCommand.value !== 'collect' && 
@@ -1099,27 +1155,36 @@ export class BuiltinValidator {
         });
       }
       if (argCount >= 2 && node.arguments[1]) {
-        const literalArgument = node.arguments[1] as LiteralNode;
-        if (typeof literalCommand.value === 'string' && 
-          literalCommand.value === 'start') {
-          if (typeof literalArgument.value === 'number' && 
-            (literalArgument.value < 0 || literalArgument.value > 65535)) {
-              this.errors.push(
-              { 
-                message: `Invalid garbage collection interval ${literalArgument.value}. The acceptable range is 1-65535. 0 for default (1000).`,
-                start: node.arguments[1].start,
-                end: node.arguments[1].end,
-                severity: 'error'
-              });
+        if ((node.arguments[1] as AstNode).type === "Literal") {
+          const literalArgument = node.arguments[1] as LiteralNode;
+          var message: string = '';
+          var error: boolean = false;
+          if (typeof literalCommand.value === 'string' && literalCommand.value === 'start') {
+            if ((typeof literalArgument.value) === 'number') {
+              if (literalArgument.value < 0 || literalArgument.value > 65535) {
+                message = `Invalid garbage collection interval ${literalArgument.value}. The acceptable range is 1-65535. 0 for default (1000).`;
+                error = true;
+              }
+            } else if ((typeof node.arguments[1]) === 'number') {
+
+            } else {
+                message = `Invalid garbage collection interval ${literalArgument.value} of type ${typeof literalArgument.value}. The acceptable range is 1-65535. 0 for default (1000).`;
+                error = true;
+            }
+          } else {
+              message = `Invalid garbage collection argument ${literalArgument.value}. Argument is only used for 'start' command.`;
+              error = true;
           }
-        } else {
-          this.errors.push(
-          { 
-            message: `Invalid garbage collection argument ${literalArgument.value}. Argument is only used for 'start' command.`,
-            start: node.arguments[1].start,
-            end: node.arguments[1].end,
-            severity: 'error'
-          });
+          if (error)
+            this.errors.push(
+            { 
+              message: message,
+              start: node.arguments[1].start,
+              end: node.arguments[1].end,
+              severity: 'error'
+            });
+        } else if ((node.arguments[1] as AstNode).type === "Identifier") {
+          // ToDo- Advanced type inference
         }
       }
       return true;
