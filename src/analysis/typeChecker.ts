@@ -771,7 +771,12 @@ export class TypeChecker {
         return this.builtinValidator.validateWildcardFunction(node);
       case 'assert':
         return this.builtinValidator.validateAssertFunction(node);
-      
+      case 'type':
+        return this.builtinValidator.validateTypelocalFunction(node);
+      case 'clock':
+        return this.builtinValidator.validateClockFunction(node);
+      case 'gc':
+        return this.builtinValidator.validateGcFunction(node);
       default:
         return false;
     }

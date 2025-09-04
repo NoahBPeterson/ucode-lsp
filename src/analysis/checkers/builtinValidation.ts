@@ -304,11 +304,6 @@ export class BuiltinValidator {
     return true;
   }
 
-  validatePrintFunction(_node: CallExpressionNode): boolean {
-    // All arguments are converted to strings - no type validation needed
-    return true;
-  }
-
   validateExistsFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'exists', 2)) return true;
     this.validateArgumentType(node.arguments[0], 'exists', 1, [UcodeType.OBJECT]);
@@ -666,6 +661,11 @@ export class BuiltinValidator {
     return true;
   }
 
+  validateTypelocalFunction(node: CallExpressionNode): boolean {
+    this.checkArgumentCount(node, 'type', 1);
+    return true;
+  }
+
   validateTimegmFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'timegm', 1)) return true;
     this.validateArgumentType(node.arguments[0], 'timegm', 1, [UcodeType.ARRAY]);
@@ -690,6 +690,13 @@ export class BuiltinValidator {
     if (node.arguments.length >= 3) {
       this.validateArgumentType(node.arguments[2], 'call', 3, [UcodeType.OBJECT, UcodeType.NULL]);
     }
+    return true;
+  }
+
+  validateClockFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'clock', 1)) return true;
+    if (node.arguments[0])
+      this.isKnownTruish(node.arguments[0]);
     return true;
   }
 
@@ -1056,6 +1063,66 @@ export class BuiltinValidator {
     // Validate first parameter (depth) if present - should be number
     if (argCount >= 1) {
       this.validateNumericArgument(node.arguments[0], 'sourcepath', 1);
+      if (argCount >= 2 && node.arguments[1]) {
+        this.isKnownTruish(node.arguments[1]);
+      }
+    }
+
+    // No validation for the second parameter (dironly) because any type can be
+    // evaluated as truthy or falsy at runtime in ucode.
+
+    return true;
+  }
+
+  validateGcFunction(node: CallExpressionNode): boolean {
+    const argCount = node.arguments.length;
+    
+    // sourcepath(depth?: number, dironly?: boolean)
+    // Both parameters are optional
+
+    // ucode is permissive with argument counts, extra arguments are ignored.
+
+    // Validate first parameter (depth) if present - should be number
+    if (argCount >= 1 && node.arguments[0]) {
+      const literalCommand = node.arguments[0] as LiteralNode;
+      if (typeof literalCommand.value === 'string' && 
+        literalCommand.value !== 'collect' && 
+        literalCommand.value !== 'start' && 
+        literalCommand.value !== 'stop' && 
+        literalCommand.value !== 'count') {
+        this.errors.push(
+        {
+          message: `Invalid garbage collection command "${literalCommand.value}". Did you mean 'collect', or 'start', 'stop', or 'count'?`,
+          start: node.arguments[0].start,
+          end: node.arguments[0].end,
+          severity: 'error' 
+        });
+      }
+      if (argCount >= 2 && node.arguments[1]) {
+        const literalArgument = node.arguments[1] as LiteralNode;
+        if (typeof literalCommand.value === 'string' && 
+          literalCommand.value === 'start') {
+          if (typeof literalArgument.value === 'number' && 
+            (literalArgument.value < 0 || literalArgument.value > 65535)) {
+              this.errors.push(
+              { 
+                message: `Invalid garbage collection interval ${literalArgument.value}. The acceptable range is 1-65535. 0 for default (1000).`,
+                start: node.arguments[1].start,
+                end: node.arguments[1].end,
+                severity: 'error'
+              });
+          }
+        } else {
+          this.errors.push(
+          { 
+            message: `Invalid garbage collection argument ${literalArgument.value}. Argument is only used for 'start' command.`,
+            start: node.arguments[1].start,
+            end: node.arguments[1].end,
+            severity: 'error'
+          });
+        }
+      }
+      return true;
     }
 
     // No validation for the second parameter (dironly) because any type can be

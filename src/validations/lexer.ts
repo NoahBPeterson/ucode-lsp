@@ -18,8 +18,6 @@ import { validateStringAnalysisFunctions } from './string-analysis';
 import { validateObjectFunctions } from './object-functions';
 import { validateNumberConversions } from './number-conversions';
 import { validateConversionFunctions } from './conversion-functions';
-
-import { validateSystemUtilityFunctions } from './system-utility-functions';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateWithLexer(textDocument: TextDocument, connection: any): Diagnostic[] {
@@ -61,8 +59,6 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateNumberConversions(textDocument, tokens, diagnostics);
         
         validateConversionFunctions(textDocument, tokens, diagnostics);
-        
-        validateSystemUtilityFunctions(textDocument, tokens, diagnostics);
         
     } catch (error) {
         connection.console.log(`Lexer failed with error: ${error}`);

@@ -422,7 +422,55 @@ async function runTests() {
             name: 'wildcard() with third argument (case insensitive)',
             code: 'wildcard("file.txt", "*.TXT", true);',
             expectedErrors: 0
-        }
+        },
+        {
+            name: 'gc() with no arguments',
+            code: 'gc();',
+            expectedErrors: 0
+        },
+        {
+            name: 'gc() collect with one argument',
+            code: `gc('collect');`,
+            expectedErrors: 0
+        },
+        {
+            name: 'gc() start with one argument',
+            code: `gc('start');`,
+            expectedErrors: 0
+        },
+        {
+            name: 'gc() stop with one argument',
+            code: `gc('stop');`,
+            expectedErrors: 0
+        },
+        {
+            name: 'gc() count with one argument',
+            code: `gc('count');`,
+            expectedErrors: 0
+        },
+        {
+            name: 'gc() collect with two arguments',
+            code: `gc('collect', 1);`,
+            expectedErrors: 1,
+            errorMessage: `Invalid garbage collection argument 1. Argument is only used for 'start' command.`
+        },
+        {
+            name: 'gc() start with two arguments',
+            code: `gc('start', 1);`,
+            expectedErrors: 0
+        },
+        {
+            name: 'gc() stop with two arguments',
+            code: `gc('stop', 1);`,
+            expectedErrors: 1,
+            errorMessage: `Invalid garbage collection argument 1. Argument is only used for 'start' command.`
+        },
+        {
+            name: 'gc() count with two arguments',
+            code: `gc('count', 1);`,
+            expectedErrors: 1,
+            errorMessage: `Invalid garbage collection argument 1. Argument is only used for 'start' command.`
+        },
     ];
 
     let passed = 0;
