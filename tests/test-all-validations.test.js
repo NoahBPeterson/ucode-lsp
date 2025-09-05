@@ -93,9 +93,11 @@ const testFiles = [
     'tests/test-object-functions-ast.js',
     'tests/test-trim-functions-ast.js',
     'tests/test-substr-functions-ast.js',
+    'tests/test-import-completion.js',
+    'tests/test-module-completions.js',
 ];
 
-const mochaFiles = [  // New entries still need to be added to the testFiles array
+const mochaFiles = [
     'test-string-method-validation.js',
     'test-missing-builtins-validation.js',
     'test-filter-builtin-validation.js',
@@ -117,6 +119,8 @@ const mochaFiles = [  // New entries still need to be added to the testFiles arr
     'test-number-conversion-validation.js',
     'test-trim-functions-ast.js',
     'test-substr-functions-ast.js',
+    'test-import-completion.js',
+    'test-module-completions.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

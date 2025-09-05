@@ -5,6 +5,7 @@ import {
     MarkupKind,
     InsertTextFormat
 } from 'vscode-languageserver/node';
+import { discoverAvailableModules, DiscoveredModule } from './moduleDiscovery';
 import { UcodeLexer, TokenType } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult } from './analysis';
@@ -48,6 +49,13 @@ export function handleCompletion(
     try {
         const lexer = new UcodeLexer(text, { rawMode: true });
         const tokens = lexer.tokenize();
+        
+        // Check if we're in an import statement context (e.g., import * as lol from '')
+        const importContext = detectImportCompletionContext(offset, tokens);
+        if (importContext) {
+            connection.console.log(`Import context detected: ${JSON.stringify(importContext)}`);
+            return createModuleNameCompletions();
+        }
         
         // Check if we're in a member expression context (e.g., "fs.")
         const memberContext = detectMemberCompletionContext(offset, tokens);
@@ -1499,6 +1507,105 @@ function getRtnlConstObjectCompletions(objectName: string, analysisResult?: Sema
     }
     console.log(`[RTNL_CONST_COMPLETION] Not an rtnl constants object: ${objectName}`);
     return [];
+}
+
+function detectImportCompletionContext(offset: number, tokens: any[]): { inStringLiteral: boolean } | undefined {
+    // Look for pattern: import [specifiers] from "..." where cursor is inside the string
+    // We want to detect: import * as lol from '|' (cursor at |)
+    
+    let importTokenIndex = -1;
+    let fromTokenIndex = -1;
+    let stringTokenIndex = -1;
+    
+    // Find relevant tokens moving backward from cursor position
+    for (let i = tokens.length - 1; i >= 0; i--) {
+        const token = tokens[i];
+        
+        // Skip tokens that are beyond our cursor position
+        if (token.pos > offset) continue;
+        
+        // Look for string literal token at or before cursor
+        if (token.type === TokenType.TK_STRING && stringTokenIndex === -1) {
+            // Check if cursor is inside this string (between quotes)
+            if (offset >= token.pos && offset <= token.end) {
+                stringTokenIndex = i;
+            }
+        }
+        
+        // Look for 'from' keyword
+        if (token.type === TokenType.TK_FROM && fromTokenIndex === -1) {
+            fromTokenIndex = i;
+        }
+        
+        // Look for 'import' keyword
+        if (token.type === TokenType.TK_IMPORT && importTokenIndex === -1) {
+            importTokenIndex = i;
+            break; // Found import, we can stop looking further back
+        }
+        
+        // If we hit another statement-ending token before finding import, stop
+        if (token.type === TokenType.TK_SCOL || token.type === TokenType.TK_RBRACE || 
+            token.type === TokenType.TK_NEWLINE) {
+            break;
+        }
+    }
+    
+    // Check if we have a valid import...from...string pattern
+    if (importTokenIndex !== -1 && fromTokenIndex !== -1 && stringTokenIndex !== -1) {
+        // Ensure the tokens are in the right order: import < from < string
+        if (importTokenIndex < fromTokenIndex && fromTokenIndex < stringTokenIndex) {
+            return { inStringLiteral: true };
+        }
+    }
+    
+    // Also check if cursor is right after 'from ' (space after from)
+    if (importTokenIndex !== -1 && fromTokenIndex !== -1 && stringTokenIndex === -1) {
+        const fromToken = tokens[fromTokenIndex];
+        // Check if cursor is shortly after the 'from' token (allowing for whitespace)
+        if (offset >= fromToken.end && offset <= fromToken.end + 10) {
+            return { inStringLiteral: false };
+        }
+    }
+    
+    return undefined;
+}
+
+function createModuleNameCompletions(): CompletionItem[] {
+    const availableModules = discoverAvailableModules();
+    const completions: CompletionItem[] = [];
+    
+    for (const module of availableModules) {
+        const isBuiltin = module.source === 'builtin';
+        const detail = isBuiltin ? 'ucode builtin module' : 'ucode system module';
+        const sortPrefix = isBuiltin ? '0_' : '1_'; // Sort builtins first, then system modules
+        
+        completions.push({
+            label: module.name,
+            kind: CompletionItemKind.Module,
+            detail: detail,
+            documentation: {
+                kind: MarkupKind.Markdown,
+                value: createModuleDocumentation(module)
+            },
+            insertText: module.name,
+            sortText: `${sortPrefix}${module.name}`
+        });
+    }
+    
+    return completions;
+}
+
+function createModuleDocumentation(module: DiscoveredModule): string {
+    const moduleType = module.source === 'builtin' ? 'builtin' : 'system';
+    let doc = `Import the **${module.name}** ${moduleType} module\n\n`;
+    
+    if (module.path) {
+        doc += `**Location:** \`${module.path}\`\n\n`;
+    }
+    
+    doc += `**Example:**\n\`\`\`ucode\nimport * as ${module.name} from '${module.name}';\n\`\`\``;
+    
+    return doc;
 }
 
 export function handleCompletionResolve(item: CompletionItem): CompletionItem {
