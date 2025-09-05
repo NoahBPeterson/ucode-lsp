@@ -815,6 +815,8 @@ export class TypeChecker {
         return this.builtinValidator.validateLtrimFunction(node);
       case 'rtrim':
         return this.builtinValidator.validateRtrimFunction(node);
+      case 'substr':
+        return this.builtinValidator.validateSubstrFunction(node);
       default:
         return false;
     }

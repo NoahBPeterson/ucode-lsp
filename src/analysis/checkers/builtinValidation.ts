@@ -1366,6 +1366,24 @@ export class BuiltinValidator {
     return true;
   }
 
+  // Substr function validation
+  validateSubstrFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'substr', 2)) return true;
+    
+    // First parameter: string
+    this.validateArgumentType(node.arguments[0], 'substr', 1, [UcodeType.STRING]);
+    
+    // Second parameter: integer (start position)
+    this.validateArgumentType(node.arguments[1], 'substr', 2, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+    
+    // Third parameter (optional): integer (length)
+    if (node.arguments.length > 2) {
+      this.validateArgumentType(node.arguments[2], 'substr', 3, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+    }
+    
+    return true;
+  }
+
   getErrors(): TypeError[] {
     return this.errors;
   }

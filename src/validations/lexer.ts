@@ -7,7 +7,6 @@ import { UcodeLexer, TokenType } from '../lexer';
 import { validateMethodCalls } from './method-calls';
 import { validateVariableDeclarations } from './variable-declarations';
 import { validateConstReassignments } from './const-reassignments';
-import { validateSubstrParametersSimple } from './substr-parameters';
 import { validateConversionFunctions } from './conversion-functions';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 
@@ -38,7 +37,6 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateMethodCalls(textDocument, tokens, diagnostics);
         validateVariableDeclarations(textDocument, tokens, diagnostics);
         validateConstReassignments(textDocument, tokens, diagnostics);
-        validateSubstrParametersSimple(textDocument, tokens, diagnostics);
         
         validateConversionFunctions(textDocument, tokens, diagnostics);
         
