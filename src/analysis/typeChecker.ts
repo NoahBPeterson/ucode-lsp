@@ -78,9 +78,9 @@ export class TypeChecker {
       { name: 'substr', parameters: [UcodeType.STRING, UcodeType.INTEGER], returnType: UcodeType.STRING, minParams: 2, maxParams: 3 },
       { name: 'split', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.ARRAY, minParams: 2, maxParams: 3 },
       { name: 'join', parameters: [UcodeType.STRING, UcodeType.ARRAY], returnType: UcodeType.STRING },
-      { name: 'trim', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
-      { name: 'ltrim', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
-      { name: 'rtrim', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
+      { name: 'trim', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
+      { name: 'ltrim', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
+      { name: 'rtrim', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
       { name: 'chr', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
       { name: 'ord', parameters: [UcodeType.STRING], returnType: UcodeType.INTEGER },
       { name: 'uc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
@@ -809,6 +809,12 @@ export class TypeChecker {
         return this.builtinValidator.validateValuesFunction(node);
       case 'exists':
         return this.builtinValidator.validateExistsFunction(node);
+      case 'trim':
+        return this.builtinValidator.validateTrimFunction(node);
+      case 'ltrim':
+        return this.builtinValidator.validateLtrimFunction(node);
+      case 'rtrim':
+        return this.builtinValidator.validateRtrimFunction(node);
       default:
         return false;
     }

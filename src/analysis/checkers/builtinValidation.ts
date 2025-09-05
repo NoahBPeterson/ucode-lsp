@@ -1338,6 +1338,34 @@ export class BuiltinValidator {
     return true;
   }
 
+  // Trim functions validation
+  validateTrimFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'trim', 1)) return true;
+    this.validateArgumentType(node.arguments[0], 'trim', 1, [UcodeType.STRING]);
+    if (node.arguments.length > 1) {
+      this.validateArgumentType(node.arguments[1], 'trim', 2, [UcodeType.STRING]);
+    }
+    return true;
+  }
+
+  validateLtrimFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'ltrim', 1)) return true;
+    this.validateArgumentType(node.arguments[0], 'ltrim', 1, [UcodeType.STRING]);
+    if (node.arguments.length > 1) {
+      this.validateArgumentType(node.arguments[1], 'ltrim', 2, [UcodeType.STRING]);
+    }
+    return true;
+  }
+
+  validateRtrimFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'rtrim', 1)) return true;
+    this.validateArgumentType(node.arguments[0], 'rtrim', 1, [UcodeType.STRING]);
+    if (node.arguments.length > 1) {
+      this.validateArgumentType(node.arguments[1], 'rtrim', 2, [UcodeType.STRING]);
+    }
+    return true;
+  }
+
   getErrors(): TypeError[] {
     return this.errors;
   }

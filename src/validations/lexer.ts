@@ -8,8 +8,6 @@ import { validateMethodCalls } from './method-calls';
 import { validateVariableDeclarations } from './variable-declarations';
 import { validateConstReassignments } from './const-reassignments';
 import { validateSubstrParametersSimple } from './substr-parameters';
-import { validateTrimParameters } from './trim-parameters';
-import { validateStringFunctions } from './string-functions';
 import { validateConversionFunctions } from './conversion-functions';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 
@@ -41,8 +39,6 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateVariableDeclarations(textDocument, tokens, diagnostics);
         validateConstReassignments(textDocument, tokens, diagnostics);
         validateSubstrParametersSimple(textDocument, tokens, diagnostics);
-        validateTrimParameters(textDocument, tokens, diagnostics);
-        validateStringFunctions(textDocument, tokens, diagnostics);
         
         validateConversionFunctions(textDocument, tokens, diagnostics);
         
