@@ -173,14 +173,13 @@ export class BuiltinValidator {
 
   validateRindexFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'rindex', 2)) return true;
-    // First argument is converted to a string, so no type check is needed.
     this.validateArgumentType(node.arguments[0], 'rindex', 1, [UcodeType.STRING, UcodeType.ARRAY]);
     return true;
   }
 
   validateMatchFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'match', 2)) return true;
-    // First argument is converted to a string, so no type check is needed.
+    this.validateArgumentType(node.arguments[0], 'match', 1, [UcodeType.STRING]); // Include UcodeType.OBJECT when it includes tostring()
     this.validateArgumentType(node.arguments[1], 'match', 2, [UcodeType.REGEX]);
     return true;
   }
