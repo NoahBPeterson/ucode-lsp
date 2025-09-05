@@ -7,7 +7,7 @@ import { TokenType, Token } from '../lexer';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateVariableDeclarations(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
-    const declarations = new Map<string, { type: 'const' | 'let' | 'var', line: number, pos: number }>();
+    const declarations = new Map<string, { type: 'const' | 'let', line: number, pos: number }>();
     
     for (let i = 0; i < tokens.length - 1; i++) {
         const declToken = tokens[i];
@@ -15,13 +15,11 @@ export function validateVariableDeclarations(textDocument: TextDocument, tokens:
         
         if (declToken && nameToken &&
             (declToken.type === TokenType.TK_CONST || 
-             declToken.type === TokenType.TK_LOCAL ||
-             (declToken.type === TokenType.TK_LABEL && declToken.value === 'var')) &&
+             declToken.type === TokenType.TK_LOCAL) &&
             nameToken.type === TokenType.TK_LABEL &&
             typeof nameToken.value === 'string') {
             
-            const varType = declToken.type === TokenType.TK_CONST ? 'const' : 
-                           declToken.type === TokenType.TK_LOCAL ? 'let' : 'var';
+            const varType = declToken.type === TokenType.TK_CONST ? 'const' : 'let';
             
             const currentLine = textDocument.positionAt(nameToken.pos).line;
             

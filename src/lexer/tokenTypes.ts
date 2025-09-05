@@ -105,7 +105,6 @@ export enum TokenType {
     TK_COMMENT,       // Comment
     TK_NEWLINE,       // New line
     TK_LET,           // 'let'
-    TK_VAR,           // 'var'
     TK_EOF,           // End of file
     TK_ERROR,         // Error token
     TK_UNKNOWN,       // Unknown token
@@ -148,7 +147,6 @@ export const Keywords: Record<string, TokenType> = {
     'continue': TokenType.TK_CONTINUE,
     'let': TokenType.TK_LOCAL,
     'const': TokenType.TK_CONST,
-    'var': TokenType.TK_VAR,
     'true': TokenType.TK_TRUE,
     'false': TokenType.TK_FALSE,
     'null': TokenType.TK_NULL,

@@ -249,7 +249,7 @@ export class UcodeLexer {
             }
             
             // Pattern 2: / followed by whitespace and then a statement keyword
-            const statementKeywords = ['export', 'import', 'function', 'let', 'const', 'var', 'if', 'while', 'for', 'return', 'break', 'continue', 'try', 'switch', 'class'];
+            const statementKeywords = ['export', 'import', 'function', 'let', 'const', 'if', 'while', 'for', 'return', 'break', 'continue', 'try', 'switch', 'class'];
             const keywordPattern = new RegExp(`^\\s*(${statementKeywords.join('|')})\\b`);
             const keywordMatch = remainingCode.match(keywordPattern);
             if (keywordMatch) {
