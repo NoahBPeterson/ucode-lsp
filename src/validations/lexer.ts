@@ -13,7 +13,6 @@ import { validateStringFunctions } from './string-functions';
 import { validateCharacterFunctions } from './character-functions';
 import { validateSplitFunction } from './split-function';
 import { validateReplaceFunction } from './replace-function';
-import { validateArrayFunctions } from './array-functions';
 import { validateObjectFunctions } from './object-functions';
 import { validateConversionFunctions } from './conversion-functions';
 import { UcodeErrorCode } from '../analysis/errorConstants';
@@ -51,7 +50,6 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateCharacterFunctions(textDocument, tokens, diagnostics);
         validateSplitFunction(textDocument, tokens, diagnostics);
         validateReplaceFunction(textDocument, tokens, diagnostics);
-        validateArrayFunctions(textDocument, tokens, diagnostics);
         validateObjectFunctions(textDocument, tokens, diagnostics);
         
         validateConversionFunctions(textDocument, tokens, diagnostics);

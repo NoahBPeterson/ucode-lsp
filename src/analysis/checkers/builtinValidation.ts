@@ -298,7 +298,7 @@ export class BuiltinValidator {
 
   validateJoinFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'join', 2)) return true;
-    // First argument (separator) is converted to string - all types are valid
+    this.validateArgumentType(node.arguments[0], 'join', 1, [UcodeType.STRING]);
     this.validateArgumentType(node.arguments[1], 'join', 2, [UcodeType.ARRAY]);
     return true;
   }
@@ -1239,12 +1239,114 @@ export class BuiltinValidator {
           // ToDo- Advanced type inference
         }
       }
-      return true;
     }
 
     // No validation for the second parameter (dironly) because any type can be
     // evaluated as truthy or falsy at runtime in ucode.
 
+    return true;
+  }
+
+  validatePushFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'push', 1)) return true;
+    this.validateArgumentType(node.arguments[0], 'push', 1, [UcodeType.ARRAY]);
+    return true;
+  }
+
+  validatePopFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'pop', 1)) return true;
+    this.validateArgumentType(node.arguments[0], 'pop', 1, [UcodeType.ARRAY]);
+    return true;
+  }
+
+  validateShiftFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'shift', 1)) return true;
+    this.validateArgumentType(node.arguments[0], 'shift', 1, [UcodeType.ARRAY]);
+    return true;
+  }
+
+  validateUnshiftFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'unshift', 1)) return true;
+    this.validateArgumentType(node.arguments[0], 'unshift', 1, [UcodeType.ARRAY]);
+    return true;
+  }
+
+  validateSliceFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'slice', 2)) return true;
+    
+    // First parameter must be array
+    this.validateArgumentType(node.arguments[0], 'slice', 1, [UcodeType.ARRAY]);
+    
+    // Second parameter (start index) must be number
+    this.validateArgumentType(node.arguments[1], 'slice', 2, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+    
+    // Third parameter (end index) is optional but must be number if present
+    if (node.arguments.length >= 3 && node.arguments[2]) {
+      this.validateArgumentType(node.arguments[2], 'slice', 3, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+    }
+    
+    return true;
+  }
+
+  validateSpliceFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'splice', 2)) return true;
+    
+    // First parameter must be array
+    this.validateArgumentType(node.arguments[0], 'splice', 1, [UcodeType.ARRAY]);
+    
+    // Second parameter (start index) must be number
+    this.validateArgumentType(node.arguments[1], 'splice', 2, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+    
+    // Third parameter (delete count) is optional but must be number if present
+    if (node.arguments.length >= 3 && node.arguments[2]) {
+      this.validateArgumentType(node.arguments[2], 'splice', 3, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+    }
+    
+    // Additional parameters are items to insert - any type is allowed
+    return true;
+  }
+
+  validateSortFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'sort', 1)) return true;
+    
+    // First parameter must be array
+    this.validateArgumentType(node.arguments[0], 'sort', 1, [UcodeType.ARRAY]);
+    
+    // Second parameter (comparator) is optional but must be function if present
+    if (node.arguments.length >= 2 && node.arguments[1]) {
+      this.validateArgumentType(node.arguments[1], 'sort', 2, [UcodeType.FUNCTION]);
+    }
+    
+    return true;
+  }
+
+  validateReverseFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'reverse', 1)) return true;
+    this.validateArgumentType(node.arguments[0], 'reverse', 1, [UcodeType.ARRAY, UcodeType.STRING]);
+    return true;
+  }
+
+  validateFilterFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'filter', 2)) return true;
+    
+    // First parameter must be array
+    this.validateArgumentType(node.arguments[0], 'filter', 1, [UcodeType.ARRAY]);
+    
+    // Second parameter must be function
+    this.validateArgumentType(node.arguments[1], 'filter', 2, [UcodeType.FUNCTION]);
+    
+    return true;
+  }
+
+  validateMapFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'map', 2)) return true;
+    
+    // First parameter must be array
+    this.validateArgumentType(node.arguments[0], 'map', 1, [UcodeType.ARRAY]);
+    
+    // Second parameter must be function
+    this.validateArgumentType(node.arguments[1], 'map', 2, [UcodeType.FUNCTION]);
+    
     return true;
   }
 

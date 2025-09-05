@@ -73,9 +73,7 @@ const testFiles = [
     'tests/test-optional-chaining-lexer.js',
     'tests/test-optional-chaining-statements.js',
     'tests/test-regex-flags.js',
-    'tests/test-complex-syntax-validation.js',
     'tests/test-object-spread-parsing.js',
-    'tests/test-comprehensive-array-validation.js',
     'tests/test-trailing-comma.js',
     'tests/test-comma-operator-parsing.js',
     'tests/test-comma-operator-lsp.js',
@@ -91,6 +89,7 @@ const testFiles = [
     'tests/test-conversion-functions-validation.js',
     'tests/test-module-functions-validation.js',
     'tests/test-number-conversion-validation.js',
+    'tests/test-array-functions-ast.js',
 ];
 
 const mochaFiles = [  // New entries still need to be added to the testFiles array

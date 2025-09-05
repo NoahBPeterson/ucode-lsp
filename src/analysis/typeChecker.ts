@@ -783,6 +783,26 @@ export class TypeChecker {
         return this.builtinValidator.validateClockFunction(node);
       case 'gc':
         return this.builtinValidator.validateGcFunction(node);
+      case 'push':
+        return this.builtinValidator.validatePushFunction(node);
+      case 'pop':
+        return this.builtinValidator.validatePopFunction(node);
+      case 'shift':
+        return this.builtinValidator.validateShiftFunction(node);
+      case 'unshift':
+        return this.builtinValidator.validateUnshiftFunction(node);
+      case 'slice':
+        return this.builtinValidator.validateSliceFunction(node);
+      case 'splice':
+        return this.builtinValidator.validateSpliceFunction(node);
+      case 'sort':
+        return this.builtinValidator.validateSortFunction(node);
+      case 'reverse':
+        return this.builtinValidator.validateReverseFunction(node);
+      case 'filter':
+        return this.builtinValidator.validateFilterFunction(node);
+      case 'map':
+        return this.builtinValidator.validateMapFunction(node);
       default:
         return false;
     }
