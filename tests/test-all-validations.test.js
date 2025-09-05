@@ -95,6 +95,8 @@ const testFiles = [
     'tests/test-substr-functions-ast.js',
     'tests/test-import-completion.js',
     'tests/test-module-completions.js',
+    'tests/test-destructured-import-completion.js',
+    'tests/test-multiple-imports-completion.js',
 ];
 
 const mochaFiles = [
@@ -121,6 +123,8 @@ const mochaFiles = [
     'test-substr-functions-ast.js',
     'test-import-completion.js',
     'test-module-completions.js',
+    'test-destructured-import-completion.js',
+    'test-multiple-imports-completion.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

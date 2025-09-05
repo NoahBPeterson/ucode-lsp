@@ -3,10 +3,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+export interface ModuleMember {
+    name: string;
+    type: 'function' | 'resource' | 'unknown';
+}
+
 export interface DiscoveredModule {
     name: string;
     source: 'builtin' | 'system';
     path?: string;
+    members?: ModuleMember[];
 }
 
 // Builtin modules that are always available
@@ -156,6 +162,59 @@ export function discoverAvailableModules(): DiscoveredModule[] {
  */
 export function getAvailableModuleNames(): string[] {
     return discoverAvailableModules().map(module => module.name);
+}
+
+/**
+ * Discovers the members (functions, resources) of a specific module
+ */
+function discoverModuleMembers(moduleName: string): ModuleMember[] {
+    if (!isUnixLikePlatform() || !isUcodeAvailable()) {
+        return [];
+    }
+
+    try {
+        const output = execSync(
+            `ucode -e "import * as ${moduleName} from '${moduleName}'; for (thing in ${moduleName}) {print(type(${moduleName}[thing]), ' ', thing, '\\n');}"`,
+            { encoding: 'utf8', timeout: 5000 }
+        );
+        
+        const members: ModuleMember[] = [];
+        const lines = output.trim().split('\n').filter(line => line.trim().length > 0);
+        
+        for (const line of lines) {
+            const parts = line.trim().split(' ');
+            if (parts.length >= 2) {
+                const type = parts[0];
+                const name = parts.slice(1).join(' '); // Handle names with spaces
+                
+                let memberType: 'function' | 'resource' | 'unknown' = 'unknown';
+                if (type === 'function') {
+                    memberType = 'function';
+                } else if (type === 'resource') {
+                    memberType = 'resource';
+                }
+                
+                members.push({ name, type: memberType });
+            }
+        }
+        
+        return members;
+    } catch (error) {
+        console.warn(`Failed to discover members for module ${moduleName}:`, error);
+        return [];
+    }
+}
+
+/**
+ * Gets members for a specific module
+ */
+export function getModuleMembers(moduleName: string): ModuleMember[] {
+    try {
+        return discoverModuleMembers(moduleName);
+    } catch (error) {
+        console.warn(`Failed to get module members for ${moduleName}:`, error);
+        return [];
+    }
 }
 
 /**

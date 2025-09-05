@@ -5,7 +5,7 @@ import {
     MarkupKind,
     InsertTextFormat
 } from 'vscode-languageserver/node';
-import { discoverAvailableModules, DiscoveredModule } from './moduleDiscovery';
+import { discoverAvailableModules, getModuleMembers, DiscoveredModule, ModuleMember } from './moduleDiscovery';
 import { UcodeLexer, TokenType } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult } from './analysis';
@@ -50,6 +50,13 @@ export function handleCompletion(
         const lexer = new UcodeLexer(text, { rawMode: true });
         const tokens = lexer.tokenize();
         
+        // Check if we're in a destructured import context (e.g., import { open, l| } from 'fs')
+        const destructuredImportContext = detectDestructuredImportContext(offset, tokens);
+        if (destructuredImportContext) {
+            connection.console.log(`Destructured import context detected: ${JSON.stringify(destructuredImportContext)}`);
+            return createDestructuredImportCompletions(destructuredImportContext.moduleName);
+        }
+
         // Check if we're in an import statement context (e.g., import * as lol from '')
         const importContext = detectImportCompletionContext(offset, tokens);
         if (importContext) {
@@ -1606,6 +1613,92 @@ function createModuleDocumentation(module: DiscoveredModule): string {
     doc += `**Example:**\n\`\`\`ucode\nimport * as ${module.name} from '${module.name}';\n\`\`\``;
     
     return doc;
+}
+
+/**
+ * Detects if we're in a destructured import context like: import { open, l| } from 'fs'
+ */
+function detectDestructuredImportContext(offset: number, tokens: any[]): { moduleName: string } | undefined {
+    
+    // Find all import statements and check which one contains the cursor
+    for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i];
+        
+        if (token.type === TokenType.TK_IMPORT) {
+            // Found an import, now look for the pattern: import { ... } from "module"
+            let lbraceTokenIndex = -1;
+            let fromTokenIndex = -1;
+            let stringTokenIndex = -1;
+            let moduleName = '';
+            
+            // Look ahead from this import token
+            for (let j = i + 1; j < tokens.length; j++) {
+                const nextToken = tokens[j];
+                
+                if (nextToken.type === TokenType.TK_LBRACE && lbraceTokenIndex === -1) {
+                    lbraceTokenIndex = j;
+                } else if (nextToken.type === TokenType.TK_FROM && fromTokenIndex === -1 && lbraceTokenIndex !== -1) {
+                    fromTokenIndex = j;
+                } else if (nextToken.type === TokenType.TK_STRING && stringTokenIndex === -1 && fromTokenIndex !== -1) {
+                    stringTokenIndex = j;
+                    moduleName = nextToken.value as string;
+                    break; // Found complete import statement
+                } else if (nextToken.type === TokenType.TK_IMPORT) {
+                    // Hit another import statement, break out to process it separately
+                    break;
+                }
+            }
+            
+            // Check if we have a valid destructured import pattern
+            if (lbraceTokenIndex !== -1 && fromTokenIndex !== -1 && stringTokenIndex !== -1) {
+                const lbraceToken = tokens[lbraceTokenIndex];
+                const fromToken = tokens[fromTokenIndex];
+                
+                // Check if cursor is after the opening brace and before 'from'
+                if (offset > lbraceToken.pos && offset < fromToken.pos) {
+                    return { moduleName };
+                }
+            }
+        }
+    }
+
+    return undefined;
+}
+
+/**
+ * Creates completions for destructured imports like: import { | } from 'fs'
+ */
+function createDestructuredImportCompletions(moduleName: string): CompletionItem[] {
+    try {
+        const members: ModuleMember[] = getModuleMembers(moduleName);
+        if (members.length === 0) {
+            return [];
+        }
+
+        const completions: CompletionItem[] = [];
+        
+        for (const member of members) {
+            // Only include functions in destructured imports (resources can't be destructured)
+            if (member.type === 'function') {
+                completions.push({
+                    label: member.name,
+                    kind: CompletionItemKind.Function,
+                    detail: `${member.name}() from ${moduleName}`,
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: `**${member.name}** function from the **${moduleName}** module\n\n**Usage:**\n\`\`\`ucode\nimport { ${member.name} } from '${moduleName}';\n${member.name}(/* parameters */);\n\`\`\``
+                    },
+                    insertText: member.name,
+                    sortText: `0_${member.name}` // Alphabetical sorting
+                });
+            }
+        }
+
+        return completions;
+    } catch (error) {
+        console.warn(`Failed to get destructured import completions for ${moduleName}:`, error);
+        return [];
+    }
 }
 
 export function handleCompletionResolve(item: CompletionItem): CompletionItem {
