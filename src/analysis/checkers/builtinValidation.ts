@@ -1080,6 +1080,59 @@ export class BuiltinValidator {
     return true;
   }
 
+  validateHexdecFunction(node: CallExpressionNode): boolean {
+    if (this.checkArgumentCount(node, 'hexdec', 1) && node.arguments[0]) {
+      const arg = node.arguments[0];
+      const argType = this.getNodeType(arg);
+
+      if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `hexdec() expects string, got ${argType.toLowerCase()}`,
+          start: arg.start,
+          end: arg.end,
+          severity: 'error'
+        });
+      }
+    }
+
+    return true;
+  }
+
+  validateB64encFunction(node: CallExpressionNode): boolean {
+    if (this.checkArgumentCount(node, 'b64enc', 1) && node.arguments[0]) {
+        const arg = node.arguments[0];      
+        const argType = this.getNodeType(arg);
+
+        if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
+          this.errors.push({
+            message: `b64enc() expects string, got ${argType.toLowerCase()}`,
+            start: arg.start,
+            end: arg.end,
+            severity: 'error'
+          });
+        }
+    }
+
+    return true;
+  }
+
+  validateB64decFunction(node: CallExpressionNode): boolean {
+    if (this.checkArgumentCount(node, 'b64dec', 1) && node.arguments[0]) {
+        const arg = node.arguments[0];      
+        const argType = this.getNodeType(arg);
+        if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
+          this.errors.push({
+            message: `b64dec() expects string, got ${argType.toLowerCase()}`,
+            start: arg.start,
+            end: arg.end,
+            severity: 'error'
+          });
+        }
+    }
+
+    return true;
+  }
+
   validateLoadfileFunction(node: CallExpressionNode): boolean {
     if (node.arguments.length !== 1) {
       this.errors.push({

@@ -12,5 +12,4 @@ export { validateReplaceFunction } from './replace-function';
 export { validateArrayFunctions } from './array-functions';
 export { validateStringAnalysisFunctions } from './string-analysis';
 export { validateObjectFunctions } from './object-functions';
-export { validateNumberConversions } from './number-conversions';
 export { validateConversionFunctions } from './conversion-functions';

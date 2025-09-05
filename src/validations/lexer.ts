@@ -16,7 +16,6 @@ import { validateReplaceFunction } from './replace-function';
 import { validateArrayFunctions } from './array-functions';
 import { validateStringAnalysisFunctions } from './string-analysis';
 import { validateObjectFunctions } from './object-functions';
-import { validateNumberConversions } from './number-conversions';
 import { validateConversionFunctions } from './conversion-functions';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 
@@ -56,7 +55,6 @@ export function validateWithLexer(textDocument: TextDocument, connection: any): 
         validateArrayFunctions(textDocument, tokens, diagnostics);
         validateStringAnalysisFunctions(textDocument, tokens, diagnostics);
         validateObjectFunctions(textDocument, tokens, diagnostics);
-        validateNumberConversions(textDocument, tokens, diagnostics);
         
         validateConversionFunctions(textDocument, tokens, diagnostics);
         

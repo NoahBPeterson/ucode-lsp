@@ -759,6 +759,12 @@ export class TypeChecker {
         return this.builtinValidator.validateRequireFunction(node);
       case 'include':
         return this.builtinValidator.validateIncludeFunction(node);
+      case 'hexdec':
+        return this.builtinValidator.validateHexdecFunction(node);
+      case 'b64enc':
+        return this.builtinValidator.validateB64encFunction(node);
+      case 'b64dec':
+        return this.builtinValidator.validateB64decFunction(node);
       case 'loadfile':
         return this.builtinValidator.validateLoadfileFunction(node);
       case 'loadstring':
