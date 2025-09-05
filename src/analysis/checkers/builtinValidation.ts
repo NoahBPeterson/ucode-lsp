@@ -939,40 +939,24 @@ export class BuiltinValidator {
 
   validateChrFunction(node: CallExpressionNode): boolean {
     if (this.checkArgumentCount(node, 'chr', 1) && node.arguments[0]) {
-      const arg = node.arguments[0];
-      if (!arg) return true;
-      
-      const argType = this.getNodeType(arg);
-
-      // chr() should accept both strings and numbers (real testing shows both work)
-      if (argType !== UcodeType.STRING && argType !== UcodeType.INTEGER && 
-          argType !== UcodeType.DOUBLE && argType !== UcodeType.UNKNOWN) {
-        this.errors.push({
-          message: `chr() expects string or number, got ${argType.toLowerCase()}`,
-          start: arg.start,
-          end: arg.end,
-          severity: 'error'
-        });
+      for (let i = 0; i < node.arguments.length; i++) {
+        const arg = node.arguments[i];
+        if (arg) {
+          this.validateNumericArgument(arg, 'chr', i);
+        }
       }
     }
     return true;
   }
 
   validateOrdFunction(node: CallExpressionNode): boolean {
-    this.checkArgumentCount(node, 'ord', 1);
+    if (!this.checkArgumentCount(node, 'ord', 1)) return true;
 
-    const arg = node.arguments[0];
-    if (!arg) return true;
-    
-    const argType = this.getNodeType(arg);
-
-    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
-      this.errors.push({
-        message: `ord() expects string, got ${argType.toLowerCase()}`,
-        start: arg.start,
-        end: arg.end,
-        severity: 'error'
-      });
+    if (node.arguments.length >= 1 && node.arguments[0]) {
+      this.validateArgumentType(node.arguments[0], 'ord', 1, [UcodeType.STRING]);
+      if (node.arguments.length >= 2 && node.arguments[1]) {
+        this.validateArgumentType(node.arguments[1], 'ord', 2, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+      }
     }
 
     return true;

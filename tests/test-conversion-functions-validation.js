@@ -125,7 +125,7 @@ describe('Conversion Functions Validation Tests', function() {
         print(ord(65));
       `);
       assert.strictEqual(errors.length, 1, 'Should have error for number parameter');
-      assert.match(errors[0].message, /ord\(\) expects string, got integer/);
+      assert.match(errors[0].message, /'ord' expects string for argument 1, but got integer/);
     });
   });
 
@@ -158,7 +158,7 @@ describe('Conversion Functions Validation Tests', function() {
         print(chr(ord(65)));
       `);
       assert.strictEqual(errors.length, 1, 'Should have error for invalid nested function');
-      assert.match(errors[0].message, /ord\(\) expects string, got integer/);
+      assert.match(errors[0].message, /'ord' expects string for argument 1, but got integer/);
     });
   });
 });
