@@ -90,6 +90,7 @@ const testFiles = [
     'tests/test-module-functions-validation.js',
     'tests/test-number-conversion-validation.js',
     'tests/test-array-functions-ast.js',
+    'tests/test-object-functions-ast.js',
 ];
 
 const mochaFiles = [  // New entries still need to be added to the testFiles array
@@ -101,6 +102,7 @@ const mochaFiles = [  // New entries still need to be added to the testFiles arr
     'test-comma-operator-lsp.js',
     'test-rtnl-constants.js',
     'test-combined-lsp-validations.js',
+    'test-object-functions-ast.js',
     'test-fs-import-validation.js',
     'test-error-code-integration.js',
     'test-disable-comments.js',

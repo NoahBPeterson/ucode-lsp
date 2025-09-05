@@ -306,6 +306,7 @@ export class BuiltinValidator {
   validateExistsFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'exists', 2)) return true;
     this.validateArgumentType(node.arguments[0], 'exists', 1, [UcodeType.OBJECT]);
+    this.validateArgumentType(node.arguments[1], 'exists', 2, [UcodeType.STRING]);
     // Second argument is converted to a string, so no type check is needed.
     return true;
   }
@@ -937,45 +938,28 @@ export class BuiltinValidator {
   }
 
   validateChrFunction(node: CallExpressionNode): boolean {
-    if (node.arguments.length !== 1) {
-      this.errors.push({
-        message: `chr() expects 1 argument, got ${node.arguments.length}`,
-        start: node.start,
-        end: node.end,
-        severity: 'error'
-      });
-      return true;
+    if (this.checkArgumentCount(node, 'chr', 1) && node.arguments[0]) {
+      const arg = node.arguments[0];
+      if (!arg) return true;
+      
+      const argType = this.getNodeType(arg);
+
+      // chr() should accept both strings and numbers (real testing shows both work)
+      if (argType !== UcodeType.STRING && argType !== UcodeType.INTEGER && 
+          argType !== UcodeType.DOUBLE && argType !== UcodeType.UNKNOWN) {
+        this.errors.push({
+          message: `chr() expects string or number, got ${argType.toLowerCase()}`,
+          start: arg.start,
+          end: arg.end,
+          severity: 'error'
+        });
+      }
     }
-
-    const arg = node.arguments[0];
-    if (!arg) return true;
-    
-    const argType = this.getNodeType(arg);
-
-    // chr() should accept both strings and numbers (real testing shows both work)
-    if (argType !== UcodeType.STRING && argType !== UcodeType.INTEGER && 
-        argType !== UcodeType.DOUBLE && argType !== UcodeType.UNKNOWN) {
-      this.errors.push({
-        message: `chr() expects string or number, got ${argType.toLowerCase()}`,
-        start: arg.start,
-        end: arg.end,
-        severity: 'error'
-      });
-    }
-
     return true;
   }
 
   validateOrdFunction(node: CallExpressionNode): boolean {
-    if (node.arguments.length !== 1) {
-      this.errors.push({
-        message: `ord() expects 1 argument, got ${node.arguments.length}`,
-        start: node.start,
-        end: node.end,
-        severity: 'error'
-      });
-      return true;
-    }
+    this.checkArgumentCount(node, 'ord', 1);
 
     const arg = node.arguments[0];
     if (!arg) return true;
@@ -995,15 +979,7 @@ export class BuiltinValidator {
   }
 
   validateUchrFunction(node: CallExpressionNode): boolean {
-    if (node.arguments.length !== 1) {
-      this.errors.push({
-        message: `uchr() expects 1 argument, got ${node.arguments.length}`,
-        start: node.start,
-        end: node.end,
-        severity: 'error'
-      });
-      return true;
-    }
+    this.checkArgumentCount(node, 'uchr', 1);
 
     const arg = node.arguments[0];
     if (!arg) return true;
@@ -1347,6 +1323,18 @@ export class BuiltinValidator {
     // Second parameter must be function
     this.validateArgumentType(node.arguments[1], 'map', 2, [UcodeType.FUNCTION]);
     
+    return true;
+  }
+
+  validateKeysFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'keys', 1)) return true;
+    this.validateArgumentType(node.arguments[0], 'keys', 1, [UcodeType.OBJECT]);
+    return true;
+  }
+
+  validateValuesFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'values', 1)) return true;
+    this.validateArgumentType(node.arguments[0], 'values', 1, [UcodeType.OBJECT]);
     return true;
   }
 

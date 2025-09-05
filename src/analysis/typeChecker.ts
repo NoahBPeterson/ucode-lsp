@@ -803,6 +803,12 @@ export class TypeChecker {
         return this.builtinValidator.validateFilterFunction(node);
       case 'map':
         return this.builtinValidator.validateMapFunction(node);
+      case 'keys':
+        return this.builtinValidator.validateKeysFunction(node);
+      case 'values':
+        return this.builtinValidator.validateValuesFunction(node);
+      case 'exists':
+        return this.builtinValidator.validateExistsFunction(node);
       default:
         return false;
     }
