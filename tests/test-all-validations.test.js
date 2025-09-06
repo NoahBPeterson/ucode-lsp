@@ -102,6 +102,7 @@ const testFiles = [
     'tests/test-nl80211-fallback.js',
     'tests/test-alphanumeric-triggers.js',
     'tests/test-completion-sorting.js',
+    'tests/test-object-property-hover-bug.js',
 ];
 
 const mochaFiles = [
@@ -135,6 +136,7 @@ const mochaFiles = [
     'test-nl80211-fallback.js',
     'test-alphanumeric-triggers.js',
     'test-completion-sorting.js',
+    'test-object-property-hover-bug.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

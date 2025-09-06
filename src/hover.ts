@@ -165,7 +165,16 @@ export function handleHover(
                             }
                         };
                     }
+                } else {
+                    // Object exists but is not an imported symbol (e.g., user-defined variable)
+                    // For member expressions on non-imported objects, don't show builtin hover
+                    console.log(`[HOVER] Object ${objectName} is not an imported symbol, skipping member hover`);
+                    return undefined;
                 }
+            } else {
+                // No analysis result or symbol table - for member expressions, don't show builtin hover
+                console.log(`[HOVER] No symbol table available for member expression, skipping hover`);
+                return undefined;
             }
         }
         
