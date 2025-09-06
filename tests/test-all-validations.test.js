@@ -97,6 +97,11 @@ const testFiles = [
     'tests/test-module-completions.js',
     'tests/test-destructured-import-completion.js',
     'tests/test-multiple-imports-completion.js',
+    'tests/test-trigger-completions.js',
+    'tests/test-exclusion-completions.js',
+    'tests/test-nl80211-fallback.js',
+    'tests/test-alphanumeric-triggers.js',
+    'tests/test-completion-sorting.js',
 ];
 
 const mochaFiles = [
@@ -125,6 +130,11 @@ const mochaFiles = [
     'test-module-completions.js',
     'test-destructured-import-completion.js',
     'test-multiple-imports-completion.js',
+    'test-trigger-completions.js',
+    'test-exclusion-completions.js',
+    'test-nl80211-fallback.js',
+    'test-alphanumeric-triggers.js',
+    'test-completion-sorting.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

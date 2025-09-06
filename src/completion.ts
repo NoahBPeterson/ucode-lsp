@@ -54,7 +54,7 @@ export function handleCompletion(
         const destructuredImportContext = detectDestructuredImportContext(offset, tokens);
         if (destructuredImportContext) {
             connection.console.log(`Destructured import context detected: ${JSON.stringify(destructuredImportContext)}`);
-            return createDestructuredImportCompletions(destructuredImportContext.moduleName);
+            return createDestructuredImportCompletions(destructuredImportContext.moduleName, destructuredImportContext.alreadyImported);
         }
 
         // Check if we're in an import statement context (e.g., import * as lol from '')
@@ -1618,7 +1618,7 @@ function createModuleDocumentation(module: DiscoveredModule): string {
 /**
  * Detects if we're in a destructured import context like: import { open, l| } from 'fs'
  */
-function detectDestructuredImportContext(offset: number, tokens: any[]): { moduleName: string } | undefined {
+function detectDestructuredImportContext(offset: number, tokens: any[]): { moduleName: string, alreadyImported: string[] } | undefined {
     
     // Find all import statements and check which one contains the cursor
     for (let i = 0; i < tokens.length; i++) {
@@ -1656,7 +1656,14 @@ function detectDestructuredImportContext(offset: number, tokens: any[]): { modul
                 
                 // Check if cursor is after the opening brace and before 'from'
                 if (offset > lbraceToken.pos && offset < fromToken.pos) {
-                    return { moduleName };
+                    // Collect already imported identifiers
+                    const alreadyImported: string[] = [];
+                    for (let k = lbraceTokenIndex + 1; k < fromTokenIndex; k++) {
+                        if (tokens[k].type === TokenType.TK_LABEL) {
+                            alreadyImported.push(tokens[k].value as string);
+                        }
+                    }
+                    return { moduleName, alreadyImported };
                 }
             }
         }
@@ -1668,7 +1675,7 @@ function detectDestructuredImportContext(offset: number, tokens: any[]): { modul
 /**
  * Creates completions for destructured imports like: import { | } from 'fs'
  */
-function createDestructuredImportCompletions(moduleName: string): CompletionItem[] {
+function createDestructuredImportCompletions(moduleName: string, alreadyImported: string[] = []): CompletionItem[] {
     try {
         const members: ModuleMember[] = getModuleMembers(moduleName);
         if (members.length === 0) {
@@ -1678,18 +1685,51 @@ function createDestructuredImportCompletions(moduleName: string): CompletionItem
         const completions: CompletionItem[] = [];
         
         for (const member of members) {
-            // Only include functions in destructured imports (resources can't be destructured)
-            if (member.type === 'function') {
+            // Exclude already imported members
+            if (!alreadyImported.includes(member.name)) {
+                // Determine completion item properties based on member type
+                let kind: CompletionItemKind;
+                let detail: string;
+                let sortPriority: string;
+                let usage: string;
+
+                switch (member.type) {
+                    case 'function':
+                        kind = CompletionItemKind.Function;
+                        detail = `${member.name}() from ${moduleName}`;
+                        sortPriority = '1'; // Functions first
+                        usage = `**${member.name}** function from the **${moduleName}** module\n\n**Usage:**\n\`\`\`ucode\nimport { ${member.name} } from '${moduleName}';\n${member.name}(/* parameters */);\n\`\`\``;
+                        break;
+                    case 'constant':
+                        kind = CompletionItemKind.Constant;
+                        detail = `${member.name} from ${moduleName}`;
+                        sortPriority = '2'; // Constants second
+                        usage = `**${member.name}** constant from the **${moduleName}** module\n\n**Usage:**\n\`\`\`ucode\nimport { ${member.name} } from '${moduleName}';\nconsole.log(${member.name});\n\`\`\``;
+                        break;
+                    case 'resource':
+                        kind = CompletionItemKind.Value;
+                        detail = `${member.name} resource from ${moduleName}`;
+                        sortPriority = '3'; // Resources third
+                        usage = `**${member.name}** resource from the **${moduleName}** module\n\n**Usage:**\n\`\`\`ucode\nimport { ${member.name} } from '${moduleName}';\n// Use as resource\n\`\`\``;
+                        break;
+                    default: // 'unknown'
+                        kind = CompletionItemKind.Value;
+                        detail = `${member.name} from ${moduleName}`;
+                        sortPriority = '4'; // Unknown last
+                        usage = `**${member.name}** from the **${moduleName}** module\n\n**Usage:**\n\`\`\`ucode\nimport { ${member.name} } from '${moduleName}';\n// Usage depends on actual type\n\`\`\``;
+                        break;
+                }
+
                 completions.push({
                     label: member.name,
-                    kind: CompletionItemKind.Function,
-                    detail: `${member.name}() from ${moduleName}`,
+                    kind,
+                    detail,
                     documentation: {
                         kind: MarkupKind.Markdown,
-                        value: `**${member.name}** function from the **${moduleName}** module\n\n**Usage:**\n\`\`\`ucode\nimport { ${member.name} } from '${moduleName}';\n${member.name}(/* parameters */);\n\`\`\``
+                        value: usage
                     },
                     insertText: member.name,
-                    sortText: `0_${member.name}` // Alphabetical sorting
+                    sortText: `${sortPriority}_${member.name}` // Sort by type priority, then alphabetically
                 });
             }
         }

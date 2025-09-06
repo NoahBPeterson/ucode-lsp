@@ -35,8 +35,8 @@ import { cos, sin, rand } from 'math';`;
       console.log('FS functions found:', fsFunctions.map(item => item.label));
       
       assert(fsFunctions.length > 0, 'Should find fs function completions when fs is first');
-      assert(fsFunctions.some(item => item.label === 'open'), 'Should include open function');
-      assert(fsFunctions.some(item => item.label === 'lstat'), 'Should include lstat function');
+      assert(fsFunctions.some(item => item.label === 'readfile'), 'Should include readfile function');
+      assert(fsFunctions.some(item => item.label === 'access'), 'Should include access function');
     } else {
       assert.fail('Should receive completions for fs when fs is first');
     }
@@ -57,7 +57,7 @@ import { cos, sin, rand } from 'math';`;
       console.log('Digest functions found:', digestFunctions.map(item => item.label));
       
       assert(digestFunctions.length > 0, 'Should find digest function completions when digest is second');
-      assert(digestFunctions.some(item => item.label === 'md5'), 'Should include md5 function');
+      assert(digestFunctions.some(item => item.label === 'sha256'), 'Should include sha256 function');
     } else {
       assert.fail('Should receive completions for digest when digest is second');
     }
@@ -65,7 +65,7 @@ import { cos, sin, rand } from 'math';`;
 
   it('should provide completions for math when fs is first', async function() {
     const testContent = `import { open, lstat } from 'fs';
-import { md5} from 'digest';
+import { md5 } from 'digest';
 import { cos, sin, rand } from 'math';`;
     
     const completions = await getCompletions(testContent, path.join(__dirname, '..', 'test-math-third.uc'), 2, 8); // Position after third '{'
@@ -78,9 +78,9 @@ import { cos, sin, rand } from 'math';`;
       console.log('Math functions found:', mathFunctions.map(item => item.label));
       
       assert(mathFunctions.length > 0, 'Should find math function completions when math is third');
-      assert(mathFunctions.some(item => item.label === 'cos'), 'Should include cos function');
-      assert(mathFunctions.some(item => item.label === 'sin'), 'Should include sin function');
-      assert(mathFunctions.some(item => item.label === 'rand'), 'Should include rand function');
+      assert(mathFunctions.some(item => item.label === 'pow'), 'Should include pow function');
+      assert(mathFunctions.some(item => item.label === 'log'), 'Should include log function');
+      assert(mathFunctions.some(item => item.label === 'atan2'), 'Should include atan2 function');
     } else {
       assert.fail('Should receive completions for math when math is third');
     }
@@ -101,9 +101,9 @@ import { md5} from 'digest';`;
       console.log('Math functions found:', mathFunctions.map(item => item.label));
       
       assert(mathFunctions.length > 0, 'Should find math function completions when math is first');
-      assert(mathFunctions.some(item => item.label === 'cos'), 'Should include cos function');
-      assert(mathFunctions.some(item => item.label === 'sin'), 'Should include sin function');
-      assert(mathFunctions.some(item => item.label === 'rand'), 'Should include rand function');
+      assert(mathFunctions.some(item => item.label === 'isnan'), 'Should include isnan function');
+      assert(mathFunctions.some(item => item.label === 'sqrt'), 'Should include sqrt function');
+      assert(mathFunctions.some(item => item.label === 'atan2'), 'Should include atan2 function');
     } else {
       assert.fail('Should receive completions for math when math is first');
     }
@@ -124,9 +124,9 @@ import { md5} from 'digest';`;
       console.log('FS functions found:', fsFunctions.map(item => item.label));
       
       assert(fsFunctions.length > 0, 'Should find fs function completions when fs is second');
-      assert(fsFunctions.some(item => item.label === 'open'), 'Should include open function');
-      assert(fsFunctions.some(item => item.label === 'lstat'), 'Should include lstat function');
-      assert(fsFunctions.some(item => item.label === 'readfile'), 'Should include readfile function');
+      assert(fsFunctions.some(item => item.label === 'writefile'), 'Should include writefile function');
+      assert(fsFunctions.some(item => item.label === 'access'), 'Should include access function');
+      assert(fsFunctions.some(item => item.label === 'stat'), 'Should include stat function');
     } else {
       assert.fail('Should receive completions for fs when fs is second');
     }
@@ -147,7 +147,7 @@ import { open, lstat, readfile } from 'fs';`;
       console.log('Digest functions found:', digestFunctions.map(item => item.label));
       
       assert(digestFunctions.length > 0, 'Should find digest function completions when digest is first');
-      assert(digestFunctions.some(item => item.label === 'sha1'), 'Should include sha1 function');
+      assert(digestFunctions.some(item => item.label === 'md5'), 'Should include sha1 function');
     } else {
       assert.fail('Should receive completions for digest when digest is first');
     }

@@ -2,10 +2,11 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { nl80211Functions, nl80211Constants } from './analysis/nl80211Types';
 
 export interface ModuleMember {
     name: string;
-    type: 'function' | 'resource' | 'unknown';
+    type: 'function' | 'resource' | 'constant' | 'unknown';
 }
 
 export interface DiscoveredModule {
@@ -175,7 +176,7 @@ function discoverModuleMembers(moduleName: string): ModuleMember[] {
     try {
         const output = execSync(
             `ucode -e "import * as ${moduleName} from '${moduleName}'; for (thing in ${moduleName}) {print(type(${moduleName}[thing]), ' ', thing, '\\n');}"`,
-            { encoding: 'utf8', timeout: 5000 }
+            { encoding: 'utf8', timeout: 5000, stdio: ['pipe', 'pipe', 'ignore'] }
         );
         
         const members: ModuleMember[] = [];
@@ -187,7 +188,7 @@ function discoverModuleMembers(moduleName: string): ModuleMember[] {
                 const type = parts[0];
                 const name = parts.slice(1).join(' '); // Handle names with spaces
                 
-                let memberType: 'function' | 'resource' | 'unknown' = 'unknown';
+                let memberType: 'function' | 'resource' | 'constant' | 'unknown' = 'unknown';
                 if (type === 'function') {
                     memberType = 'function';
                 } else if (type === 'resource') {
@@ -200,7 +201,7 @@ function discoverModuleMembers(moduleName: string): ModuleMember[] {
         
         return members;
     } catch (error) {
-        console.warn(`Failed to discover members for module ${moduleName}:`, error);
+        // Silently fail when modules are not available (expected for some modules like nl80211)
         return [];
     }
 }
@@ -210,12 +211,97 @@ function discoverModuleMembers(moduleName: string): ModuleMember[] {
  */
 export function getModuleMembers(moduleName: string): ModuleMember[] {
     try {
-        return discoverModuleMembers(moduleName);
+        const dynamicMembers = discoverModuleMembers(moduleName);
+        
+        // If dynamic discovery succeeded, use those results
+        if (dynamicMembers.length > 0) {
+            return dynamicMembers;
+        }
+        
+        // Fallback to static type definitions if available
+        return getStaticModuleMembers(moduleName);
     } catch (error) {
         console.warn(`Failed to get module members for ${moduleName}:`, error);
-        return [];
+        
+        // Try static fallback even on error
+        return getStaticModuleMembers(moduleName);
     }
 }
+
+/**
+ * Gets module members from static type definitions when runtime introspection fails
+ */
+function getStaticModuleMembers(moduleName: string): ModuleMember[] {
+    switch (moduleName) {
+        case 'nl80211':
+            return getNl80211StaticMembers();
+        case 'rtnl':
+            return getRtnlStaticMembers();
+        case 'socket':
+            return getSocketStaticMembers();
+        case 'struct':
+            return getStructStaticMembers();
+        case 'zlib':
+            return getZlibStaticMembers();
+        case 'ubus':
+            return getUbusStaticMembers();
+        case 'uci':
+            return getUciStaticMembers();
+        case 'uloop':
+            return getUloopStaticMembers();
+        case 'fs':
+            return getFsStaticMembers();
+        case 'debug':
+            return getDebugStaticMembers();
+        case 'log':
+            return getLogStaticMembers();
+        case 'math':
+            return getMathStaticMembers();
+        case 'digest':
+            return getDigestStaticMembers();
+        case 'resolv':
+            return getResolvStaticMembers();
+        default:
+            return [];
+    }
+}
+
+function getNl80211StaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+    
+    // Convert static function definitions to ModuleMember format
+    for (const [name] of nl80211Functions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+    
+    // Convert static constant definitions to ModuleMember format
+    for (const [name] of nl80211Constants.entries()) {
+        members.push({
+            name,
+            type: 'constant' // Proper semantic type for constants
+        });
+    }
+    
+    return members;
+}
+
+// Placeholder functions for other modules - implement as needed
+function getRtnlStaticMembers(): ModuleMember[] { return []; }
+function getSocketStaticMembers(): ModuleMember[] { return []; }  
+function getStructStaticMembers(): ModuleMember[] { return []; }
+function getZlibStaticMembers(): ModuleMember[] { return []; }
+function getUbusStaticMembers(): ModuleMember[] { return []; }
+function getUciStaticMembers(): ModuleMember[] { return []; }
+function getUloopStaticMembers(): ModuleMember[] { return []; }
+function getFsStaticMembers(): ModuleMember[] { return []; }
+function getDebugStaticMembers(): ModuleMember[] { return []; }
+function getLogStaticMembers(): ModuleMember[] { return []; }
+function getMathStaticMembers(): ModuleMember[] { return []; }
+function getDigestStaticMembers(): ModuleMember[] { return []; }
+function getResolvStaticMembers(): ModuleMember[] { return []; }
 
 /**
  * Clears the module cache (useful for testing or manual refresh)

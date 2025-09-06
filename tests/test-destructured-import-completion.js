@@ -26,17 +26,17 @@ describe('Destructured Import Completion Test', function() {
 
     const completions = await getCompletions(testContent, testFilePath, 0, 8); // Position after '{'
     
-    console.log('Math destructured completions received:', completions?.length || 0);
+    //console.log('Math destructured completions received:', completions?.length || 0);
     if (completions) {
       const mathFunctions = completions.filter(item => 
         ['cos', 'sin', 'rand', 'pow', 'sqrt', 'exp', 'log', 'abs', 'atan2', 'isnan', 'srand'].includes(item.label)
       );
-      console.log('Math functions found:', mathFunctions.map(item => item.label));
+      //console.log('Math functions found:', mathFunctions.map(item => item.label));
       
       assert(mathFunctions.length > 0, 'Should find math function completions');
-      assert(mathFunctions.some(item => item.label === 'cos'), 'Should include cos function');
-      assert(mathFunctions.some(item => item.label === 'sin'), 'Should include sin function');
-      assert(mathFunctions.some(item => item.label === 'rand'), 'Should include rand function');
+      assert(mathFunctions.some(item => item.label === 'sqrt'), 'Should include sqrt function');
+      assert(mathFunctions.some(item => item.label === 'exp'), 'Should include exp function');
+      assert(mathFunctions.some(item => item.label === 'abs'), 'Should include abs function');
     } else {
       assert.fail('Should receive completions for math destructured import');
     }
@@ -56,7 +56,7 @@ describe('Destructured Import Completion Test', function() {
       console.log('Digest functions found:', digestFunctions.map(item => item.label));
       
       assert(digestFunctions.length > 0, 'Should find digest function completions');
-      assert(digestFunctions.some(item => item.label === 'md5'), 'Should include md5 function');
+      assert(digestFunctions.some(item => item.label === 'sha384'), 'Should include sha384 function');
     } else {
       assert.fail('Should receive completions for digest destructured import');
     }
@@ -95,7 +95,7 @@ describe('Destructured Import Completion Test', function() {
         ['cos', 'sin', 'rand', 'pow', 'sqrt'].includes(item.label)
       );
       
-      assert(mathFunctions.length > 3, 'Should find math function completions when cursor is in middle');
+      assert(mathFunctions.length == 2, 'Should find math function completions when cursor is in middle');
     } else {
       assert.fail('Should receive completions when cursor is in middle of destructured import');
     }
