@@ -215,8 +215,12 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
 
-      // Check for redeclaration in current scope
-      if (!this.symbolTable.declare(name, symbolType, dataType, node.id)) {
+      // Check for redeclaration and shadowing
+      const existingSymbol = this.symbolTable.lookupInCurrentScope(name);
+      
+      // Check if we have a real redeclaration (same scope, not builtin)
+      if (existingSymbol && existingSymbol.type !== SymbolType.BUILTIN) {
+        // True redeclaration in same scope - always an error
         this.addDiagnosticErrorCode(
           UcodeErrorCode.VARIABLE_REDECLARATION,
           `Variable '${name}' is already declared in this scope`,
@@ -224,21 +228,34 @@ export class SemanticAnalyzer extends BaseVisitor {
           node.id.end,
           DiagnosticSeverity.Error,
         );
-      }
-
-      // Check for shadowing
-      if (this.options.enableShadowingWarnings) {
-        const shadowedSymbol = this.symbolTable.checkShadowing(name);
-        if (shadowedSymbol) {
+      } else {
+        // Check for shadowing
+        const shadowedSymbol = this.symbolTable.lookup(name);
+        
+        if (shadowedSymbol && shadowedSymbol.type === SymbolType.BUILTIN) {
+          // Shadowing builtin function - show warning but allow it
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.SHADOWING_BUILTIN,
+            `Variable '${name}' shadows builtin function '${name}()'`,
+            node.id.start,
+            node.id.end,
+            DiagnosticSeverity.Warning,
+          );
+        } else if (shadowedSymbol && this.options.enableShadowingWarnings) {
+          // Shadowing variable/function from outer scope - show warning
           this.addDiagnosticErrorCode(
             UcodeErrorCode.VARIABLE_SHADOWING,
-            `Variable '${name}' shadows declaration from outer scope`,
+            `Variable '${name}' shadows ${shadowedSymbol.type} '${name}' from outer scope`,
             node.id.start,
             node.id.end,
             DiagnosticSeverity.Warning,
           );
         }
+        
+        // Declare the symbol (allow shadowing builtins)
+        this.symbolTable.declare(name, symbolType, dataType, node.id);
       }
+
 
       // Process initializer
       if (node.init) {
@@ -1657,6 +1674,24 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (node.declaration) {
       // Visit the actual declaration (function, variable, etc.)
       this.visit(node.declaration);
+      
+      // Mark the exported declaration as used to prevent unused variable warnings
+      if (this.options.enableScopeAnalysis) {
+        if (node.declaration.type === 'FunctionDeclaration') {
+          const funcDecl = node.declaration as FunctionDeclarationNode;
+          if (funcDecl.id) {
+            this.symbolTable.markUsed(funcDecl.id.name, funcDecl.id.start);
+          }
+        } else if (node.declaration.type === 'VariableDeclaration') {
+          const varDecl = node.declaration as VariableDeclarationNode;
+          for (const declarator of varDecl.declarations) {
+            if (declarator.id.type === 'Identifier') {
+              const id = declarator.id as IdentifierNode;
+              this.symbolTable.markUsed(id.name, id.start);
+            }
+          }
+        }
+      }
     }
     
     // Handle export specifiers if present (export { name })
@@ -1673,6 +1708,20 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (node.declaration) {
       // Visit the actual declaration
       this.visit(node.declaration);
+      
+      // Mark the exported declaration as used to prevent unused variable warnings
+      if (this.options.enableScopeAnalysis) {
+        if (node.declaration.type === 'FunctionDeclaration') {
+          const funcDecl = node.declaration as FunctionDeclarationNode;
+          if (funcDecl.id) {
+            this.symbolTable.markUsed(funcDecl.id.name, funcDecl.id.start);
+          }
+        } else if (node.declaration.type === 'Identifier') {
+          // export default myVariable;
+          const id = node.declaration as IdentifierNode;
+          this.symbolTable.markUsed(id.name, id.start);
+        }
+      }
     }
   }
 

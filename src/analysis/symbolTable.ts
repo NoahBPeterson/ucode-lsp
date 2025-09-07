@@ -359,6 +359,18 @@ export class SymbolTable {
     return true;
   }
 
+  lookupInCurrentScope(name: string): Symbol | null {
+    const currentScopeMap = this.scopes[this.scopes.length - 1];
+    if (!currentScopeMap) {
+      return null;
+    }
+    return currentScopeMap.get(name) || null;
+  }
+
+  getScopeCount(): number {
+    return this.scopes.length;
+  }
+
   lookup(name: string): Symbol | null {
     // Search from current scope to global scope
     for (let i = this.scopes.length - 1; i >= 0; i--) {

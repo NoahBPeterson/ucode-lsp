@@ -105,6 +105,7 @@ const testFiles = [
     'tests/test-object-property-hover-bug.js',
     'tests/test-variable-hover-consistency-bug.js',
     'tests/test-semantic-analysis-timing.js',
+    'tests/test-builtin-shadowing.js',
 ];
 
 const mochaFiles = [
@@ -141,6 +142,7 @@ const mochaFiles = [
     'test-object-property-hover-bug.js',
     'test-variable-hover-consistency-bug.js',
     'test-semantic-analysis-timing.js',
+    'test-builtin-shadowing.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

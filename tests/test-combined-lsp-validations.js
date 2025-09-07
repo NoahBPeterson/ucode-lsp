@@ -218,6 +218,105 @@ describe('Combined LSP Validation Tests', function() {
     });
   });
 
+  describe('Export Unused Variable Detection', function() {
+    it('should NOT show "declared but never used" for exported functions', async function() {
+      const testContent = `export function myFunction() { return 42; }`;
+      
+      const diagnostics = await getDiagnostics(testContent, '/tmp/test-export-function.uc');
+      
+      const unusedWarnings = diagnostics.filter(d => 
+        d.severity === 4 && 
+        d.message.includes('declared but never used')
+      );
+      
+      assert.strictEqual(unusedWarnings.length, 0, 
+        `Should not show unused warnings for exported functions. Found: ${unusedWarnings.map(e => e.message).join(', ')}`);
+    });
+
+    it('should NOT show "declared but never used" for exported variables', async function() {
+      const testContent = `
+        export const myVariable = "hello";
+        export let myLet = 123;
+      `;
+      
+      const diagnostics = await getDiagnostics(testContent, '/tmp/test-export-variables.uc');
+      
+      const unusedWarnings = diagnostics.filter(d => 
+        d.severity === 4 && 
+        d.message.includes('declared but never used')
+      );
+      
+      assert.strictEqual(unusedWarnings.length, 0, 
+        `Should not show unused warnings for exported variables. Found: ${unusedWarnings.map(e => e.message).join(', ')}`);
+    });
+
+    it('should NOT show "declared but never used" for export specifiers', async function() {
+      const testContent = `
+        const localVar = "test";
+        function localFunc() { return "func"; }
+        export { localVar, localFunc };
+      `;
+      
+      const diagnostics = await getDiagnostics(testContent, '/tmp/test-export-specifiers.uc');
+      
+      const unusedWarnings = diagnostics.filter(d => 
+        d.severity === 4 && 
+        d.message.includes('declared but never used')
+      );
+      
+      assert.strictEqual(unusedWarnings.length, 0, 
+        `Should not show unused warnings for exported specifiers. Found: ${unusedWarnings.map(e => e.message).join(', ')}`);
+    });
+
+    it('should NOT show "declared but never used" for default exports', async function() {
+      const testContent = `
+        function defaultFunc() { return "default"; }
+        export default defaultFunc;
+      `;
+      
+      const diagnostics = await getDiagnostics(testContent, '/tmp/test-export-default.uc');
+      
+      const unusedWarnings = diagnostics.filter(d => 
+        d.severity === 4 && 
+        d.message.includes('declared but never used')
+      );
+      
+      assert.strictEqual(unusedWarnings.length, 0, 
+        `Should not show unused warnings for default exports. Found: ${unusedWarnings.map(e => e.message).join(', ')}`);
+    });
+
+    it('should handle comprehensive export scenarios without unused warnings', async function() {
+      const testContent = `
+        // Named export declarations
+        export function myFunction() { return 42; }
+        export const myVariable = "hello";
+        export let myLet = 123;
+
+        // Export specifiers
+        const localVar = "test";
+        function localFunc() { return "func"; }
+        export { localVar, localFunc };
+
+        // Default exports
+        export default function defaultFunc() { return "default"; }
+
+        // Mixed scenarios
+        const mixedVar = "mixed";
+        export { mixedVar as renamedVar };
+      `;
+      
+      const diagnostics = await getDiagnostics(testContent, '/tmp/test-comprehensive-exports.uc');
+      
+      const unusedWarnings = diagnostics.filter(d => 
+        d.severity === 4 && 
+        d.message.includes('declared but never used')
+      );
+      
+      assert.strictEqual(unusedWarnings.length, 0, 
+        `Should not show unused warnings for any export scenarios. Found: ${unusedWarnings.map(e => e.message).join(', ')}`);
+    });
+  });
+
   describe('Edge Cases and Integration', function() {
     it('should handle complex mixed scenarios', async function() {
       const testContent = `
