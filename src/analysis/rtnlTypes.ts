@@ -91,6 +91,7 @@ export const rtnlConstants: Map<string, RtnlConstantSignature> = new Map([
   ["NLM_F_CREATE", { name: "NLM_F_CREATE", value: 1024, type: "integer", description: "Create if it does not exist" }],
   ["NLM_F_EXCL", { name: "NLM_F_EXCL", value: 512, type: "integer", description: "Do not touch, if it exists" }],
   ["NLM_F_REPLACE", { name: "NLM_F_REPLACE", value: 256, type: "integer", description: "Replace existing matching object" }],
+  ["NLM_F_STRICT_CHK", { name: "NLM_F_STRICT_CHK", value: 32768, type: "integer", description: "" }],
 
   // Address Family Constants
   ["AF_UNSPEC", { name: "AF_UNSPEC", value: 0, type: "integer", description: "Unspecified address family" }],
