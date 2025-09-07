@@ -36,7 +36,7 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
     let hoverTokenIndex = -1;
     for (let i = 0; i < tokens.length; i++) {
         const token = tokens[i];
-        if (token.pos <= offset && offset <= token.end) {
+        if (token.pos <= offset && offset < token.end) {
             hoverTokenIndex = i;
             break;
         }
@@ -178,7 +178,7 @@ export function handleHover(
             }
         }
         
-        const token = tokens.find(t => t.pos <= offset && offset <= t.end);
+        const token = tokens.find(t => t.pos <= offset && offset < t.end);
         
         if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
             const word = token.value;
@@ -390,6 +390,8 @@ export function handleHover(
                             break;
                     }
                     
+                    console.log(`[HOVER_DEBUG] Generated hover text for "${word}":`, hoverText ? `"${hoverText.substring(0, 50)}..."` : 'EMPTY');
+                    
                     if (hoverText) {
                         return {
                             contents: { kind: MarkupKind.Markdown, value: hoverText },
@@ -507,7 +509,7 @@ export function handleHover(
 
 function detectMemberExpression(offset: number, tokens: any[]): { objectName: string; propertyName: string } | undefined {
     // Find the token at the current position
-    const currentTokenIndex = tokens.findIndex(t => t.pos <= offset && offset <= t.end);
+    const currentTokenIndex = tokens.findIndex(t => t.pos <= offset && offset < t.end);
     if (currentTokenIndex === -1) return undefined;
     
     const currentToken = tokens[currentTokenIndex];
@@ -553,7 +555,7 @@ function getWordRangeAtPosition(text: string, offset: number): { start: number; 
     let match;
     
     while ((match = wordRegex.exec(text)) !== null) {
-        if (match.index <= offset && offset <= match.index + match[0].length) {
+        if (match.index <= offset && offset < match.index + match[0].length) {
             return {
                 start: match.index,
                 end: match.index + match[0].length
