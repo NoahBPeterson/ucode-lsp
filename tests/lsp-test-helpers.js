@@ -182,6 +182,11 @@ function createLSPTestServer(options = {}) {
         params: {
           processId: process.pid,
           clientInfo: { name: 'test-client', version: '1.0.0' },
+          rootUri: `file://${process.cwd()}`,
+          workspaceFolders: [{
+            uri: `file://${process.cwd()}`,
+            name: 'ucode-lsp'
+          }],
           capabilities: { ...defaultCapabilities, ...options.capabilities }
         }
       };

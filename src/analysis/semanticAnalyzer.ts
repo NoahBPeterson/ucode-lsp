@@ -17,6 +17,7 @@ import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
+import { FileResolver } from './fileResolver';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
 import { fsModuleTypeRegistry } from './fsModuleTypes';
 import { logTypeRegistry } from './logTypes';
@@ -38,6 +39,7 @@ export interface SemanticAnalysisOptions {
   enableControlFlowAnalysis?: boolean;
   enableUnusedVariableDetection?: boolean;
   enableShadowingWarnings?: boolean;
+  workspaceRoot?: string | undefined;
 }
 
 export interface SemanticAnalysisResult {
@@ -61,12 +63,14 @@ export class SemanticAnalyzer extends BaseVisitor {
   private disabledLines: Set<number> = new Set(); // Track lines with disable comments
   private disabledRanges: Array<{ start: number; end: number }> = []; // Track disabled multi-line ranges
   private linesWithSuppressedDiagnostics: Set<number> = new Set(); // Track lines where diagnostics were suppressed
+  private fileResolver: FileResolver;
 
   constructor(textDocument: TextDocument, options: SemanticAnalysisOptions = {}) {
     super();
     this.textDocument = textDocument;
     this.symbolTable = new SymbolTable();
     this.typeChecker = new TypeChecker(this.symbolTable);
+    this.fileResolver = new FileResolver(options.workspaceRoot);
     this.options = {
       enableScopeAnalysis: true,
       enableTypeChecking: true,
@@ -273,10 +277,11 @@ export class SemanticAnalyzer extends BaseVisitor {
        
   visitImportDeclaration(node: ImportDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
-      // For now, just add imported symbols to the symbol table
-      // TODO: Add proper file resolution and cross-file analysis
+      const modulePath = node.source.value as string;
+      
+      // Validate import specifiers against module exports
       for (const specifier of node.specifiers) {
-        this.processImportSpecifier(specifier, node.source.value as string);
+        this.validateAndProcessImportSpecifier(specifier, modulePath);
       }
     }
     
@@ -540,6 +545,51 @@ export class SemanticAnalyzer extends BaseVisitor {
         // TODO: Resolve actual definition location
       }
     }
+  }
+
+  private validateAndProcessImportSpecifier(specifier: ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode, modulePath: string): void {
+    // Try to resolve the module and validate exports
+    const resolvedUri = this.fileResolver.resolveImportPath(modulePath, this.textDocument.uri);
+    
+    if (resolvedUri) {
+      const moduleExports = this.fileResolver.getModuleExports(resolvedUri);
+      
+      if (moduleExports && specifier.type === 'ImportSpecifier') {
+        // Validate named import against actual module exports
+        const importedName = specifier.imported.name;
+        const hasNamedExport = moduleExports.some(exp => exp.type === 'named' && exp.name === importedName);
+        
+        if (!hasNamedExport) {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.EXPORT_NOT_FOUND,
+            `Module ${modulePath} does not export '${importedName}'`,
+            specifier.imported.start,
+            specifier.imported.end,
+            DiagnosticSeverity.Error
+          );
+          return; // Don't process invalid import
+        }
+      } else if (moduleExports && specifier.type === 'ImportDefaultSpecifier') {
+        // Validate default import
+        const hasDefaultExport = moduleExports.some(exp => exp.type === 'default');
+        
+        if (!hasDefaultExport) {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.EXPORT_NOT_FOUND,
+            `Module ${modulePath} does not have a default export`,
+            specifier.local.start,
+            specifier.local.end,
+            DiagnosticSeverity.Error
+          );
+          return; // Don't process invalid import
+        }
+      }
+      // Namespace imports (import * as name) are always valid as they import everything
+    }
+    // If module cannot be resolved, we cannot validate exports, so allow the import
+    
+    // Process the import (either validation passed or module not resolvable)
+    this.processImportSpecifier(specifier, modulePath);
   }
 
   visitFunctionDeclaration(node: FunctionDeclarationNode): void {

@@ -1,6 +1,6 @@
 import { UcodeLexer } from '../lexer';
 import { UcodeParser } from '../parser';
-import { FunctionDeclarationNode, AstNode } from '../ast/nodes';
+import { FunctionDeclarationNode, AstNode, ExportDefaultDeclarationNode, ExportNamedDeclarationNode } from '../ast/nodes';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -11,9 +11,16 @@ export interface FunctionDefinition {
     end: number;
 }
 
+export interface ModuleExport {
+    name: string;
+    type: 'default' | 'named';
+    isFunction: boolean;
+}
+
 export class FileResolver {
     private workspaceRoot: string;
     private fileCache = new Map<string, FunctionDefinition[]>();
+    private exportCache = new Map<string, ModuleExport[]>();
 
     constructor(workspaceRoot?: string) {
         this.workspaceRoot = workspaceRoot || process.cwd();
@@ -56,6 +63,15 @@ export class FileResolver {
                 }
             }
 
+            // Handle dotted module paths (e.g., 'u1905.u1905d.src.u1905.log')
+            if (!importPath.includes('/') && !importPath.startsWith('.')) {
+                const dottedPath = importPath.replace(/\./g, '/') + '.uc';
+                const resolvedPath = path.resolve(this.workspaceRoot, dottedPath);
+                if (fs.existsSync(resolvedPath)) {
+                    return this.filePathToUri(resolvedPath);
+                }
+            }
+
             return null;
         } catch (error) {
             console.error('Error resolving import path:', error);
@@ -85,6 +101,30 @@ export class FileResolver {
             return definitions.find(def => def.name === functionName) || null;
         } catch (error) {
             console.error('Error finding function definition:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Get all exports from a module
+     */
+    getModuleExports(fileUri: string): ModuleExport[] | null {
+        try {
+            // Check cache first
+            const cached = this.exportCache.get(fileUri);
+            if (cached) {
+                return cached;
+            }
+
+            // Load and parse exports
+            const exports = this.loadModuleExports(fileUri);
+            if (!exports) return null;
+
+            // Cache the results
+            this.exportCache.set(fileUri, exports);
+            return exports;
+        } catch (error) {
+            console.error('Error getting module exports:', error);
             return null;
         }
     }
@@ -160,6 +200,86 @@ export class FileResolver {
                 visitor(value);
             }
         }
+    }
+
+    /**
+     * Load all exports from a module file
+     */
+    private loadModuleExports(fileUri: string): ModuleExport[] | null {
+        try {
+            const filePath = this.uriToFilePath(fileUri);
+            if (!filePath || !fs.existsSync(filePath)) {
+                return null;
+            }
+
+            // Read and parse the file
+            const source = fs.readFileSync(filePath, 'utf-8');
+            const lexer = new UcodeLexer(source, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, source);
+            const result = parser.parse();
+
+            if (!result.ast) {
+                return null;
+            }
+
+            const exports: ModuleExport[] = [];
+            this.findExports(result.ast, exports);
+            return exports;
+        } catch (error) {
+            console.error('Error loading module exports:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Find all exports in an AST node
+     */
+    private findExports(node: AstNode, exports: ModuleExport[]): void {
+        if (node.type === 'ExportDefaultDeclaration') {
+            const exportNode = node as ExportDefaultDeclarationNode;
+            exports.push({
+                name: 'default',
+                type: 'default',
+                isFunction: exportNode.declaration?.type === 'FunctionDeclaration' || exportNode.declaration?.type === 'FunctionExpression'
+            });
+        } else if (node.type === 'ExportNamedDeclaration') {
+            const exportNode = node as ExportNamedDeclarationNode;
+            if (exportNode.declaration) {
+                // export function foo() {} or export let x = 1
+                if (exportNode.declaration.type === 'FunctionDeclaration') {
+                    const funcDecl = exportNode.declaration as FunctionDeclarationNode;
+                    exports.push({
+                        name: funcDecl.id.name,
+                        type: 'named',
+                        isFunction: true
+                    });
+                } else if (exportNode.declaration.type === 'VariableDeclaration') {
+                    const varDecl = exportNode.declaration as any; // VariableDeclarationNode
+                    for (const declarator of varDecl.declarations) {
+                        exports.push({
+                            name: declarator.id.name,
+                            type: 'named',
+                            isFunction: false
+                        });
+                    }
+                }
+            } else if (exportNode.specifiers) {
+                // export { foo, bar }
+                for (const specifier of exportNode.specifiers) {
+                    exports.push({
+                        name: specifier.exported.name,
+                        type: 'named',
+                        isFunction: false // We don't know without more analysis
+                    });
+                }
+            }
+        }
+
+        // Recursively search child nodes
+        this.visitChildren(node, (child) => {
+            this.findExports(child, exports);
+        });
     }
 
     /**

@@ -6,7 +6,7 @@
 import { TokenType } from '../../lexer';
 import { 
   AstNode, VariableDeclarationNode, VariableDeclaratorNode, 
-  FunctionDeclarationNode, IdentifierNode, BlockStatementNode,
+  FunctionDeclarationNode, FunctionExpressionNode, IdentifierNode, BlockStatementNode,
   ImportDeclarationNode, ImportSpecifierNode, ImportDefaultSpecifierNode,
   ImportNamespaceSpecifierNode, LiteralNode, ExportNamedDeclarationNode,
   ExportDefaultDeclarationNode, ExportAllDeclarationNode, ExportSpecifierNode
@@ -74,18 +74,23 @@ export abstract class DeclarationStatements extends ExpressionParser {
     };
   }
 
-  protected parseFunctionDeclaration(isExported: boolean = false): FunctionDeclarationNode | null {
+  protected parseFunctionDeclaration(isExported: boolean = false): FunctionDeclarationNode | FunctionExpressionNode | null {
     const start = this.previous()!.pos;
 
-    if (!this.check(TokenType.TK_LABEL)) {
+    // For export default functions, the name is optional (anonymous functions allowed)
+    let id: IdentifierNode | null = null;
+    
+    if (this.check(TokenType.TK_LABEL)) {
+      id = this.parseIdentifierName();
+      if (!id) return null;
+    } else if (!isExported) {
+      // Regular function declarations require a name
       this.error("Expected function name");
       return null;
     }
+    // For export default, id can be null (anonymous function)
 
-    const id = this.parseIdentifierName();
-    if (!id) return null;
-
-    this.consume(TokenType.TK_LPAREN, "Expected '(' after function name");
+    this.consume(TokenType.TK_LPAREN, id ? "Expected '(' after function name" : "Expected '(' after 'function'");
 
     const params: IdentifierNode[] = [];
     let restParam: IdentifierNode | undefined = undefined;
@@ -128,20 +133,39 @@ export abstract class DeclarationStatements extends ExpressionParser {
     }
     // Regular (non-exported) functions don't require semicolons
 
-    const result: FunctionDeclarationNode = {
-      type: 'FunctionDeclaration',
-      start,
-      end: hadSemicolon ? this.previous()!.end : body.end,
-      id,
-      params,
-      body
-    };
-    
-    if (restParam) {
-      result.restParam = restParam;
+    if (id) {
+      // Named function - use FunctionDeclarationNode
+      const result: FunctionDeclarationNode = {
+        type: 'FunctionDeclaration',
+        start,
+        end: hadSemicolon ? this.previous()!.end : body.end,
+        id,
+        params,
+        body
+      };
+      
+      if (restParam) {
+        result.restParam = restParam;
+      }
+      
+      return result;
+    } else {
+      // Anonymous function - use FunctionExpressionNode
+      const result: FunctionExpressionNode = {
+        type: 'FunctionExpression',
+        start,
+        end: hadSemicolon ? this.previous()!.end : body.end,
+        id: null,
+        params,
+        body
+      };
+      
+      if (restParam) {
+        result.restParam = restParam;
+      }
+      
+      return result;
     }
-    
-    return result;
   }
 
   protected parseImportDeclaration(): ImportDeclarationNode | null {
@@ -193,6 +217,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
       });
     } else {
       // Default import: import name from 'module'
+      // or mixed import: import Default, { named } from 'module'
       const local = this.parseIdentifierName();
       if (!local) return null;
 
@@ -202,6 +227,39 @@ export abstract class DeclarationStatements extends ExpressionParser {
         end: local.end,
         local
       });
+      
+      // Check for mixed import (default + named)
+      if (this.match(TokenType.TK_COMMA)) {
+        if (this.match(TokenType.TK_LBRACE)) {
+          // Parse named imports after default
+          if (!this.check(TokenType.TK_RBRACE)) {
+            do {
+              const imported = this.parseImportSpecifierName();
+              if (!imported) continue;
+
+              let namedLocal = imported;
+              if (this.match(TokenType.TK_LABEL) && this.previous()!.value === 'as') {
+                const parsedLocal = this.parseIdentifierName();
+                if (!parsedLocal) continue;
+                namedLocal = parsedLocal;
+              }
+
+              specifiers.push({
+                type: 'ImportSpecifier',
+                start: imported.start,
+                end: namedLocal.end,
+                imported,
+                local: namedLocal
+              });
+            } while (this.match(TokenType.TK_COMMA));
+          }
+          
+          this.consume(TokenType.TK_RBRACE, "Expected '}' after import specifiers");
+        } else {
+          this.error("Expected '{' after ',' in mixed import");
+          return null;
+        }
+      }
     }
 
     // Parse 'from' keyword

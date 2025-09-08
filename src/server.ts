@@ -323,6 +323,7 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
             enableControlFlowAnalysis: true,
             enableUnusedVariableDetection: true,
             enableShadowingWarnings: true,
+            workspaceRoot: workspaceFolders.length > 0 ? workspaceFolders[0] : process.cwd(),
         });
         const analysisResult = analyzer.analyze(parseResult.ast);
         analysisCache.set(textDocument.uri, {result: analysisResult, timestamp: Date.now()});
