@@ -1,6 +1,7 @@
 import { UcodeLexer } from '../lexer';
 import { UcodeParser } from '../parser';
 import { FunctionDeclarationNode, AstNode, ExportDefaultDeclarationNode, ExportNamedDeclarationNode } from '../ast/nodes';
+import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -27,10 +28,24 @@ export class FileResolver {
     }
 
     /**
+     * Check if a module is a builtin module
+     */
+    isBuiltinModule(modulePath: string): boolean {
+        const availableModules = discoverAvailableModules();
+        return availableModules.some(module => module.name === modulePath && module.source === 'builtin');
+    }
+
+    /**
      * Resolve a relative import path to an absolute file path
      */
     resolveImportPath(importPath: string, currentFileUri: string): string | null {
         try {
+            // Check if it's a builtin module first - this takes priority
+            if (this.isBuiltinModule(importPath)) {
+                // Return a special URI to indicate this is a builtin module
+                return `builtin://${importPath}`;
+            }
+
             // Convert URI to file path
             const currentFilePath = this.uriToFilePath(currentFileUri);
             if (!currentFilePath) return null;
@@ -110,6 +125,12 @@ export class FileResolver {
      */
     getModuleExports(fileUri: string): ModuleExport[] | null {
         try {
+            // Handle builtin modules
+            if (fileUri.startsWith('builtin://')) {
+                const moduleName = fileUri.replace('builtin://', '');
+                return this.getBuiltinModuleExports(moduleName);
+            }
+
             // Check cache first
             const cached = this.exportCache.get(fileUri);
             if (cached) {
@@ -127,6 +148,27 @@ export class FileResolver {
             console.error('Error getting module exports:', error);
             return null;
         }
+    }
+
+    /**
+     * Get exports for a builtin module
+     */
+    private getBuiltinModuleExports(moduleName: string): ModuleExport[] {
+        // For builtin modules, we need to determine their export pattern
+        // Most ucode builtin modules export all their functions and constants as named exports
+        const members = getModuleMembers(moduleName);
+        const exports: ModuleExport[] = [];
+
+        // Convert module members to exports
+        for (const member of members) {
+            exports.push({
+                name: member.name,
+                type: 'named',
+                isFunction: member.type === 'function'
+            });
+        }
+
+        return exports;
     }
 
     /**

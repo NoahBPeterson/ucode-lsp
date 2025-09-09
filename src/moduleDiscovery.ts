@@ -3,6 +3,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { nl80211Functions, nl80211Constants } from './analysis/nl80211Types';
+import { fsModuleFunctions } from './analysis/fsModuleTypes';
+import { uloopConstants, uloopFunctions } from './analysis/uloopTypes';
+import { uciFunctions } from './analysis/uciTypes';
+import { ubusConstants, ubusFunctions } from './analysis/ubusTypes';
+import { zlibConstants, zlibFunctions } from './analysis/zlibTypes';
+import { structFunctions } from './analysis/structTypes';
+import { socketConstants, socketFunctions } from './analysis/socketTypes';
+import { rtnlConstants, rtnlFunctions } from './analysis/rtnlTypes';
+import { debugFunctions } from './analysis/debugTypes';
+import { logConstants, logFunctions } from './analysis/logTypes';
+import { mathFunctions } from './analysis/mathTypes';
+import { digestFunctions } from './analysis/digestTypes';
+import { resolvFunctions } from './analysis/resolvTypes';
 
 export interface ModuleMember {
     name: string;
@@ -285,23 +298,221 @@ function getNl80211StaticMembers(): ModuleMember[] {
         });
     }
     
+    // Add special 'const' export that represents all constants collectively
+    members.push({
+        name: 'const',
+        type: 'constant'
+    });
+    
     return members;
 }
 
 // Placeholder functions for other modules - implement as needed
-function getRtnlStaticMembers(): ModuleMember[] { return []; }
-function getSocketStaticMembers(): ModuleMember[] { return []; }  
-function getStructStaticMembers(): ModuleMember[] { return []; }
-function getZlibStaticMembers(): ModuleMember[] { return []; }
-function getUbusStaticMembers(): ModuleMember[] { return []; }
-function getUciStaticMembers(): ModuleMember[] { return []; }
-function getUloopStaticMembers(): ModuleMember[] { return []; }
-function getFsStaticMembers(): ModuleMember[] { return []; }
-function getDebugStaticMembers(): ModuleMember[] { return []; }
-function getLogStaticMembers(): ModuleMember[] { return []; }
-function getMathStaticMembers(): ModuleMember[] { return []; }
-function getDigestStaticMembers(): ModuleMember[] { return []; }
-function getResolvStaticMembers(): ModuleMember[] { return []; }
+function getRtnlStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of rtnlFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    for (const [name] of rtnlConstants.entries()) {
+        members.push({
+            name,
+            type: 'constant'
+        });
+    }
+
+    // Add special 'const' export that represents all constants collectively
+    members.push({
+        name: 'const',
+        type: 'constant'
+    });
+
+    return members;
+}
+function getSocketStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of socketFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    for (const [name] of socketConstants.entries()) {
+        members.push({
+            name,
+            type: 'constant'
+        });
+    }
+
+    return members;
+}
+function getStructStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of structFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    return members;
+}
+function getZlibStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of zlibFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    for (const [name] of zlibConstants.entries()) {
+        members.push({
+            name,
+            type: 'constant'
+        });
+    }
+
+    return members;
+}
+function getUbusStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of ubusFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    for (const [name] of ubusConstants.entries()) {
+        members.push({
+            name,
+            type: 'constant'
+        });
+    }
+
+    return members;
+}
+function getUciStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of uciFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    return members;
+}
+function getUloopStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of uloopFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    for (const [name] of uloopConstants.entries()) {
+        members.push({
+            name,
+            type: 'constant'
+        });
+    }
+
+    return members;
+}
+function getFsStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+    
+    // Convert static function definitions to ModuleMember format
+    for (const [name] of fsModuleFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+    
+    return members;
+}
+function getDebugStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of debugFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    return members;
+}
+function getLogStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of logFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    for (const [name] of logConstants.entries()) {
+        members.push({
+            name,
+            type: 'constant'
+        });
+    }
+
+    return members;
+}
+function getMathStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of mathFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    return members;
+}
+function getDigestStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of digestFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    return members;
+}
+function getResolvStaticMembers(): ModuleMember[] {
+    const members: ModuleMember[] = [];
+
+    for (const [name] of resolvFunctions.entries()) {
+        members.push({
+            name,
+            type: 'function'
+        });
+    }
+
+    return members;
+}
 
 /**
  * Clears the module cache (useful for testing or manual refresh)

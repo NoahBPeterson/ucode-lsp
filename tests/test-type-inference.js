@@ -1,9 +1,9 @@
 // Test the type inference functionality programmatically
-const fs = require('fs');
-const { UcodeLexer } = require('../src/lexer/ucodeLexer.ts');
-const { UcodeParser } = require('../src/parser/ucodeParser.ts');
-const { SemanticAnalyzer } = require('../src/analysis/semanticAnalyzer.ts');
-const { UcodeType, typeToString } = require('../src/analysis/symbolTable.ts');
+import fs from 'fs';
+import { UcodeLexer } from '../src/lexer/ucodeLexer.ts';
+import { UcodeParser } from '../src/parser/ucodeParser.ts';
+import { SemanticAnalyzer } from '../src/analysis/semanticAnalyzer.ts';
+import { UcodeType, typeToString } from '../src/analysis/symbolTable.ts';
 
 console.log('🧪 Testing type inference functionality...\n');
 

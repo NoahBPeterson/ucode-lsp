@@ -89,7 +89,7 @@ import { debug, warn, error } from '../u1905/u1905d/src/u1905/log.uc';
 debug('%s', 'test message');
 `;
 
-      const diagnostics = await getDiagnostics(testContent, '/tmp/named-import-error.uc');
+      const diagnostics = await getDiagnostics(testContent, '/Users/noahpeterson/Desktop/ucode-lsp/tests/named-import-error.uc');
       
       // Should show export errors for named imports
       const exportErrors = diagnostics.filter(d => 
@@ -211,7 +211,7 @@ logsNs.default.warn('%s', 'namespace import works');
 debug('%s', 'named import should fail');
 `;
 
-      const diagnostics = await getDiagnostics(testContent, '/tmp/mixed-imports.uc');
+      const diagnostics = await getDiagnostics(testContent, '/Users/noahpeterson/Desktop/ucode-lsp/tests/mixed-imports.uc');
       
       // Should show error for named import but not for valid patterns
       const namedImportErrors = diagnostics.filter(d => 

@@ -292,14 +292,20 @@ export function handleHover(
                                     hoverText = getMathModuleDocumentation();
                                 }
                             } else if (symbol.importedFrom === 'nl80211') {
-                                // Check if this is a specific nl80211 function or constant (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (nl80211TypeRegistry.isNl80211Function(originalName)) {
-                                    hoverText = nl80211TypeRegistry.getFunctionDocumentation(originalName);
-                                } else if (nl80211TypeRegistry.isNl80211Constant(originalName)) {
-                                    hoverText = nl80211TypeRegistry.getConstantDocumentation(originalName);
+                                // Check if this is a const import object first
+                                if (symbol.dataType && typeof symbol.dataType === 'object' && 
+                                    'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'nl80211-const') {
+                                    hoverText = `(const object) **${symbol.name}**: \`object\`\n\nContainer for nl80211 module constants.`;
                                 } else {
-                                    hoverText = getNl80211ModuleDocumentation();
+                                    // Check if this is a specific nl80211 function or constant (could be aliased)
+                                    const originalName = symbol.importSpecifier || symbol.name;
+                                    if (nl80211TypeRegistry.isNl80211Function(originalName)) {
+                                        hoverText = nl80211TypeRegistry.getFunctionDocumentation(originalName);
+                                    } else if (nl80211TypeRegistry.isNl80211Constant(originalName)) {
+                                        hoverText = nl80211TypeRegistry.getConstantDocumentation(originalName);
+                                    } else {
+                                        hoverText = getNl80211ModuleDocumentation();
+                                    }
                                 }
                             } else if (symbol.importedFrom === 'resolv') {
                                 // Check if this is a specific resolv function (could be aliased)
@@ -310,14 +316,20 @@ export function handleHover(
                                     hoverText = getResolvModuleDocumentation();
                                 }
                             } else if (symbol.importedFrom === 'rtnl') {
-                                // Check if this is a specific rtnl function or constant (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (rtnlTypeRegistry.getFunctionNames().includes(originalName)) {
-                                    hoverText = rtnlTypeRegistry.getFunctionDocumentation(originalName);
-                                } else if (rtnlTypeRegistry.getConstant(originalName)) {
-                                    hoverText = rtnlTypeRegistry.getConstantDocumentation(originalName);
+                                // Check if this is a const import object first
+                                if (symbol.dataType && typeof symbol.dataType === 'object' && 
+                                    'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'rtnl-const') {
+                                    hoverText = `(const object) **${symbol.name}**: \`object\`\n\nContainer for rtnl module constants.`;
                                 } else {
-                                    hoverText = getRtnlModuleDocumentation();
+                                    // Check if this is a specific rtnl function or constant (could be aliased)
+                                    const originalName = symbol.importSpecifier || symbol.name;
+                                    if (rtnlTypeRegistry.getFunctionNames().includes(originalName)) {
+                                        hoverText = rtnlTypeRegistry.getFunctionDocumentation(originalName);
+                                    } else if (rtnlTypeRegistry.getConstant(originalName)) {
+                                        hoverText = rtnlTypeRegistry.getConstantDocumentation(originalName);
+                                    } else {
+                                        hoverText = getRtnlModuleDocumentation();
+                                    }
                                 }
                             } else if (symbol.importedFrom === 'fs') {
                                 // Check if this is a specific fs function (could be aliased)

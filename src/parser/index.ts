@@ -4,13 +4,15 @@
 
 export { UcodeParser } from './ucodeParser';
 export { 
+  Precedence, 
+  RecoveryMode 
+} from './types';
+export type { 
   ParseResult, 
   ParseError, 
   ParseWarning, 
   Diagnostic,
-  Precedence, 
   ParseRule,
-  PrefixParseFn,
-  InfixParseFn,
-  RecoveryMode 
+  PrefixParseFn, 
+  InfixParseFn 
 } from './types';

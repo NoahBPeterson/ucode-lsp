@@ -246,7 +246,7 @@ function createLSPTestServer(options = {}) {
           pendingRequests.delete(key);
           reject(new Error('Timeout waiting for diagnostics'));
         }
-      }, 8000);
+      }, 2000);
 
       pendingRequests.set(key, { resolve, timeout });
       serverProcess.stdin.write(createLSPMessage(didOpen));
@@ -289,7 +289,7 @@ function createLSPTestServer(options = {}) {
           inflightStartedAt.delete(reqKey);
           reject(new Error('Timeout waiting for completion response'));
         }
-      }, 12000); // < suite timeout
+      }, 2000); // < suite timeout
 
       pendingRequests.set(reqKey, { resolve, reject, timeout });
       inflightStartedAt.set(reqKey, Date.now());
@@ -337,7 +337,7 @@ function createLSPTestServer(options = {}) {
           inflightStartedAt.delete(reqKey);
           reject(new Error('Timeout waiting for hover response'));
         }
-      }, 12000); // < suite timeout
+      }, 2000); // < suite timeout
 
       pendingRequests.set(reqKey, { resolve, reject, timeout });
       inflightStartedAt.set(reqKey, Date.now());
@@ -378,7 +378,7 @@ function createLSPTestServer(options = {}) {
           inflightStartedAt.delete(reqKey);
           reject(new Error('Timeout waiting for code action response'));
         }
-      }, 12000);
+      }, 2000);
 
       pendingRequests.set(reqKey, { resolve, reject, timeout });
       inflightStartedAt.set(reqKey, Date.now());

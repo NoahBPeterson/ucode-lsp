@@ -1,7 +1,7 @@
-const assert = require('assert');
-const { UcodeParser } = require('../src/parser/ucodeParser.ts');
-const { UcodeLexer } = require('../src/lexer/ucodeLexer.ts');
-const { SemanticAnalyzer } = require('../src/analysis/semanticAnalyzer.ts');
+import assert from 'assert';
+import { UcodeParser } from '../src/parser/ucodeParser.ts';
+import { UcodeLexer } from '../src/lexer/ucodeLexer.ts';
+import { SemanticAnalyzer } from '../src/analysis/semanticAnalyzer.ts';
 
 /**
  * Test for complex edge case: import { 'const' as alias } syntax

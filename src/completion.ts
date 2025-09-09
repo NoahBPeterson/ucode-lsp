@@ -1232,9 +1232,12 @@ function getRtnlModuleCompletions(objectName: string, analysisResult?: SemanticA
     console.log(`[RTNL_MODULE_COMPLETION] Symbol found: ${objectName}, type: ${symbol.type}, dataType: ${JSON.stringify(symbol.dataType)}`);
 
     // Check if this is an rtnl module (from require('rtnl') or import * asrtnl from 'rtnl')
+    // But NOT an rtnl-const object (that should use getRtnlConstObjectCompletions instead)
     const isRtnlModule = (
         // Direct rtnl module import: import * asrtnl from 'rtnl'
-        (symbol.type === 'imported' && symbol.importedFrom === 'rtnl') ||
+        (symbol.type === 'imported' && symbol.importedFrom === 'rtnl' && 
+         !(symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType && 
+           symbol.dataType.moduleName === 'rtnl-const')) ||
         
         // Module symbol from require: const rtnl = require('rtnl')
         (symbol.type === 'module' && symbol.dataType && 
