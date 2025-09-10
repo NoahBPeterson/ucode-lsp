@@ -90,6 +90,7 @@ export abstract class OperatorExpressions extends CompositeExpressions {
     
     // Parse parameters from the left side
     const params: IdentifierNode[] = [];
+    let restParam: IdentifierNode | undefined = undefined;
     
     if (left.type === 'Identifier') {
       // Single parameter without parentheses: param => body
@@ -101,6 +102,16 @@ export abstract class OperatorExpressions extends CompositeExpressions {
       for (const arg of callExpr.arguments) {
         if (arg.type === 'Identifier') {
           params.push(arg as IdentifierNode);
+        } else if (arg.type === 'SpreadElement') {
+          // Handle rest parameter: ...args
+          if (arg.argument && arg.argument.type === 'Identifier') {
+            restParam = arg.argument as IdentifierNode;
+            // Rest parameter should be the last one
+            break;
+          } else {
+            this.error("Invalid rest parameter in arrow function");
+            return null;
+          }
         } else {
           this.error("Invalid parameter in arrow function");
           return null;
@@ -154,7 +165,7 @@ export abstract class OperatorExpressions extends CompositeExpressions {
     
     if (!body) return null;
     
-    return {
+    const arrowFunctionNode: ArrowFunctionExpressionNode = {
       type: 'ArrowFunctionExpression',
       start: left.start,
       end: body.end,
@@ -162,5 +173,11 @@ export abstract class OperatorExpressions extends CompositeExpressions {
       body,
       expression
     };
+
+    if (restParam) {
+      arrowFunctionNode.restParam = restParam;
+    }
+
+    return arrowFunctionNode;
   }
 }

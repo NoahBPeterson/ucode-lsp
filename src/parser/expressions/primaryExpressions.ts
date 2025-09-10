@@ -4,7 +4,7 @@
  */
 
 import { TokenType } from '../../lexer';
-import { AstNode, IdentifierNode, LiteralNode, ThisExpressionNode, FunctionExpressionNode, BlockStatementNode, TemplateLiteralNode, TemplateElementNode } from '../../ast/nodes';
+import { AstNode, IdentifierNode, LiteralNode, ThisExpressionNode, FunctionExpressionNode, BlockStatementNode, TemplateLiteralNode, TemplateElementNode, SpreadElementNode } from '../../ast/nodes';
 import { ParseRules } from '../parseRules';
 import { Precedence } from '../types';
 
@@ -134,15 +134,36 @@ export abstract class PrimaryExpressions extends ParseRules {
       }
     }
     // Check for parameter list with identifiers: (identifier [, identifier]* ) =>
-    else if (this.check(TokenType.TK_LABEL)) {
-      this.advance(); // consume first identifier
+    else if (this.check(TokenType.TK_LABEL) || this.check(TokenType.TK_ELLIP)) {
+      // Handle first parameter (normal identifier or rest parameter)
+      if (this.check(TokenType.TK_ELLIP)) {
+        this.advance(); // consume spread operator
+        if (this.check(TokenType.TK_LABEL)) {
+          this.advance(); // consume rest parameter name
+        } else {
+          // Invalid rest parameter - reset and fall back to regular parsing
+          this.current = checkpoint;
+          return this.parseExpression();
+        }
+      } else {
+        this.advance(); // consume first identifier
+      }
       
       // Check if there's a comma (multi-param) or closing paren followed by arrow
       if (this.check(TokenType.TK_COMMA)) {
         // Multiple parameters - likely arrow function
         while (this.check(TokenType.TK_COMMA)) {
           this.advance(); // consume comma
-          if (this.check(TokenType.TK_LABEL)) {
+          if (this.check(TokenType.TK_ELLIP)) {
+            this.advance(); // consume spread operator
+            if (this.check(TokenType.TK_LABEL)) {
+              this.advance(); // consume rest parameter name
+              // Rest parameter must be the last one
+              break;
+            } else {
+              break; // Invalid rest parameter
+            }
+          } else if (this.check(TokenType.TK_LABEL)) {
             this.advance(); // consume next identifier
           } else {
             break; // Invalid parameter list
@@ -167,18 +188,42 @@ export abstract class PrimaryExpressions extends ParseRules {
     
     if (isArrowParams) {
       // Parse as parameter list for arrow function
-      const params: IdentifierNode[] = [];
+      const params: AstNode[] = [];
       
       if (!this.check(TokenType.TK_RPAREN)) {
         do {
-          if (this.check(TokenType.TK_LABEL)) {
+          if (this.match(TokenType.TK_ELLIP)) {
+            // Handle rest parameter: ...args
+            const spreadStart = this.previous()!.pos;
+            if (this.check(TokenType.TK_LABEL)) {
+              const token = this.advance()!;
+              const restParam: IdentifierNode = {
+                type: 'Identifier',
+                start: token.pos,
+                end: token.end,
+                name: token.value as string
+              };
+              const spreadElement: SpreadElementNode = {
+                type: 'SpreadElement',
+                start: spreadStart,
+                end: token.end,
+                argument: restParam
+              };
+              params.push(spreadElement);
+              // Rest parameter must be the last one
+              break;
+            } else {
+              this.error("Expected parameter name after '...'");
+            }
+          } else if (this.check(TokenType.TK_LABEL)) {
             const token = this.advance()!;
-            params.push({
+            const identifier: IdentifierNode = {
               type: 'Identifier',
               start: token.pos,
               end: token.end,
               name: token.value as string
-            });
+            };
+            params.push(identifier);
           }
         } while (this.match(TokenType.TK_COMMA));
       }

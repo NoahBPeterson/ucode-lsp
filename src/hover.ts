@@ -78,13 +78,103 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
     return undefined;
 }
 
+
+function inferPropertyTypeFromValue(propertyValue: string): string | undefined {
+    // Remove whitespace and normalize
+    const value = propertyValue.trim();
+    
+    // Check for arrow function patterns
+    if (value.includes('=>')) {
+        const arrowIndex = value.indexOf('=>');
+        const beforeArrow = value.slice(0, arrowIndex).trim();
+        
+        // Extract parameter list
+        let params = '';
+        if (beforeArrow.startsWith('(') && beforeArrow.includes(')')) {
+            const parenMatch = beforeArrow.match(/^\((.*)\)/);
+            params = parenMatch ? parenMatch[1] || '' : '';
+        } else {
+            // Single parameter without parentheses
+            params = beforeArrow;
+        }
+        
+        const hasRestParam = params.includes('...');
+        
+        // Infer return type from function body
+        let returnType = 'unknown';
+        const afterArrow = value.slice(value.indexOf('=>') + 2).trim();
+        
+        if (afterArrow.startsWith('warn(')) {
+            returnType = 'null'; // warn() returns null
+        } else if (afterArrow.includes('return ')) {
+            // Try to infer from explicit return statements
+            const returnMatch = afterArrow.match(/return\s+([^;]+)/);
+            if (returnMatch && returnMatch[1]) {
+                const returnExpr = returnMatch[1].trim();
+                if (returnExpr === 'null' || returnExpr === 'undefined') {
+                    returnType = returnExpr;
+                } else if (returnExpr.match(/^\d+$/)) {
+                    returnType = 'number';
+                } else if (returnExpr.match(/^["'`]/)) {
+                    returnType = 'string';
+                } else if (returnExpr === 'true' || returnExpr === 'false') {
+                    returnType = 'boolean';
+                }
+            }
+        }
+        
+        let signature = `(${params}) => ${returnType}`;
+        let description = 'Arrow function';
+        
+        if (hasRestParam) {
+            description += ' with rest parameters';
+        }
+        
+        return `**(function)** **${signature}**\n\n${description}`;
+    }
+    
+    // Check for regular function expression
+    if (value.startsWith('function')) {
+        const funcMatch = value.match(/^function\s*\(([^)]*)\)/);
+        const params = funcMatch ? funcMatch[1] : '';
+        const hasRestParam = params && params.includes('...');
+        
+        let signature = `function(${params})`;
+        let description = 'Function expression';
+        
+        if (hasRestParam) {
+            description += ' with rest parameters';
+        }
+        
+        return `**(function)** **${signature}**\\n\\n${description}`;
+    }
+    
+    // For other values, provide generic type info
+    if (value.startsWith('[')) {
+        return `**(array)** Array literal`;
+    } else if (value.startsWith('{')) {
+        return `**(object)** Object literal`;
+    } else if (value.match(/^['"`]/)) {
+        return `**(string)** String literal`;
+    } else if (value.match(/^\d/)) {
+        return `**(number)** Number literal`;
+    } else if (value === 'true' || value === 'false') {
+        return `**(boolean)** Boolean literal`;
+    }
+    
+    return undefined;
+}
+
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
     documents: any,
     analysisResult?: SemanticAnalysisResult
 ): Hover | undefined {
+    console.error(`[HOVER] Starting hover at ${textDocumentPositionParams.position.line}:${textDocumentPositionParams.position.character}`);
+    
     const document = documents.get(textDocumentPositionParams.textDocument.uri);
     if (!document) {
+        console.error(`[HOVER] No document found for URI: ${textDocumentPositionParams.textDocument.uri}`);
         return undefined;
     }
 
@@ -180,6 +270,51 @@ export function handleHover(
         
         const token = tokens.find(t => t.pos <= offset && offset < t.end);
         
+        
+        // Check for rest parameters (like ...args)
+        if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
+            // Look for ellipsis token right before this label
+            const tokenIndex = tokens.indexOf(token);
+            if (tokenIndex > 0) {
+                const prevToken = tokens[tokenIndex - 1];
+                if (prevToken && prevToken.type === TokenType.TK_ELLIP) {
+                    // This is a rest parameter
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: `**(rest parameter)** **...${token.value}**: \`array\`\n\nRest parameter - collects remaining arguments into an array`
+                        },
+                        range: {
+                            start: document.positionAt(prevToken.pos), // Include the ...
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+            }
+        }
+        
+        // Also check if we're hovering over the ellipsis itself
+        if (token && token.type === TokenType.TK_ELLIP) {
+            // Look for a label token right after this ellipsis
+            const tokenIndex = tokens.indexOf(token);
+            if (tokenIndex + 1 < tokens.length) {
+                const nextToken = tokens[tokenIndex + 1];
+                if (nextToken && nextToken.type === TokenType.TK_LABEL) {
+                    // This is a rest parameter
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: `**(rest parameter)** **...${nextToken.value}**: \`array\`\n\nRest parameter - collects remaining arguments into an array`
+                        },
+                        range: {
+                            start: document.positionAt(token.pos), // The ellipsis
+                            end: document.positionAt(nextToken.end)
+                        }
+                    };
+                }
+            }
+        }
+        
         if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
             const word = token.value;
             
@@ -232,6 +367,53 @@ export function handleHover(
                 }
             }
             
+            // Special case: check for object properties by examining the text context
+            // Look for patterns like "property_name: (args) => ..."
+            if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
+                const word = token.value;
+                
+                // Get the line containing this token
+                const lineStart = text.lastIndexOf('\n', token.pos) + 1;
+                const lineEnd = text.indexOf('\n', token.end);
+                const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+                
+                // Check if this looks like an object property definition
+                // Pattern: "propertyName: (params) => ..." or "propertyName: (...params) => ..."
+                const propertyPattern = new RegExp(`\\b${word}\\s*:\\s*\\([^)]*\\)\\s*=>`);
+                if (propertyPattern.test(line)) {
+                    // Check if there's a builtin/global function with the same name
+                    // If so, prioritize the builtin function documentation over property type
+                    let hasBuiltinFunction = false;
+                    if (analysisResult) {
+                        const builtinSymbol = analysisResult.symbolTable.lookup(word);
+                        hasBuiltinFunction = (builtinSymbol && builtinSymbol.type === SymbolType.FUNCTION) ?? false;
+                    }
+                    
+                    if (!hasBuiltinFunction) {
+                        // No builtin function found, show property type hover
+                        const match = line.match(new RegExp(`\\b${word}\\s*:\\s*(\\([^)]*\\)\\s*=>.*?)(?:,|$|\\})`));
+                        if (match) {
+                            const functionDef = match[1].trim();
+                            const hoverText = inferPropertyTypeFromValue(functionDef);
+                            
+                            if (hoverText) {
+                                return {
+                                    contents: {
+                                        kind: MarkupKind.Markdown,
+                                        value: hoverText
+                                    },
+                                    range: {
+                                        start: document.positionAt(token.pos),
+                                        end: document.positionAt(token.end)
+                                    }
+                                };
+                            }
+                        }
+                    }
+                    // If hasBuiltinFunction is true, we fall through to the builtin function lookup
+                }
+            }
+            
             // 1. Check for user-defined symbols using the analysis cache (PRIORITY OVER GLOBAL FUNCTIONS)
             if (analysisResult) {
                 let symbol = analysisResult.symbolTable.lookup(word);
@@ -241,12 +423,51 @@ export function handleHover(
                     symbol = analysisResult.symbolTable.lookupAtPosition(word, offset);
                 }
                 
+                // If still no symbol found, check if this might be a rest parameter in the current context
+                if (!symbol) {
+                    // Look for rest parameter usage by checking the text context
+                    const lineStart = text.lastIndexOf('\n', offset) + 1;
+                    const currentLineStart = Math.max(0, lineStart);
+                    const beforeCurrentLine = text.slice(0, currentLineStart);
+                    
+                    // Look for recent arrow function definitions with rest parameters
+                    // Pattern matches: (...word) or (anything, ...word) followed by =>
+                    const restParamPattern = new RegExp(`\\([^)]*\\.\\.\\.${word}[^)]*\\)\\s*=>`, 'g');
+                    const matches = [...beforeCurrentLine.matchAll(restParamPattern)];
+                    
+                    // If we find a rest parameter definition for this word recently, treat it as a rest parameter
+                    if (matches.length > 0) {
+                        const lastMatch = matches[matches.length - 1];
+                        const matchPosition = lastMatch.index || 0;
+                        
+                        // Only consider it if the rest parameter definition is within ~200 characters (same function context)
+                        if (offset - matchPosition < 200) {
+                            return {
+                                contents: {
+                                    kind: MarkupKind.Markdown,
+                                    value: `**(rest parameter)** **${word}**: \`array\`\n\nRest parameter - collects remaining arguments into an array`
+                                },
+                                range: {
+                                    start: document.positionAt(token.pos),
+                                    end: document.positionAt(token.end)
+                                }
+                            };
+                        }
+                    }
+                }
+                
                 if (symbol) {
                     let hoverText = '';
                     switch (symbol.type) {
                         case SymbolType.VARIABLE:
                         case SymbolType.PARAMETER:
-                            hoverText = `(${symbol.type}) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
+                            // Check if this parameter is a rest parameter (array type)
+                            const dataTypeStr = typeToString(symbol.dataType);
+                            if (symbol.type === SymbolType.PARAMETER && (dataTypeStr.includes('array') || dataTypeStr.includes('Array'))) {
+                                hoverText = `**(rest parameter)** **${symbol.name}**: \`array\`\n\nRest parameter - collects remaining arguments into an array`;
+                            } else {
+                                hoverText = `(${symbol.type}) **${symbol.name}**: \`${dataTypeStr}\``;
+                            }
                             break;
                         case SymbolType.FUNCTION:
                             // NOTE: Parameter types are not yet tracked in this example.
