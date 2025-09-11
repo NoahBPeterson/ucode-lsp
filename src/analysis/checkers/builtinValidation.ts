@@ -713,7 +713,7 @@ export class BuiltinValidator {
 
   validateTimelocalFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'timelocal', 1)) return true;
-    this.validateArgumentType(node.arguments[0], 'timelocal', 1, [UcodeType.ARRAY]);
+    this.validateArgumentType(node.arguments[0], 'timelocal', 1, [UcodeType.OBJECT]);
     return true;
   }
 
@@ -724,7 +724,7 @@ export class BuiltinValidator {
 
   validateTimegmFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'timegm', 1)) return true;
-    this.validateArgumentType(node.arguments[0], 'timegm', 1, [UcodeType.ARRAY]);
+    this.validateArgumentType(node.arguments[0], 'timegm', 1, [UcodeType.OBJECT]);
     return true;
   }
 
@@ -750,7 +750,6 @@ export class BuiltinValidator {
   }
 
   validateClockFunction(node: CallExpressionNode): boolean {
-    if (!this.checkArgumentCount(node, 'clock', 1)) return true;
     if (node.arguments[0])
       this.isKnownTruish(node.arguments[0]);
     return true;

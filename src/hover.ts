@@ -470,8 +470,8 @@ export function handleHover(
                             }
                             break;
                         case SymbolType.FUNCTION:
-                            // NOTE: Parameter types are not yet tracked in this example.
-                            hoverText = `(function) **${symbol.name}**(): \`${typeToString(symbol.dataType)}\``;
+                            // Show that this is a function type, not its return type
+                            hoverText = `(function) **${symbol.name}**: \`function\``;
                             break;
                         case SymbolType.MODULE:
                             hoverText = `(module) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
