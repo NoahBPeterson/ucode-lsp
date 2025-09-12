@@ -159,83 +159,18 @@ export class TypeChecker {
       { name: 'srand', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.NULL },
       { name: 'isnan', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN },
       
-      // Digest builtin functions (from digest.c global_fns[])
-      { name: 'md5', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'sha1', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'sha256', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'md5_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'sha1_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'sha256_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      
-      // Extended digest builtin functions (from digest.c global_fns[])
-      { name: 'md2', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'md4', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'sha384', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'sha512', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'md2_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'md4_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'sha384_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'sha512_file', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      
-      // Debug builtin functions (from debug.c global_fns[])
-      { name: 'memdump', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN },
-      { name: 'traceback', parameters: [UcodeType.INTEGER], returnType: UcodeType.ARRAY, minParams: 0, maxParams: 1 },
-      { name: 'sourcepos', parameters: [], returnType: UcodeType.OBJECT },
-      { name: 'getinfo', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT },
-      { name: 'getlocal', parameters: [UcodeType.INTEGER, UcodeType.UNKNOWN], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
-      { name: 'setlocal', parameters: [UcodeType.INTEGER, UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.OBJECT, minParams: 2, maxParams: 3 },
-      { name: 'getupval', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.OBJECT },
-      { name: 'setupval', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.OBJECT },
-      
-      // Log builtin functions (from log.c global_fns[])
-      { name: 'openlog', parameters: [UcodeType.STRING, UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, minParams: 0, maxParams: 3 },
-      { name: 'syslog', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 2 },
-      { name: 'closelog', parameters: [], returnType: UcodeType.NULL },
-      { name: 'ulog_open', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN, UcodeType.STRING], returnType: UcodeType.BOOLEAN, minParams: 0, maxParams: 3 },
-      { name: 'ulog', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 2 },
-      { name: 'ulog_close', parameters: [], returnType: UcodeType.NULL },
-      { name: 'ulog_threshold', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, minParams: 0, maxParams: 1 },
-      { name: 'INFO', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 1 },
-      { name: 'NOTE', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 1 },
-      { name: 'WARN', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 1 },
-      { name: 'ERR', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN, variadic: true, minParams: 1 },
-      
-      // RTNL builtin functions (from rtnl.c global_fns[])
-      { name: 'request', parameters: [UcodeType.INTEGER], returnType: createUnionType([UcodeType.OBJECT, UcodeType.NULL]), minParams: 1, maxParams: 3 },
-      { name: 'listener', parameters: [UcodeType.FUNCTION, UcodeType.ARRAY, UcodeType.ARRAY], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 3 },
-      { name: 'error', parameters: [], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
-      
-      // NL80211 builtin functions (from nl80211.c global_fns[])
-      // Note: There may be a name collision with fs error() function
-      { name: 'request', parameters: [UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 3 },
-      { name: 'waitfor', parameters: [UcodeType.ARRAY], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
-      { name: 'listener', parameters: [UcodeType.FUNCTION, UcodeType.ARRAY], returnType: UcodeType.OBJECT },
-      
-      // Resolv builtin functions (from resolv.c global_fns[])
-      { name: 'query', parameters: [UcodeType.STRING, UcodeType.ARRAY, UcodeType.OBJECT], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
-      
-      // Socket builtin functions (from socket.c global_fns[])
-      { name: 'create', parameters: [], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 3 },
-      { name: 'connect', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 4 },
-      { name: 'listen', parameters: [], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 5 },
-      { name: 'sockaddr', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT },
-      { name: 'nameinfo', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
-
-      // ubus builtin functions (from ubus.c global_fns[])
-      { name: 'error', parameters: [UcodeType.BOOLEAN], returnType: UcodeType.UNKNOWN, minParams: 0, maxParams: 1 },
-      { name: 'connect', parameters: [UcodeType.STRING, UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 2 },
-      { name: 'open_channel', parameters: [UcodeType.INTEGER, UcodeType.FUNCTION, UcodeType.FUNCTION, UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 4 },
-      { name: 'guard', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, minParams: 0, maxParams: 1 },
-
-      // UCI builtin functions (from uci.c global_fns[])
-      { name: 'error', parameters: [], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
-      { name: 'cursor', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING, UcodeType.OBJECT], returnType: createUnionType([UcodeType.OBJECT, UcodeType.NULL]), minParams: 0, maxParams: 4 },
-
-      // Zlib builtin functions (from zlib.c global_fns[])
-      { name: 'deflate', parameters: [UcodeType.UNKNOWN, UcodeType.BOOLEAN, UcodeType.INTEGER], returnType: UcodeType.STRING, minParams: 1, maxParams: 3 },  // str_or_resource, gzip?, level? -> string | null
-      { name: 'inflate', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.STRING, minParams: 1, maxParams: 1 },  // str_or_resource -> string | null
-      { name: 'deflater', parameters: [UcodeType.BOOLEAN, UcodeType.INTEGER], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 2 },  // gzip?, level? -> zlib.deflate | null
-      { name: 'inflater', parameters: [], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 0 }  // () -> zlib.inflate | null
+      // Module-specific functions have been removed from global builtins
+      // They are now only accessible through proper module imports:
+      // - digest.* functions via import from 'digest'  
+      // - debug.* functions via import from 'debug'
+      // - log.* functions via import from 'log'
+      // - rtnl.* functions via import from 'rtnl'
+      // - nl80211.* functions via import from 'nl80211'
+      // - resolv.* functions via import from 'resolv'
+      // - socket.* functions via import from 'socket'
+      // - ubus.* functions via import from 'ubus'
+      // - uci.* functions via import from 'uci'
+      // - zlib.* functions via import from 'zlib'
     ];
 
     for (const builtin of builtins) {
@@ -535,68 +470,69 @@ export class TypeChecker {
   private checkCallExpression(node: CallExpressionNode): UcodeType {
     if (node.callee.type === 'Identifier') {
       const funcName = (node.callee as IdentifierNode).name;
-      const signature = this.builtinFunctions.get(funcName);
       
-      if (signature) {
-        return this.validateBuiltinCall(node, signature);
-      } else {
-        // Check if it's a user-defined function, imported function, or variable containing a function
-        const symbol = this.symbolTable.lookup(funcName);
-        if (symbol) {
-          // Check for functions and imported functions
-          if (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED) {
-            // Special handling for imported fs functions
-            if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'fs') {
-              const fsFunction = fsModuleTypeRegistry.getFunction(funcName);
-              if (fsFunction) {
-                const returnTypeData = this.parseReturnType(fsFunction.returnType);
-                // Convert UcodeDataType back to UcodeType for compatibility
-                if (typeof returnTypeData === 'string') {
-                  return returnTypeData as UcodeType;
-                } else if (isUnionType(returnTypeData)) {
-                  // For union types, we need to return a union type, but the interface expects UcodeType
-                  // For now, return the first type - this needs to be improved in the future
-                  const types = getUnionTypes(returnTypeData);
-                  return types[0] || UcodeType.UNKNOWN;
-                } else {
-                  return UcodeType.UNKNOWN;
-                }
-              }
-            }
-            
-            // For other imported functions or when fs lookup fails, use default handling
-            if (typeof symbol.dataType === 'string') {
-              return symbol.dataType as UcodeType;
-            } else if (isUnionType(symbol.dataType)) {
-              const types = getUnionTypes(symbol.dataType);
-              return types[0] || UcodeType.UNKNOWN;
-            } else {
-              return UcodeType.UNKNOWN;
-            }
-          }
-          // Check for variables that might contain functions (e.g., arrow functions)
-          else if (symbol.type === SymbolType.VARIABLE) {
-            // Check if the variable's data type is function or if it could be callable
-            if (typeof symbol.dataType === 'string') {
-              if (symbol.dataType === UcodeType.FUNCTION) {
-                return UcodeType.UNKNOWN; // Function calls return unknown by default
-              } else if (symbol.dataType === UcodeType.UNKNOWN) {
-                // For variables with unknown type (like arrow functions), assume they might be callable
-                // This prevents false positives for arrow functions assigned to variables
+      // First check if it's a user-defined function, imported function, or variable containing a function
+      const symbol = this.symbolTable.lookup(funcName);
+      if (symbol) {
+        // Check for functions and imported functions
+        if (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED) {
+          // Special handling for imported fs functions
+          if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'fs') {
+            const fsFunction = fsModuleTypeRegistry.getFunction(funcName);
+            if (fsFunction) {
+              const returnTypeData = this.parseReturnType(fsFunction.returnType);
+              // Convert UcodeDataType back to UcodeType for compatibility
+              if (typeof returnTypeData === 'string') {
+                return returnTypeData as UcodeType;
+              } else if (isUnionType(returnTypeData)) {
+                // For union types, we need to return a union type, but the interface expects UcodeType
+                // For now, return the first type - this needs to be improved in the future
+                const types = getUnionTypes(returnTypeData);
+                return types[0] || UcodeType.UNKNOWN;
+              } else {
                 return UcodeType.UNKNOWN;
               }
             }
           }
+          
+          // For other imported functions or when module lookup fails, use default handling
+          if (typeof symbol.dataType === 'string') {
+            return symbol.dataType as UcodeType;
+          } else if (isUnionType(symbol.dataType)) {
+            const types = getUnionTypes(symbol.dataType);
+            return types[0] || UcodeType.UNKNOWN;
+          } else {
+            return UcodeType.UNKNOWN;
+          }
         }
-        
-        this.errors.push({
-          message: `Undefined function: ${funcName}`,
-          start: node.start,
-          end: node.end,
-          severity: 'error'
-        });
-        return UcodeType.UNKNOWN;
+        // Check for variables that might contain functions (e.g., arrow functions)
+        else if (symbol.type === SymbolType.VARIABLE) {
+          // Check if the variable's data type is function or if it could be callable
+          if (typeof symbol.dataType === 'string') {
+            if (symbol.dataType === UcodeType.FUNCTION) {
+              return UcodeType.UNKNOWN; // Function calls return unknown by default
+            } else if (symbol.dataType === UcodeType.UNKNOWN) {
+              // For variables with unknown type (like arrow functions), assume they might be callable
+              // This prevents false positives for arrow functions assigned to variables
+              return UcodeType.UNKNOWN;
+            }
+          }
+        }
       }
+      
+      // Check global builtin functions (only truly global functions remain)
+      const signature = this.builtinFunctions.get(funcName);
+      if (signature) {
+        return this.validateBuiltinCall(node, signature);
+      }
+      
+      this.errors.push({
+        message: `Undefined function: ${funcName}`,
+        start: node.start,
+        end: node.end,
+        severity: 'error'
+      });
+      return UcodeType.UNKNOWN;
     }
 
     // Handle member expression calls (e.g., fs.open, obj.method)
@@ -1033,4 +969,5 @@ export class TypeChecker {
   getCommonReturnType(types: UcodeType[]): UcodeDataType {
     return this.typeCompatibility.getCommonType(types);
   }
+
 }
