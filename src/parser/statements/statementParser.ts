@@ -69,7 +69,16 @@ export abstract class StatementParser extends BasicStatements {
       }
 
       if (this.match(TokenType.TK_TRY)) {
-        return this.parseTryStatement();
+        // Check if 'try' is followed by '{' to determine if it's a try statement
+        if (this.check(TokenType.TK_LBRACE)) {
+          return this.parseTryStatement();
+        } else {
+          // 'try' is not followed by '{', treat it as an identifier
+          // Back up one token so it can be parsed as an expression
+          this.current--;
+          this.warningAt("'try' keyword used as identifier", this.peek()!.pos, this.peek()!.end);
+          return this.parseExpressionStatement();
+        }
       }
 
       if (this.match(TokenType.TK_SWITCH)) {

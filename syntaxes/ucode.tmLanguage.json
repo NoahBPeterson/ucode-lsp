@@ -24,6 +24,9 @@
       "include": "#functions"
     },
     {
+      "include": "#objects"
+    },
+    {
       "include": "#variables"
     }
   ],
@@ -210,6 +213,31 @@
         {
           "name": "entity.name.function.ucode",
           "match": "\\b([a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?=\\()"
+        }
+      ]
+    },
+    "objects": {
+      "patterns": [
+        {
+          "name": "meta.object.literal.ucode",
+          "begin": "\\{",
+          "end": "\\}",
+          "patterns": [
+            {
+              "name": "meta.object.property.ucode",
+              "begin": "\\b(try|catch|if|else|while|for|return|break|continue|function|let|const|true|false|null|this|switch|case|default|import|export|in|delete|[a-zA-Z_$][a-zA-Z0-9_$]*)\\s*(?=:)",
+              "beginCaptures": {
+                "1": {
+                  "name": "variable.other.property.ucode"
+                }
+              },
+              "end": "(?=:)",
+              "patterns": []
+            },
+            {
+              "include": "$self"
+            }
+          ]
         }
       ]
     },

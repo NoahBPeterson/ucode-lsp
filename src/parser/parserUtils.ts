@@ -3,7 +3,7 @@
  */
 
 import { Token, TokenType } from '../lexer';
-import { ParseError, ParseWarning, RecoveryMode, STATEMENT_SYNC_TOKENS, EXPRESSION_SYNC_TOKENS } from './types';
+import { ParseWarning, RecoveryMode, STATEMENT_SYNC_TOKENS, EXPRESSION_SYNC_TOKENS, ParseError } from './types';
 
 export class ParserUtils {
   protected tokens: Token[];
@@ -128,6 +128,10 @@ export class ParserUtils {
     
     this.panicMode = true;
     this.errors.push({ message, start: pos, end, severity: 'error' });
+  }
+
+  protected warningAt(message: string, pos: number, end: number): void {
+    this.warnings.push({ message, start: pos, end, severity: 'warning' });
   }
 
   protected synchronize(mode: RecoveryMode): void {

@@ -80,10 +80,10 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
           computed = true;
           key = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
           this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property key");
-        } else if (this.check(TokenType.TK_LABEL)) {
+        } else if (this.check(TokenType.TK_LABEL) || this.canUseAsIdentifier()) {
           // Handle identifier property keys - could be shorthand or regular
           const token = this.advance()!;
-          const identifierName = token.value as string;
+          const identifierName = this.getTokenAsIdentifierName(token);
           
           // Check for shorthand property syntax (no colon after identifier)
           if (!this.check(TokenType.TK_COLON)) {
@@ -202,5 +202,65 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
       computed,
       optional
     };
+  }
+
+  /**
+   * Check if the current token can be used as an identifier (property name, etc.)
+   * This allows keywords like 'try' to be used as identifiers in contexts where they're unambiguous
+   */
+  protected canUseAsIdentifier(): boolean {
+    const token = this.peek();
+    if (!token) return false;
+    
+    // Allow keywords to be used as identifiers
+    const keywordTokens = [
+      TokenType.TK_TRY, TokenType.TK_CATCH, TokenType.TK_IF, TokenType.TK_ELSE,
+      TokenType.TK_WHILE, TokenType.TK_FOR, TokenType.TK_RETURN, TokenType.TK_BREAK,
+      TokenType.TK_CONTINUE, TokenType.TK_FUNC, TokenType.TK_LOCAL, TokenType.TK_CONST,
+      TokenType.TK_TRUE, TokenType.TK_FALSE, TokenType.TK_NULL, TokenType.TK_THIS,
+      TokenType.TK_SWITCH, TokenType.TK_CASE, TokenType.TK_DEFAULT, TokenType.TK_IMPORT,
+      TokenType.TK_EXPORT, TokenType.TK_IN, TokenType.TK_DELETE
+    ];
+    
+    return keywordTokens.includes(token.type);
+  }
+
+  /**
+   * Get the string representation of a token to use as an identifier name
+   */
+  protected getTokenAsIdentifierName(token: any): string {
+    // If it's already a label token, use its value
+    if (token.type === TokenType.TK_LABEL) {
+      return token.value as string;
+    }
+    
+    // For keyword tokens, get the keyword string
+    const keywordMap: { [key: number]: string } = {
+      [TokenType.TK_TRY]: 'try',
+      [TokenType.TK_CATCH]: 'catch',
+      [TokenType.TK_IF]: 'if',
+      [TokenType.TK_ELSE]: 'else',
+      [TokenType.TK_WHILE]: 'while',
+      [TokenType.TK_FOR]: 'for',
+      [TokenType.TK_RETURN]: 'return',
+      [TokenType.TK_BREAK]: 'break',
+      [TokenType.TK_CONTINUE]: 'continue',
+      [TokenType.TK_FUNC]: 'function',
+      [TokenType.TK_LOCAL]: 'let',
+      [TokenType.TK_CONST]: 'const',
+      [TokenType.TK_TRUE]: 'true',
+      [TokenType.TK_FALSE]: 'false',
+      [TokenType.TK_NULL]: 'null',
+      [TokenType.TK_THIS]: 'this',
+      [TokenType.TK_SWITCH]: 'switch',
+      [TokenType.TK_CASE]: 'case',
+      [TokenType.TK_DEFAULT]: 'default',
+      [TokenType.TK_IMPORT]: 'import',
+      [TokenType.TK_EXPORT]: 'export',
+      [TokenType.TK_IN]: 'in',
+      [TokenType.TK_DELETE]: 'delete'
+    };
+    
+    return keywordMap[token.type] || (token.value as string) || '';
   }
 }
