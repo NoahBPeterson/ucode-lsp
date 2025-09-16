@@ -43,12 +43,19 @@ export abstract class BasicStatements extends ControlFlowStatements {
     if (hadSemicolon) {
       this.advance();
     } else {
-      // Record error but continue parsing
-      this.errorAt("Expected ';' after expression", 
-                   this.previous()?.end || start, 
-                   this.previous()?.end || start);
-      // Reset panic mode for missing semicolon to allow subsequent errors
-      this.panicMode = false;
+      // Allow optional semicolons before closing tokens (}, EOF, etc.)
+      const nextToken = this.peek()?.type;
+      const isOptionalSemicolon = nextToken === TokenType.TK_RBRACE || 
+                                 nextToken === TokenType.TK_EOF;
+      
+      if (!isOptionalSemicolon) {
+        // Record error but continue parsing
+        this.errorAt("Expected ';' after expression", 
+                     this.previous()?.end || start, 
+                     this.previous()?.end || start);
+        // Reset panic mode for missing semicolon to allow subsequent errors
+        this.panicMode = false;
+      }
     }
     
     return {

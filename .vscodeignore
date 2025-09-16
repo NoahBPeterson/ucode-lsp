@@ -16,6 +16,9 @@ vsc-extension-quickstart.md
 **/*.ts
 ucode/**
 u1905/**
+umpad/**
+umpad/*
+linguist-proposal/**
 payload_processor_ucode/**
 ucode_gotchas.md
 .claude/**
