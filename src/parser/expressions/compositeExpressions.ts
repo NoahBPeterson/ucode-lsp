@@ -37,7 +37,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
           const expr = this.parseExpression();
           elements.push(expr);
         }
-      } while (this.match(TokenType.TK_COMMA));
+      } while (this.match(TokenType.TK_COMMA) && !this.check(TokenType.TK_RBRACK));
     }
 
     this.consume(TokenType.TK_RBRACK, "Expected ']' after array elements");
