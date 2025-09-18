@@ -282,8 +282,21 @@ export const rtnlConstants: Map<string, RtnlConstantSignature> = new Map([
   ["RTNH_F_TRAP", { name: "RTNH_F_TRAP", value: 64, type: "integer", description: "Nexthop is trapping packets" }],
 
   // Bridge constants
-  ["BRIDGE_FLAGS_MASTER", { name: "BRIDGE_FLAGS_MASTER", value: 1, type: "integer", description: "Bridge master flag" }],
-  ["BRIDGE_FLAGS_SELF", { name: "BRIDGE_FLAGS_SELF", value: 2, type: "integer", description: "Bridge self flag" }],
+  ["BRIDGE_FLAGS_MASTER", { name: "BRIDGE_FLAGS_MASTER", value: 1, type: "integer", description: "Bridge command to/from master" }],
+  ["BRIDGE_FLAGS_SELF", { name: "BRIDGE_FLAGS_SELF", value: 2, type: "integer", description: "Bridge command to/from lowerdev" }],
+  ["BRIDGE_MODE_UNSPEC", { name: "BRIDGE_MODE_UNSPEC", value: 0, type: "integer", description: "Unspecified bridge mode" }],
+  ["BRIDGE_MODE_HAIRPIN", { name: "BRIDGE_MODE_HAIRPIN", value: 1, type: "integer", description: "Hairpin bridge mode" }],
+  ["BRIDGE_MODE_VEB", { name: "BRIDGE_MODE_VEB", value: 0, type: "integer", description: "Default loopback mode" }],
+  ["BRIDGE_MODE_VEPA", { name: "BRIDGE_MODE_VEPA", value: 1, type: "integer", description: "802.1Qbg defined VEPA mode" }],
+  ["BRIDGE_MODE_UNDEF", { name: "BRIDGE_MODE_UNDEF", value: 0xFFFF, type: "integer", description: "Mode undefined" }],
+  ["BRIDGE_VLAN_INFO_MASTER", { name: "BRIDGE_VLAN_INFO_MASTER", value: 1, type: "integer", description: "Operate on Bridge device as well" }],
+  ["BRIDGE_VLAN_INFO_PVID", { name: "BRIDGE_VLAN_INFO_PVID", value: 2, type: "integer", description: "VLAN is PVID, ingress untagged" }],
+  ["BRIDGE_VLAN_INFO_UNTAGGED", { name: "BRIDGE_VLAN_INFO_UNTAGGED", value: 4, type: "integer", description: "VLAN egresses untagged" }],
+  ["BRIDGE_VLAN_INFO_RANGE_BEGIN", { name: "BRIDGE_VLAN_INFO_RANGE_BEGIN", value: 8, type: "integer", description: "VLAN is start of vlan range" }],
+  ["BRIDGE_VLAN_INFO_RANGE_END", { name: "BRIDGE_VLAN_INFO_RANGE_END", value: 16, type: "integer", description: "VLAN is end of vlan range" }],
+  ["BRIDGE_VLAN_INFO_BRENTRY", { name: "BRIDGE_VLAN_INFO_BRENTRY", value: 32, type: "integer", description: "Global bridge VLAN entry" }],
+  ["MACVLAN_MODE_BRIDGE", { name: "MACVLAN_MODE_BRIDGE", value: 4, type: "integer", description: "Talk to bridge ports directly" }],
+  ["LINK_XSTATS_TYPE_BRIDGE", { name: "LINK_XSTATS_TYPE_BRIDGE", value: 1, type: "integer", description: "Bridge extended statistics type" }],
 
   // Netlink Message Flags (commonly used with rtnl)
   ["NLM_F_REQUEST", { name: "NLM_F_REQUEST", value: 1, type: "integer", description: "This message is a request" }],

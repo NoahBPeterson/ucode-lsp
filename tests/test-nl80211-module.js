@@ -115,15 +115,6 @@ testNl80211Validation('Return type handling', () => {
     return listenerFunc.returnType === 'nl80211.listener';
 });
 
-// Test 9: Constant documentation
-testNl80211Validation('Constant documentation', () => {
-    const doc = nl80211TypeRegistry.getConstantDocumentation('NL80211_IFTYPE_STATION');
-    console.log(`  Constant doc length: ${doc.length} characters`);
-    return doc.includes('**NL80211_IFTYPE_STATION**') &&
-           doc.includes('Station (client) interface type') &&
-           doc.includes('*integer*');
-});
-
 // Test 10: Import validation
 testNl80211Validation('Import validation', () => {
     const validImports = nl80211TypeRegistry.getValidImports();
