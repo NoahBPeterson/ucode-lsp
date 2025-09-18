@@ -15,6 +15,9 @@
       "include": "#numbers"
     },
     {
+      "include": "#property_access"
+    },
+    {
       "include": "#keywords"
     },
     {
@@ -31,6 +34,14 @@
     }
   ],
   "repository": {
+    "property_access": {
+      "patterns": [
+        {
+          "name": "variable.other.property.ucode",
+          "match": "(?<=\\.)\\b(try|catch|if|else|elif|endif|while|endwhile|for|endfor|break|continue|return|switch|case|default|in|let|const|function|endfunction|delete|import|export|true|false|null|this|[a-zA-Z_$][a-zA-Z0-9_$]*)\\b"
+        }
+      ]
+    },
     "template_blocks": {
       "patterns": [
         {

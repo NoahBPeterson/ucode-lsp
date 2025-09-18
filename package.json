@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.3.149",
+  "version": "0.3.150",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
