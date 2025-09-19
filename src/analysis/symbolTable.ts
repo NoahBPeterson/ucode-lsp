@@ -38,7 +38,12 @@ export interface ModuleType {
   moduleName: string;
 }
 
-export type UcodeDataType = UcodeType | UnionType | ModuleType;
+export interface DefaultImportType {
+  type: UcodeType.OBJECT;
+  isDefaultImport: boolean;
+}
+
+export type UcodeDataType = UcodeType | UnionType | ModuleType | DefaultImportType;
 
 // Utility functions for working with union types
 export function createUnionType(types: UcodeType[]): UcodeDataType {

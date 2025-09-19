@@ -322,6 +322,14 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Create appropriate data type for special imports first
     let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
     
+    // Mark default imports explicitly
+    if (specifier.type === 'ImportDefaultSpecifier') {
+      dataType = {
+        type: UcodeType.OBJECT,
+        isDefaultImport: true
+      };
+    }
+    
     // Special case: importing 'const' from nl80211 creates a constants object
     if (source === 'nl80211' && importedName === 'const') {
       dataType = {

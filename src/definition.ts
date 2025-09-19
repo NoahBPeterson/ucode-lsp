@@ -4,6 +4,7 @@ import {
     Range
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import * as fs from 'fs';
 import { UcodeLexer, TokenType } from './lexer';
 import { SemanticAnalysisResult, Symbol, SymbolType } from './analysis';
 import { FileResolver } from './analysis/fileResolver';
@@ -128,16 +129,22 @@ function getImportedSymbolDefinition(symbol: Symbol, currentDocument: TextDocume
     // We need to convert byte offset to line/character position
     try {
         // Try to get the target document to convert positions
-        const targetDocContent = require('fs').readFileSync(targetUri.replace('file://', ''), 'utf8');
+        const targetDocContent = fs.readFileSync(targetUri.replace('file://', ''), 'utf8');
         const targetDoc = {
             getText: () => targetDocContent,
             positionAt: (offset: number) => {
-                const lines = targetDocContent.substring(0, offset).split('\n');
+                // clamp offset to valid range (optional but nice to have)
+                const clamped = Math.max(0, Math.min(offset, targetDocContent.length));
+
+                const slice = targetDocContent.slice(0, clamped);
+                const lines = slice.split('\n');
+
+                const lastLine = lines.at(-1) ?? ''; // safe: string | undefined -> string
                 return {
-                    line: lines.length - 1,
-                    character: lines[lines.length - 1].length
+                    line: Math.max(0, lines.length - 1),
+                    character: lastLine.length,
                 };
-            }
+            }, 
         };
         
         const startPos = targetDoc.positionAt(functionDef.start);

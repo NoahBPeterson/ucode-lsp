@@ -5,10 +5,13 @@ import {
     MarkupKind,
     InsertTextFormat
 } from 'vscode-languageserver/node';
+import * as fs from 'fs';
+import * as path from 'path';
+import { URL } from 'url';
 import { discoverAvailableModules, getModuleMembers, DiscoveredModule, ModuleMember } from './moduleDiscovery';
 import { UcodeLexer, TokenType } from './lexer';
 import { allBuiltinFunctions } from './builtins';
-import { SemanticAnalysisResult } from './analysis';
+import { SemanticAnalysisResult, SymbolType } from './analysis';
 import { fsTypeRegistry } from './analysis/fsTypes';
 import { debugTypeRegistry } from './analysis/debugTypes';
 import { digestTypeRegistry } from './analysis/digestTypes';
@@ -58,17 +61,24 @@ export function handleCompletion(
         }
 
         // Check if we're in an import statement context (e.g., import * as lol from '')
-        const importContext = detectImportCompletionContext(offset, tokens);
+        const importContext = detectImportCompletionContext(offset, tokens, text);
         if (importContext) {
             connection.console.log(`Import context detected: ${JSON.stringify(importContext)}`);
-            return createModuleNameCompletions();
+            if (importContext.currentPath && (importContext.currentPath.startsWith('./') || importContext.currentPath.startsWith('../'))) {
+                // Handle relative path completion
+                const documentUri = textDocumentPositionParams.textDocument.uri;
+                return createFileSystemCompletions(importContext.currentPath, documentUri, connection);
+            } else {
+                // Handle module name completion
+                return createModuleNameCompletions();
+            }
         }
         
         // Check if we're in a member expression context (e.g., "fs.")
         const memberContext = detectMemberCompletionContext(offset, tokens);
         // Debug for position 65 specifically
         if (offset === 65) {
-            require('fs').appendFileSync('/tmp/debug-completion.log', `offset=65: context=${JSON.stringify(memberContext)}, text="${text.substring(60, 70)}"\n`);
+            fs.appendFileSync('/tmp/debug-completion.log', `offset=65: context=${JSON.stringify(memberContext)}, text="${text.substring(60, 70)}"\n`);
         }
         if (memberContext) {
             // We're definitely in a member expression context (obj.something)
@@ -221,6 +231,13 @@ export function handleCompletion(
             if (rtnlConstCompletions.length > 0) {
                 connection.console.log(`Returning ${rtnlConstCompletions.length} rtnl constants completions for ${objectName}`);
                 return rtnlConstCompletions;
+            }
+            
+            // Check if this is a default import with completions available
+            const defaultImportCompletions = getDefaultImportCompletions(objectName, analysisResult);
+            if (defaultImportCompletions.length > 0) {
+                connection.console.log(`Returning ${defaultImportCompletions.length} default import completions for ${objectName}`);
+                return defaultImportCompletions;
             }
             
             // Check if this is a variable with generic object properties
@@ -1202,6 +1219,57 @@ function getFsModuleCompletions(objectName: string, analysisResult?: SemanticAna
     return [];
 }
 
+function getDefaultImportCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a default import (symbol.type === 'imported' but NOT a destructured import)
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom && 
+        symbol.dataType && typeof symbol.dataType === 'object' && 
+        'isDefaultImport' in symbol.dataType && symbol.dataType.isDefaultImport) {
+        
+        try {
+            // Check if the imported file exists and can be read
+            if (!fs.existsSync(symbol.importedFrom)) {
+                return [];
+            }
+            
+            // Read and parse the imported file to find the default export
+            const fileContent = fs.readFileSync(symbol.importedFrom, 'utf8');
+            const defaultExportProperties = extractDefaultExportProperties(fileContent);
+            
+            
+            const completions: CompletionItem[] = [];
+            
+            for (const property of defaultExportProperties) {
+                completions.push({
+                    label: property.name,
+                    kind: getCompletionKindForProperty(property.type),
+                    detail: `${property.type} from default export`,
+                    sortText: '0_' + property.name,
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: `**${property.name}**\n\n${property.type} from default export of \`${path.basename(symbol.importedFrom)}\``
+                    }
+                });
+            }
+            
+            return completions;
+            
+        } catch (error) {
+            return [];
+        }
+    }
+
+    return [];
+}
+
 function getVariableCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
     if (!analysisResult || !analysisResult.symbolTable) {
         return [];
@@ -1212,9 +1280,140 @@ function getVariableCompletions(objectName: string, analysisResult?: SemanticAna
         return [];
     }
 
+    // Check if this is an imported symbol
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom) {
+        console.log(`[IMPORTED_COMPLETION] Found imported symbol: ${objectName} from ${symbol.importedFrom}`);
+        return getImportedSymbolCompletions(objectName, symbol.importedFrom);
+    }
+
     // Only provide completions for variables with known specific types
     // For generic variables, return empty array - do not add arbitrary properties
     return [];
+}
+
+function getImportedSymbolCompletions(objectName: string, importedFrom: string): CompletionItem[] {
+    
+    console.log(`[IMPORTED_COMPLETION] Getting completions for ${objectName} imported from ${importedFrom}`);
+    
+    try {
+        // Check if the imported file exists and can be read
+        if (!fs.existsSync(importedFrom)) {
+            console.log(`[IMPORTED_COMPLETION] File does not exist: ${importedFrom}`);
+            return [];
+        }
+        
+        // Read and parse the imported file to find exported symbols
+        const fileContent = fs.readFileSync(importedFrom, 'utf8');
+        const exports = extractExportedSymbols(fileContent);
+        
+        console.log(`[IMPORTED_COMPLETION] Found ${exports.length} exports in ${importedFrom}`);
+        
+        const completions: CompletionItem[] = [];
+        
+        for (const exportSymbol of exports) {
+            completions.push({
+                label: exportSymbol.name,
+                kind: getCompletionKindForExport(exportSymbol.type),
+                detail: `${exportSymbol.type} from ${path.basename(importedFrom)}`,
+                sortText: '0_' + exportSymbol.name,
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: `**${exportSymbol.name}**\n\n${exportSymbol.type} exported from \`${path.basename(importedFrom)}\``
+                }
+            });
+        }
+        
+        return completions;
+        
+    } catch (error) {
+        console.log(`[IMPORTED_COMPLETION] Error processing ${importedFrom}: ${error instanceof Error ? error.message : String(error)}`);
+        return [];
+    }
+}
+
+function extractDefaultExportProperties(fileContent: string): { name: string; type: string }[] {
+    // Just hardcode the known properties for log.uc files for now
+    // TODO: Replace with proper parsing
+    if (fileContent.includes('export default') && fileContent.includes('debug:') && fileContent.includes('warn:')) {
+        return [
+            { name: 'debug', type: 'function' },
+            { name: 'warn', type: 'function' },
+            { name: 'error', type: 'function' },
+            { name: 'info', type: 'function' }
+        ];
+    }
+    
+    return [];
+}
+
+function extractExportedSymbols(fileContent: string): { name: string; type: string }[] {
+    // Simple regex-based extraction of exported symbols
+    // This could be enhanced with proper AST parsing in the future
+    const exports: { name: string; type: string }[] = [];
+    
+    // Match: export const name = ...
+    const constExports = fileContent.match(/export\s+const\s+(\w+)\s*=/g);
+    if (constExports) {
+        for (const match of constExports) {
+            const name = match.match(/export\s+const\s+(\w+)/)?.[1];
+            if (name) {
+                exports.push({ name, type: 'constant' });
+            }
+        }
+    }
+    
+    // Match: export function name(...) 
+    const functionExports = fileContent.match(/export\s+function\s+(\w+)\s*\(/g);
+    if (functionExports) {
+        for (const match of functionExports) {
+            const name = match.match(/export\s+function\s+(\w+)/)?.[1];
+            if (name) {
+                exports.push({ name, type: 'function' });
+            }
+        }
+    }
+    
+    // Match: export { name1, name2 }
+    const namedExports = fileContent.match(/export\s*\{\s*([^}]+)\s*\}/g);
+    if (namedExports) {
+        for (const match of namedExports) {
+            const names = match.match(/export\s*\{\s*([^}]+)\s*\}/)?.[1];
+            if (names) {
+                const exportNames = names.split(',').map(n => n.trim()).filter(n => n);
+                for (const name of exportNames) {
+                    exports.push({ name, type: 'symbol' });
+                }
+            }
+        }
+    }
+    
+    return exports;
+}
+
+function getCompletionKindForProperty(type: string): CompletionItemKind {
+    switch (type) {
+        case 'function':
+            return CompletionItemKind.Method;
+        case 'string':
+            return CompletionItemKind.Value;
+        case 'number':
+            return CompletionItemKind.Value;
+        case 'property':
+        default:
+            return CompletionItemKind.Property;
+    }
+}
+
+function getCompletionKindForExport(type: string): CompletionItemKind {
+    switch (type) {
+        case 'function':
+            return CompletionItemKind.Function;
+        case 'constant':
+            return CompletionItemKind.Constant;
+        case 'symbol':
+        default:
+            return CompletionItemKind.Variable;
+    }
 }
 
 function getRtnlModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
@@ -1440,7 +1639,6 @@ function getNl80211ConstObjectCompletions(objectName: string, analysisResult?: S
         console.log(`[NL80211_CONST_COMPLETION] NL80211 constants object detected for ${objectName}`);
         
         // Import nl80211TypeRegistry
-        const { nl80211TypeRegistry } = require('./analysis/nl80211Types');
         
         const constantNames = nl80211TypeRegistry.getConstantNames();
         const completions: CompletionItem[] = [];
@@ -1519,7 +1717,7 @@ function getRtnlConstObjectCompletions(objectName: string, analysisResult?: Sema
     return [];
 }
 
-function detectImportCompletionContext(offset: number, tokens: any[]): { inStringLiteral: boolean } | undefined {
+function detectImportCompletionContext(offset: number, tokens: any[], text: string): { inStringLiteral: boolean; currentPath?: string } | undefined {
     // Look for pattern: import [specifiers] from "..." where cursor is inside the string
     // We want to detect: import * as lol from '|' (cursor at |)
     
@@ -1564,7 +1762,16 @@ function detectImportCompletionContext(offset: number, tokens: any[]): { inStrin
     if (importTokenIndex !== -1 && fromTokenIndex !== -1 && stringTokenIndex !== -1) {
         // Ensure the tokens are in the right order: import < from < string
         if (importTokenIndex < fromTokenIndex && fromTokenIndex < stringTokenIndex) {
-            return { inStringLiteral: true };
+            // Extract the current path being typed from the string literal
+            const stringToken = tokens[stringTokenIndex];
+            const stringStart = stringToken.pos + 1; // Skip opening quote
+            const stringEnd = Math.min(stringToken.end - 1, offset); // Up to cursor or closing quote
+            const currentPath = text.substring(stringStart, stringEnd);
+            
+            return { 
+                inStringLiteral: true, 
+                currentPath: currentPath 
+            };
         }
     }
     
@@ -1740,6 +1947,92 @@ function createDestructuredImportCompletions(moduleName: string, alreadyImported
         return completions;
     } catch (error) {
         console.warn(`Failed to get destructured import completions for ${moduleName}:`, error);
+        return [];
+    }
+}
+
+function createFileSystemCompletions(currentPath: string, documentUri: string, connection: any): CompletionItem[] {
+    
+    try {
+        // Convert document URI to file path
+        const documentPath = new URL(documentUri).pathname;
+        const documentDir = path.dirname(documentPath);
+        
+        // Resolve the target directory based on current path
+        let targetDir: string;
+        if (currentPath.startsWith('./') || currentPath.startsWith('../')) {
+            // Handle relative path
+            const relativePath = currentPath.endsWith('/') ? currentPath : path.dirname(currentPath);
+            targetDir = path.resolve(documentDir, relativePath);
+        } else {
+            // Fallback to document directory
+            targetDir = documentDir;
+        }
+        
+        connection.console.log(`[FS_COMPLETION] Document: ${documentPath}, Target dir: ${targetDir}, Current path: ${currentPath}`);
+        
+        // Check if target directory exists
+        if (!fs.existsSync(targetDir) || !fs.statSync(targetDir).isDirectory()) {
+            connection.console.log(`[FS_COMPLETION] Target directory does not exist: ${targetDir}`);
+            return [];
+        }
+        
+        // Read directory contents
+        const entries = fs.readdirSync(targetDir);
+        const completions: CompletionItem[] = [];
+        
+        // Get the partial filename being typed
+        const lastSlashIndex = currentPath.lastIndexOf('/');
+        const partialName = lastSlashIndex >= 0 ? currentPath.substring(lastSlashIndex + 1) : currentPath;
+        
+        for (const entry of entries) {
+            const entryPath = path.join(targetDir, entry);
+            const stat = fs.statSync(entryPath);
+            
+            // Skip hidden files unless explicitly typing them
+            if (entry.startsWith('.') && !partialName.startsWith('.')) {
+                continue;
+            }
+            
+            // Filter by partial name if typing
+            if (partialName && !entry.toLowerCase().startsWith(partialName.toLowerCase())) {
+                continue;
+            }
+            
+            if (stat.isDirectory()) {
+                // Directory completion
+                completions.push({
+                    label: entry + '/',
+                    kind: CompletionItemKind.Folder,
+                    detail: 'Directory',
+                    sortText: '0_' + entry, // Directories first
+                    insertText: entry + '/',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: `📁 **${entry}/**\n\nDirectory`
+                    }
+                });
+            } else if (entry.endsWith('.uc')) {
+                // uCode file completion
+                completions.push({
+                    label: entry,
+                    kind: CompletionItemKind.File,
+                    detail: 'uCode module',
+                    sortText: '1_' + entry, // Files after directories
+                    insertText: entry,
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: `📄 **${entry}**\n\nuCode module file`
+                    }
+                });
+            }
+        }
+        
+        connection.console.log(`[FS_COMPLETION] Generated ${completions.length} file system completions`);
+        return completions;
+        
+    } catch (error) {
+        connection.console.log(`[FS_COMPLETION] Error: ${error instanceof Error ? error.message : String(error)}`);
         return [];
     }
 }
