@@ -7,6 +7,7 @@ import { TokenType } from '../../lexer';
 import { 
   AstNode, BlockStatementNode, ExpressionStatementNode, EmptyStatementNode
 } from '../../ast/nodes';
+import { Precedence } from '../types';
 import { ControlFlowStatements } from './controlFlowStatements';
 
 export abstract class BasicStatements extends ControlFlowStatements {
@@ -34,7 +35,7 @@ export abstract class BasicStatements extends ControlFlowStatements {
 
   protected parseExpressionStatement(): ExpressionStatementNode | null {
     const start = this.peek()?.pos || 0;
-    const expression = this.parseExpression();
+    const expression = this.parseExpression(Precedence.COMMA);
     
     if (!expression) return null;
     
