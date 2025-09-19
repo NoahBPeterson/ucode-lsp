@@ -43,6 +43,7 @@ export function handleCompletion(
         return createGeneralCompletions(analysisResult, connection);
     }
     
+    
     connection.console.log(`[COMPLETION] Document found, analysisResult: ${!!analysisResult}`);
 
     const position = textDocumentPositionParams.position;
@@ -74,17 +75,14 @@ export function handleCompletion(
             }
         }
         
-        // Check if we're in a member expression context (e.g., "fs.")
+        // Check if we're in a member expression context (e.g., "fs." or "obj.prop.")
         const memberContext = detectMemberCompletionContext(offset, tokens);
-        // Debug for position 65 specifically
-        if (offset === 65) {
-            fs.appendFileSync('/tmp/debug-completion.log', `offset=65: context=${JSON.stringify(memberContext)}, text="${text.substring(60, 70)}"\n`);
-        }
         if (memberContext) {
             // We're definitely in a member expression context (obj.something)
             // Never show builtin functions or keywords for member expressions
-            const { objectName } = memberContext;
-            connection.console.log(`Member expression detected for: ${objectName}`);
+            const { objectName, propertyChain } = memberContext;
+            connection.console.log(`Member expression detected for: ${objectName}${propertyChain ? `, chain: ${propertyChain.join('.')}` : ''}`);
+            connection.console.log(`[DEBUG] objectName: "${objectName}", propertyChain: ${JSON.stringify(propertyChain)}`);
             
             // Check if this is an fs object with completions available
             const fsCompletions = getFsObjectCompletions(objectName, analysisResult);
@@ -240,6 +238,24 @@ export function handleCompletion(
                 return defaultImportCompletions;
             }
             
+            // Check if this is a namespace import with completions available (only if no property chain)
+            if (!propertyChain || propertyChain.length === 0) {
+                const namespaceImportCompletions = getNamespaceImportCompletions(objectName, analysisResult);
+                if (namespaceImportCompletions.length > 0) {
+                    connection.console.log(`Returning ${namespaceImportCompletions.length} namespace import completions for ${objectName}`);
+                    return namespaceImportCompletions;
+                }
+            }
+            
+            // Check if this is a property chain completion (e.g., obj.prop.subprop.)
+            if (propertyChain && propertyChain.length > 0) {
+                const propertyChainCompletions = getPropertyChainCompletions(objectName, propertyChain, analysisResult);
+                if (propertyChainCompletions.length > 0) {
+                    connection.console.log(`Returning ${propertyChainCompletions.length} property chain completions for ${objectName}.${propertyChain.join('.')}`);
+                    return propertyChainCompletions;
+                }
+            }
+            
             // Check if this is a variable with generic object properties
             const variableCompletions = getVariableCompletions(objectName, analysisResult);
             if (variableCompletions.length > 0) {
@@ -261,9 +277,9 @@ export function handleCompletion(
     }
 }
 
-function detectMemberCompletionContext(offset: number, tokens: any[]): { objectName: string } | undefined {
-    // Look for pattern: LABEL DOT (cursor position)
-    // We want to find tokens that come just before the cursor position
+function detectMemberCompletionContext(offset: number, tokens: any[]): { objectName: string; propertyChain?: string[] } | undefined {
+    // Look for pattern: LABEL DOT [LABEL DOT]* (cursor position)
+    // This handles both simple (obj.) and chained (obj.prop.subprop.) member access
     
     let dotTokenIndex = -1;
     
@@ -276,23 +292,76 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
         }
     }
     
-    // If we found a dot, check if there's a LABEL token immediately before it
-    if (dotTokenIndex > 0) {
-        const dotToken = tokens[dotTokenIndex];
-        const prevToken = tokens[dotTokenIndex - 1];
+    if (dotTokenIndex <= 0) {
+        return undefined;
+    }
+    
+    const dotToken = tokens[dotTokenIndex];
+    
+    // Make sure the cursor is after the dot or right at it (for completion)
+    if (offset < dotToken.pos || offset > dotToken.end) {
+        return undefined;
+    }
+    
+    // Walk backwards to build the property chain
+    const propertyChain: string[] = [];
+    let currentTokenIndex = dotTokenIndex - 1;
+    
+    // Build the chain by walking backwards through LABEL DOT patterns
+    while (currentTokenIndex >= 0) {
+        const token = tokens[currentTokenIndex];
         
-        // Check if previous token is a LABEL and it's immediately before the dot
-        if (prevToken.type === TokenType.TK_LABEL && prevToken.end === dotToken.pos) {
-            // Make sure the cursor is after the dot or right at it (for completion)
-            if (offset >= dotToken.pos && offset <= dotToken.end) {
-                return {
-                    objectName: prevToken.value as string
-                };
+        if (token.type === TokenType.TK_LABEL) {
+            // Check if this label is properly connected to the next dot
+            if (currentTokenIndex + 1 < tokens.length) {
+                const nextToken = tokens[currentTokenIndex + 1];
+                if (nextToken.type === TokenType.TK_DOT && token.end === nextToken.pos) {
+                    // This label is connected to a dot, add it to the chain
+                    propertyChain.unshift(token.value as string);
+                    
+                    // Look for another dot before this label
+                    if (currentTokenIndex > 0) {
+                        const prevToken = tokens[currentTokenIndex - 1];
+                        if (prevToken.type === TokenType.TK_DOT && prevToken.end === token.pos) {
+                            // There's another dot before this label, continue the chain
+                            currentTokenIndex -= 2; // Skip the dot and continue
+                            continue;
+                        }
+                    }
+                    
+                    // This is the root object name
+                    break;
+                } else {
+                    // Label is not connected to a dot, stop here
+                    break;
+                }
+            } else {
+                // No token after this label, stop here
+                break;
             }
+        } else {
+            // Not a label token, stop here
+            break;
         }
     }
     
-    return undefined;
+    if (propertyChain.length === 0) {
+        return undefined;
+    }
+    
+    // The first element is the root object name, the rest are property chain
+    const objectName = propertyChain[0];
+    if (!objectName) {
+        return undefined;
+    }
+    
+    const chain = propertyChain.slice(1);
+    
+    const result: { objectName: string; propertyChain?: string[] } = { objectName };
+    if (chain.length > 0) {
+        result.propertyChain = chain;
+    }
+    return result;
 }
 
 function getFsObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
@@ -1267,6 +1336,126 @@ function getDefaultImportCompletions(objectName: string, analysisResult?: Semant
         }
     }
 
+    return [];
+}
+
+function getNamespaceImportCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Check if this is a namespace import (import * as name from 'module')
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom && symbol.importSpecifier === '*') {
+        try {
+            // Check if the imported file exists and can be read
+            if (!fs.existsSync(symbol.importedFrom)) {
+                return [];
+            }
+            
+            // Read and parse the imported file to find exports
+            const fileContent = fs.readFileSync(symbol.importedFrom, 'utf8');
+            const completions: CompletionItem[] = [];
+            
+            // For namespace imports, provide 'default' as a completion if there's a default export
+            if (fileContent.includes('export default')) {
+                completions.push({
+                    label: 'default',
+                    kind: CompletionItemKind.Property,
+                    detail: 'default export',
+                    sortText: '0_default',
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: `**default**\n\nDefault export from \`${path.basename(symbol.importedFrom)}\`\n\nAccess with: \`${objectName}.default.propertyName\``
+                    }
+                });
+            }
+            
+            // Also include any named exports
+            const namedExports = extractExportedSymbols(fileContent);
+            for (const exportSymbol of namedExports) {
+                completions.push({
+                    label: exportSymbol.name,
+                    kind: getCompletionKindForExport(exportSymbol.type),
+                    detail: `${exportSymbol.type} export`,
+                    sortText: '1_' + exportSymbol.name,
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: `**${exportSymbol.name}**\n\n${exportSymbol.type} export from \`${path.basename(symbol.importedFrom)}\``
+                    }
+                });
+            }
+            
+            return completions;
+            
+        } catch (error) {
+            return [];
+        }
+    }
+
+    return [];
+}
+
+function getPropertyChainCompletions(objectName: string, propertyChain: string[], analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    if (!symbol) {
+        return [];
+    }
+
+    // Handle specific known patterns
+    
+    // Pattern: namespace.default.* (e.g., logss.default.debug)
+    if (symbol.type === SymbolType.IMPORTED && 
+        symbol.importedFrom && 
+        symbol.importSpecifier === '*' &&
+        propertyChain.length === 1 && 
+        propertyChain[0] === 'default') {
+        
+        try {
+            // Check if the imported file exists and can be read
+            if (!fs.existsSync(symbol.importedFrom)) {
+                return [];
+            }
+            
+            // Read and parse the imported file to find the default export properties
+            const fileContent = fs.readFileSync(symbol.importedFrom, 'utf8');
+            const defaultExportProperties = extractDefaultExportProperties(fileContent);
+            
+            const completions: CompletionItem[] = [];
+            
+            for (const property of defaultExportProperties) {
+                completions.push({
+                    label: property.name,
+                    kind: getCompletionKindForProperty(property.type),
+                    detail: `${property.type} from default export`,
+                    sortText: '0_' + property.name,
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: `**${property.name}**\n\n${property.type} from default export of \`${path.basename(symbol.importedFrom)}\`\n\nAccessed via: \`${objectName}.default.${property.name}\``
+                    }
+                });
+            }
+            
+            return completions;
+            
+        } catch (error) {
+            return [];
+        }
+    }
+    
+    // TODO: Add more property chain patterns here
+    // - module.exports.* patterns
+    // - nested object property chains
+    // - method chaining completions
+    
     return [];
 }
 
