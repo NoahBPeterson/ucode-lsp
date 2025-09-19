@@ -3,6 +3,25 @@ import { test, expect } from 'bun:test';
 import { execSync } from 'child_process';
 import fs from 'fs';
 
+// Shared LSP server for mocha tests
+let sharedLSPServer = null;
+
+async function createSharedLSPServer() {
+    if (sharedLSPServer) return sharedLSPServer;
+    
+    const { createLSPTestServer } = require('./lsp-test-helpers');
+    sharedLSPServer = createLSPTestServer();
+    await sharedLSPServer.initialize();
+    return sharedLSPServer;
+}
+
+async function shutdownSharedLSPServer() {
+    if (sharedLSPServer) {
+        await sharedLSPServer.shutdown();
+        sharedLSPServer = null;
+    }
+}
+
 // List of test files to run
 const testFiles = [
     'tests/test-simple-validation.js',
@@ -159,6 +178,34 @@ test('Comprehensive Validation Test Suite', async () => {
     let totalSuites = 0;
     let passedSuites = 0;
     let totalTestCount = 0;
+    
+    // First, run shared LSP tests
+    console.log('\n🔥 Running Shared LSP Tests (Fast)...\n');
+    
+    try {
+        const lspServer = await createSharedLSPServer();
+        
+        // Run function return type tests with shared LSP
+        const { runFunctionReturnTypeTests } = require('./test-function-return-types-shared');
+        const functionTestsResult = await runFunctionReturnTypeTests(lspServer);
+        
+        totalSuites++;
+        if (functionTestsResult) {
+            passedSuites++;
+            console.log('✅ Shared LSP Function Return Type Tests: PASSED');
+        } else {
+            console.log('❌ Shared LSP Function Return Type Tests: FAILED');
+        }
+        
+        // Keep LSP server running for potential future shared tests
+        // It will be shut down at the end
+        
+    } catch (error) {
+        console.log(`❌ Shared LSP tests failed: ${error.message}`);
+        totalSuites++;
+    }
+    
+    console.log('\n📋 Running Individual Test Suites...\n');
 
     for (const [index, testFile] of testFiles.entries()) {
         if (!fs.existsSync(testFile)) {
@@ -167,8 +214,6 @@ test('Comprehensive Validation Test Suite', async () => {
         }
         
         totalSuites++;
-        console.log(`\n📋 Running Test Suite ${index + 1}: ${testFile}`);
-        console.log('-'.repeat(50));
         
         try {
             // Use different command for mocha tests
@@ -179,7 +224,6 @@ test('Comprehensive Validation Test Suite', async () => {
                 : `bun ${testFile}`;
             
             const output = execSync(command, { encoding: 'utf8' });
-            //console.log(output);
             
             // Parse test results from output - handle both bun and mocha formats
             const bunPassedMatch = output.match(/(\d+)\/(\d+) tests passed/);
@@ -191,12 +235,11 @@ test('Comprehensive Validation Test Suite', async () => {
                 const total = parseInt(bunPassedMatch[2]);
                 totalTestCount += total;
                 
-                if (passed === total) {
+                if (passed === total && total !== 0) {
                     passedSuites++;
-                    console.log(`✅ Suite ${index + 1} PASSED: ${passed}/${total} tests`);
                 } else {
+                    console.log(`❌ Suite ${index + 1} FAILED: ${passed}/${total} tests - ${testFile}`);
                     console.log(output);
-                    console.log(`❌ Suite ${index + 1} FAILED: ${passed}/${total} tests`);
                 }
             } else if (mochaPassedMatch) {
                 const passed = parseInt(mochaPassedMatch[1]);
@@ -206,18 +249,16 @@ test('Comprehensive Validation Test Suite', async () => {
                 
                 if (failed === 0) {
                     passedSuites++;
-                    console.log(`✅ Suite ${index + 1} PASSED: ${passed} tests`);
                 } else {
+                    console.log(`❌ Suite ${index + 1} FAILED: ${passed} passed, ${failed} failed - ${testFile}`);
                     console.log(output);
-                    console.log(`❌ Suite ${index + 1} FAILED: ${passed} passed, ${failed} failed`);
                 }
             } else {
-                console.log(`✅ Suite ${index + 1} completed (format may vary)`);
                 passedSuites++; // Assume pass if no failures detected
             }
             
         } catch (error) {
-            console.log(`❌ Suite ${index + 1} FAILED with error:`);
+            console.log(`❌ Suite ${index + 1} FAILED with error - ${testFile}`);
             console.log(error.stdout || error.message);
         }
     }
@@ -238,7 +279,15 @@ test('Comprehensive Validation Test Suite', async () => {
     console.log(`Test Suites: ${passedSuites}/${totalSuites} passed`);
     console.log(`Total Tests: ${totalTestCount} executed\n`);
 
+    // Cleanup shared LSP server
+    try {
+        await shutdownSharedLSPServer();
+        console.log('\n🧹 Shared LSP server shut down');
+    } catch (error) {
+        console.log(`⚠️  Error shutting down shared LSP server: ${error.message}`);
+    }
+
     // Assert that all test suites passed
     expect(passedSuites).toBe(totalSuites);
     expect(totalTestCount).toBeGreaterThan(0);
-}, { timeout: 60000 });
+}, { timeout: 120000 }); // Increased timeout for LSP operations

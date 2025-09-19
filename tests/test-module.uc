@@ -30,6 +30,11 @@ let configFile = "config.uc";
 let scriptCode = "return 42";
 let filename = "data.uc";
 
+function getCode()
+{
+    return "lol";
+}
+
 // Valid require() functions
 require(modulePath);      // valid: string variable
 require("./helpers");     // valid: string literal

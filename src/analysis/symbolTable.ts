@@ -115,6 +115,8 @@ export interface Symbol {
   node: AstNode;
   declaredAt: number; // position in source
   usedAt: number[];   // positions where used
+  // Function-specific fields
+  returnType?: UcodeDataType;   // Return type for functions (when dataType is FUNCTION)
   // Import-specific fields
   importedFrom?: string;        // File path where this symbol is imported from
   importSpecifier?: string;     // Original name if aliased (e.g., 'run_command' for 'import { run_command as cmd }')
@@ -201,6 +203,7 @@ export class SymbolTable {
         name: builtin.name,
         type: SymbolType.BUILTIN,
         dataType: UcodeType.FUNCTION, // Builtin functions should be typed as FUNCTION, not their return type
+        returnType: builtin.returnType, // Store the actual return type separately
         scope: 0,
         declared: true,
         used: false,

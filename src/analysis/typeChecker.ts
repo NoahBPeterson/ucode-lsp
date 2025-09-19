@@ -495,13 +495,11 @@ export class TypeChecker {
             }
           }
           
-          // For other imported functions or when module lookup fails, use default handling
-          if (typeof symbol.dataType === 'string') {
-            return symbol.dataType as UcodeType;
-          } else if (isUnionType(symbol.dataType)) {
-            const types = getUnionTypes(symbol.dataType);
-            return types[0] || UcodeType.UNKNOWN;
+          // For user-defined functions and other imported functions, return their return type
+          if (symbol.returnType) {
+            return this.dataTypeToUcodeType(symbol.returnType);
           } else {
+            // Fallback for functions without explicit return type
             return UcodeType.UNKNOWN;
           }
         }

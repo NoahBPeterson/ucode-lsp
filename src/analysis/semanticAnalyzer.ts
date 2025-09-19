@@ -597,7 +597,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const name = node.id.name;
 
       // Declare the function first with an UNKNOWN return type to handle recursion.
-      if (!this.symbolTable.declare(name, SymbolType.FUNCTION, UcodeType.UNKNOWN as UcodeDataType, node.id)) {
+      if (!this.symbolTable.declare(name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, node.id)) {
         this.addDiagnosticErrorCode(
           UcodeErrorCode.FUNCTION_REDECLARATION,
           `Function '${name}' is already declared in this scope`,
@@ -636,7 +636,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Update the function's symbol with the now-known return type.
       const symbol = this.symbolTable.lookup(name);
       if (symbol) {
-        symbol.dataType = inferredReturnType;
+        symbol.dataType = UcodeType.FUNCTION;  // Functions should always have type 'function'
+        symbol.returnType = inferredReturnType; // Store the actual return type separately
       }
 
       // Exit function scope
@@ -1654,12 +1655,32 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return null;
   }
 
+  private inferFunctionCallReturnType(node: AstNode): UcodeDataType | null {
+    if (node.type !== 'CallExpression') {
+      return null;
+    }
+    
+    const callExpr = node as CallExpressionNode;
+    if (callExpr.callee.type !== 'Identifier') {
+      return null;
+    }
+    
+    const funcName = (callExpr.callee as IdentifierNode).name;
+    const symbol = this.symbolTable.lookup(funcName);
+    
+    if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
+      // Return the raw return type without conversion to preserve unions
+      return symbol.returnType || null;
+    }
+    
+    return null;
+  }
+
   private processInitializerTypeInference(node: VariableDeclaratorNode, name: string): void {
     if (!node.init) {
       return;
     }
     
-    const initType = this.typeChecker.checkNode(node.init);
     const symbol = this.symbolTable.lookup(name);
     if (symbol) {
       // Check if this is an fs function call and assign the appropriate fs type
@@ -1708,8 +1729,17 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         return;
       }
 
+      // Check if this is a function call and preserve the return type (including unions)
+      const functionReturnType = this.inferFunctionCallReturnType(node.init!);
+      if (functionReturnType) {
+        symbol.dataType = functionReturnType;
+        return;
+      }
+
       // Don't overwrite module types that were set during declaration
       if (symbol.type !== SymbolType.MODULE) {
+        // For non-function calls, fall back to type checker result
+        const initType = this.typeChecker.checkNode(node.init);
         symbol.dataType = initType as UcodeDataType;
         // Debug logging for arrow function variables
         if (node.init.type === 'ArrowFunctionExpression') {

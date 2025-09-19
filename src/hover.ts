@@ -318,6 +318,28 @@ export function handleHover(
         if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
             const word = token.value;
             
+            // Check if this is a function call (e.g., test() instead of just test)
+            const isFunctionCall = detectFunctionCall(offset, tokens);
+            if (isFunctionCall && analysisResult) {
+                const symbol = analysisResult.symbolTable.lookup(word);
+                if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
+                    // Show return type for function calls
+                    if (symbol.returnType) {
+                        const returnTypeStr = typeToString(symbol.returnType);
+                        return {
+                            contents: {
+                                kind: MarkupKind.Markdown,
+                                value: `(function call) **${word}()**: \`${returnTypeStr}\`\n\nReturn type of function call`
+                            },
+                            range: {
+                                start: document.positionAt(token.pos),
+                                end: document.positionAt(token.end)
+                            }
+                        };
+                    }
+                }
+            }
+            
             // Check if this is part of a member expression (e.g., fs.open)
             const memberExpressionInfo = detectMemberExpression(offset, tokens);
             if (memberExpressionInfo && analysisResult) {
@@ -470,8 +492,13 @@ export function handleHover(
                             }
                             break;
                         case SymbolType.FUNCTION:
-                            // Show that this is a function type, not its return type
-                            hoverText = `(function) **${symbol.name}**: \`function\``;
+                            // Show function type with return type information
+                            if (symbol.returnType) {
+                                const returnTypeStr = typeToString(symbol.returnType);
+                                hoverText = `(function) **${symbol.name}**: \`function\`\n\nReturns: \`${returnTypeStr}\``;
+                            } else {
+                                hoverText = `(function) **${symbol.name}**: \`function\``;
+                            }
                             break;
                         case SymbolType.MODULE:
                             hoverText = `(module) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
@@ -738,6 +765,35 @@ export function handleHover(
     }
     
     return undefined;
+}
+
+function detectFunctionCall(offset: number, tokens: any[]): boolean {
+    // Find the token at the current position
+    const currentTokenIndex = tokens.findIndex(t => t.pos <= offset && offset < t.end);
+    if (currentTokenIndex === -1) return false;
+    
+    const currentToken = tokens[currentTokenIndex];
+    
+    // Check if current token is a label (function name)
+    if (currentToken.type !== TokenType.TK_LABEL) return false;
+    
+    // Check if this is part of a function declaration by looking for 'function' keyword before
+    if (currentTokenIndex > 0) {
+        const prevToken = tokens[currentTokenIndex - 1];
+        if (prevToken && prevToken.type === TokenType.TK_FUNC) {
+            return false; // This is a function declaration, not a call
+        }
+    }
+    
+    // Check if there's an opening parenthesis immediately after this token
+    if (currentTokenIndex + 1 < tokens.length) {
+        const nextToken = tokens[currentTokenIndex + 1];
+        if (nextToken.type === TokenType.TK_LPAREN && currentToken.end === nextToken.pos) {
+            return true; // This is a function call
+        }
+    }
+    
+    return false;
 }
 
 function detectMemberExpression(offset: number, tokens: any[]): { objectName: string; propertyName: string } | undefined {
