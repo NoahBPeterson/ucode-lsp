@@ -68,6 +68,21 @@ export class FileResolver {
                         return this.filePathToUri(withExtension);
                     }
                 }
+
+                // Fallback: treat relative dot-notation imports as workspace-relative
+                if (importPath.startsWith('./')) {
+                    const workspaceRelativePath = path.resolve(this.workspaceRoot, importPath.replace(/^\.\//, ''));
+                    if (fs.existsSync(workspaceRelativePath)) {
+                        return this.filePathToUri(workspaceRelativePath);
+                    }
+
+                    if (!workspaceRelativePath.endsWith('.uc')) {
+                        const workspaceWithExtension = workspaceRelativePath + '.uc';
+                        if (fs.existsSync(workspaceWithExtension)) {
+                            return this.filePathToUri(workspaceWithExtension);
+                        }
+                    }
+                }
             }
             
             // Handle absolute paths

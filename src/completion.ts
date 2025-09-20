@@ -10,6 +10,7 @@ import * as path from 'path';
 import { URL } from 'url';
 import { discoverAvailableModules, getModuleMembers, DiscoveredModule, ModuleMember } from './moduleDiscovery';
 import { UcodeLexer, TokenType } from './lexer';
+import { UcodeParser } from './parser';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType } from './analysis';
 import { fsTypeRegistry } from './analysis/fsTypes';
@@ -30,6 +31,8 @@ import { uloopObjectRegistry } from './analysis/uloopTypes';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 import { zlibTypeRegistry } from './analysis/zlibTypes';
 import { fsModuleTypeRegistry } from './analysis/fsModuleTypes';
+
+const defaultExportPropertiesCache = new Map<string, { content: string; properties: { name: string; type: string }[] }>();
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -1416,7 +1419,7 @@ function getDefaultImportCompletions(objectName: string, analysisResult?: Semant
             
             // Read and parse the imported file to find the default export
             const fileContent = fs.readFileSync(filePath, 'utf8');
-            const defaultExportProperties = extractDefaultExportProperties(fileContent);
+            const defaultExportProperties = extractDefaultExportProperties(fileContent, filePath);
             
             const completions: CompletionItem[] = [];
             
@@ -1428,7 +1431,7 @@ function getDefaultImportCompletions(objectName: string, analysisResult?: Semant
                     sortText: '0_' + property.name,
                     documentation: {
                         kind: MarkupKind.Markdown,
-                        value: `**${property.name}**\n\n${property.type} from default export of \`${path.basename(symbol.importedFrom)}\``
+                        value: `**${property.name}**\n\n${property.type} from default export of \`${path.basename(filePath)}\``
                     }
                 });
             }
@@ -1576,7 +1579,7 @@ function getPropertyChainCompletions(objectName: string, propertyChain: string[]
             
             // Read and parse the imported file to find the default export properties
             const fileContent = fs.readFileSync(filePath, 'utf8');
-            const defaultExportProperties = extractDefaultExportProperties(fileContent);
+            const defaultExportProperties = extractDefaultExportProperties(fileContent, filePath);
             
             const completions: CompletionItem[] = [];
             
@@ -1588,7 +1591,7 @@ function getPropertyChainCompletions(objectName: string, propertyChain: string[]
                     sortText: '0_' + property.name,
                     documentation: {
                         kind: MarkupKind.Markdown,
-                        value: `**${property.name}**\n\n${property.type} from default export of \`${path.basename(symbol.importedFrom)}\`\n\nAccessed via: \`${objectName}.default.${property.name}\``
+                        value: `**${property.name}**\n\n${property.type} from default export of \`${path.basename(filePath)}\`\n\nAccessed via: \`${objectName}.default.${property.name}\``
                     }
                 });
             }
@@ -1669,19 +1672,181 @@ function getImportedSymbolCompletions(objectName: string, importedFrom: string):
     }
 }
 
-function extractDefaultExportProperties(fileContent: string): { name: string; type: string }[] {
-    // Just hardcode the known properties for log.uc files for now
-    // TODO: Replace with proper parsing
-    if (fileContent.includes('export default') && fileContent.includes('debug:') && fileContent.includes('warn:')) {
-        return [
-            { name: 'debug', type: 'function' },
-            { name: 'warn', type: 'function' },
-            { name: 'error', type: 'function' },
-            { name: 'info', type: 'function' }
-        ];
+function extractDefaultExportProperties(fileContent: string, filePath?: string): { name: string; type: string }[] {
+    if (filePath) {
+        const cached = defaultExportPropertiesCache.get(filePath);
+        if (cached && cached.content === fileContent) {
+            return cached.properties;
+        }
     }
-    
-    return [];
+
+    let properties: { name: string; type: string }[] = [];
+
+    try {
+        const lexer = new UcodeLexer(fileContent, { rawMode: true });
+        const tokens = lexer.tokenize();
+        const parser = new UcodeParser(tokens, fileContent);
+        const parseResult = parser.parse();
+
+        if (!parseResult.ast) {
+            if (filePath) {
+                defaultExportPropertiesCache.set(filePath, { content: fileContent, properties });
+            }
+            return properties;
+        }
+
+        const program = parseResult.ast as any;
+        const variableInitializers = new Map<string, any>();
+
+        for (const statement of program.body || []) {
+            if (statement?.type === 'VariableDeclaration') {
+                for (const declarator of statement.declarations || []) {
+                    if (declarator?.id?.type === 'Identifier') {
+                        variableInitializers.set(declarator.id.name, declarator.init || null);
+                    }
+                }
+            }
+        }
+
+        for (const statement of program.body || []) {
+            if (statement?.type === 'ExportDefaultDeclaration') {
+                const resolved = resolveDefaultExportObject(statement.declaration, variableInitializers, new Set<string>());
+                if (resolved && resolved.type === 'ObjectExpression') {
+                    properties = extractPropertiesFromObjectExpression(resolved);
+                    break;
+                }
+            }
+        }
+    } catch (error) {
+        properties = [];
+    }
+
+    if (filePath) {
+        defaultExportPropertiesCache.set(filePath, { content: fileContent, properties });
+    }
+
+    return properties;
+}
+
+function resolveDefaultExportObject(
+    declaration: any,
+    variableInitializers: Map<string, any>,
+    visited: Set<string>
+): any | null {
+    if (!declaration) {
+        return null;
+    }
+
+    if (declaration.type === 'ObjectExpression') {
+        return declaration;
+    }
+
+    if (declaration.type === 'Identifier') {
+        const name = declaration.name;
+        if (!name || visited.has(name)) {
+            return null;
+        }
+        visited.add(name);
+        const initializer = variableInitializers.get(name);
+        if (initializer) {
+            return resolveDefaultExportObject(initializer, variableInitializers, visited);
+        }
+        return null;
+    }
+
+    if (declaration.type === 'CallExpression') {
+        for (const arg of declaration.arguments || []) {
+            const resolved = resolveDefaultExportObject(arg, variableInitializers, visited);
+            if (resolved) {
+                return resolved;
+            }
+        }
+        return null;
+    }
+
+    if (declaration.type === 'AssignmentExpression') {
+        return resolveDefaultExportObject(declaration.right, variableInitializers, visited);
+    }
+
+    if (declaration.type === 'VariableDeclarator') {
+        return resolveDefaultExportObject(declaration.init, variableInitializers, visited);
+    }
+
+    return null;
+}
+
+function extractPropertiesFromObjectExpression(objectExpression: any): { name: string; type: string }[] {
+    const properties: { name: string; type: string }[] = [];
+    if (!objectExpression?.properties) {
+        return properties;
+    }
+
+    const seen = new Set<string>();
+
+    for (const property of objectExpression.properties) {
+        if (!property || property.type !== 'Property') {
+            continue;
+        }
+
+        const propertyName = extractDefaultExportPropertyName(property);
+        if (!propertyName || seen.has(propertyName)) {
+            continue;
+        }
+
+        const propertyType = inferDefaultExportPropertyType(property.value);
+        properties.push({ name: propertyName, type: propertyType });
+        seen.add(propertyName);
+    }
+
+    return properties;
+}
+
+function extractDefaultExportPropertyName(property: any): string | null {
+    if (!property) {
+        return null;
+    }
+
+    if (property.computed) {
+        if (property.key?.type === 'Literal' && property.key.value !== undefined && property.key.value !== null) {
+            return String(property.key.value);
+        }
+        return null;
+    }
+
+    if (property.key?.type === 'Identifier') {
+        return property.key.name;
+    }
+
+    if (property.key?.type === 'Literal') {
+        if (property.key.value === undefined || property.key.value === null) {
+            return null;
+        }
+        return String(property.key.value);
+    }
+
+    return null;
+}
+
+function inferDefaultExportPropertyType(valueNode: any): string {
+    if (!valueNode) {
+        return 'property';
+    }
+
+    switch (valueNode.type) {
+        case 'FunctionExpression':
+        case 'ArrowFunctionExpression':
+            return 'function';
+        case 'Literal':
+            if (valueNode.literalType === 'string') {
+                return 'string';
+            }
+            if (valueNode.literalType === 'number' || valueNode.literalType === 'double') {
+                return 'number';
+            }
+            return 'property';
+        default:
+            return 'property';
+    }
 }
 
 function extractExportedSymbols(fileContent: string): { name: string; type: string }[] {

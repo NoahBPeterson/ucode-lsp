@@ -132,6 +132,7 @@ const testFiles = [
     'tests/test-dot-notation-helpers.js',
     'tests/test-dot-notation-namespace-imports.js',
     'tests/test-namespace-import-file-existence.js',
+    'tests/test-dot-notation-default-import.js',
     'tests/test-module-aliasing.js',
 ];
 
@@ -177,6 +178,7 @@ const mochaFiles = [
     'test-multi-level-completions.js',
     'test-dot-notation-namespace-imports.js',
     'test-namespace-import-file-existence.js',
+    'test-dot-notation-default-import.js',
     'test-module-aliasing.js',
 ];
 
