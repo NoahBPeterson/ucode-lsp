@@ -195,6 +195,22 @@ export function handleHover(
             // Look up the object in the symbol table to determine its module
             if (analysisResult && analysisResult.symbolTable) {
                 const symbol = analysisResult.symbolTable.lookup(objectName);
+                if (symbol && symbol.propertyTypes && symbol.propertyTypes.has(memberName)) {
+                    const propertyType = symbol.propertyTypes.get(memberName)!;
+                    const typeString = typeToString(propertyType);
+                    const hoverMarkdown = `**${memberName}**: \`${typeString}\`\n\nGlobal property on \`${objectName}\``;
+
+                    console.log(`[HOVER] Returning property hover for ${objectName}.${memberName}: ${typeString}`);
+
+                    return {
+                        contents: { kind: MarkupKind.Markdown, value: hoverMarkdown },
+                        range: {
+                            start: document.positionAt(memberContext.memberTokenPos),
+                            end: document.positionAt(memberContext.memberTokenEnd)
+                        }
+                    };
+                }
+
                 if (symbol && symbol.type === SymbolType.IMPORTED) {
                     console.log(`[HOVER] Found imported symbol: ${objectName} from ${symbol.importedFrom}`);
                     

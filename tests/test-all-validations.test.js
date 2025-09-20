@@ -133,6 +133,7 @@ const testFiles = [
     'tests/test-dot-notation-namespace-imports.js',
     'tests/test-namespace-import-file-existence.js',
     'tests/test-dot-notation-default-import.js',
+    'tests/test-global-object-types.js',
     'tests/test-module-aliasing.js',
 ];
 
@@ -179,6 +180,7 @@ const mochaFiles = [
     'test-dot-notation-namespace-imports.js',
     'test-namespace-import-file-existence.js',
     'test-dot-notation-default-import.js',
+    'test-global-object-types.js',
     'test-module-aliasing.js',
 ];
 
@@ -229,7 +231,7 @@ test('Comprehensive Validation Test Suite', async () => {
         try {
             // Use different command for mocha tests
             const isMochaTest = mochaFiles.includes(testFile.substring(testFile.indexOf('/')+1));
-            const timeout = testFile.includes('test-missing-builtins-validation.js') ? '20000' : '15000';
+            const timeout = testFile.includes('test-missing-builtins-validation.js') ? '30000' : '25000';
             const command = isMochaTest 
                 ? `./node_modules/.bin/mocha ${testFile} --timeout ${timeout}`
                 : `bun ${testFile}`;

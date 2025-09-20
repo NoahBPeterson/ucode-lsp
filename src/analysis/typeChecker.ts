@@ -767,6 +767,27 @@ export class TypeChecker {
         return UcodeType.UNKNOWN;
       }
 
+      // Handle global object property lookups (tracked via semantic analysis)
+      if (!node.computed &&
+          (node.property.type === 'Identifier' || node.property.type === 'Literal') &&
+          node.object.type === 'Identifier' &&
+          (node.object as IdentifierNode).name === 'global') {
+        let propertyName: string | null = null;
+        if (node.property.type === 'Identifier') {
+          propertyName = (node.property as IdentifierNode).name;
+        } else if (node.property.type === 'Literal') {
+          const literalProperty = node.property as LiteralNode;
+          if (literalProperty.value !== undefined && literalProperty.value !== null) {
+            propertyName = String(literalProperty.value);
+          }
+        }
+
+        if (propertyName && symbol.propertyTypes && symbol.propertyTypes.has(propertyName)) {
+          const propertyType = symbol.propertyTypes.get(propertyName)!;
+          return this.dataTypeToUcodeType(propertyType);
+        }
+      }
+
       // Check if this is an fs object with a specific type
       const fsType = fsTypeRegistry.isVariableOfFsType(symbol.dataType);
       if (fsType && !node.computed) {

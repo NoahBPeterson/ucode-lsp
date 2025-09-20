@@ -129,6 +129,7 @@ export interface Symbol {
     uri: string;
     range: { start: number; end: number };
   };
+  propertyTypes?: Map<string, UcodeDataType>; // Known property types for object-like symbols (e.g., global)
 }
 
 export class SymbolTable {
@@ -324,7 +325,8 @@ export class SymbolTable {
         name: 'global'
       } as IdentifierNode,
       declaredAt: 0,
-      usedAt: []
+      usedAt: [],
+      propertyTypes: new Map()
     });
   }
 

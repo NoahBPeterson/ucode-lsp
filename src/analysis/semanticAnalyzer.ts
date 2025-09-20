@@ -10,7 +10,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
-         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode } from '../ast/nodes';
+         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -1239,6 +1239,25 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
   visitAssignmentExpression(node: AssignmentExpressionNode): void {
     if (this.options.enableTypeChecking) {
+      // Track assignments to global properties (e.g., global.foo = "bar")
+      if (node.left.type === 'MemberExpression') {
+        const memberNode = node.left as MemberExpressionNode;
+        if (!memberNode.computed &&
+            memberNode.object.type === 'Identifier' &&
+            (memberNode.object as IdentifierNode).name === 'global' &&
+            memberNode.property.type === 'Identifier') {
+          const propertyName = (memberNode.property as IdentifierNode).name;
+          const propertyType = this.inferAssignmentDataType(node.right);
+          const globalSymbol = this.symbolTable.lookup('global');
+          if (globalSymbol) {
+            if (!globalSymbol.propertyTypes) {
+              globalSymbol.propertyTypes = new Map<string, UcodeDataType>();
+            }
+            globalSymbol.propertyTypes.set(propertyName, propertyType);
+          }
+        }
+      }
+
       // Handle fs type inference for assignment expressions FIRST (e.g., file_content = open(...))
       // This creates symbols for undeclared variables before type checking tries to look them up
       if (node.left.type === 'Identifier') {
@@ -1775,6 +1794,59 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return null;
   }
 
+  private inferAssignmentDataType(expression: AstNode): UcodeDataType {
+    if (expression.type === 'Identifier') {
+      const sourceName = (expression as IdentifierNode).name;
+      const sourceSymbol = this.symbolTable.lookup(sourceName);
+      if (sourceSymbol) {
+        return sourceSymbol.dataType;
+      }
+    }
+
+    const fsType = this.inferFsType(expression);
+    if (fsType) {
+      return createFsObjectDataType(fsType);
+    }
+
+    const nl80211Type = this.inferNl80211Type(expression);
+    if (nl80211Type) {
+      return createNl80211ObjectDataType(nl80211Type);
+    }
+
+    const uloopType = this.inferUloopType(expression);
+    if (uloopType) {
+      return createUloopObjectDataType(uloopType);
+    }
+
+    const uciType = this.inferUciType(expression);
+    if (uciType) {
+      return createUciObjectDataType(uciType);
+    }
+
+    const importedFsReturnType = this.inferImportedFsFunctionReturnType(expression);
+    if (importedFsReturnType) {
+      return importedFsReturnType;
+    }
+
+    const rtnlReturnType = this.inferImportedRtnlFunctionReturnType(expression);
+    if (rtnlReturnType) {
+      return rtnlReturnType;
+    }
+
+    const methodReturnType = this.inferMethodReturnType(expression);
+    if (methodReturnType) {
+      return methodReturnType;
+    }
+
+    const functionReturnType = this.inferFunctionCallReturnType(expression);
+    if (functionReturnType) {
+      return functionReturnType;
+    }
+
+    const inferredType = this.typeChecker.checkNode(expression);
+    return inferredType as UcodeDataType;
+  }
+
   private inferFunctionCallReturnType(node: AstNode): UcodeDataType | null {
     if (node.type !== 'CallExpression') {
       return null;
@@ -1824,6 +1896,32 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             delete symbol.importSpecifier;
           }
           return;
+        }
+      }
+
+      // Handle default imports accessed via global properties (e.g., let e = global.d;)
+      if (node.init.type === 'MemberExpression') {
+        const memberNode = node.init as MemberExpressionNode;
+        if (!memberNode.computed &&
+            memberNode.object.type === 'Identifier' &&
+            (memberNode.object as IdentifierNode).name === 'global') {
+          const globalSymbol = this.symbolTable.lookup('global');
+          let propertyName: string | null = null;
+          if (memberNode.property.type === 'Identifier') {
+            propertyName = (memberNode.property as IdentifierNode).name;
+          } else if (memberNode.property.type === 'Literal') {
+            const literalProperty = memberNode.property as LiteralNode;
+            if (literalProperty.value !== undefined && literalProperty.value !== null) {
+              propertyName = String(literalProperty.value);
+            }
+          }
+
+          if (globalSymbol && propertyName && globalSymbol.propertyTypes && globalSymbol.propertyTypes.has(propertyName)) {
+            const propertyType = globalSymbol.propertyTypes.get(propertyName)!;
+            symbol.dataType = propertyType;
+            this.symbolTable.updateSymbolType(name, propertyType);
+            return;
+          }
         }
       }
 

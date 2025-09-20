@@ -1267,6 +1267,11 @@ function getFsModuleCompletions(objectName: string, analysisResult?: SemanticAna
         // Module symbol from require: const fs = require('fs')
         (symbol.type === 'module' && symbol.dataType && 
          typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType && 
+         symbol.dataType.moduleName === 'fs') ||
+
+        // Variables that reference the fs module (e.g., aliases)
+        (symbol.type === SymbolType.VARIABLE && symbol.dataType &&
+         typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType &&
          symbol.dataType.moduleName === 'fs')
     );
 
