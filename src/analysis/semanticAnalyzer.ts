@@ -1803,6 +1803,30 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     
     const symbol = this.symbolTable.lookup(name);
     if (symbol) {
+      // Handle simple aliasing of imported modules (e.g., let alias = fs;)
+      if (node.init.type === 'Identifier') {
+        const sourceName = (node.init as IdentifierNode).name;
+        const sourceSymbol = this.symbolTable.lookup(sourceName);
+
+        if (sourceSymbol && (sourceSymbol.type === SymbolType.IMPORTED || sourceSymbol.type === SymbolType.MODULE)) {
+          symbol.type = sourceSymbol.type;
+          symbol.dataType = sourceSymbol.dataType;
+
+          if (sourceSymbol.importedFrom !== undefined) {
+            symbol.importedFrom = sourceSymbol.importedFrom;
+          } else {
+            delete symbol.importedFrom;
+          }
+
+          if (sourceSymbol.importSpecifier !== undefined) {
+            symbol.importSpecifier = sourceSymbol.importSpecifier;
+          } else {
+            delete symbol.importSpecifier;
+          }
+          return;
+        }
+      }
+
       // Check if this is an fs function call and assign the appropriate fs type
       const fsType = this.inferFsType(node.init!);
       if (fsType) {

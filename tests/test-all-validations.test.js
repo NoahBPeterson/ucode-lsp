@@ -132,6 +132,7 @@ const testFiles = [
     'tests/test-dot-notation-helpers.js',
     'tests/test-dot-notation-namespace-imports.js',
     'tests/test-namespace-import-file-existence.js',
+    'tests/test-module-aliasing.js',
 ];
 
 const mochaFiles = [
@@ -176,6 +177,7 @@ const mochaFiles = [
     'test-multi-level-completions.js',
     'test-dot-notation-namespace-imports.js',
     'test-namespace-import-file-existence.js',
+    'test-module-aliasing.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
