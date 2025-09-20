@@ -37,6 +37,7 @@ export function handleCompletion(
     connection: any,
     analysisResult?: SemanticAnalysisResult
 ): CompletionItem[] {
+    connection.console.log(`[COMPLETION_DEBUG] analysisResult provided: ${!!analysisResult}, symbolTable: ${!!analysisResult?.symbolTable}`);
     const document = documents.get(textDocumentPositionParams.textDocument.uri);
     if (!document) {
         connection.console.log(`[COMPLETION] No document found for URI: ${textDocumentPositionParams.textDocument.uri}`);
@@ -244,6 +245,14 @@ export function handleCompletion(
                 if (namespaceImportCompletions.length > 0) {
                     connection.console.log(`Returning ${namespaceImportCompletions.length} namespace import completions for ${objectName}`);
                     return namespaceImportCompletions;
+                }
+                
+                // Fallback: check if this might be a namespace import that wasn't handled above
+                // This covers edge cases where the symbol properties don't match expected patterns
+                const fallbackNamespaceCompletions = getFallbackNamespaceCompletions(objectName, analysisResult);
+                if (fallbackNamespaceCompletions.length > 0) {
+                    connection.console.log(`Returning ${fallbackNamespaceCompletions.length} fallback namespace completions for ${objectName}`);
+                    return fallbackNamespaceCompletions;
                 }
             }
             
@@ -565,7 +574,7 @@ function getDebugModuleCompletions(objectName: string, analysisResult?: Semantic
     console.log(`[DEBUG_COMPLETION] Symbol found: ${objectName}, type: ${symbol.type}`);
 
     // Check if this is a debug module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'debug') {
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'debug') {
         console.log(`[DEBUG_COMPLETION] Debug module detected for ${objectName}`);
         
         // Get all debug function names
@@ -611,7 +620,7 @@ function getDigestModuleCompletions(objectName: string, analysisResult?: Semanti
     console.log(`[DIGEST_COMPLETION] Symbol found: ${objectName}, type: ${symbol.type}`);
 
     // Check if this is a digest module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'digest') {
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'digest') {
         console.log(`[DIGEST_COMPLETION] Digest module detected for ${objectName}`);
         
         // Get all digest function names
@@ -652,7 +661,7 @@ function getLogModuleCompletions(objectName: string, analysisResult?: SemanticAn
     }
 
     // Check if this is a log module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'log') {
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'log') {
         const functionNames = logTypeRegistry.getFunctionNames();
         const completions: CompletionItem[] = [];
         
@@ -689,7 +698,7 @@ function getMathModuleCompletions(objectName: string, analysisResult?: SemanticA
     }
 
     // Check if this is a math module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'math') {
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'math') {
         const functionNames = mathTypeRegistry.getFunctionNames();
         const completions: CompletionItem[] = [];
         
@@ -727,7 +736,7 @@ function getNl80211ModuleCompletions(objectName: string, analysisResult?: Semant
 
     // Check if this is a nl80211 module import (namespace import)
     // Exclude constants objects which should only show constants, not functions
-    if (symbol.type === 'imported' && symbol.importedFrom === 'nl80211' && 
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'nl80211' && 
         !(symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'nl80211-const')) {
         const functionNames = nl80211TypeRegistry.getFunctionNames();
         const constantNames = nl80211TypeRegistry.getConstantNames();
@@ -787,7 +796,7 @@ function getResolvModuleCompletions(objectName: string, analysisResult?: Semanti
     }
 
     // Check if this is a resolv module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'resolv') {
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'resolv') {
         const functionNames = resolvTypeRegistry.getFunctionNames();
         const completions: CompletionItem[] = [];
         
@@ -824,7 +833,7 @@ function getSocketModuleCompletions(objectName: string, analysisResult?: Semanti
     }
 
     // Check if this is a socket module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'socket') {
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'socket') {
         const functionNames = socketTypeRegistry.getFunctionNames();
         const constantNames = socketTypeRegistry.getConstantNames();
         const completions: CompletionItem[] = [];
@@ -883,7 +892,7 @@ function getUbusModuleCompletions(objectName: string, analysisResult?: SemanticA
     }
 
     // Check if this is a ubus module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'ubus') {
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'ubus') {
         const functionNames = ubusTypeRegistry.getFunctionNames();
         const constantNames = ubusTypeRegistry.getConstantNames();
         const completions: CompletionItem[] = [];
@@ -941,7 +950,7 @@ function getUloopModuleCompletions(objectName: string, analysisResult?: Semantic
     }
 
     // Check if this is a uloop module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'uloop') {
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'uloop') {
         const functionNames = uloopTypeRegistry.getFunctionNames();
         const constantNames = uloopTypeRegistry.getConstantNames();
         const completions: CompletionItem[] = [];
@@ -1000,7 +1009,7 @@ function getStructModuleCompletions(objectName: string, analysisResult?: Semanti
     }
 
     // Check if this is a struct module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'struct') {
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'struct') {
         const functionNames = structTypeRegistry.getFunctionNames();
         const completions: CompletionItem[] = [];
         
@@ -1147,7 +1156,7 @@ function getUciModuleCompletions(objectName: string, analysisResult?: SemanticAn
     }
 
     // Check if this is a uci module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'uci') {
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'uci') {
         const functionNames = uciTypeRegistry.getFunctionNames();
         const completions: CompletionItem[] = [];
         
@@ -1185,7 +1194,7 @@ function getZlibModuleCompletions(objectName: string, analysisResult?: SemanticA
     }
 
     // Check if this is a zlib module import (namespace import)
-    if (symbol.type === 'imported' && symbol.importedFrom === 'zlib') {
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'zlib') {
         const functionNames = zlibTypeRegistry.getFunctionNames();
         const constantNames = zlibTypeRegistry.getConstantNames();
         const completions: CompletionItem[] = [];
@@ -1250,7 +1259,7 @@ function getFsModuleCompletions(objectName: string, analysisResult?: SemanticAna
     // Check if this is an fs module (from require('fs') or import * as fs from 'fs')
     const isFsModule = (
         // Direct fs module import: import * as fs from 'fs'
-        (symbol.type === 'imported' && symbol.importedFrom === 'fs') ||
+        (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'fs') ||
         
         // Module symbol from require: const fs = require('fs')
         (symbol.type === 'module' && symbol.dataType && 
@@ -1288,7 +1297,97 @@ function getFsModuleCompletions(objectName: string, analysisResult?: SemanticAna
     return [];
 }
 
+function getFallbackNamespaceCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    const fs = require('fs');
+    const path = require('path');
+    
+    if (!analysisResult || !analysisResult.symbolTable) {
+        return [];
+    }
+
+    const symbol = analysisResult.symbolTable.lookup(objectName);
+    
+    // Only provide fallback completions if we have a symbol with valid import information
+    if (!symbol || !symbol.importedFrom || symbol.type !== SymbolType.IMPORTED) {
+        return [];
+    }
+    
+    // Check if this is a built-in module (no file path, just module name)
+    const builtinModules = ['uloop', 'rtnl', 'socket', 'math', 'log', 'debug', 'digest', 'fs', 'nl80211', 'resolv', 'struct', 'ubus', 'uci', 'zlib'];
+    const isBuiltinModule = builtinModules.includes(symbol.importedFrom);
+    
+    // For built-in modules, don't provide fallback completions - they should be handled by specific module completion functions
+    if (isBuiltinModule) {
+        return [];
+    }
+    
+    try {
+        // For file-based imports, resolve the file path and check existence
+        let filePath: string;
+        
+        if (symbol.importedFrom.startsWith('file://')) {
+            filePath = symbol.importedFrom.replace('file://', '');
+        } else if (symbol.importedFrom.startsWith('./') || symbol.importedFrom.startsWith('../')) {
+            filePath = path.resolve(process.cwd(), symbol.importedFrom);
+        } else if (/^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+$/.test(symbol.importedFrom)) {
+            // Dot notation - convert to file path
+            const convertedPath = './' + symbol.importedFrom.replace(/\./g, '/') + '.uc';
+            filePath = path.resolve(process.cwd(), convertedPath);
+        } else {
+            // Unknown import format - no fallback completions for non-builtin modules
+            return [];
+        }
+        
+        // Only provide completions if the file actually exists
+        if (!fs.existsSync(filePath)) {
+            return [];
+        }
+        
+        // Read the file to check if it has exports
+        const fileContent = fs.readFileSync(filePath, 'utf8');
+        
+        const completions: CompletionItem[] = [];
+        
+        // Only add 'default' if there's actually a default export
+        if (fileContent.includes('export default')) {
+            completions.push({
+                label: 'default',
+                kind: CompletionItemKind.Property,
+                detail: 'default export',
+                sortText: '0_default',
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: `**default**\n\nDefault export from \`${path.basename(filePath)}\`\n\nAccess with: \`${objectName}.default.propertyName\``
+                }
+            });
+        }
+        
+        // Also include any named exports  
+        const namedExports = extractExportedSymbols(fileContent);
+        for (const exportSymbol of namedExports) {
+            completions.push({
+                label: exportSymbol.name,
+                kind: getCompletionKindForExport(exportSymbol.type),
+                detail: `${exportSymbol.type} export`,
+                sortText: '1_' + exportSymbol.name,
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: `**${exportSymbol.name}**\n\n${exportSymbol.type} export from \`${path.basename(filePath)}\``
+                }
+            });
+        }
+        
+        return completions;
+        
+    } catch (error) {
+        // If anything fails, don't provide any completions
+        return [];
+    }
+}
+
 function getDefaultImportCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    const fs = require('fs');
+    
     if (!analysisResult || !analysisResult.symbolTable) {
         return [];
     }
@@ -1303,16 +1402,21 @@ function getDefaultImportCompletions(objectName: string, analysisResult?: Semant
         symbol.dataType && typeof symbol.dataType === 'object' && 
         'isDefaultImport' in symbol.dataType && symbol.dataType.isDefaultImport) {
         
+        
         try {
             // Check if the imported file exists and can be read
-            if (!fs.existsSync(symbol.importedFrom)) {
+            // Convert URI to file system path
+            const filePath = symbol.importedFrom.startsWith('file://') 
+                ? symbol.importedFrom.replace('file://', '') 
+                : symbol.importedFrom;
+            
+            if (!fs.existsSync(filePath)) {
                 return [];
             }
             
             // Read and parse the imported file to find the default export
-            const fileContent = fs.readFileSync(symbol.importedFrom, 'utf8');
+            const fileContent = fs.readFileSync(filePath, 'utf8');
             const defaultExportProperties = extractDefaultExportProperties(fileContent);
-            
             
             const completions: CompletionItem[] = [];
             
@@ -1350,45 +1454,83 @@ function getNamespaceImportCompletions(objectName: string, analysisResult?: Sema
     }
 
     // Check if this is a namespace import (import * as name from 'module')
-    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom && symbol.importSpecifier === '*') {
+    // Be more permissive to catch edge cases, but avoid conflicts with default imports
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom && 
+        (symbol.importSpecifier === '*' || 
+         // Only process if this is NOT already handled by default import completions
+         !(symbol.dataType && typeof symbol.dataType === 'object' && 
+           'isDefaultImport' in symbol.dataType && symbol.dataType.isDefaultImport))) {
         try {
-            // Check if the imported file exists and can be read
-            if (!fs.existsSync(symbol.importedFrom)) {
+            // Check if this is a built-in module
+            const builtinModules = ['uloop', 'rtnl', 'socket', 'math', 'log', 'debug', 'digest', 'fs', 'nl80211', 'resolv', 'struct', 'ubus', 'uci', 'zlib'];
+            const isBuiltinModule = builtinModules.includes(symbol.importedFrom);
+            
+            let completions: CompletionItem[] = [];
+            
+            if (isBuiltinModule) {
+                // For built-in modules, don't provide namespace import completions - they should be handled by specific module completion functions
                 return [];
             }
             
-            // Read and parse the imported file to find exports
-            const fileContent = fs.readFileSync(symbol.importedFrom, 'utf8');
-            const completions: CompletionItem[] = [];
+            // For file-based imports, check if the imported file exists and can be read
+            // Convert URI to file system path, or resolve import path if needed
+            let filePath: string;
+            let resolved = false;
             
-            // For namespace imports, provide 'default' as a completion if there's a default export
-            if (fileContent.includes('export default')) {
-                completions.push({
-                    label: 'default',
-                    kind: CompletionItemKind.Property,
-                    detail: 'default export',
-                    sortText: '0_default',
-                    documentation: {
-                        kind: MarkupKind.Markdown,
-                        value: `**default**\n\nDefault export from \`${path.basename(symbol.importedFrom)}\`\n\nAccess with: \`${objectName}.default.propertyName\``
-                    }
-                });
+            if (symbol.importedFrom.startsWith('file://')) {
+                // Already a resolved URI
+                filePath = symbol.importedFrom.replace('file://', '');
+                resolved = true;
+            } else if (symbol.importedFrom.startsWith('./') || symbol.importedFrom.startsWith('../')) {
+                // Relative path that wasn't resolved - need to resolve it now
+                const path = require('path');
+                filePath = path.resolve(process.cwd(), symbol.importedFrom);
+                resolved = true;
+            } else if (/^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+$/.test(symbol.importedFrom)) {
+                // Dot notation that wasn't resolved - convert it to a file path
+                const path = require('path');
+                const convertedPath = './' + symbol.importedFrom.replace(/\./g, '/') + '.uc';
+                filePath = path.resolve(process.cwd(), convertedPath);
+                resolved = true;
+            } else {
+                // Unknown import format for non-builtin modules
+                return [];
             }
-            
-            // Also include any named exports
-            const namedExports = extractExportedSymbols(fileContent);
-            for (const exportSymbol of namedExports) {
-                completions.push({
-                    label: exportSymbol.name,
-                    kind: getCompletionKindForExport(exportSymbol.type),
-                    detail: `${exportSymbol.type} export`,
-                    sortText: '1_' + exportSymbol.name,
-                    documentation: {
-                        kind: MarkupKind.Markdown,
-                        value: `**${exportSymbol.name}**\n\n${exportSymbol.type} export from \`${path.basename(symbol.importedFrom)}\``
-                    }
-                });
+                
+            if (resolved && fs.existsSync(filePath)) {
+                // Read and parse the imported file to find exports
+                const fileContent = fs.readFileSync(filePath, 'utf8');
+                
+                // For namespace imports, provide 'default' as a completion if there's a default export
+                if (fileContent.includes('export default')) {
+                    completions.push({
+                        label: 'default',
+                        kind: CompletionItemKind.Property,
+                        detail: 'default export',
+                        sortText: '0_default',
+                        documentation: {
+                            kind: MarkupKind.Markdown,
+                            value: `**default**\n\nDefault export from \`${path.basename(filePath)}\`\n\nAccess with: \`${objectName}.default.propertyName\``
+                        }
+                    });
+                }
+                
+                // Also include any named exports
+                const namedExports = extractExportedSymbols(fileContent);
+                for (const exportSymbol of namedExports) {
+                    completions.push({
+                        label: exportSymbol.name,
+                        kind: getCompletionKindForExport(exportSymbol.type),
+                        detail: `${exportSymbol.type} export`,
+                        sortText: '1_' + exportSymbol.name,
+                        documentation: {
+                            kind: MarkupKind.Markdown,
+                            value: `**${exportSymbol.name}**\n\n${exportSymbol.type} export from \`${path.basename(filePath)}\``
+                        }
+                    });
+                }
             }
+            // Don't provide any fallback completions if file doesn't exist
             
             return completions;
             
@@ -1401,6 +1543,8 @@ function getNamespaceImportCompletions(objectName: string, analysisResult?: Sema
 }
 
 function getPropertyChainCompletions(objectName: string, propertyChain: string[], analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+    const fs = require('fs');
+    
     if (!analysisResult || !analysisResult.symbolTable) {
         return [];
     }
@@ -1412,7 +1556,7 @@ function getPropertyChainCompletions(objectName: string, propertyChain: string[]
 
     // Handle specific known patterns
     
-    // Pattern: namespace.default.* (e.g., logss.default.debug)
+    // Pattern: namespace.default.* (e.g., logModule.default.debug)
     if (symbol.type === SymbolType.IMPORTED && 
         symbol.importedFrom && 
         symbol.importSpecifier === '*' &&
@@ -1421,12 +1565,17 @@ function getPropertyChainCompletions(objectName: string, propertyChain: string[]
         
         try {
             // Check if the imported file exists and can be read
-            if (!fs.existsSync(symbol.importedFrom)) {
+            // Convert URI to file system path
+            const filePath = symbol.importedFrom.startsWith('file://') 
+                ? symbol.importedFrom.replace('file://', '') 
+                : symbol.importedFrom;
+                
+            if (!fs.existsSync(filePath)) {
                 return [];
             }
             
             // Read and parse the imported file to find the default export properties
-            const fileContent = fs.readFileSync(symbol.importedFrom, 'utf8');
+            const fileContent = fs.readFileSync(filePath, 'utf8');
             const defaultExportProperties = extractDefaultExportProperties(fileContent);
             
             const completions: CompletionItem[] = [];
@@ -1623,7 +1772,7 @@ function getRtnlModuleCompletions(objectName: string, analysisResult?: SemanticA
     // But NOT an rtnl-const object (that should use getRtnlConstObjectCompletions instead)
     const isRtnlModule = (
         // Direct rtnl module import: import * asrtnl from 'rtnl'
-        (symbol.type === 'imported' && symbol.importedFrom === 'rtnl' && 
+        (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'rtnl' && 
          !(symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType && 
            symbol.dataType.moduleName === 'rtnl-const')) ||
         

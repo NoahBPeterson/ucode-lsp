@@ -129,6 +129,9 @@ const testFiles = [
     'tests/test-module-imports.js',
     'tests/test-object-method-hover.js',
     'tests/test-multi-level-completions.js',
+    'tests/test-dot-notation-helpers.js',
+    'tests/test-dot-notation-namespace-imports.js',
+    'tests/test-namespace-import-file-existence.js',
 ];
 
 const mochaFiles = [
@@ -171,6 +174,8 @@ const mochaFiles = [
     'test-rest-parameters-lsp.js',
     'test-object-method-hover.js',
     'test-multi-level-completions.js',
+    'test-dot-notation-namespace-imports.js',
+    'test-namespace-import-file-existence.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

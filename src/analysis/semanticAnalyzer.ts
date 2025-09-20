@@ -57,6 +57,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private functionScopes: number[] = []; // Track function scope levels
   private loopScopes: number[] = []; // Track loop scope levels
   private switchScopes: number[] = []; // Track switch statement scope levels
+  private commonjsImports: Map<string, { importedFrom: string; importSpecifier: string }> = new Map();
   private currentFunctionNode: FunctionDeclarationNode | null = null;
   private functionReturnTypes = new Map<FunctionDeclarationNode, UcodeType[]>();
   private processingFunctionCallCallee = false; // Track when processing function call callee
@@ -212,8 +213,77 @@ export class SemanticAnalyzer extends BaseVisitor {
                   dataType = { type: UcodeType.OBJECT, moduleName: 'struct' };
                   break;
                 default:
+                  // Check if it's a file path require (relative or absolute)
+                  if (moduleName.startsWith('./') || moduleName.startsWith('../') || moduleName.startsWith('/')) {
+                    // Handle file path requires similar to ES6 imports
+                    const resolvedUri = this.fileResolver.resolveImportPath(moduleName, this.textDocument.uri);
+                    if (resolvedUri) {
+                      symbolType = SymbolType.IMPORTED;
+                      dataType = {
+                        type: UcodeType.OBJECT,
+                        isDefaultImport: true  // CommonJS require gets the default export
+                      };
+                      
+                      // Store the import info to be added after declaration
+                      this.commonjsImports.set(name, {
+                        importedFrom: this.normalizeImportedFrom(moduleName, resolvedUri),
+                        importSpecifier: 'default'
+                      });
+                    }
+                  } 
+                  // Check if it's a dot notation module (e.g., 'u1905.u1905d.src.u1905.log')
+                  else if (this.isDotNotationModule(moduleName)) {
+                    // Convert dot notation to file path: 'u1905.u1905d.src.u1905.log' -> './u1905/u1905d/src/u1905/log.uc'
+                    const filePath = this.convertDotNotationToPath(moduleName);
+                    const resolvedUri = this.fileResolver.resolveImportPath(filePath, this.textDocument.uri);
+                    if (resolvedUri) {
+                      symbolType = SymbolType.IMPORTED;
+                      dataType = {
+                        type: UcodeType.OBJECT,
+                        isDefaultImport: true  // CommonJS require gets the default export
+                      };
+                      
+                      // Store the import info to be added after declaration
+                      this.commonjsImports.set(name, {
+                        importedFrom: this.normalizeImportedFrom(filePath, resolvedUri),
+                        importSpecifier: 'default'
+                      });
+                    }
+                  }
                   break;
               }
+            }
+          }
+        }
+      }
+
+      // Handle member expression assignments (e.g., const logger = logs.default)
+      if (node.init && node.init.type === 'MemberExpression') {
+        const memberExpr = node.init as any; // MemberExpressionNode
+        if (memberExpr.object && memberExpr.object.type === 'Identifier') {
+          const objectName = memberExpr.object.name;
+          const sourceSymbol = this.symbolTable.lookup(objectName);
+          
+          if (sourceSymbol && sourceSymbol.type === SymbolType.IMPORTED && 
+              sourceSymbol.dataType && typeof sourceSymbol.dataType === 'object' && 
+              'isDefaultImport' in sourceSymbol.dataType && sourceSymbol.dataType.isDefaultImport) {
+            
+            // Check if accessing 'default' property
+            if (memberExpr.property && memberExpr.property.type === 'Identifier' && 
+                memberExpr.property.name === 'default') {
+              
+              // Propagate the import information to the new variable
+              symbolType = SymbolType.IMPORTED;
+              dataType = {
+                type: UcodeType.OBJECT,
+                isDefaultImport: true
+              };
+              
+              // Store the import info for the new variable
+              this.commonjsImports.set(name, {
+                importedFrom: sourceSymbol.importedFrom!,
+                importSpecifier: 'default'
+              });
             }
           }
         }
@@ -258,6 +328,17 @@ export class SemanticAnalyzer extends BaseVisitor {
         
         // Declare the symbol (allow shadowing builtins)
         this.symbolTable.declare(name, symbolType, dataType, node.id);
+        
+        // Add import information if this is a CommonJS require
+        const commonjsImport = this.commonjsImports.get(name);
+        if (commonjsImport) {
+          const symbol = this.symbolTable.lookup(name);
+          if (symbol) {
+            symbol.importedFrom = commonjsImport.importedFrom;
+            symbol.importSpecifier = commonjsImport.importSpecifier;
+          }
+          this.commonjsImports.delete(name); // Clean up
+        }
       }
 
 
@@ -319,6 +400,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       importedName = '*';
     }
     
+    
     // Create appropriate data type for special imports first
     let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
     
@@ -360,7 +442,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (!rtnlTypeRegistry.getFunctionNames().includes(importedName)) {
         let exports = (rtnlTypeRegistry.getFunctionNames().concat(rtnlTypeRegistry.getConstantNames())).join(', ');
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the rtnl module. Available exports: ${exports}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -380,7 +462,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'fs' && specifier.type === 'ImportSpecifier') {
       if (!fsModuleTypeRegistry.getFunctionNames().includes(importedName)) {
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the fs module. Available exports: ${fsModuleTypeRegistry.getFunctionNames().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -395,7 +477,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'log' && specifier.type === 'ImportSpecifier') {
       if (!logTypeRegistry.isValidLogImport(importedName)) {
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the log module. Available exports: ${logTypeRegistry.getValidLogImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -409,7 +491,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'math' && specifier.type === 'ImportSpecifier') {
       if (!mathTypeRegistry.isValidMathImport(importedName)) {
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the math module. Available exports: ${mathTypeRegistry.getValidMathImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -423,7 +505,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'nl80211' && specifier.type === 'ImportSpecifier' && importedName !== 'const') {
       if (!nl80211TypeRegistry.isValidNl80211Import(importedName)) {
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the nl80211 module. Available exports: ${nl80211TypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -437,7 +519,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'resolv' && specifier.type === 'ImportSpecifier') {
       if (!resolvTypeRegistry.isValidImport(importedName)) {
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the resolv module. Available exports: ${resolvTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -451,7 +533,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'rtnl' && specifier.type === 'ImportSpecifier') {
       if (!rtnlTypeRegistry.isValidRtnlImport(importedName)) {
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the rtnl module. Available exports: ${rtnlTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -465,7 +547,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'socket' && specifier.type === 'ImportSpecifier') {
       if (!socketTypeRegistry.isValidImport(importedName)) {
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the socket module. Available exports: ${socketTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -479,7 +561,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'ubus' && specifier.type === 'ImportSpecifier') {
       if (!ubusTypeRegistry.isValidImport(importedName)) {
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the ubus module. Available exports: ${ubusTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -493,7 +575,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'uci' && specifier.type === 'ImportSpecifier') {
       if (!uciTypeRegistry.isValidImport(importedName)) {
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the uci module. Available exports: ${ 
             uciTypeRegistry.getValidImports().join(', ')
           }`,
@@ -509,7 +591,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'uloop' && specifier.type === 'ImportSpecifier') {
       if (!uloopTypeRegistry.isValidImport(importedName)) {
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the uloop module. Available exports: ${ 
             uloopTypeRegistry.getValidImports().join(', ')
           }`,
@@ -525,7 +607,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (source === 'struct' && specifier.type === 'ImportSpecifier') {
       if (!structTypeRegistry.isValidImport(importedName)) {
         this.addDiagnosticErrorCode(
-          UcodeErrorCode.INVALID_IMPORT,
+          UcodeErrorCode.EXPORT_NOT_FOUND,
           `'${importedName}' is not exported by the struct module. Available exports: ${structTypeRegistry.getValidImports().join(', ')}`,
           specifier.imported.start,
           specifier.imported.end,
@@ -548,7 +630,14 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Store import information in the symbol
       const symbol = this.symbolTable.lookup(localName);
       if (symbol) {
-        symbol.importedFrom = source;
+        // Convert dot notation to file path if needed, then resolve to URI
+        let actualModulePath = source;
+        if (this.isDotNotationModule(source)) {
+          actualModulePath = this.convertDotNotationToPath(source);
+        }
+        
+        const resolvedUri = this.fileResolver.resolveImportPath(actualModulePath, this.textDocument.uri);
+        symbol.importedFrom = this.normalizeImportedFrom(source, resolvedUri);
         symbol.importSpecifier = importedName;
         // TODO: Resolve actual definition location
       }
@@ -556,8 +645,24 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   private validateAndProcessImportSpecifier(specifier: ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode, modulePath: string): void {
+    // Check if this is a built-in module - skip file resolution for these
+    const builtinModules = ['uloop', 'rtnl', 'socket', 'math', 'log', 'debug', 'digest', 'fs', 'nl80211', 'resolv', 'struct', 'ubus', 'uci', 'zlib'];
+    const isBuiltinModule = builtinModules.includes(modulePath);
+    
+    if (isBuiltinModule) {
+      // For built-in modules, skip validation and directly process the import
+      this.processImportSpecifier(specifier, modulePath);
+      return;
+    }
+    
+    // Convert dot notation to file path if needed
+    let actualModulePath = modulePath;
+    if (this.isDotNotationModule(modulePath)) {
+      actualModulePath = this.convertDotNotationToPath(modulePath);
+    }
+    
     // Try to resolve the module and validate exports
-    const resolvedUri = this.fileResolver.resolveImportPath(modulePath, this.textDocument.uri);
+    const resolvedUri = this.fileResolver.resolveImportPath(actualModulePath, this.textDocument.uri);
     
     if (resolvedUri) {
       const moduleExports = this.fileResolver.getModuleExports(resolvedUri);
@@ -598,6 +703,13 @@ export class SemanticAnalyzer extends BaseVisitor {
     
     // Process the import (either validation passed or module not resolvable)
     this.processImportSpecifier(specifier, modulePath);
+  }
+
+  private normalizeImportedFrom(source: string, resolvedUri: string | null): string {
+    if (resolvedUri && resolvedUri.startsWith('builtin://')) {
+      return source;
+    }
+    return resolvedUri || source;
   }
 
   visitFunctionDeclaration(node: FunctionDeclarationNode): void {
@@ -1744,8 +1856,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         return;
       }
 
-      // Don't overwrite module types that were set during declaration
-      if (symbol.type !== SymbolType.MODULE) {
+      // Don't overwrite module types or imported types that were set during declaration
+      if (symbol.type !== SymbolType.MODULE && symbol.type !== SymbolType.IMPORTED) {
         // For non-function calls, fall back to type checker result
         const initType = this.typeChecker.checkNode(node.init);
         symbol.dataType = initType as UcodeDataType;
@@ -2048,5 +2160,23 @@ private addDiagnostic(
         }
       }
     }
+  }
+
+  /**
+   * Check if a module name uses dot notation format (e.g., 'u1905.u1905d.src.u1905.log')
+   * Dot notation modules contain only alphanumeric characters, dots, and underscores
+   */
+  private isDotNotationModule(moduleName: string): boolean {
+    // Must contain at least one dot and only valid identifier characters
+    // Each part must start with a letter or underscore, followed by letters, numbers, or underscores
+    return /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+$/.test(moduleName);
+  }
+
+  /**
+   * Convert dot notation module name to relative file path
+   * Example: 'u1905.u1905d.src.u1905.log' -> './u1905/u1905d/src/u1905/log.uc'
+   */
+  private convertDotNotationToPath(moduleName: string): string {
+    return './' + moduleName.replace(/\./g, '/') + '.uc';
   }
 }

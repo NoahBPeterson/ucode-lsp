@@ -24,7 +24,7 @@ describe('Multi-level Object Property Completions', () => {
     it('should provide completions for default import properties', async function() {
         this.timeout(5000);
         
-        const testContent = `import logs from './u1905/u1905d/src/u1905/log.uc';
+        const testContent = `import logs from './tests/u1905/u1905d/src/u1905/log.uc';
 logs.`;
         const testFilePath = './test-default-import.uc';
         
@@ -52,7 +52,7 @@ logs.`;
     it('should provide completions for namespace import default properties', async function() {
         this.timeout(5000);
         
-        const testContent = `import * as logss from './u1905/u1905d/src/u1905/log.uc';
+        const testContent = `import * as logss from './tests/u1905/u1905d/src/u1905/log.uc';
 logss.default.`;
         const testFilePath = './test-namespace-default.uc';
         
@@ -84,7 +84,7 @@ logss.default.`;
     it('should provide namespace completions for simple namespace access', async function() {
         this.timeout(5000);
         
-        const testContent = `import * as logss from './u1905/u1905d/src/u1905/log.uc';
+        const testContent = `import * as logss from './tests/u1905/u1905d/src/u1905/log.uc';
 logss.`;
         const testFilePath = './test-namespace-simple.uc';
         
@@ -108,9 +108,9 @@ logss.`;
         this.timeout(5000);
         
         // Test both patterns
-        const defaultImportContent = `import logs from './u1905/u1905d/src/u1905/log.uc';
+        const defaultImportContent = `import logs from './tests/u1905/u1905d/src/u1905/log.uc';
 logs.`;
-        const namespaceImportContent = `import * as logss from './u1905/u1905d/src/u1905/log.uc';
+        const namespaceImportContent = `import * as logss from './tests/u1905/u1905d/src/u1905/log.uc';
 logss.default.`;
         
         const [defaultCompletions, namespaceCompletions] = await Promise.all([
