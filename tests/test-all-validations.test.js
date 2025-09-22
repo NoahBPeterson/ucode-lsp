@@ -135,6 +135,8 @@ const testFiles = [
     'tests/test-dot-notation-default-import.js',
     'tests/test-global-object-types.js',
     'tests/test-module-aliasing.js',
+    'tests/test-rtnl-module-validation.test.js',
+    'tests/test-module-method-validation.test.js',
 ];
 
 const mochaFiles = [
@@ -232,9 +234,13 @@ test('Comprehensive Validation Test Suite', async () => {
             // Use different command for mocha tests
             const isMochaTest = mochaFiles.includes(testFile.substring(testFile.indexOf('/')+1));
             const timeout = testFile.includes('test-missing-builtins-validation.js') ? '30000' : '25000';
-            const command = isMochaTest 
+            const isBunTestSuite = testFile.endsWith('.test.js') || testFile.endsWith('.test.ts');
+
+            const command = isMochaTest
                 ? `./node_modules/.bin/mocha ${testFile} --timeout ${timeout}`
-                : `bun ${testFile}`;
+                : isBunTestSuite
+                    ? `bun test ${testFile}`
+                    : `bun ${testFile}`;
             
             const output = execSync(command, { encoding: 'utf8' });
             

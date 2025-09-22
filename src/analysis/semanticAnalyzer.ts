@@ -11,7 +11,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
@@ -20,6 +20,8 @@ import { allBuiltinFunctions } from '../builtins';
 import { FileResolver } from './fileResolver';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
 import { fsModuleTypeRegistry } from './fsModuleTypes';
+import { debugTypeRegistry } from './debugTypes';
+import { digestTypeRegistry } from './digestTypes';
 import { logTypeRegistry } from './logTypes';
 import { mathTypeRegistry } from './mathTypes';
 import { nl80211TypeRegistry, Nl80211ObjectType, createNl80211ObjectDataType } from './nl80211Types';
@@ -32,6 +34,7 @@ import { uciTypeRegistry, UciObjectType, createUciObjectDataType } from './uciTy
 import { uloopTypeRegistry, UloopObjectType, createUloopObjectDataType, uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
+import { zlibTypeRegistry } from './zlibTypes';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -61,6 +64,21 @@ export class SemanticAnalyzer extends BaseVisitor {
   private currentFunctionNode: FunctionDeclarationNode | null = null;
   private functionReturnTypes = new Map<FunctionDeclarationNode, UcodeType[]>();
   private processingFunctionCallCallee = false; // Track when processing function call callee
+  private readonly moduleFunctionProviders: Record<string, () => string[]> = {
+    debug: () => debugTypeRegistry.getFunctionNames(),
+    digest: () => digestTypeRegistry.getFunctionNames(),
+    log: () => logTypeRegistry.getFunctionNames(),
+    math: () => mathTypeRegistry.getFunctionNames(),
+    nl80211: () => nl80211TypeRegistry.getFunctionNames(),
+    resolv: () => resolvTypeRegistry.getFunctionNames(),
+    socket: () => socketTypeRegistry.getFunctionNames(),
+    struct: () => structTypeRegistry.getFunctionNames(),
+    ubus: () => ubusTypeRegistry.getFunctionNames(),
+    uci: () => uciTypeRegistry.getFunctionNames(),
+    uloop: () => uloopTypeRegistry.getFunctionNames(),
+    zlib: () => zlibTypeRegistry.getFunctionNames(),
+    rtnl: () => rtnlTypeRegistry.getFunctionNames(),
+  };
   private disabledLines: Set<number> = new Set(); // Track lines with disable comments
   private disabledRanges: Array<{ start: number; end: number }> = []; // Track disabled multi-line ranges
   private linesWithSuppressedDiagnostics: Set<number> = new Set(); // Track lines where diagnostics were suppressed
@@ -399,16 +417,22 @@ export class SemanticAnalyzer extends BaseVisitor {
       localName = specifier.local.name;
       importedName = '*';
     }
-    
-    
+
     // Create appropriate data type for special imports first
     let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
-    
+
     // Mark default imports explicitly
     if (specifier.type === 'ImportDefaultSpecifier') {
       dataType = {
         type: UcodeType.OBJECT,
         isDefaultImport: true
+      };
+    }
+
+    if (specifier.type === 'ImportNamespaceSpecifier') {
+      dataType = {
+        type: UcodeType.OBJECT,
+        moduleName: source
       };
     }
     
@@ -984,56 +1008,114 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
     }
     
-    // Validate fs module method calls
-    this.validateFsModuleMethod(node);
+    // Validate builtin module method calls
+    this.validateModuleMember(node);
   }
   
-  private validateFsModuleMethod(node: MemberExpressionNode): void {
+  private validateModuleMember(node: MemberExpressionNode): void {
     // Only check non-computed member expressions (obj.method)
     if (node.computed || node.property.type !== 'Identifier') {
       return;
     }
-    
-    // Check if this is a call on the fs module object
-    if (node.object.type === 'Identifier') {
-      const objectName = (node.object as IdentifierNode).name;
-      const methodName = (node.property as IdentifierNode).name;
-      
-      // Look up the object symbol
-      const symbol = this.symbolTable.lookup(objectName);
-      if (!symbol) {
-        // Check if this looks like a module usage without import
-        if (this.isKnownModuleName(objectName)) {
-          this.addDiagnostic(
-            `Cannot use '${objectName}' module without importing it first. Add: import { ${methodName} } from '${objectName}'; or import * as ${objectName} from '${objectName}';`,
-            node.object.start,
-            node.object.end,
-            DiagnosticSeverity.Error
-          );
-        }
-        return;
+
+    if (node.object.type !== 'Identifier') {
+      return;
+    }
+
+    const objectName = (node.object as IdentifierNode).name;
+    const methodName = (node.property as IdentifierNode).name;
+
+    // Look up the object symbol
+    const symbol = this.symbolTable.lookup(objectName);
+    if (!symbol) {
+      if (this.isKnownModuleName(objectName)) {
+        this.addDiagnostic(
+          `Cannot use '${objectName}' module without importing it first. Add: import { ${methodName} } from '${objectName}'; or import * as ${objectName} from '${objectName}';`,
+          node.object.start,
+          node.object.end,
+          DiagnosticSeverity.Error
+        );
       }
-      
-      // Check if this is an fs module object
-      if (symbol.type === SymbolType.MODULE && 
-          typeof symbol.dataType === 'object' && 
-          symbol.dataType.type === UcodeType.OBJECT &&
-          'moduleName' in symbol.dataType &&
-          symbol.dataType.moduleName === 'fs') {
-        
-        // Check if the method is valid for the fs module
-        if (!this.isValidFsModuleMethod(methodName)) {
-          this.addDiagnosticErrorCode(
-            UcodeErrorCode.INVALID_IMPORT,
-            `Method '${methodName}' is not available on the fs module. Did you mean to call this on a file handle? Use fs.open() first.`,
-            node.property.start,
-            node.property.end,
-            DiagnosticSeverity.Error
-          );
-          return;
-        }
+      return;
+    }
+
+    // Only validate method calls
+    if (!this.processingFunctionCallCallee) {
+      return;
+    }
+
+    const moduleName = this.getModuleNameFromSymbol(symbol);
+    if (!moduleName) {
+      return;
+    }
+
+    if (moduleName === 'fs') {
+      if (!this.isValidFsModuleMethod(methodName)) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_IMPORT,
+          `Method '${methodName}' is not available on the fs module. Did you mean to call this on a file handle? Use fs.open() first.`,
+          node.property.start,
+          node.property.end,
+          DiagnosticSeverity.Error
+        );
+      }
+      return;
+    }
+
+    const provider = this.moduleFunctionProviders[moduleName];
+    if (!provider) {
+      return;
+    }
+
+    const functionNames = provider();
+    if (functionNames.includes(methodName)) {
+      return;
+    }
+
+    const availableFunctions = functionNames.join(', ');
+    this.addDiagnosticErrorCode(
+      UcodeErrorCode.INVALID_IMPORT,
+      `Method '${methodName}' is not available on the ${moduleName} module. Available functions: ${availableFunctions}`,
+      node.property.start,
+      node.property.end,
+      DiagnosticSeverity.Error
+    );
+  }
+
+  private getModuleNameFromSymbol(symbol: SymbolEntry): string | null {
+    if (symbol.type !== SymbolType.MODULE && symbol.type !== SymbolType.IMPORTED) {
+      return null;
+    }
+
+    let candidate: string | undefined;
+
+    if (symbol.importedFrom && typeof symbol.importedFrom === 'string') {
+      candidate = symbol.importedFrom;
+    }
+
+    if (!candidate && typeof symbol.dataType === 'object' && symbol.dataType !== null) {
+      const dataType = symbol.dataType as { moduleName?: unknown };
+      if (typeof dataType.moduleName === 'string') {
+        candidate = dataType.moduleName;
       }
     }
+
+    if (!candidate) {
+      return null;
+    }
+
+    // Normalize derived module names like "fs.file" or "rtnl-const"
+    const normalized = candidate.replace(/^builtin:\/\//, '').split(/[.-]/)[0];
+
+    if (normalized === 'fs' || normalized === 'rtnl') {
+      return normalized;
+    }
+
+    if (normalized !== undefined && Object.prototype.hasOwnProperty.call(this.moduleFunctionProviders, normalized)) {
+      return normalized;
+    }
+
+    return null;
   }
   
   private isValidFsModuleMethod(methodName: string): boolean {

@@ -80,6 +80,48 @@ export function test() {
     expect(fsErrors.some(e => e.message.includes("Method 'flush' is not available"))).toBe(true);
 });
 
+test('fs module validation - invalid namespace methods are rejected', () => {
+    const code = `
+'use strict';
+
+import * as fs from 'fs';
+
+export function test() {
+    // These should all be flagged as invalid when using namespace import
+    let a = fs.read('/tmp/test');         // Invalid - use fs.readfile() or file.read()
+    let b = fs.write('/tmp/test', 'data'); // Invalid - use fs.writefile() or file.write()
+    let c = fs.close();                   // Invalid - only available on file handles
+    let d = fs.seek(0);                   // Invalid - only available on file handles
+    let e = fs.flush();                   // Invalid - only available on file handles
+}`;
+
+    const result = parseAndAnalyze(code);
+
+    const fsErrors = result.diagnostics.filter(d =>
+        d.message.includes('not available on the fs module') &&
+        d.severity === DiagnosticSeverity.Error
+    );
+
+    if (fsErrors.length !== 5) {
+        console.log(`Found ${fsErrors.length} fs module validation errors:`);
+        fsErrors.forEach((error, i) => {
+            console.log(`  ${i + 1}. ${error.message}`);
+        });
+
+        console.log('All diagnostics:');
+        result.diagnostics.forEach((d, i) => {
+            console.log(`  ${i + 1}. [${d.severity}] ${d.message}`);
+        });
+    }
+
+    expect(fsErrors.length).toBe(5);
+    expect(fsErrors.some(e => e.message.includes("Method 'read' is not available"))).toBe(true);
+    expect(fsErrors.some(e => e.message.includes("Method 'write' is not available"))).toBe(true);
+    expect(fsErrors.some(e => e.message.includes("Method 'close' is not available"))).toBe(true);
+    expect(fsErrors.some(e => e.message.includes("Method 'seek' is not available"))).toBe(true);
+    expect(fsErrors.some(e => e.message.includes("Method 'flush' is not available"))).toBe(true);
+});
+
 test('fs module validation - valid methods are allowed', () => {
     const code = `
 'use strict';
