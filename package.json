@@ -86,7 +86,7 @@
     "@types/bun": "latest",
     "@types/node": "24.0.14",
     "@types/vscode": "^1.86.0",
-    "@vscode/vsce": "^3.6.0",
+    "@vscode/vsce": "^3.6.1",
     "mocha": "^11.7.1",
     "ts-loader": "^9.5.2",
     "typescript": "^5.8.3",
