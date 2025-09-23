@@ -137,6 +137,8 @@ const testFiles = [
     'tests/test-module-aliasing.js',
     'tests/test-rtnl-module-validation.test.js',
     'tests/test-module-method-validation.test.js',
+    'tests/test-object-property-type-inference.test.js',
+    'tests/test-object-property-hover-lsp.mocha.js',
 ];
 
 const mochaFiles = [
@@ -184,6 +186,7 @@ const mochaFiles = [
     'test-dot-notation-default-import.js',
     'test-global-object-types.js',
     'test-module-aliasing.js',
+    'test-object-property-hover-lsp.mocha.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {
@@ -236,9 +239,19 @@ test('Comprehensive Validation Test Suite', async () => {
             const timeout = testFile.includes('test-missing-builtins-validation.js') ? '30000' : '25000';
             const isBunTestSuite = testFile.endsWith('.test.js') || testFile.endsWith('.test.ts');
 
+            let runWithBunTest = false;
+            if (isBunTestSuite) {
+                try {
+                    const contents = fs.readFileSync(testFile, 'utf8');
+                    runWithBunTest = /from ['"]bun:test['"]/m.test(contents) || /require\(['"]bun:test['"]\)/m.test(contents);
+                } catch (readErr) {
+                    console.log(`⚠️  Unable to inspect ${testFile}: ${readErr.message}`);
+                }
+            }
+
             const command = isMochaTest
                 ? `./node_modules/.bin/mocha ${testFile} --timeout ${timeout}`
-                : isBunTestSuite
+                : runWithBunTest
                     ? `bun test ${testFile}`
                     : `bun ${testFile}`;
             

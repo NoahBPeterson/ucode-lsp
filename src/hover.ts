@@ -198,7 +198,10 @@ export function handleHover(
                 if (symbol && symbol.propertyTypes && symbol.propertyTypes.has(memberName)) {
                     const propertyType = symbol.propertyTypes.get(memberName)!;
                     const typeString = typeToString(propertyType);
-                    const hoverMarkdown = `**${memberName}**: \`${typeString}\`\n\nGlobal property on \`${objectName}\``;
+                    const scopeLabel = objectName === 'global'
+                        ? `Global property on \`${objectName}\``
+                        : `Property on \`${objectName}\``;
+                    const hoverMarkdown = `**${memberName}**: \`${typeString}\`\n\n${scopeLabel}`;
 
                     console.log(`[HOVER] Returning property hover for ${objectName}.${memberName}: ${typeString}`);
 

@@ -1082,6 +1082,23 @@ export class SemanticAnalyzer extends BaseVisitor {
     );
   }
 
+  private getStaticPropertyName(propertyNode: AstNode): string | null {
+    if (propertyNode.type === 'Identifier') {
+      return (propertyNode as IdentifierNode).name;
+    }
+
+    if (propertyNode.type === 'Literal') {
+      const literalProperty = propertyNode as LiteralNode;
+      if (literalProperty.value === undefined || literalProperty.value === null) {
+        return null;
+      }
+
+      return String(literalProperty.value);
+    }
+
+    return null;
+  }
+  
   private getModuleNameFromSymbol(symbol: SymbolEntry): string | null {
     if (symbol.type !== SymbolType.MODULE && symbol.type !== SymbolType.IMPORTED) {
       return null;
@@ -1321,21 +1338,25 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
   visitAssignmentExpression(node: AssignmentExpressionNode): void {
     if (this.options.enableTypeChecking) {
-      // Track assignments to global properties (e.g., global.foo = "bar")
+      // Track assignments to object properties (e.g., obj.foo = "bar")
       if (node.left.type === 'MemberExpression') {
         const memberNode = node.left as MemberExpressionNode;
-        if (!memberNode.computed &&
-            memberNode.object.type === 'Identifier' &&
-            (memberNode.object as IdentifierNode).name === 'global' &&
-            memberNode.property.type === 'Identifier') {
-          const propertyName = (memberNode.property as IdentifierNode).name;
-          const propertyType = this.inferAssignmentDataType(node.right);
-          const globalSymbol = this.symbolTable.lookup('global');
-          if (globalSymbol) {
-            if (!globalSymbol.propertyTypes) {
-              globalSymbol.propertyTypes = new Map<string, UcodeDataType>();
+        if (!memberNode.computed && memberNode.object.type === 'Identifier') {
+          const objectName = (memberNode.object as IdentifierNode).name;
+          const propertyName = this.getStaticPropertyName(memberNode.property);
+
+          if (propertyName) {
+            const targetSymbol = this.symbolTable.lookup(objectName);
+
+            if (targetSymbol && (objectName === 'global' || (targetSymbol.type !== SymbolType.MODULE && targetSymbol.type !== SymbolType.IMPORTED))) {
+              const propertyType = this.inferAssignmentDataType(node.right);
+
+              if (!targetSymbol.propertyTypes) {
+                targetSymbol.propertyTypes = new Map<string, UcodeDataType>();
+              }
+
+              targetSymbol.propertyTypes.set(propertyName, propertyType);
             }
-            globalSymbol.propertyTypes.set(propertyName, propertyType);
           }
         }
       }
@@ -1979,30 +2000,33 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           }
           return;
         }
+
+        if (sourceSymbol) {
+          symbol.dataType = sourceSymbol.dataType;
+          this.symbolTable.updateSymbolType(name, sourceSymbol.dataType);
+
+          if (sourceSymbol.propertyTypes) {
+            symbol.propertyTypes = sourceSymbol.propertyTypes;
+          }
+          return;
+        }
       }
 
       // Handle default imports accessed via global properties (e.g., let e = global.d;)
       if (node.init.type === 'MemberExpression') {
         const memberNode = node.init as MemberExpressionNode;
-        if (!memberNode.computed &&
-            memberNode.object.type === 'Identifier' &&
-            (memberNode.object as IdentifierNode).name === 'global') {
-          const globalSymbol = this.symbolTable.lookup('global');
-          let propertyName: string | null = null;
-          if (memberNode.property.type === 'Identifier') {
-            propertyName = (memberNode.property as IdentifierNode).name;
-          } else if (memberNode.property.type === 'Literal') {
-            const literalProperty = memberNode.property as LiteralNode;
-            if (literalProperty.value !== undefined && literalProperty.value !== null) {
-              propertyName = String(literalProperty.value);
-            }
-          }
+        if (!memberNode.computed && memberNode.object.type === 'Identifier') {
+          const objectName = (memberNode.object as IdentifierNode).name;
+          const propertyName = this.getStaticPropertyName(memberNode.property);
 
-          if (globalSymbol && propertyName && globalSymbol.propertyTypes && globalSymbol.propertyTypes.has(propertyName)) {
-            const propertyType = globalSymbol.propertyTypes.get(propertyName)!;
-            symbol.dataType = propertyType;
-            this.symbolTable.updateSymbolType(name, propertyType);
-            return;
+          if (propertyName) {
+            const objectSymbol = this.symbolTable.lookup(objectName);
+            if (objectSymbol && objectSymbol.propertyTypes && objectSymbol.propertyTypes.has(propertyName)) {
+              const propertyType = objectSymbol.propertyTypes.get(propertyName)!;
+              symbol.dataType = propertyType;
+              this.symbolTable.updateSymbolType(name, propertyType);
+              return;
+            }
           }
         }
       }
