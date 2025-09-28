@@ -129,7 +129,11 @@ export interface Symbol {
     uri: string;
     range: { start: number; end: number };
   };
-  propertyTypes?: Map<string, UcodeDataType>; // Known property types for object-like symbols (e.g., global)
+    propertyTypes?: Map<string, UcodeDataType>; // Known property types for object-like symbols (e.g., global)
+    initNode?: AstNode; // Initial value node for SSA type protection
+    initialLiteralType?: UcodeDataType | undefined; // Initial literal type, if declared with a literal
+    currentType?: UcodeDataType | undefined; // Current type after assignments (for SSA)
+    currentTypeEffectiveFrom?: number | undefined; // Source offset where currentType becomes active
 }
 
 export class SymbolTable {
@@ -342,7 +346,7 @@ export class SymbolTable {
     }
   }
 
-  declare(name: string, type: SymbolType, dataType: UcodeDataType, node: AstNode): boolean {
+  declare(name: string, type: SymbolType, dataType: UcodeDataType, node: AstNode, initNode?: AstNode): boolean {
     const currentScopeMap = this.scopes[this.scopes.length - 1];
     if (!currentScopeMap) {
       return false;
@@ -362,7 +366,8 @@ export class SymbolTable {
       used: false,
       node,
       declaredAt: node.start,
-      usedAt: []
+      usedAt: [],
+      ...(initNode && { initNode })
     };
 
     currentScopeMap.set(name, symbol);
@@ -437,7 +442,9 @@ export class SymbolTable {
         const symbol = scope.get(name);
         if (symbol) {
           symbol.dataType = newDataType;
-          console.log(`[SYMBOL_UPDATE] Updated ${name} to type ${JSON.stringify(newDataType)} in scope ${i}`);
+          symbol.currentType = undefined;
+          symbol.currentTypeEffectiveFrom = undefined;
+          // console.log(`[SYMBOL_UPDATE] Updated ${name} to type ${JSON.stringify(newDataType)} in scope ${i}`);
           return true;
         }
       }

@@ -167,6 +167,33 @@ export class SemanticAnalyzer extends BaseVisitor {
       let symbolType = SymbolType.VARIABLE;
       let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
 
+      // SSA-style immediate type inference for literals to prevent later assignments from affecting initial type
+      if (node.init) {
+        switch (node.init.type) {
+          case 'ArrayExpression':
+            dataType = UcodeType.ARRAY as UcodeDataType;
+            break;
+          case 'ObjectExpression':
+            dataType = UcodeType.OBJECT as UcodeDataType;
+            break;
+          case 'Literal':
+            const literal = node.init as any;
+            if (literal.literalType === 'regexp') {
+              dataType = UcodeType.REGEX as UcodeDataType;
+            } else if (typeof literal.value === 'string') {
+              dataType = UcodeType.STRING as UcodeDataType;
+            } else if (typeof literal.value === 'number') {
+              // Check if it's an integer or double
+              dataType = Number.isInteger(literal.value) ? UcodeType.INTEGER as UcodeDataType : UcodeType.DOUBLE as UcodeDataType;
+            } else if (typeof literal.value === 'boolean') {
+              dataType = UcodeType.BOOLEAN as UcodeDataType;
+            } else if (literal.value === null) {
+              dataType = UcodeType.NULL as UcodeDataType;
+            }
+            break;
+        }
+      }
+
       // Special handling for require() calls
       if (node.init && node.init.type === 'CallExpression') {
         const callExpr = node.init as any; // CallExpressionNode
@@ -345,7 +372,15 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
         
         // Declare the symbol (allow shadowing builtins)
-        this.symbolTable.declare(name, symbolType, dataType, node.id);
+        this.symbolTable.declare(name, symbolType, dataType, node.id, node.init || undefined);
+
+        const declaredSymbol = this.symbolTable.lookup(name);
+        if (declaredSymbol && node.init && this.isLiteralType(dataType, node.init)) {
+          declaredSymbol.initialLiteralType = dataType;
+        }
+        if (declaredSymbol) {
+          this.setDeclarationTypeIfUnset(declaredSymbol, dataType);
+        }
         
         // Add import information if this is a CommonJS require
         const commonjsImport = this.commonjsImports.get(name);
@@ -966,6 +1001,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   visitMemberExpression(node: MemberExpressionNode): void {
+    // // console.log('DEBUG: visitMemberExpression called for:', (node.object as any).name + '.' + (node.property as any).name);
     if (this.options.enableScopeAnalysis) {
       // Visit the object part (e.g., 'constants' in 'constants.DT_HOSTINFO_FINAL_PATH')
       this.visit(node.object);
@@ -1013,12 +1049,15 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
   
   private validateModuleMember(node: MemberExpressionNode): void {
+    // console.log('DEBUG: validateModuleMember called for:', (node.object as any).name + '.' + (node.property as any).name);
     // Only check non-computed member expressions (obj.method)
     if (node.computed || node.property.type !== 'Identifier') {
+      // console.log('DEBUG: skipping - computed or not identifier');
       return;
     }
 
     if (node.object.type !== 'Identifier') {
+      // console.log('DEBUG: skipping - object not identifier');
       return;
     }
 
@@ -1046,11 +1085,13 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     const moduleName = this.getModuleNameFromSymbol(symbol);
     if (!moduleName) {
+      // console.log('DEBUG: no module name found, returning');
       return;
     }
 
     if (moduleName === 'fs') {
-      if (!this.isValidFsModuleMethod(methodName)) {
+      const isValid = this.isValidFsModuleMethod(methodName);
+      if (!isValid) {
         this.addDiagnosticErrorCode(
           UcodeErrorCode.INVALID_IMPORT,
           `Method '${methodName}' is not available on the fs module. Did you mean to call this on a file handle? Use fs.open() first.`,
@@ -1283,6 +1324,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   visitCallExpression(node: CallExpressionNode): void {
+    // console.log('DEBUG: visitCallExpression called for:', node.callee.type === 'MemberExpression' ? 'member call' : 'function call');
     // Always handle scope analysis for function calls
     if (this.options.enableScopeAnalysis) {
       // Mark function callee as used if it's an identifier
@@ -1337,6 +1379,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   visitAssignmentExpression(node: AssignmentExpressionNode): void {
+    // First, do the default traversal to visit child nodes with original symbol types
+    super.visitAssignmentExpression(node);
     if (this.options.enableTypeChecking) {
       // Track assignments to object properties (e.g., obj.foo = "bar")
       if (node.left.type === 'MemberExpression') {
@@ -1361,60 +1405,44 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         }
       }
 
-      // Handle fs type inference for assignment expressions FIRST (e.g., file_content = open(...))
+      // Handle special type inference for assignment expressions FIRST (e.g., file_content = open(...))
       // This creates symbols for undeclared variables before type checking tries to look them up
+      // Only handle cases that need early inference for undeclared variables
       if (node.left.type === 'Identifier') {
         const variableName = (node.left as IdentifierNode).name;
         let symbol = this.symbolTable.lookup(variableName);
         
-        // Check if this is an fs function call and assign the appropriate fs type
-        const fsType = this.inferFsType(node.right);
-        const nl80211Type = this.inferNl80211Type(node.right);
-        const uloopType = this.inferUloopType(node.right);
-        const rtnlFunctionReturnType = this.inferImportedRtnlFunctionReturnType(node.right);
-        let dataType: UcodeDataType;
-        
-        if (fsType) {
-          dataType = createFsObjectDataType(fsType);
-        } else if (nl80211Type) {
-          dataType = createNl80211ObjectDataType(nl80211Type);
-        } else if (uloopType) {
-          dataType = createUloopObjectDataType(uloopType);
-        } else if (rtnlFunctionReturnType) {
-          dataType = rtnlFunctionReturnType;
-        } else {
-          // Check if this is a method call that returns a specific type
-          const methodReturnType = this.inferMethodReturnType(node.right);
-          if (methodReturnType) {
-            dataType = methodReturnType;
-          } else {
-            // Use the inferred type from the right-hand side
-            const rightType = this.typeChecker.checkNode(node.right);
-            dataType = rightType as UcodeDataType;
+        // Only create symbols for undeclared variables with special types
+        if (!symbol) {
+          const fsType = this.inferFsType(node.right);
+          const nl80211Type = this.inferNl80211Type(node.right);
+          const uloopType = this.inferUloopType(node.right);
+          const rtnlFunctionReturnType = this.inferImportedRtnlFunctionReturnType(node.right);
+          
+          let earlyDataType: UcodeDataType | null = null;
+          
+          if (fsType) {
+            earlyDataType = createFsObjectDataType(fsType);
+          } else if (nl80211Type) {
+            earlyDataType = createNl80211ObjectDataType(nl80211Type);
+          } else if (uloopType) {
+            earlyDataType = createUloopObjectDataType(uloopType);
+          } else if (rtnlFunctionReturnType) {
+            earlyDataType = rtnlFunctionReturnType;
           }
-        }
-        
-        if (symbol && symbol.type === SymbolType.VARIABLE) {
-          // Update existing variable symbol across all scopes
-          symbol.dataType = dataType;
-          // Also force update in case it's in a different scope
-          this.symbolTable.updateSymbolType(variableName, dataType);
-        } else if (!symbol) {
-          // Create new symbol for undeclared variable (implicit declaration)
-          this.symbolTable.declare(variableName, SymbolType.VARIABLE, dataType, node.left as IdentifierNode);
-        } else {
-          // Symbol exists but wrong type, try to update it anyway
-          this.symbolTable.updateSymbolType(variableName, dataType);
-        }
-        
-        // For fs object variables, also force declaration in global scope to ensure completion access
-        if (fsType) {
-          this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
-        }
-        
-        // For uloop object variables, also force declaration in global scope to ensure completion access
-        if (uloopType) {
-          this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
+          
+          // Only create new symbols for undeclared variables with special types
+          if (earlyDataType) {
+            this.symbolTable.declare(variableName, SymbolType.VARIABLE, earlyDataType, node.left as IdentifierNode);
+            
+            // For special object variables, also force declaration in global scope
+            if (fsType) {
+              this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, earlyDataType);
+            }
+            if (uloopType) {
+              this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, earlyDataType);
+            }
+          }
         }
       }
       
@@ -1433,10 +1461,74 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       for (const warning of result.warnings) {
         this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
       }
+      
+      // After type checking, update variable types for general function calls
+      if (node.left.type === 'Identifier') {
+        const variableName = (node.left as IdentifierNode).name;
+        let symbol = this.symbolTable.lookup(variableName);
+        
+        // Skip if we already handled this in the early inference phase
+        const fsType = this.inferFsType(node.right);
+        const nl80211Type = this.inferNl80211Type(node.right);
+        const uloopType = this.inferUloopType(node.right);
+        const rtnlFunctionReturnType = this.inferImportedRtnlFunctionReturnType(node.right);
+        
+        // Skip require() calls - they're handled specially in visitVariableDeclarator
+        const isRequireCall = node.right.type === 'CallExpression' && 
+                             (node.right as CallExpressionNode).callee.type === 'Identifier' &&
+                             ((node.right as CallExpressionNode).callee as IdentifierNode).name === 'require';
+        
+        if (!fsType && !nl80211Type && !uloopType && !rtnlFunctionReturnType && !isRequireCall) {
+          // Check for all types of function calls that return specific types
+          const methodReturnType = this.inferMethodReturnType(node.right);
+          const functionReturnType = this.inferFunctionCallReturnType(node.right);
+          let dataType: UcodeDataType;
+          
+          if (methodReturnType) {
+            dataType = methodReturnType;
+          } else if (functionReturnType) {
+            dataType = functionReturnType;
+          } else {
+            // Use the inferred type from the right-hand side
+            const rightType = this.typeChecker.checkNode(node.right);
+            dataType = rightType as UcodeDataType;
+          }
+          
+          if (symbol && symbol.type === SymbolType.VARIABLE) {
+            // SSA: If this is a literal type, preserve original but track current type
+            const isLiteralVariable = symbol.initialLiteralType !== undefined;
+            if (isLiteralVariable) {
+              // Update current type but preserve original literal type
+              symbol.currentType = dataType;
+              symbol.currentTypeEffectiveFrom = node.end;
+            } else {
+              // Regular variable, update normally
+              symbol.currentType = undefined;
+              symbol.currentTypeEffectiveFrom = undefined;
+              symbol.dataType = dataType;
+              this.symbolTable.updateSymbolType(variableName, dataType);
+            }
+          } else if (!symbol) {
+            this.symbolTable.declare(variableName, SymbolType.VARIABLE, dataType, node.left as IdentifierNode);
+          } else {
+            // SSA: If this is a literal type, preserve original but track current type
+            const isLiteralVariable = symbol && symbol.initialLiteralType !== undefined;
+            if (isLiteralVariable) {
+              // Update current type but preserve original literal type
+              symbol.currentType = dataType;
+              symbol.currentTypeEffectiveFrom = node.end;
+            } else {
+              // Regular variable, update normally
+              symbol.currentType = undefined;
+              symbol.currentTypeEffectiveFrom = undefined;
+              this.symbolTable.updateSymbolType(variableName, dataType);
+            }
+          }
+        }
+      }
     }
 
-    // Continue with default traversal
-    super.visitAssignmentExpression(node);
+    // Base traversal already happened at the beginning of this method
   }
 
   visitBinaryExpression(node: BinaryExpressionNode): void {
@@ -1963,12 +2055,40 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const funcName = (callExpr.callee as IdentifierNode).name;
     const symbol = this.symbolTable.lookup(funcName);
     
-    if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
+    if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED || symbol.type === SymbolType.BUILTIN)) {
       // Return the raw return type without conversion to preserve unions
       return symbol.returnType || null;
     }
-    
+
     return null;
+  }
+
+  private setDeclarationTypeIfUnset(symbol: SymbolEntry, dataType: UcodeDataType): void {
+    if (symbol.initialLiteralType === undefined && typeof dataType === 'string' && dataType !== UcodeType.UNKNOWN) {
+      symbol.initialLiteralType = dataType;
+    }
+  }
+
+  private isLiteralType(dataType: UcodeDataType, initNode: any): boolean {
+    // Check if the dataType corresponds to a literal type and if the init node is actually a literal
+    if (!initNode) return false;
+    
+    switch (initNode.type) {
+      case 'ArrayExpression':
+        return dataType === UcodeType.ARRAY;
+      case 'ObjectExpression':
+        return dataType === UcodeType.OBJECT;
+      case 'Literal':
+        if (initNode.literalType === 'regexp') {
+          return dataType === UcodeType.REGEX;
+        }
+        if (typeof initNode.value === 'string') return dataType === UcodeType.STRING;
+        if (typeof initNode.value === 'number') return dataType === UcodeType.INTEGER || dataType === UcodeType.DOUBLE;
+        if (typeof initNode.value === 'boolean') return dataType === UcodeType.BOOLEAN;
+        if (initNode.value === null) return dataType === UcodeType.NULL;
+        break;
+    }
+    return false;
   }
 
   private processInitializerTypeInference(node: VariableDeclaratorNode, name: string): void {
@@ -1998,6 +2118,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           } else {
             delete symbol.importSpecifier;
           }
+          this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
           return;
         }
 
@@ -2008,6 +2129,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           if (sourceSymbol.propertyTypes) {
             symbol.propertyTypes = sourceSymbol.propertyTypes;
           }
+          this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
           return;
         }
       }
@@ -2025,12 +2147,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               const propertyType = objectSymbol.propertyTypes.get(propertyName)!;
               symbol.dataType = propertyType;
               this.symbolTable.updateSymbolType(name, propertyType);
+              this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
               return;
             }
           }
         }
       }
 
+      // DEBUG
       // Check if this is an fs function call and assign the appropriate fs type
       const fsType = this.inferFsType(node.init!);
       if (fsType) {
@@ -2038,6 +2162,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         symbol.dataType = dataType;
         // For fs object variables, also force declaration in global scope to ensure completion access
         this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+        this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
         return;
       }
 
@@ -2048,6 +2173,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         symbol.dataType = dataType;
         // For nl80211 object variables, also force declaration in global scope to ensure completion access
         this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+        this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
         return;
       }
 
@@ -2058,6 +2184,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         symbol.dataType = dataType;
         // For uloop object variables, also force declaration in global scope to ensure completion access
         this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+        this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
         return;
       }
 
@@ -2067,28 +2194,32 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const dataType = createUciObjectDataType(uciType);
         symbol.dataType = dataType;
         this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+        this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
         return;
       }
 
-      // Check if this is an imported fs function call and assign the proper union return type
-      const importedFsReturnType = this.inferImportedFsFunctionReturnType(node.init!);
-      if (importedFsReturnType) {
-        symbol.dataType = importedFsReturnType;
-        return;
-      }
+      // Don't overwrite module types, imported types, or literal types that were set during declaration
+      if (symbol.type !== SymbolType.MODULE && symbol.type !== SymbolType.IMPORTED && 
+          !this.isLiteralType(symbol.dataType, node.init)) {
+        // Check if this is an imported fs function call and assign the proper union return type
+        const importedFsReturnType = this.inferImportedFsFunctionReturnType(node.init!);
+        if (importedFsReturnType) {
+          symbol.dataType = importedFsReturnType;
+          this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
+          return;
+        }
 
-      // Check if this is a function call and preserve the return type (including unions)
-      const functionReturnType = this.inferFunctionCallReturnType(node.init!);
-      if (functionReturnType) {
-        symbol.dataType = functionReturnType;
-        return;
-      }
-
-      // Don't overwrite module types or imported types that were set during declaration
-      if (symbol.type !== SymbolType.MODULE && symbol.type !== SymbolType.IMPORTED) {
+        // Check if this is a function call and preserve the return type (including unions)
+        const functionReturnType = this.inferFunctionCallReturnType(node.init!);
+        if (functionReturnType) {
+          symbol.dataType = functionReturnType;
+          this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
+          return;
+        }
         // For non-function calls, fall back to type checker result
         const initType = this.typeChecker.checkNode(node.init);
         symbol.dataType = initType as UcodeDataType;
+        this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
         // Debug logging for arrow function variables
         if (node.init.type === 'ArrowFunctionExpression') {
           // Function type detected

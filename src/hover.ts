@@ -3,10 +3,10 @@ import {
     Hover,
     MarkupKind
 } from 'vscode-languageserver/node';
-import { UcodeLexer, TokenType, isKeyword } from './lexer';
+import { UcodeLexer, TokenType, isKeyword, Token } from './lexer';
 import { allBuiltinFunctions } from './builtins';
-import { SemanticAnalysisResult, SymbolType } from './analysis';
-import { typeToString } from './analysis/symbolTable';
+import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
+import { typeToString, UcodeDataType } from './analysis/symbolTable';
 import { debugTypeRegistry } from './analysis/debugTypes';
 import { digestTypeRegistry } from './analysis/digestTypes';
 import { logTypeRegistry } from './analysis/logTypes';
@@ -76,6 +76,99 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
     }
     
     return undefined;
+}
+
+
+function isAssignmentOperator(type: TokenType): boolean {
+    switch (type) {
+        case TokenType.TK_ASSIGN:
+        case TokenType.TK_ASADD:
+        case TokenType.TK_ASSUB:
+        case TokenType.TK_ASMUL:
+        case TokenType.TK_ASDIV:
+        case TokenType.TK_ASMOD:
+        case TokenType.TK_ASLEFT:
+        case TokenType.TK_ASRIGHT:
+        case TokenType.TK_ASBAND:
+        case TokenType.TK_ASBXOR:
+        case TokenType.TK_ASBOR:
+        case TokenType.TK_ASEXP:
+        case TokenType.TK_ASAND:
+        case TokenType.TK_ASOR:
+        case TokenType.TK_ASNULLISH:
+            return true;
+        default:
+            return false;
+    }
+}
+
+function isLikelyAssignmentTarget(tokens: Token[], tokenIndex: number): boolean {
+    if (tokenIndex < 0 || tokenIndex >= tokens.length) {
+        return false;
+    }
+
+    let prevIndex = tokenIndex - 1;
+    while (prevIndex >= 0) {
+        const prevToken = tokens[prevIndex];
+        if (!prevToken) {
+            break;
+        }
+
+        if (prevToken.type === TokenType.TK_NEWLINE || prevToken.type === TokenType.TK_SCOL) {
+            prevIndex--;
+            continue;
+        }
+
+        if (prevToken.type === TokenType.TK_LOCAL || prevToken.type === TokenType.TK_CONST) {
+            return false;
+        }
+
+        break;
+    }
+
+    const prevToken = prevIndex >= 0 ? tokens[prevIndex] : undefined;
+    if (prevToken && (prevToken.type === TokenType.TK_LOCAL || prevToken.type === TokenType.TK_CONST)) {
+        // Variable declarations should reflect their declared literal type, not assignment result
+        return false;
+    }
+
+    for (let i = tokenIndex + 1; i < tokens.length; i++) {
+        const nextToken = tokens[i];
+        if (!nextToken) {
+            return false;
+        }
+
+        if (isAssignmentOperator(nextToken.type)) {
+            return true;
+        }
+
+        if (
+            nextToken.type === TokenType.TK_NEWLINE ||
+            nextToken.type === TokenType.TK_SCOL ||
+            nextToken.type === TokenType.TK_COMMA ||
+            nextToken.type === TokenType.TK_COLON ||
+            nextToken.type === TokenType.TK_ARROW ||
+            nextToken.type === TokenType.TK_EOF
+        ) {
+            return false;
+        }
+    }
+
+    return false;
+}
+
+function resolveVariableTypeForHover(symbol: UcodeSymbol, offset: number, isAssignmentTarget: boolean): UcodeDataType {
+    if (symbol.currentType) {
+        if (isAssignmentTarget) {
+            return symbol.currentType;
+        }
+
+        if (symbol.currentTypeEffectiveFrom !== undefined && offset >= symbol.currentTypeEffectiveFrom) {
+            return symbol.currentType;
+        }
+    }
+
+    return symbol.dataType;
 }
 
 
@@ -288,12 +381,12 @@ export function handleHover(
         }
         
         const token = tokens.find(t => t.pos <= offset && offset < t.end);
+        const tokenIndex = token ? tokens.indexOf(token) : -1;
         
         
         // Check for rest parameters (like ...args)
         if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
             // Look for ellipsis token right before this label
-            const tokenIndex = tokens.indexOf(token);
             if (tokenIndex > 0) {
                 const prevToken = tokens[tokenIndex - 1];
                 if (prevToken && prevToken.type === TokenType.TK_ELLIP) {
@@ -315,7 +408,6 @@ export function handleHover(
         // Also check if we're hovering over the ellipsis itself
         if (token && token.type === TokenType.TK_ELLIP) {
             // Look for a label token right after this ellipsis
-            const tokenIndex = tokens.indexOf(token);
             if (tokenIndex + 1 < tokens.length) {
                 const nextToken = tokens[tokenIndex + 1];
                 if (nextToken && nextToken.type === TokenType.TK_LABEL) {
@@ -498,16 +590,20 @@ export function handleHover(
                 }
                 
                 if (symbol) {
+                    const isAssignmentContext = tokenIndex >= 0 ? isLikelyAssignmentTarget(tokens, tokenIndex) : false;
+                    const effectiveType = resolveVariableTypeForHover(symbol, offset, isAssignmentContext);
+                    const effectiveTypeStr = typeToString(effectiveType);
+
                     let hoverText = '';
                     switch (symbol.type) {
                         case SymbolType.VARIABLE:
                         case SymbolType.PARAMETER:
                             // Check if this parameter is a rest parameter (array type)
-                            const dataTypeStr = typeToString(symbol.dataType);
-                            if (symbol.type === SymbolType.PARAMETER && (dataTypeStr.includes('array') || dataTypeStr.includes('Array'))) {
+                            const declaredTypeStr = typeToString(symbol.dataType);
+                            if (symbol.type === SymbolType.PARAMETER && (declaredTypeStr.includes('array') || declaredTypeStr.includes('Array'))) {
                                 hoverText = `**(rest parameter)** **${symbol.name}**: \`array\`\n\nRest parameter - collects remaining arguments into an array`;
                             } else {
-                                hoverText = `(${symbol.type}) **${symbol.name}**: \`${dataTypeStr}\``;
+                                hoverText = `(${symbol.type}) **${symbol.name}**: \`${effectiveTypeStr}\``;
                             }
                             break;
                         case SymbolType.FUNCTION:

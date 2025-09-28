@@ -9,7 +9,7 @@ import {
   ObjectExpressionNode, ConditionalExpressionNode, ArrowFunctionExpressionNode, 
   FunctionExpressionNode
 } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes, createUnionType } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes, createUnionType, Symbol as UcodeSymbol } from './symbolTable';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
@@ -255,12 +255,13 @@ export class TypeChecker {
     const symbol = this.symbolTable.lookup(node.name);
     if (symbol) {
       this.symbolTable.markUsed(node.name, node.start);
+      const dataType = this.getEffectiveSymbolDataType(symbol, node.start);
       // Convert UcodeDataType to UcodeType for backwards compatibility
-      if (typeof symbol.dataType === 'string') {
-        return symbol.dataType as UcodeType;
-      } else if (isUnionType(symbol.dataType)) {
+      if (typeof dataType === 'string') {
+        return dataType as UcodeType;
+      } else if (isUnionType(dataType)) {
         // For union types, return the first type or UNKNOWN
-        const types = getUnionTypes(symbol.dataType);
+        const types = getUnionTypes(dataType);
         return types[0] || UcodeType.UNKNOWN;
       } else {
         // For other complex types like ModuleType, return OBJECT
@@ -273,6 +274,14 @@ export class TypeChecker {
       // Note: The SemanticAnalyzer will handle "Undefined variable" diagnostics
       return isBuiltin ? UcodeType.FUNCTION : UcodeType.UNKNOWN;
     }
+  }
+
+  private getEffectiveSymbolDataType(symbol: UcodeSymbol, position: number): UcodeDataType {
+    if (symbol.currentType && symbol.currentTypeEffectiveFrom !== undefined && position >= symbol.currentTypeEffectiveFrom) {
+      return symbol.currentType;
+    }
+
+    return symbol.dataType;
   }
 
   private checkBinaryExpression(node: BinaryExpressionNode): UcodeType {
