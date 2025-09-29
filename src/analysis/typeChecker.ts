@@ -56,6 +56,8 @@ export class TypeChecker {
   private warnings: TypeWarning[] = [];
   private builtinValidator: BuiltinValidator;
   private typeCompatibility: TypeCompatibilityChecker;
+  private assignmentTargetDepth = 0;
+  private constantAssignmentProperties = new Map<string, Set<string>>();
 
   constructor(symbolTable: SymbolTable) {
     this.symbolTable = symbolTable;
@@ -182,6 +184,59 @@ export class TypeChecker {
     this.errors = [];
     this.warnings = [];
     this.builtinValidator.resetErrors();
+  }
+
+  withAssignmentTarget<T>(fn: () => T): T {
+    this.assignmentTargetDepth++;
+    try {
+      return fn();
+    } finally {
+      this.assignmentTargetDepth--;
+    }
+  }
+
+  private isAssignmentTargetContext(): boolean {
+    return this.assignmentTargetDepth > 0;
+  }
+
+  private getStaticPropertyName(node: AstNode): string | null {
+    if (node.type === 'Identifier') {
+      return (node as IdentifierNode).name;
+    }
+    if (node.type === 'Literal') {
+      const literal = node as LiteralNode;
+      if (literal.value !== undefined && literal.value !== null) {
+        return String(literal.value);
+      }
+    }
+    return null;
+  }
+
+  private recordConstantAssignment(objectName: string, propertyName: string): void {
+    let properties = this.constantAssignmentProperties.get(objectName);
+    if (!properties) {
+      properties = new Set<string>();
+      this.constantAssignmentProperties.set(objectName, properties);
+    }
+    properties.add(propertyName);
+  }
+
+  private hasConstantAssignment(objectName: string, propertyName: string): boolean {
+    const properties = this.constantAssignmentProperties.get(objectName);
+    return properties ? properties.has(propertyName) : false;
+  }
+
+  private ensureSymbolHasIntegerProperty(objectName: string, propertyName: string): void {
+    const symbol = this.symbolTable.lookup(objectName);
+    if (!symbol) {
+      return;
+    }
+    if (!symbol.propertyTypes) {
+      symbol.propertyTypes = new Map<string, UcodeDataType>();
+    }
+    if (!symbol.propertyTypes.has(propertyName)) {
+      symbol.propertyTypes.set(propertyName, UcodeType.INTEGER);
+    }
   }
 
   checkNode(node: AstNode): UcodeType {
@@ -850,8 +905,22 @@ export class TypeChecker {
       // Check if this is an rtnl constants object with a specific property
       if (symbol.dataType && typeof symbol.dataType === 'object' && 
           'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'rtnl-const' && !node.computed) {
-        const propertyName = (node.property as IdentifierNode).name;
+        const propertyName = this.getStaticPropertyName(node.property);
+        if (!propertyName) {
+          return UcodeType.UNKNOWN;
+        }
         if (!rtnlTypeRegistry.isRtnlConstant(propertyName)) {
+          const objectName = node.object.type === 'Identifier'
+            ? (node.object as IdentifierNode).name
+            : null;
+          if (objectName && this.isAssignmentTargetContext()) {
+            this.recordConstantAssignment(objectName, propertyName);
+            this.ensureSymbolHasIntegerProperty(objectName, propertyName);
+            return UcodeType.INTEGER;
+          }
+          if (objectName && this.hasConstantAssignment(objectName, propertyName)) {
+            return UcodeType.INTEGER;
+          }
           this.errors.push({
             message: `Property '${propertyName}' does not exist on rtnl constants object. Available constants: ${rtnlTypeRegistry.getConstantNames().join(', ')}`,
             start: node.property.start,
@@ -866,8 +935,22 @@ export class TypeChecker {
       // Check if this is an nl80211 constants object with a specific property
       if (symbol.dataType && typeof symbol.dataType === 'object' && 
           'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'nl80211-const' && !node.computed) {
-        const propertyName = (node.property as IdentifierNode).name;
+        const propertyName = this.getStaticPropertyName(node.property);
+        if (!propertyName) {
+          return UcodeType.UNKNOWN;
+        }
         if (!nl80211TypeRegistry.isNl80211Constant(propertyName)) {
+          const objectName = node.object.type === 'Identifier'
+            ? (node.object as IdentifierNode).name
+            : null;
+          if (objectName && this.isAssignmentTargetContext()) {
+            this.recordConstantAssignment(objectName, propertyName);
+            this.ensureSymbolHasIntegerProperty(objectName, propertyName);
+            return UcodeType.INTEGER;
+          }
+          if (objectName && this.hasConstantAssignment(objectName, propertyName)) {
+            return UcodeType.INTEGER;
+          }
           this.errors.push({
             message: `Property '${propertyName}' does not exist on nl80211 constants object. Available constants: ${nl80211TypeRegistry.getConstantNames().join(', ')}`,
             start: node.property.start,

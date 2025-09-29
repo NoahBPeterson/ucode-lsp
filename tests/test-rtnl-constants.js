@@ -76,6 +76,13 @@ describe('RTNL Constants Integration Tests', function() {
   });
 
   describe('NL80211 Constants Comparison', function() {
+    it('should allow assigning new nl80211 constants without errors', async function() {
+      const testContent = `import { request as wlrequest, listener as wllistener, 'const' as wlconst, error as wlerror } from 'nl80211';\nwlconst.NL80211_CMD_ABORT_SCAN ??= wlconst.NL80211_CMD_TDLS_CANCEL_CHANNEL_SWITCH + 2;`;
+      const diagnostics = await getDiagnostics(testContent, '/tmp/test-nl80211-const-assignment.uc');
+      const propertyErrors = diagnostics.filter(d => d.severity === 1 && d.message.includes("Property 'NL80211_CMD_ABORT_SCAN' does not exist"));
+      assert.strictEqual(propertyErrors.length, 0, `Should not flag assignments creating new constants, but got errors: ${propertyErrors.map(e => e.message).join(', ')}`);
+    });
+
     it('should work the same way as nl80211 constants', async function() {
       const testContent = `import { 'const' as nl80211const } from 'nl80211';\nimport { 'const' as rtnlconst } from 'rtnl';\nlet nlCmd = nl80211const.NL80211_CMD_GET_INTERFACE;\nlet rtRoute = rtnlconst.RTN_UNICAST;`;
       const diagnostics = await getDiagnostics(testContent, '/tmp/test-both-constants.uc');

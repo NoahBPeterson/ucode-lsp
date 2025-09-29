@@ -82,6 +82,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private disabledLines: Set<number> = new Set(); // Track lines with disable comments
   private disabledRanges: Array<{ start: number; end: number }> = []; // Track disabled multi-line ranges
   private linesWithSuppressedDiagnostics: Set<number> = new Set(); // Track lines where diagnostics were suppressed
+  private assignmentLeftDepth = 0;
   private fileResolver: FileResolver;
 
   constructor(textDocument: TextDocument, options: SemanticAnalysisOptions = {}) {
@@ -1029,8 +1030,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     
     // IMPORTANT: Always run type checking for member expressions to validate array/string methods
     if (this.options.enableTypeChecking) {
-      // Type check the member expression for invalid array/string methods
-      this.typeChecker.checkNode(node);
+      if (this.assignmentLeftDepth > 0) {
+        this.typeChecker.withAssignmentTarget(() => this.typeChecker.checkNode(node));
+      } else {
+        // Type check the member expression for invalid array/string methods
+        this.typeChecker.checkNode(node);
+      }
       const result = this.typeChecker.getResult();
       
       // Add type errors to diagnostics
@@ -1379,8 +1384,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   visitAssignmentExpression(node: AssignmentExpressionNode): void {
-    // First, do the default traversal to visit child nodes with original symbol types
-    super.visitAssignmentExpression(node);
+    this.assignmentLeftDepth++;
+    this.visit(node.left);
+    this.assignmentLeftDepth--;
+    this.visit(node.right);
     if (this.options.enableTypeChecking) {
       // Track assignments to object properties (e.g., obj.foo = "bar")
       if (node.left.type === 'MemberExpression') {
@@ -1447,7 +1454,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
       
       // Now check assignment type compatibility after symbols are created
-      this.typeChecker.checkNode(node.left);
+      this.typeChecker.withAssignmentTarget(() => this.typeChecker.checkNode(node.left));
       this.typeChecker.checkNode(node.right);
       
       const result = this.typeChecker.getResult();
