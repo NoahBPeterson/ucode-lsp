@@ -1,46 +1,29 @@
 // Test suite for socket module completion and hover functionality
 console.log('🔧 Running Socket Module Tests...\n');
 
+const fs = require('fs');
+const path = require('path');
 const { socketTypeRegistry } = require('../src/analysis/socketTypes');
 
 const expectedFunctions = [
   'create', 'connect', 'listen', 'sockaddr', 'nameinfo', 'addrinfo', 'poll', 'error', 'strerror'
 ];
 
-const expectedConstants = [
-  // Address Families
-  'AF_UNSPEC', 'AF_UNIX', 'AF_INET', 'AF_INET6', 'AF_PACKET',
-  
-  // Socket Types
-  'SOCK_STREAM', 'SOCK_DGRAM', 'SOCK_RAW', 'SOCK_PACKET', 'SOCK_NONBLOCK', 'SOCK_CLOEXEC',
-  
-  // Message Flags
-  'MSG_DONTROUTE', 'MSG_DONTWAIT', 'MSG_EOR', 'MSG_NOSIGNAL', 'MSG_OOB', 'MSG_PEEK', 'MSG_TRUNC', 'MSG_WAITALL',
-  'MSG_CONFIRM', 'MSG_MORE', 'MSG_FASTOPEN', 'MSG_CMSG_CLOEXEC', 'MSG_ERRQUEUE',
-  
-  // Socket Options
-  'SOL_SOCKET', 'SO_ACCEPTCONN', 'SO_BROADCAST', 'SO_DEBUG', 'SO_DONTROUTE', 'SO_ERROR', 'SO_KEEPALIVE',
-  'SO_LINGER', 'SO_OOBINLINE', 'SO_RCVBUF', 'SO_RCVLOWAT', 'SO_RCVTIMEO', 'SO_REUSEADDR', 'SO_REUSEPORT',
-  'SO_SNDBUF', 'SO_SNDLOWAT', 'SO_SNDTIMEO', 'SO_TIMESTAMP', 'SO_TYPE',
-  
-  // Protocols
-  'IPPROTO_IP', 'IPPROTO_IPV6', 'IPPROTO_TCP', 'IPPROTO_UDP',
-  
-  // Shutdown
-  'SHUT_RD', 'SHUT_WR', 'SHUT_RDWR',
-  
-  // Address Info Flags
-  'AI_ADDRCONFIG', 'AI_ALL', 'AI_CANONIDN', 'AI_CANONNAME', 'AI_IDN', 'AI_NUMERICHOST', 'AI_NUMERICSERV', 'AI_PASSIVE', 'AI_V4MAPPED',
-  
-  // Name Info Constants
-  'NI_DGRAM', 'NI_IDN', 'NI_MAXHOST', 'NI_MAXSERV', 'NI_NAMEREQD', 'NI_NOFQDN', 'NI_NUMERICHOST', 'NI_NUMERICSERV',
-  
-  // Poll Events
-  'POLLIN', 'POLLPRI', 'POLLOUT', 'POLLERR', 'POLLHUP', 'POLLNVAL', 'POLLRDHUP',
-  
-  // Credential Messages
-  'SCM_CREDENTIALS', 'SCM_RIGHTS'
-];
+function readExpectedConstants() {
+  const socketSourcePath = path.join(__dirname, '..', 'ucode', 'lib', 'socket.c');
+  const source = fs.readFileSync(socketSourcePath, 'utf8');
+  const regex = /ADD_CONST_IF\(([^)]+)\);/g;
+  const names = new Set();
+  let match;
+
+  while ((match = regex.exec(source)) !== null) {
+    names.add(match[1]);
+  }
+
+  return Array.from(names).sort();
+}
+
+const expectedConstants = readExpectedConstants();
 
 let totalTests = 0;
 let passedTests = 0;
@@ -78,8 +61,13 @@ testCase("All expected functions are present", () => {
 testCase("All expected constants are present", () => {
   const actualConstants = socketTypeRegistry.getConstantNames();
   const missing = expectedConstants.filter(name => !actualConstants.includes(name));
+  const unexpected = actualConstants.filter(name => !expectedConstants.includes(name));
   if (missing.length > 0) {
     console.log(`    Missing constants: ${missing.join(', ')}`);
+    return false;
+  }
+  if (unexpected.length > 0) {
+    console.log(`    Unexpected constants: ${unexpected.join(', ')}`);
     return false;
   }
   console.log(`    Found all ${expectedConstants.length} expected constants`);
