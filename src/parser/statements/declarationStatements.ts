@@ -228,9 +228,26 @@ export abstract class DeclarationStatements extends ExpressionParser {
         local
       });
       
-      // Check for mixed import (default + named)
+      // Check for mixed import (default + named or default + namespace)
       if (this.match(TokenType.TK_COMMA)) {
-        if (this.match(TokenType.TK_LBRACE)) {
+        if (this.match(TokenType.TK_MUL)) {
+          // Namespace import after default: import name, * as ns from 'module'
+          this.consume(TokenType.TK_LABEL, "Expected 'as' after '*' in import");
+          if (this.previous()!.value !== 'as') {
+            this.error("Expected 'as' after '*' in import");
+            return null;
+          }
+
+          const nsLocal = this.parseIdentifierName();
+          if (!nsLocal) return null;
+
+          specifiers.push({
+            type: 'ImportNamespaceSpecifier',
+            start: this.previous()!.pos,
+            end: nsLocal.end,
+            local: nsLocal
+          });
+        } else if (this.match(TokenType.TK_LBRACE)) {
           // Parse named imports after default
           if (!this.check(TokenType.TK_RBRACE)) {
             do {
@@ -253,10 +270,10 @@ export abstract class DeclarationStatements extends ExpressionParser {
               });
             } while (this.match(TokenType.TK_COMMA));
           }
-          
+
           this.consume(TokenType.TK_RBRACE, "Expected '}' after import specifiers");
         } else {
-          this.error("Expected '{' after ',' in mixed import");
+          this.error("Expected '{' or '*' after ',' in mixed import");
           return null;
         }
       }
