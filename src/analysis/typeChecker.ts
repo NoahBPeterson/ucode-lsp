@@ -1162,9 +1162,21 @@ export class TypeChecker {
         return UcodeType.INTEGER; // NL80211 constants are integers
       }
     }
-    
+
+    // For computed property access on arrays (e.g., uuid[0]), check if we have type info
+    if (node.object.type === 'Identifier' && node.computed) {
+      const symbol = this.symbolTable.lookup((node.object as IdentifierNode).name);
+      if (symbol && symbol.dataType === UcodeType.ARRAY && node.property.type === 'Literal') {
+        const indexKey = String((node.property as LiteralNode).value);
+        if (symbol.propertyTypes && symbol.propertyTypes.has(indexKey)) {
+          const elementType = symbol.propertyTypes.get(indexKey)!;
+          return this.dataTypeToUcodeType(elementType);
+        }
+      }
+    }
+
     const objectType = this.checkNode(node.object);
-    
+
     // Check for array type (with TypeScript workaround)
     if ((objectType as any) === UcodeType.ARRAY && !node.computed) {
       // Arrays in ucode have no properties or methods at all
@@ -1218,7 +1230,37 @@ export class TypeChecker {
   private checkAssignmentExpression(node: AssignmentExpressionNode): UcodeType {
     const leftType = this.checkNode(node.left);
     const rightType = this.checkNode(node.right);
-    
+
+    // Track array element types
+    if (node.operator === '=' && node.left.type === 'MemberExpression') {
+      const memberExpr = node.left as MemberExpressionNode;
+      if (memberExpr.object.type === 'Identifier' && memberExpr.computed) {
+        const arrayName = (memberExpr.object as IdentifierNode).name;
+        const symbol = this.symbolTable.lookup(arrayName);
+
+        // If this is an array variable, track the element type
+        if (symbol && symbol.dataType === UcodeType.ARRAY) {
+          // Get the index if it's a literal
+          let indexKey: string | null = null;
+          if (memberExpr.property.type === 'Literal') {
+            const literalProp = memberExpr.property as LiteralNode;
+            indexKey = String(literalProp.value);
+          }
+
+          if (indexKey !== null) {
+            // Initialize propertyTypes map if it doesn't exist
+            if (!symbol.propertyTypes) {
+              symbol.propertyTypes = new Map<string, UcodeDataType>();
+            }
+
+            // Store the type of this array element
+            const rightDataType = this.ucodeTypeToDataType(rightType);
+            symbol.propertyTypes.set(indexKey, rightDataType);
+          }
+        }
+      }
+    }
+
     // Basic type compatibility check
     if (node.operator === '=' && leftType !== UcodeType.UNKNOWN && rightType !== UcodeType.UNKNOWN) {
       if (!this.typeCompatibility.canAssign(leftType, rightType)) {
@@ -1232,6 +1274,11 @@ export class TypeChecker {
     }
 
     return rightType;
+  }
+
+  private ucodeTypeToDataType(type: UcodeType): UcodeDataType {
+    // Simple conversion - for more complex types we'd need to handle unions
+    return type as UcodeDataType;
   }
 
   private checkArrayExpression(node: ArrayExpressionNode): UcodeType {

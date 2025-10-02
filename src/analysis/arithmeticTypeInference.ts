@@ -44,18 +44,24 @@ export class ArithmeticTypeInference {
     if (leftType === UcodeType.DOUBLE || rightType === UcodeType.DOUBLE) {
       return UcodeType.DOUBLE;
     }
-    
+
     // Rule 2: Operations that can produce NaN or Infinity result in double
     if (this.canProduceFloatingPointSpecial(leftType, rightType)) {
       return UcodeType.DOUBLE;
     }
-    
+
     // Rule 3: Valid integer operations result in integer
     if (this.areValidIntegerOperands(leftType, rightType)) {
       return UcodeType.INTEGER;
     }
-    
-    // Rule 4: Operations with mixed or invalid types often produce double (NaN)
+
+    // Rule 4: If one operand is UNKNOWN, treat the result as UNKNOWN
+    // Don't assume it's a double - let it propagate as unknown
+    if (leftType === UcodeType.UNKNOWN || rightType === UcodeType.UNKNOWN) {
+      return UcodeType.UNKNOWN;
+    }
+
+    // Rule 5: Operations with mixed or invalid types often produce double (NaN)
     return UcodeType.DOUBLE;
   }
   
