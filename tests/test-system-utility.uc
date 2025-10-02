@@ -8,7 +8,6 @@ type([1, 2, 3]);                // valid: array
 type({key: "value"});           // valid: object
 type(true);                     // valid: boolean
 type(null);                     // valid: null
-type(undefined);                // valid: undefined
 type(function() {});            // valid: function
 
 // print() function - these should NOT show errors (accepts any types):
@@ -38,9 +37,12 @@ gc();                           // valid: no parameters
 let gcResult = gc();            // valid: assignment
 
 // These should be valid (no errors):
-let value = getValue();
+let value = {};
 let data = {test: true};
 let numbers = [1, 2, 3];
+
+function getUserName(){}
+function calculate(){}
 
 // Valid type() functions with variables
 type(value);                    // valid: variable
@@ -50,9 +52,11 @@ type(getUserName());            // valid: function call
 
 // Valid print() functions with expressions
 print("Result:", calculate());  // valid: function call in print
-print("Items:", numbers.length); // valid: property access
+print("Items:", length(numbers)); // valid: property access
 print(data);                    // valid: object
 print(...numbers);              // valid: spread operator
+
+let lastUpdate = time();
 
 // Valid system functions in expressions
 if (time() > lastUpdate) {      // valid: time in condition
