@@ -157,7 +157,23 @@ function isLikelyAssignmentTarget(tokens: Token[], tokenIndex: number): boolean 
     return false;
 }
 
-function resolveVariableTypeForHover(symbol: UcodeSymbol, offset: number, isAssignmentTarget: boolean): UcodeDataType {
+function resolveVariableTypeForHover(
+    symbol: UcodeSymbol,
+    offset: number,
+    isAssignmentTarget: boolean,
+    analysisResult?: SemanticAnalysisResult
+): UcodeDataType {
+    // Check for flow-sensitive type narrowing first
+    if (analysisResult && analysisResult.typeChecker && analysisResult.ast) {
+        const typeChecker = analysisResult.typeChecker;
+
+        // Check if this position is inside a null guard for this variable
+        const narrowedType = typeChecker.getNarrowedTypeAtPosition(symbol.name, offset);
+        if (narrowedType) {
+            return narrowedType;
+        }
+    }
+
     if (symbol.currentType) {
         if (isAssignmentTarget) {
             return symbol.currentType;
@@ -591,7 +607,7 @@ export function handleHover(
                 
                 if (symbol) {
                     const isAssignmentContext = tokenIndex >= 0 ? isLikelyAssignmentTarget(tokens, tokenIndex) : false;
-                    const effectiveType = resolveVariableTypeForHover(symbol, offset, isAssignmentContext);
+                    const effectiveType = resolveVariableTypeForHover(symbol, offset, isAssignmentContext, analysisResult);
                     const effectiveTypeStr = typeToString(effectiveType);
 
                     let hoverText = '';

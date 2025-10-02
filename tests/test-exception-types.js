@@ -4,7 +4,7 @@ const path = require('path');
 const assert = require('assert');
 
 describe('Exception Object Type Inference Tests', function() {
-  this.timeout(10000); // 10 second timeout for LSP tests
+  this.timeout(1000); // 1 second timeout for LSP tests
 
   let serverProcess;
   let requestId = 1;

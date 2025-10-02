@@ -10,7 +10,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
-         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode } from '../ast/nodes';
+         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -49,6 +49,8 @@ export interface SemanticAnalysisResult {
   diagnostics: Diagnostic[];
   symbolTable: SymbolTable;
   typeResults: Map<AstNode, TypeCheckResult>;
+  typeChecker?: TypeChecker;
+  ast?: ProgramNode;
 }
 
 export class SemanticAnalyzer extends BaseVisitor {
@@ -84,6 +86,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private linesWithSuppressedDiagnostics: Set<number> = new Set(); // Track lines where diagnostics were suppressed
   private assignmentLeftDepth = 0;
   private fileResolver: FileResolver;
+  private currentASTRoot: ProgramNode | null = null;
 
   constructor(textDocument: TextDocument, options: SemanticAnalysisOptions = {}) {
     super();
@@ -114,6 +117,13 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.disabledRanges = [];
     this.linesWithSuppressedDiagnostics.clear();
 
+    // Store the AST root for later reference
+    if (ast.type === 'Program') {
+      this.currentASTRoot = ast as ProgramNode;
+      // Pass the AST to TypeChecker for direct analysis
+      this.typeChecker.setAST(this.currentASTRoot);
+    }
+
     try {
       // Parse disable comments before analysis
       this.parseDisableComments();
@@ -138,11 +148,21 @@ export class SemanticAnalyzer extends BaseVisitor {
       );
     }
 
-    return {
+    // Post-process diagnostics to apply flow-sensitive narrowing
+    this.diagnostics = this.filterDiagnosticsWithFlowSensitiveAnalysis(this.diagnostics);
+
+    const result: SemanticAnalysisResult = {
       diagnostics: this.diagnostics,
       symbolTable: this.symbolTable,
-      typeResults: new Map() // TODO: Implement type result tracking
+      typeResults: new Map(), // TODO: Implement type result tracking
+      typeChecker: this.typeChecker
     };
+
+    if (this.currentASTRoot) {
+      result.ast = this.currentASTRoot;
+    }
+
+    return result;
   }
 
   visitProgram(node: ProgramNode): void {
@@ -1040,7 +1060,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       
       // Add type errors to diagnostics
       for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error);
+        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
       }
       
       // Add type warnings to diagnostics
@@ -1346,7 +1366,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       
       // Add type errors to diagnostics
       for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error);
+        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
       }
       
       // Add type warnings to diagnostics
@@ -1461,7 +1481,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       
       // Add type errors to diagnostics
       for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error);
+        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
       }
       
       // Add type warnings to diagnostics
@@ -1543,13 +1563,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     super.visitBinaryExpression(node);
 
     if (this.options.enableTypeChecking) {
+      
       // Type check the binary expression for type warnings
       this.typeChecker.checkNode(node);
       const result = this.typeChecker.getResult();
       
       // Add type errors to diagnostics
       for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error);
+        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
       }
       
       // Add type warnings to diagnostics
@@ -1608,6 +1629,27 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
     // Continue with default traversal
     super.visitContinueStatement(node);
+  }
+
+  visitIfStatement(node: IfStatementNode): void {
+    if (this.options.enableTypeChecking) {
+      // Type check the if statement for flow-sensitive analysis
+      this.typeChecker.checkNode(node);
+      const result = this.typeChecker.getResult();
+      
+      // Add type errors to diagnostics
+      for (const error of result.errors) {
+        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
+      }
+      
+      // Add type warnings to diagnostics
+      for (const warning of result.warnings) {
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
+      }
+    }
+    
+    // Continue with default traversal AFTER type checking to ensure flow-sensitive context is available
+    super.visitIfStatement(node);
   }
 
   // Override loop visitors to track loop scopes
@@ -2351,7 +2393,9 @@ private addDiagnostic(
     message: string, 
     start: number, 
     end: number, 
-    severity?: DiagnosticSeverity
+    severity?: DiagnosticSeverity,
+    code?: string,
+    data?: any
   ): void {
     let finalSeverity: DiagnosticSeverity = severity || DiagnosticSeverity.Error;
 
@@ -2392,7 +2436,9 @@ private addDiagnostic(
           end: endPos
         },
         message,
-        source: 'ucode-semantic'
+        source: 'ucode-semantic',
+        ...(code && { code }),
+        ...(data && { data })
       };
 
       this.diagnostics.push(diagnostic);
@@ -2544,5 +2590,163 @@ private addDiagnostic(
    */
   private convertDotNotationToPath(moduleName: string): string {
     return './' + moduleName.replace(/\./g, '/') + '.uc';
+  }
+
+
+  private findContainingNullGuard(node: AstNode, variableName: string, position: number): boolean {
+    // Check if this is an if statement
+    if (node.type === 'IfStatement') {
+      const ifNode = node as IfStatementNode;
+      
+      // Check if the position is within the consequent block
+      if (ifNode.consequent && 
+          position >= ifNode.consequent.start && 
+          position <= ifNode.consequent.end) {
+        
+        // Check if the if condition is a null guard for our variable
+        if (this.isNullGuard(ifNode.test, variableName)) {
+          return true;
+        }
+      }
+    }
+
+    // Recursively check all child nodes
+    if ((node as any).body) {
+      const body = (node as any).body;
+      if (Array.isArray(body)) {
+        for (const child of body) {
+          if (this.findContainingNullGuard(child, variableName, position)) {
+            return true;
+          }
+        }
+      } else {
+        if (this.findContainingNullGuard(body, variableName, position)) {
+          return true;
+        }
+      }
+    }
+
+    // Check other common child properties
+    const childProps = ['consequent', 'alternate', 'test', 'left', 'right', 'argument', 'callee', 'arguments'];
+    for (const prop of childProps) {
+      const child = (node as any)[prop];
+      if (child) {
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            if (item && typeof item === 'object' && item.type) {
+              if (this.findContainingNullGuard(item, variableName, position)) {
+                return true;
+              }
+            }
+          }
+        } else if (typeof child === 'object' && child.type) {
+          if (this.findContainingNullGuard(child, variableName, position)) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private isNullGuard(testNode: AstNode, variableName: string): boolean {
+    if (!testNode || testNode.type !== 'BinaryExpression') {
+      return false;
+    }
+
+    const binaryExpr = testNode as BinaryExpressionNode;
+    
+    // Check for "variableName != null" pattern
+    if ((binaryExpr.operator === '!=' || binaryExpr.operator === '!==') &&
+        binaryExpr.left.type === 'Identifier' &&
+        (binaryExpr.left as IdentifierNode).name === variableName &&
+        binaryExpr.right.type === 'Literal' &&
+        (binaryExpr.right as any).value === null) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private filterDiagnosticsWithFlowSensitiveAnalysis(diagnostics: Diagnostic[]): Diagnostic[] {
+    if (!this.currentASTRoot) {
+      return diagnostics;
+    }
+
+
+    return diagnostics.filter(diagnostic => {
+      // Check if this is a null-related diagnostic on 'in' operator
+      if (diagnostic.message.includes("'in' operator") && 
+          diagnostic.message.includes("possibly 'null'")) {
+        
+        // Try to determine what variable this diagnostic is about
+        // This is a heuristic based on the diagnostic message
+        const variableMatch = diagnostic.message.match(/Argument is possibly 'null'/);
+        
+        if (variableMatch) {
+          // Find the AST node at this position
+          const position = diagnostic.range.start.character;
+          const line = diagnostic.range.start.line;
+          
+          // Convert line-based position to character position (approximation)
+          const textLines = this.textDocument.getText().split('\n');
+          let charPosition = 0;
+          for (let i = 0; i < line && i < textLines.length; i++) {
+            const line = textLines[i];
+            if (line !== undefined) {
+              charPosition += line.length + 1; // +1 for newline
+            }
+          }
+          charPosition += position;
+          
+          // Find if this position contains a null guard
+          if (this.currentASTRoot && this.findNullGuardAtPosition(this.currentASTRoot, charPosition)) {
+            return false; // Filter out this diagnostic
+          }
+        }
+      }
+      
+      return true; // Keep all other diagnostics
+    });
+  }
+
+  private findNullGuardAtPosition(node: AstNode, position: number): boolean {
+    // Look for 'in' operators at this position
+    if (node.type === 'BinaryExpression') {
+      const binaryNode = node as BinaryExpressionNode;
+      if (binaryNode.operator === 'in' && 
+          position >= binaryNode.start && 
+          position <= binaryNode.end &&
+          binaryNode.right && 
+          binaryNode.right.type === 'Identifier') {
+        
+        const variableName = (binaryNode.right as IdentifierNode).name;
+        return this.findContainingNullGuard(this.currentASTRoot!, variableName, position);
+      }
+    }
+    
+    // Recursively check children
+    const childProps = ['body', 'consequent', 'alternate', 'test', 'left', 'right', 'argument', 'callee', 'arguments'];
+    for (const prop of childProps) {
+      const child = (node as any)[prop];
+      if (child) {
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            if (item && typeof item === 'object' && item.type) {
+              if (this.findNullGuardAtPosition(item, position)) {
+                return true;
+              }
+            }
+          }
+        } else if (typeof child === 'object' && child.type) {
+          if (this.findNullGuardAtPosition(child, position)) {
+            return true;
+          }
+        }
+      }
+    }
+    
+    return false;
   }
 }

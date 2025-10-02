@@ -4,7 +4,7 @@ const path = require('path');
 const assert = require('assert');
 
 describe('Import Completion Test', function() {
-  this.timeout(15000);
+  this.timeout(1000);
 
   let serverProcess;
   let requestId = 1;

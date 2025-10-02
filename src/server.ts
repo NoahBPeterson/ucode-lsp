@@ -435,6 +435,14 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 end: { line: line + 1, character: 0 }
             }).replace(/\r?\n$/, ''); // Remove trailing newline
 
+            // Add type narrowing specific quick fixes
+            if (diagnostic.code) {
+                const typeNarrowingActions = generateTypeNarrowingQuickFixes(
+                    diagnostic, document, params.textDocument.uri
+                );
+                codeActions.push(...typeNarrowingActions);
+            }
+
             // Check if line already has disable comment
             if (lineText.includes('// ucode-lsp disable')) {
                 continue; // Skip if already has disable comment
@@ -472,6 +480,80 @@ connection.onDefinition((params) => {
     }
     return handleDefinition(params, documents, legacyCache);
 });
+
+// Generate quick fixes for type narrowing diagnostics
+function generateTypeNarrowingQuickFixes(diagnostic: any, document: any, uri: string): CodeAction[] {
+    const actions: CodeAction[] = [];
+    
+    if (!diagnostic.code || !diagnostic.data) {
+        return actions;
+    }
+
+    const { code, data } = diagnostic;
+    
+    if (code === 'nullable-in-operator' && data.variableName) {
+        // Quick fix for null safety in 'in' operator
+        const nullGuardAction: CodeAction = {
+            title: `Wrap ${data.variableName} in null guard`,
+            kind: CodeActionKind.QuickFix,
+            diagnostics: [diagnostic],
+            edit: {
+                changes: {
+                    [uri]: [
+                        TextEdit.replace(
+                            diagnostic.range,
+                            `if (${data.variableName} != null) {\n    ${document.getText(diagnostic.range)}\n}`
+                        )
+                    ]
+                }
+            }
+        };
+        actions.push(nullGuardAction);
+    }
+    
+    if (code === 'incompatible-function-argument' && data.variableName && data.expectedType) {
+        // Quick fix for function argument type mismatch
+        const typeGuardAction: CodeAction = {
+            title: `Wrap ${data.variableName} in ${data.expectedType} guard`,
+            kind: CodeActionKind.QuickFix,
+            diagnostics: [diagnostic],
+            edit: {
+                changes: {
+                    [uri]: [
+                        TextEdit.replace(
+                            diagnostic.range,
+                            `if (type(${data.variableName}) == '${data.expectedType}') {\n    ${document.getText(diagnostic.range)}\n}`
+                        )
+                    ]
+                }
+            }
+        };
+        actions.push(typeGuardAction);
+        
+        // Also offer assertion option
+        const assertionAction: CodeAction = {
+            title: `Add ${data.expectedType} assertion to ${data.variableName}`,
+            kind: CodeActionKind.QuickFix,
+            diagnostics: [diagnostic],
+            edit: {
+                changes: {
+                    [uri]: [
+                        TextEdit.replace(
+                            diagnostic.range,
+                            document.getText(diagnostic.range).replace(
+                                data.variableName,
+                                `(${data.variableName} as ${data.expectedType})`
+                            )
+                        )
+                    ]
+                }
+            }
+        };
+        actions.push(assertionAction);
+    }
+    
+    return actions;
+}
 
 documents.listen(connection);
 

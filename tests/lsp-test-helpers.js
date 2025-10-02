@@ -1,12 +1,13 @@
 /**
  * LSP Test Helpers
- * 
+ *
  * Provides reusable LSP test utilities based on the superior pattern
  * from test-rtnl-constants.js. Each test file gets its own server
  * instance but uses the same robust protocol handling.
  */
 
 const { spawn } = require('child_process');
+const path = require('path');
 
 /**
  * Creates an LSP test server instance with the robust Buffer-based protocol handling
@@ -152,7 +153,8 @@ function createLSPTestServer(options = {}) {
   // Initialize the server
   function initialize() {
     return new Promise((resolve, reject) => {
-      serverProcess = spawn('node', ['dist/server.js', '--stdio'], {
+      const serverPath = path.join(__dirname, '..', 'dist', 'server.js');
+      serverProcess = spawn('node', [serverPath, '--stdio'], {
         stdio: ['pipe', 'pipe', 'inherit']
       });
 
