@@ -533,11 +533,11 @@ export class TypeChecker {
       if (incompatibleTypes.length > 0 && (compatibleWithArray || this.typeNarrowing.containsType(rightTypeData, UcodeType.OBJECT))) {
         // Some parts of the union are compatible, some aren't
         const incompatibilityDesc = this.typeNarrowing.getIncompatibilityDescription(rightTypeData, UcodeType.OBJECT);
-        this.errors.push({
+        this.warnings.push({
           message: `'in' operator: ${incompatibilityDesc}. Use a guard or assertion.`,
           start: node.right.start,
           end: node.right.end,
-          severity: 'error'
+          severity: 'warning'
         });
       } else {
         // Completely incompatible
