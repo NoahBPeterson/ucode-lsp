@@ -797,6 +797,13 @@ export class TypeChecker {
   }
 
   private validateBuiltinCall(node: CallExpressionNode, signature: FunctionSignature): UcodeType {
+    // Ensure all arguments are checked first to populate _fullType
+    for (const arg of node.arguments) {
+      if (arg) {
+        this.checkNode(arg);
+      }
+    }
+
     // First check special cases
     if (this.validateSpecialBuiltins(node, signature)) {
       return this.dataTypeToUcodeType(signature.returnType);
