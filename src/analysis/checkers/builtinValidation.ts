@@ -115,17 +115,55 @@ export class BuiltinValidator {
     const argType = this.getNodeType(arg);
     const checkTypes = [...allowedTypes, UcodeType.UNKNOWN];
 
-    if (!checkTypes.includes(argType)) {
-      const message = customErrorMessage ||
-        `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
+    // Check if argType is a union type
+    const argTypes = argType.split(' | ').map(t => t.trim());
+    const isUnion = argTypes.length > 1;
 
-      this.errors.push({
-        message: message,
-        start: arg.start,
-        end: arg.end,
-        severity: 'error'
-      });
-      return false;
+    if (isUnion) {
+      // For union types, check if ANY type is allowed
+      const hasAllowedType = argTypes.some(t => checkTypes.includes(t as UcodeType));
+      const disallowedTypes = argTypes.filter(t =>
+        t !== UcodeType.UNKNOWN && !allowedTypes.includes(t as UcodeType)
+      );
+
+      if (!hasAllowedType) {
+        // None of the types in the union are allowed - ERROR
+        const message = customErrorMessage ||
+          `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
+
+        this.errors.push({
+          message: message,
+          start: arg.start,
+          end: arg.end,
+          severity: 'error'
+        });
+        return false;
+      } else if (disallowedTypes.length > 0) {
+        // Some types are allowed, some are not - WARNING
+        const message = customErrorMessage ||
+          `Argument ${argPosition} of ${funcName}() may be ${disallowedTypes.join(' | ')}. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
+
+        this.warnings.push({
+          message: message,
+          start: arg.start,
+          end: arg.end,
+          severity: 'warning'
+        });
+      }
+    } else {
+      // Single type - check if it's allowed
+      if (!checkTypes.includes(argType)) {
+        const message = customErrorMessage ||
+          `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
+
+        this.errors.push({
+          message: message,
+          start: arg.start,
+          end: arg.end,
+          severity: 'error'
+        });
+        return false;
+      }
     }
 
     return true;

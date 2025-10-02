@@ -87,10 +87,11 @@ export class TypeChecker {
     this.typeCompatibility = new TypeCompatibilityChecker();
     this.typeNarrowing = new TypeNarrowingEngine();
     this.flowSensitiveTracker = new FlowSensitiveTypeTracker(symbolTable);
-    
+
     // Inject type checker into builtin validator
-    this.builtinValidator.setTypeChecker(this.checkNode.bind(this));
-    
+    // Use a method that returns the full type description including unions
+    this.builtinValidator.setTypeChecker(this.getNodeTypeDescription.bind(this));
+
     this.initializeBuiltins();
   }
 
@@ -593,6 +594,48 @@ export class TypeChecker {
     }
     // For complex expressions, return null
     return null;
+  }
+
+  private getNodeTypeDescription(node: AstNode): UcodeType {
+    // For identifiers, check if there's a narrowed type in the current context
+    if (node.type === 'Identifier') {
+      const identifierNode = node as IdentifierNode;
+      const variableName = identifierNode.name;
+
+      // Check for flow-sensitive narrowing using findContainingGuard
+      const guardInfo = this.findContainingGuard(this.currentAST, variableName, node.start);
+      if (guardInfo) {
+        // Get the base type and apply the guard
+        const fullType = this.getFullTypeFromNode(node);
+        if (fullType) {
+          const narrowedType = this.applyTypeGuard(fullType, guardInfo);
+          return this.getTypeDescription(narrowedType) as UcodeType;
+        }
+      }
+    }
+
+    // Get the full type data (which includes unions)
+    const fullType = this.getFullTypeFromNode(node);
+    if (fullType) {
+      // Convert to string description (e.g., "null | object | array")
+      return this.getTypeDescription(fullType) as UcodeType;
+    }
+
+    // For CallExpressions, get the return type from the function
+    if (node.type === 'CallExpression') {
+      const callNode = node as CallExpressionNode;
+      if (callNode.callee.type === 'Identifier') {
+        const funcName = (callNode.callee as IdentifierNode).name;
+        const symbol = this.symbolTable.lookup(funcName);
+        if (symbol && symbol.returnType) {
+          // Return the full type description of the return type
+          return this.getTypeDescription(symbol.returnType) as UcodeType;
+        }
+      }
+    }
+
+    // Fallback to simple type check
+    return this.checkNode(node);
   }
 
   private parseReturnType(returnTypeStr: string): UcodeDataType {
@@ -1667,6 +1710,36 @@ export class TypeChecker {
       case 'FunctionDeclaration':
         const funcNode = node as FunctionDeclarationNode;
         children.push(funcNode.id, ...funcNode.params, funcNode.body);
+        break;
+      case 'WhileStatement':
+        const whileNode = node as any;
+        children.push(whileNode.test, whileNode.body);
+        break;
+      case 'ForStatement':
+        const forNode = node as any;
+        if (forNode.init) children.push(forNode.init);
+        if (forNode.test) children.push(forNode.test);
+        if (forNode.update) children.push(forNode.update);
+        children.push(forNode.body);
+        break;
+      case 'CallExpression':
+        const callNode = node as CallExpressionNode;
+        children.push(callNode.callee);
+        children.push(...callNode.arguments.filter(arg => arg != null));
+        break;
+      case 'AssignmentExpression':
+        const assignNode = node as any;
+        children.push(assignNode.left, assignNode.right);
+        break;
+      case 'SwitchStatement':
+        const switchNode = node as any;
+        children.push(switchNode.discriminant);
+        if (switchNode.cases) {
+          for (const caseNode of switchNode.cases) {
+            if (caseNode.test) children.push(caseNode.test);
+            children.push(...caseNode.consequent);
+          }
+        }
         break;
       // Add more node types as needed
     }
