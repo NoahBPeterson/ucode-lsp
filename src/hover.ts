@@ -794,14 +794,15 @@ export function handleHover(
                     }
                 }
             }
-            
 
-            // Check if this is an exception property FIRST (before symbol table)
-            if (exceptionTypeRegistry.isExceptionProperty(word)) {
+            // Check built-in functions BEFORE exception properties
+            // (builtin functions like 'type' take precedence over exception properties)
+            const documentation = allBuiltinFunctions.get(word);
+            if (documentation) {
                 return {
                     contents: {
                         kind: MarkupKind.Markdown,
-                        value: exceptionTypeRegistry.getPropertyDocumentation(word)
+                        value: `**${word}** (built-in function)\n\n${documentation}`
                     },
                     range: {
                         start: document.positionAt(token.pos),
@@ -809,16 +810,13 @@ export function handleHover(
                     }
                 };
             }
-                        
-            // Symbol table lookup moved to BEFORE global function checks for correct priority
-            
-            // 3. Fallback to built-in functions and keywords
-            const documentation = allBuiltinFunctions.get(word);
-            if (documentation) {
+
+            // Check if this is an exception property (after builtin functions)
+            if (exceptionTypeRegistry.isExceptionProperty(word)) {
                 return {
                     contents: {
                         kind: MarkupKind.Markdown,
-                        value: `**${word}** (built-in function)\n\n${documentation}`
+                        value: exceptionTypeRegistry.getPropertyDocumentation(word)
                     },
                     range: {
                         start: document.positionAt(token.pos),
