@@ -193,6 +193,153 @@ if (a == null) {
   }
 });
 
+test('nested type() guard should narrow builtin arguments', async () => {
+  const content = `function complexType(x) {
+  if (x > 10)
+      return null;
+  if (x > 5)
+      return {"data": x};
+  return [x, x * 2];
+}
+
+let complex = complexType(3);
+
+if (complex == null) {
+  print(complex);
+} else {
+  if (type(complex) == 'array') {
+      let ip = arrtoip(complex);
+  }
+}`;
+
+  const testPath = path.join(__dirname, 'temp-nested-arrtoip-narrowing.uc');
+  fs.writeFileSync(testPath, content);
+
+  try {
+    const diagnostics = await getDiagnostics(content, testPath);
+
+    const typeWarnings = diagnostics.filter(d => d.severity === 2);
+    const arrtoipWarnings = typeWarnings.filter(d => d.message.includes('arrtoip'));
+
+    console.log(`arrtoip warnings in nested guard test: ${arrtoipWarnings.length}`);
+    if (arrtoipWarnings.length > 0) {
+      console.log('arrtoip warning messages:', arrtoipWarnings.map(d => d.message));
+    }
+
+    expect(arrtoipWarnings.length).toBe(0);
+  } finally {
+    if (fs.existsSync(testPath)) {
+      fs.unlinkSync(testPath);
+    }
+  }
+});
+
+test("null equality guard should narrow to null in positive branch", async () => {
+  const content = `function complexType(x) {
+  if (x > 10)
+      return null;
+  if (x > 5)
+      return {"data": x};
+  return [x, x * 2];
+}
+
+let complex = complexType(7);
+
+if (complex == null) {
+  let len = length(complex);
+  print(complex);
+} else {
+  print('not null');
+}`;
+
+  const testPath = path.join(__dirname, 'temp-null-guard-positive.uc');
+  fs.writeFileSync(testPath, content);
+
+  try {
+    const diagnostics = await getDiagnostics(content, testPath);
+
+    const lines = content.split('\n');
+    const lengthLine = lines.findIndex(line => line.includes('length(complex)'));
+
+    const hoverColumn = lines[lengthLine].indexOf('complex');
+    const hover = await getHover(content, testPath, lengthLine, hoverColumn);
+
+    if (!hover || !hover.contents) {
+      throw new Error('Expected hover information for complex inside null guard');
+    }
+
+    const hoverText = typeof hover.contents === 'string'
+      ? hover.contents
+      : (hover.contents.value || JSON.stringify(hover.contents));
+
+    expect(hoverText.includes('`null`')).toBe(true);
+    expect(hoverText.includes('object')).toBe(false);
+    expect(hoverText.includes('array')).toBe(false);
+  } finally {
+    if (fs.existsSync(testPath)) {
+      fs.unlinkSync(testPath);
+    }
+  }
+});
+
+test("should narrow type in switch cases", async () => {
+  const content = `function getArrayOrObject(x) {
+  if (x > 5)
+      return [x, x * 2];
+  return {"key": x};
+}
+
+let value = getArrayOrObject(10);
+
+switch (type(value)) {
+  case 'array':
+      let arrayLen = length(value);
+      arrtoip(value);
+      break;
+
+  case 'object':
+      if ("key" in value) {
+          print(value.key);
+      }
+      break;
+}`;
+
+  const testPath = path.join(__dirname, 'temp-switch-type-narrowing.uc');
+  fs.writeFileSync(testPath, content);
+
+  try {
+    const diagnostics = await getDiagnostics(content, testPath);
+
+    const lines = content.split('\n');
+    const arrtoipLine = lines.findIndex(line => line.includes('arrtoip(value)'));
+    const inLine = lines.findIndex(line => line.includes('"key" in value'));
+
+    const typeWarnings = diagnostics.filter(d => d.severity === 2);
+
+    const arrtoipWarnings = typeWarnings.filter(d =>
+      d.message.includes('arrtoip') &&
+      (d.range?.start?.line === arrtoipLine || d.line === arrtoipLine)
+    );
+
+    const inWarnings = typeWarnings.filter(d =>
+      d.message.includes("'in' operator") &&
+      (d.range?.start?.line === inLine || d.line === inLine)
+    );
+
+    if (arrtoipWarnings.length > 0) {
+      throw new Error(`arrtoip warnings: ${JSON.stringify(arrtoipWarnings, null, 2)}`);
+    }
+
+    if (inWarnings.length > 0) {
+      throw new Error(`in-operator warnings: ${JSON.stringify(inWarnings, null, 2)}`);
+    }
+  } finally {
+    if (fs.existsSync(testPath)) {
+      fs.unlinkSync(testPath);
+    }
+  }
+});
+
 test("should narrow type in logical AND (&&) expressions", async () => {
   const content = `function null_or_object(test) {
     if (type(test) == "string") return null;
@@ -1906,13 +2053,416 @@ if (type(a) == 'object') {
 
   try {
     const diagnostics = await getDiagnostics(content, testPath);
-    const nullDiagnostics = diagnostics.filter(d => 
+    const nullDiagnostics = diagnostics.filter(d =>
       d.message.includes("null") || d.message.includes("possibly")
     );
-    
+
     // After narrowing to 'object', no null/possibly diagnostics should appear
     expect(nullDiagnostics.length).toBe(0);
     console.log("✓ Type guard suppresses diagnostics for narrowed operations");
+
+  } finally {
+    if (fs.existsSync(testPath)) {
+      fs.unlinkSync(testPath);
+    }
+  }
+});
+
+test("should narrow type in switch statement based on type() discriminant", async () => {
+  const content = `function array_or_object(test) {
+    if (type(test) == 'int') {
+        return {"a": 5};
+    }
+    return [5];
+}
+
+let d = array_or_object(0);
+
+switch(type(d))
+{
+    case 'object':
+        print(d);
+        break;
+    case 'array':
+        print(d);
+        break;
+    default:
+        print(d);
+        break;
+}`;
+
+  const testPath = path.join(__dirname, "temp-switch-type-discriminant.uc");
+  fs.writeFileSync(testPath, content);
+
+  try {
+    const lines = content.split("\n");
+
+    // Find the three print(d) statements
+    const objectCaseLine = lines.findIndex((line, idx) => {
+      return line.includes("case 'object':") && lines[idx + 1]?.includes("print(d)");
+    }) + 1;
+
+    const arrayCaseLine = lines.findIndex((line, idx) => {
+      return line.includes("case 'array':") && lines[idx + 1]?.includes("print(d)");
+    }) + 1;
+
+    const defaultCaseLine = lines.findIndex((line, idx) => {
+      return line.includes("default:") && lines[idx + 1]?.includes("print(d)");
+    }) + 1;
+
+    // Check hover in 'object' case
+    const objectCol = lines[objectCaseLine].indexOf("d");
+    const objectHover = await getHover(content, testPath, objectCaseLine, objectCol);
+    const objectHoverText = typeof objectHover?.contents === "string"
+      ? objectHover.contents
+      : (objectHover?.contents?.value || "");
+
+    console.log(`Object case hover (line ${objectCaseLine}):`, objectHoverText);
+    expect(objectHoverText).toContain("object");
+    expect(objectHoverText).not.toContain("array");
+
+    // Check hover in 'array' case
+    const arrayCol = lines[arrayCaseLine].indexOf("d");
+    const arrayHover = await getHover(content, testPath, arrayCaseLine, arrayCol);
+    const arrayHoverText = typeof arrayHover?.contents === "string"
+      ? arrayHover.contents
+      : (arrayHover?.contents?.value || "");
+
+    console.log(`Array case hover (line ${arrayCaseLine}):`, arrayHoverText);
+    expect(arrayHoverText).toContain("array");
+    expect(arrayHoverText).not.toContain("object");
+
+    // Check hover in default case - should show remaining types after narrowing out object and array
+    const defaultCol = lines[defaultCaseLine].indexOf("d");
+    const defaultHover = await getHover(content, testPath, defaultCaseLine, defaultCol);
+    const defaultHoverText = typeof defaultHover?.contents === "string"
+      ? defaultHover.contents
+      : (defaultHover?.contents?.value || "");
+
+    console.log(`Default case hover (line ${defaultCaseLine}):`, defaultHoverText);
+    // Default should show unknown/null or be empty since all possible types are covered
+    expect(defaultHoverText).not.toContain("object");
+    expect(defaultHoverText).not.toContain("array");
+
+    console.log("✓ Switch statement narrows types based on type() discriminant");
+
+  } finally {
+    if (fs.existsSync(testPath)) {
+      fs.unlinkSync(testPath);
+    }
+  }
+});
+
+test("should handle switch fall-through with explicit case bodies", async () => {
+  const content = `function array_or_object(test) {
+    if (type(test) == 'int') {
+        return {"a": 5};
+    }
+    return [5];
+}
+
+let d = array_or_object(0);
+
+switch(type(d))
+{
+    case 'object':
+        print(d, "object");
+    case 'array':
+        print(d, "array");
+    default:
+        print(d);
+        break;
+}`;
+
+  const testPath = path.join(__dirname, "temp-switch-true-fallthrough.uc");
+  fs.writeFileSync(testPath, content);
+
+  try {
+    const lines = content.split("\n");
+
+    // Find each print statement
+    let objectPrintLine = -1;
+    let arrayPrintLine = -1;
+    let defaultPrintLine = -1;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes('case \'object\':')) {
+        objectPrintLine = i + 1;
+      } else if (lines[i].includes('case \'array\':')) {
+        arrayPrintLine = i + 1;
+      } else if (lines[i].includes('default:')) {
+        defaultPrintLine = i + 1;
+      }
+    }
+
+    // Check hover in object case - should be just object
+    const objectCol = lines[objectPrintLine].indexOf("d");
+    const objectHover = await getHover(content, testPath, objectPrintLine, objectCol);
+    const objectHoverText = typeof objectHover?.contents === "string"
+      ? objectHover.contents
+      : (objectHover?.contents?.value || "");
+
+    console.log(`Object case (no break) hover (line ${objectPrintLine}):`, objectHoverText);
+    expect(objectHoverText).toContain("object");
+    expect(objectHoverText).not.toContain("array");
+
+    // Check hover in array case - should be object | array (can reach from object fallthrough OR array match)
+    const arrayCol = lines[arrayPrintLine].indexOf("d");
+    const arrayHover = await getHover(content, testPath, arrayPrintLine, arrayCol);
+    const arrayHoverText = typeof arrayHover?.contents === "string"
+      ? arrayHover.contents
+      : (arrayHover?.contents?.value || "");
+
+    console.log(`Array case (with fallthrough) hover (line ${arrayPrintLine}):`, arrayHoverText);
+    expect(arrayHoverText).toContain("array");
+    expect(arrayHoverText).toContain("object");
+
+    // Check hover in default case - should be object | array (all cases fall through)
+    const defaultCol = lines[defaultPrintLine].indexOf("d");
+    const defaultHover = await getHover(content, testPath, defaultPrintLine, defaultCol);
+    const defaultHoverText = typeof defaultHover?.contents === "string"
+      ? defaultHover.contents
+      : (defaultHover?.contents?.value || "");
+
+    console.log(`Default case (with fallthrough from all) hover (line ${defaultPrintLine}):`, defaultHoverText);
+    expect(defaultHoverText).toContain("array");
+    expect(defaultHoverText).toContain("object");
+
+    console.log("✓ Switch fall-through with explicit bodies shows correct type widening");
+
+  } finally {
+    if (fs.existsSync(testPath)) {
+      fs.unlinkSync(testPath);
+    }
+  }
+});
+
+test("should handle switch fall-through with empty cases", async () => {
+  const content = `function multi_type(test) {
+    if (type(test) == 'int') {
+        return {"a": 5};
+    }
+    if (type(test) == 'string') {
+        return [5];
+    }
+    return "str";
+}
+
+let d = multi_type(0);
+
+switch(type(d))
+{
+    case 'object':
+    case 'array':
+        // Both object and array fall through here - type should be object | array
+        print(d);
+        break;
+    case 'string':
+        print(d);
+        break;
+}`;
+
+  const testPath = path.join(__dirname, "temp-switch-empty-fallthrough.uc");
+  fs.writeFileSync(testPath, content);
+
+  try {
+    const lines = content.split("\n");
+
+    // Find the print(d) in the fall-through section
+    const fallthroughLine = lines.findIndex((line, idx) => {
+      return line.includes("Both object and array") && lines[idx + 1]?.includes("print(d)");
+    }) + 1;
+
+    const stringLine = lines.findIndex((line, idx) => {
+      return line.includes("case 'string':") && lines[idx + 1]?.includes("print(d)");
+    }) + 1;
+
+    // Check hover in fall-through case - should show object | array
+    const fallthroughCol = lines[fallthroughLine].indexOf("d");
+    const fallthroughHover = await getHover(content, testPath, fallthroughLine, fallthroughCol);
+    const fallthroughHoverText = typeof fallthroughHover?.contents === "string"
+      ? fallthroughHover.contents
+      : (fallthroughHover?.contents?.value || "");
+
+    console.log(`Empty fall-through case hover (line ${fallthroughLine}):`, fallthroughHoverText);
+    expect(fallthroughHoverText).toContain("array");
+    expect(fallthroughHoverText).toContain("object");
+
+    // Check hover in string case
+    const stringCol = lines[stringLine].indexOf("d");
+    const stringHover = await getHover(content, testPath, stringLine, stringCol);
+    const stringHoverText = typeof stringHover?.contents === "string"
+      ? stringHover.contents
+      : (stringHover?.contents?.value || "");
+
+    console.log(`String case hover (line ${stringLine}):`, stringHoverText);
+    expect(stringHoverText).toContain("string");
+    expect(stringHoverText).not.toContain("object");
+    expect(stringHoverText).not.toContain("array");
+
+    console.log("✓ Switch empty case fall-through shows union type");
+
+  } finally {
+    if (fs.existsSync(testPath)) {
+      fs.unlinkSync(testPath);
+    }
+  }
+});
+
+test("should narrow default case when not all types are handled", async () => {
+  const content = `function multi_type(test) {
+    if (type(test) == 'int') {
+        return {"a": 5};
+    }
+    if (type(test) == 'string') {
+        return [5];
+    }
+    return "str";
+}
+
+let d = multi_type(0);
+
+switch(type(d))
+{
+    case 'object':
+        print(d);
+        break;
+    default:
+        // Should narrow to array | string (everything except object)
+        print(d);
+        break;
+}`;
+
+  const testPath = path.join(__dirname, "temp-switch-partial-default.uc");
+  fs.writeFileSync(testPath, content);
+
+  try {
+    const lines = content.split("\n");
+
+    const objectLine = lines.findIndex((line, idx) => {
+      return line.includes("case 'object':") && lines[idx + 1]?.includes("print(d)");
+    }) + 1;
+
+    const defaultLine = lines.findIndex((line, idx) => {
+      return line.includes("// Should narrow") && lines[idx + 1]?.includes("print(d)");
+    }) + 1;
+
+    // Check hover in object case
+    const objectCol = lines[objectLine].indexOf("d");
+    const objectHover = await getHover(content, testPath, objectLine, objectCol);
+    const objectHoverText = typeof objectHover?.contents === "string"
+      ? objectHover.contents
+      : (objectHover?.contents?.value || "");
+
+    console.log(`Object case hover (line ${objectLine}):`, objectHoverText);
+    expect(objectHoverText).toContain("object");
+    expect(objectHoverText).not.toContain("array");
+    expect(objectHoverText).not.toContain("string");
+
+    // Check hover in default case - should show array | string (not object)
+    const defaultCol = lines[defaultLine].indexOf("d");
+    const defaultHover = await getHover(content, testPath, defaultLine, defaultCol);
+    const defaultHoverText = typeof defaultHover?.contents === "string"
+      ? defaultHover.contents
+      : (defaultHover?.contents?.value || "");
+
+    console.log(`Default case hover (line ${defaultLine}):`, defaultHoverText);
+    expect(defaultHoverText).toContain("array");
+    expect(defaultHoverText).toContain("string");
+    expect(defaultHoverText).not.toContain("object");
+
+    console.log("✓ Default case correctly narrows to remaining types");
+
+  } finally {
+    if (fs.existsSync(testPath)) {
+      fs.unlinkSync(testPath);
+    }
+  }
+});
+
+test("should handle default case with fall-through and unhandled types", async () => {
+  const content = `function array_or_object(test) {
+    if (type(test) == 'int') {
+        return {"a": 5};
+    }
+    if (type(test) == "double") {
+        return null;
+    }
+    return [5];
+}
+
+let d = array_or_object(5.0);
+
+switch(type(d))
+{
+    case 'object':
+        print(d, "object");
+    case 'array':
+        print(d, "array");
+    default:
+        print(d, " default");
+        break;
+}`;
+
+  const testPath = path.join(__dirname, "temp-switch-default-fallthrough-unhandled.uc");
+  fs.writeFileSync(testPath, content);
+
+  try {
+    const lines = content.split("\n");
+
+    // Find each print statement
+    let objectPrintLine = -1;
+    let arrayPrintLine = -1;
+    let defaultPrintLine = -1;
+
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes('case \'object\':')) {
+        objectPrintLine = i + 1;
+      } else if (lines[i].includes('case \'array\':')) {
+        arrayPrintLine = i + 1;
+      } else if (lines[i].includes('default:')) {
+        defaultPrintLine = i + 1;
+      }
+    }
+
+    // Check hover in object case - should be just object
+    const objectCol = lines[objectPrintLine].indexOf("d");
+    const objectHover = await getHover(content, testPath, objectPrintLine, objectCol);
+    const objectHoverText = typeof objectHover?.contents === "string"
+      ? objectHover.contents
+      : (objectHover?.contents?.value || "");
+
+    console.log(`Object case (no break) hover (line ${objectPrintLine}):`, objectHoverText);
+    expect(objectHoverText).toContain("object");
+    expect(objectHoverText).not.toContain("array");
+    expect(objectHoverText).not.toContain("null");
+
+    // Check hover in array case - should be object | array (fall-through from object)
+    const arrayCol = lines[arrayPrintLine].indexOf("d");
+    const arrayHover = await getHover(content, testPath, arrayPrintLine, arrayCol);
+    const arrayHoverText = typeof arrayHover?.contents === "string"
+      ? arrayHover.contents
+      : (arrayHover?.contents?.value || "");
+
+    console.log(`Array case (with fallthrough) hover (line ${arrayPrintLine}):`, arrayHoverText);
+    expect(arrayHoverText).toContain("array");
+    expect(arrayHoverText).toContain("object");
+    expect(arrayHoverText).not.toContain("null");
+
+    // Check hover in default case - should be object | array | null
+    // (fall-through from object/array + unhandled null type)
+    const defaultCol = lines[defaultPrintLine].indexOf("d");
+    const defaultHover = await getHover(content, testPath, defaultPrintLine, defaultCol);
+    const defaultHoverText = typeof defaultHover?.contents === "string"
+      ? defaultHover.contents
+      : (defaultHover?.contents?.value || "");
+
+    console.log(`Default case (with fallthrough + unhandled) hover (line ${defaultPrintLine}):`, defaultHoverText);
+    expect(defaultHoverText).toContain("array");
+    expect(defaultHoverText).toContain("object");
+    expect(defaultHoverText).toContain("null");
+
+    console.log("✓ Default case with fall-through correctly includes unhandled types");
 
   } finally {
     if (fs.existsSync(testPath)) {

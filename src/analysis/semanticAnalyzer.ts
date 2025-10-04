@@ -1796,6 +1796,19 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       this.switchScopes.push(this.symbolTable.getCurrentScope());
     }
 
+    if (this.options.enableTypeChecking) {
+      this.typeChecker.checkNode(node);
+      const result = this.typeChecker.getResult();
+
+      for (const error of result.errors) {
+        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
+      }
+
+      for (const warning of result.warnings) {
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
+      }
+    }
+
     // Continue with default traversal
     super.visitSwitchStatement(node);
 

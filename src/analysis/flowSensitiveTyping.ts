@@ -33,12 +33,20 @@ export class FlowSensitiveTypeTracker {
   private symbolTable: SymbolTable;
   private flowTypeStack: FlowTypeInfo[][] = []; // Stack of scopes, each containing narrowed types
   private currentScopeId = 0;
+  private getActiveGuardCallback?: (variableName: string, position: number) => UcodeDataType | null;
 
   constructor(symbolTable: SymbolTable) {
     this.symbolTable = symbolTable;
     this.narrowingEngine = new TypeNarrowingEngine();
     // Initialize with global scope
     this.flowTypeStack.push([]);
+  }
+
+  /**
+   * Set a callback to get active guard types from the type checker
+   */
+  setActiveGuardCallback(callback: (variableName: string, position: number) => UcodeDataType | null): void {
+    this.getActiveGuardCallback = callback;
   }
 
   /**
@@ -102,29 +110,29 @@ export class FlowSensitiveTypeTracker {
    */
   analyzeIfStatement(ifStatement: IfStatementNode): TypeGuardInfo[] {
     const guards: TypeGuardInfo[] = [];
-    
+
     if (ifStatement.test && ifStatement.test.type === 'BinaryExpression') {
       const binaryExpr = ifStatement.test as BinaryExpressionNode;
-      const guard = this.extractTypeGuard(binaryExpr);
+      const guard = this.extractTypeGuard(binaryExpr, ifStatement.test.start);
       if (guard) {
         guards.push(guard);
       }
     }
-    
+
     return guards;
   }
 
   /**
    * Extract type guard information from a binary expression
    */
-  private extractTypeGuard(expr: BinaryExpressionNode): TypeGuardInfo | null {
-    // Handle null checks: variable != null, variable == null, etc.
+  private extractTypeGuard(expr: BinaryExpressionNode, position: number): TypeGuardInfo | null {
+    // Handle null checks: variable != null
     if ((expr.operator === '!=' || expr.operator === '!==') && this.isNullLiteral(expr.right)) {
       const variableName = this.getVariableName(expr.left);
       if (variableName) {
-        const originalType = this.getOriginalVariableType(variableName);
-        
-        
+        const originalType = this.getOriginalVariableType(variableName, position);
+
+
         if (originalType) {
           const narrowingResult = this.narrowingEngine.removeNullFromType(originalType);
           return {
@@ -140,6 +148,68 @@ export class FlowSensitiveTypeTracker {
       }
     }
 
+    // Handle reversed null checks: null != variable
+    if ((expr.operator === '!=' || expr.operator === '!==') && this.isNullLiteral(expr.left)) {
+      const variableName = this.getVariableName(expr.right);
+      if (variableName) {
+        const originalType = this.getOriginalVariableType(variableName, position);
+        if (originalType) {
+          const narrowingResult = this.narrowingEngine.removeNullFromType(originalType);
+          return {
+            variableName,
+            guard: {
+              type: 'null-check',
+              expression: `${variableName} != null`
+            },
+            positiveNarrowing: narrowingResult.narrowedType,
+            negativeNarrowing: originalType
+          };
+        }
+      }
+    }
+
+    // Handle equality null checks: variable == null
+    if ((expr.operator === '==' || expr.operator === '===') && this.isNullLiteral(expr.right)) {
+      const variableName = this.getVariableName(expr.left);
+      if (variableName) {
+        const originalType = this.getOriginalVariableType(variableName, position);
+        if (originalType) {
+          const positiveNarrowing = this.narrowingEngine.keepOnlyTypes(originalType, [UcodeType.NULL]);
+          const negativeNarrowing = this.narrowingEngine.removeNullFromType(originalType);
+          return {
+            variableName,
+            guard: {
+              type: 'null-check',
+              expression: `${variableName} == null`
+            },
+            positiveNarrowing: positiveNarrowing.narrowedType,
+            negativeNarrowing: negativeNarrowing.narrowedType
+          };
+        }
+      }
+    }
+
+    // Handle reversed equality null checks: null == variable
+    if ((expr.operator === '==' || expr.operator === '===') && this.isNullLiteral(expr.left)) {
+      const variableName = this.getVariableName(expr.right);
+      if (variableName) {
+        const originalType = this.getOriginalVariableType(variableName, position);
+        if (originalType) {
+          const positiveNarrowing = this.narrowingEngine.keepOnlyTypes(originalType, [UcodeType.NULL]);
+          const negativeNarrowing = this.narrowingEngine.removeNullFromType(originalType);
+          return {
+            variableName,
+            guard: {
+              type: 'null-check',
+              expression: `${variableName} == null`
+            },
+            positiveNarrowing: positiveNarrowing.narrowedType,
+            negativeNarrowing: negativeNarrowing.narrowedType
+          };
+        }
+      }
+    }
+
     // Handle type checks: type(variable) == 'array', etc.
     if (expr.operator === '==' && this.isTypeCall(expr.left) && this.isStringLiteral(expr.right)) {
       const typeCall = expr.left as any;
@@ -147,9 +217,9 @@ export class FlowSensitiveTypeTracker {
         const variableName = this.getVariableName(typeCall.arguments[0]);
         const testedTypeStr = (expr.right as any).value;
         const testedType = this.stringToUcodeType(testedTypeStr);
-        
+
         if (variableName && testedType) {
-          const originalType = this.getOriginalVariableType(variableName);
+          const originalType = this.getOriginalVariableType(variableName, position);
           if (originalType) {
             const positiveNarrowing = this.narrowingEngine.keepOnlyTypes(originalType, [testedType]);
             const negativeNarrowing = this.narrowingEngine.removeTypesFromUnion(originalType, [testedType]);
@@ -193,11 +263,20 @@ export class FlowSensitiveTypeTracker {
     return null;
   }
 
-  private getOriginalVariableType(variableName: string): UcodeDataType | null {
+  private getOriginalVariableType(variableName: string, position: number): UcodeDataType | null {
     const symbol = this.symbolTable.lookup(variableName);
     if (symbol) {
-      // Get the symbol's original type before any flow-sensitive narrowing
-      return symbol.dataType;
+      // First check for guard context from type checker (for nested guards)
+      if (this.getActiveGuardCallback) {
+        const guardType = this.getActiveGuardCallback(variableName, position);
+        if (guardType) {
+          return guardType;
+        }
+      }
+
+      // Then check flow-sensitive narrowing
+      const effectiveType = this.getEffectiveType(variableName, position);
+      return effectiveType || symbol.dataType;
     }
     return null;
   }

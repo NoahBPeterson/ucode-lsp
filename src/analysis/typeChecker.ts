@@ -8,7 +8,8 @@ import {
   CallExpressionNode, MemberExpressionNode, AssignmentExpressionNode, ArrayExpressionNode,
   ObjectExpressionNode, ConditionalExpressionNode, ArrowFunctionExpressionNode,
   FunctionExpressionNode, IfStatementNode, ProgramNode, BlockStatementNode,
-  ExpressionStatementNode, FunctionDeclarationNode, VariableDeclarationNode
+  ExpressionStatementNode, FunctionDeclarationNode, VariableDeclarationNode,
+  SwitchStatementNode, SwitchCaseNode
 } from '../ast/nodes';
 
 /**
@@ -16,10 +17,11 @@ import {
  */
 interface TypeGuardInfo {
   variableName: string;
-  // The narrowed type - if null, means "remove null from type"
-  // If specified, means "narrow to exactly this type"
+  // The narrowed type. When set to UcodeType.NULL with isNegative true, null is removed.
+  // When set to UcodeType.NULL with isNegative false, type is narrowed to just null.
+  // For other UcodeType values, isNegative false keeps only that type, true removes it.
   narrowToType: UcodeType | null;
-  // Whether this is a negative narrowing (e.g., in else block)
+  // Whether this is a negative narrowing (e.g., removing the type in else block)
   isNegative: boolean;
 }
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes, createUnionType, Symbol as UcodeSymbol } from './symbolTable';
@@ -91,6 +93,9 @@ export class TypeChecker {
     // Inject type checker into builtin validator
     // Use a method that returns the full type description including unions
     this.builtinValidator.setTypeChecker(this.getNodeTypeDescription.bind(this));
+
+    // Set up callback so flowSensitiveTracker can access guard contexts from typeChecker
+    this.flowSensitiveTracker.setActiveGuardCallback(this.getActiveGuardType.bind(this));
 
     this.initializeBuiltins();
   }
@@ -296,6 +301,19 @@ export class TypeChecker {
         return UcodeType.STRING;
       case 'IfStatement':
         return this.checkIfStatement(node as any);
+      case 'ExpressionStatement':
+        return this.checkExpressionStatement(node as ExpressionStatementNode);
+      case 'VariableDeclaration':
+        return this.checkVariableDeclaration(node as VariableDeclarationNode);
+      case 'BlockStatement':
+        return this.checkBlockStatement(node as BlockStatementNode);
+      case 'ReturnStatement':
+        return this.checkReturnStatement(node as any);
+      case 'BreakStatement':
+      case 'ContinueStatement':
+        return UcodeType.UNKNOWN;
+      case 'SwitchStatement':
+        return this.checkSwitchStatement(node as SwitchStatementNode);
       default:
         return UcodeType.UNKNOWN;
     }
@@ -352,7 +370,10 @@ export class TypeChecker {
       }
       
       // Store the full type information in the node for later use by type narrowing
-      (node as any)._fullType = dataType;
+      const existingFullType = (node as any)._fullType as UcodeDataType | undefined;
+      if (!existingFullType || this.shouldUpdateFullType(existingFullType, dataType)) {
+        (node as any)._fullType = dataType;
+      }
       
       // Convert UcodeDataType to UcodeType for backwards compatibility
       if (typeof dataType === 'string') {
@@ -380,6 +401,41 @@ export class TypeChecker {
     }
 
     return symbol.dataType;
+  }
+
+  private shouldUpdateFullType(existingType: UcodeDataType, candidateType: UcodeDataType): boolean {
+    // If either type is a module/object reference, prefer the latest information
+    if (this.isModuleLikeType(candidateType) || this.isModuleLikeType(existingType)) {
+      return true;
+    }
+
+    const existingTypes = getUnionTypes(existingType);
+    const candidateTypes = getUnionTypes(candidateType);
+
+    const candidateSubsetOfExisting = candidateTypes.every(type => existingTypes.includes(type));
+    const existingSubsetOfCandidate = existingTypes.every(type => candidateTypes.includes(type));
+
+    if (candidateSubsetOfExisting && !existingSubsetOfCandidate) {
+      // Candidate removes options -> narrower
+      return true;
+    }
+
+    if (candidateSubsetOfExisting && existingSubsetOfCandidate) {
+      // Types identical -> allow refresh
+      return true;
+    }
+
+    if (!candidateSubsetOfExisting && existingSubsetOfCandidate) {
+      // Candidate introduces new possibilities -> keep existing narrow type
+      return false;
+    }
+
+    // Fallback: accept update when sets are incomparable
+    return true;
+  }
+
+  private isModuleLikeType(type: UcodeDataType): boolean {
+    return typeof type === 'object' && !isUnionType(type) && 'moduleName' in (type as any);
   }
 
   private checkBinaryExpression(node: BinaryExpressionNode): UcodeType {
@@ -502,25 +558,38 @@ export class TypeChecker {
 
   private checkInOperator(node: BinaryExpressionNode, _leftType: UcodeType, rightType: UcodeType): UcodeType {
     // Get the full type data for the right operand
-    const rightTypeData = this.getFullTypeFromNode(node.right) || this.getTypeAsDataType(rightType);
+    let rightTypeData = this.getFullTypeFromNode(node.right) || this.getTypeAsDataType(rightType);
 
     // Check for flow-sensitive narrowing using direct AST analysis
     if (node.right.type === 'Identifier') {
       const variableName = (node.right as IdentifierNode).name;
 
+      // Incorporate guard contexts first (e.g., from equality null checks)
+      const guardContextType = this.getActiveGuardType(variableName, node.right.start);
+      if (guardContextType) {
+        rightTypeData = guardContextType;
+      } else {
+        const flowType = this.flowSensitiveTracker.getEffectiveType(variableName, node.right.start);
+        if (flowType) {
+          rightTypeData = flowType;
+        }
+      }
+
       // Check if we're inside any type guard for this variable
       // Use the position of the variable itself (node.right.start), not the start of the 'in' expression
-      const guardInfo = this.findContainingGuard(this.currentAST, variableName, node.right.start);
-      if (guardInfo) {
-        // Apply the guard to get the narrowed type
-        const narrowedType = this.applyTypeGuard(rightTypeData, guardInfo);
+      const guardChain = this.getGuardsForPosition(this.currentAST, variableName, node.right.start);
+      if (guardChain.length > 0) {
+        let narrowedType = rightTypeData;
+        for (const guardInfo of guardChain) {
+          narrowedType = this.applyTypeGuard(narrowedType, guardInfo);
+        }
 
-        // Re-check compatibility with narrowed type
         if (this.typeNarrowing.isSubtype(narrowedType, UcodeType.OBJECT) ||
             this.typeNarrowing.isSubtype(narrowedType, UcodeType.ARRAY)) {
-          // The narrowed type is compatible, no error needed
           return UcodeType.BOOLEAN;
         }
+
+        rightTypeData = narrowedType;
       }
     }
     
@@ -602,16 +671,29 @@ export class TypeChecker {
       const identifierNode = node as IdentifierNode;
       const variableName = identifierNode.name;
 
-      // Check for flow-sensitive narrowing using findContainingGuard
-      const guardInfo = this.findContainingGuard(this.currentAST, variableName, node.start);
-      if (guardInfo) {
-        // Get the base type and apply the guard
-        const fullType = this.getFullTypeFromNode(node);
-        if (fullType) {
-          const narrowedType = this.applyTypeGuard(fullType, guardInfo);
-          return this.getTypeDescription(narrowedType) as UcodeType;
-        }
+      // First check for active guard from outer scope (guardContextStack)
+      let baseType = this.getFullTypeFromNode(node);
+      if (!baseType) {
+        return UcodeType.UNKNOWN;
       }
+
+      const activeGuardType = this.getActiveGuardType(variableName, node.start);
+      if (activeGuardType) {
+        baseType = activeGuardType;
+      }
+
+      // Then check for flow-sensitive narrowing from current if statement
+      const guards = this.getGuardsForPosition(this.currentAST, variableName, node.start);
+      if (guards.length > 0) {
+        let narrowedType = baseType;
+        for (const guardInfo of guards) {
+          narrowedType = this.applyTypeGuard(narrowedType, guardInfo);
+        }
+        return this.getTypeDescription(narrowedType) as UcodeType;
+      }
+
+      // Return the base type (possibly narrowed by outer guard)
+      return this.getTypeDescription(baseType) as UcodeType;
     }
 
     // Get the full type data (which includes unions)
@@ -1370,6 +1452,175 @@ export class TypeChecker {
     return UcodeType.UNKNOWN; // If statements don't return values
   }
 
+  private checkExpressionStatement(node: ExpressionStatementNode): UcodeType {
+    return this.checkNode(node.expression);
+  }
+
+  private checkVariableDeclaration(node: VariableDeclarationNode): UcodeType {
+    for (const declarator of node.declarations) {
+      if (declarator.init) {
+        this.checkNode(declarator.init);
+      }
+    }
+    return UcodeType.UNKNOWN;
+  }
+
+  private checkBlockStatement(node: BlockStatementNode): UcodeType {
+    for (const statement of node.body) {
+      this.checkNode(statement);
+    }
+    return UcodeType.UNKNOWN;
+  }
+
+  private checkReturnStatement(node: any): UcodeType {
+    if (node.argument) {
+      return this.checkNode(node.argument);
+    }
+    return UcodeType.UNKNOWN;
+  }
+
+  private checkSwitchStatement(node: SwitchStatementNode): UcodeType {
+    this.checkNode(node.discriminant);
+
+    const switchInfo = this.getTypeSwitchVariable(node.discriminant);
+    const handledTypes: UcodeType[] = [];
+
+    for (const caseNode of node.cases) {
+      let pushedGuard = false;
+
+      if (switchInfo && caseNode.consequent.length > 0) {
+        const { start, end } = this.getCaseRange(caseNode);
+        const baseType = this.getBaseTypeForPosition(switchInfo.variableName, start);
+        let narrowedType: UcodeDataType | null = null;
+
+        if (caseNode.test && caseNode.test.type === 'Literal') {
+          const caseLiteral = caseNode.test as LiteralNode;
+          if (typeof caseLiteral.value === 'string') {
+            const testedType = this.stringLiteralToUcodeType(caseLiteral.value);
+            if (testedType) {
+              if (!handledTypes.includes(testedType)) {
+                handledTypes.push(testedType);
+              }
+              narrowedType = this.typeNarrowing.keepOnlyTypes(baseType, [testedType]).narrowedType;
+            }
+          }
+        } else if (!caseNode.test && handledTypes.length > 0) {
+          narrowedType = this.typeNarrowing.removeTypesFromUnion(baseType, handledTypes).narrowedType;
+        } else if (!caseNode.test) {
+          narrowedType = baseType;
+        }
+
+        if (narrowedType) {
+          this.pushGuardContext(switchInfo.variableName, narrowedType, start, end);
+          pushedGuard = true;
+        }
+      }
+
+      for (const statement of caseNode.consequent) {
+        this.checkNode(statement);
+      }
+
+      if (switchInfo && pushedGuard) {
+        this.popGuardContext();
+      }
+    }
+
+    return UcodeType.UNKNOWN;
+  }
+
+  private getTypeSwitchVariable(discriminant: AstNode): { variableName: string } | null {
+    if (discriminant.type !== 'CallExpression') {
+      return null;
+    }
+
+    const callExpr = discriminant as CallExpressionNode;
+    if (callExpr.callee.type !== 'Identifier' ||
+        (callExpr.callee as IdentifierNode).name !== 'type') {
+      return null;
+    }
+
+    if (!callExpr.arguments.length || !callExpr.arguments[0] || callExpr.arguments[0].type !== 'Identifier') {
+      return null;
+    }
+
+    const variableName = (callExpr.arguments[0] as IdentifierNode).name;
+    return { variableName };
+  }
+
+  private getCaseRange(caseNode: SwitchCaseNode): { start: number; end: number } {
+    if (caseNode.consequent.length > 0) {
+      const first = caseNode.consequent[0]!;
+      const last = caseNode.consequent[caseNode.consequent.length - 1]!;
+      return {
+        start: first.start,
+        end: last.end
+      };
+    }
+
+    return { start: caseNode.start, end: caseNode.end };
+  }
+
+  private stringLiteralToUcodeType(value: string): UcodeType | null {
+    switch (value) {
+      case 'array':
+        return UcodeType.ARRAY;
+      case 'object':
+        return UcodeType.OBJECT;
+      case 'string':
+        return UcodeType.STRING;
+      case 'int':
+        return UcodeType.INTEGER;
+      case 'double':
+        return UcodeType.DOUBLE;
+      case 'bool':
+        return UcodeType.BOOLEAN;
+      case 'function':
+        return UcodeType.FUNCTION;
+      case 'null':
+        return UcodeType.NULL;
+      default:
+        return null;
+    }
+  }
+
+  private getBaseTypeForPosition(variableName: string, position: number): UcodeDataType {
+    const guardType = this.getActiveGuardType(variableName, position);
+    if (guardType) {
+      return guardType;
+    }
+
+    const flowType = this.flowSensitiveTracker.getEffectiveType(variableName, position);
+    if (flowType) {
+      return flowType;
+    }
+
+    const symbol = this.symbolTable.lookup(variableName);
+    return symbol ? symbol.dataType : UcodeType.UNKNOWN;
+  }
+
+  /**
+   * Check if a switch case has a break/return statement
+   */
+  private caseHasBreak(caseNode: SwitchCaseNode): boolean {
+    for (const statement of caseNode.consequent) {
+      if (statement.type === 'BreakStatement' || statement.type === 'ReturnStatement') {
+        return true;
+      }
+      // Check inside block statements
+      if (statement.type === 'BlockStatement') {
+        const blockNode = statement as any;
+        if (blockNode.body && Array.isArray(blockNode.body)) {
+          for (const innerStmt of blockNode.body) {
+            if (innerStmt.type === 'BreakStatement' || innerStmt.type === 'ReturnStatement') {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   getCommonReturnType(types: UcodeType[]): UcodeDataType {
     return this.typeCompatibility.getCommonType(types);
   }
@@ -1399,9 +1650,23 @@ export class TypeChecker {
     const baseType = symbol.dataType;
 
     // Check if this position is inside a type guard
-    const guardInfo = this.findContainingGuard(this.currentAST, variableName, position);
-    if (guardInfo) {
-      return this.applyTypeGuard(baseType, guardInfo);
+    const guards = this.getGuardsForPosition(this.currentAST, variableName, position);
+    if (guards.length > 0) {
+      const positiveGuards = guards.filter(g => !g.isNegative && g.narrowToType !== null);
+
+      if (positiveGuards.length > 1) {
+        // Multiple positive guards - combine into union (fall-through case without default)
+        const types = positiveGuards.map(g => g.narrowToType!);
+        const narrowingResult = this.typeNarrowing.keepOnlyTypes(baseType, types);
+        return narrowingResult.narrowedType;
+      }
+
+      // Single guard or all negative - apply sequentially
+      let narrowedType = baseType;
+      for (const guardInfo of guards) {
+        narrowedType = this.applyTypeGuard(narrowedType, guardInfo);
+      }
+      return narrowedType;
     }
 
     return null; // No narrowing applies
@@ -1412,102 +1677,196 @@ export class TypeChecker {
    */
   private applyTypeGuard(baseType: UcodeDataType, guard: TypeGuardInfo): UcodeDataType {
     if (guard.narrowToType === null) {
-      // Null guard - remove null from type
+      return baseType;
+    }
+
+    if (guard.narrowToType === UcodeType.NULL) {
       if (guard.isNegative) {
-        // In else block of (a == null), variable is non-null
-        const narrowingResult = this.typeNarrowing.removeNullFromType(baseType);
-        return narrowingResult.narrowedType;
-      } else {
-        // In then block of (a != null), variable is non-null
+        // Remove null from the union (non-null branch)
         const narrowingResult = this.typeNarrowing.removeNullFromType(baseType);
         return narrowingResult.narrowedType;
       }
-    } else {
-      // Type guard - narrow to specific type
-      return guard.narrowToType;
+
+      // Keep only null in the positive equality branch
+      const narrowingResult = this.typeNarrowing.keepOnlyTypes(baseType, [UcodeType.NULL]);
+      return narrowingResult.narrowedType;
     }
+
+    if (guard.isNegative) {
+      // Remove the specified type in negative branch
+      const narrowingResult = this.typeNarrowing.removeTypesFromUnion(baseType, [guard.narrowToType]);
+      return narrowingResult.narrowedType;
+    }
+
+    // Positive branch keeps only the specified type
+    const narrowingResult = this.typeNarrowing.keepOnlyTypes(baseType, [guard.narrowToType]);
+    return narrowingResult.narrowedType;
   }
 
   /**
-   * Find the type guard that applies to this position
+   * Collect all guards that apply to the variable at the specified position
    */
-  private findContainingGuard(ast: AstNode | null, variableName: string, position: number): TypeGuardInfo | null {
+  private getGuardsForPosition(ast: AstNode | null, variableName: string, position: number): TypeGuardInfo[] {
     if (!ast) {
-      return null;
+      return [];
     }
 
-    return this.findGuardInNode(ast, variableName, position);
+    const guards: TypeGuardInfo[] = [];
+    this.collectGuards(ast, variableName, position, guards);
+    return guards;
   }
 
+  private collectGuards(node: AstNode | null, variableName: string, position: number, guards: TypeGuardInfo[]): void {
+    if (!node) {
+      return;
+    }
 
-  /**
-   * Recursively search for if statements and logical AND expressions that narrow types
-   */
-  private findGuardInNode(node: AstNode, variableName: string, position: number): TypeGuardInfo | null {
-    // First check if this node itself provides narrowing for the position
-
-    // Check if this is a logical AND expression (guard && ...)
-    // Do this FIRST before recursing, so we can catch the pattern before diving into children
     if (node.type === 'BinaryExpression') {
       const binaryNode = node as BinaryExpressionNode;
 
-      if (binaryNode.operator === '&&') {
-        // Check if the position is in the right side of the AND
-        if (position >= binaryNode.right.start && position <= binaryNode.right.end) {
-          // Check if the left side (or any part of it) contains a guard for our variable
-          const guardInfo = this.findGuardInCondition(binaryNode.left, variableName);
-          if (guardInfo) {
-            return guardInfo;
+      if (binaryNode.operator === '&&' &&
+          position >= binaryNode.right.start && position <= binaryNode.right.end) {
+        const guardInfo = this.findGuardInCondition(binaryNode.left, variableName);
+        if (guardInfo) {
+          guards.push(guardInfo);
+        }
+        this.collectGuards(binaryNode.right, variableName, position, guards);
+        return;
+      }
+    }
+
+    if (node.type === 'IfStatement') {
+      const ifNode = node as IfStatementNode;
+
+      if (ifNode.consequent &&
+          position >= ifNode.consequent.start &&
+          position <= ifNode.consequent.end) {
+        const guardInfo = this.extractTypeGuard(ifNode.test, variableName);
+        if (guardInfo) {
+          guards.push(guardInfo);
+        }
+        this.collectGuards(ifNode.consequent, variableName, position, guards);
+        return;
+      }
+
+      if (ifNode.alternate &&
+          position >= ifNode.alternate.start &&
+          position <= ifNode.alternate.end) {
+        const guardInfo = this.extractTypeGuard(ifNode.test, variableName);
+        if (guardInfo) {
+          guards.push({ ...guardInfo, isNegative: !guardInfo.isNegative });
+        }
+        this.collectGuards(ifNode.alternate, variableName, position, guards);
+        return;
+      }
+    }
+
+    if (node.type === 'SwitchStatement') {
+      const switchNode = node as SwitchStatementNode;
+      const switchInfo = this.getTypeSwitchVariable(switchNode.discriminant);
+
+      if (switchInfo && switchInfo.variableName === variableName) {
+        const handledTypes: UcodeType[] = [];
+
+        // First pass: collect all handled types and detect breaks
+        const caseInfo: Array<{caseNode: SwitchCaseNode, type: UcodeType | null, hasBreak: boolean}> = [];
+        for (const caseNode of switchNode.cases) {
+          let testedType: UcodeType | null = null;
+          if (caseNode.test && caseNode.test.type === 'Literal') {
+            const caseLiteral = caseNode.test as LiteralNode;
+            if (typeof caseLiteral.value === 'string') {
+              testedType = this.stringLiteralToUcodeType(caseLiteral.value);
+              if (testedType && !handledTypes.includes(testedType)) {
+                handledTypes.push(testedType);
+              }
+            }
+          }
+
+          // Check if this case has a break statement
+          const hasBreak = this.caseHasBreak(caseNode);
+          caseInfo.push({caseNode, type: testedType, hasBreak});
+        }
+
+        // Second pass: find which case contains the position and apply guards with fall-through
+        for (let i = 0; i < caseInfo.length; i++) {
+          const info = caseInfo[i];
+          if (!info || info.caseNode.consequent.length === 0) continue;
+
+          const { start, end } = this.getCaseRange(info.caseNode);
+          if (position >= start && position <= end) {
+            // Collect all types that can reach this position (including fall-through from above)
+            const reachableTypes: UcodeType[] = [];
+
+            // Look backwards to find all cases that can fall through to here
+            for (let j = 0; j <= i; j++) {
+              const prevInfo = caseInfo[j];
+              if (!prevInfo) continue;
+
+              if (prevInfo.type) {
+                reachableTypes.push(prevInfo.type);
+              }
+              // If we hit a break before reaching our case, stop looking back
+              if (j < i && prevInfo.hasBreak && prevInfo.caseNode.consequent.length > 0) {
+                // This case has a break and has code, so it can't fall through
+                // Clear previous types
+                reachableTypes.length = 0;
+              }
+            }
+
+            // Handle default case specially - it can have both fall-through types AND unhandled types
+            const isDefaultCase = !info.caseNode.test;
+
+            if (isDefaultCase) {
+              // Default case: can be reached by fall-through from previous cases OR directly
+              // The type should be: (base type) MINUS (handled types that didn't fall through)
+
+              // Remove types that were handled but didn't reach here via fall-through
+              const handledTypesNotReachable = handledTypes.filter(t => !reachableTypes.includes(t));
+
+              if (handledTypesNotReachable.length > 0) {
+                // There are some handled types that didn't fall through - remove them
+                for (const handledType of handledTypesNotReachable) {
+                  guards.push({
+                    variableName,
+                    narrowToType: handledType,
+                    isNegative: true
+                  });
+                }
+              }
+              // If handledTypesNotReachable is empty, all handled types fell through,
+              // so we don't narrow at all - keep the base type (which includes unhandled types like null)
+            } else if (reachableTypes.length === 1 && reachableTypes[0] !== undefined) {
+              // Single type - normal case (not default)
+              guards.push({
+                variableName,
+                narrowToType: reachableTypes[0],
+                isNegative: false
+              });
+            } else if (reachableTypes.length > 1) {
+              // Multiple types due to fall-through in non-default case
+              for (const reachableType of reachableTypes) {
+                guards.push({
+                  variableName,
+                  narrowToType: reachableType,
+                  isNegative: false
+                });
+              }
+            }
+
+            this.collectGuards(info.caseNode.consequent[0] || info.caseNode, variableName, position, guards);
+            return;
           }
         }
       }
     }
 
-    // Check if this is an if statement
-    if (node.type === 'IfStatement') {
-      const ifNode = node as IfStatementNode;
-
-      // Check if the position is within the consequent (then block) - positive narrowing
-      if (ifNode.consequent &&
-          position >= ifNode.consequent.start &&
-          position <= ifNode.consequent.end) {
-
-        // Extract guard from the condition
-        const guardInfo = this.extractTypeGuard(ifNode.test, variableName);
-        if (guardInfo) {
-          return guardInfo;
-        }
-      }
-
-      // Check if the position is within the alternate (else block) - negative narrowing
-      if (ifNode.alternate &&
-          position >= ifNode.alternate.start &&
-          position <= ifNode.alternate.end) {
-
-        // Extract guard from the condition and invert it
-        const guardInfo = this.extractTypeGuard(ifNode.test, variableName);
-        if (guardInfo) {
-          // Invert the guard for else block
-          return {
-            ...guardInfo,
-            isNegative: !guardInfo.isNegative
-          };
-        }
-      }
-    }
-
-    // Recursively check child nodes
     const children = this.getChildNodes(node);
     for (const child of children) {
       if (position >= child.start && position <= child.end) {
-        const guardInfo = this.findGuardInNode(child, variableName, position);
-        if (guardInfo) {
-          return guardInfo;
-        }
+        this.collectGuards(child, variableName, position, guards);
+        return;
       }
     }
-
-    return null;
   }
 
   /**
@@ -1624,17 +1983,17 @@ export class TypeChecker {
     if (this.isNullGuardCondition(condition, variableName)) {
       return {
         variableName,
-        narrowToType: null, // null means "remove null"
-        isNegative: false
+        narrowToType: UcodeType.NULL,
+        isNegative: true // Remove null in positive branch
       };
     }
 
-    // Check for a == null or null == a (for negative narrowing)
+    // Check for a == null or null == a (positive branch keeps only null)
     if (this.isNullCheckCondition(condition, variableName)) {
       return {
         variableName,
-        narrowToType: null,
-        isNegative: true // In else block, this narrows to non-null
+        narrowToType: UcodeType.NULL,
+        isNegative: false
       };
     }
 
