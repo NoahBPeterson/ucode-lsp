@@ -1343,8 +1343,12 @@ export class TypeChecker {
       }
     }
 
-    // Basic type compatibility check
-    if (node.operator === '=' && leftType !== UcodeType.UNKNOWN && rightType !== UcodeType.UNKNOWN) {
+    // Type compatibility check - but NOT for simple identifier assignments
+    // Variables can change type, so we only check property/array element assignments
+    if (node.operator === '=' &&
+        node.left.type !== 'Identifier' && // Allow variables to change type
+        leftType !== UcodeType.UNKNOWN &&
+        rightType !== UcodeType.UNKNOWN) {
       if (!this.typeCompatibility.canAssign(leftType, rightType)) {
         this.warnings.push({
           message: `Type mismatch: assigning ${rightType} to ${leftType}`,
