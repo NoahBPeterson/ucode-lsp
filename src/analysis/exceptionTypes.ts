@@ -108,10 +108,8 @@ import { UcodeDataType, UcodeType } from './symbolTable';
 
 /**
  * Create a UcodeDataType for exception objects
+ * Exception objects have type 'object' with known properties: message (string), type (string), stacktrace (array)
  */
 export function createExceptionObjectDataType(): UcodeDataType {
-  return {
-    type: UcodeType.OBJECT,
-    moduleName: 'exception'
-  };
+  return UcodeType.OBJECT;
 }

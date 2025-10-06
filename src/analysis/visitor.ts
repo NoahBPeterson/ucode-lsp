@@ -3,17 +3,17 @@
  * Provides base classes for traversing the AST
  */
 
-import { 
+import {
   AstNode, ProgramNode, LiteralNode, IdentifierNode, BinaryExpressionNode,
   UnaryExpressionNode, CallExpressionNode, MemberExpressionNode, AssignmentExpressionNode,
   ArrayExpressionNode, ObjectExpressionNode, PropertyNode, BlockStatementNode,
   ExpressionStatementNode, VariableDeclarationNode, VariableDeclaratorNode,
-  IfStatementNode, ForStatementNode, WhileStatementNode, FunctionDeclarationNode,
+  IfStatementNode, ForStatementNode, WhileStatementNode, FunctionDeclarationNode, FunctionExpressionNode,
   ReturnStatementNode, BreakStatementNode, ContinueStatementNode, TryStatementNode,
   CatchClauseNode, SwitchStatementNode, SwitchCaseNode, ConditionalExpressionNode,
   ForInStatementNode, EmptyStatementNode, ThisExpressionNode, DeleteExpressionNode,
   ImportDeclarationNode, ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
-  ArrowFunctionExpressionNode, ExportNamedDeclarationNode, ExportDefaultDeclarationNode
+  ArrowFunctionExpressionNode, ExportNamedDeclarationNode, ExportDefaultDeclarationNode, TemplateLiteralNode
 } from '../ast/nodes';
 
 export interface VisitorMethods {
@@ -37,6 +37,7 @@ export interface VisitorMethods {
   visitForInStatement?(node: ForInStatementNode): void;
   visitWhileStatement?(node: WhileStatementNode): void;
   visitFunctionDeclaration?(node: FunctionDeclarationNode): void;
+  visitFunctionExpression?(node: FunctionExpressionNode): void;
   visitReturnStatement?(node: ReturnStatementNode): void;
   visitBreakStatement?(node: BreakStatementNode): void;
   visitContinueStatement?(node: ContinueStatementNode): void;
@@ -55,6 +56,7 @@ export interface VisitorMethods {
   visitArrowFunctionExpression?(node: ArrowFunctionExpressionNode): void;
   visitExportNamedDeclaration?(node: ExportNamedDeclarationNode): void;
   visitExportDefaultDeclaration?(node: ExportDefaultDeclarationNode): void;
+  visitTemplateLiteral?(node: TemplateLiteralNode): void;
 }
 
 export class BaseVisitor implements VisitorMethods {
@@ -120,6 +122,9 @@ export class BaseVisitor implements VisitorMethods {
       case 'FunctionDeclaration':
         this.visitFunctionDeclaration(node as FunctionDeclarationNode);
         break;
+      case 'FunctionExpression':
+        this.visitFunctionExpression(node as FunctionExpressionNode);
+        break;
       case 'ReturnStatement':
         this.visitReturnStatement(node as ReturnStatementNode);
         break;
@@ -173,6 +178,9 @@ export class BaseVisitor implements VisitorMethods {
         break;
       case 'ExportDefaultDeclaration':
         this.visitExportDefaultDeclaration(node as ExportDefaultDeclarationNode);
+        break;
+      case 'TemplateLiteral':
+        this.visitTemplateLiteral(node as TemplateLiteralNode);
         break;
     }
   }
@@ -299,6 +307,16 @@ export class BaseVisitor implements VisitorMethods {
     this.visit(node.body);
   }
 
+  visitFunctionExpression(node: FunctionExpressionNode): void {
+    if (node.id) {
+      this.visit(node.id);
+    }
+    for (const param of node.params) {
+      this.visit(param);
+    }
+    this.visit(node.body);
+  }
+
   visitReturnStatement(node: ReturnStatementNode): void {
     if (node.argument) {
       this.visit(node.argument);
@@ -410,5 +428,13 @@ export class BaseVisitor implements VisitorMethods {
     if (node.declaration) {
       this.visit(node.declaration);
     }
+  }
+
+  visitTemplateLiteral(node: TemplateLiteralNode): void {
+    // Visit all embedded expressions in the template literal
+    for (const expression of node.expressions) {
+      this.visit(expression);
+    }
+    // Template quasis (the string parts) don't need visiting as they're just text
   }
 }

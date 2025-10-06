@@ -23,7 +23,7 @@ export function myFunction() {
 
     // Create the import file
     const importPath = path.join(__dirname, "temp-test-import.uc");
-    const importContent = `import wireless, * as wconst from 'temp-test-module';
+    const importContent = `import wireless, * as wconst from './temp-test-module';
 
 print("Default import:", wireless);
 print("Namespace import:", wconst);

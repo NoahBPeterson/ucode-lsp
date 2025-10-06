@@ -77,20 +77,37 @@ export function getUnionTypes(type: UcodeDataType): UcodeType[] {
 
 export function typeToString(type: UcodeDataType): string {
   if (isUnionType(type)) {
-    return type.types.join(' | ');
+    // Recursively convert each type in the union to a string
+    return type.types.map(t => typeToString(t)).join(' | ');
   }
-  
-  // Handle module types (ModuleType)
-  if (typeof type === 'object' && type.type === UcodeType.OBJECT && 'moduleName' in type) {
-    const moduleType = type as ModuleType;
-    // For actual fs objects, return the specific type (fs.file, fs.dir, fs.proc)
-    if (moduleType.moduleName.startsWith('fs.') || moduleType.moduleName.startsWith('uci.')) {
-      return moduleType.moduleName;
+
+  // Handle object types (ModuleType, DefaultImportType, etc.)
+  if (typeof type === 'object') {
+    // ModuleType
+    if ('moduleName' in type) {
+      const moduleType = type as ModuleType;
+      // For actual fs objects, return the specific type (fs.file, fs.dir, fs.proc)
+      if (moduleType.moduleName.startsWith('fs.') || moduleType.moduleName.startsWith('uci.')) {
+        return moduleType.moduleName;
+      }
+      // For module references, return a more descriptive format
+      return `${moduleType.moduleName} module`;
     }
-    // For module references, return a more descriptive format
-    return `${moduleType.moduleName} module`;
+
+    // DefaultImportType
+    if ('isDefaultImport' in type) {
+      return 'object'; // Default imports are objects
+    }
+
+    // Generic object with 'type' property - return the type value
+    // Cast to any to avoid TypeScript narrowing issues
+    const objType = type as any;
+    if ('type' in objType && typeof objType.type === 'string') {
+      return objType.type; // e.g., 'object', 'array', etc.
+    }
   }
-  
+
+  // Plain UcodeType enum value (string)
   return type as string;
 }
 
@@ -140,6 +157,8 @@ export class SymbolTable {
   private scopes: Map<string, Symbol>[] = [];
   private currentScope = 0;
   private globalScope: Map<string, Symbol> = new Map();
+  // Keep track of all symbols ever declared (including in exited scopes) for position-based lookup
+  private allSymbols: Symbol[] = [];
 
   constructor() {
     // Initialize global scope
@@ -371,6 +390,8 @@ export class SymbolTable {
     };
 
     currentScopeMap.set(name, symbol);
+    // Also add to allSymbols for position-based lookup after scope exits
+    this.allSymbols.push(symbol);
     return true;
   }
 
@@ -402,7 +423,7 @@ export class SymbolTable {
 
   // Position-aware lookup that searches all scopes for symbols that contain the given position
   lookupAtPosition(name: string, position: number): Symbol | null {
-    // Search all scopes for symbols with the given name
+    // First search active scopes for symbols with the given name
     for (let i = this.scopes.length - 1; i >= 0; i--) {
       const scope = this.scopes[i];
       if (scope) {
@@ -415,7 +436,21 @@ export class SymbolTable {
         }
       }
     }
-    return null;
+
+    // If not found in active scopes, search allSymbols (includes symbols from exited scopes like catch clauses)
+    // Find the most recent symbol with the given name that was declared before or at the position
+    let bestMatch: Symbol | null = null;
+    for (const symbol of this.allSymbols) {
+      if (symbol.name === name && symbol.declaredAt !== undefined && symbol.declaredAt <= position) {
+        // Check if this symbol's scope contains the position
+        // A symbol is accessible if it was declared before the position and its scope hasn't ended yet
+        // For now, we use a simple heuristic: the symbol with the closest declaredAt to position wins
+        if (!bestMatch || symbol.declaredAt > bestMatch.declaredAt) {
+          bestMatch = symbol;
+        }
+      }
+    }
+    return bestMatch;
   }
 
   // Debug method to see all symbols in all scopes
@@ -515,7 +550,7 @@ export class SymbolTable {
 
   markUsed(name: string, position: number): boolean {
     let foundAny = false;
-    
+
     // Mark ALL symbols with this name as used across all scopes
     // This handles cases where the same variable exists in multiple scopes
     // (e.g., declared in function scope and force-declared in global scope)
@@ -527,7 +562,7 @@ export class SymbolTable {
         foundAny = true;
       }
     }
-    
+
     return foundAny;
   }
 

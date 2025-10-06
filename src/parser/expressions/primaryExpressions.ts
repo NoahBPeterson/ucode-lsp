@@ -308,28 +308,74 @@ export abstract class PrimaryExpressions extends ParseRules {
   }
 
   protected parseTemplateLiteral(): TemplateLiteralNode {
-    const token = this.previous()!;
-    const templateValue = String(token.value);
-    
-    // For now, parse the template literal as a single quasi without expressions
-    // TODO: Implement proper parsing of embedded expressions ${...}
-    const quasi: TemplateElementNode = {
+    const startToken = this.previous()!;
+    const start = startToken.pos;
+    const quasis: TemplateElementNode[] = [];
+    const expressions: AstNode[] = [];
+
+    // Add the first quasi (the initial TK_TEMPLATE token)
+    quasis.push({
       type: 'TemplateElement',
-      start: token.pos,
-      end: token.end,
+      start: startToken.pos,
+      end: startToken.end,
       value: {
-        raw: templateValue,
-        cooked: templateValue // For now, just use the raw value
+        raw: String(startToken.value),
+        cooked: String(startToken.value)
       },
-      tail: true // This is the only/last quasi
-    };
+      tail: false // Not the last one yet
+    });
+
+    // Parse placeholders and subsequent template parts
+    while (this.match(TokenType.TK_PLACEH)) {
+      // Parse the expression inside ${...}
+      const expr = this.parseExpression();
+      if (!expr) {
+        break;
+      }
+      expressions.push(expr);
+
+      // Expect closing brace
+      if (!this.match(TokenType.TK_RBRACE)) {
+        // Error: expected }
+        break;
+      }
+
+      // Now we should have another TK_TEMPLATE token (or we're done)
+      if (this.match(TokenType.TK_TEMPLATE)) {
+        const quasi = this.previous()!;
+        quasis.push({
+          type: 'TemplateElement',
+          start: quasi.pos,
+          end: quasi.end,
+          value: {
+            raw: String(quasi.value),
+            cooked: String(quasi.value)
+          },
+          tail: false // Might not be the last
+        });
+      } else {
+        // No more template parts
+        break;
+      }
+    }
+
+    // Mark the last quasi as tail
+    if (quasis.length > 0) {
+      const lastQuasi = quasis[quasis.length - 1];
+      if (lastQuasi) {
+        lastQuasi.tail = true;
+      }
+    }
+
+    const lastQuasi = quasis.length > 0 ? quasis[quasis.length - 1] : null;
+    const end = lastQuasi ? lastQuasi.end : startToken.end;
 
     return {
       type: 'TemplateLiteral',
-      start: token.pos,
-      end: token.end,
-      expressions: [], // No embedded expressions for now
-      quasis: [quasi]
+      start,
+      end,
+      expressions,
+      quasis
     };
   }
 

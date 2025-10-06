@@ -23,11 +23,14 @@ interface TypeGuardInfo {
   narrowToType: UcodeType | null;
   // Whether this is a negative narrowing (e.g., removing the type in else block)
   isNegative: boolean;
+  // Whether this is a combined OR guard (e.g., type(x) === 'array' || type(x) === 'string')
+  isCombinedOr?: boolean;
 }
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes, createUnionType, Symbol as UcodeSymbol } from './symbolTable';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
+import { createExceptionObjectDataType } from './exceptionTypes';
 import { allBuiltinFunctions } from '../builtins';
 import { fsTypeRegistry } from './fsTypes';
 import { fsModuleTypeRegistry } from './fsModuleTypes';
@@ -314,6 +317,10 @@ export class TypeChecker {
         return UcodeType.UNKNOWN;
       case 'SwitchStatement':
         return this.checkSwitchStatement(node as SwitchStatementNode);
+      case 'TryStatement':
+        return this.checkTryStatement(node as any);
+      case 'CatchClause':
+        return this.checkCatchClause(node as any);
       default:
         return UcodeType.UNKNOWN;
     }
@@ -652,7 +659,8 @@ export class TypeChecker {
   private getTypeDescription(type: UcodeDataType): string {
     if (isUnionType(type)) {
       const types = getUnionTypes(type);
-      return types.join(' | ');
+      // Recursively convert each type to string to handle nested unions
+      return types.map(t => this.getTypeDescription(t)).join(' | ');
     }
     return type as string;
   }
@@ -1587,6 +1595,51 @@ export class TypeChecker {
     }
   }
 
+  private checkTryStatement(node: any): UcodeType {
+    // Check the try block
+    if (node.block) {
+      this.checkNode(node.block);
+    }
+
+    // Check catch handler (let checkCatchClause handle the details)
+    if (node.handler) {
+      this.checkNode(node.handler);
+    }
+
+    // Check finally block
+    if (node.finalizer) {
+      this.checkNode(node.finalizer);
+    }
+
+    return UcodeType.UNKNOWN;
+  }
+
+  private checkCatchClause(node: any): UcodeType {
+    // Enter catch scope
+    this.symbolTable.enterScope();
+
+    // Declare catch parameter (the exception variable)
+    if (node.param) {
+      const exceptionType = createExceptionObjectDataType();
+      this.symbolTable.declare(
+        node.param.name,
+        SymbolType.PARAMETER,
+        exceptionType,
+        node.param
+      );
+    }
+
+    // Check catch body
+    if (node.body) {
+      this.checkNode(node.body);
+    }
+
+    // Exit catch scope
+    this.symbolTable.exitScope();
+
+    return UcodeType.UNKNOWN;
+  }
+
   private getBaseTypeForPosition(variableName: string, position: number): UcodeDataType {
     const guardType = this.getActiveGuardType(variableName, position);
     if (guardType) {
@@ -1645,6 +1698,12 @@ export class TypeChecker {
    * Used by hover functionality to show flow-sensitive types
    */
   getNarrowedTypeAtPosition(variableName: string, position: number): UcodeDataType | null {
+    // First check guard context stack (used for if statements with type guards)
+    const guardType = this.getActiveGuardType(variableName, position);
+    if (guardType) {
+      return guardType;
+    }
+
     // Get the base type from the symbol table
     const symbol = this.symbolTable.lookup(variableName);
     if (!symbol) {
@@ -1653,7 +1712,7 @@ export class TypeChecker {
 
     const baseType = symbol.dataType;
 
-    // Check if this position is inside a type guard
+    // Check if this position is inside a type guard (for switch statements)
     const guards = this.getGuardsForPosition(this.currentAST, variableName, position);
     if (guards.length > 0) {
       const positiveGuards = guards.filter(g => !g.isNegative && g.narrowToType !== null);
@@ -1682,6 +1741,12 @@ export class TypeChecker {
   private applyTypeGuard(baseType: UcodeDataType, guard: TypeGuardInfo): UcodeDataType {
     if (guard.narrowToType === null) {
       return baseType;
+    }
+
+    // Handle combined OR guards (e.g., type(x) === 'array' || type(x) === 'string')
+    if ((guard as any).isCombinedOr) {
+      // The narrowToType is already the narrowed union type (e.g., 'array' from 'array | object')
+      return guard.narrowToType as UcodeDataType;
     }
 
     if (guard.narrowToType === UcodeType.NULL) {
@@ -1972,7 +2037,124 @@ export class TypeChecker {
    * Extract type guard information from a condition
    * Returns null if the condition doesn't guard the variable
    */
+  /**
+   * Count the number of branches in an OR chain
+   */
+  private countOrBranches(expr: BinaryExpressionNode): number {
+    if (expr.operator !== '||') {
+      return 1;
+    }
+
+    let count = 0;
+    if (expr.left.type === 'BinaryExpression' && (expr.left as BinaryExpressionNode).operator === '||') {
+      count += this.countOrBranches(expr.left as BinaryExpressionNode);
+    } else {
+      count += 1;
+    }
+
+    if (expr.right.type === 'BinaryExpression' && (expr.right as BinaryExpressionNode).operator === '||') {
+      count += this.countOrBranches(expr.right as BinaryExpressionNode);
+    } else {
+      count += 1;
+    }
+
+    return count;
+  }
+
   private extractTypeGuard(condition: AstNode, variableName: string): TypeGuardInfo | null {
+    // Handle OR operator for combining type guards
+    if (condition.type === 'BinaryExpression') {
+      const binaryExpr = condition as BinaryExpressionNode;
+
+      if (binaryExpr.operator === '||') {
+        // Count total branches in the OR chain
+        const totalBranches = this.countOrBranches(binaryExpr);
+
+        // Collect all guards in the OR chain
+        const allGuards = this.collectOrGuards(condition, variableName);
+
+        // If we have fewer guards than branches, there's a non-guard expression
+        // In this case, don't narrow - the non-guard branch could make the whole condition true
+        if (allGuards.length < totalBranches) {
+          return null;
+        }
+
+        if (allGuards.length >= 2) {
+          // Get the variable's original type
+          const symbol = this.symbolTable.lookup(variableName);
+          if (!symbol) {
+            return null;
+          }
+
+          const originalType = symbol.dataType;
+          let originalTypes = getUnionTypes(originalType);
+
+          // For OR guards: a type satisfies the condition if it satisfies ANY guard
+          const satisfyingTypes = originalTypes.filter(type => {
+            return allGuards.some(guard => {
+              if (!guard.narrowToType) {
+                return false;
+              }
+
+              if (guard.isNegative) {
+                // Negative guard: type satisfies if it's NOT the guarded type
+                return type !== guard.narrowToType;
+              } else {
+                // Positive guard: type satisfies if it IS the guarded type
+                return type === guard.narrowToType;
+              }
+            });
+          });
+
+          // Check if any guard is a tautology (always true for all types)
+          const hasTautology = allGuards.some(guard => {
+            if (!guard.narrowToType) {
+              return false;
+            }
+            if (guard.isNegative) {
+              // Negative guard is a tautology if the tested type is NOT in the original union
+              return !originalTypes.includes(guard.narrowToType);
+            }
+            return false;
+          });
+
+          // If there's a tautology in an OR chain and all types satisfy, no narrowing occurs
+          if (hasTautology && satisfyingTypes.length === originalTypes.length) {
+            return null;
+          }
+
+          // Filter effective guards for expression building
+          const effectiveGuards = allGuards.filter(guard => {
+            if (!guard.narrowToType) {
+              return false;
+            }
+            return originalTypes.includes(guard.narrowToType);
+          });
+
+          if (effectiveGuards.length === 0) {
+            return null;
+          }
+
+          if (satisfyingTypes.length === 0) {
+            return null;
+          }
+
+          if (satisfyingTypes.length === originalTypes.length) {
+            // No narrowing occurred
+            return null;
+          }
+
+          const finalType = createUnionType(satisfyingTypes);
+          return {
+            variableName,
+            narrowToType: finalType as UcodeType,
+            isNegative: false,
+            isCombinedOr: true
+          };
+        }
+      }
+    }
+
     // Check for type() == 'typename' pattern
     const typeGuardType = this.extractTypeCallGuard(condition, variableName);
     if (typeGuardType) {
@@ -1980,6 +2162,16 @@ export class TypeChecker {
         variableName,
         narrowToType: typeGuardType,
         isNegative: false
+      };
+    }
+
+    // Check for type() !== 'typename' pattern (negative guard)
+    const negativeTypeGuard = this.extractNegativeTypeCallGuard(condition, variableName);
+    if (negativeTypeGuard) {
+      return {
+        variableName,
+        narrowToType: negativeTypeGuard,
+        isNegative: true
       };
     }
 
@@ -2005,6 +2197,77 @@ export class TypeChecker {
   }
 
   /**
+   * Recursively collect all type guards in an OR chain
+   */
+  private collectOrGuards(condition: AstNode, variableName: string): TypeGuardInfo[] {
+    const guards: TypeGuardInfo[] = [];
+
+    if (condition.type === 'BinaryExpression') {
+      const binaryExpr = condition as BinaryExpressionNode;
+
+      if (binaryExpr.operator === '||') {
+        // Recursively collect from both sides
+        guards.push(...this.collectOrGuards(binaryExpr.left, variableName));
+        guards.push(...this.collectOrGuards(binaryExpr.right, variableName));
+        return guards;
+      }
+    }
+
+    // Not an OR - try to extract a single guard
+    const guard = this.extractSingleTypeGuard(condition, variableName);
+    if (guard) {
+      guards.push(guard);
+    }
+
+    return guards;
+  }
+
+  /**
+   * Extract a single type guard (not handling OR)
+   */
+  private extractSingleTypeGuard(condition: AstNode, variableName: string): TypeGuardInfo | null {
+    // Check for type() == 'typename' pattern
+    const typeGuardType = this.extractTypeCallGuard(condition, variableName);
+    if (typeGuardType) {
+      return {
+        variableName,
+        narrowToType: typeGuardType,
+        isNegative: false
+      };
+    }
+
+    // Check for type() !== 'typename' pattern (negative guard)
+    const negativeTypeGuard = this.extractNegativeTypeCallGuard(condition, variableName);
+    if (negativeTypeGuard) {
+      return {
+        variableName,
+        narrowToType: negativeTypeGuard,
+        isNegative: true
+      };
+    }
+
+    // Check for a != null or null != a
+    if (this.isNullGuardCondition(condition, variableName)) {
+      return {
+        variableName,
+        narrowToType: UcodeType.NULL,
+        isNegative: true
+      };
+    }
+
+    // Check for a == null or null == a
+    if (this.isNullCheckCondition(condition, variableName)) {
+      return {
+        variableName,
+        narrowToType: UcodeType.NULL,
+        isNegative: false
+      };
+    }
+
+    return null;
+  }
+
+  /**
    * Extract type from type(variable) == 'typename' pattern
    */
   private extractTypeCallGuard(condition: AstNode, variableName: string): UcodeType | null {
@@ -2016,6 +2279,77 @@ export class TypeChecker {
 
     // Check for type(a) == 'typename' or 'typename' == type(a)
     if (binaryExpr.operator !== '==' && binaryExpr.operator !== '===') {
+      return null;
+    }
+
+    let typeCall: CallExpressionNode | null = null;
+    let typeLiteral: any = null;
+
+    // Check left side for type() call, right side for string literal
+    if (binaryExpr.left.type === 'CallExpression' &&
+        binaryExpr.right.type === 'Literal') {
+      typeCall = binaryExpr.left as CallExpressionNode;
+      typeLiteral = binaryExpr.right;
+    }
+    // Check right side for type() call, left side for string literal
+    else if (binaryExpr.right.type === 'CallExpression' &&
+             binaryExpr.left.type === 'Literal') {
+      typeCall = binaryExpr.right as CallExpressionNode;
+      typeLiteral = binaryExpr.left;
+    }
+
+    if (!typeCall || !typeLiteral) {
+      return null;
+    }
+
+    // Verify it's a call to type() function
+    if (typeCall.callee.type !== 'Identifier' ||
+        (typeCall.callee as IdentifierNode).name !== 'type') {
+      return null;
+    }
+
+    // Verify it has one argument and it's our variable
+    if (typeCall.arguments.length !== 1 ||
+        !typeCall.arguments[0] ||
+        typeCall.arguments[0].type !== 'Identifier' ||
+        (typeCall.arguments[0] as IdentifierNode).name !== variableName) {
+      return null;
+    }
+
+    // Map type string to UcodeType
+    const typeStr = typeLiteral.value;
+    switch (typeStr) {
+      case 'object':
+        return UcodeType.OBJECT;
+      case 'array':
+        return UcodeType.ARRAY;
+      case 'string':
+        return UcodeType.STRING;
+      case 'int':
+        return UcodeType.INTEGER;
+      case 'double':
+        return UcodeType.DOUBLE;
+      case 'bool':
+        return UcodeType.BOOLEAN;
+      case 'function':
+        return UcodeType.FUNCTION;
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Extract type from type(variable) !== 'typename' pattern (negative guard)
+   */
+  private extractNegativeTypeCallGuard(condition: AstNode, variableName: string): UcodeType | null {
+    if (condition.type !== 'BinaryExpression') {
+      return null;
+    }
+
+    const binaryExpr = condition as BinaryExpressionNode;
+
+    // Check for type(a) !== 'typename' or 'typename' !== type(a)
+    if (binaryExpr.operator !== '!=' && binaryExpr.operator !== '!==') {
       return null;
     }
 

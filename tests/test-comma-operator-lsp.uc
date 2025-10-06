@@ -42,6 +42,7 @@ let obj = {
 // Nested comma operators
 let result4 = (a = (b = 5, b + 1), c = (a + 2, a * 2), a + c);
 
+function getValue(a){return a;}
 // Comma operator with function calls
 let result5 = (console.log("test"), getValue());
 
@@ -52,6 +53,10 @@ let arrowTest = (x) => (console.log(x), x * 2);
 const processInput = function(val) {
     if (val == null)
         return null;
+    
+    function someFunction(){}
+    function transform(){}
+    function getDefaultValue() {return "lol";};
 
     let rv = { invert: false };
 
@@ -59,7 +64,7 @@ const processInput = function(val) {
     rv.val = trim(replace(val, /^[ \t]*!/, () => (rv.invert = true, '')));
     
     // Additional similar patterns
-    rv.processed = someFunction(val, (item) => (rv.count++, item.toUpperCase()));
+    rv.processed = someFunction(val, (item) => (rv.count++, uc(item)));
     rv.transformed = transform(val, () => (rv.modified = true, getDefaultValue()));
 
     return length(rv.val) ? rv : null;

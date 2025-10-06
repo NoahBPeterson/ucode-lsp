@@ -38,6 +38,8 @@ export class UcodeLexer {
     private lastOffset: number = 0;
     private buffer: string = '';
     private errors: string[] = [];
+    private templates: number[] = []; // Stack of brace depth counters for template placeholders
+    private eofEmitted: boolean = false; // Track if EOF has been emitted
 
     constructor(source: string, config?: ParseConfig) {
         this.source = source;
@@ -81,6 +83,10 @@ export class UcodeLexer {
             case LexState.UC_LEX_PLACEHOLDER_END:
                 return this.placeholderEnd();
             case LexState.UC_LEX_EOF:
+                if (this.eofEmitted) {
+                    return null; // Don't emit EOF multiple times
+                }
+                this.eofEmitted = true;
                 return this.emitToken(TokenType.TK_EOF);
             default:
                 return null;
@@ -160,9 +166,9 @@ export class UcodeLexer {
         if (this.line === 1 && this.column === 1 && this.peekChar() === '#' && this.peekChar(1) === '!') {
             return this.parseShebang();
         }
-        
+
         this.skipWhitespace();
-        
+
         if (this.pos >= this.source.length) {
             this.state = LexState.UC_LEX_EOF;
             return this.emitToken(TokenType.TK_EOF);
@@ -185,12 +191,13 @@ export class UcodeLexer {
             return this.emitToken(TokenType.TK_RSTM);
         }
 
-        // Template literals
+        // Template literal placeholder start
         if (ch === '$' && this.peekChar(1) === '{') {
-            this.nextChar();
-            this.nextChar();
+            this.nextChar(); // consume '$'
+            this.nextChar(); // consume '{'
             this.state = LexState.UC_LEX_PLACEHOLDER_START;
-            return this.emitToken(TokenType.TK_PLACEH);
+            // Don't emit token here - let placeholderStart() do it
+            return this.nextToken();
         }
 
         // Numbers
@@ -288,6 +295,26 @@ export class UcodeLexer {
         // Operators
         const operator = this.parseOperator();
         if (operator) {
+            // Track braces when inside template placeholder
+            if (this.templates.length > 0) {
+                if (operator.type === TokenType.TK_LBRACE) {
+                    // Increment brace depth for current placeholder
+                    const lastIdx = this.templates.length - 1;
+                    this.templates[lastIdx] = (this.templates[lastIdx] ?? 0) + 1;
+                } else if (operator.type === TokenType.TK_RBRACE) {
+                    // Check if we're closing the placeholder or just a nested brace
+                    const lastIdx = this.templates.length - 1;
+                    const braceDepth = this.templates[lastIdx] ?? 0;
+                    if (braceDepth === 0) {
+                        // Closing the placeholder itself
+                        this.templates.pop();
+                        this.state = LexState.UC_LEX_PLACEHOLDER_END;
+                    } else {
+                        // Just a nested brace - decrement depth
+                        this.templates[lastIdx] = braceDepth - 1;
+                    }
+                }
+            }
             return operator;
         }
 
@@ -408,23 +435,23 @@ export class UcodeLexer {
     private parseTemplateLiteral(): Token | null {
         const startPos = this.pos;
         let value = '';
-        
+
         this.nextChar(); // consume opening backtick
-        
+
         while (this.pos < this.source.length) {
             const ch = this.peekChar();
-            
+
             // End of template literal
             if (ch === '`') {
                 this.nextChar(); // consume closing backtick
                 return this.emitToken(TokenType.TK_TEMPLATE, value, startPos);
             }
-            
+
             // Handle escape sequences
             if (ch === '\\') {
                 this.nextChar(); // consume backslash
                 const escaped = this.nextChar();
-                
+
                 switch (escaped) {
                     case 'n': value += '\n'; break;
                     case 't': value += '\t'; break;
@@ -434,28 +461,18 @@ export class UcodeLexer {
                     case '$': value += '$'; break;
                     default: value += escaped; break;
                 }
-            } 
+            }
             // Handle template interpolations ${...}
             else if (ch === '$' && this.peekChar(1) === '{') {
-                // For now, include the ${...} as literal text
-                // TODO: Implement proper template interpolation tokenizing
-                value += this.nextChar(); // consume '$'
-                value += this.nextChar(); // consume '{'
-                
-                // Find the matching closing brace
-                let braceCount = 1;
-                while (this.pos < this.source.length && braceCount > 0) {
-                    const braceCh = this.nextChar();
-                    value += braceCh;
-                    if (braceCh === '{') braceCount++;
-                    else if (braceCh === '}') braceCount--;
-                }
-            } 
+                // Emit the template part before the placeholder
+                // DO NOT consume the ${, let identifyToken() handle it
+                return this.emitToken(TokenType.TK_TEMPLATE, value, startPos);
+            }
             else {
                 value += this.nextChar();
             }
         }
-        
+
         return this.emitToken(TokenType.TK_ERROR, 'Unterminated template literal', startPos);
     }
 
@@ -607,12 +624,70 @@ export class UcodeLexer {
 
     private placeholderStart(): Token | null {
         this.state = LexState.UC_LEX_IDENTIFY_TOKEN;
-        return this.identifyToken();
+
+        // Push 0 onto templates stack to start tracking brace depth for this placeholder
+        this.templates.push(0);
+
+        const startPos = this.pos - 2; // We already consumed ${
+        return {
+            type: TokenType.TK_PLACEH,
+            pos: startPos,
+            end: this.pos,
+            value: '${',
+            line: this.line,
+            column: this.column
+        };
     }
 
     private placeholderEnd(): Token | null {
+        // Continue parsing template literal from current position
+        // The C implementation calls parse_string(lex, '`') here
         this.state = LexState.UC_LEX_IDENTIFY_TOKEN;
-        return this.identifyToken();
+
+        return this.continueTemplateLiteral();
+    }
+
+    private continueTemplateLiteral(): Token | null {
+        const startPos = this.pos;
+        let value = '';
+
+        while (this.pos < this.source.length) {
+            const ch = this.peekChar();
+
+            // End of template literal
+            if (ch === '`') {
+                this.nextChar(); // consume closing backtick
+                this.state = LexState.UC_LEX_IDENTIFY_TOKEN; // Reset state after template ends
+                return this.emitToken(TokenType.TK_TEMPLATE, value, startPos);
+            }
+
+            // Handle escape sequences
+            if (ch === '\\') {
+                this.nextChar(); // consume backslash
+                const escaped = this.nextChar();
+
+                switch (escaped) {
+                    case 'n': value += '\n'; break;
+                    case 't': value += '\t'; break;
+                    case 'r': value += '\r'; break;
+                    case '\\': value += '\\'; break;
+                    case '`': value += '`'; break;
+                    case '$': value += '$'; break;
+                    default: value += escaped; break;
+                }
+            }
+            // Handle template interpolations ${...}
+            else if (ch === '$' && this.peekChar(1) === '{') {
+                // Emit the template part before the placeholder
+                // DO NOT consume the ${, let identifyToken() handle it
+                return this.emitToken(TokenType.TK_TEMPLATE, value, startPos);
+            }
+            else {
+                value += this.nextChar();
+            }
+        }
+
+        return this.emitToken(TokenType.TK_ERROR, 'Unterminated template literal', startPos);
     }
 
     private skipWhitespace(): void {

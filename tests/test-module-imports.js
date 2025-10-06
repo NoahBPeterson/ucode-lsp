@@ -24,7 +24,8 @@ describe('General Module Import Tests', function() {
     it('should allow default import', async function() {
       const testContent = `import MyDefault from './tests/module_tests/default_only.uc';`;
       const diagnostics = await getDiagnostics(testContent, 'test.uc');
-      assert.strictEqual(diagnostics.length, 0, "Should have no diagnostics for valid default import.");
+      const errors = diagnostics.filter(d => d.severity === 1); // Only check errors, not warnings
+      assert.strictEqual(errors.length, 0, "Should have no errors for valid default import.");
     });
 
     it('should NOT allow named import', async function() {
@@ -38,7 +39,8 @@ describe('General Module Import Tests', function() {
     it('should allow default and named import', async function() {
       const testContent = `import MyDefault, { foo } from './tests/module_tests/default_and_named_vars.uc';`;
       const diagnostics = await getDiagnostics(testContent, 'test.uc');
-      assert.strictEqual(diagnostics.length, 0, "Should have no diagnostics for valid default and named import.");
+      const errors = diagnostics.filter(d => d.severity === 1); // Only check errors, not warnings
+      assert.strictEqual(errors.length, 0, "Should have no errors for valid default and named import.");
     });
 
     it('should NOT allow importing a non-existent named export', async function() {
@@ -52,8 +54,8 @@ describe('General Module Import Tests', function() {
     it('should allow default and named function import', async function() {
       const testContent = `import Default, { myFunc } from './tests/module_tests/default_and_named_funcs.uc';`;
       const diagnostics = await getDiagnostics(testContent, 'test.uc');
-      console.log(diagnostics);
-      assert.strictEqual(diagnostics.length, 0, "Should have no diagnostics for valid default and named function import.");
+      const errors = diagnostics.filter(d => d.severity === 1); // Only check errors, not warnings
+      assert.strictEqual(errors.length, 0, "Should have no errors for valid default and named function import.");
     });
   });
 
@@ -61,8 +63,8 @@ describe('General Module Import Tests', function() {
     it('should allow default and named function import', async function() {
       const testContent = `import Default, { myFunc } from './tests/module_tests/default_and_named_funcs_2.uc';`;
       const diagnostics = await getDiagnostics(testContent, 'test.uc');
-      console.log(diagnostics);
-      assert.strictEqual(diagnostics.length, 0, "Should have no diagnostics for valid default and named function import.");
+      const errors = diagnostics.filter(d => d.severity === 1); // Only check errors, not warnings
+      assert.strictEqual(errors.length, 0, "Should have no errors for valid default and named function import.");
     });
   });
 
@@ -70,7 +72,8 @@ describe('General Module Import Tests', function() {
     it('should allow named imports', async function() {
       const testContent = `import { foo, myFunc } from './tests/module_tests/named_only.uc';`;
       const diagnostics = await getDiagnostics(testContent, 'test.uc');
-      assert.strictEqual(diagnostics.length, 0, "Should have no diagnostics for valid named imports.");
+      const errors = diagnostics.filter(d => d.severity === 1); // Only check errors, not warnings
+      assert.strictEqual(errors.length, 0, "Should have no errors for valid named imports.");
     });
 
     it('should NOT allow default import', async function() {
@@ -84,7 +87,8 @@ describe('General Module Import Tests', function() {
     it('should allow default and multiple named imports', async function() {
       const testContent = `import MyDefault, { myVar, myFunc } from './tests/module_tests/mixed_exports.uc';`;
       const diagnostics = await getDiagnostics(testContent, 'test.uc');
-      assert.strictEqual(diagnostics.length, 0, "Should have no diagnostics for valid mixed imports.");
+      const errors = diagnostics.filter(d => d.severity === 1); // Only check errors, not warnings
+      assert.strictEqual(errors.length, 0, "Should have no errors for valid mixed imports.");
     });
 
     it('should NOT allow importing a non-exported variable', async function() {

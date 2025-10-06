@@ -139,6 +139,10 @@ const testFiles = [
     'tests/test-module-method-validation.test.js',
     'tests/test-object-property-type-inference.test.js',
     'tests/test-object-property-hover-lsp.mocha.js',
+    'tests/test-template-literals.test.js',
+    'tests/test-complex-or-guards.test.js',
+    'tests/test-edge-case-guards.test.js',
+    'tests/test-branch-count-validation.test.js',
 ];
 
 const mochaFiles = [
@@ -162,6 +166,9 @@ const mochaFiles = [
     'test-module-functions-validation.js',
     'test-number-conversion-validation.js',
     'test-trim-functions-ast.js',
+    'test-template-literal-usage.test.js',
+    'test-or-type-narrowing.test.js',
+    'test-or-hover.test.js',
     'test-substr-functions-ast.js',
     'test-import-completion.js',
     'test-module-completions.js',
@@ -187,6 +194,9 @@ const mochaFiles = [
     'test-global-object-types.js',
     'test-module-aliasing.js',
     'test-object-property-hover-lsp.mocha.js',
+    'test-complex-or-guards.test.js',
+    'test-edge-case-guards.test.js',
+    'test-branch-count-validation.test.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

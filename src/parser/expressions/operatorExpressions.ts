@@ -130,32 +130,8 @@ export abstract class OperatorExpressions extends CompositeExpressions {
     
     if (this.check(TokenType.TK_LBRACE)) {
       // Block statement body: => { ... }
-      // For now, we'll create a basic block-like structure
-      const start = this.peek()!.pos;
-      this.advance(); // consume '{'
-      
-      // Skip to the matching closing brace for now
-      let braceCount = 1;
-      const bodyStart = this.peek()?.pos || start;
-      let bodyEnd = bodyStart;
-      
-      while (braceCount > 0 && !this.isAtEnd()) {
-        if (this.check(TokenType.TK_LBRACE)) {
-          braceCount++;
-        } else if (this.check(TokenType.TK_RBRACE)) {
-          braceCount--;
-        }
-        bodyEnd = this.peek()?.end || bodyEnd;
-        this.advance();
-      }
-      
-      // Create a simple block representation
-      body = {
-        type: 'BlockStatement',
-        start,
-        end: bodyEnd,
-        body: [] // Empty for now - proper parsing would go here
-      } as BlockStatementNode;
+      const openingBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' for arrow function body");
+      body = this.parseBlockStatement(openingBrace, "arrow function body") as BlockStatementNode;
       expression = false;
     } else {
       // Expression body: => expression

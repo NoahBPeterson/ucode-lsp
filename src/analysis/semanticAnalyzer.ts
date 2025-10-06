@@ -433,21 +433,25 @@ export class SemanticAnalyzer extends BaseVisitor {
   visitImportDeclaration(node: ImportDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
       const modulePath = node.source.value as string;
-      
+
       // Validate import specifiers against module exports
       for (const specifier of node.specifiers) {
-        this.validateAndProcessImportSpecifier(specifier, modulePath);
+        this.validateAndProcessImportSpecifier(specifier, modulePath, node.source);
       }
     }
-    
-    // Continue with default traversal
-    super.visitImportDeclaration(node);
+
+    // DON'T call super.visitImportDeclaration(node) here!
+    // The base class visits specifiers and their local identifiers, which would mark
+    // them as "used" immediately, preventing unused import warnings.
+    // validateAndProcessImportSpecifier already declares the imports in the symbol table.
   }
 
-  visitImportSpecifier(node: ImportSpecifierNode): void {
-    // Only visit the local identifier, not the imported one
-    // This prevents the "undefined variable" error for the original name in aliases
-    this.visit(node.local);
+  visitImportSpecifier(_node: ImportSpecifierNode): void {
+    // Don't visit the local identifier here - it's already declared in the symbol table
+    // by processImportSpecifier. Visiting it would mark it as "used" immediately,
+    // preventing unused import warnings.
+    // We also don't visit the imported identifier to prevent "undefined variable" errors
+    // for the original name in aliased imports (e.g., import { foo as bar })
   }
 
   visitProperty(node: PropertyNode): void {
@@ -724,34 +728,38 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
-  private validateAndProcessImportSpecifier(specifier: ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode, modulePath: string): void {
+  private validateAndProcessImportSpecifier(
+    specifier: ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode,
+    modulePath: string,
+    sourceNode: AstNode
+  ): void {
     // Check if this is a built-in module - skip file resolution for these
     const builtinModules = ['uloop', 'rtnl', 'socket', 'math', 'log', 'debug', 'digest', 'fs', 'nl80211', 'resolv', 'struct', 'ubus', 'uci', 'zlib'];
     const isBuiltinModule = builtinModules.includes(modulePath);
-    
+
     if (isBuiltinModule) {
       // For built-in modules, skip validation and directly process the import
       this.processImportSpecifier(specifier, modulePath);
       return;
     }
-    
+
     // Convert dot notation to file path if needed
     let actualModulePath = modulePath;
     if (this.isDotNotationModule(modulePath)) {
       actualModulePath = this.convertDotNotationToPath(modulePath);
     }
-    
+
     // Try to resolve the module and validate exports
     const resolvedUri = this.fileResolver.resolveImportPath(actualModulePath, this.textDocument.uri);
-    
+
     if (resolvedUri) {
       const moduleExports = this.fileResolver.getModuleExports(resolvedUri);
-      
+
       if (moduleExports && specifier.type === 'ImportSpecifier') {
         // Validate named import against actual module exports
         const importedName = specifier.imported.name;
         const hasNamedExport = moduleExports.some(exp => exp.type === 'named' && exp.name === importedName);
-        
+
         if (!hasNamedExport) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.EXPORT_NOT_FOUND,
@@ -765,7 +773,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       } else if (moduleExports && specifier.type === 'ImportDefaultSpecifier') {
         // Validate default import
         const hasDefaultExport = moduleExports.some(exp => exp.type === 'default');
-        
+
         if (!hasDefaultExport) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.EXPORT_NOT_FOUND,
@@ -778,11 +786,22 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
       // Namespace imports (import * as name) are always valid as they import everything
+
+      // Process the import since the module was found
+      this.processImportSpecifier(specifier, modulePath);
+    } else {
+      // Module cannot be resolved - add a warning on the source path, not the imported identifier
+      this.addDiagnosticErrorCode(
+        UcodeErrorCode.MODULE_NOT_FOUND,
+        `Cannot find module '${modulePath}'`,
+        sourceNode.start,
+        sourceNode.end,
+        DiagnosticSeverity.Warning
+      );
+
+      // Still process the import to avoid cascading errors
+      this.processImportSpecifier(specifier, modulePath);
     }
-    // If module cannot be resolved, we cannot validate exports, so allow the import
-    
-    // Process the import (either validation passed or module not resolvable)
-    this.processImportSpecifier(specifier, modulePath);
   }
 
   private normalizeImportedFrom(source: string, resolvedUri: string | null): string {
@@ -894,7 +913,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   visitArrowFunctionExpression(node: ArrowFunctionExpressionNode): void {
     if (this.options.enableScopeAnalysis) {
       // Arrow functions are always anonymous and don't get declared in outer scope
-      
+
       // Set context for nested return statement analysis
       const previousFunction = this.currentFunctionNode;
       this.currentFunctionNode = node as any; // Type compatibility for analysis
@@ -915,7 +934,16 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
 
       // Visit the function body
-      this.visit(node.body);
+      // For BlockStatement bodies, visit statements directly to avoid creating an extra scope
+      if (node.body.type === 'BlockStatement') {
+        const blockBody = (node.body as BlockStatementNode).body;
+        for (const statement of blockBody) {
+          this.visit(statement);
+        }
+      } else {
+        // For expression bodies, visit normally
+        this.visit(node.body);
+      }
 
       // Exit function scope
       this.symbolTable.exitScope();
@@ -963,12 +991,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (this.options.enableScopeAnalysis) {
       // Enter catch scope
       this.symbolTable.enterScope();
-      
+
       // Declare the catch parameter as an exception object if present
       if (node.param) {
         // Create exception object type with standard properties
         const exceptionObjectType = createExceptionObjectDataType();
-        
+
         if (!this.symbolTable.declare(node.param.name, SymbolType.PARAMETER, exceptionObjectType, node.param)) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.PARAMETER_REDECLARATION,
@@ -977,12 +1005,22 @@ export class SemanticAnalyzer extends BaseVisitor {
             node.param.end,
             DiagnosticSeverity.Error,
           );
+        } else {
+          // Add property types for exception object properties
+          const symbol = this.symbolTable.lookup(node.param.name);
+          if (symbol) {
+            symbol.propertyTypes = new Map([
+              ['message', UcodeType.STRING],
+              ['type', UcodeType.STRING],
+              ['stacktrace', UcodeType.ARRAY]
+            ]);
+          }
         }
       }
-      
+
       // Visit the catch body
       this.visit(node.body);
-      
+
       // Exit catch scope
       this.symbolTable.exitScope();
     } else {
@@ -1349,7 +1387,6 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   visitCallExpression(node: CallExpressionNode): void {
-    // console.log('DEBUG: visitCallExpression called for:', node.callee.type === 'MemberExpression' ? 'member call' : 'function call');
     // Always handle scope analysis for function calls
     if (this.options.enableScopeAnalysis) {
       // Mark function callee as used if it's an identifier
@@ -1820,13 +1857,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
   private checkUnusedVariables(): void {
     const unusedVariables = this.symbolTable.getUnusedVariables();
-    
+
     // Global VM variables that should not trigger unused warnings
     const globalVMVariables = new Set(['ARGV', 'NaN', 'Infinity', 'REQUIRE_SEARCH_PATH', 'modules', 'global']);
-    
+
     for (const symbol of unusedVariables) {
       // Don't warn about unused parameters, builtins, or global VM variables
-      if (symbol.type === SymbolType.PARAMETER || 
+      if (symbol.type === SymbolType.PARAMETER ||
           symbol.type === SymbolType.BUILTIN ||
           globalVMVariables.has(symbol.name)) {
         continue;
@@ -2602,6 +2639,33 @@ private addDiagnostic(
    * Example: 'u1905.u1905d.src.u1905.log' -> './u1905/u1905d/src/u1905/log.uc'
    */
   private convertDotNotationToPath(moduleName: string): string {
+    // Extract namespace from current file path
+    // e.g., if current file is /path/to/foo/bar/baz/file.uc, we need to check if
+    // the module name starts with any of: "foo.bar.baz", "bar.baz", or "baz"
+    const currentUri = this.textDocument.uri;
+    const currentPath = currentUri.replace('file://', '');
+    const pathParts = currentPath.split('/');
+
+    // Remove the filename to get directory parts
+    const dirParts = pathParts.slice(0, -1);
+
+    // Try matching from the deepest directory up to the root
+    // For /path/to/foo/bar/baz/file.uc:
+    // Try: "foo.bar.baz", then "bar.baz", then "baz"
+    for (let i = 0; i < dirParts.length; i++) {
+      const namespaceParts = dirParts.slice(i);
+      const namespaceDotted = namespaceParts.join('.');
+
+      if (moduleName.startsWith(namespaceDotted + '.')) {
+        // Strip the namespace prefix and resolve as relative to current directory
+        // e.g., "foo.bar.baz.other" with namespace "foo.bar.baz" -> "other" -> "./other.uc"
+        const relativeName = moduleName.substring(namespaceDotted.length + 1);
+        return './' + relativeName.replace(/\./g, '/') + '.uc';
+      }
+    }
+
+    // Default behavior: convert dot notation to path
+    // "foo.bar.baz" -> "./foo/bar/baz.uc"
     return './' + moduleName.replace(/\./g, '/') + '.uc';
   }
 

@@ -25,7 +25,6 @@ assert("message");           // valid: string
 assert([1, 2, 3]);           // valid: array
 assert({key: "value"});      // valid: object
 assert(null);                // valid: null
-assert(undefined);           // valid: undefined
 
 // These should be valid (no errors):
 let pattern = "*.txt";

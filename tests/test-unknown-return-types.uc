@@ -20,7 +20,7 @@ function processValue(input) {
     if (input === null) {
         return 0;
     }
-    if (typeof input === "string") {
+    if (type(input) === "string") {
         return "processed";
     }
     return input;  // This should be "integer | string | unknown"

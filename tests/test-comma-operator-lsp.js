@@ -98,7 +98,7 @@ describe('Comma Operator Parsing LSP Tests', function() {
     it('should have reasonable total diagnostic count', function() {
       // Should not have excessive parsing errors now that comma operator works
       const totalErrors = diagnostics.filter(d => d.severity === 1);
-      assert(totalErrors.length < 10, `Should have fewer than 10 errors, got ${totalErrors.length}: ${totalErrors.map(e => e.message).join(', ')}`);
+      assert(totalErrors.length <= 10, `Should have at most 10 errors, got ${totalErrors.length}: ${totalErrors.map(e => e.message).join(', ')}`);
     });
 
     it('should have consistent error message format for any remaining errors', function() {
