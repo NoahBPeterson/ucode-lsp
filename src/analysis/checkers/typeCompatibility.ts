@@ -184,6 +184,8 @@ export class TypeCompatibilityChecker {
           // Boolean operand becomes integer, others stay the same
           return operandType === UcodeType.BOOLEAN ? UcodeType.INTEGER : operandType;
         }
+        // Unary +/- on strings performs numeric conversion (e.g., +"42" → 42, +"abc" → NaN)
+        if (operandType === UcodeType.STRING) return UcodeType.DOUBLE;
         return UcodeType.UNKNOWN;
       case '!':
         // Logical NOT can be applied to any type (truthy/falsy evaluation)
