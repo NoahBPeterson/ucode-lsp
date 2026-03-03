@@ -6,7 +6,7 @@
 import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode, 
          FunctionDeclarationNode, FunctionExpressionNode, IdentifierNode, CallExpressionNode,
          BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
-         ContinueStatementNode, AssignmentExpressionNode, BinaryExpressionNode, LogicalExpressionNode, ImportDeclarationNode,
+         ContinueStatementNode, AssignmentExpressionNode, BinaryExpressionNode, UnaryExpressionNode, LogicalExpressionNode, ImportDeclarationNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
@@ -242,7 +242,10 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (stmt.type === 'FunctionDeclaration') {
         const funcNode = stmt as FunctionDeclarationNode;
         if (funcNode.id && funcNode.id.name) {
-          this.symbolTable.declare(funcNode.id.name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, funcNode.id);
+          // Use a synthetic node with start=0 so lookupAtPosition sees the
+          // hoisted symbol as declared before any forward reference.
+          const hoistedNode = { ...funcNode.id, start: 0 };
+          this.symbolTable.declare(funcNode.id.name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, hoistedNode);
         }
       }
     }
@@ -906,6 +909,12 @@ export class SemanticAnalyzer extends BaseVisitor {
             DiagnosticSeverity.Error
           );
         }
+      } else {
+        // Update the hoisted symbol's node to the real declaration node
+        // so that diagnostic ranges (e.g., "unused variable") point to the
+        // actual function declaration, not the synthetic hoisted position.
+        existing.node = node.id;
+        existing.declaredAt = node.id.start;
       }
 
       // Set context for nested return statement analysis.
@@ -1122,10 +1131,14 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (!symbol) {
         // Check if it's a builtin function before reporting as undefined
         const isBuiltin = allBuiltinFunctions.has(node.name);
-        
+
+        // Check if it was set as a property on the global object (e.g., global.FOO = ...)
+        const globalSymbol = this.symbolTable.lookup('global');
+        const isGlobalProperty = globalSymbol?.propertyTypes?.has(node.name);
+
         // Don't report "Undefined variable" if this identifier is a function call callee
         // The TypeChecker will handle "Undefined function" diagnostic for function calls
-        if (!isBuiltin && !this.processingFunctionCallCallee) {
+        if (!isBuiltin && !isGlobalProperty && !this.processingFunctionCallCallee) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.UNDEFINED_VARIABLE,
             `Undefined variable: ${node.name}`,
@@ -1675,6 +1688,23 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
 
     // Base traversal already happened at the beginning of this method
+  }
+
+  visitUnaryExpression(node: UnaryExpressionNode): void {
+    super.visitUnaryExpression(node);
+
+    if (this.options.enableTypeChecking) {
+      this.typeChecker.checkNode(node);
+      const result = this.typeChecker.getResult();
+
+      for (const error of result.errors) {
+        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
+      }
+
+      for (const warning of result.warnings) {
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
+      }
+    }
   }
 
   visitBinaryExpression(node: BinaryExpressionNode): void {

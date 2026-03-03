@@ -912,6 +912,15 @@ export class TypeChecker {
             }
           }
         }
+        // Check for parameters that might be callback functions (e.g., cb(), uci_getter())
+        else if (symbol.type === SymbolType.PARAMETER) {
+          // Parameters with unknown or function type could be callable
+          if (typeof symbol.dataType === 'string') {
+            if (symbol.dataType === UcodeType.FUNCTION || symbol.dataType === UcodeType.UNKNOWN) {
+              return UcodeType.UNKNOWN;
+            }
+          }
+        }
       }
       
       // Check global builtin functions (only truly global functions remain)
