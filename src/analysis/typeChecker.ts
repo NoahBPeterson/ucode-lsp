@@ -579,10 +579,13 @@ export class TypeChecker {
     switch (operator) {
       case '+':
       case '-':
+        // Unary +/- perform numeric conversion on strings (e.g., +"42" → 42)
+        // This is valid in ucode, same as JavaScript behavior
+        return operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT;
       case '++':
       case '--':
         // These require numeric types or booleans (which coerce to integers)
-        return operandType === UcodeType.STRING || 
+        return operandType === UcodeType.STRING ||
                operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT;
       case '~':
         // Bitwise complement requires integer type or booleans (which coerce to integers)

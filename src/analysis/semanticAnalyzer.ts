@@ -226,8 +226,26 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   visitProgram(node: ProgramNode): void {
+    // Hoist top-level function declarations so forward references resolve
+    this.hoistFunctionDeclarations(node);
     // Global scope analysis
     super.visitProgram(node);
+  }
+
+  /**
+   * Pre-register all top-level function declarations in the symbol table
+   * so that forward references (calling a function before its declaration) work.
+   */
+  private hoistFunctionDeclarations(node: ProgramNode): void {
+    if (!this.options.enableScopeAnalysis) return;
+    for (const stmt of node.body) {
+      if (stmt.type === 'FunctionDeclaration') {
+        const funcNode = stmt as FunctionDeclarationNode;
+        if (funcNode.id && funcNode.id.name) {
+          this.symbolTable.declare(funcNode.id.name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, funcNode.id);
+        }
+      }
+    }
   }
 
   visitVariableDeclaration(node: VariableDeclarationNode): void {
@@ -875,15 +893,19 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
 
-      // Declare the function first with an UNKNOWN return type to handle recursion.
-      if (!this.symbolTable.declare(name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, node.id)) {
-        this.addDiagnosticErrorCode(
-          UcodeErrorCode.FUNCTION_REDECLARATION,
-          `Function '${name}' is already declared in this scope`,
-          node.id.start,
-          node.id.end,
-          DiagnosticSeverity.Error
-        );
+      // Declare the function (may already exist from hoisting pre-pass).
+      const existing = this.symbolTable.lookup(name);
+      const alreadyHoisted = existing && existing.type === SymbolType.FUNCTION;
+      if (!alreadyHoisted) {
+        if (!this.symbolTable.declare(name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, node.id)) {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.FUNCTION_REDECLARATION,
+            `Function '${name}' is already declared in this scope`,
+            node.id.start,
+            node.id.end,
+            DiagnosticSeverity.Error
+          );
+        }
       }
 
       // Set context for nested return statement analysis.
