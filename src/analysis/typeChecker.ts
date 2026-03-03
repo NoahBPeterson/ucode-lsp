@@ -9,7 +9,8 @@ import {
   ObjectExpressionNode, ConditionalExpressionNode, ArrowFunctionExpressionNode,
   FunctionExpressionNode, IfStatementNode, ProgramNode, BlockStatementNode,
   ExpressionStatementNode, FunctionDeclarationNode, VariableDeclarationNode,
-  SwitchStatementNode, SwitchCaseNode
+  VariableDeclaratorNode, ExportDefaultDeclarationNode, ReturnStatementNode,
+  PropertyNode, SwitchStatementNode, SwitchCaseNode
 } from '../ast/nodes';
 
 /**
@@ -39,6 +40,7 @@ import { rtnlTypeRegistry } from './rtnlTypes';
 import { nl80211TypeRegistry } from './nl80211Types';
 import { TypeNarrowingEngine } from './typeNarrowing';
 import { FlowSensitiveTypeTracker } from './flowSensitiveTyping';
+import { CFGQueryEngine } from './cfg/queryEngine';
 
 export interface FunctionSignature {
   name: string;
@@ -69,10 +71,13 @@ export interface TypeWarning {
   start: number;
   end: number;
   severity: 'warning';
+  code?: string;
+  data?: any;
 }
 
 export class TypeChecker {
   private symbolTable: SymbolTable;
+  private cfgQueryEngine: CFGQueryEngine | null = null;
   private builtinFunctions: Map<string, FunctionSignature>;
   private errors: TypeError[] = [];
   private warnings: TypeWarning[] = [];
@@ -85,7 +90,8 @@ export class TypeChecker {
   private currentAST: ProgramNode | null = null;
   private constantAssignmentProperties = new Map<string, Set<string>>();
 
-  constructor(symbolTable: SymbolTable) {
+  constructor(symbolTable: SymbolTable, cfgQueryEngine?: CFGQueryEngine) {
+    this.cfgQueryEngine = cfgQueryEngine || null;
     this.symbolTable = symbolTable;
     this.builtinFunctions = new Map();
     this.builtinValidator = new BuiltinValidator();
@@ -101,6 +107,20 @@ export class TypeChecker {
     this.flowSensitiveTracker.setActiveGuardCallback(this.getActiveGuardType.bind(this));
 
     this.initializeBuiltins();
+  }
+
+  /**
+   * Set the CFG query engine for flow-sensitive type lookups
+   */
+  public setCFGQueryEngine(cfgQueryEngine: CFGQueryEngine | null): void {
+    this.cfgQueryEngine = cfgQueryEngine;
+  }
+
+  /**
+   * Get the type narrowing engine for checking type compatibility
+   */
+  public getTypeNarrowing(): TypeNarrowingEngine {
+    return this.typeNarrowing;
   }
 
   private initializeBuiltins(): void {
@@ -216,6 +236,20 @@ export class TypeChecker {
     this.errors = [];
     this.warnings = [];
     this.builtinValidator.resetErrors();
+  }
+
+  /**
+   * Get current errors for post-processing
+   */
+  getErrors(): TypeError[] {
+    return this.errors;
+  }
+
+  /**
+   * Set errors after post-processing/filtering
+   */
+  setErrors(errors: TypeError[]): void {
+    this.errors = errors;
   }
 
   withAssignmentTarget<T>(fn: () => T): T {
@@ -652,6 +686,17 @@ export class TypeChecker {
   }
 
   private getFullTypeFromNode(node: AstNode): UcodeDataType | null {
+    // For Identifiers, check CFG for flow-sensitive narrowed types
+    if (node.type === 'Identifier' && this.cfgQueryEngine) {
+      const varName = (node as IdentifierNode).name;
+      const cfgType = this.cfgQueryEngine.getTypeAtPosition(varName, node.start);
+
+      if (cfgType) {
+        // CFG has a narrowed type for this variable at this position
+        return cfgType;
+      }
+    }
+
     // Extract full type information stored during identifier checking
     return (node as any)._fullType || null;
   }
@@ -797,9 +842,30 @@ export class TypeChecker {
   private checkCallExpression(node: CallExpressionNode): UcodeType {
     if (node.callee.type === 'Identifier') {
       const funcName = (node.callee as IdentifierNode).name;
-      
+
       // First check if it's a user-defined function, imported function, or variable containing a function
-      const symbol = this.symbolTable.lookup(funcName);
+      // Use lookupAtPosition to properly handle local variables in nested scopes
+      let symbol = this.symbolTable.lookupAtPosition(funcName, node.start);
+
+      // Try CFG-based lookup if symbol table fails
+      if (!symbol && this.cfgQueryEngine) {
+        const cfgType = this.cfgQueryEngine.getTypeAtPosition(funcName, node.start);
+        if (cfgType) {
+          // Create a temporary symbol with CFG-inferred type
+          symbol = {
+            name: funcName,
+            type: SymbolType.VARIABLE,
+            dataType: cfgType,
+            scope: 0,
+            declared: true,
+            used: true,
+            node: {} as any,
+            declaredAt: node.start,
+            usedAt: [node.start]
+          } as UcodeSymbol;
+        }
+      }
+
       if (symbol) {
         // Check for functions and imported functions
         if (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED) {
@@ -837,8 +903,8 @@ export class TypeChecker {
             if (symbol.dataType === UcodeType.FUNCTION) {
               return UcodeType.UNKNOWN; // Function calls return unknown by default
             } else if (symbol.dataType === UcodeType.UNKNOWN) {
-              // For variables with unknown type (like arrow functions), assume they might be callable
-              // This prevents false positives for arrow functions assigned to variables
+              // For variables with unknown type (like arrow functions or dynamically assigned functions),
+              // assume they might be callable to prevent false positives
               return UcodeType.UNKNOWN;
             }
           }
@@ -1704,16 +1770,25 @@ export class TypeChecker {
       return guardType;
     }
 
-    // Get the base type from the symbol table
+    const guards = this.getGuardsForPosition(this.currentAST, variableName, position);
+
+    // Get the base type from the symbol table if available
     const symbol = this.symbolTable.lookup(variableName);
     if (!symbol) {
+      // If the variable isn't in the symbol table (e.g., callback parameter),
+      // try to infer its narrowed type purely from guard information.
+      if (guards.length > 0) {
+        const narrowedFromGuards = this.inferTypeFromGuardsWithoutBase(guards);
+        if (narrowedFromGuards) {
+          return narrowedFromGuards;
+        }
+      }
       return null;
     }
 
     const baseType = symbol.dataType;
 
     // Check if this position is inside a type guard (for switch statements)
-    const guards = this.getGuardsForPosition(this.currentAST, variableName, position);
     if (guards.length > 0) {
       const positiveGuards = guards.filter(g => !g.isNegative && g.narrowToType !== null);
 
@@ -1733,6 +1808,27 @@ export class TypeChecker {
     }
 
     return null; // No narrowing applies
+  }
+
+  private inferTypeFromGuardsWithoutBase(guards: TypeGuardInfo[]): UcodeDataType | null {
+    if (guards.length === 0) {
+      return null;
+    }
+
+    const positiveTypes = guards
+      .filter(guard => !guard.isNegative && guard.narrowToType !== null)
+      .map(guard => guard.narrowToType as UcodeType);
+
+    if (positiveTypes.length === 0) {
+      return null;
+    }
+
+    const uniqueTypes = Array.from(new Set(positiveTypes));
+    if (uniqueTypes.length === 1) {
+      return uniqueTypes[0] as UcodeDataType;
+    }
+
+    return createUnionType(uniqueTypes);
   }
 
   /**
@@ -2422,6 +2518,12 @@ export class TypeChecker {
       case 'BlockStatement':
         children.push(...(node as BlockStatementNode).body);
         break;
+      case 'ExportDefaultDeclaration':
+        const exportNode = node as ExportDefaultDeclarationNode;
+        if (exportNode.declaration) {
+          children.push(exportNode.declaration);
+        }
+        break;
       case 'IfStatement':
         const ifNode = node as IfStatementNode;
         children.push(ifNode.test);
@@ -2430,6 +2532,12 @@ export class TypeChecker {
         break;
       case 'ExpressionStatement':
         children.push((node as ExpressionStatementNode).expression);
+        break;
+      case 'ReturnStatement':
+        const returnNode = node as ReturnStatementNode;
+        if (returnNode.argument) {
+          children.push(returnNode.argument);
+        }
         break;
       case 'BinaryExpression':
         const binaryNode = node as BinaryExpressionNode;
@@ -2448,9 +2556,13 @@ export class TypeChecker {
         const objNode = node as ObjectExpressionNode;
         // Object literals contain properties with values
         for (const prop of objNode.properties) {
-          if (prop.value) {
-            children.push(prop.value);
-          }
+          children.push(prop);
+        }
+        break;
+      case 'Property':
+        const propNode = node as PropertyNode;
+        if (propNode.value) {
+          children.push(propNode.value);
         }
         break;
       case 'ArrayExpression':
@@ -2462,6 +2574,14 @@ export class TypeChecker {
         const funcNode = node as FunctionDeclarationNode;
         children.push(funcNode.id, ...funcNode.params, funcNode.body);
         break;
+      case 'FunctionExpression':
+        const funcExpr = node as FunctionExpressionNode;
+        if (funcExpr.id) {
+          children.push(funcExpr.id);
+        }
+        children.push(...funcExpr.params);
+        children.push(funcExpr.body);
+        break;
       case 'WhileStatement':
         const whileNode = node as any;
         children.push(whileNode.test, whileNode.body);
@@ -2472,6 +2592,19 @@ export class TypeChecker {
         if (forNode.test) children.push(forNode.test);
         if (forNode.update) children.push(forNode.update);
         children.push(forNode.body);
+        break;
+      case 'ArrowFunctionExpression':
+        const arrowNode = node as ArrowFunctionExpressionNode;
+        children.push(...arrowNode.params);
+        if (arrowNode.body && typeof arrowNode.body === 'object') {
+          children.push(arrowNode.body as AstNode);
+        }
+        break;
+      case 'VariableDeclarator':
+        const declaratorNode = node as VariableDeclaratorNode;
+        if (declaratorNode.init) {
+          children.push(declaratorNode.init);
+        }
         break;
       case 'CallExpression':
         const callNode = node as CallExpressionNode;

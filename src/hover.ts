@@ -303,7 +303,25 @@ export function handleHover(
             
             // Look up the object in the symbol table to determine its module
             if (analysisResult && analysisResult.symbolTable) {
-                const symbol = analysisResult.symbolTable.lookup(objectName);
+                // Try CFG-based lookup first for flow-sensitive types
+                let symbol = analysisResult.symbolTable.lookup(objectName);
+                if (analysisResult.cfgQueryEngine && !symbol) {
+                    const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, offset);
+                    if (cfgType) {
+                        // Create a temporary symbol with CFG-inferred type
+                        symbol = {
+                            name: objectName,
+                            type: SymbolType.VARIABLE,
+                            dataType: cfgType,
+                            scope: 0,
+                            declared: true,
+                            used: true,
+                            node: {} as any,
+                            declaredAt: offset,
+                            usedAt: [offset]
+                        } as UcodeSymbol;
+                    }
+                }
                 if (symbol && symbol.propertyTypes && symbol.propertyTypes.has(memberName)) {
                     const propertyType = symbol.propertyTypes.get(memberName)!;
                     const typeString = typeToString(propertyType);
@@ -448,7 +466,28 @@ export function handleHover(
             // Check if this is a function call (e.g., test() instead of just test)
             const isFunctionCall = detectFunctionCall(offset, tokens);
             if (isFunctionCall && analysisResult) {
-                const symbol = analysisResult.symbolTable.lookup(word);
+                let symbol = analysisResult.symbolTable.lookup(word);
+
+                // Try CFG-based type lookup for flow-sensitive function types
+                if (!symbol && analysisResult.cfgQueryEngine) {
+                    const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(word, offset);
+                    if (cfgType) {
+                        // If CFG found a type, create a symbol with it
+                        // For function calls, the CFG type may be the function itself or its return type
+                        symbol = {
+                            name: word,
+                            type: SymbolType.VARIABLE,
+                            dataType: cfgType,
+                            scope: 0,
+                            declared: true,
+                            used: true,
+                            node: {} as any,
+                            declaredAt: offset,
+                            usedAt: [offset]
+                        } as UcodeSymbol;
+                    }
+                }
+
                 if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
                     // Show return type for function calls
                     if (symbol.returnType) {
@@ -566,10 +605,41 @@ export function handleHover(
             // 1. Check for user-defined symbols using the analysis cache (PRIORITY OVER GLOBAL FUNCTIONS)
             if (analysisResult) {
                 let symbol = analysisResult.symbolTable.lookup(word);
-                
+
                 // If regular lookup fails, try position-aware lookup for scope-sensitive symbols
                 if (!symbol) {
                     symbol = analysisResult.symbolTable.lookupAtPosition(word, offset);
+                }
+
+                // Try CFG-based flow-sensitive type lookup
+                if (!symbol && analysisResult.cfgQueryEngine) {
+                    const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(word, offset);
+                    if (cfgType) {
+                        // Create a temporary symbol with CFG-inferred type
+                        symbol = {
+                            name: word,
+                            type: SymbolType.VARIABLE,
+                            dataType: cfgType,
+                            scope: 0,
+                            declared: true,
+                            used: true,
+                            node: {} as any,
+                            declaredAt: offset,
+                            usedAt: [offset]
+                        } as UcodeSymbol;
+                    }
+                }
+
+                // If we have a symbol from symbol table, check if CFG has more precise type
+                if (symbol && analysisResult.cfgQueryEngine) {
+                    const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(word, offset);
+                    if (cfgType && cfgType !== symbol.dataType) {
+                        // CFG provides flow-sensitive type - use it
+                        symbol = {
+                            ...symbol,
+                            dataType: cfgType
+                        };
+                    }
                 }
                 
                 // If still no symbol found, check if this might be a rest parameter in the current context
@@ -1510,9 +1580,28 @@ let result = poll([{fd: sock, events: POLLIN}], 5000);
 
 function getFsMethodHover(memberInfo: { objectName: string; propertyName: string }, analysisResult: SemanticAnalysisResult): string | null {
     const { objectName, propertyName } = memberInfo;
-    
+
     // Look up the object in the symbol table
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    let symbol = analysisResult.symbolTable.lookup(objectName);
+
+    // Try CFG-based lookup if symbol table fails
+    if (!symbol && analysisResult.cfgQueryEngine) {
+        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, 0);
+        if (cfgType) {
+            symbol = {
+                name: objectName,
+                type: SymbolType.VARIABLE,
+                dataType: cfgType,
+                scope: 0,
+                declared: true,
+                used: true,
+                node: {} as any,
+                declaredAt: 0,
+                usedAt: [0]
+            } as UcodeSymbol;
+        }
+    }
+
     if (!symbol) {
         return null;
     }
@@ -1851,9 +1940,28 @@ The uci module is specifically designed for OpenWrt systems and provides safe, t
 
 function getUloopMethodHover(memberInfo: { objectName: string; propertyName: string }, analysisResult: SemanticAnalysisResult): string | null {
     const { objectName, propertyName } = memberInfo;
-    
+
     // Look up the object in the symbol table
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    let symbol = analysisResult.symbolTable.lookup(objectName);
+
+    // Try CFG-based lookup if symbol table fails
+    if (!symbol && analysisResult.cfgQueryEngine) {
+        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, 0);
+        if (cfgType) {
+            symbol = {
+                name: objectName,
+                type: SymbolType.VARIABLE,
+                dataType: cfgType,
+                scope: 0,
+                declared: true,
+                used: true,
+                node: {} as any,
+                declaredAt: 0,
+                usedAt: [0]
+            } as UcodeSymbol;
+        }
+    }
+
     if (!symbol) {
         return null;
     }
@@ -2023,9 +2131,28 @@ Supports both single-call compression/decompression and streaming operations. Th
 
 function getFsModuleMethodHover(memberInfo: { objectName: string; propertyName: string }, analysisResult: SemanticAnalysisResult): string | null {
     const { objectName, propertyName } = memberInfo;
-    
+
     // Look up the object in the symbol table
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    let symbol = analysisResult.symbolTable.lookup(objectName);
+
+    // Try CFG-based lookup if symbol table fails
+    if (!symbol && analysisResult.cfgQueryEngine) {
+        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, 0);
+        if (cfgType) {
+            symbol = {
+                name: objectName,
+                type: SymbolType.VARIABLE,
+                dataType: cfgType,
+                scope: 0,
+                declared: true,
+                used: true,
+                node: {} as any,
+                declaredAt: 0,
+                usedAt: [0]
+            } as UcodeSymbol;
+        }
+    }
+
     if (!symbol) {
         return null;
     }

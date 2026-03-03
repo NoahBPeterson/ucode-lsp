@@ -12,7 +12,7 @@ import { discoverAvailableModules, getModuleMembers, DiscoveredModule, ModuleMem
 import { UcodeLexer, TokenType } from './lexer';
 import { UcodeParser } from './parser';
 import { allBuiltinFunctions } from './builtins';
-import { SemanticAnalysisResult, SymbolType } from './analysis';
+import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
 import { fsTypeRegistry } from './analysis/fsTypes';
 import { debugTypeRegistry } from './analysis/debugTypes';
 import { digestTypeRegistry } from './analysis/digestTypes';
@@ -33,6 +33,39 @@ import { zlibTypeRegistry } from './analysis/zlibTypes';
 import { fsModuleTypeRegistry } from './analysis/fsModuleTypes';
 
 const defaultExportPropertiesCache = new Map<string, { content: string; properties: { name: string; type: string }[] }>();
+
+/**
+ * Helper to lookup a symbol with CFG fallback
+ * First tries symbol table, then falls back to CFG-based type inference
+ */
+function lookupSymbolWithCFG(
+    objectName: string,
+    analysisResult: SemanticAnalysisResult,
+    offset: number = 0
+): UcodeSymbol | undefined {
+    // Try symbol table first
+    let symbol = analysisResult.symbolTable.lookup(objectName);
+
+    // Try CFG-based lookup if symbol table fails
+    if (!symbol && analysisResult.cfgQueryEngine) {
+        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, offset);
+        if (cfgType) {
+            symbol = {
+                name: objectName,
+                type: SymbolType.VARIABLE,
+                dataType: cfgType,
+                scope: 0,
+                declared: true,
+                used: true,
+                node: {} as any,
+                declaredAt: offset,
+                usedAt: [offset]
+            } as UcodeSymbol;
+        }
+    }
+
+    return symbol || undefined;
+}
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams,
@@ -382,8 +415,8 @@ function getFsObjectCompletions(objectName: string, analysisResult?: SemanticAna
         return [];
     }
 
-    // Look up the symbol in the symbol table
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    // Look up the symbol in the symbol table (with CFG fallback)
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         console.log(`[FS_COMPLETION] Symbol not found: ${objectName}`);
         // Debug the symbol table to see what's available
@@ -433,7 +466,7 @@ function getNl80211ObjectCompletions(objectName: string, analysisResult?: Semant
     }
 
     // Look up the symbol in the symbol table
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         console.log(`[NL80211_COMPLETION] Symbol not found: ${objectName}`);
         return [];
@@ -481,7 +514,7 @@ function getUloopObjectCompletions(objectName: string, analysisResult?: Semantic
     }
 
     // Look up the symbol in the symbol table
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         console.log(`[ULOOP_COMPLETION] Symbol not found: ${objectName}`);
         return [];
@@ -528,7 +561,7 @@ function getUciObjectCompletions(objectName: string, analysisResult?: SemanticAn
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -568,7 +601,7 @@ function getDebugModuleCompletions(objectName: string, analysisResult?: Semantic
     }
 
     // Look up the symbol in the symbol table
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         console.log(`[DEBUG_COMPLETION] Symbol not found: ${objectName}`);
         return [];
@@ -614,7 +647,7 @@ function getDigestModuleCompletions(objectName: string, analysisResult?: Semanti
     }
 
     // Look up the symbol in the symbol table
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         console.log(`[DIGEST_COMPLETION] Symbol not found: ${objectName}`);
         return [];
@@ -658,7 +691,7 @@ function getLogModuleCompletions(objectName: string, analysisResult?: SemanticAn
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -695,7 +728,7 @@ function getMathModuleCompletions(objectName: string, analysisResult?: SemanticA
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -732,7 +765,7 @@ function getNl80211ModuleCompletions(objectName: string, analysisResult?: Semant
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -793,7 +826,7 @@ function getResolvModuleCompletions(objectName: string, analysisResult?: Semanti
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -830,7 +863,7 @@ function getSocketModuleCompletions(objectName: string, analysisResult?: Semanti
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -889,7 +922,7 @@ function getUbusModuleCompletions(objectName: string, analysisResult?: SemanticA
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -947,7 +980,7 @@ function getUloopModuleCompletions(objectName: string, analysisResult?: Semantic
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -1006,7 +1039,7 @@ function getStructModuleCompletions(objectName: string, analysisResult?: Semanti
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -1153,7 +1186,7 @@ function getUciModuleCompletions(objectName: string, analysisResult?: SemanticAn
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -1191,7 +1224,7 @@ function getZlibModuleCompletions(objectName: string, analysisResult?: SemanticA
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -1251,7 +1284,7 @@ function getFsModuleCompletions(objectName: string, analysisResult?: SemanticAna
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         console.log(`[FS_MODULE_COMPLETION] Symbol not found: ${objectName}`);
         return [];
@@ -1313,7 +1346,7 @@ function getFallbackNamespaceCompletions(objectName: string, analysisResult?: Se
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     
     // Only provide fallback completions if we have a symbol with valid import information
     if (!symbol || !symbol.importedFrom || symbol.type !== SymbolType.IMPORTED) {
@@ -1400,7 +1433,7 @@ function getDefaultImportCompletions(objectName: string, analysisResult?: Semant
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -1456,7 +1489,7 @@ function getNamespaceImportCompletions(objectName: string, analysisResult?: Sema
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -1557,7 +1590,7 @@ function getPropertyChainCompletions(objectName: string, propertyChain: string[]
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -1621,7 +1654,7 @@ function getVariableCompletions(objectName: string, analysisResult?: SemanticAna
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -1930,7 +1963,7 @@ function getRtnlModuleCompletions(objectName: string, analysisResult?: SemanticA
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         console.log(`[RTNL_MODULE_COMPLETION] Symbol not found: ${objectName}`);
         return [];
@@ -2008,7 +2041,7 @@ function getExceptionObjectCompletions(objectName: string, analysisResult?: Sema
     
     // First, try the symbol table approach for properly scoped catch parameters
     if (analysisResult && analysisResult.symbolTable) {
-        const symbol = analysisResult.symbolTable.lookup(objectName);
+        const symbol = lookupSymbolWithCFG(objectName, analysisResult);
         if (symbol) {
             console.log(`[EXCEPTION_COMPLETION] Symbol found: ${objectName}, dataType: ${JSON.stringify(symbol.dataType)}`);
             
@@ -2132,7 +2165,7 @@ function getNl80211ConstObjectCompletions(objectName: string, analysisResult?: S
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         console.log(`[NL80211_CONST_COMPLETION] Symbol not found: ${objectName}`);
         return [];
@@ -2182,7 +2215,7 @@ function getRtnlConstObjectCompletions(objectName: string, analysisResult?: Sema
         console.log(`[RTNL_CONST_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
         return [];
     }
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
     if (!symbol) {
         console.log(`[RTNL_CONST_COMPLETION] Symbol not found: ${objectName}`);
         return [];

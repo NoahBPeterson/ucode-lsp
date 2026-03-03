@@ -6,7 +6,7 @@
 import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode, 
          FunctionDeclarationNode, FunctionExpressionNode, IdentifierNode, CallExpressionNode,
          BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
-         ContinueStatementNode, AssignmentExpressionNode, BinaryExpressionNode, ImportDeclarationNode,
+         ContinueStatementNode, AssignmentExpressionNode, BinaryExpressionNode, LogicalExpressionNode, ImportDeclarationNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
@@ -18,6 +18,10 @@ import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
 import { FileResolver } from './fileResolver';
+import { CFGBuilder } from './cfg/cfgBuilder';
+import { DataFlowAnalyzer } from './cfg/dataFlowAnalyzer';
+import { CFGQueryEngine } from './cfg/queryEngine';
+import { type ControlFlowGraph } from './cfg/types';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
 import { fsModuleTypeRegistry } from './fsModuleTypes';
 import { debugTypeRegistry } from './debugTypes';
@@ -51,6 +55,8 @@ export interface SemanticAnalysisResult {
   typeResults: Map<AstNode, TypeCheckResult>;
   typeChecker?: TypeChecker;
   ast?: ProgramNode;
+  cfg?: ControlFlowGraph;
+  cfgQueryEngine?: CFGQueryEngine;
 }
 
 export class SemanticAnalyzer extends BaseVisitor {
@@ -66,6 +72,8 @@ export class SemanticAnalyzer extends BaseVisitor {
   private currentFunctionNode: FunctionDeclarationNode | null = null;
   private functionReturnTypes = new Map<FunctionDeclarationNode, UcodeType[]>();
   private processingFunctionCallCallee = false; // Track when processing function call callee
+  private cfg: ControlFlowGraph | null = null;
+  private cfgQueryEngine: CFGQueryEngine | null = null;
   private readonly moduleFunctionProviders: Record<string, () => string[]> = {
     debug: () => debugTypeRegistry.getFunctionNames(),
     digest: () => digestTypeRegistry.getFunctionNames(),
@@ -131,11 +139,55 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Visit the AST to perform semantic analysis
       this.visit(ast);
 
+      // CFG-based data flow analysis (if enabled)
+      if (this.options.enableControlFlowAnalysis && this.currentASTRoot) {
+        try {
+          // Build the Control Flow Graph
+          const cfgBuilder = new CFGBuilder('top-level');
+          this.cfg = cfgBuilder.build(this.currentASTRoot);
+
+          // Run data flow analysis on the CFG
+          const dataFlowAnalyzer = new DataFlowAnalyzer(
+            this.cfg,
+            this.symbolTable,
+            this.textDocument.getText()
+          );
+          const dfResult = dataFlowAnalyzer.analyze();
+
+          // Create query engine for LSP features to use
+          this.cfgQueryEngine = new CFGQueryEngine(
+            this.cfg,
+            cfgBuilder.getNodeToBlockMap()
+          );
+
+          // Pass CFG query engine to TypeChecker for flow-sensitive type checking
+          if (this.typeChecker) {
+            this.typeChecker.setCFGQueryEngine(this.cfgQueryEngine);
+          }
+
+          // Filter out false "Undefined function" errors for variables with unknown type from CFG
+          this.filterUndefinedFunctionErrorsWithCFG();
+
+          // Log CFG analysis result for debugging
+          if (!dfResult.converged) {
+            console.warn(`CFG analysis did not converge after ${dfResult.iterations} iterations`);
+          }
+        } catch (cfgError) {
+          // CFG analysis is best-effort; don't fail the whole analysis if it errors
+          console.error('CFG analysis error:', cfgError);
+          this.cfg = null;
+          this.cfgQueryEngine = null;
+          if (this.typeChecker) {
+            this.typeChecker.setCFGQueryEngine(null);
+          }
+        }
+      }
+
       // Post-analysis checks
       if (this.options.enableUnusedVariableDetection) {
         this.checkUnusedVariables();
       }
-      
+
       // Check for unnecessary disable comments
       this.checkUnnecessaryDisableComments();
 
@@ -160,6 +212,14 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     if (this.currentASTRoot) {
       result.ast = this.currentASTRoot;
+    }
+
+    if (this.cfg) {
+      result.cfg = this.cfg;
+    }
+
+    if (this.cfgQueryEngine) {
+      result.cfgQueryEngine = this.cfgQueryEngine;
     }
 
     return result;
@@ -1103,7 +1163,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       
       // Add type warnings to diagnostics
       for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
       }
     }
     
@@ -1408,7 +1468,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       
       // Add type warnings to diagnostics
       for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
       }
     }
 
@@ -1523,7 +1583,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       
       // Add type warnings to diagnostics
       for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
       }
       
       // After type checking, update variable types for general function calls
@@ -1612,7 +1672,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       
       // Add type warnings to diagnostics
       for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
       }
     }
   }
@@ -1669,24 +1729,24 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   visitIfStatement(node: IfStatementNode): void {
+    // First visit the statement to populate symbol table with declarations
+    super.visitIfStatement(node);
+
     if (this.options.enableTypeChecking) {
-      // Type check the if statement for flow-sensitive analysis
+      // Type check the if statement AFTER visiting to ensure all local variables are declared
       this.typeChecker.checkNode(node);
       const result = this.typeChecker.getResult();
-      
+
       // Add type errors to diagnostics
       for (const error of result.errors) {
         this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
       }
-      
+
       // Add type warnings to diagnostics
       for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
       }
     }
-    
-    // Continue with default traversal AFTER type checking to ensure flow-sensitive context is available
-    super.visitIfStatement(node);
   }
 
   // Override loop visitors to track loop scopes
@@ -2440,9 +2500,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
 private addDiagnostic(
-    message: string, 
-    start: number, 
-    end: number, 
+    message: string,
+    start: number,
+    end: number,
     severity?: DiagnosticSeverity,
     code?: string,
     data?: any
@@ -2746,46 +2806,366 @@ private addDiagnostic(
     return false;
   }
 
+  /**
+   * Filter out "Undefined function" errors for variables that have unknown type from CFG
+   * This prevents false positives for dynamically-looked-up functions
+   */
+  private filterUndefinedFunctionErrorsWithCFG(): void {
+    if (!this.cfgQueryEngine || !this.typeChecker) {
+      return;
+    }
+
+    const typeCheckerErrors = this.typeChecker.getErrors();
+    const filteredErrors = typeCheckerErrors.filter(error => {
+      // Check if this is an "Undefined function" error
+      if (!error.message.startsWith('Undefined function:')) {
+        return true; // Keep other errors
+      }
+
+      // Extract function name from error message
+      const match = error.message.match(/Undefined function: (\w+)/);
+      if (!match) {
+        return true; // Keep if we can't parse
+      }
+
+      const funcName = match[1];
+      if (!funcName) {
+        return true; // Keep if we can't extract name
+      }
+
+      // First check if symbol exists in symbol table (it might be a local variable)
+      const symbol = this.symbolTable.lookupAtPosition(funcName, error.start);
+
+      // If symbol exists and has unknown type, suppress the error
+      if (symbol && symbol.dataType === 'unknown') {
+        return false; // Filter out - we don't know if it's callable
+      }
+
+      // Also check CFG for type information
+      const cfgType = this.cfgQueryEngine!.getTypeAtPosition(funcName, error.start);
+
+      // If CFG says the type is unknown (not undefined/missing), suppress the error
+      // Unknown means we don't know if it's callable or not, so don't report error
+      if (cfgType === 'unknown') {
+        return false; // Filter out this error
+      }
+
+      return true; // Keep the error
+    });
+
+    // Update TypeChecker with filtered errors
+    this.typeChecker.setErrors(filteredErrors);
+  }
+
+  /**
+   * Re-check an expression with CFG-based type information.
+   * Returns true if the diagnostic should be filtered (expression is valid with CFG types).
+   */
+  private recheckExpressionWithCFG(diagnostic: Diagnostic): boolean {
+    const diagnosticData = (diagnostic as any).data;
+    if (
+      !diagnosticData ||
+      !diagnosticData.variableName ||
+      typeof diagnosticData.argumentOffset !== 'number' ||
+      !Array.isArray(diagnosticData.expectedTypes) ||
+      diagnosticData.expectedTypes.length === 0 ||
+      !this.cfgQueryEngine ||
+      !this.typeChecker
+    ) {
+      return false; // Can't re-check without necessary data
+    }
+
+    const varName: string = diagnosticData.variableName;
+    const argumentOffset: number = diagnosticData.argumentOffset;
+
+    // Query CFG for the variable's type at this position
+    const cfgType = this.cfgQueryEngine.getTypeAtPosition(varName, argumentOffset);
+
+    // Check if CFG type satisfies any of the expected types
+    const expectedTypes = diagnosticData.expectedTypes as UcodeType[];
+    const typeNarrowing = this.typeChecker.getTypeNarrowing();
+
+    if (cfgType && typeNarrowing.isSubtypeOfUnion(cfgType, expectedTypes)) {
+      return true; // Filter this diagnostic
+    }
+
+    // Fall back to AST-based guard detection when CFG data is unavailable
+    const guardTypes = this.findTypeGuardNarrowedTypes(varName, argumentOffset);
+    if (
+      guardTypes &&
+      guardTypes.length > 0 &&
+      guardTypes.every(type => expectedTypes.includes(type))
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
   private filterDiagnosticsWithFlowSensitiveAnalysis(diagnostics: Diagnostic[]): Diagnostic[] {
-    if (!this.currentASTRoot) {
+    if (!this.currentASTRoot || !this.cfgQueryEngine) {
       return diagnostics;
     }
 
-
     return diagnostics.filter(diagnostic => {
+      // Option C: Selective Re-checking
+      // Check if this is a recheckable diagnostic (nullable-argument with variable name and AST node)
+      if ((diagnostic as any).code === 'nullable-argument') {
+        const diagnosticData = (diagnostic as any).data;
+        if (
+          diagnosticData &&
+          diagnosticData.variableName &&
+          typeof diagnosticData.argumentOffset === 'number' &&
+          Array.isArray(diagnosticData.expectedTypes)
+        ) {
+          // Re-check this expression with CFG types
+          const shouldFilter = this.recheckExpressionWithCFG(diagnostic);
+          if (shouldFilter) {
+            return false; // Filter out this diagnostic
+          }
+        }
+      }
+
+      // Legacy: Check if this is a builtin argument warning about "may be X"
+      if (diagnostic.message.includes("may be") && diagnostic.severity === DiagnosticSeverity.Warning) {
+        const diagnosticData = (diagnostic as any).data;
+        if (diagnosticData && diagnosticData.variableName) {
+          // This is the old path for diagnostics without AST nodes
+          // Keep this for backward compatibility
+        }
+      }
+
       // Check if this is a null-related diagnostic on 'in' operator
-      if (diagnostic.message.includes("'in' operator") && 
+      if (diagnostic.message.includes("'in' operator") &&
           diagnostic.message.includes("possibly 'null'")) {
-        
+
         // Try to determine what variable this diagnostic is about
         // This is a heuristic based on the diagnostic message
         const variableMatch = diagnostic.message.match(/Argument is possibly 'null'/);
-        
+
         if (variableMatch) {
           // Find the AST node at this position
           const position = diagnostic.range.start.character;
           const line = diagnostic.range.start.line;
-          
+
           // Convert line-based position to character position (approximation)
           const textLines = this.textDocument.getText().split('\n');
           let charPosition = 0;
           for (let i = 0; i < line && i < textLines.length; i++) {
-            const line = textLines[i];
-            if (line !== undefined) {
-              charPosition += line.length + 1; // +1 for newline
+            const lineText = textLines[i];
+            if (lineText !== undefined) {
+              charPosition += lineText.length + 1; // +1 for newline
             }
           }
           charPosition += position;
-          
+
           // Find if this position contains a null guard
           if (this.currentASTRoot && this.findNullGuardAtPosition(this.currentASTRoot, charPosition)) {
             return false; // Filter out this diagnostic
           }
         }
       }
-      
+
       return true; // Keep all other diagnostics
     });
+  }
+
+  private findTypeGuardNarrowedTypes(variableName: string, offset: number): UcodeType[] | null {
+    if (!this.currentASTRoot) {
+      return null;
+    }
+
+    return this.searchTypeGuardForPosition(this.currentASTRoot, variableName, offset);
+  }
+
+  private searchTypeGuardForPosition(node: AstNode, variableName: string, offset: number): UcodeType[] | null {
+    if (!this.nodeContainsPosition(node, offset)) {
+      return null;
+    }
+
+    switch (node.type) {
+      case 'IfStatement': {
+        const ifNode = node as IfStatementNode;
+        if (this.nodeContainsPosition(ifNode.consequent, offset)) {
+          const guardInfo = this.collectTypeGuardTypes(ifNode.test, variableName);
+          if (guardInfo.pure && guardInfo.types.size > 0) {
+            return Array.from(guardInfo.types);
+          }
+        }
+
+        const inConsequent = this.searchTypeGuardForPosition(ifNode.consequent, variableName, offset);
+        if (inConsequent) {
+          return inConsequent;
+        }
+
+        if (ifNode.alternate) {
+          const inAlternate = this.searchTypeGuardForPosition(ifNode.alternate, variableName, offset);
+          if (inAlternate) {
+            return inAlternate;
+          }
+        }
+        return null;
+      }
+
+      case 'BlockStatement': {
+        const blockNode = node as BlockStatementNode;
+        for (const statement of blockNode.body) {
+          const result = this.searchTypeGuardForPosition(statement, variableName, offset);
+          if (result) {
+            return result;
+          }
+        }
+        return null;
+      }
+
+      case 'FunctionDeclaration':
+      case 'FunctionExpression':
+      case 'ArrowFunctionExpression': {
+        const body = (node as any).body;
+        if (body) {
+          return this.searchTypeGuardForPosition(body, variableName, offset);
+        }
+        return null;
+      }
+
+      default:
+        break;
+    }
+
+    for (const key of Object.keys(node)) {
+      const child = (node as any)[key];
+      if (!child) {
+        continue;
+      }
+
+      if (Array.isArray(child)) {
+        for (const item of child) {
+          if (item && typeof item === 'object' && 'type' in item) {
+            const result = this.searchTypeGuardForPosition(item as AstNode, variableName, offset);
+            if (result) {
+              return result;
+            }
+          }
+        }
+      } else if (typeof child === 'object' && 'type' in child) {
+        const result = this.searchTypeGuardForPosition(child as AstNode, variableName, offset);
+        if (result) {
+          return result;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private collectTypeGuardTypes(condition: AstNode, variableName: string): { types: Set<UcodeType>; pure: boolean } {
+    const result = { types: new Set<UcodeType>(), pure: true };
+
+    const visit = (expr: AstNode | null | undefined): void => {
+      if (!expr || !result.pure) {
+        return;
+      }
+
+      switch (expr.type) {
+        case 'LogicalExpression': {
+          const logical = expr as LogicalExpressionNode;
+          visit(logical.left);
+          visit(logical.right);
+          return;
+        }
+
+        case 'BinaryExpression': {
+          const binary = expr as BinaryExpressionNode;
+          if (binary.operator === '==' || binary.operator === '===') {
+            const direct = this.extractTypeCheck(binary.left, binary.right, variableName);
+            const reversed = this.extractTypeCheck(binary.right, binary.left, variableName);
+
+            const matchedType = direct ?? reversed;
+            if (matchedType) {
+              result.types.add(matchedType);
+              return;
+            }
+          }
+
+          result.pure = false;
+          return;
+        }
+
+        default:
+          result.pure = false;
+          return;
+      }
+    };
+
+    visit(condition);
+    return result;
+  }
+
+  private extractTypeCheck(left: AstNode, right: AstNode, variableName: string): UcodeType | null {
+    if (
+      left.type === 'CallExpression' &&
+      this.isTypeCallOnVariable(left as CallExpressionNode, variableName) &&
+      right.type === 'Literal'
+    ) {
+      const literal = right as LiteralNode;
+      if (typeof literal.value === 'string') {
+        return this.mapTypeStringToUcodeType(literal.value);
+      }
+    }
+
+    return null;
+  }
+
+  private isTypeCallOnVariable(node: CallExpressionNode, variableName: string): boolean {
+    if (node.callee.type !== 'Identifier') {
+      return false;
+    }
+
+    if ((node.callee as IdentifierNode).name !== 'type') {
+      return false;
+    }
+
+    if (!node.arguments || node.arguments.length !== 1) {
+      return false;
+    }
+
+    const arg = node.arguments[0];
+    return !!arg && arg.type === 'Identifier' && (arg as IdentifierNode).name === variableName;
+  }
+
+  private mapTypeStringToUcodeType(typeStr: string): UcodeType | null {
+    switch (typeStr) {
+      case 'string':
+        return UcodeType.STRING;
+      case 'int':
+        return UcodeType.INTEGER;
+      case 'double':
+        return UcodeType.DOUBLE;
+      case 'bool':
+        return UcodeType.BOOLEAN;
+      case 'array':
+        return UcodeType.ARRAY;
+      case 'object':
+        return UcodeType.OBJECT;
+      case 'function':
+        return UcodeType.FUNCTION;
+      case 'null':
+        return UcodeType.NULL;
+      default:
+        return null;
+    }
+  }
+
+  private nodeContainsPosition(node: AstNode | null | undefined, offset: number): boolean {
+    if (!node || typeof node !== 'object') {
+      return false;
+    }
+
+    if (typeof (node as any).start !== 'number' || typeof (node as any).end !== 'number') {
+      return false;
+    }
+
+    return offset >= (node as any).start && offset <= (node as any).end;
   }
 
   private findNullGuardAtPosition(node: AstNode, position: number): boolean {

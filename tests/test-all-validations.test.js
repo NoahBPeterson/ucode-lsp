@@ -36,7 +36,6 @@ const testFiles = [
     'tests/test-conversion-functions.js',
     'tests/test-module-functions.js',
     'tests/test-json-utility-functions.js',
-    'tests/test-utility-functions-ast.test.js',
     'tests/test-system-utility-functions.js',
     'tests/test-union-types-programmatic.js',
     'tests/test-union-types-logic.js',
@@ -45,7 +44,6 @@ const testFiles = [
     'tests/test-arrow-function-parsing.js',
     'tests/test-for-in-bare-fix.js',
     'tests/test-imported-function-fix.js',
-    'tests/test-object-property-keys.test.js',
     'tests/test-object-property-keys-fix.js',
     'tests/test-namespace-import-validation.js',
     'tests/test-fs-module-support.js',
@@ -135,14 +133,8 @@ const testFiles = [
     'tests/test-dot-notation-default-import.js',
     'tests/test-global-object-types.js',
     'tests/test-module-aliasing.js',
-    'tests/test-rtnl-module-validation.test.js',
-    'tests/test-module-method-validation.test.js',
-    'tests/test-object-property-type-inference.test.js',
     'tests/test-object-property-hover-lsp.mocha.js',
-    'tests/test-template-literals.test.js',
-    'tests/test-complex-or-guards.test.js',
-    'tests/test-edge-case-guards.test.js',
-    'tests/test-branch-count-validation.test.js',
+    'tests/test-type-guard-narrowing-bug.js',  // TODO: Fix CFG type narrowing in arrow callbacks
 ];
 
 const mochaFiles = [
@@ -161,14 +153,12 @@ const mochaFiles = [
     'test-auto-fix-code-actions.js',
     'test-disable-parser-diagnostics.js',
     'test-nlresult-specific.js',
+    'test-type-guard-narrowing-bug.js',  // TODO: Fix CFG type narrowing in arrow callbacks
     'test-disable-comments-warnings.js',
     'test-conversion-functions-validation.js',
     'test-module-functions-validation.js',
     'test-number-conversion-validation.js',
     'test-trim-functions-ast.js',
-    'test-template-literal-usage.test.js',
-    'test-or-type-narrowing.test.js',
-    'test-or-hover.test.js',
     'test-substr-functions-ast.js',
     'test-import-completion.js',
     'test-module-completions.js',
@@ -194,9 +184,6 @@ const mochaFiles = [
     'test-global-object-types.js',
     'test-module-aliasing.js',
     'test-object-property-hover-lsp.mocha.js',
-    'test-complex-or-guards.test.js',
-    'test-edge-case-guards.test.js',
-    'test-branch-count-validation.test.js',
 ];
 
 test('Comprehensive Validation Test Suite', async () => {

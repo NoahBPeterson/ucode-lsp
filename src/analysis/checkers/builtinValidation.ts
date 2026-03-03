@@ -143,11 +143,24 @@ export class BuiltinValidator {
         const message = customErrorMessage ||
           `Argument ${argPosition} of ${funcName}() may be ${disallowedTypes.join(' | ')}. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
 
+        // Extract variable name for CFG-based filtering
+        const variableName = this.getVariableName(arg);
+
         this.warnings.push({
           message: message,
           start: arg.start,
           end: arg.end,
-          severity: 'warning'
+          severity: 'warning',
+          code: 'nullable-argument',
+          data: {
+            functionName: funcName,
+            argumentIndex: argPosition - 1,
+            expectedType: allowedTypes.join(' | '),
+            expectedTypes: [...allowedTypes],
+            actualType: argType,
+            variableName: variableName,
+            argumentOffset: arg.start
+          }
         });
       }
     } else {
@@ -195,6 +208,18 @@ export class BuiltinValidator {
     }
     // For non-literals, we can't determine truthiness statically, assume truish
     return true;
+  }
+
+  /**
+   * Extract variable name from an argument node for CFG-based type narrowing.
+   * Returns null if the argument is not a simple identifier.
+   */
+  private getVariableName(node: AstNode): string | null {
+    if (node.type === 'Identifier') {
+      return (node as any).name;
+    }
+    // For complex expressions, return null
+    return null;
   }
 
   validateLengthFunction(node: CallExpressionNode): boolean {

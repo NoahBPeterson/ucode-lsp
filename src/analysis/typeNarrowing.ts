@@ -121,6 +121,20 @@ export class TypeNarrowingEngine {
   }
 
   /**
+   * Check if an actual type is assignable to any of the expected union types
+   */
+  isSubtypeOfUnion(actualType: UcodeDataType, expectedTypes: UcodeType[]): boolean {
+    if (!expectedTypes || expectedTypes.length === 0) {
+      return false;
+    }
+
+    const actualTypes = getUnionTypes(actualType);
+    const allowed = new Set(expectedTypes);
+
+    return actualTypes.every(actual => allowed.has(actual));
+  }
+
+  /**
    * Get the portion of a union type that is NOT assignable to an expected type
    */
   getUnassignablePortion(actualType: UcodeDataType, expectedType: UcodeType): UcodeDataType {
