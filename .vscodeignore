@@ -32,3 +32,9 @@ bun.lock
 *.txt
 *.js
 dist/*.map
+*.mjs
+*.sh
+mwan4/**
+pbr/**
+scripts/**
+tsconfig.tsbuildinfo
