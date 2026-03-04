@@ -1447,10 +1447,19 @@ function getDefaultImportCompletions(objectName: string, analysisResult?: Semant
         try {
             // Check if the imported file exists and can be read
             // Convert URI to file system path
-            const filePath = symbol.importedFrom.startsWith('file://') 
-                ? symbol.importedFrom.replace('file://', '') 
-                : symbol.importedFrom;
-            
+            let filePath: string;
+            if (symbol.importedFrom.startsWith('file://')) {
+                filePath = symbol.importedFrom.replace('file://', '');
+            } else if (symbol.importedFrom.startsWith('./') || symbol.importedFrom.startsWith('../')) {
+                filePath = path.resolve(process.cwd(), symbol.importedFrom);
+            } else if (/^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+$/.test(symbol.importedFrom)) {
+                // Dot notation that wasn't resolved - convert to file path
+                const convertedPath = './' + symbol.importedFrom.replace(/\./g, '/') + '.uc';
+                filePath = path.resolve(process.cwd(), convertedPath);
+            } else {
+                filePath = symbol.importedFrom;
+            }
+
             if (!fs.existsSync(filePath)) {
                 return [];
             }

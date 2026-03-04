@@ -138,6 +138,7 @@ const testFiles = [
 ];
 
 const mochaFiles = [
+    'test-dot-notation-default-import.js',
     'test-string-method-validation.js',
     'test-missing-builtins-validation.js',
     'test-filter-builtin-validation.js',

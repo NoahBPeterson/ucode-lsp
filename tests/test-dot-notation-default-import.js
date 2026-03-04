@@ -20,9 +20,9 @@ describe('Dot Notation Default Import Completions', () => {
     it('should provide completions for dot notation default imports', async function() {
         this.timeout(5000);
 
-        const testContent = `import defs from 'umap.defs';
+        const testContent = `import defs from 'tests.defs';
 defs.`;
-        const testFilePath = path.join(process.cwd(), 'umapd/umapd/src/test-dot-notation-default.uc');
+        const testFilePath = path.join(process.cwd(), 'tests/test-dot-notation-default.uc');
         const completions = await lspServer.getCompletions(testContent, testFilePath, 1, 5);
 
         const items = completions?.items || completions || [];
@@ -36,10 +36,10 @@ defs.`;
     it('should propagate default import completions through aliases', async function() {
         this.timeout(5000);
 
-        const testContent = `import defs from 'umap.defs';
+        const testContent = `import defs from 'tests.defs';
 const defsAlias = defs;
 defsAlias.`;
-        const testFilePath = path.join(process.cwd(), 'umapd/umapd/src/test-dot-notation-alias.uc');
+        const testFilePath = path.join(process.cwd(), 'tests/test-dot-notation-alias.uc');
         const completions = await lspServer.getCompletions(testContent, testFilePath, 2, 9);
 
         const items = completions?.items || completions || [];
