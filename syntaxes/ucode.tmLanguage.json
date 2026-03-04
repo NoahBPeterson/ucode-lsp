@@ -9,6 +9,9 @@
       "include": "#comments"
     },
     {
+      "include": "#regexp"
+    },
+    {
       "include": "#strings"
     },
     {
@@ -81,6 +84,38 @@
           "name": "comment.block.template.ucode",
           "begin": "{#",
           "end": "#}"
+        }
+      ]
+    },
+    "regexp": {
+      "patterns": [
+        {
+          "name": "string.regexp.ucode",
+          "begin": "(?<=[=(,:;!?\\[])\\s*(/(?![/*]))",
+          "beginCaptures": {
+            "1": { "name": "string.regexp.ucode" }
+          },
+          "end": "(/[gis]*)",
+          "endCaptures": {
+            "1": { "name": "string.regexp.ucode" }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.regexp.ucode",
+              "match": "\\\\."
+            },
+            {
+              "name": "constant.other.character-class.regexp.ucode",
+              "begin": "\\[",
+              "end": "\\]",
+              "patterns": [
+                {
+                  "name": "constant.character.escape.regexp.ucode",
+                  "match": "\\\\."
+                }
+              ]
+            }
+          ]
         }
       ]
     },

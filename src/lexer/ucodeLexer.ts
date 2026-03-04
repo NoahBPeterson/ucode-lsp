@@ -479,16 +479,17 @@ export class UcodeLexer {
     private parseRegex(): Token | null {
         const startPos = this.pos;
         let value = '';
-        
+        let inCharClass = false;
+
         this.nextChar(); // consume opening /
         value += '/';
-        
+
         while (this.pos < this.source.length) {
             const ch = this.peekChar();
-            
-            if (ch === '/') {
+
+            if (ch === '/' && !inCharClass) {
                 value += this.nextChar(); // consume closing /
-                
+
                 // Handle regex flags (ucode supports: g, i, s)
                 const supportedFlags = new Set(['g', 'i', 's']);
                 while (this.pos < this.source.length && /[a-zA-Z]/.test(this.peekChar())) {
@@ -506,27 +507,33 @@ export class UcodeLexer {
                         );
                     }
                 }
-                
+
                 return this.emitToken(TokenType.TK_REGEXP, value, startPos);
             }
-            
+
             // Check for unescaped newline - this indicates a stray slash, not a regex
             if (isLineBreak(ch)) {
                 // Reset position to just after the initial slash
                 this.pos = startPos + 1;
                 return this.emitToken(TokenType.TK_ERROR, "Unexpected token '/'. Did you mean to use a comment '//'?", startPos);
             }
-            
+
             if (ch === '\\') {
                 value += this.nextChar(); // consume backslash
                 if (this.pos < this.source.length) {
                     value += this.nextChar(); // consume escaped character
                 }
             } else {
+                // Track character class brackets
+                if (ch === '[' && !inCharClass) {
+                    inCharClass = true;
+                } else if (ch === ']' && inCharClass) {
+                    inCharClass = false;
+                }
                 value += this.nextChar();
             }
         }
-        
+
         return this.emitToken(TokenType.TK_ERROR, 'Unterminated regex', startPos);
     }
 
@@ -783,7 +790,8 @@ export class UcodeLexer {
                  tokenType === TokenType.TK_WHILE ||     // while
                  tokenType === TokenType.TK_FOR ||       // for
                  tokenType === TokenType.TK_CASE ||      // case
-                 tokenType === TokenType.TK_COLON) {     // :
+                 tokenType === TokenType.TK_COLON ||     // :
+                 tokenType === TokenType.TK_QMARK) {     // ?
             this.noRegexp = false;
         }
         // Special handling for { and ; - regex is less likely but still possible
