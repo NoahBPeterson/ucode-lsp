@@ -256,6 +256,36 @@ print(NEVER_DEFINED);
 });
 
 // ---------------------------------------------------------------------------
+// match() regex suggestion
+// ---------------------------------------------------------------------------
+describe('match() regex suggestion', () => {
+    test('match(str, "pattern") should suggest regex conversion', () => {
+        const code = `
+let str = "hello world";
+let m = match(str, "^hello$");
+`;
+        const result = analyze(code);
+        const matchErrors = result.diagnostics.filter(d =>
+            d.message.includes('match') && d.message.includes('regex')
+        );
+        expect(matchErrors.length).toBeGreaterThan(0);
+        expect(matchErrors[0].message).toContain('Did you mean: /^hello$/');
+    });
+
+    test('match(str, /pattern/) should not produce a regex suggestion error', () => {
+        const code = `
+let str = "hello world";
+let m = match(str, /^hello$/);
+`;
+        const result = analyze(code);
+        const matchErrors = result.diagnostics.filter(d =>
+            d.message.includes('match') && d.message.includes('Did you mean')
+        );
+        expect(matchErrors.length).toBe(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Hoisted function diagnostic ranges
 // ---------------------------------------------------------------------------
 describe('Hoisted function diagnostic ranges', () => {

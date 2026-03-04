@@ -243,7 +243,29 @@ export class BuiltinValidator {
   validateMatchFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'match', 2)) return true;
     this.validateArgumentType(node.arguments[0], 'match', 1, [UcodeType.STRING]); // Include UcodeType.OBJECT when it includes tostring()
-    this.validateArgumentType(node.arguments[1], 'match', 2, [UcodeType.REGEX]);
+
+    // Custom check for argument 2: suggest regex conversion if a string literal is passed
+    const regexArg = node.arguments[1];
+    if (regexArg) {
+      const regexArgType = this.getNodeType(regexArg);
+      if (regexArgType !== UcodeType.REGEX && regexArgType !== UcodeType.UNKNOWN) {
+        if (regexArg.type === 'Literal') {
+          const literal = regexArg as any;
+          if (literal.literalType === 'string') {
+            const value = literal.value as string;
+            this.errors.push({
+              message: `Function 'match' expects regex for argument 2, but got string.\nDid you mean: /${value}/`,
+              start: regexArg.start,
+              end: regexArg.end,
+              severity: 'error'
+            });
+            return true;
+          }
+        }
+        this.validateArgumentType(regexArg, 'match', 2, [UcodeType.REGEX]);
+      }
+    }
+
     return true;
   }
 
