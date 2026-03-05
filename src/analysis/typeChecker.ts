@@ -38,6 +38,7 @@ import { fsModuleTypeRegistry } from './fsModuleTypes';
 import { uloopObjectRegistry } from './uloopTypes';
 import { rtnlTypeRegistry } from './rtnlTypes';
 import { nl80211TypeRegistry } from './nl80211Types';
+import { ioModuleTypeRegistry } from './ioTypes';
 import { TypeNarrowingEngine } from './typeNarrowing';
 import { FlowSensitiveTypeTracker } from './flowSensitiveTyping';
 import { CFGQueryEngine } from './cfg/queryEngine';
@@ -142,10 +143,10 @@ export class TypeChecker {
       { name: 'type', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.STRING },
       { name: 'keys', parameters: [UcodeType.OBJECT], returnType: UcodeType.ARRAY },
       { name: 'values', parameters: [UcodeType.OBJECT], returnType: UcodeType.ARRAY },
-      { name: 'push', parameters: [UcodeType.ARRAY], returnType: UcodeType.INTEGER, variadic: true },
+      { name: 'push', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN, variadic: true },
       { name: 'pop', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN },
       { name: 'shift', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN },
-      { name: 'unshift', parameters: [UcodeType.ARRAY], returnType: UcodeType.INTEGER, variadic: true },
+      { name: 'unshift', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN, variadic: true },
       { name: 'filter', parameters: [UcodeType.ARRAY, UcodeType.FUNCTION], returnType: UcodeType.ARRAY },
       { name: 'index', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
       { name: 'rindex', parameters: [UcodeType.STRING, UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
@@ -156,19 +157,19 @@ export class TypeChecker {
       { name: 'replace', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.STRING },
       { name: 'system', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.INTEGER, minParams: 1, maxParams: 2 },
       { name: 'time', parameters: [], returnType: UcodeType.INTEGER },
-      { name: 'sleep', parameters: [UcodeType.INTEGER], returnType: UcodeType.NULL },
+      { name: 'sleep', parameters: [UcodeType.INTEGER], returnType: UcodeType.BOOLEAN },
       { name: 'localtime', parameters: [], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 1 },
       { name: 'gmtime', parameters: [], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 1 },
       { name: 'timelocal', parameters: [UcodeType.OBJECT], returnType: UcodeType.INTEGER },
       { name: 'timegm', parameters: [UcodeType.OBJECT], returnType: UcodeType.INTEGER },
-      { name: 'min', parameters: [], returnType: UcodeType.INTEGER, variadic: true },
-      { name: 'max', parameters: [], returnType: UcodeType.INTEGER, variadic: true },
+      { name: 'min', parameters: [], returnType: UcodeType.UNKNOWN, variadic: true },
+      { name: 'max', parameters: [], returnType: UcodeType.UNKNOWN, variadic: true },
       { name: 'uniq', parameters: [UcodeType.ARRAY], returnType: UcodeType.ARRAY },
       { name: 'b64enc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
       { name: 'b64dec', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
       { name: 'hexenc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
       { name: 'hexdec', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
-      { name: 'hex', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
+      { name: 'hex', parameters: [UcodeType.STRING], returnType: UcodeType.INTEGER },
       { name: 'uchr', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
       { name: 'iptoarr', parameters: [UcodeType.STRING], returnType: UcodeType.ARRAY },
       { name: 'arrtoip', parameters: [UcodeType.ARRAY], returnType: UcodeType.STRING },
@@ -193,7 +194,7 @@ export class TypeChecker {
       { name: 'sort', parameters: [UcodeType.ARRAY], returnType: UcodeType.ARRAY, minParams: 1, maxParams: 2 },
       { name: 'splice', parameters: [UcodeType.ARRAY, UcodeType.INTEGER], returnType: UcodeType.ARRAY, variadic: true },
       { name: 'slice', parameters: [UcodeType.UNKNOWN, UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 2, maxParams: 3 },
-      { name: 'warn', parameters: [], returnType: UcodeType.NULL, variadic: true },
+      { name: 'warn', parameters: [], returnType: UcodeType.INTEGER, variadic: true },
       { name: 'trace', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },
       { name: 'proto', parameters: [UcodeType.OBJECT], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
       { name: 'render', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
@@ -209,7 +210,7 @@ export class TypeChecker {
       { name: 'sin', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.DOUBLE },
       { name: 'sqrt', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.DOUBLE },
       { name: 'pow', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.DOUBLE },
-      { name: 'rand', parameters: [], returnType: UcodeType.INTEGER },
+      { name: 'rand', parameters: [], returnType: UcodeType.DOUBLE, minParams: 0, maxParams: 2 },
       { name: 'srand', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.NULL },
       { name: 'isnan', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.BOOLEAN },
       
@@ -974,6 +975,11 @@ export class TypeChecker {
 
     // First check special cases
     if (this.validateSpecialBuiltins(node, signature)) {
+      const narrowed = this.builtinValidator.narrowedReturnType;
+      this.builtinValidator.narrowedReturnType = null;
+      if (narrowed !== null) {
+        return narrowed;
+      }
       return this.dataTypeToUcodeType(signature.returnType);
     }
 
@@ -1270,8 +1276,42 @@ export class TypeChecker {
         return UcodeType.UNKNOWN;
       }
       
+      // Check if this is an io.handle object with methods
+      if (ioModuleTypeRegistry.isVariableOfIoType(symbol.dataType) && !node.computed) {
+        const methodName = (node.property as IdentifierNode).name;
+        const method = ioModuleTypeRegistry.getIoHandleMethod(methodName);
+        if (method) {
+          switch (method.returnType) {
+            case 'string | null':
+            case 'string':
+              return UcodeType.STRING;
+            case 'number | null':
+            case 'number':
+              return UcodeType.INTEGER;
+            case 'boolean | null':
+            case 'boolean':
+              return UcodeType.BOOLEAN;
+            case 'io.handle | null':
+              return UcodeType.OBJECT;
+            case 'object | null':
+              return UcodeType.OBJECT;
+            case 'any':
+              return UcodeType.UNKNOWN;
+            default:
+              return UcodeType.UNKNOWN;
+          }
+        }
+        this.errors.push({
+          message: `Method '${methodName}' does not exist on io.handle`,
+          start: node.start,
+          end: node.end,
+          severity: 'error'
+        });
+        return UcodeType.UNKNOWN;
+      }
+
       // Check if this is an rtnl constants object with a specific property
-      if (symbol.dataType && typeof symbol.dataType === 'object' && 
+      if (symbol.dataType && typeof symbol.dataType === 'object' &&
           'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'rtnl-const' && !node.computed) {
         const propertyName = this.getStaticPropertyName(node.property);
         if (!propertyName) {

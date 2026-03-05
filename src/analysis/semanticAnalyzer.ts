@@ -39,6 +39,7 @@ import { uloopTypeRegistry, UloopObjectType, createUloopObjectDataType, uloopObj
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
 import { zlibTypeRegistry } from './zlibTypes';
+import { IoObjectType, createIoHandleDataType } from './ioTypes';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -1576,29 +1577,35 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           const fsType = this.inferFsType(node.right);
           const nl80211Type = this.inferNl80211Type(node.right);
           const uloopType = this.inferUloopType(node.right);
+          const ioType = this.inferIoType(node.right);
           const rtnlFunctionReturnType = this.inferImportedRtnlFunctionReturnType(node.right);
-          
+
           let earlyDataType: UcodeDataType | null = null;
-          
+
           if (fsType) {
             earlyDataType = createFsObjectDataType(fsType);
           } else if (nl80211Type) {
             earlyDataType = createNl80211ObjectDataType(nl80211Type);
           } else if (uloopType) {
             earlyDataType = createUloopObjectDataType(uloopType);
+          } else if (ioType) {
+            earlyDataType = createIoHandleDataType();
           } else if (rtnlFunctionReturnType) {
             earlyDataType = rtnlFunctionReturnType;
           }
-          
+
           // Only create new symbols for undeclared variables with special types
           if (earlyDataType) {
             this.symbolTable.declare(variableName, SymbolType.VARIABLE, earlyDataType, node.left as IdentifierNode);
-            
+
             // For special object variables, also force declaration in global scope
             if (fsType) {
               this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, earlyDataType);
             }
             if (uloopType) {
+              this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, earlyDataType);
+            }
+            if (ioType) {
               this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, earlyDataType);
             }
           }
@@ -1630,14 +1637,23 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const fsType = this.inferFsType(node.right);
         const nl80211Type = this.inferNl80211Type(node.right);
         const uloopType = this.inferUloopType(node.right);
+        const ioType = this.inferIoType(node.right);
         const rtnlFunctionReturnType = this.inferImportedRtnlFunctionReturnType(node.right);
-        
+
         // Skip require() calls - they're handled specially in visitVariableDeclarator
-        const isRequireCall = node.right.type === 'CallExpression' && 
+        const isRequireCall = node.right.type === 'CallExpression' &&
                              (node.right as CallExpressionNode).callee.type === 'Identifier' &&
                              ((node.right as CallExpressionNode).callee as IdentifierNode).name === 'require';
-        
-        if (!fsType && !nl80211Type && !uloopType && !rtnlFunctionReturnType && !isRequireCall) {
+
+        // If an io type was inferred but the symbol already existed, update its type now
+        if (ioType && symbol) {
+          const dataType = createIoHandleDataType();
+          symbol.dataType = dataType;
+          this.symbolTable.updateSymbolType(variableName, dataType);
+          this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
+        }
+
+        if (!fsType && !nl80211Type && !uloopType && !ioType && !rtnlFunctionReturnType && !isRequireCall) {
           // Check for all types of function calls that return specific types
           const methodReturnType = this.inferMethodReturnType(node.right);
           const functionReturnType = this.inferFunctionCallReturnType(node.right);
@@ -1997,7 +2013,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       const callNode = node as CallExpressionNode;
       if (callNode.callee.type === 'Identifier') {
         const funcName = (callNode.callee as IdentifierNode).name;
-        
+
+        // Skip if this function was imported from a non-fs module (e.g. io.open)
+        const symbol = this.symbolTable.lookup(funcName);
+        if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom && symbol.importedFrom !== 'fs') {
+          return null;
+        }
+
         // Map fs functions to their return types
         switch (funcName) {
           case 'open':
@@ -2034,6 +2056,51 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
     }
     
+    return null;
+  }
+
+  private inferIoType(node: AstNode): IoObjectType | null {
+    if (node.type === 'CallExpression') {
+      const callNode = node as CallExpressionNode;
+      if (callNode.callee.type === 'Identifier') {
+        const funcName = (callNode.callee as IdentifierNode).name;
+
+        // Only infer io.handle if the function was imported from 'io'
+        const symbol = this.symbolTable.lookup(funcName);
+        if (!symbol || symbol.type !== SymbolType.IMPORTED || symbol.importedFrom !== 'io') {
+          return null;
+        }
+
+        const originalName = symbol.importSpecifier || funcName;
+        switch (originalName) {
+          case 'open':
+          case 'new':
+          case 'from':
+            return IoObjectType.IO_HANDLE;
+          default:
+            return null;
+        }
+      }
+      // Handle module member calls like io.open()
+      else if (callNode.callee.type === 'MemberExpression') {
+        const memberNode = callNode.callee as MemberExpressionNode;
+        if (memberNode.object.type === 'Identifier' &&
+            memberNode.property.type === 'Identifier') {
+          const objName = (memberNode.object as IdentifierNode).name;
+          const objSymbol = this.symbolTable.lookup(objName);
+          // Must be the io module (default import)
+          if (objSymbol && objSymbol.importedFrom === 'io') {
+            const methodName = (memberNode.property as IdentifierNode).name;
+            switch (methodName) {
+              case 'open':
+              case 'new':
+              case 'from':
+                return IoObjectType.IO_HANDLE;
+            }
+          }
+        }
+      }
+    }
     return null;
   }
 
@@ -2224,6 +2291,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       return createUloopObjectDataType(uloopType);
     }
 
+    const ioType = this.inferIoType(expression);
+    if (ioType) {
+      return createIoHandleDataType();
+    }
+
     const uciType = this.inferUciType(expression);
     if (uciType) {
       return createUciObjectDataType(uciType);
@@ -2394,6 +2466,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const dataType = createUloopObjectDataType(uloopType);
         symbol.dataType = dataType;
         // For uloop object variables, also force declaration in global scope to ensure completion access
+        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+        this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
+        return;
+      }
+
+      // Check if this is an io function call and assign io.handle type
+      const ioType = this.inferIoType(node.init!);
+      if (ioType) {
+        const dataType = createIoHandleDataType();
+        symbol.dataType = dataType;
         this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
         this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
         return;

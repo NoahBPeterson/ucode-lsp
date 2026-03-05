@@ -34,8 +34,12 @@ const connection = createConnection(ProposedFeatures.all);
 
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
-// Analysis cache for storing semantic analysis results with timestamps
-const analysisCache = new Map<string, {result: SemanticAnalysisResult, timestamp: number}>();
+// Analysis cache for storing semantic analysis results with timestamps and tokens
+const analysisCache = new Map<string, {result: SemanticAnalysisResult, tokens: any[], timestamp: number}>();
+
+// Debounce timers for document analysis - prevents re-analysis on every keystroke
+const analysisTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const ANALYSIS_DEBOUNCE_MS = 50;
 
 // Workspace folders for directory scanning
 let workspaceFolders: string[] = [];
@@ -116,21 +120,16 @@ function shouldSkipDirectory(dirName: string): boolean {
 }
 
 async function analyzeDiscoveredFiles(filePaths: string[]): Promise<void> {
-    connection.console.log(`Analyzing ${filePaths.length} discovered .uc files...`);
-    
     for (const filePath of filePaths) {
         try {
             const uri = filePathToUri(filePath);
             const content = await fs.promises.readFile(filePath, 'utf8');
-            
-            // Create a virtual text document for analysis
             const textDocument = TextDocument.create(uri, 'ucode', 1, content);
-            
-            // Analyze the document and cache the results
             await validateAndAnalyzeDocument(textDocument);
-            
+            // Yield to event loop between files so incoming requests aren't blocked
+            await new Promise(resolve => setImmediate(resolve));
         } catch (error) {
-            connection.console.warn(`Error analyzing file ${filePath}: ${error}`);
+            // Silently skip files that fail to analyze during background scan
         }
     }
     
@@ -249,9 +248,8 @@ connection.onInitialized(async () => {
         connection.console.warn(`Failed to register file watcher: ${error}`);
     }
 
-    // Perform initial workspace scan
-    connection.console.log('Performing initial workspace scan...');
-    await scanAndAnalyzeWorkspace();
+    // Perform initial workspace scan in the background — don't block request handling
+    scanAndAnalyzeWorkspace();
 });
 
 documents.onDidClose((_e: TextDocumentChangeEvent<TextDocument>) => {
@@ -259,7 +257,16 @@ documents.onDidClose((_e: TextDocumentChangeEvent<TextDocument>) => {
 });
 
 documents.onDidChangeContent(async (change: TextDocumentChangeEvent<TextDocument>) => {
-    await validateAndAnalyzeDocument(change.document);
+    // Debounce analysis — avoid re-running full semantic analysis on every keystroke
+    const uri = change.document.uri;
+    const existingTimer = analysisTimers.get(uri);
+    if (existingTimer) {
+        clearTimeout(existingTimer);
+    }
+    analysisTimers.set(uri, setTimeout(async () => {
+        analysisTimers.delete(uri);
+        await validateAndAnalyzeDocument(change.document);
+    }, ANALYSIS_DEBOUNCE_MS));
 });
 
 documents.onDidOpen(async (change: TextDocumentChangeEvent<TextDocument>) => {
@@ -326,55 +333,39 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
             workspaceRoot: workspaceFolders.length > 0 ? workspaceFolders[0] : process.cwd(),
         });
         const analysisResult = analyzer.analyze(parseResult.ast);
-        analysisCache.set(textDocument.uri, {result: analysisResult, timestamp: Date.now()});
-        connection.console.log(`[ANALYSIS] Cached analysis result for: ${textDocument.uri}`);
+        analysisCache.set(textDocument.uri, {result: analysisResult, tokens, timestamp: Date.now()});
         
         // Semantic analysis diagnostics are already filtered by the SemanticAnalyzer itself
         diagnostics.push(...analysisResult.diagnostics);
     } else {
         analysisCache.delete(textDocument.uri);
-        connection.console.log(`[ANALYSIS] Removed analysis cache for: ${textDocument.uri} (no AST)`);
     }
     
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
 }
 
 connection.onDidChangeWatchedFiles(async (params: DidChangeWatchedFilesParams) => {
-    connection.console.log(`Received ${params.changes.length} file change events`);
-    
     for (const change of params.changes) {
         const filePath = uriToFilePath(change.uri);
-        
+
         if (!filePath.endsWith('.uc')) {
             continue;
         }
-        
-        const changeTypeString = change.type === FileChangeType.Created ? 'Created' :
-                                change.type === FileChangeType.Changed ? 'Changed' : 'Deleted';
-        connection.console.log(`File ${changeTypeString}: ${filePath}`);
-        
+
         switch (change.type) {
             case FileChangeType.Created:
             case FileChangeType.Changed:
                 try {
-                    // Re-analyze the changed/created file
                     const content = await fs.promises.readFile(filePath, 'utf8');
                     const textDocument = TextDocument.create(change.uri, 'ucode', 1, content);
                     await validateAndAnalyzeDocument(textDocument);
-                    connection.console.log(`Re-analyzed file: ${filePath}`);
                 } catch (error) {
-                    connection.console.warn(`Error re-analyzing file ${filePath}: ${error}`);
-                    // If file doesn't exist, remove from cache
                     analysisCache.delete(change.uri);
                 }
                 break;
-                
+
             case FileChangeType.Deleted:
-                // Remove from analysis cache
-                if (analysisCache.has(change.uri)) {
-                    analysisCache.delete(change.uri);
-                    connection.console.log(`Removed deleted file from cache: ${filePath}`);
-                }
+                analysisCache.delete(change.uri);
                 break;
         }
     }
@@ -382,24 +373,19 @@ connection.onDidChangeWatchedFiles(async (params: DidChangeWatchedFilesParams) =
 
 connection.onHover((params) => {
     const cacheEntry = analysisCache.get(params.textDocument.uri);
-    const analysisResult = cacheEntry?.result;
-    
-    if (!analysisResult) {
-        console.error(`[SERVER_DEBUG] No analysis result available for hover`);
+    if (!cacheEntry?.result) {
         return null;
     }
-    
-    return handleHover(params, documents, analysisResult);
+
+    return handleHover(params, documents, cacheEntry.result, cacheEntry.tokens);
 });
 
 connection.onCompletion(async (params) => {
     let cacheEntry = analysisCache.get(params.textDocument.uri);
     let analysisResult = cacheEntry?.result;
-    connection.console.log(`[COMPLETION] URI: ${params.textDocument.uri}, Analysis cached: ${!!analysisResult}, Position: ${params.position.line}:${params.position.character}`);
-    
+
     // If no analysis result is cached, force a fresh analysis
     if (!analysisResult) {
-        connection.console.log(`[COMPLETION] WARNING: No analysis result in cache, forcing fresh analysis`);
         const document = documents.get(params.textDocument.uri);
         if (document) {
             await validateAndAnalyzeDocument(document);

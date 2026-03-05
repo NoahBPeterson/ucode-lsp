@@ -24,6 +24,7 @@ import { fsModuleFunctions } from './fsBuiltins';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 import { zlibTypeRegistry } from './analysis/zlibTypes';
 import { fsModuleTypeRegistry } from './analysis/fsModuleTypes';
+import { ioModuleTypeRegistry } from './analysis/ioTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 
 function detectMemberHoverContext(position: any, tokens: any[], document: any): { objectName: string, memberName: string, memberTokenPos: number, memberTokenEnd: number } | undefined {
@@ -277,29 +278,32 @@ function inferPropertyTypeFromValue(propertyValue: string): string | undefined {
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
     documents: any,
-    analysisResult?: SemanticAnalysisResult
+    analysisResult?: SemanticAnalysisResult,
+    cachedTokens?: any[]
 ): Hover | undefined {
-    console.error(`[HOVER] Starting hover at ${textDocumentPositionParams.position.line}:${textDocumentPositionParams.position.character}`);
-    
     const document = documents.get(textDocumentPositionParams.textDocument.uri);
     if (!document) {
-        console.error(`[HOVER] No document found for URI: ${textDocumentPositionParams.textDocument.uri}`);
         return undefined;
     }
 
     const position = textDocumentPositionParams.position;
     const text = document.getText();
     const offset = document.offsetAt(position);
-    
+
     try {
-        const lexer = new UcodeLexer(text, { rawMode: true });
-        const tokens = lexer.tokenize();
+        // Use cached tokens when available to avoid re-lexing the entire document
+        let tokens: any[];
+        if (cachedTokens && cachedTokens.length > 0) {
+            tokens = cachedTokens;
+        } else {
+            const lexer = new UcodeLexer(text, { rawMode: true });
+            tokens = lexer.tokenize();
+        }
         
         // First check if we're hovering over a member expression (e.g., "rtnl.request")
         const memberContext = detectMemberHoverContext(textDocumentPositionParams.position, tokens, document);
         if (memberContext) {
             const { objectName, memberName } = memberContext;
-            console.log(`[HOVER] Member expression detected: ${objectName}.${memberName}`);
             
             // Look up the object in the symbol table to determine its module
             if (analysisResult && analysisResult.symbolTable) {
@@ -330,7 +334,6 @@ export function handleHover(
                         : `Property on \`${objectName}\``;
                     const hoverMarkdown = `**${memberName}**: \`${typeString}\`\n\n${scopeLabel}`;
 
-                    console.log(`[HOVER] Returning property hover for ${objectName}.${memberName}: ${typeString}`);
 
                     return {
                         contents: { kind: MarkupKind.Markdown, value: hoverMarkdown },
@@ -342,7 +345,6 @@ export function handleHover(
                 }
 
                 if (symbol && symbol.type === SymbolType.IMPORTED) {
-                    console.log(`[HOVER] Found imported symbol: ${objectName} from ${symbol.importedFrom}`);
                     
                     // Get module-specific documentation for the member
                     const moduleName = symbol.importedFrom;
@@ -390,6 +392,8 @@ export function handleHover(
                         hoverText = uciTypeRegistry.getFunctionDocumentation(memberName);
                     } else if (moduleName === 'fs' && fsModuleTypeRegistry.isFsModuleFunction(memberName)) {
                         hoverText = fsModuleTypeRegistry.getFunctionDocumentation(memberName);
+                    } else if (moduleName === 'io' && ioModuleTypeRegistry.isIoModuleFunction(memberName)) {
+                        hoverText = ioModuleTypeRegistry.getFunctionDocumentation(memberName);
                     }
                     
                     if (hoverText) {
@@ -401,15 +405,43 @@ export function handleHover(
                             }
                         };
                     }
-                } else {
-                    // Object exists but is not an imported symbol (e.g., user-defined variable)
-                    // For member expressions on non-imported objects, don't show builtin hover
-                    console.log(`[HOVER] Object ${objectName} is not an imported symbol, skipping member hover`);
+                } else if (symbol) {
+                    // Non-imported variable — check if it's a typed object (io.handle, fs.file, etc.)
+                    if (ioModuleTypeRegistry.isVariableOfIoType(symbol.dataType)) {
+                        const doc = ioModuleTypeRegistry.getHandleFunctionDocumentation(memberName);
+                        if (doc) {
+                            return {
+                                contents: { kind: MarkupKind.Markdown, value: doc },
+                                range: {
+                                    start: document.positionAt(memberContext.memberTokenPos),
+                                    end: document.positionAt(memberContext.memberTokenEnd)
+                                }
+                            };
+                        }
+                    }
+                    const fsType = fsTypeRegistry.isVariableOfFsType(symbol.dataType);
+                    if (fsType) {
+                        const methodSignature = fsTypeRegistry.getFsMethod(fsType, memberName);
+                        if (methodSignature) {
+                            let doc = `**${memberName}()** - ${fsType} method\n\n`;
+                            if (methodSignature.description) {
+                                doc += methodSignature.description + '\n\n';
+                            }
+                            doc += `**Returns:** \`${methodSignature.returnType}\``;
+                            return {
+                                contents: { kind: MarkupKind.Markdown, value: doc },
+                                range: {
+                                    start: document.positionAt(memberContext.memberTokenPos),
+                                    end: document.positionAt(memberContext.memberTokenEnd)
+                                }
+                            };
+                        }
+                    }
+                    // For other non-imported objects, don't show builtin hover
                     return undefined;
                 }
             } else {
                 // No analysis result or symbol table - for member expressions, don't show builtin hover
-                console.log(`[HOVER] No symbol table available for member expression, skipping hover`);
                 return undefined;
             }
         }
@@ -460,9 +492,39 @@ export function handleHover(
             }
         }
         
+        // Handle 'from' keyword — when imported from io module, it's lexed as TK_FROM not TK_LABEL
+        if (token && token.type === TokenType.TK_FROM && analysisResult) {
+            const word = 'from';
+            const symbol = analysisResult.symbolTable.lookup(word);
+            if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'io') {
+                const originalName = symbol.importSpecifier || symbol.name;
+                const isFunctionCall = detectFunctionCall(offset, tokens);
+                let hoverText: string;
+                if (ioModuleTypeRegistry.isIoModuleFunction(originalName)) {
+                    hoverText = ioModuleTypeRegistry.getFunctionDocumentation(originalName);
+                } else {
+                    hoverText = getIoModuleDocumentation();
+                }
+                if (isFunctionCall && symbol.returnType) {
+                    const returnTypeStr = typeToString(symbol.returnType);
+                    hoverText = `(function call) **${word}()**: \`${returnTypeStr}\`\n\n${hoverText}`;
+                }
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: hoverText
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
+        }
+
         if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
             const word = token.value;
-            
+
             // Check if this is a function call (e.g., test() instead of just test)
             const isFunctionCall = detectFunctionCall(offset, tokens);
             if (isFunctionCall && analysisResult) {
@@ -508,7 +570,10 @@ export function handleHover(
             
             // Check if this is part of a member expression (e.g., fs.open)
             const memberExpressionInfo = detectMemberExpression(offset, tokens);
-            if (memberExpressionInfo && analysisResult) {
+            if (memberExpressionInfo && analysisResult && !memberExpressionInfo.cursorOnObject) {
+                // Only show method/property hover when cursor is on the property side
+                // When cursor is on the object side, fall through to the variable type display
+
                 // Handle fs object method hover
                 const fsMethodHover = getFsMethodHover(memberExpressionInfo, analysisResult);
                 if (fsMethodHover) {
@@ -523,7 +588,7 @@ export function handleHover(
                         }
                     };
                 }
-                
+
                 // Handle uloop module function hover (namespace access like uloop.init)
                 const uloopMethodHover = getUloopMethodHover(memberExpressionInfo, analysisResult);
                 if (uloopMethodHover) {
@@ -538,7 +603,7 @@ export function handleHover(
                         }
                     };
                 }
-                
+
                 // Handle fs module function hover (namespace access like fs.opendir)
                 const fsModuleMethodHover = getFsModuleMethodHover(memberExpressionInfo, analysisResult);
                 if (fsModuleMethodHover) {
@@ -546,6 +611,21 @@ export function handleHover(
                         contents: {
                             kind: MarkupKind.Markdown,
                             value: fsModuleMethodHover
+                        },
+                        range: {
+                            start: document.positionAt(token.pos),
+                            end: document.positionAt(token.end)
+                        }
+                    };
+                }
+
+                // Handle io.handle method hover (e.g., h.read, h.write)
+                const ioMethodHover = getIoMethodHover(memberExpressionInfo, analysisResult);
+                if (ioMethodHover) {
+                    return {
+                        contents: {
+                            kind: MarkupKind.Markdown,
+                            value: ioMethodHover
                         },
                         range: {
                             start: document.positionAt(token.pos),
@@ -740,6 +820,15 @@ export function handleHover(
                                 } else {
                                     hoverText = getMathModuleDocumentation();
                                 }
+                            } else if (symbol.importedFrom === 'io') {
+                                const originalName = symbol.importSpecifier || symbol.name;
+                                if (ioModuleTypeRegistry.isIoModuleFunction(originalName)) {
+                                    hoverText = ioModuleTypeRegistry.getFunctionDocumentation(originalName);
+                                } else if (ioModuleTypeRegistry.isIoConstant(originalName)) {
+                                    hoverText = ioModuleTypeRegistry.getConstantDocumentation(originalName);
+                                } else {
+                                    hoverText = getIoModuleDocumentation();
+                                }
                             } else if (symbol.importedFrom === 'nl80211') {
                                 // Check if this is a const import object first
                                 if (symbol.dataType && typeof symbol.dataType === 'object' && 
@@ -851,7 +940,6 @@ export function handleHover(
                             break;
                     }
                     
-                    console.log(`[HOVER_DEBUG] Generated hover text for "${word}":`, hoverText ? `"${hoverText.substring(0, 50)}..."` : 'EMPTY');
                     
                     if (hoverText) {
                         return {
@@ -995,46 +1083,48 @@ function detectFunctionCall(offset: number, tokens: any[]): boolean {
     return false;
 }
 
-function detectMemberExpression(offset: number, tokens: any[]): { objectName: string; propertyName: string } | undefined {
+function detectMemberExpression(offset: number, tokens: any[]): { objectName: string; propertyName: string; cursorOnObject: boolean } | undefined {
     // Find the token at the current position
     const currentTokenIndex = tokens.findIndex(t => t.pos <= offset && offset < t.end);
     if (currentTokenIndex === -1) return undefined;
-    
+
     const currentToken = tokens[currentTokenIndex];
-    
+
     // Look for pattern: LABEL DOT LABEL or LABEL DOT current_position
     // Check if current token is part of a member expression
-    
+
     // Case 1: Hovering over object name in "object.property"
     if (currentTokenIndex + 2 < tokens.length) {
         const nextToken = tokens[currentTokenIndex + 1];
         const afterNextToken = tokens[currentTokenIndex + 2];
-        
-        if (nextToken.type === TokenType.TK_DOT && 
+
+        if (nextToken.type === TokenType.TK_DOT &&
             afterNextToken.type === TokenType.TK_LABEL &&
             currentToken.type === TokenType.TK_LABEL) {
             return {
                 objectName: currentToken.value as string,
-                propertyName: afterNextToken.value as string
+                propertyName: afterNextToken.value as string,
+                cursorOnObject: true
             };
         }
     }
-    
+
     // Case 2: Hovering over property name in "object.property"
     if (currentTokenIndex >= 2) {
         const prevToken = tokens[currentTokenIndex - 1];
         const beforePrevToken = tokens[currentTokenIndex - 2];
-        
-        if (prevToken.type === TokenType.TK_DOT && 
+
+        if (prevToken.type === TokenType.TK_DOT &&
             beforePrevToken.type === TokenType.TK_LABEL &&
             currentToken.type === TokenType.TK_LABEL) {
             return {
                 objectName: beforePrevToken.value as string,
-                propertyName: currentToken.value as string
+                propertyName: currentToken.value as string,
+                cursorOnObject: false
             };
         }
     }
-    
+
     return undefined;
 }
 
@@ -1278,6 +1368,56 @@ let hypotenuse = math.sqrt(math.pow(x, 2) + math.pow(y, 2));  // ~1.0
 - Functions return NaN for invalid inputs
 - \`rand()\` returns integers in range [0, RAND_MAX] (at least 32767)
 - \`srand()\` can be used to create reproducible random sequences
+
+*Hover over individual function names for detailed parameter and return type information.*`;
+}
+
+function getIoModuleDocumentation(): string {
+    return `## IO Module
+
+**Object-oriented access to UNIX file descriptors**
+
+The io module provides low-level I/O operations using POSIX file descriptors, with support for terminal control and pseudo-terminal operations.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { open, O_RDWR } from 'io';
+
+let handle = open('/tmp/test.txt', O_RDWR);
+handle.write('Hello World\\n');
+handle.close();
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as io from 'io';
+
+let handle = io.open('/tmp/test.txt', io.O_RDWR);
+handle.write('Hello World\\n');
+handle.close();
+\`\`\`
+
+### Module Functions
+
+- **\`open()\`** - Open a file (POSIX open semantics)
+- **\`new()\`** - Create handle from existing fd number
+- **\`from()\`** - Create handle from existing file resource
+- **\`pipe()\`** - Create a pipe (returns [read, write] handles)
+- **\`error()\`** - Get last error message
+
+### Handle Methods
+
+- **\`read()\`**, **\`write()\`** - Read/write data
+- **\`seek()\`**, **\`tell()\`** - File position
+- **\`dup()\`**, **\`dup2()\`** - Duplicate file descriptors
+- **\`fileno()\`** - Get underlying fd number
+- **\`fcntl()\`**, **\`ioctl()\`** - File/device control
+- **\`isatty()\`** - Test if fd is a terminal
+- **\`close()\`** - Close the handle
+- **\`ptsname()\`**, **\`grantpt()\`**, **\`unlockpt()\`** - Pseudoterminal ops
+- **\`tcgetattr()\`**, **\`tcsetattr()\`** - Terminal attributes
 
 *Hover over individual function names for detailed parameter and return type information.*`;
 }
@@ -1652,6 +1792,48 @@ function getFsMethodHover(memberInfo: { objectName: string; propertyName: string
     }
     
     return documentation;
+}
+
+function getIoMethodHover(memberInfo: { objectName: string; propertyName: string }, analysisResult: SemanticAnalysisResult): string | null {
+    const { objectName, propertyName } = memberInfo;
+
+    // Look up the object in the symbol table
+    let symbol = analysisResult.symbolTable.lookup(objectName);
+
+    // Try CFG-based lookup if symbol table fails
+    if (!symbol && analysisResult.cfgQueryEngine) {
+        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, 0);
+        if (cfgType) {
+            symbol = {
+                name: objectName,
+                type: SymbolType.VARIABLE,
+                dataType: cfgType,
+                scope: 0,
+                declared: true,
+                used: true,
+                node: {} as any,
+                declaredAt: 0,
+                usedAt: [0]
+            } as UcodeSymbol;
+        }
+    }
+
+    if (!symbol) {
+        return null;
+    }
+
+    // Check if this is an io.handle type
+    if (!ioModuleTypeRegistry.isVariableOfIoType(symbol.dataType)) {
+        return null;
+    }
+
+    // Get the handle method documentation
+    const doc = ioModuleTypeRegistry.getHandleFunctionDocumentation(propertyName);
+    if (!doc) {
+        return null;
+    }
+
+    return doc;
 }
 
 function getParameterName(methodName: string, paramIndex: number): string {
@@ -2174,6 +2356,20 @@ function getFsModuleMethodHover(memberInfo: { objectName: string; propertyName: 
             return fsModuleTypeRegistry.getFunctionDocumentation(propertyName);
         }
     }
-    
+
+    // Check if this is an io module
+    const isIoModule = (
+        (symbol.type === 'imported' && symbol.importedFrom === 'io') ||
+        (symbol.type === 'module' && symbol.dataType &&
+         typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType &&
+         symbol.dataType.moduleName === 'io')
+    );
+
+    if (isIoModule) {
+        if (ioModuleTypeRegistry.isIoModuleFunction(propertyName)) {
+            return ioModuleTypeRegistry.getFunctionDocumentation(propertyName);
+        }
+    }
+
     return null;
 }

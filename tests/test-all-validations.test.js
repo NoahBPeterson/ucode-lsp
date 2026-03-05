@@ -86,6 +86,8 @@ const testFiles = [
     'tests/test-split-regex-validation.js',
     'tests/test-fuzz-integration.js',
     'tests/test-zlib-module.js',
+    'tests/test-io-module.js',
+    'tests/test-io-hover.js',
     'tests/test-clock-function.js',
     'tests/test-optional-chaining-lexer.js',
     'tests/test-optional-chaining-statements.js',

@@ -23,10 +23,13 @@ import { ControlFlowGraph, BasicBlock } from './types';
 import { TypeState } from './typeState';
 import {
   SymbolTable,
+  SymbolType,
   UcodeType,
   UcodeDataType,
   getUnionTypes,
 } from '../symbolTable';
+import { createIoHandleDataType } from '../ioTypes';
+import { createFsObjectDataType, FsObjectType } from '../fsTypes';
 
 /**
  * Configuration for data flow analysis
@@ -424,6 +427,20 @@ export class DataFlowAnalyzer {
       const symbol = this.symbolTable.lookup(funcName);
       if (symbol?.returnType) {
         return symbol.returnType;
+      }
+
+      // Check for module-imported functions that return typed objects
+      if (symbol?.type === SymbolType.IMPORTED && symbol.importedFrom) {
+        const originalName = symbol.importSpecifier || funcName;
+        if (symbol.importedFrom === 'io') {
+          if (originalName === 'open' || originalName === 'new' || originalName === 'from') {
+            return createIoHandleDataType();
+          }
+        } else if (symbol.importedFrom === 'fs') {
+          if (originalName === 'open') return createFsObjectDataType(FsObjectType.FS_FILE);
+          if (originalName === 'opendir') return createFsObjectDataType(FsObjectType.FS_DIR);
+          if (originalName === 'popen') return createFsObjectDataType(FsObjectType.FS_PROC);
+        }
       }
 
       // Check built-in functions with known return types
