@@ -61,11 +61,11 @@ const cosReturnType = cosFunc && cosFunc.returnType === 'number';
 testResult('Return type handling', cosReturnType,
   `cos() return type: ${cosFunc ? cosFunc.returnType : 'N/A'}`);
 
-// Test 7: Functions with no parameters
+// Test 7: Functions with optional parameters (rand takes 0-2 args)
 const randFunc = mathTypeRegistry.getFunction('rand');
-const randNoParams = randFunc && randFunc.parameters.length === 0;
-testResult('Functions with no parameters', randNoParams,
-  `rand() parameters: ${randFunc ? randFunc.parameters.length : 'N/A'}`);
+const randOptionalParams = randFunc && randFunc.parameters.length === 2 && randFunc.parameters.every(p => p.optional);
+testResult('Functions with optional parameters', randOptionalParams,
+  `rand() parameters: ${randFunc ? randFunc.parameters.length : 'N/A'}, all optional: ${randFunc ? randFunc.parameters.every(p => p.optional) : 'N/A'}`);
 
 // Test 8: Functions with multiple parameters
 const atan2Func = mathTypeRegistry.getFunction('atan2');

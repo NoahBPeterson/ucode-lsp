@@ -12,7 +12,18 @@ export abstract class PrimaryExpressions extends ParseRules {
 
   protected parseIdentifier(): IdentifierNode | null {
     const token = this.previous()!;
-    
+
+    // TK_FROM is a contextual keyword that can be used as an identifier
+    // e.g.: import { from } from 'io'; from(resource);
+    if (token.type === TokenType.TK_FROM) {
+      return {
+        type: 'Identifier',
+        start: token.pos,
+        end: token.end,
+        name: 'from'
+      };
+    }
+
     if (token.type !== TokenType.TK_LABEL) {
       this.error("Expected identifier");
       return null;
@@ -42,9 +53,20 @@ export abstract class PrimaryExpressions extends ParseRules {
   }
 
   protected parseImportSpecifierName(): IdentifierNode | null {
-    // Import specifiers can be either identifiers (regular names) or string literals (quoted reserved words)
+    // Import specifiers can be identifiers, contextual keywords (e.g. 'from'),
+    // or string literals (quoted reserved words)
     if (this.check(TokenType.TK_LABEL)) {
       return this.parseIdentifierName();
+    } else if (this.check(TokenType.TK_FROM)) {
+      // 'from' is a contextual keyword, valid as an import specifier name
+      // e.g.: import { from } from 'io';
+      const token = this.advance()!;
+      return {
+        type: 'Identifier',
+        start: token.pos,
+        end: token.end,
+        name: 'from'
+      };
     } else if (this.check(TokenType.TK_STRING)) {
       const token = this.advance()!;
       // Convert string literal to identifier for import specifier

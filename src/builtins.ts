@@ -131,7 +131,11 @@ export const fsBuiltinFunctions = new Map<string, string>([
     
     ['realpath', '**realpath(path)** - Resolve a pathname to its canonical form.\n\n**Parameters:**\n- `path` (string): Path to resolve\n\n**Returns:** `string|null` - Absolute path or null on error\n\n**Example:**\n```ucode\nlet resolved = realpath("../relative/path");\n```'],
     
-    ['pipe', '**pipe()** - Create a pipe (returns array of file descriptors).\n\n**Returns:** `array|null` - Array of [readfd, writefd] or null on error\n\n**Example:**\n```ucode\nlet [readfd, writefd] = pipe();\nif (readfd && writefd) {\n    // Use the pipe\n}\n```']
+    ['pipe', '**pipe()** - Create a pipe (returns array of file descriptors).\n\n**Returns:** `array|null` - Array of [readfd, writefd] or null on error\n\n**Example:**\n```ucode\nlet [readfd, writefd] = pipe();\nif (readfd && writefd) {\n    // Use the pipe\n}\n```'],
+
+    ['dup2', '**dup2(oldfd, newfd)** - Duplicate a file descriptor.\n\nDuplicates the file descriptor `oldfd` to `newfd`. If `newfd` was previously open, it is silently closed before being reused.\n\n**Parameters:**\n- `oldfd` (number): The file descriptor to duplicate\n- `newfd` (number): The file descriptor number to duplicate to\n\n**Returns:** `boolean|null` - true on success, null on error\n\n**Example:**\n```ucode\nconst logfile = open("/tmp/error.log", "w");\ndup2(logfile.fileno(), 2);\nlogfile.close();\n```'],
+
+    ['mkdtemp', '**mkdtemp(template)** - Create a unique temporary directory.\n\nCreates a temporary directory based on the given template. The template must end with XXXXXX, which is replaced with a unique string.\n\n**Parameters:**\n- `template` (string, optional): Path template (default "/tmp/XXXXXX")\n\n**Returns:** `string|null` - Path of the created directory or null on error\n\n**Example:**\n```ucode\nconst tmpdir = mkdtemp("/tmp/myapp-XXXXXX");\nprint(tmpdir); // e.g., "/tmp/myapp-a1b2c3"\n```']
 ]);
 
 // ============================================================================
@@ -244,7 +248,7 @@ export const mathBuiltinFunctions = new Map<string, string>([
     
     ['pow', '**pow(x, y)** - Calculates the value of x raised to the power of y.\n\n**Parameters:**\n- `x` (number): The base value\n- `y` (number): The power value\n\n**Returns:** `number` - The result of x^y or NaN if either argument cannot be converted to a number\n\n**Example:**\n```ucode\npow(2, 3);   // 8 (2^3)\npow(4, 0.5); // 2 (4^0.5 = √4)\npow(10, 2);  // 100\n```'],
     
-    ['rand', '**rand()** - Produces a pseudo-random positive integer.\n\n**Returns:** `number` - A random integer in the range 0 to RAND_MAX (at least 32767)\n\n**Example:**\n```ucode\nrand();  // e.g., 1804\nrand();  // e.g., 25667\n// Note: Use srand() to seed the generator\n```'],
+    ['rand', '**rand([a[, b]])** - Produces a pseudo-random number.\n\nWithout arguments, returns a pseudo-random integer in the range 0 to RAND_MAX (at least 32767).\nWith a single argument `a`, returns a random number in the range 0 to `a` inclusive.\nWith two arguments `a, b`, returns a random number in the range `a` to `b` inclusive.\n\n**Parameters:**\n- `a` (number, optional): End of range (or start if `b` is given)\n- `b` (number, optional): End of range\n\n**Returns:** `number`\n\n**Example:**\n```ucode\nrand();       // e.g., 1804 (integer 0..RAND_MAX)\nrand(100);    // e.g., 73.5 (double 0..100)\nrand(1, 10);  // e.g., 5.2  (double 1..10)\n```'],
     
     ['srand', '**srand(seed)** - Seeds the pseudo-random number generator.\n\n**Parameters:**\n- `seed` (number): The seed value for the random number generator\n\n**Returns:** `null`\n\n**Example:**\n```ucode\nsrand(42);   // Seed with 42\nrand();      // Predictable sequence\nsrand(42);   // Same seed\nrand();      // Same first value\n```'],
     
@@ -422,6 +426,14 @@ export const uciBuiltinFunctions = new Map<string, string>([
     ['error', '**error()** - Query error information.\n\n**Returns:** `string | null` - Description of the last occurred error or null if there is no error information\n\n**Example:**\n```ucode\n// Trigger error\nconst ctx = cursor();\nctx.set("not_existing_config", "test", "1");\n\n// Print error (should yield "Entry not found")\nprint(error(), "\n");\n```'],
     
     ['cursor', '**cursor([config_dir], [delta_dir], [config2_dir], [flags])** - Instantiate uci cursor.\n\n**Parameters:**\n- `config_dir` (string, optional): The directory to search for configuration files (default: "/etc/config")\n- `delta_dir` (string, optional): The directory to save delta records in (default: "/tmp/.uci")\n- `config2_dir` (string, optional): The directory to keep override config files in (default: "/var/run/uci")\n- `flags` (object, optional): Parser flags object with properties "strict" and "print_errors"\n\n**Returns:** `uci.cursor | null` - The instantiated cursor on success, null on error\n\n**Example:**\n```ucode\nimport { cursor } from "uci";\n\nlet ctx = cursor();\nlet hostname = ctx.get_first("system", "system", "hostname");\n\n// Custom configuration\nlet custom_ctx = cursor("/tmp/config", "/tmp/delta");\n```']
+]);
+
+export const ioBuiltinFunctions = new Map<string, string>([
+    ['error', '**error()** - Returns the last I/O error message.\n\n**Returns:** `string|null` - Error message string or null if no error occurred'],
+    ['new', '**new(fd, [takeOver])** - Create an io.handle from an existing file descriptor number.\n\n**Parameters:**\n- `fd` (number): The file descriptor number\n- `takeOver` (boolean, optional): If true, the handle will close the fd when garbage collected (default: false)\n\n**Returns:** `io.handle|null` - A new handle or null on error'],
+    ['open', '**open(path, [flags], [mode])** - Open a file using POSIX open() semantics.\n\n**Parameters:**\n- `path` (string): The path to open\n- `flags` (number, optional): POSIX open flags (O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, etc.) (default: O_RDONLY)\n- `mode` (number, optional): File mode for new files (default: 0666)\n\n**Returns:** `io.handle|null` - A new handle or null on error'],
+    ['from', '**from(source)** - Create an io.handle from an existing file handle resource.\n\n**Parameters:**\n- `source` (resource): An fs.file, fs.proc, fs.dir, or io.handle resource\n\n**Returns:** `io.handle|null` - A new handle wrapping the extracted fd, or null on error'],
+    ['pipe', '**pipe()** - Create a pipe.\n\n**Returns:** `array|null` - Array of [read_handle, write_handle] io.handle objects, or null on error'],
 ]);
 
 // Merge all builtins for completion

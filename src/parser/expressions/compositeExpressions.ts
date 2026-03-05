@@ -219,7 +219,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
       TokenType.TK_CONTINUE, TokenType.TK_FUNC, TokenType.TK_LOCAL, TokenType.TK_CONST,
       TokenType.TK_TRUE, TokenType.TK_FALSE, TokenType.TK_NULL, TokenType.TK_THIS,
       TokenType.TK_SWITCH, TokenType.TK_CASE, TokenType.TK_DEFAULT, TokenType.TK_IMPORT,
-      TokenType.TK_EXPORT, TokenType.TK_IN, TokenType.TK_DELETE
+      TokenType.TK_EXPORT, TokenType.TK_IN, TokenType.TK_DELETE, TokenType.TK_FROM
     ];
     
     return keywordTokens.includes(token.type);
@@ -258,7 +258,8 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
       [TokenType.TK_IMPORT]: 'import',
       [TokenType.TK_EXPORT]: 'export',
       [TokenType.TK_IN]: 'in',
-      [TokenType.TK_DELETE]: 'delete'
+      [TokenType.TK_DELETE]: 'delete',
+      [TokenType.TK_FROM]: 'from'
     };
     
     return keywordMap[token.type] || (token.value as string) || '';

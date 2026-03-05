@@ -2,20 +2,7 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { nl80211Functions, nl80211Constants } from './analysis/nl80211Types';
-import { fsModuleFunctions } from './analysis/fsModuleTypes';
-import { uloopConstants, uloopFunctions } from './analysis/uloopTypes';
-import { uciFunctions } from './analysis/uciTypes';
-import { ubusConstants, ubusFunctions } from './analysis/ubusTypes';
-import { zlibConstants, zlibFunctions } from './analysis/zlibTypes';
-import { structFunctions } from './analysis/structTypes';
-import { socketConstants, socketFunctions } from './analysis/socketTypes';
-import { rtnlConstants, rtnlFunctions } from './analysis/rtnlTypes';
-import { debugFunctions } from './analysis/debugTypes';
-import { logConstants, logFunctions } from './analysis/logTypes';
-import { mathFunctions } from './analysis/mathTypes';
-import { digestFunctions } from './analysis/digestTypes';
-import { resolvFunctions } from './analysis/resolvTypes';
+import { MODULE_REGISTRIES, KNOWN_MODULES, isKnownModule } from './analysis/moduleDispatch';
 
 export interface ModuleMember {
     name: string;
@@ -29,11 +16,8 @@ export interface DiscoveredModule {
     members?: ModuleMember[];
 }
 
-// Builtin modules that are always available
-const BUILTIN_MODULES = [
-    'fs', 'debug', 'log', 'math', 'ubus', 'uci', 'uloop', 
-    'digest', 'nl80211', 'resolv', 'rtnl', 'socket', 'struct', 'zlib'
-];
+// Builtin modules — derived from the single source of truth
+const BUILTIN_MODULES: readonly string[] = KNOWN_MODULES;
 
 let cachedModules: DiscoveredModule[] | null = null;
 let lastCacheTime = 0;
@@ -245,270 +229,22 @@ export function getModuleMembers(moduleName: string): ModuleMember[] {
  * Gets module members from static type definitions when runtime introspection fails
  */
 function getStaticModuleMembers(moduleName: string): ModuleMember[] {
-    switch (moduleName) {
-        case 'nl80211':
-            return getNl80211StaticMembers();
-        case 'rtnl':
-            return getRtnlStaticMembers();
-        case 'socket':
-            return getSocketStaticMembers();
-        case 'struct':
-            return getStructStaticMembers();
-        case 'zlib':
-            return getZlibStaticMembers();
-        case 'ubus':
-            return getUbusStaticMembers();
-        case 'uci':
-            return getUciStaticMembers();
-        case 'uloop':
-            return getUloopStaticMembers();
-        case 'fs':
-            return getFsStaticMembers();
-        case 'debug':
-            return getDebugStaticMembers();
-        case 'log':
-            return getLogStaticMembers();
-        case 'math':
-            return getMathStaticMembers();
-        case 'digest':
-            return getDigestStaticMembers();
-        case 'resolv':
-            return getResolvStaticMembers();
-        default:
-            return [];
-    }
-}
+    if (!isKnownModule(moduleName)) return [];
 
-function getNl80211StaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-    
-    // Convert static function definitions to ModuleMember format
-    for (const [name] of nl80211Functions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-    
-    // Convert static constant definitions to ModuleMember format
-    for (const [name] of nl80211Constants.entries()) {
-        members.push({
-            name,
-            type: 'constant' // Proper semantic type for constants
-        });
-    }
-    
-    // Add special 'const' export that represents all constants collectively
-    members.push({
-        name: 'const',
-        type: 'constant'
-    });
-    
-    return members;
-}
-
-// Placeholder functions for other modules - implement as needed
-function getRtnlStaticMembers(): ModuleMember[] {
+    const reg = MODULE_REGISTRIES[moduleName];
     const members: ModuleMember[] = [];
 
-    for (const [name] of rtnlFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
+    for (const name of reg.getFunctionNames()) {
+        members.push({ name, type: 'function' });
     }
 
-    for (const [name] of rtnlConstants.entries()) {
-        members.push({
-            name,
-            type: 'constant'
-        });
+    for (const name of reg.getConstantNames()) {
+        members.push({ name, type: 'constant' });
     }
 
-    // Add special 'const' export that represents all constants collectively
-    members.push({
-        name: 'const',
-        type: 'constant'
-    });
-
-    return members;
-}
-function getSocketStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-
-    for (const [name] of socketFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-
-    for (const [name] of socketConstants.entries()) {
-        members.push({
-            name,
-            type: 'constant'
-        });
-    }
-
-    return members;
-}
-function getStructStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-
-    for (const [name] of structFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-
-    return members;
-}
-function getZlibStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-
-    for (const [name] of zlibFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-
-    for (const [name] of zlibConstants.entries()) {
-        members.push({
-            name,
-            type: 'constant'
-        });
-    }
-
-    return members;
-}
-function getUbusStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-
-    for (const [name] of ubusFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-
-    for (const [name] of ubusConstants.entries()) {
-        members.push({
-            name,
-            type: 'constant'
-        });
-    }
-
-    return members;
-}
-function getUciStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-
-    for (const [name] of uciFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-
-    return members;
-}
-function getUloopStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-
-    for (const [name] of uloopFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-
-    for (const [name] of uloopConstants.entries()) {
-        members.push({
-            name,
-            type: 'constant'
-        });
-    }
-
-    return members;
-}
-function getFsStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-    
-    // Convert static function definitions to ModuleMember format
-    for (const [name] of fsModuleFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-    
-    return members;
-}
-function getDebugStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-
-    for (const [name] of debugFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-
-    return members;
-}
-function getLogStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-
-    for (const [name] of logFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-
-    for (const [name] of logConstants.entries()) {
-        members.push({
-            name,
-            type: 'constant'
-        });
-    }
-
-    return members;
-}
-function getMathStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-
-    for (const [name] of mathFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-
-    return members;
-}
-function getDigestStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-
-    for (const [name] of digestFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
-    }
-
-    return members;
-}
-function getResolvStaticMembers(): ModuleMember[] {
-    const members: ModuleMember[] = [];
-
-    for (const [name] of resolvFunctions.entries()) {
-        members.push({
-            name,
-            type: 'function'
-        });
+    // nl80211 and rtnl have a special 'const' bulk export
+    if (moduleName === 'nl80211' || moduleName === 'rtnl') {
+        members.push({ name: 'const', type: 'constant' });
     }
 
     return members;

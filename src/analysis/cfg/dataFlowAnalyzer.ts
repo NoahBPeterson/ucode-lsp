@@ -30,6 +30,7 @@ import {
 } from '../symbolTable';
 import { createIoHandleDataType } from '../ioTypes';
 import { createFsObjectDataType, FsObjectType } from '../fsTypes';
+import { Match } from 'effect';
 
 /**
  * Configuration for data flow analysis
@@ -432,15 +433,22 @@ export class DataFlowAnalyzer {
       // Check for module-imported functions that return typed objects
       if (symbol?.type === SymbolType.IMPORTED && symbol.importedFrom) {
         const originalName = symbol.importSpecifier || funcName;
-        if (symbol.importedFrom === 'io') {
-          if (originalName === 'open' || originalName === 'new' || originalName === 'from') {
-            return createIoHandleDataType();
-          }
-        } else if (symbol.importedFrom === 'fs') {
-          if (originalName === 'open') return createFsObjectDataType(FsObjectType.FS_FILE);
-          if (originalName === 'opendir') return createFsObjectDataType(FsObjectType.FS_DIR);
-          if (originalName === 'popen') return createFsObjectDataType(FsObjectType.FS_PROC);
-        }
+        const objectType = Match.value(symbol.importedFrom).pipe(
+          Match.when('io', () => {
+            if (originalName === 'open' || originalName === 'new' || originalName === 'from') {
+              return createIoHandleDataType();
+            }
+            return null;
+          }),
+          Match.when('fs', () => {
+            if (originalName === 'open') return createFsObjectDataType(FsObjectType.FS_FILE);
+            if (originalName === 'opendir') return createFsObjectDataType(FsObjectType.FS_DIR);
+            if (originalName === 'popen') return createFsObjectDataType(FsObjectType.FS_PROC);
+            return null;
+          }),
+          Match.orElse(() => null)
+        );
+        if (objectType) return objectType;
       }
 
       // Check built-in functions with known return types

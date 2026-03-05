@@ -72,6 +72,12 @@ export abstract class ParseRules extends ParserUtils {
       precedence: Precedence.NONE 
     });
 
+    // Contextual keywords usable as identifiers
+    this.rules.set(TokenType.TK_FROM, {
+      prefix: () => this.parseIdentifier(),
+      precedence: Precedence.NONE
+    });
+
     // Grouping
     this.rules.set(TokenType.TK_LPAREN, { 
       prefix: () => this.parseGrouping(), 

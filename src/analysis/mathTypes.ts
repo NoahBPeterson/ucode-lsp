@@ -84,9 +84,12 @@ export const mathFunctions: Map<string, MathFunctionSignature> = new Map([
   }],
   ["rand", {
     name: "rand",
-    parameters: [],
+    parameters: [
+      { name: "a", type: "number", optional: true },
+      { name: "b", type: "number", optional: true }
+    ],
     returnType: "number",
-    description: "Produces a pseudo-random positive integer in the range 0 to RAND_MAX inclusive (at least 32767). Automatically seeds the PRNG on first use if not manually seeded."
+    description: "Without arguments, returns a pseudo-random integer 0..RAND_MAX. With one argument a, returns a random double 0..a. With two arguments a,b, returns a random double a..b."
   }],
   ["srand", {
     name: "srand",

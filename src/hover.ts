@@ -7,25 +7,10 @@ import { UcodeLexer, TokenType, isKeyword, Token } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
 import { typeToString, UcodeDataType } from './analysis/symbolTable';
-import { debugTypeRegistry } from './analysis/debugTypes';
-import { digestTypeRegistry } from './analysis/digestTypes';
-import { logTypeRegistry } from './analysis/logTypes';
-import { mathTypeRegistry } from './analysis/mathTypes';
-import { nl80211TypeRegistry } from './analysis/nl80211Types';
-import { resolvTypeRegistry } from './analysis/resolvTypes';
-import { rtnlTypeRegistry } from './analysis/rtnlTypes';
-import { socketTypeRegistry } from './analysis/socketTypes';
-import { structTypeRegistry } from './analysis/structTypes';
-import { ubusTypeRegistry } from './analysis/ubusTypes';
-import { uciTypeRegistry } from './analysis/uciTypes';
-import { uloopTypeRegistry, uloopObjectRegistry } from './analysis/uloopTypes';
-import { fsTypeRegistry } from './analysis/fsTypes';
-import { fsModuleFunctions } from './fsBuiltins';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
-import { zlibTypeRegistry } from './analysis/zlibTypes';
-import { fsModuleTypeRegistry } from './analysis/fsModuleTypes';
-import { ioModuleTypeRegistry } from './analysis/ioTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
+import { Option } from 'effect';
+import { MODULE_REGISTRIES, isKnownModule, isKnownObjectType, getModuleMemberDocumentation, getImportedSymbolDocumentation, getObjectMethodDocumentation, type KnownObjectType } from './analysis/moduleDispatch';
 
 function detectMemberHoverContext(position: any, tokens: any[], document: any): { objectName: string, memberName: string, memberTokenPos: number, memberTokenEnd: number } | undefined {
     // Look for pattern: LABEL DOT LABEL (where cursor is over the second LABEL)
@@ -275,6 +260,72 @@ function inferPropertyTypeFromValue(propertyValue: string): string | undefined {
     return undefined;
 }
 
+/**
+ * Detect known object type from a symbol's dataType.
+ */
+function detectObjectTypeFromDataType(dataType: any): KnownObjectType | null {
+    if (!dataType || typeof dataType !== 'object' || !('moduleName' in dataType)) return null;
+    const mn = dataType.moduleName as string;
+    if (isKnownObjectType(mn)) return mn;
+    return null;
+}
+
+/**
+ * Unified member hover: handles object method hover (fs.file/dir/proc, io.handle, uloop.*, uci.cursor)
+ * and module namespace hover (fs.opendir, io.open, uloop.init, etc.)
+ */
+function getUnifiedMemberHover(
+    memberInfo: { objectName: string; propertyName: string },
+    analysisResult: SemanticAnalysisResult
+): string | null {
+    const { objectName, propertyName } = memberInfo;
+
+    // Look up the object in the symbol table
+    let symbol = analysisResult.symbolTable.lookup(objectName);
+
+    // Try CFG-based lookup if symbol table fails
+    if (!symbol && analysisResult.cfgQueryEngine) {
+        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, 0);
+        if (cfgType) {
+            symbol = {
+                name: objectName,
+                type: SymbolType.VARIABLE,
+                dataType: cfgType,
+                scope: 0,
+                declared: true,
+                used: true,
+                node: {} as any,
+                declaredAt: 0,
+                usedAt: [0]
+            } as UcodeSymbol;
+        }
+    }
+
+    if (!symbol) return null;
+
+    // 1. Check if it's a known object type (fs.file, io.handle, uloop.timer, etc.)
+    const objType = detectObjectTypeFromDataType(symbol.dataType);
+    if (objType) {
+        const methodDoc = getObjectMethodDocumentation(objType, propertyName);
+        if (Option.isSome(methodDoc)) return methodDoc.value;
+    }
+
+    // 2. Check if it's a module namespace import (import * as fs from 'fs') or require('fs')
+    let moduleName: string | undefined;
+    if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom) {
+        moduleName = symbol.importedFrom;
+    } else if (symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
+        moduleName = (symbol.dataType as any).moduleName as string;
+    }
+
+    if (moduleName && isKnownModule(moduleName)) {
+        const doc = getModuleMemberDocumentation(moduleName, propertyName);
+        if (Option.isSome(doc)) return doc.value;
+    }
+
+    return null;
+}
+
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
     documents: any,
@@ -345,55 +396,16 @@ export function handleHover(
                 }
 
                 if (symbol && symbol.type === SymbolType.IMPORTED) {
-                    
+
                     // Get module-specific documentation for the member
                     const moduleName = symbol.importedFrom;
                     let hoverText: string | undefined;
-                    
-                    if (moduleName === 'nl80211' && nl80211TypeRegistry.isNl80211Function(memberName)) {
-                        hoverText = nl80211TypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'nl80211' && nl80211TypeRegistry.isNl80211Constant(memberName)) {
-                        hoverText = nl80211TypeRegistry.getConstantDocumentation(memberName);
-                    } else if (moduleName === 'rtnl' && rtnlTypeRegistry.isRtnlFunction(memberName)) {
-                        hoverText = rtnlTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'rtnl' && rtnlTypeRegistry.isRtnlConstant(memberName)) {
-                        hoverText = rtnlTypeRegistry.getConstantDocumentation(memberName);
-                    } else if (moduleName === 'socket' && socketTypeRegistry.isSocketFunction(memberName)) {
-                        hoverText = socketTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'socket' && socketTypeRegistry.isSocketConstant(memberName)) {
-                        hoverText = socketTypeRegistry.getConstantDocumentation(memberName);
-                    } else if (moduleName === 'ubus' && ubusTypeRegistry.isUbusFunction(memberName)) {
-                        hoverText = ubusTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'ubus' && ubusTypeRegistry.isUbusConstant(memberName)) {
-                        hoverText = ubusTypeRegistry.getConstantDocumentation(memberName);
-                    } else if (moduleName === 'uloop' && uloopTypeRegistry.isUloopFunction(memberName)) {
-                        hoverText = uloopTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'uloop' && uloopTypeRegistry.isUloopConstant(memberName)) {
-                        hoverText = uloopTypeRegistry.getConstantDocumentation(memberName);
-                    } else if (moduleName === 'zlib' && zlibTypeRegistry.isZlibFunction(memberName)) {
-                        hoverText = zlibTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'zlib' && zlibTypeRegistry.isZlibConstant(memberName)) {
-                        hoverText = zlibTypeRegistry.getConstantDocumentation(memberName);
-                    } else if (moduleName === 'debug' && debugTypeRegistry.isDebugFunction(memberName)) {
-                        hoverText = debugTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'digest' && digestTypeRegistry.isDigestFunction(memberName)) {
-                        hoverText = digestTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'log' && logTypeRegistry.isLogFunction(memberName)) {
-                        hoverText = logTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'log' && logTypeRegistry.isLogConstant(memberName)) {
-                        hoverText = logTypeRegistry.getConstantDocumentation(memberName);
-                    } else if (moduleName === 'math' && mathTypeRegistry.isMathFunction(memberName)) {
-                        hoverText = mathTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'resolv' && resolvTypeRegistry.isResolvFunction(memberName)) {
-                        hoverText = resolvTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'struct' && structTypeRegistry.isStructFunction(memberName)) {
-                        hoverText = structTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'uci' && uciTypeRegistry.isUciFunction(memberName)) {
-                        hoverText = uciTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'fs' && fsModuleTypeRegistry.isFsModuleFunction(memberName)) {
-                        hoverText = fsModuleTypeRegistry.getFunctionDocumentation(memberName);
-                    } else if (moduleName === 'io' && ioModuleTypeRegistry.isIoModuleFunction(memberName)) {
-                        hoverText = ioModuleTypeRegistry.getFunctionDocumentation(memberName);
+
+                    if (moduleName && isKnownModule(moduleName)) {
+                        const doc = getModuleMemberDocumentation(moduleName, memberName);
+                        if (Option.isSome(doc)) {
+                            hoverText = doc.value;
+                        }
                     }
                     
                     if (hoverText) {
@@ -407,29 +419,12 @@ export function handleHover(
                     }
                 } else if (symbol) {
                     // Non-imported variable — check if it's a typed object (io.handle, fs.file, etc.)
-                    if (ioModuleTypeRegistry.isVariableOfIoType(symbol.dataType)) {
-                        const doc = ioModuleTypeRegistry.getHandleFunctionDocumentation(memberName);
-                        if (doc) {
+                    const objType = detectObjectTypeFromDataType(symbol.dataType);
+                    if (objType) {
+                        const methodDoc = getObjectMethodDocumentation(objType, memberName);
+                        if (Option.isSome(methodDoc)) {
                             return {
-                                contents: { kind: MarkupKind.Markdown, value: doc },
-                                range: {
-                                    start: document.positionAt(memberContext.memberTokenPos),
-                                    end: document.positionAt(memberContext.memberTokenEnd)
-                                }
-                            };
-                        }
-                    }
-                    const fsType = fsTypeRegistry.isVariableOfFsType(symbol.dataType);
-                    if (fsType) {
-                        const methodSignature = fsTypeRegistry.getFsMethod(fsType, memberName);
-                        if (methodSignature) {
-                            let doc = `**${memberName}()** - ${fsType} method\n\n`;
-                            if (methodSignature.description) {
-                                doc += methodSignature.description + '\n\n';
-                            }
-                            doc += `**Returns:** \`${methodSignature.returnType}\``;
-                            return {
-                                contents: { kind: MarkupKind.Markdown, value: doc },
+                                contents: { kind: MarkupKind.Markdown, value: methodDoc.value },
                                 range: {
                                     start: document.positionAt(memberContext.memberTokenPos),
                                     end: document.positionAt(memberContext.memberTokenEnd)
@@ -499,12 +494,8 @@ export function handleHover(
             if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'io') {
                 const originalName = symbol.importSpecifier || symbol.name;
                 const isFunctionCall = detectFunctionCall(offset, tokens);
-                let hoverText: string;
-                if (ioModuleTypeRegistry.isIoModuleFunction(originalName)) {
-                    hoverText = ioModuleTypeRegistry.getFunctionDocumentation(originalName);
-                } else {
-                    hoverText = getIoModuleDocumentation();
-                }
+                const ioDoc = getImportedSymbolDocumentation('io', originalName);
+                let hoverText: string = Option.isSome(ioDoc) ? ioDoc.value : MODULE_REGISTRIES['io'].getModuleDocumentation();
                 if (isFunctionCall && symbol.returnType) {
                     const returnTypeStr = typeToString(symbol.returnType);
                     hoverText = `(function call) **${word}()**: \`${returnTypeStr}\`\n\n${hoverText}`;
@@ -574,58 +565,13 @@ export function handleHover(
                 // Only show method/property hover when cursor is on the property side
                 // When cursor is on the object side, fall through to the variable type display
 
-                // Handle fs object method hover
-                const fsMethodHover = getFsMethodHover(memberExpressionInfo, analysisResult);
-                if (fsMethodHover) {
+                // Unified member hover: check object types and module namespaces
+                const memberHoverDoc = getUnifiedMemberHover(memberExpressionInfo, analysisResult);
+                if (memberHoverDoc) {
                     return {
                         contents: {
                             kind: MarkupKind.Markdown,
-                            value: fsMethodHover
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-
-                // Handle uloop module function hover (namespace access like uloop.init)
-                const uloopMethodHover = getUloopMethodHover(memberExpressionInfo, analysisResult);
-                if (uloopMethodHover) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: uloopMethodHover
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-
-                // Handle fs module function hover (namespace access like fs.opendir)
-                const fsModuleMethodHover = getFsModuleMethodHover(memberExpressionInfo, analysisResult);
-                if (fsModuleMethodHover) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: fsModuleMethodHover
-                        },
-                        range: {
-                            start: document.positionAt(token.pos),
-                            end: document.positionAt(token.end)
-                        }
-                    };
-                }
-
-                // Handle io.handle method hover (e.g., h.read, h.write)
-                const ioMethodHover = getIoMethodHover(memberExpressionInfo, analysisResult);
-                if (ioMethodHover) {
-                    return {
-                        contents: {
-                            kind: MarkupKind.Markdown,
-                            value: ioMethodHover
+                            value: memberHoverDoc
                         },
                         range: {
                             start: document.positionAt(token.pos),
@@ -785,154 +731,24 @@ export function handleHover(
                             hoverText = `(module) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
                             break;
                         case SymbolType.IMPORTED:
-                            // Special handling for module imports
-                            if (symbol.importedFrom === 'debug') {
-                                // Check if this is a specific debug function (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (debugTypeRegistry.isDebugFunction(originalName)) {
-                                    hoverText = debugTypeRegistry.getFunctionDocumentation(originalName);
-                                } else {
-                                    hoverText = getDebugModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'digest') {
-                                // Check if this is a specific digest function (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (digestTypeRegistry.isDigestFunction(originalName)) {
-                                    hoverText = digestTypeRegistry.getFunctionDocumentation(originalName);
-                                } else {
-                                    hoverText = getDigestModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'log') {
-                                // Check if this is a specific log function or constant (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (logTypeRegistry.isLogFunction(originalName)) {
-                                    hoverText = logTypeRegistry.getFunctionDocumentation(originalName);
-                                } else if (logTypeRegistry.isLogConstant(originalName)) {
-                                    hoverText = logTypeRegistry.getConstantDocumentation(originalName);
-                                } else {
-                                    hoverText = getLogModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'math') {
-                                // Check if this is a specific math function (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (mathTypeRegistry.isMathFunction(originalName)) {
-                                    hoverText = mathTypeRegistry.getFunctionDocumentation(originalName);
-                                } else {
-                                    hoverText = getMathModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'io') {
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (ioModuleTypeRegistry.isIoModuleFunction(originalName)) {
-                                    hoverText = ioModuleTypeRegistry.getFunctionDocumentation(originalName);
-                                } else if (ioModuleTypeRegistry.isIoConstant(originalName)) {
-                                    hoverText = ioModuleTypeRegistry.getConstantDocumentation(originalName);
-                                } else {
-                                    hoverText = getIoModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'nl80211') {
-                                // Check if this is a const import object first
-                                if (symbol.dataType && typeof symbol.dataType === 'object' && 
-                                    'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'nl80211-const') {
+                            // Special handling for nl80211-const / rtnl-const objects
+                            if (symbol.dataType && typeof symbol.dataType === 'object' &&
+                                'moduleName' in symbol.dataType) {
+                                const mn = (symbol.dataType as any).moduleName;
+                                if (mn === 'nl80211-const') {
                                     hoverText = `(const object) **${symbol.name}**: \`object\`\n\nContainer for nl80211 module constants.`;
-                                } else {
-                                    // Check if this is a specific nl80211 function or constant (could be aliased)
-                                    const originalName = symbol.importSpecifier || symbol.name;
-                                    if (nl80211TypeRegistry.isNl80211Function(originalName)) {
-                                        hoverText = nl80211TypeRegistry.getFunctionDocumentation(originalName);
-                                    } else if (nl80211TypeRegistry.isNl80211Constant(originalName)) {
-                                        hoverText = nl80211TypeRegistry.getConstantDocumentation(originalName);
-                                    } else {
-                                        hoverText = getNl80211ModuleDocumentation();
-                                    }
-                                }
-                            } else if (symbol.importedFrom === 'resolv') {
-                                // Check if this is a specific resolv function (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (resolvTypeRegistry.isResolvFunction(originalName)) {
-                                    hoverText = resolvTypeRegistry.getFunctionDocumentation(originalName);
-                                } else {
-                                    hoverText = getResolvModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'rtnl') {
-                                // Check if this is a const import object first
-                                if (symbol.dataType && typeof symbol.dataType === 'object' && 
-                                    'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'rtnl-const') {
+                                    break;
+                                } else if (mn === 'rtnl-const') {
                                     hoverText = `(const object) **${symbol.name}**: \`object\`\n\nContainer for rtnl module constants.`;
-                                } else {
-                                    // Check if this is a specific rtnl function or constant (could be aliased)
-                                    const originalName = symbol.importSpecifier || symbol.name;
-                                    if (rtnlTypeRegistry.getFunctionNames().includes(originalName)) {
-                                        hoverText = rtnlTypeRegistry.getFunctionDocumentation(originalName);
-                                    } else if (rtnlTypeRegistry.getConstant(originalName)) {
-                                        hoverText = rtnlTypeRegistry.getConstantDocumentation(originalName);
-                                    } else {
-                                        hoverText = getRtnlModuleDocumentation();
-                                    }
+                                    break;
                                 }
-                            } else if (symbol.importedFrom === 'fs') {
-                                // Check if this is a specific fs function (could be aliased)
+                            }
+                            // Unified imported symbol hover via moduleDispatch
+                            if (symbol.importedFrom && isKnownModule(symbol.importedFrom)) {
                                 const originalName = symbol.importSpecifier || symbol.name;
-                                const fsDoc = fsModuleFunctions.get(originalName);
-                                if (fsDoc) {
-                                    hoverText = `**${symbol.name}** (fs module function)\n\n${fsDoc}`;
-                                } else {
-                                    hoverText = getFsModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'socket') {
-                                // Check if this is a specific socket function or constant (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (socketTypeRegistry.isSocketFunction(originalName)) {
-                                    hoverText = socketTypeRegistry.getFunctionDocumentation(originalName);
-                                } else if (socketTypeRegistry.isSocketConstant(originalName)) {
-                                    hoverText = socketTypeRegistry.getConstantDocumentation(originalName);
-                                } else {
-                                    hoverText = getSocketModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'ubus') {
-                                // Check if this is a specific ubus function or constant (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (ubusTypeRegistry.isUbusFunction(originalName)) {
-                                    hoverText = ubusTypeRegistry.getFunctionDocumentation(originalName);
-                                } else if (ubusTypeRegistry.isUbusConstant(originalName)) {
-                                    hoverText = ubusTypeRegistry.getConstantDocumentation(originalName);
-                                } else {
-                                    hoverText = getUbusModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'uci') {
-                                // Check if this is a specific uci function (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (uciTypeRegistry.isUciFunction(originalName)) {
-                                    hoverText = uciTypeRegistry.getFunctionDocumentation(originalName);
-                                } else {
-                                    hoverText = getUciModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'uloop') {
-                                // Check if this is a specific uloop function or constant (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (uloopTypeRegistry.isUloopFunction(originalName)) {
-                                    hoverText = uloopTypeRegistry.getFunctionDocumentation(originalName);
-                                } else if (uloopTypeRegistry.isUloopConstant(originalName)) {
-                                    hoverText = uloopTypeRegistry.getConstantDocumentation(originalName);
-                                } else {
-                                    hoverText = getUloopModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'struct') {
-                                // Check if this is a specific struct function (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (structTypeRegistry.isStructFunction(originalName)) {
-                                    hoverText = structTypeRegistry.getFunctionDocumentation(originalName);
-                                } else {
-                                    hoverText = getStructModuleDocumentation();
-                                }
-                            } else if (symbol.importedFrom === 'zlib') {
-                                // Check if this is a specific zlib function or constant (could be aliased)
-                                const originalName = symbol.importSpecifier || symbol.name;
-                                if (zlibTypeRegistry.isZlibFunction(originalName)) {
-                                    hoverText = zlibTypeRegistry.getFunctionDocumentation(originalName);
-                                } else if (zlibTypeRegistry.isZlibConstant(originalName)) {
-                                    hoverText = zlibTypeRegistry.getConstantDocumentation(originalName);
-                                } else {
-                                    hoverText = getZlibModuleDocumentation();
+                                const doc = getImportedSymbolDocumentation(symbol.importedFrom, originalName);
+                                if (Option.isSome(doc)) {
+                                    hoverText = doc.value;
                                 }
                             } else {
                                 hoverText = `(imported) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
@@ -1022,11 +838,12 @@ export function handleHover(
         const word = text.substring(wordRange.start, wordRange.end);
         
         // Check if this is a log module function
-        if (logTypeRegistry.isLogFunction(word)) {
+        const logFuncDoc = MODULE_REGISTRIES['log'].getFunctionDocumentation(word);
+        if (Option.isSome(logFuncDoc)) {
             return {
                 contents: {
                     kind: MarkupKind.Markdown,
-                    value: logTypeRegistry.getFunctionDocumentation(word)
+                    value: logFuncDoc.value
                 },
                 range: {
                     start: document.positionAt(wordRange.start),
@@ -1144,1232 +961,3 @@ function getWordRangeAtPosition(text: string, offset: number): { start: number; 
     return undefined;
 }
 
-function getDebugModuleDocumentation(): string {
-    return `## Debug Module
-
-**Runtime debug functionality for ucode scripts**
-
-The debug module provides comprehensive debugging and introspection capabilities for ucode applications.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { memdump, traceback } from 'debug';
-
-let stacktrace = traceback(1);
-memdump("/tmp/dump.txt");
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as debug from 'debug';
-
-let stacktrace = debug.traceback(1);
-debug.memdump("/tmp/dump.txt");
-\`\`\`
-
-### Available Functions
-
-- **\`memdump()\`** - Write memory dump report to file
-- **\`traceback()\`** - Generate stack trace from execution point  
-- **\`sourcepos()\`** - Get current source position information
-- **\`getinfo()\`** - Get detailed information about a value
-- **\`getlocal()\`** - Get the value of a local variable
-- **\`setlocal()\`** - Set the value of a local variable
-- **\`getupval()\`** - Get the value of an upvalue (closure variable)
-- **\`setupval()\`** - Set the value of an upvalue (closure variable)
-
-### Environment Variables
-
-- **\`UCODE_DEBUG_MEMDUMP_ENABLED\`** - Enable/disable automatic memory dumps (default: enabled)
-- **\`UCODE_DEBUG_MEMDUMP_SIGNAL\`** - Signal for triggering memory dumps (default: SIGUSR2)
-- **\`UCODE_DEBUG_MEMDUMP_PATH\`** - Output directory for memory dumps (default: /tmp)
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getDigestModuleDocumentation(): string {
-    return `## Digest Module
-
-**Cryptographic hash functions for ucode scripts**
-
-The digest module provides secure hashing functionality using industry-standard algorithms.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { md5, sha256, sha1_file } from 'digest';
-
-let hash = md5("Hello World");
-let fileHash = sha256_file("/path/to/file.txt");
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as digest from 'digest';
-
-let hash = digest.md5("Hello World");
-let fileHash = digest.sha256_file("/path/to/file.txt");
-\`\`\`
-
-### Available Functions
-
-**String hashing functions:**
-- **\`md5()\`** - Calculate MD5 hash of string
-- **\`sha1()\`** - Calculate SHA1 hash of string
-- **\`sha256()\`** - Calculate SHA256 hash of string
-- **\`sha384()\`** - Calculate SHA384 hash of string (extended)
-- **\`sha512()\`** - Calculate SHA512 hash of string (extended)
-- **\`md2()\`** - Calculate MD2 hash of string (extended)
-- **\`md4()\`** - Calculate MD4 hash of string (extended)
-
-**File hashing functions:**
-- **\`md5_file()\`** - Calculate MD5 hash of file
-- **\`sha1_file()\`** - Calculate SHA1 hash of file
-- **\`sha256_file()\`** - Calculate SHA256 hash of file
-- **\`sha384_file()\`** - Calculate SHA384 hash of file (extended)
-- **\`sha512_file()\`** - Calculate SHA512 hash of file (extended)
-- **\`md2_file()\`** - Calculate MD2 hash of file (extended)
-- **\`md4_file()\`** - Calculate MD4 hash of file (extended)
-
-### Notes
-
-- Extended algorithms (MD2, MD4, SHA384, SHA512) may not be available on all systems
-- All functions return \`null\` on error or invalid input
-- File functions return \`null\` if the file cannot be read
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getLogModuleDocumentation(): string {
-    return `## Log Module
-
-**System logging functions for ucode scripts**
-
-The log module provides bindings to the POSIX syslog functions as well as OpenWrt specific ulog library functions.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { openlog, syslog, LOG_PID, LOG_USER, LOG_ERR } from 'log';
-
-openlog("my-log-ident", LOG_PID, LOG_USER);
-syslog(LOG_ERR, "An error occurred!");
-
-// OpenWrt specific ulog functions
-import { ulog_open, ulog, ULOG_SYSLOG, LOG_DAEMON, LOG_INFO } from 'log';
-
-ulog_open(ULOG_SYSLOG, LOG_DAEMON, "my-log-ident");
-ulog(LOG_INFO, "The current epoch is %d", time());
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as log from 'log';
-
-log.openlog("my-log-ident", log.LOG_PID, log.LOG_USER);
-log.syslog(log.LOG_ERR, "An error occurred!");
-
-// OpenWrt specific ulog functions
-log.ulog_open(log.ULOG_SYSLOG, log.LOG_DAEMON, "my-log-ident");
-log.ulog(log.LOG_INFO, "The current epoch is %d", time());
-\`\`\`
-
-### Available Functions
-
-**Standard syslog functions:**
-- **\`openlog()\`** - Open connection to system logger
-- **\`syslog()\`** - Log a message to the system logger
-- **\`closelog()\`** - Close connection to system logger
-
-**OpenWrt ulog functions:**
-- **\`ulog_open()\`** - Configure ulog logger
-- **\`ulog()\`** - Log a message via ulog mechanism
-- **\`ulog_close()\`** - Close ulog logger
-- **\`ulog_threshold()\`** - Set ulog priority threshold
-
-**Convenience functions:**
-- **\`INFO()\`** - Log with LOG_INFO priority
-- **\`NOTE()\`** - Log with LOG_NOTICE priority
-- **\`WARN()\`** - Log with LOG_WARNING priority
-- **\`ERR()\`** - Log with LOG_ERR priority
-
-### Constants
-
-**Log options:** LOG_PID, LOG_CONS, LOG_NDELAY, LOG_ODELAY, LOG_NOWAIT
-
-**Log facilities:** LOG_AUTH, LOG_AUTHPRIV, LOG_CRON, LOG_DAEMON, LOG_FTP, LOG_KERN, LOG_LPR, LOG_MAIL, LOG_NEWS, LOG_SYSLOG, LOG_USER, LOG_UUCP, LOG_LOCAL0-7
-
-**Log priorities:** LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG
-
-**Ulog channels:** ULOG_KMSG, ULOG_STDIO, ULOG_SYSLOG
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getMathModuleDocumentation(): string {
-    return `## Math Module
-
-**Mathematical and trigonometric functions for ucode scripts**
-
-The math module provides comprehensive mathematical operations including basic arithmetic, trigonometry, logarithms, and random number generation.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { sin, cos, pow, sqrt, abs } from 'math';
-
-let angle = 3.14159 / 4;  // 45 degrees in radians
-let x = cos(angle);       // ~0.707
-let y = sin(angle);       // ~0.707
-let hypotenuse = sqrt(pow(x, 2) + pow(y, 2));  // ~1.0
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as math from 'math';
-
-let angle = 3.14159 / 4;  // 45 degrees in radians
-let x = math.cos(angle);  // ~0.707
-let y = math.sin(angle);  // ~0.707
-let hypotenuse = math.sqrt(math.pow(x, 2) + math.pow(y, 2));  // ~1.0
-\`\`\`
-
-### Available Functions
-
-**Basic operations:**
-- **\`abs()\`** - Absolute value
-- **\`pow()\`** - Exponentiation (x^y)
-- **\`sqrt()\`** - Square root
-
-**Trigonometric functions:**
-- **\`sin()\`** - Sine (radians)
-- **\`cos()\`** - Cosine (radians)
-- **\`atan2()\`** - Arc tangent of y/x (radians)
-
-**Logarithmic and exponential:**
-- **\`log()\`** - Natural logarithm
-- **\`exp()\`** - e raised to the power of x
-
-**Random number generation:**
-- **\`rand()\`** - Generate pseudo-random integer
-- **\`srand()\`** - Seed the random number generator
-
-**Utility functions:**
-- **\`isnan()\`** - Test if value is NaN (not a number)
-
-### Notes
-
-- All trigonometric functions use radians, not degrees
-- Functions return NaN for invalid inputs
-- \`rand()\` returns integers in range [0, RAND_MAX] (at least 32767)
-- \`srand()\` can be used to create reproducible random sequences
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getIoModuleDocumentation(): string {
-    return `## IO Module
-
-**Object-oriented access to UNIX file descriptors**
-
-The io module provides low-level I/O operations using POSIX file descriptors, with support for terminal control and pseudo-terminal operations.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { open, O_RDWR } from 'io';
-
-let handle = open('/tmp/test.txt', O_RDWR);
-handle.write('Hello World\\n');
-handle.close();
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as io from 'io';
-
-let handle = io.open('/tmp/test.txt', io.O_RDWR);
-handle.write('Hello World\\n');
-handle.close();
-\`\`\`
-
-### Module Functions
-
-- **\`open()\`** - Open a file (POSIX open semantics)
-- **\`new()\`** - Create handle from existing fd number
-- **\`from()\`** - Create handle from existing file resource
-- **\`pipe()\`** - Create a pipe (returns [read, write] handles)
-- **\`error()\`** - Get last error message
-
-### Handle Methods
-
-- **\`read()\`**, **\`write()\`** - Read/write data
-- **\`seek()\`**, **\`tell()\`** - File position
-- **\`dup()\`**, **\`dup2()\`** - Duplicate file descriptors
-- **\`fileno()\`** - Get underlying fd number
-- **\`fcntl()\`**, **\`ioctl()\`** - File/device control
-- **\`isatty()\`** - Test if fd is a terminal
-- **\`close()\`** - Close the handle
-- **\`ptsname()\`**, **\`grantpt()\`**, **\`unlockpt()\`** - Pseudoterminal ops
-- **\`tcgetattr()\`**, **\`tcsetattr()\`** - Terminal attributes
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getNl80211ModuleDocumentation(): string {
-    return `## NL80211 Module
-
-**WiFi/802.11 networking interface for ucode scripts**
-
-The nl80211 module provides access to the Linux kernel's nl80211 subsystem for managing WiFi interfaces and wireless networking operations.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { request, waitfor, listener, error } from 'nl80211';
-import { NL80211_CMD_GET_WIPHY, NL80211_CMD_TRIGGER_SCAN } from 'nl80211';
-
-// Request wireless interface information
-let result = request(NL80211_CMD_GET_WIPHY, NLM_F_DUMP);
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as nl80211 from 'nl80211';
-
-// Trigger a scan and wait for results
-let result = nl80211.request(nl80211.NL80211_CMD_TRIGGER_SCAN, nl80211.NLM_F_ACK);
-let scanResults = nl80211.waitfor([nl80211.NL80211_CMD_NEW_SCAN_RESULTS], 10000);
-\`\`\`
-
-### Available Functions
-
-**Core operations:**
-- **\`request()\`** - Send netlink request to nl80211 subsystem
-- **\`waitfor()\`** - Wait for specific nl80211 events
-- **\`listener()\`** - Create event listener for nl80211 messages
-- **\`error()\`** - Get last error information
-
-### Available Constants
-
-**Netlink flags:**
-- **NLM_F_*** - Request flags (ACK, DUMP, CREATE, etc.)
-
-**NL80211 commands:**
-- **NL80211_CMD_*** - WiFi interface commands (GET_WIPHY, TRIGGER_SCAN, etc.)
-
-**Interface types:**
-- **NL80211_IFTYPE_*** - WiFi interface types (STATION, AP, MONITOR, etc.)
-
-**Hardware simulator:**
-- **HWSIM_CMD_*** - Commands for mac80211_hwsim testing
-
-### Notes
-
-- Requires root privileges or appropriate capabilities
-- Used for WiFi interface management, scanning, and monitoring
-- Integrates with OpenWrt's wireless configuration system
-- Event-driven architecture for asynchronous operations
-
-*Hover over individual function names and constants for detailed parameter and return type information.*`;
-}
-
-function getResolvModuleDocumentation(): string {
-    return `## Resolv Module
-
-**DNS resolution functionality for ucode scripts**
-
-The resolv module provides DNS resolution functionality for ucode, allowing you to perform DNS queries for various record types and handle responses.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { query, error } from 'resolv';
-
-let result = query('example.com', { type: ['A'] });
-if (!result) {
-    let err = error();
-    print('DNS error: ', err, '\\n');
-}
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as resolv from 'resolv';
-
-let result = resolv.query('example.com', { type: ['A'] });
-if (!result) {
-    let err = resolv.error();
-    print('DNS error: ', err, '\\n');
-}
-\`\`\`
-
-### Available Functions
-
-**Core operations:**
-- **\`query()\`** - Perform DNS queries for specified domain names
-- **\`error()\`** - Get the last error message from DNS operations
-
-### Supported DNS Record Types
-
-- **A** - IPv4 address record
-- **AAAA** - IPv6 address record
-- **CNAME** - Canonical name record
-- **MX** - Mail exchange record
-- **NS** - Name server record
-- **PTR** - Pointer record (reverse DNS)
-- **SOA** - Start of authority record
-- **SRV** - Service record
-- **TXT** - Text record
-- **ANY** - Any available record type
-
-### Response Codes
-
-- **NOERROR** - Query successful
-- **FORMERR** - Format error in query
-- **SERVFAIL** - Server failure
-- **NXDOMAIN** - Non-existent domain
-- **NOTIMP** - Not implemented
-- **REFUSED** - Query refused
-- **TIMEOUT** - Query timed out
-
-### Examples
-
-Basic A record lookup:
-\`\`\`ucode
-const result = query(['example.com']);
-\`\`\`
-
-Specific record type query:
-\`\`\`ucode
-const mxRecords = query(['example.com'], { type: ['MX'] });
-\`\`\`
-
-Multiple domains with custom nameserver:
-\`\`\`ucode
-const results = query(['example.com', 'google.com'], {
-    type: ['A', 'MX'],
-    nameserver: ['8.8.8.8', '1.1.1.1'],
-    timeout: 10000
-});
-\`\`\`
-
-Reverse DNS lookup:
-\`\`\`ucode
-const ptrResult = query(['192.0.2.1'], { type: ['PTR'] });
-\`\`\`
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getRtnlModuleDocumentation(): string {
-    return `## RTNL Module
-**Routing Netlink functionality for ucode scripts**
-
-The rtnl module provides routing netlink functionality for ucode, allowing you to interact with the Linux kernel's routing and network interface subsystem.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { request, listener, error } from 'rtnl';
-// Send routing request
-let result = request(RTM_GETROUTE, NLM_F_DUMP);
-\`\`\`
-
-**Constants import syntax:**
-\`\`\`ucode
-import { 'const' as rtnlconst } from 'rtnl';
-let routeType = rtnlconst.RTN_UNICAST;
-let tableId = rtnlconst.RT_TABLE_MAIN;
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as rtnl from 'rtnl';
-let result = rtnl.request(rtnl.RTM_GETROUTE, rtnl.NLM_F_DUMP);
-\`\`\`
-
-### Available Functions
-
-**Core operations:**
-- **\`request()\`** - Send netlink request to routing subsystem
-- **\`listener()\`** - Create event listener for routing messages  
-- **\`error()\`** - Get last error information
-
-### Available Constants
-
-**Route types:**
-- **RTN_UNICAST** - Gateway or direct route
-- **RTN_LOCAL** - Accept locally
-- **RTN_BROADCAST** - Accept locally as broadcast
-
-**Route tables:**
-- **RT_TABLE_UNSPEC** - Unspecified table
-- **RT_TABLE_MAIN** - Main routing table
-- **RT_TABLE_LOCAL** - Local routing table
-
-**Bridge flags:**
-- **BRIDGE_FLAGS_MASTER** - Bridge master flag
-- **BRIDGE_FLAGS_SELF** - Bridge self flag
-
-*Hover over individual function and constant names for detailed information.*`;
-}
-
-function getSocketModuleDocumentation(): string {
-    return `## Socket Module
-
-**Network socket functionality for ucode scripts**
-
-The socket module provides comprehensive network socket functionality for creating TCP/UDP connections, listening for incoming connections, and handling network communication.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { create, connect, listen, AF_INET, SOCK_STREAM } from 'socket';
-
-// Create a TCP socket
-let sock = create(AF_INET, SOCK_STREAM);
-let result = connect(sock, "192.168.1.1", "80");
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as socket from 'socket';
-
-// Create a UDP socket
-let sock = socket.create(socket.AF_INET, socket.SOCK_DGRAM);
-let result = socket.connect(sock, "8.8.8.8", "53");
-\`\`\`
-
-### Available Functions
-
-**Socket creation and connection:**
-- **\`create()\`** - Create a new socket with specified domain, type, and protocol
-- **\`connect()\`** - Connect socket to a remote address
-- **\`listen()\`** - Listen for incoming connections on a socket
-
-**Address resolution:**
-- **\`sockaddr()\`** - Create socket address structures
-- **\`addrinfo()\`** - Resolve hostnames and service names to addresses
-- **\`nameinfo()\`** - Convert addresses back to hostnames
-
-**I/O operations:**
-- **\`poll()\`** - Wait for events on multiple sockets
-
-**Error handling:**
-- **\`error()\`** - Get socket error information
-- **\`strerror()\`** - Convert error codes to human-readable strings
-
-### Socket Constants
-
-**Address Families:**
-- **AF_INET** - IPv4 Internet protocols
-- **AF_INET6** - IPv6 Internet protocols  
-- **AF_UNIX** - Unix domain sockets
-
-**Socket Types:**
-- **SOCK_STREAM** - TCP (reliable, connection-oriented)
-- **SOCK_DGRAM** - UDP (unreliable, connectionless)
-- **SOCK_RAW** - Raw sockets
-
-**Socket Options:**
-- **SOL_SOCKET**, **SO_REUSEADDR**, **SO_KEEPALIVE**, etc.
-
-**Message Flags:**
-- **MSG_DONTWAIT**, **MSG_NOSIGNAL**, **MSG_PEEK**, etc.
-
-**Protocols:**
-- **IPPROTO_TCP**, **IPPROTO_UDP**, **IPPROTO_IP**, etc.
-
-**Poll Events:**
-- **POLLIN**, **POLLOUT**, **POLLERR**, **POLLHUP**, etc.
-
-### Examples
-
-Create and connect TCP socket:
-\`\`\`ucode
-let sock = create(AF_INET, SOCK_STREAM);
-if (connect(sock, "example.com", "80") == 0) {
-    print("Connected successfully\\n");
-}
-\`\`\`
-
-Create UDP server:
-\`\`\`ucode
-let sock = create(AF_INET, SOCK_DGRAM);
-listen(sock, "0.0.0.0", "8080");
-\`\`\`
-
-Wait for socket events:
-\`\`\`ucode
-let result = poll([{fd: sock, events: POLLIN}], 5000);
-\`\`\`
-
-*Hover over individual function names and constants for detailed parameter and return type information.*`;
-}
-
-function getFsMethodHover(memberInfo: { objectName: string; propertyName: string }, analysisResult: SemanticAnalysisResult): string | null {
-    const { objectName, propertyName } = memberInfo;
-
-    // Look up the object in the symbol table
-    let symbol = analysisResult.symbolTable.lookup(objectName);
-
-    // Try CFG-based lookup if symbol table fails
-    if (!symbol && analysisResult.cfgQueryEngine) {
-        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, 0);
-        if (cfgType) {
-            symbol = {
-                name: objectName,
-                type: SymbolType.VARIABLE,
-                dataType: cfgType,
-                scope: 0,
-                declared: true,
-                used: true,
-                node: {} as any,
-                declaredAt: 0,
-                usedAt: [0]
-            } as UcodeSymbol;
-        }
-    }
-
-    if (!symbol) {
-        return null;
-    }
-    
-    // Check if this is an fs object type
-    const fsType = fsTypeRegistry.isVariableOfFsType(symbol.dataType);
-    if (!fsType) {
-        return null;
-    }
-    
-    // Get the method signature for this fs type
-    const methodSignature = fsTypeRegistry.getFsMethod(fsType, propertyName);
-    if (!methodSignature) {
-        return null;
-    }
-    
-    // Format the hover documentation
-    let documentation = `**${propertyName}()** - ${fsType} method\n\n`;
-    
-    if (methodSignature.description) {
-        documentation += methodSignature.description + '\n\n';
-    }
-    
-    // Add parameter information
-    if (methodSignature.parameters.length > 0) {
-        documentation += '**Parameters:**\n';
-        methodSignature.parameters.forEach((param, index) => {
-            const paramName = getParameterName(propertyName, index);
-            const isOptional = (methodSignature.minParams !== undefined && index >= methodSignature.minParams) ||
-                             (methodSignature.maxParams !== undefined && index >= methodSignature.maxParams);
-            documentation += `- **${paramName}**: \`${param}\`${isOptional ? ' (optional)' : ''}\n`;
-        });
-        documentation += '\n';
-    }
-    
-    // Add return type information
-    documentation += `**Returns:** \`${methodSignature.returnType}\`\n\n`;
-    
-    // Add specific examples for read method
-    if (propertyName === 'read') {
-        documentation += '**Examples:**\n';
-        documentation += '```ucode\n';
-        documentation += `${objectName}.read(10);        // Read 10 bytes\n`;
-        documentation += `${objectName}.read("line");    // Read until newline\n`;
-        documentation += `${objectName}.read("all");     // Read until EOF\n`;
-        documentation += `${objectName}.read(":");       // Read until colon\n`;
-        documentation += '```\n';
-    }
-    
-    return documentation;
-}
-
-function getIoMethodHover(memberInfo: { objectName: string; propertyName: string }, analysisResult: SemanticAnalysisResult): string | null {
-    const { objectName, propertyName } = memberInfo;
-
-    // Look up the object in the symbol table
-    let symbol = analysisResult.symbolTable.lookup(objectName);
-
-    // Try CFG-based lookup if symbol table fails
-    if (!symbol && analysisResult.cfgQueryEngine) {
-        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, 0);
-        if (cfgType) {
-            symbol = {
-                name: objectName,
-                type: SymbolType.VARIABLE,
-                dataType: cfgType,
-                scope: 0,
-                declared: true,
-                used: true,
-                node: {} as any,
-                declaredAt: 0,
-                usedAt: [0]
-            } as UcodeSymbol;
-        }
-    }
-
-    if (!symbol) {
-        return null;
-    }
-
-    // Check if this is an io.handle type
-    if (!ioModuleTypeRegistry.isVariableOfIoType(symbol.dataType)) {
-        return null;
-    }
-
-    // Get the handle method documentation
-    const doc = ioModuleTypeRegistry.getHandleFunctionDocumentation(propertyName);
-    if (!doc) {
-        return null;
-    }
-
-    return doc;
-}
-
-function getParameterName(methodName: string, paramIndex: number): string {
-    const paramMappings: { [key: string]: string[] } = {
-        'read': ['length'],
-        'write': ['data'],
-        'seek': ['offset', 'position'],
-        'truncate': ['offset'],
-        'lock': ['operation'],
-        'ioctl': ['direction', 'type', 'num', 'value']
-    };
-    
-    const params = paramMappings[methodName];
-    if (params && paramIndex < params.length) {
-        return params[paramIndex]!;
-    }
-    
-    return `param${paramIndex + 1}`;
-}
-
-function getFsModuleDocumentation(): string {
-    return `## FS Module
-
-**File system operations for ucode scripts**
-
-The fs module provides comprehensive file system functionality for reading, writing, and manipulating files and directories.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { open, readlink, stat } from 'fs';
-
-let file = open("file.txt", "r");
-let target = readlink("/sys/class/net/eth0");
-let info = stat("/etc/passwd");
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as fs from 'fs';
-
-let file = fs.open("file.txt", "r");
-let content = file.read("all");
-file.close();
-\`\`\`
-
-### Available Functions
-
-**File operations:**
-- **\`open()\`** - Open files for reading/writing
-- **\`fdopen()\`** - Associate file descriptor with handle
-- **\`popen()\`** - Execute commands and handle I/O
-
-**Directory operations:**
-- **\`opendir()\`** - Open directories for reading
-- **\`mkdir()\`** - Create directories
-- **\`rmdir()\`** - Remove directories
-
-**File system information:**
-- **\`stat()\`** - Get file/directory information
-- **\`lstat()\`** - Get info without following symlinks
-- **\`readlink()\`** - Read symbolic link targets
-
-**File manipulation:**
-- **\`unlink()\`** - Remove files
-- **\`symlink()\`** - Create symbolic links
-- **\`chmod()\`** - Change file permissions
-- **\`chown()\`** - Change file ownership
-
-**Utility functions:**
-- **\`error()\`** - Get last error information
-- **\`getcwd()\`** - Get current working directory
-- **\`chdir()\`** - Change current directory
-
-### File Handle Objects
-
-- **\`fs.file\`** - File handles with read/write/seek methods
-- **\`fs.proc\`** - Process handles for command execution
-- **\`fs.dir\`** - Directory handles for listing entries
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getStructModuleDocumentation(): string {
-    return `## Struct Module
-
-**Binary data packing/unpacking module for ucode scripts**
-
-The struct module provides routines for interpreting byte strings as packed binary data, similar to Python's struct module.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { pack, unpack } from 'struct';
-
-let buffer = pack('bhl', -13, 1234, 444555666);
-let values = unpack('bhl', buffer);
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as struct from 'struct';
-
-let buffer = struct.pack('bhl', -13, 1234, 444555666);
-let values = struct.unpack('bhl', buffer);
-\`\`\`
-
-### Available Functions
-
-**Core functions:**
-- **\`pack()\`** - Pack values into binary string according to format
-- **\`unpack()\`** - Unpack binary string into values according to format
-- **\`new()\`** - Create precompiled format instance for efficiency
-- **\`buffer()\`** - Create struct buffer for incremental operations
-
-### Format String Syntax
-
-**Format characters:**
-- **\`b/B\`** - signed/unsigned char (1 byte)
-- **\`h/H\`** - signed/unsigned short (2 bytes)
-- **\`i/I\`** - signed/unsigned int (4 bytes)
-- **\`l/L\`** - signed/unsigned long (4 bytes)
-- **\`q/Q\`** - signed/unsigned long long (8 bytes)
-- **\`f\`** - float (4 bytes)
-- **\`d\`** - double (8 bytes)
-- **\`s\`** - string
-- **\`?\`** - boolean
-
-**Byte order prefixes:**
-- **\`@\`** - native (default)
-- **\`<\`** - little-endian
-- **\`>\`** - big-endian
-- **\`!\`** - network (big-endian)
-
-### Examples
-
-\`\`\`ucode
-// Pack three integers as network byte order
-let data = pack('!III', 1, 2, 3);
-
-// Unpack the same data
-let [a, b, c] = unpack('!III', data);
-
-// Use precompiled format for efficiency
-let fmt = struct.new('!III');
-let packed = fmt.pack(1, 2, 3);
-let unpacked = fmt.unpack(packed);
-\`\`\`
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getUbusModuleDocumentation(): string {
-    return `## ubus Module
-
-**OpenWrt unified bus communication for ucode scripts**
-
-The ubus module provides comprehensive access to the OpenWrt unified bus (ubus) system, enabling communication with system services and daemons.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { connect, error, STATUS_OK } from 'ubus';
-
-let conn = connect();
-if (conn) {
-    let objects = conn.list();
-    print("Available objects:", length(objects));
-} else {
-    print("Connection failed:", error());
-}
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as ubus from 'ubus';
-
-let conn = ubus.connect();
-if (conn) {
-    let result = conn.call("system", "info", {});
-    print("System info:", result);
-}
-\`\`\`
-
-### Available Functions
-
-- **\`connect()\`** - Establish connection to ubus daemon
-- **\`error()\`** - Retrieve last ubus error information
-- **\`open_channel()\`** - Create bidirectional ubus channel
-- **\`guard()\`** - Set/get global ubus exception handler
-
-### Status Constants
-
-- **\`STATUS_OK\`** - Operation completed successfully
-- **\`STATUS_INVALID_COMMAND\`** - Invalid or unknown command
-- **\`STATUS_INVALID_ARGUMENT\`** - Invalid argument provided
-- **\`STATUS_METHOD_NOT_FOUND\`** - Requested method not found
-- **\`STATUS_NOT_FOUND\`** - Requested object not found
-- **\`STATUS_NO_DATA\`** - No data available
-- **\`STATUS_PERMISSION_DENIED\`** - Access denied
-- **\`STATUS_TIMEOUT\`** - Operation timed out
-- **\`STATUS_NOT_SUPPORTED\`** - Operation not supported
-- **\`STATUS_UNKNOWN_ERROR\`** - Unknown error occurred
-- **\`STATUS_CONNECTION_FAILED\`** - Connection failed
-
-### Connection Methods
-
-Once connected, the connection object provides methods like:
-- **\`list()\`** - List available ubus objects
-- **\`call()\`** - Call methods on ubus objects
-- **\`publish()\`** - Publish ubus objects
-- **\`listener()\`** - Register event listeners
-- **\`subscriber()\`** - Create subscriptions
-
-### Additional Information
-
-The ubus module is specifically designed for OpenWrt systems and requires the ubus daemon to be running. It provides both synchronous and asynchronous communication patterns for maximum flexibility.
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getUciModuleDocumentation(): string {
-    return `## UCI Module
-
-**OpenWrt UCI configuration interface for ucode scripts**
-
-The uci module provides access to the native OpenWrt libuci API for reading and manipulating UCI configuration files.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { cursor } from 'uci';
-
-let ctx = cursor();
-let hostname = ctx.get_first('system', 'system', 'hostname');
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as uci from 'uci';
-
-let ctx = uci.cursor();
-let hostname = ctx.get_first('system', 'system', 'hostname');
-\`\`\`
-
-### Available Functions
-
-- **\`error()\`** - Query error information
-- **\`cursor()\`** - Instantiate uci cursor for configuration manipulation
-
-### UCI Cursor Methods
-
-The cursor object provides comprehensive methods for configuration management:
-
-- **Configuration Management**: \`load()\`, \`unload()\`, \`configs()\`
-- **Data Access**: \`get()\`, \`get_all()\`, \`get_first()\`, \`foreach()\`
-- **Data Modification**: \`add()\`, \`set()\`, \`delete()\`, \`rename()\`, \`reorder()\`
-- **List Operations**: \`list_append()\`, \`list_remove()\`
-- **Change Management**: \`save()\`, \`commit()\`, \`revert()\`, \`changes()\`
-
-### Configuration Files
-
-UCI configurations are stored in \`/etc/config/\` and can be manipulated through the cursor interface:
-
-\`\`\`ucode
-let ctx = cursor();
-
-// Read configuration values
-let hostname = ctx.get('system', '@system[0]', 'hostname');
-
-// Modify configuration
-ctx.set('system', '@system[0]', 'hostname', 'new-hostname');
-ctx.commit('system');
-\`\`\`
-
-### Additional Information
-
-The uci module is specifically designed for OpenWrt systems and provides safe, transactional access to system configuration files with support for delta records and change tracking.
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getUloopMethodHover(memberInfo: { objectName: string; propertyName: string }, analysisResult: SemanticAnalysisResult): string | null {
-    const { objectName, propertyName } = memberInfo;
-
-    // Look up the object in the symbol table
-    let symbol = analysisResult.symbolTable.lookup(objectName);
-
-    // Try CFG-based lookup if symbol table fails
-    if (!symbol && analysisResult.cfgQueryEngine) {
-        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, 0);
-        if (cfgType) {
-            symbol = {
-                name: objectName,
-                type: SymbolType.VARIABLE,
-                dataType: cfgType,
-                scope: 0,
-                declared: true,
-                used: true,
-                node: {} as any,
-                declaredAt: 0,
-                usedAt: [0]
-            } as UcodeSymbol;
-        }
-    }
-
-    if (!symbol) {
-        return null;
-    }
-    
-    // Check if this is a uloop namespace import (import * as uloop from 'uloop')
-    if (symbol.type === 'imported' && symbol.importedFrom === 'uloop') {
-        // Check if the property is a valid uloop function
-        if (uloopTypeRegistry.isUloopFunction(propertyName)) {
-            return uloopTypeRegistry.getFunctionDocumentation(propertyName);
-        }
-        
-        // Check if the property is a valid uloop constant
-        if (uloopTypeRegistry.isUloopConstant(propertyName)) {
-            return uloopTypeRegistry.getConstantDocumentation(propertyName);
-        }
-    }
-    
-    // Check if this is a uloop object type with methods
-    const uloopType = uloopObjectRegistry.isVariableOfUloopType(symbol.dataType);
-    if (uloopType) {
-        // Get the method signature for this uloop object type
-        const methodSignature = uloopObjectRegistry.getUloopMethod(uloopType, propertyName);
-        if (methodSignature) {
-            const params = methodSignature.parameters.map(p => {
-                if (p.optional && p.defaultValue !== undefined) {
-                    return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-                } else if (p.optional) {
-                    return `[${p.name}: ${p.type}]`;
-                } else {
-                    return `${p.name}: ${p.type}`;
-                }
-            }).join(', ');
-            
-            let doc = `**${methodSignature.name}(${params}): ${methodSignature.returnType}**\n\n${methodSignature.description}\n\n`;
-            
-            if (methodSignature.parameters.length > 0) {
-                doc += '**Parameters:**\n';
-                methodSignature.parameters.forEach(param => {
-                    const optional = param.optional ? ' (optional)' : '';
-                    const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-                    doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-                });
-                doc += '\n';
-            }
-            
-            doc += `**Returns:** \`${methodSignature.returnType}\``;
-            
-            return doc;
-        }
-    }
-    
-    return null;
-}
-
-function getUloopModuleDocumentation(): string {
-    return `**uloop** - OpenWrt uloop event loop module
-
-Provides event-driven programming capabilities for handling timers, file descriptors, processes, signals, and background tasks.
-
-### Core Functions
-
-- **\`init()\`** - Initialize the event loop
-- **\`run([timeout])\`** - Run the event loop  
-- **\`end()\`** - Stop the event loop
-- **\`done()\`** - Stop and cleanup the event loop
-
-### Event Objects
-
-- **\`timer(timeout, callback)\`** - Create timer objects
-- **\`handle(fd, callback, events)\`** - Monitor file descriptors
-- **\`process(cmd, args, env, callback)\`** - Execute external processes  
-- **\`task(taskFunc, outputCb, inputCb)\`** - Run background tasks
-- **\`interval(timeout, callback)\`** - Create repeating timers
-- **\`signal(signal, callback)\`** - Handle Unix signals
-
-### Constants
-
-- **\`ULOOP_READ\`** (1) - Monitor for read events
-- **\`ULOOP_WRITE\`** (2) - Monitor for write events  
-- **\`ULOOP_EDGE_TRIGGER\`** (4) - Use edge-triggered mode
-- **\`ULOOP_BLOCKING\`** (8) - Keep descriptor blocking
-
-### Usage Examples
-
-\`\`\`ucode
-import * as uloop from 'uloop';
-
-uloop.init();
-
-// Create a timer
-let timer = uloop.timer(1000, () => {
-    printf("Timer fired!\\n");
-});
-
-// Monitor a file descriptor  
-let handle = uloop.handle(fd, (events) => {
-    if (events & uloop.ULOOP_READ) {
-        // Handle read event
-    }
-}, uloop.ULOOP_READ);
-
-// Run the event loop
-uloop.run();
-\`\`\`
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getZlibModuleDocumentation(): string {
-    return `## Zlib Module
-
-**Data compression and decompression module**
-
-The zlib module provides single-call and stream-oriented functions for interacting with zlib data compression.
-
-### Usage
-
-**Named import syntax:**
-\`\`\`ucode
-import { deflate, inflate, Z_BEST_SPEED, Z_NO_FLUSH } from 'zlib';
-
-const compressed = deflate("Hello World!", true, Z_BEST_SPEED);
-const decompressed = inflate(compressed);
-\`\`\`
-
-**Namespace import syntax:**
-\`\`\`ucode
-import * as zlib from 'zlib';
-
-const compressed = zlib.deflate("Hello World!");
-const decompressed = zlib.inflate(compressed);
-
-// Streaming compression
-const deflater = zlib.deflater(false, zlib.Z_DEFAULT_COMPRESSION);
-deflater.write("data chunk", zlib.Z_NO_FLUSH);
-const result = deflater.read();
-\`\`\`
-
-### Available Functions
-
-- **\`deflate()\`** - Compresses data in Zlib or gzip format
-- **\`inflate()\`** - Decompresses data in Zlib or gzip format  
-- **\`deflater()\`** - Initialize a deflate stream for streaming compression
-- **\`inflater()\`** - Initialize an inflate stream for streaming decompression
-
-### Compression Levels
-
-- **\`Z_NO_COMPRESSION\`** (0) - No compression
-- **\`Z_BEST_SPEED\`** (1) - Fastest compression
-- **\`Z_BEST_COMPRESSION\`** (9) - Maximum compression
-- **\`Z_DEFAULT_COMPRESSION\`** (-1) - Default balance of speed/compression
-
-### Flush Options
-
-- **\`Z_NO_FLUSH\`** (0) - No flushing, accumulate data
-- **\`Z_PARTIAL_FLUSH\`** (1) - Partial flush without closing stream  
-- **\`Z_SYNC_FLUSH\`** (2) - Sync flush, align to byte boundary
-- **\`Z_FULL_FLUSH\`** (3) - Full flush, reset compression state
-- **\`Z_FINISH\`** (4) - Finish stream, no more input expected
-
-### Additional Information
-
-Supports both single-call compression/decompression and streaming operations. The streaming API allows processing large amounts of data in chunks without loading everything into memory.
-
-*Hover over individual function names for detailed parameter and return type information.*`;
-}
-
-function getFsModuleMethodHover(memberInfo: { objectName: string; propertyName: string }, analysisResult: SemanticAnalysisResult): string | null {
-    const { objectName, propertyName } = memberInfo;
-
-    // Look up the object in the symbol table
-    let symbol = analysisResult.symbolTable.lookup(objectName);
-
-    // Try CFG-based lookup if symbol table fails
-    if (!symbol && analysisResult.cfgQueryEngine) {
-        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, 0);
-        if (cfgType) {
-            symbol = {
-                name: objectName,
-                type: SymbolType.VARIABLE,
-                dataType: cfgType,
-                scope: 0,
-                declared: true,
-                used: true,
-                node: {} as any,
-                declaredAt: 0,
-                usedAt: [0]
-            } as UcodeSymbol;
-        }
-    }
-
-    if (!symbol) {
-        return null;
-    }
-    
-    // Check if this is an fs module (from require('fs') or import * as fs from 'fs')
-    const isFsModule = (
-        // Direct fs module import: import * as fs from 'fs'
-        (symbol.type === 'imported' && symbol.importedFrom === 'fs') ||
-        
-        // Module symbol from require: const fs = require('fs')
-        (symbol.type === 'module' && symbol.dataType && 
-         typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType && 
-         symbol.dataType.moduleName === 'fs')
-    );
-    
-    if (isFsModule) {
-        // Check if the property is a valid fs module function
-        if (fsModuleTypeRegistry.isFsModuleFunction(propertyName)) {
-            return fsModuleTypeRegistry.getFunctionDocumentation(propertyName);
-        }
-    }
-
-    // Check if this is an io module
-    const isIoModule = (
-        (symbol.type === 'imported' && symbol.importedFrom === 'io') ||
-        (symbol.type === 'module' && symbol.dataType &&
-         typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType &&
-         symbol.dataType.moduleName === 'io')
-    );
-
-    if (isIoModule) {
-        if (ioModuleTypeRegistry.isIoModuleFunction(propertyName)) {
-            return ioModuleTypeRegistry.getFunctionDocumentation(propertyName);
-        }
-    }
-
-    return null;
-}

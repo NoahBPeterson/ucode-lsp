@@ -286,6 +286,131 @@ let m = match(str, /^hello$/);
 });
 
 // ---------------------------------------------------------------------------
+// Flow-sensitive length() return type
+// ---------------------------------------------------------------------------
+describe('Flow-sensitive length() return type', () => {
+    test('length() on a known string should not produce null-related warnings', () => {
+        const code = `
+let s = "hello";
+let n = length(s);
+let x = n + 1;
+`;
+        const result = analyze(code);
+        const msgs = getDiagnosticMessages(result);
+        const nullWarnings = msgs.filter(m =>
+            m.includes('null') && (m.includes('length') || m.includes('n'))
+        );
+        expect(nullWarnings.length).toBe(0);
+    });
+
+    test('length() on an unknown variable should not crash', () => {
+        const code = `
+function test_len(val) {
+    let n = length(val);
+    return n;
+}
+`;
+        const result = analyze(code);
+        // Should not throw and should not produce errors about length itself
+        const lengthErrors = result.diagnostics.filter(d =>
+            d.message.includes("Function 'length'") && d.severity === 1
+        );
+        expect(lengthErrors.length).toBe(0);
+    });
+
+    test('length() on a known array should return integer', () => {
+        const code = `
+let arr = [1, 2, 3];
+let n = length(arr);
+let x = n + 1;
+`;
+        const result = analyze(code);
+        const msgs = getDiagnosticMessages(result);
+        const nullWarnings = msgs.filter(m =>
+            m.includes('null') && (m.includes('length') || m.includes('n'))
+        );
+        expect(nullWarnings.length).toBe(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Flow-sensitive return type narrowing for other builtins
+// ---------------------------------------------------------------------------
+describe('Flow-sensitive return type narrowing', () => {
+    test('keys() on a known object should return array', () => {
+        const code = `
+let obj = { a: 1, b: 2 };
+let k = keys(obj);
+let first = k[0];
+`;
+        const result = analyze(code);
+        const msgs = getDiagnosticMessages(result);
+        const nullWarnings = msgs.filter(m => m.includes('null') && m.includes('keys'));
+        expect(nullWarnings.length).toBe(0);
+    });
+
+    test('index() on a known string should return integer', () => {
+        const code = `
+let s = "hello world";
+let i = index(s, "world");
+let x = i + 1;
+`;
+        const result = analyze(code);
+        const msgs = getDiagnosticMessages(result);
+        const nullWarnings = msgs.filter(m => m.includes('null') && m.includes('index'));
+        expect(nullWarnings.length).toBe(0);
+    });
+
+    test('split() on a known string should return array', () => {
+        const code = `
+let s = "a,b,c";
+let parts = split(s, ",");
+let first = parts[0];
+`;
+        const result = analyze(code);
+        const msgs = getDiagnosticMessages(result);
+        const nullWarnings = msgs.filter(m => m.includes('null') && m.includes('split'));
+        expect(nullWarnings.length).toBe(0);
+    });
+
+    test('trim() on a known string should return string', () => {
+        const code = `
+let s = "  hello  ";
+let t = trim(s);
+let n = length(t);
+`;
+        const result = analyze(code);
+        const msgs = getDiagnosticMessages(result);
+        const nullWarnings = msgs.filter(m => m.includes('null') && m.includes('trim'));
+        expect(nullWarnings.length).toBe(0);
+    });
+
+    test('reverse() on a known array should return array', () => {
+        const code = `
+let arr = [1, 2, 3];
+let rev = reverse(arr);
+let first = rev[0];
+`;
+        const result = analyze(code);
+        const msgs = getDiagnosticMessages(result);
+        const nullWarnings = msgs.filter(m => m.includes('null') && m.includes('reverse'));
+        expect(nullWarnings.length).toBe(0);
+    });
+
+    test('filter() on a known array should return array', () => {
+        const code = `
+let arr = [1, 2, 3, 4];
+let evens = filter(arr, (x) => x % 2 == 0);
+let n = length(evens);
+`;
+        const result = analyze(code);
+        const msgs = getDiagnosticMessages(result);
+        const nullWarnings = msgs.filter(m => m.includes('null') && m.includes('filter'));
+        expect(nullWarnings.length).toBe(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Hoisted function diagnostic ranges
 // ---------------------------------------------------------------------------
 describe('Hoisted function diagnostic ranges', () => {

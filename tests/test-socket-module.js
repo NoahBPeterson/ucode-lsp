@@ -12,7 +12,7 @@ const expectedFunctions = [
 function readExpectedConstants() {
   const socketSourcePath = path.join(__dirname, '..', 'ucode', 'lib', 'socket.c');
   const source = fs.readFileSync(socketSourcePath, 'utf8');
-  const regex = /ADD_CONST_IF\(([^)]+)\);/g;
+  const regex = /ADD_CONST(?:_IF)?\(([^)]+)\);/g;
   const names = new Set();
   let match;
 

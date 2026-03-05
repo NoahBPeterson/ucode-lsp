@@ -154,14 +154,14 @@ it('should return builtin and system modules', async function() {
     const completions = await getCompletions(testContent, testFilePath, 0, testContent.length);
 
     // Verify we have at least the expected builtin modules (may have more system modules)
-    const minExpectedModules = 14; // fs, debug, log, math, ubus, uci, uloop, digest, nl80211, resolv, rtnl, socket, struct, zlib
+    const minExpectedModules = 15; // fs, debug, io, log, math, ubus, uci, uloop, digest, nl80211, resolv, rtnl, socket, struct, zlib
     assert(completions.length >= minExpectedModules, `Expected at least ${minExpectedModules} modules, got ${completions.length}`);
     
     // Verify we have both builtin and potentially system modules
     const builtinCount = completions.filter(c => c.detail === 'ucode builtin module').length;
     const systemCount = completions.filter(c => c.detail === 'ucode system module').length;
     
-    assert.strictEqual(builtinCount, 14, 'All 14 builtin modules should be present');
+    assert.strictEqual(builtinCount, 15, 'All 15 builtin modules should be present');
     console.log(`Found ${builtinCount} builtin modules and ${systemCount} system modules`);
   });
 

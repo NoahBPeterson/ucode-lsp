@@ -63,7 +63,7 @@ testResult('Original log function documentation', hasLogDoc,
 
 // Test 8: Verify rand function documentation exists
 const randDoc = mathTypeRegistry.getFunctionDocumentation('rand');
-const hasRandDoc = randDoc && randDoc.includes('rand(): number') && randDoc.includes('pseudo-random');
+const hasRandDoc = randDoc && randDoc.includes('rand(') && randDoc.includes('number') && randDoc.includes('pseudo-random');
 testResult('Original rand function documentation', hasRandDoc,
   `Has documentation: ${!!randDoc}`);
 

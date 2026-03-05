@@ -240,6 +240,23 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     returnType: "array | null",
     description: "Creates a pipe and returns an array with read and write file handles"
   }],
+  ["dup2", {
+    name: "dup2",
+    parameters: [
+      { name: "oldfd", type: "number", optional: false },
+      { name: "newfd", type: "number", optional: false }
+    ],
+    returnType: "boolean | null",
+    description: "Duplicates file descriptor oldfd to newfd. Returns true on success, null on error"
+  }],
+  ["mkdtemp", {
+    name: "mkdtemp",
+    parameters: [
+      { name: "template", type: "string", optional: true, defaultValue: "/tmp/XXXXXX" }
+    ],
+    returnType: "string | null",
+    description: "Creates a unique temporary directory using the given template. Returns the path of the created directory on success, null on error"
+  }],
   ["getcwd", {
     name: "getcwd",
     parameters: [],

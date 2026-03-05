@@ -33,12 +33,11 @@ import { arithmeticTypeInference } from './arithmeticTypeInference';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { allBuiltinFunctions } from '../builtins';
-import { fsTypeRegistry } from './fsTypes';
 import { fsModuleTypeRegistry } from './fsModuleTypes';
-import { uloopObjectRegistry } from './uloopTypes';
 import { rtnlTypeRegistry } from './rtnlTypes';
 import { nl80211TypeRegistry } from './nl80211Types';
-import { ioModuleTypeRegistry } from './ioTypes';
+import { Option } from 'effect';
+import { isKnownObjectType, OBJECT_REGISTRIES, type KnownObjectType } from './moduleDispatch';
 import { TypeNarrowingEngine } from './typeNarrowing';
 import { FlowSensitiveTypeTracker } from './flowSensitiveTyping';
 import { CFGQueryEngine } from './cfg/queryEngine';
@@ -1046,6 +1045,51 @@ export class TypeChecker {
   }
 
 
+  /**
+   * Detect if a data type represents a known object type from the dispatch layer.
+   */
+  private detectObjectType(dataType: UcodeDataType): KnownObjectType | null {
+    if (typeof dataType === 'string') return null;
+    if (typeof dataType === 'object' && 'moduleName' in dataType) {
+      const name = (dataType as any).moduleName as string;
+      if (isKnownObjectType(name)) return name;
+    }
+    return null;
+  }
+
+  /**
+   * Convert a return type string (from module type registries) to a UcodeType.
+   */
+  private returnTypeStringToUcodeType(returnType: string | UcodeType): UcodeType {
+    // If already a UcodeType enum value, return directly (fs methods use UcodeType enum)
+    if (Object.values(UcodeType).includes(returnType as UcodeType)) {
+      return returnType as UcodeType;
+    }
+    // String-based return types from various registries
+    switch (returnType) {
+      case 'integer':
+      case 'number':
+      case 'number | null':
+        return UcodeType.INTEGER;
+      case 'string':
+      case 'string | null':
+        return UcodeType.STRING;
+      case 'boolean':
+      case 'boolean | null':
+        return UcodeType.BOOLEAN;
+      case 'null':
+        return UcodeType.NULL;
+      case 'io.handle | null':
+      case 'object | null':
+      case 'fs.file | fs.proc | socket.socket':
+        return UcodeType.OBJECT;
+      case 'any':
+      case 'any | null':
+      default:
+        return UcodeType.UNKNOWN;
+    }
+  }
+
   private dataTypeToUcodeType(dataType: UcodeDataType): UcodeType {
     // Handle string type (UcodeType)
     if (typeof dataType === 'string') {
@@ -1224,85 +1268,16 @@ export class TypeChecker {
         }
       }
 
-      // Check if this is an fs object with a specific type
-      const fsType = fsTypeRegistry.isVariableOfFsType(symbol.dataType);
-      if (fsType && !node.computed) {
+      // Check if this is a known object type (fs.file/dir/proc, io.handle, uloop.*, uci.cursor, nl80211.listener)
+      const detectedObjectType = this.detectObjectType(symbol.dataType);
+      if (detectedObjectType && !node.computed) {
         const methodName = (node.property as IdentifierNode).name;
-        const method = fsTypeRegistry.getFsMethod(fsType, methodName);
-        if (method) {
-          return method.returnType;
-        }
-        // Method not found on fs type
-        this.errors.push({
-          message: `Method '${methodName}' does not exist on ${fsType}`,
-          start: node.start,
-          end: node.end,
-          severity: 'error'
-        });
-        return UcodeType.UNKNOWN;
-      }
-
-      // Check if this is a uloop object with a specific type
-      const uloopType = uloopObjectRegistry.isVariableOfUloopType(symbol.dataType);
-      if (uloopType && !node.computed) {
-        const methodName = (node.property as IdentifierNode).name;
-        const method = uloopObjectRegistry.getUloopMethod(uloopType, methodName);
-        if (method) {
-          // Convert return type string to UcodeType
-          switch (method.returnType) {
-            case 'integer':
-              return UcodeType.INTEGER;
-            case 'string | null':
-            case 'string':
-              return UcodeType.STRING;
-            case 'boolean | null':
-            case 'boolean':
-              return UcodeType.BOOLEAN;
-            case 'null':
-              return UcodeType.NULL;
-            case 'fs.file | fs.proc | socket.socket':
-              return UcodeType.OBJECT;
-            default:
-              return UcodeType.UNKNOWN;
-          }
-        }
-        // Method not found on uloop type
-        this.errors.push({
-          message: `Method '${methodName}' does not exist on ${uloopType}`,
-          start: node.start,
-          end: node.end,
-          severity: 'error'
-        });
-        return UcodeType.UNKNOWN;
-      }
-      
-      // Check if this is an io.handle object with methods
-      if (ioModuleTypeRegistry.isVariableOfIoType(symbol.dataType) && !node.computed) {
-        const methodName = (node.property as IdentifierNode).name;
-        const method = ioModuleTypeRegistry.getIoHandleMethod(methodName);
-        if (method) {
-          switch (method.returnType) {
-            case 'string | null':
-            case 'string':
-              return UcodeType.STRING;
-            case 'number | null':
-            case 'number':
-              return UcodeType.INTEGER;
-            case 'boolean | null':
-            case 'boolean':
-              return UcodeType.BOOLEAN;
-            case 'io.handle | null':
-              return UcodeType.OBJECT;
-            case 'object | null':
-              return UcodeType.OBJECT;
-            case 'any':
-              return UcodeType.UNKNOWN;
-            default:
-              return UcodeType.UNKNOWN;
-          }
+        const method = OBJECT_REGISTRIES[detectedObjectType].getMethod(methodName);
+        if (Option.isSome(method)) {
+          return this.returnTypeStringToUcodeType(method.value.returnType);
         }
         this.errors.push({
-          message: `Method '${methodName}' does not exist on io.handle`,
+          message: `Method '${methodName}' does not exist on ${detectedObjectType}`,
           start: node.start,
           end: node.end,
           severity: 'error'
