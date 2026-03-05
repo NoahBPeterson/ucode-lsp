@@ -1,31 +1,15 @@
 // Comprehensive test runner for all validation unit tests
 import { test, expect } from 'bun:test';
-import { execSync } from 'child_process';
+import { execSync, exec } from 'child_process';
+import { promisify } from 'util';
 import fs from 'fs';
 
-// Shared LSP server for mocha tests
-let sharedLSPServer = null;
+const execAsync = promisify(exec);
 
-async function createSharedLSPServer() {
-    if (sharedLSPServer) return sharedLSPServer;
-    
-    const { createLSPTestServer } = require('./lsp-test-helpers');
-    sharedLSPServer = createLSPTestServer();
-    await sharedLSPServer.initialize();
-    return sharedLSPServer;
-}
-
-async function shutdownSharedLSPServer() {
-    if (sharedLSPServer) {
-        await sharedLSPServer.shutdown();
-        sharedLSPServer = null;
-    }
-}
-
-// List of test files to run
+// List of all test files to run
 const testFiles = [
     'tests/test-simple-validation.js',
-    'tests/test-array-validations.js', 
+    'tests/test-array-validations.js',
     'tests/test-new-validations-unit.js',
     'tests/test-trim-validations-real.js',
     'tests/test-encoding-io-functions.js',
@@ -139,7 +123,8 @@ const testFiles = [
     'tests/test-type-guard-narrowing-bug.js',  // TODO: Fix CFG type narrowing in arrow callbacks
 ];
 
-const mochaFiles = [
+// Mocha test files (run as a single combined mocha invocation with shared LSP server)
+const mochaFileSet = new Set([
     'test-dot-notation-default-import.js',
     'test-string-method-validation.js',
     'test-missing-builtins-validation.js',
@@ -183,143 +168,177 @@ const mochaFiles = [
     'test-multi-level-completions.js',
     'test-dot-notation-namespace-imports.js',
     'test-namespace-import-file-existence.js',
-    'test-dot-notation-default-import.js',
     'test-global-object-types.js',
     'test-module-aliasing.js',
     'test-object-property-hover-lsp.mocha.js',
-];
+]);
+
+function getBaseName(filePath) {
+    return filePath.substring(filePath.lastIndexOf('/') + 1);
+}
 
 test('Comprehensive Validation Test Suite', async () => {
-    console.log('🚀 Running Comprehensive Validation Test Suite\n');
+    console.log('Running Comprehensive Validation Test Suite\n');
     console.log('='.repeat(60));
 
     let totalSuites = 0;
     let passedSuites = 0;
     let totalTestCount = 0;
-    
-    // First, run shared LSP tests
-    console.log('\n🔥 Running Shared LSP Tests (Fast)...\n');
-    
+
+    // First, run shared LSP tests (function return type tests)
+    console.log('\nRunning Shared LSP Tests (Fast)...\n');
+
     try {
-        const lspServer = await createSharedLSPServer();
-        
-        // Run function return type tests with shared LSP
+        const { createLSPTestServer } = require('./lsp-test-helpers');
+        const lspServer = createLSPTestServer();
+        await lspServer.initialize();
+
         const { runFunctionReturnTypeTests } = require('./test-function-return-types-shared');
         const functionTestsResult = await runFunctionReturnTypeTests(lspServer);
-        
+
         totalSuites++;
         if (functionTestsResult) {
             passedSuites++;
-            console.log('✅ Shared LSP Function Return Type Tests: PASSED');
+            console.log('  Shared LSP Function Return Type Tests: PASSED');
         } else {
-            console.log('❌ Shared LSP Function Return Type Tests: FAILED');
+            console.log('  Shared LSP Function Return Type Tests: FAILED');
         }
-        
-        // Keep LSP server running for potential future shared tests
-        // It will be shut down at the end
-        
+
+        lspServer.shutdown();
     } catch (error) {
-        console.log(`❌ Shared LSP tests failed: ${error.message}`);
+        console.log(`  Shared LSP tests failed: ${error.message}`);
         totalSuites++;
     }
-    
-    console.log('\n📋 Running Individual Test Suites...\n');
 
-    for (const [index, testFile] of testFiles.entries()) {
+    // Separate test files into mocha vs non-mocha
+    const mochaTestPaths = [];
+    const nonMochaTestFiles = [];
+
+    for (const testFile of testFiles) {
         if (!fs.existsSync(testFile)) {
-            console.log(`⚠️  Test file ${testFile} not found, skipping...`);
+            console.log(`  Test file ${testFile} not found, skipping...`);
             continue;
         }
-        
-        totalSuites++;
-        
-        try {
-            // Use different command for mocha tests
-            const isMochaTest = mochaFiles.includes(testFile.substring(testFile.indexOf('/')+1));
-            const timeout = testFile.includes('test-missing-builtins-validation.js') ? '30000' : '25000';
-            const isBunTestSuite = testFile.endsWith('.test.js') || testFile.endsWith('.test.ts');
+        if (mochaFileSet.has(getBaseName(testFile))) {
+            mochaTestPaths.push(testFile);
+        } else {
+            nonMochaTestFiles.push(testFile);
+        }
+    }
 
-            let runWithBunTest = false;
-            if (isBunTestSuite) {
-                try {
-                    const contents = fs.readFileSync(testFile, 'utf8');
-                    runWithBunTest = /from ['"]bun:test['"]/m.test(contents) || /require\(['"]bun:test['"]\)/m.test(contents);
-                } catch (readErr) {
-                    console.log(`⚠️  Unable to inspect ${testFile}: ${readErr.message}`);
-                }
+    // --- Run all mocha tests in a single invocation with shared LSP server ---
+    if (mochaTestPaths.length > 0) {
+        console.log(`\nRunning ${mochaTestPaths.length} mocha test suites (shared LSP server)...\n`);
+
+        const mochaCmd = [
+            './node_modules/.bin/mocha',
+            '--require', 'tests/mocha-shared-setup.js',
+            '--timeout', '30000',
+            '--reporter', 'min',
+            ...mochaTestPaths
+        ].join(' ');
+
+        let mochaOutput = '';
+        let mochaExitOk = false;
+
+        try {
+            mochaOutput = execSync(mochaCmd, { encoding: 'utf8', timeout: 90000 });
+            mochaExitOk = true;
+        } catch (error) {
+            // mocha exits non-zero on test failures but still writes output to stdout
+            mochaOutput = error.stdout || '';
+        }
+
+        // Parse "N passing" and "N failing" from mocha min reporter
+        const passingMatch = mochaOutput.match(/(\d+) passing/);
+        const failingMatch = mochaOutput.match(/(\d+) failing/);
+        const mochaPasses = passingMatch ? parseInt(passingMatch[1]) : 0;
+        const mochaFailures = failingMatch ? parseInt(failingMatch[1]) : 0;
+        totalTestCount += mochaPasses + mochaFailures;
+        totalSuites += mochaTestPaths.length;
+
+        if (mochaExitOk && mochaFailures === 0) {
+            passedSuites += mochaTestPaths.length;
+            console.log(`  All ${mochaTestPaths.length} mocha suites passed (${mochaPasses} tests)\n`);
+        } else if (mochaFailures > 0) {
+            // Estimate failed suites from failure count (conservative: at least 1 suite failed)
+            const failedSuiteCount = Math.min(mochaFailures, mochaTestPaths.length);
+            passedSuites += mochaTestPaths.length - failedSuiteCount;
+            console.log(`  Mocha: ${mochaPasses} passed, ${mochaFailures} failed\n`);
+            // Show failure details from the output
+            const failureSection = mochaOutput.substring(mochaOutput.indexOf('failing'));
+            if (failureSection) {
+                console.log(failureSection.substring(0, 2000));
+            }
+        } else {
+            // No passing/failing match found but exit was ok - assume all passed
+            if (mochaExitOk) {
+                passedSuites += mochaTestPaths.length;
+                console.log(`  All ${mochaTestPaths.length} mocha suites passed\n`);
+            } else {
+                console.log('  Mocha invocation failed');
+                console.log(mochaOutput.substring(0, 1000));
+            }
+        }
+    }
+
+    // --- Run non-mocha (bun) tests in parallel ---
+    if (nonMochaTestFiles.length > 0) {
+        console.log(`Running ${nonMochaTestFiles.length} bun test suites (parallel)...\n`);
+
+        totalSuites += nonMochaTestFiles.length;
+
+        const bunResults = await Promise.all(nonMochaTestFiles.map(async (testFile) => {
+            const command = `bun ${testFile}`;
+            try {
+                const { stdout } = await execAsync(command, { encoding: 'utf8', timeout: 30000 });
+                return { testFile, stdout, ok: true };
+            } catch (error) {
+                return { testFile, stdout: error.stdout || error.message, ok: false };
+            }
+        }));
+
+        for (const { testFile, stdout, ok } of bunResults) {
+            if (!ok) {
+                console.log(`  FAILED with error - ${testFile}`);
+                console.log(stdout);
+                continue;
             }
 
-            const command = isMochaTest
-                ? `./node_modules/.bin/mocha ${testFile} --timeout ${timeout}`
-                : runWithBunTest
-                    ? `bun test ${testFile}`
-                    : `bun ${testFile}`;
-            
-            const output = execSync(command, { encoding: 'utf8' });
-            
-            // Parse test results from output - handle both bun and mocha formats
-            const bunPassedMatch = output.match(/(\d+)\/(\d+) tests passed/);
-            const mochaPassedMatch = output.match(/(\d+) passing/);
-            const mochaFailedMatch = output.match(/(\d+) failing/);
-            
+            const bunPassedMatch = stdout.match(/(\d+)\/(\d+) tests passed/);
             if (bunPassedMatch) {
                 const passed = parseInt(bunPassedMatch[1]);
                 const total = parseInt(bunPassedMatch[2]);
                 totalTestCount += total;
-                
                 if (passed === total && total !== 0) {
                     passedSuites++;
                 } else {
-                    console.log(`❌ Suite ${index + 1} FAILED: ${passed}/${total} tests - ${testFile}`);
-                    console.log(output);
-                }
-            } else if (mochaPassedMatch) {
-                const passed = parseInt(mochaPassedMatch[1]);
-                const failed = mochaFailedMatch ? parseInt(mochaFailedMatch[1]) : 0;
-                const total = passed + failed;
-                totalTestCount += total;
-                
-                if (failed === 0) {
-                    passedSuites++;
-                } else {
-                    console.log(`❌ Suite ${index + 1} FAILED: ${passed} passed, ${failed} failed - ${testFile}`);
-                    console.log(output);
+                    console.log(`  FAILED: ${passed}/${total} tests - ${testFile}`);
+                    console.log(stdout);
                 }
             } else {
                 passedSuites++; // Assume pass if no failures detected
             }
-            
-        } catch (error) {
-            console.log(`❌ Suite ${index + 1} FAILED with error - ${testFile}`);
-            console.log(error.stdout || error.message);
         }
     }
 
     console.log('\n' + '='.repeat(60));
-    console.log('📊 FINAL TEST RESULTS');
+    console.log('FINAL TEST RESULTS');
     console.log('='.repeat(60));
 
     if (passedSuites === totalSuites) {
-        console.log('\n🎉 ALL VALIDATION TEST SUITES PASSED! 🎉');
+        console.log('\nALL VALIDATION TEST SUITES PASSED!');
     } else {
-        console.log('\n❌ Some test suites failed. Please review the output above.');
+        console.log('\nSome test suites failed. Please review the output above.');
     }
 
-    console.log('\n💡 These tests validate the core logic of our uCode built-in function validations.');
-    console.log('   For full integration testing, use the .uc test files in VS Code with the extension.\n\n');
+    console.log('\nThese tests validate the core logic of our uCode built-in function validations.');
+    console.log('For full integration testing, use the .uc test files in VS Code with the extension.\n');
 
     console.log(`Test Suites: ${passedSuites}/${totalSuites} passed`);
     console.log(`Total Tests: ${totalTestCount} executed\n`);
 
-    // Cleanup shared LSP server
-    try {
-        await shutdownSharedLSPServer();
-        console.log('\n🧹 Shared LSP server shut down');
-    } catch (error) {
-        console.log(`⚠️  Error shutting down shared LSP server: ${error.message}`);
-    }
-
     // Assert that all test suites passed
     expect(passedSuites).toBe(totalSuites);
     expect(totalTestCount).toBeGreaterThan(0);
-}, { timeout: 120000 }); // Increased timeout for LSP operations
+}, { timeout: 120000 });

@@ -20,8 +20,8 @@ export interface DiscoveredModule {
 const BUILTIN_MODULES: readonly string[] = KNOWN_MODULES;
 
 let cachedModules: DiscoveredModule[] | null = null;
-let lastCacheTime = 0;
-const CACHE_DURATION = 30000; // 30 seconds
+let cachedUcodeAvailable: boolean | null = null;
+const cachedModuleMembers = new Map<string, ModuleMember[]>();
 
 /**
  * Checks if the current platform supports ucode module discovery
@@ -32,15 +32,19 @@ function isUnixLikePlatform(): boolean {
 }
 
 /**
- * Checks if ucode command is available
+ * Checks if ucode command is available (cached once per session)
  */
 function isUcodeAvailable(): boolean {
+    if (cachedUcodeAvailable !== null) {
+        return cachedUcodeAvailable;
+    }
     try {
         execSync('command -v ucode', { stdio: 'ignore', timeout: 5000 });
-        return true;
+        cachedUcodeAvailable = true;
     } catch {
-        return false;
+        cachedUcodeAvailable = false;
     }
+    return cachedUcodeAvailable;
 }
 
 /**
@@ -120,15 +124,13 @@ function discoverSoModules(searchPaths: string[]): DiscoveredModule[] {
  * Discovers all available ucode modules
  */
 export function discoverAvailableModules(): DiscoveredModule[] {
-    const now = Date.now();
-    
-    // Return cached result if still valid
-    if (cachedModules && (now - lastCacheTime) < CACHE_DURATION) {
+    // Return cached result (persists for the entire session)
+    if (cachedModules) {
         return cachedModules;
     }
-    
+
     const modules: DiscoveredModule[] = [];
-    
+
     // Always include builtin modules
     for (const name of BUILTIN_MODULES) {
         modules.push({
@@ -136,7 +138,7 @@ export function discoverAvailableModules(): DiscoveredModule[] {
             source: 'builtin'
         });
     }
-    
+
     // Try to discover system modules on Unix-like platforms
     if (isUnixLikePlatform() && isUcodeAvailable()) {
         try {
@@ -147,11 +149,10 @@ export function discoverAvailableModules(): DiscoveredModule[] {
             console.warn('Failed to discover system modules:', error);
         }
     }
-    
-    // Cache the result
+
+    // Cache the result for the session
     cachedModules = modules;
-    lastCacheTime = now;
-    
+
     return modules;
 }
 
@@ -207,22 +208,34 @@ function discoverModuleMembers(moduleName: string): ModuleMember[] {
  * Gets members for a specific module
  */
 export function getModuleMembers(moduleName: string): ModuleMember[] {
+    // Return cached result if available
+    const cached = cachedModuleMembers.get(moduleName);
+    if (cached) {
+        return cached;
+    }
+
+    let members: ModuleMember[];
     try {
         const dynamicMembers = discoverModuleMembers(moduleName);
-        
+
         // If dynamic discovery succeeded, use those results
         if (dynamicMembers.length > 0) {
-            return dynamicMembers;
+            members = dynamicMembers;
+        } else {
+            // Fallback to static type definitions if available
+            members = getStaticModuleMembers(moduleName);
         }
-        
-        // Fallback to static type definitions if available
-        return getStaticModuleMembers(moduleName);
     } catch (error) {
         console.warn(`Failed to get module members for ${moduleName}:`, error);
-        
-        // Try static fallback even on error
-        return getStaticModuleMembers(moduleName);
+        members = getStaticModuleMembers(moduleName);
     }
+
+    // Cache for the session
+    if (members.length > 0) {
+        cachedModuleMembers.set(moduleName, members);
+    }
+
+    return members;
 }
 
 /**
@@ -255,5 +268,6 @@ function getStaticModuleMembers(moduleName: string): ModuleMember[] {
  */
 export function clearModuleCache(): void {
     cachedModules = null;
-    lastCacheTime = 0;
+    cachedUcodeAvailable = null;
+    cachedModuleMembers.clear();
 }

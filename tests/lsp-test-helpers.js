@@ -15,6 +15,18 @@ const path = require('path');
  * @param {Object} options.capabilities - Client capabilities to send during initialization
  */
 function createLSPTestServer(options = {}) {
+  // If a shared server exists (via mocha root hook), return a no-op wrapper
+  if (global.__sharedLSPServer) {
+    return {
+      initialize: () => Promise.resolve(),
+      shutdown: () => {},
+      getDiagnostics: global.__sharedLSPServer.getDiagnostics,
+      getCompletions: global.__sharedLSPServer.getCompletions,
+      getHover: global.__sharedLSPServer.getHover,
+      getCodeActions: global.__sharedLSPServer.getCodeActions,
+    };
+  }
+
   let serverProcess = null;
   let requestId = 1;
   let wireBuffer = Buffer.alloc(0);
