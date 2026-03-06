@@ -120,7 +120,8 @@ const testFiles = [
     'tests/test-global-object-types.js',
     'tests/test-module-aliasing.js',
     'tests/test-object-property-hover-lsp.mocha.js',
-    'tests/test-type-guard-narrowing-bug.js',  // TODO: Fix CFG type narrowing in arrow callbacks
+    'tests/test-type-guard-narrowing-bug.js',
+    'tests/test-call-chain-completions.js',
 ];
 
 // Mocha test files (run as a single combined mocha invocation with shared LSP server)
@@ -141,7 +142,7 @@ const mochaFileSet = new Set([
     'test-auto-fix-code-actions.js',
     'test-disable-parser-diagnostics.js',
     'test-nlresult-specific.js',
-    'test-type-guard-narrowing-bug.js',  // TODO: Fix CFG type narrowing in arrow callbacks
+    'test-type-guard-narrowing-bug.js',
     'test-disable-comments-warnings.js',
     'test-conversion-functions-validation.js',
     'test-module-functions-validation.js',
@@ -171,6 +172,7 @@ const mochaFileSet = new Set([
     'test-global-object-types.js',
     'test-module-aliasing.js',
     'test-object-property-hover-lsp.mocha.js',
+    'test-call-chain-completions.js',
 ]);
 
 function getBaseName(filePath) {

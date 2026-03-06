@@ -16,7 +16,7 @@ import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './ana
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { rtnlTypeRegistry } from './analysis/rtnlTypes';
 import { Option } from 'effect';
-import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, type KnownObjectType } from './analysis/moduleDispatch';
+import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, type KnownObjectType } from './analysis/moduleDispatch';
 
 const defaultExportPropertiesCache = new Map<string, { content: string; properties: { name: string; type: string }[] }>();
 
@@ -103,10 +103,32 @@ export function handleCompletion(
         if (memberContext) {
             // We're definitely in a member expression context (obj.something)
             // Never show builtin functions or keywords for member expressions
-            const { objectName, propertyChain } = memberContext;
-            connection.console.log(`Member expression detected for: ${objectName}${propertyChain ? `, chain: ${propertyChain.join('.')}` : ''}`);
+            const { objectName, propertyChain, resolvedObjectType } = memberContext;
+            connection.console.log(`Member expression detected for: ${objectName}${propertyChain ? `, chain: ${propertyChain.join('.')}` : ''}${resolvedObjectType ? `, resolvedObjectType: ${resolvedObjectType}` : ''}`);
             connection.console.log(`[DEBUG] objectName: "${objectName}", propertyChain: ${JSON.stringify(propertyChain)}`);
-            
+
+            // Call chain completions: cursor(). or fs.open(). resolved via return type
+            if (resolvedObjectType) {
+                const reg = OBJECT_REGISTRIES[resolvedObjectType];
+                const completions: CompletionItem[] = [];
+                const isException = resolvedObjectType === 'exception';
+                for (const methodName of reg.getMethodNames()) {
+                    const methodDoc = reg.getMethodDocumentation(methodName);
+                    const item: CompletionItem = {
+                        label: methodName,
+                        kind: isException ? CompletionItemKind.Property : CompletionItemKind.Method,
+                        detail: `${resolvedObjectType} ${isException ? 'property' : 'method'}`,
+                        insertText: methodName
+                    };
+                    if (Option.isSome(methodDoc)) {
+                        item.documentation = { kind: MarkupKind.Markdown, value: methodDoc.value };
+                    }
+                    completions.push(item);
+                }
+                connection.console.log(`Returning ${completions.length} call-chain completions for ${resolvedObjectType}`);
+                return completions;
+            }
+
             // Unified object type completions (fs.file/dir/proc, io.handle, uloop.*, uci.cursor, nl80211.listener, exception)
             const objectTypeCompletions = getUnifiedObjectTypeCompletions(objectName, analysisResult);
             if (objectTypeCompletions.length > 0) {
@@ -188,12 +210,12 @@ export function handleCompletion(
     }
 }
 
-function detectMemberCompletionContext(offset: number, tokens: any[]): { objectName: string; propertyChain?: string[] } | undefined {
+function detectMemberCompletionContext(offset: number, tokens: any[]): { objectName: string; propertyChain?: string[]; resolvedObjectType?: KnownObjectType } | undefined {
     // Look for pattern: LABEL DOT [LABEL DOT]* (cursor position)
-    // This handles both simple (obj.) and chained (obj.prop.subprop.) member access
-    
+    // Also handles call chains: LABEL(...) DOT, LABEL DOT LABEL(...) DOT
+
     let dotTokenIndex = -1;
-    
+
     // Find the most recent DOT token before or at the cursor
     for (let i = tokens.length - 1; i >= 0; i--) {
         const token = tokens[i];
@@ -202,26 +224,27 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
             break;
         }
     }
-    
+
     if (dotTokenIndex <= 0) {
         return undefined;
     }
-    
+
     const dotToken = tokens[dotTokenIndex];
-    
+
     // Make sure the cursor is after the dot or right at it (for completion)
     if (offset < dotToken.pos || offset > dotToken.end) {
         return undefined;
     }
-    
+
     // Walk backwards to build the property chain
     const propertyChain: string[] = [];
     let currentTokenIndex = dotTokenIndex - 1;
-    
+    let resolvedObjectType: KnownObjectType | undefined;
+
     // Build the chain by walking backwards through LABEL DOT patterns
     while (currentTokenIndex >= 0) {
         const token = tokens[currentTokenIndex];
-        
+
         if (token.type === TokenType.TK_LABEL) {
             // Check if this label is properly connected to the next dot
             if (currentTokenIndex + 1 < tokens.length) {
@@ -229,7 +252,7 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
                 if (nextToken.type === TokenType.TK_DOT && token.end === nextToken.pos) {
                     // This label is connected to a dot, add it to the chain
                     propertyChain.unshift(token.value as string);
-                    
+
                     // Look for another dot before this label
                     if (currentTokenIndex > 0) {
                         const prevToken = tokens[currentTokenIndex - 1];
@@ -239,7 +262,7 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
                             continue;
                         }
                     }
-                    
+
                     // This is the root object name
                     break;
                 } else {
@@ -250,25 +273,55 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
                 // No token after this label, stop here
                 break;
             }
+        } else if (token.type === TokenType.TK_RPAREN) {
+            // Call expression: walk backward through matched parens to find the function name
+            let parenDepth = 1;
+            let j = currentTokenIndex - 1;
+            while (j >= 0 && parenDepth > 0) {
+                if (tokens[j].type === TokenType.TK_RPAREN) parenDepth++;
+                else if (tokens[j].type === TokenType.TK_LPAREN) parenDepth--;
+                j--;
+            }
+            // j now points to the token before the opening paren
+            if (j >= 0 && tokens[j].type === TokenType.TK_LABEL) {
+                const funcName = tokens[j].value as string;
+                let moduleName: string | undefined;
+                // Check for module prefix: LABEL DOT LABEL(...)
+                if (j >= 2 && tokens[j - 1].type === TokenType.TK_DOT && tokens[j - 2].type === TokenType.TK_LABEL) {
+                    moduleName = tokens[j - 2].value as string;
+                }
+                const objType = resolveReturnObjectType(funcName, moduleName);
+                if (objType) {
+                    resolvedObjectType = objType;
+                    break;
+                }
+            }
+            // Could not resolve — stop
+            break;
         } else {
-            // Not a label token, stop here
+            // Not a label or rparen token, stop here
             break;
         }
     }
-    
+
+    // If we resolved an object type from a call chain, return it directly
+    if (resolvedObjectType) {
+        return { objectName: '__call_chain__', resolvedObjectType };
+    }
+
     if (propertyChain.length === 0) {
         return undefined;
     }
-    
+
     // The first element is the root object name, the rest are property chain
     const objectName = propertyChain[0];
     if (!objectName) {
         return undefined;
     }
-    
+
     const chain = propertyChain.slice(1);
-    
-    const result: { objectName: string; propertyChain?: string[] } = { objectName };
+
+    const result: { objectName: string; propertyChain?: string[]; resolvedObjectType?: KnownObjectType } = { objectName };
     if (chain.length > 0) {
         result.propertyChain = chain;
     }

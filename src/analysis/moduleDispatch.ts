@@ -1323,6 +1323,49 @@ export function getObjectTypeRegistry(name: string): Option.Option<ObjectTypeReg
   return Option.none();
 }
 
+/**
+ * Extract an object type from a return type string like "uci.cursor | null" → "uci.cursor"
+ */
+function extractObjectTypeFromReturnType(returnType: string): KnownObjectType | null {
+  // Try the full string first
+  const trimmed = returnType.trim();
+  if (isKnownObjectType(trimmed)) return trimmed;
+
+  // Split on "|" and find the first known object type
+  for (const part of trimmed.split('|')) {
+    const candidate = part.trim();
+    if (candidate && isKnownObjectType(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Resolve the return object type for a function call.
+ * Given a function name (and optional module name), look up its FunctionSignature
+ * and extract the object type from its returnType.
+ */
+export function resolveReturnObjectType(funcName: string, moduleName?: string): KnownObjectType | null {
+  if (moduleName && isKnownModule(moduleName)) {
+    const reg = MODULE_REGISTRIES[moduleName];
+    const sig = reg.getFunction(funcName);
+    if (Option.isSome(sig)) {
+      return extractObjectTypeFromReturnType(sig.value.returnType);
+    }
+    return null;
+  }
+
+  // No module specified — search all modules (handles bare named imports like cursor())
+  for (const mod of KNOWN_MODULES) {
+    const reg = MODULE_REGISTRIES[mod];
+    const sig = reg.getFunction(funcName);
+    if (Option.isSome(sig)) {
+      const objType = extractObjectTypeFromReturnType(sig.value.returnType);
+      if (objType) return objType;
+    }
+  }
+  return null;
+}
+
 // ---- Dispatch functions ----
 
 /**

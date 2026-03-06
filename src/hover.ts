@@ -10,14 +10,14 @@ import { typeToString, UcodeDataType } from './analysis/symbolTable';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { Option } from 'effect';
-import { MODULE_REGISTRIES, isKnownModule, isKnownObjectType, getModuleMemberDocumentation, getImportedSymbolDocumentation, getObjectMethodDocumentation, type KnownObjectType } from './analysis/moduleDispatch';
+import { MODULE_REGISTRIES, isKnownModule, isKnownObjectType, getModuleMemberDocumentation, getImportedSymbolDocumentation, getObjectMethodDocumentation, resolveReturnObjectType, type KnownObjectType } from './analysis/moduleDispatch';
 
-function detectMemberHoverContext(position: any, tokens: any[], document: any): { objectName: string, memberName: string, memberTokenPos: number, memberTokenEnd: number } | undefined {
+function detectMemberHoverContext(position: any, tokens: any[], document: any): { objectName: string, memberName: string, memberTokenPos: number, memberTokenEnd: number, resolvedObjectType?: KnownObjectType } | undefined {
     // Look for pattern: LABEL DOT LABEL (where cursor is over the second LABEL)
-    // We want to find tokens that match this pattern at the hover position
-    
+    // Also handles call chains: LABEL(...) DOT LABEL, LABEL DOT LABEL(...) DOT LABEL
+
     const offset = document.offsetAt(position);
-    
+
     // Find the token at the hover position
     let hoverTokenIndex = -1;
     for (let i = 0; i < tokens.length; i++) {
@@ -27,32 +27,34 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
             break;
         }
     }
-    
+
     if (hoverTokenIndex === -1) {
         return undefined;
     }
-    
+
     const hoverToken = tokens[hoverTokenIndex];
-    
+
     // Check if we're hovering over a LABEL token
     if (hoverToken.type !== TokenType.TK_LABEL) {
         return undefined;
     }
-    
+
     // Check if there's a DOT token immediately before this LABEL
     if (hoverTokenIndex < 2) {
         return undefined;
     }
-    
+
     const dotToken = tokens[hoverTokenIndex - 1];
+    if (dotToken.type !== TokenType.TK_DOT || dotToken.end !== hoverToken.pos) {
+        return undefined;
+    }
+
     const objectToken = tokens[hoverTokenIndex - 2];
-    
+
     // Verify the pattern: LABEL DOT LABEL
-    if (dotToken.type === TokenType.TK_DOT && 
-        objectToken.type === TokenType.TK_LABEL &&
-        objectToken.end === dotToken.pos &&
-        dotToken.end === hoverToken.pos) {
-        
+    if (objectToken.type === TokenType.TK_LABEL &&
+        objectToken.end === dotToken.pos) {
+
         return {
             objectName: objectToken.value as string,
             memberName: hoverToken.value as string,
@@ -60,7 +62,38 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
             memberTokenEnd: hoverToken.end
         };
     }
-    
+
+    // Handle call chain pattern: ...LABEL(...) DOT LABEL
+    if (objectToken.type === TokenType.TK_RPAREN &&
+        objectToken.end === dotToken.pos) {
+        // Walk backward through matched parens
+        let parenDepth = 1;
+        let j = hoverTokenIndex - 3;
+        while (j >= 0 && parenDepth > 0) {
+            if (tokens[j].type === TokenType.TK_RPAREN) parenDepth++;
+            else if (tokens[j].type === TokenType.TK_LPAREN) parenDepth--;
+            j--;
+        }
+        // j now points to the token before the opening paren
+        if (j >= 0 && tokens[j].type === TokenType.TK_LABEL) {
+            const funcName = tokens[j].value as string;
+            let moduleName: string | undefined;
+            if (j >= 2 && tokens[j - 1].type === TokenType.TK_DOT && tokens[j - 2].type === TokenType.TK_LABEL) {
+                moduleName = tokens[j - 2].value as string;
+            }
+            const objType = resolveReturnObjectType(funcName, moduleName);
+            if (objType) {
+                return {
+                    objectName: '__call_chain__',
+                    memberName: hoverToken.value as string,
+                    memberTokenPos: hoverToken.pos,
+                    memberTokenEnd: hoverToken.end,
+                    resolvedObjectType: objType
+                };
+            }
+        }
+    }
+
     return undefined;
 }
 
@@ -354,8 +387,23 @@ export function handleHover(
         // First check if we're hovering over a member expression (e.g., "rtnl.request")
         const memberContext = detectMemberHoverContext(textDocumentPositionParams.position, tokens, document);
         if (memberContext) {
-            const { objectName, memberName } = memberContext;
-            
+            const { objectName, memberName, resolvedObjectType } = memberContext;
+
+            // Call chain hover: cursor().foreach, fs.open().read, etc.
+            if (resolvedObjectType) {
+                const methodDoc = getObjectMethodDocumentation(resolvedObjectType, memberName);
+                if (Option.isSome(methodDoc)) {
+                    return {
+                        contents: { kind: MarkupKind.Markdown, value: methodDoc.value },
+                        range: {
+                            start: document.positionAt(memberContext.memberTokenPos),
+                            end: document.positionAt(memberContext.memberTokenEnd)
+                        }
+                    };
+                }
+                return undefined;
+            }
+
             // Look up the object in the symbol table to determine its module
             if (analysisResult && analysisResult.symbolTable) {
                 // Try CFG-based lookup first for flow-sensitive types

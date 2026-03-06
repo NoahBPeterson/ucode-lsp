@@ -32,8 +32,8 @@ import { UloopObjectType, createUloopObjectDataType, uloopObjectRegistry } from 
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
 import { IoObjectType, createIoHandleDataType } from './ioTypes';
-import { Either } from 'effect';
-import { MODULE_REGISTRIES, isKnownModule, validateImport } from './moduleDispatch';
+import { Either, Option } from 'effect';
+import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, validateImport } from './moduleDispatch';
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -2003,36 +2003,79 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
   private inferMethodReturnType(node: AstNode): UcodeDataType | null {
     // Check if this is a call expression on a member expression (method call)
-    if (node.type === 'CallExpression') {
-      const callNode = node as CallExpressionNode;
-      
-      if (callNode.callee.type === 'MemberExpression') {
-        const memberNode = callNode.callee as MemberExpressionNode;
-        
-        if (memberNode.object.type === 'Identifier' && memberNode.property.type === 'Identifier') {
-          const objectName = (memberNode.object as IdentifierNode).name;
-          const methodName = (memberNode.property as IdentifierNode).name;
-          
-          // Look up the object in the symbol table
-          const symbol = this.symbolTable.lookup(objectName);
-          if (symbol) {
-            // Check if this is a uloop object method call
-            const uloopType = uloopObjectRegistry.isVariableOfUloopType(symbol.dataType);
-            if (uloopType) {
-              const method = uloopObjectRegistry.getUloopMethod(uloopType, methodName);
-              if (method) {
-                // Special handling for methods that return fs objects
-                if (method.returnType === 'fs.file | fs.proc | socket.socket') {
-                  // Return fs.file type for autocomplete
-                  return createFsObjectDataType(FsObjectType.FS_FILE);
-                }
-              }
+    if (node.type !== 'CallExpression') return null;
+
+    const callNode = node as CallExpressionNode;
+    if (callNode.callee.type !== 'MemberExpression') return null;
+
+    const memberNode = callNode.callee as MemberExpressionNode;
+    if (memberNode.property.type !== 'Identifier') return null;
+    const methodName = (memberNode.property as IdentifierNode).name;
+
+    // Case 1: obj.method() where obj is an Identifier in the symbol table
+    if (memberNode.object.type === 'Identifier') {
+      const objectName = (memberNode.object as IdentifierNode).name;
+      const symbol = this.symbolTable.lookup(objectName);
+      if (symbol) {
+        // Check if this is a uloop object method call
+        const uloopType = uloopObjectRegistry.isVariableOfUloopType(symbol.dataType);
+        if (uloopType) {
+          const method = uloopObjectRegistry.getUloopMethod(uloopType, methodName);
+          if (method) {
+            if (method.returnType === 'fs.file | fs.proc | socket.socket') {
+              return createFsObjectDataType(FsObjectType.FS_FILE);
+            }
+          }
+        }
+
+        // Check known object type methods (fs.file, uci.cursor, io.handle, etc.)
+        if (symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
+          const mn = (symbol.dataType as any).moduleName as string;
+          if (isKnownObjectType(mn)) {
+            const methodSig = OBJECT_REGISTRIES[mn].getMethod(methodName);
+            if (Option.isSome(methodSig)) {
+              return this.parseReturnTypeString(methodSig.value.returnType);
             }
           }
         }
       }
     }
-    
+
+    // Case 2: Call chain — expr().method() where expr() is a CallExpression
+    // e.g., fs.open("/tmp/x").read("all"), cursor().foreach(...)
+    if (memberNode.object.type === 'CallExpression') {
+      const innerCall = memberNode.object as CallExpressionNode;
+      const objType = this.resolveCallExpressionObjectType(innerCall);
+      if (objType && isKnownObjectType(objType)) {
+        const methodSig = OBJECT_REGISTRIES[objType].getMethod(methodName);
+        if (Option.isSome(methodSig)) {
+          return this.parseReturnTypeString(methodSig.value.returnType);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Resolve the object type returned by a CallExpression.
+   * Handles: cursor(), fs.open(), io.open(), etc.
+   */
+  private resolveCallExpressionObjectType(call: CallExpressionNode): string | null {
+    // Simple call: cursor()
+    if (call.callee.type === 'Identifier') {
+      const funcName = (call.callee as IdentifierNode).name;
+      return resolveReturnObjectType(funcName);
+    }
+    // Member call: fs.open(), uci.cursor()
+    if (call.callee.type === 'MemberExpression') {
+      const member = call.callee as MemberExpressionNode;
+      if (member.object.type === 'Identifier' && member.property.type === 'Identifier') {
+        const moduleName = (member.object as IdentifierNode).name;
+        const funcName = (member.property as IdentifierNode).name;
+        return resolveReturnObjectType(funcName, moduleName);
+      }
+    }
     return null;
   }
 
@@ -2267,6 +2310,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const importedFsReturnType = this.inferImportedFsFunctionReturnType(node.init!);
         if (importedFsReturnType) {
           symbol.dataType = importedFsReturnType;
+          this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
+          return;
+        }
+
+        // Check if this is a method call chain and resolve the return type
+        const methodReturnType = this.inferMethodReturnType(node.init!);
+        if (methodReturnType) {
+          symbol.dataType = methodReturnType;
           this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
           return;
         }
