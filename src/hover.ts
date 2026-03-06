@@ -11,6 +11,7 @@ import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { Option } from 'effect';
 import { MODULE_REGISTRIES, isKnownModule, isKnownObjectType, getModuleMemberDocumentation, getImportedSymbolDocumentation, getObjectMethodDocumentation, resolveReturnObjectType, type KnownObjectType } from './analysis/moduleDispatch';
+import { parseFormatSpecifiers } from './analysis/checkers/builtinValidation';
 
 function detectMemberHoverContext(position: any, tokens: any[], document: any): { objectName: string, memberName: string, memberTokenPos: number, memberTokenEnd: number, resolvedObjectType?: KnownObjectType } | undefined {
     // Look for pattern: LABEL DOT LABEL (where cursor is over the second LABEL)
@@ -359,6 +360,138 @@ function getUnifiedMemberHover(
     return null;
 }
 
+const FORMAT_SPECIFIER_DESCRIPTIONS: Record<string, string> = {
+    'd': 'signed decimal integer',
+    'i': 'signed decimal integer',
+    'u': 'unsigned decimal integer',
+    'o': 'unsigned octal',
+    'x': 'unsigned hex (lowercase)',
+    'X': 'unsigned hex (uppercase)',
+    'f': 'decimal floating point',
+    'F': 'decimal floating point',
+    'e': 'scientific notation (lowercase)',
+    'E': 'scientific notation (uppercase)',
+    'g': 'shortest of %e/%f (lowercase)',
+    'G': 'shortest of %E/%F (uppercase)',
+    'a': 'hex floating point (lowercase)',
+    'A': 'hex floating point (uppercase)',
+    's': 'string',
+    'c': 'character',
+    'J': 'JSON serialization (ucode-specific)',
+    'n': 'number of characters written so far',
+    'p': 'pointer address',
+    '%': "literal '%'",
+};
+
+function getFormatSpecifierHover(token: Token, tokenIndex: number, tokens: Token[], offset: number, document: any): Hover | undefined {
+    // Walk backwards: expect TK_LPAREN, then TK_LABEL with value printf/sprintf
+    // Allow for optional comma/args between, but the string must be the first arg
+    // Pattern: LABEL LPAREN STRING ...
+    let lparenIdx = -1;
+    for (let i = tokenIndex - 1; i >= 0; i--) {
+        const t = tokens[i]!;
+        if (t.type === TokenType.TK_LPAREN) {
+            lparenIdx = i;
+            break;
+        }
+        // If we hit anything other than whitespace-like tokens between LPAREN and our string,
+        // this string is not the first argument
+        if (t.type === TokenType.TK_COMMA || t.type === TokenType.TK_RPAREN ||
+            t.type === TokenType.TK_SCOL || t.type === TokenType.TK_LBRACE) {
+            return undefined;
+        }
+    }
+    if (lparenIdx < 0) return undefined;
+
+    // The token before LPAREN should be a LABEL with value printf or sprintf
+    const labelIdx = lparenIdx - 1;
+    if (labelIdx < 0) return undefined;
+    const labelToken = tokens[labelIdx];
+    if (!labelToken || labelToken.type !== TokenType.TK_LABEL) return undefined;
+    const funcName = labelToken.value as string;
+    if (funcName !== 'printf' && funcName !== 'sprintf') return undefined;
+
+    // Check there are no tokens between LPAREN and our string (it must be the first arg)
+    let hasTokensBetween = false;
+    for (let i = lparenIdx + 1; i < tokenIndex; i++) {
+        hasTokensBetween = true;
+        break;
+    }
+    if (hasTokensBetween) return undefined;
+
+    // Parse the format string (strip quotes)
+    const rawValue = token.value as string;
+    const specifiers = parseFormatSpecifiers(rawValue);
+    if (specifiers.length === 0) return undefined;
+
+    // Compute cursor offset within the string content
+    // token.pos is the position of the opening quote, so string content starts at token.pos + 1
+    const cursorOffsetInString = offset - token.pos - 1;
+
+    // Find which specifier the cursor is over
+    let argIndex = 0;
+    for (const spec of specifiers) {
+        if (spec.specifier !== '%') argIndex++; // %% doesn't consume an argument
+        if (cursorOffsetInString >= spec.position && cursorOffsetInString < spec.endPosition) {
+            // Found the specifier under the cursor
+            const desc = FORMAT_SPECIFIER_DESCRIPTIONS[spec.specifier];
+            if (!desc) return undefined;
+
+            let markdown = `**Format specifier: \`${spec.fullMatch}\`**\n\n`;
+
+            const hasModifiers = spec.flags || spec.width || spec.precision;
+            if (hasModifiers) {
+                markdown += '| | |\n|---|---|\n';
+                markdown += `| Type | ${desc} |\n`;
+                if (spec.flags) {
+                    const flagDescs: string[] = [];
+                    if (spec.flags.includes('-')) flagDescs.push('left-align');
+                    if (spec.flags.includes('+')) flagDescs.push('always show sign');
+                    if (spec.flags.includes(' ')) flagDescs.push('space before positive');
+                    if (spec.flags.includes('0')) flagDescs.push('zero-pad');
+                    if (spec.flags.includes('#')) flagDescs.push('alternate form');
+                    markdown += `| Flags | \`${spec.flags}\` (${flagDescs.join(', ')}) |\n`;
+                }
+                if (spec.width) {
+                    const widthDesc = spec.width === '*' ? 'from argument' : `${spec.width} (minimum field width)`;
+                    markdown += `| Width | ${widthDesc} |\n`;
+                }
+                if (spec.precision) {
+                    const precDesc = spec.precision === '*' ? 'from argument' : `${spec.precision} (decimal places)`;
+                    markdown += `| Precision | ${precDesc} |\n`;
+                }
+            } else {
+                if (spec.specifier === '%') {
+                    markdown += `Prints a ${desc}.`;
+                } else {
+                    markdown += `Prints a **${desc}**.`;
+                }
+            }
+
+            if (spec.specifier !== '%') {
+                markdown += `\n\nArgument ${argIndex} in the call.`;
+            }
+
+            // Compute hover range: the specifier within the document
+            const specStartOffset = token.pos + 1 + spec.position;
+            const specEndOffset = token.pos + 1 + spec.endPosition;
+
+            return {
+                contents: {
+                    kind: MarkupKind.Markdown,
+                    value: markdown
+                },
+                range: {
+                    start: document.positionAt(specStartOffset),
+                    end: document.positionAt(specEndOffset)
+                }
+            };
+        }
+    }
+
+    return undefined;
+}
+
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
     documents: any,
@@ -491,8 +624,13 @@ export function handleHover(
         
         const token = tokens.find(t => t.pos <= offset && offset < t.end);
         const tokenIndex = token ? tokens.indexOf(token) : -1;
-        
-        
+
+        // Check for printf/sprintf format specifier hover
+        if (token && token.type === TokenType.TK_STRING && tokenIndex >= 0) {
+            const fmtHover = getFormatSpecifierHover(token, tokenIndex, tokens, offset, document);
+            if (fmtHover) return fmtHover;
+        }
+
         // Check for rest parameters (like ...args)
         if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
             // Look for ellipsis token right before this label

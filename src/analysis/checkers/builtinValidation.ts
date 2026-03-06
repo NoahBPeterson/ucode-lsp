@@ -7,17 +7,22 @@ import { UcodeType } from '../symbolTable';
 import { TypeError, TypeWarning } from '../types';
 import { UcodeErrorCode } from '../errorConstants';
 
-interface FormatSpecifier {
+export interface FormatSpecifier {
   specifier: string;
   expectedTypes: UcodeType[];
   position: number;
+  endPosition: number;
+  flags: string;
+  width: string;
+  precision: string;
+  fullMatch: string;
 }
 
 /**
  * Parse printf-style format specifiers from a format string.
  * Returns an array of specifiers that consume arguments (excludes %%).
  */
-function parseFormatSpecifiers(format: string): FormatSpecifier[] {
+export function parseFormatSpecifiers(format: string): FormatSpecifier[] {
   const specifiers: FormatSpecifier[] = [];
   // Match format specifiers: % [flags] [width] [.precision] [length] conversion
   // Flags: -, +, space, 0, #
@@ -27,7 +32,17 @@ function parseFormatSpecifiers(format: string): FormatSpecifier[] {
   let match;
   while ((match = formatRegex.exec(format)) !== null) {
     const conversion = match[4]!;
-    if (conversion === '%') continue; // %% is literal percent, no argument consumed
+    const fullMatch = match[0];
+    const flags = match[1] || '';
+    const width = match[2] || '';
+    const precision = match[3] || '';
+    const endPosition = match.index + fullMatch.length;
+
+    if (conversion === '%') {
+      // Include %% in results for hover (literal percent), but mark with empty expectedTypes
+      specifiers.push({ specifier: '%', expectedTypes: [], position: match.index, endPosition, flags: '', width: '', precision: '', fullMatch });
+      continue;
+    }
 
     let expectedTypes: UcodeType[] = [];
     switch (conversion) {
@@ -50,13 +65,13 @@ function parseFormatSpecifiers(format: string): FormatSpecifier[] {
 
     // If width or precision uses *, that consumes an extra argument (integer)
     if (match[2] === '*') {
-      specifiers.push({ specifier: '*', expectedTypes: [UcodeType.INTEGER], position: match.index });
+      specifiers.push({ specifier: '*', expectedTypes: [UcodeType.INTEGER], position: match.index, endPosition, flags, width, precision, fullMatch });
     }
     if (match[3] === '*') {
-      specifiers.push({ specifier: '*', expectedTypes: [UcodeType.INTEGER], position: match.index });
+      specifiers.push({ specifier: '*', expectedTypes: [UcodeType.INTEGER], position: match.index, endPosition, flags, width, precision, fullMatch });
     }
 
-    specifiers.push({ specifier: conversion, expectedTypes, position: match.index });
+    specifiers.push({ specifier: conversion, expectedTypes, position: match.index, endPosition, flags, width, precision, fullMatch });
   }
   return specifiers;
 }
@@ -1037,7 +1052,8 @@ export class BuiltinValidator {
     const literal = formatArg as LiteralNode;
     if (typeof literal.value !== 'string') return;
 
-    const specifiers = parseFormatSpecifiers(literal.value);
+    const allSpecifiers = parseFormatSpecifiers(literal.value);
+    const specifiers = allSpecifiers.filter(s => s.specifier !== '%'); // exclude %% (literal percent)
     const dataArgs = node.arguments.slice(1); // arguments after the format string
     const specCount = specifiers.length;
     const argCount = dataArgs.length;
