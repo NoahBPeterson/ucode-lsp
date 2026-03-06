@@ -22,6 +22,8 @@ import {
   BlockStatementNode,
   ConditionalExpressionNode,
   LogicalExpressionNode,
+  ExpressionStatementNode,
+  CallExpressionNode,
 } from '../../ast/nodes';
 import { ControlFlowGraph, BasicBlock, Edge } from './types';
 import { TypeState } from './typeState';
@@ -222,6 +224,23 @@ export class CFGBuilder {
       case 'LogicalExpression':
         this.visitLogicalExpression(node as LogicalExpressionNode);
         break;
+
+      // Expression statements: check for die()/exit() calls
+      case 'ExpressionStatement': {
+        const exprStmt = node as ExpressionStatementNode;
+        this.addStatement(node);
+        if (exprStmt.expression.type === 'CallExpression') {
+          const call = exprStmt.expression as CallExpressionNode;
+          if (
+            call.callee.type === 'Identifier' &&
+            ((call.callee as any).name === 'die' || (call.callee as any).name === 'exit')
+          ) {
+            this.connect(this.currentBlock, this.cfg.exit);
+            this.currentBlock = this.createBlock('after.die');
+          }
+        }
+        break;
+      }
 
       // All other statements and expressions
       default:

@@ -14,7 +14,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
-import { Diagnostic, DiagnosticSeverity } from 'vscode-languageserver/node';
+import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
 import { FileResolver } from './fileResolver';
@@ -65,7 +65,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private switchScopes: number[] = []; // Track switch statement scope levels
   private commonjsImports: Map<string, { importedFrom: string; importSpecifier: string }> = new Map();
   private currentFunctionNode: FunctionDeclarationNode | null = null;
-  private functionReturnTypes = new Map<FunctionDeclarationNode, UcodeType[]>();
+  private functionReturnTypes = new Map<FunctionDeclarationNode, { node: ReturnStatementNode, type: UcodeType }[]>();
   private processingFunctionCallCallee = false; // Track when processing function call callee
   private cfg: ControlFlowGraph | null = null;
   private cfgQueryEngine: CFGQueryEngine | null = null;
@@ -150,6 +150,9 @@ export class SemanticAnalyzer extends BaseVisitor {
 
           // Filter out false "Undefined function" errors for variables with unknown type from CFG
           this.filterUndefinedFunctionErrorsWithCFG();
+
+          // Detect unreachable code
+          this.detectUnreachableCode();
 
           // Log CFG analysis result for debugging
           if (!dfResult.converged) {
@@ -710,7 +713,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.visit(node.body);
 
       // Infer the final return type from all collected return types.
-      const returnTypes = this.functionReturnTypes.get(node) || [];
+      const returnEntries = this.functionReturnTypes.get(node) || [];
+      const returnTypes = returnEntries.map(e => e.type);
       const inferredReturnType = this.typeChecker.getCommonReturnType(returnTypes);
 
       // Update the function's symbol with the now-known return type.
@@ -1524,7 +1528,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const returnType = node.argument ? this.typeChecker.checkNode(node.argument) : UcodeType.NULL;
         
         // Store it for later inference.
-        this.functionReturnTypes.get(this.currentFunctionNode)?.push(returnType);
+        this.functionReturnTypes.get(this.currentFunctionNode)?.push({ node, type: returnType });
       }
     }
   }
@@ -2505,6 +2509,10 @@ private addDiagnostic(
         ...(data && { data })
       };
 
+      if (data?.unnecessary) {
+        diagnostic.tags = [DiagnosticTag.Unnecessary];
+      }
+
       this.diagnostics.push(diagnostic);
     }
   }
@@ -2764,6 +2772,105 @@ private addDiagnostic(
    * Filter out "Undefined function" errors for variables that have unknown type from CFG
    * This prevents false positives for dynamically-looked-up functions
    */
+  private detectUnreachableCode(): void {
+    // Check top-level CFG
+    if (this.cfgQueryEngine && this.cfg) {
+      this.emitUnreachableDiagnostics(this.cfgQueryEngine, this.cfg);
+    }
+
+    // Build per-function CFGs and check those too
+    if (this.currentASTRoot) {
+      this.detectUnreachableCodeInFunctions(this.currentASTRoot);
+    }
+  }
+
+  private detectUnreachableCodeInFunctions(node: AstNode): void {
+    if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
+      const funcNode = node as any;
+      if (funcNode.body) {
+        try {
+          const builder = new CFGBuilder(funcNode.id?.name || 'anonymous');
+          const cfg = builder.build(funcNode.body);
+          const engine = new CFGQueryEngine(cfg, builder.getNodeToBlockMap());
+          this.emitUnreachableDiagnostics(engine, cfg);
+
+          // Filter unreachable return statements from the function's return type
+          this.narrowFunctionReturnType(funcNode, engine, cfg);
+        } catch (_) {
+          // Best-effort; skip functions that fail CFG construction
+        }
+      }
+    }
+
+    // Recurse into child nodes
+    for (const key of Object.keys(node)) {
+      const val = (node as any)[key];
+      if (val && typeof val === 'object') {
+        if (Array.isArray(val)) {
+          for (const child of val) {
+            if (child && typeof child.type === 'string') {
+              this.detectUnreachableCodeInFunctions(child);
+            }
+          }
+        } else if (typeof val.type === 'string') {
+          this.detectUnreachableCodeInFunctions(val);
+        }
+      }
+    }
+  }
+
+  private emitUnreachableDiagnostics(engine: CFGQueryEngine, cfg: ControlFlowGraph): void {
+    const unreachableBlocks = engine.getUnreachableBlocks();
+
+    for (const block of unreachableBlocks) {
+      if (block.statements.length === 0) continue;
+      if (block === cfg.exit) continue;
+
+      const firstStmt = block.statements[0]!;
+      const lastStmt = block.statements[block.statements.length - 1]!;
+
+      this.addDiagnostic(
+        'Unreachable code detected',
+        firstStmt.start,
+        lastStmt.end,
+        DiagnosticSeverity.Hint,
+        UcodeErrorCode.UNREACHABLE_CODE,
+        { unnecessary: true }
+      );
+    }
+  }
+
+  private narrowFunctionReturnType(funcNode: any, engine: CFGQueryEngine, cfg: ControlFlowGraph): void {
+    const returnEntries = this.functionReturnTypes.get(funcNode as FunctionDeclarationNode);
+    if (!returnEntries || returnEntries.length === 0) return;
+
+    // Collect start offsets of all statements in unreachable blocks
+    const unreachableOffsets = new Set<number>();
+    for (const block of engine.getUnreachableBlocks()) {
+      if (block === cfg.exit) continue;
+      for (const stmt of block.statements) {
+        unreachableOffsets.add(stmt.start);
+      }
+    }
+
+    // Filter to only reachable return entries
+    const reachableEntries = returnEntries.filter(e => !unreachableOffsets.has(e.node.start));
+    if (reachableEntries.length === returnEntries.length) return; // nothing changed
+
+    // Update the stored entries
+    this.functionReturnTypes.set(funcNode as FunctionDeclarationNode, reachableEntries);
+
+    // Re-compute and update the function symbol's return type
+    const name = funcNode.id?.name;
+    if (name) {
+      const symbol = this.symbolTable.lookup(name);
+      if (symbol) {
+        const reachableTypes = reachableEntries.map(e => e.type);
+        symbol.returnType = this.typeChecker.getCommonReturnType(reachableTypes);
+      }
+    }
+  }
+
   private filterUndefinedFunctionErrorsWithCFG(): void {
     if (!this.cfgQueryEngine || !this.typeChecker) {
       return;

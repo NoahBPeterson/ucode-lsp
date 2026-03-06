@@ -123,6 +123,7 @@ const testFiles = [
     'tests/test-type-guard-narrowing-bug.js',
     'tests/test-call-chain-completions.js',
     'tests/test-printf-format-diagnostics.js',
+    'tests/test-unreachable-code.js',
 ];
 
 // Mocha test files (run as a single combined mocha invocation with shared LSP server)
@@ -175,6 +176,7 @@ const mochaFileSet = new Set([
     'test-object-property-hover-lsp.mocha.js',
     'test-call-chain-completions.js',
     'test-printf-format-diagnostics.js',
+    'test-unreachable-code.js',
 ]);
 
 function getBaseName(filePath) {
