@@ -1,92 +1,124 @@
-// Showcase: Unreachable Code Detection (UC4001)
-// Unreachable code should appear faded (greyed out) in VS Code
+// Showcase: Never-Returns Inference & Callback-Aware CFG (0.5.11)
+// Open this file in VS Code with ucode-lsp to see faded unreachable code.
 
-// === After return ===
-function after_return() {
-	let x = 1;
-	return x;
-	let y = 2;       // unreachable
-	printf("%d\n", y); // unreachable
+// ─────────────────────────────────────────────────────────
+// 1. NEVER-RETURNS INFERENCE
+// ─────────────────────────────────────────────────────────
+// If every path through a function ends in die()/exit(),
+// the LSP infers it as "never returns". Callers that invoke
+// it get the same unreachable-code treatment as die()/exit().
+
+// This helper always terminates — inferred as never-returning.
+function fatal(msg) {
+	die("FATAL: " + msg);
 }
 
-// === After break ===
-function after_break() {
-	while (true) {
-		printf("loop\n");
-		break;
-		printf("never\n"); // unreachable
-	}
+// Code after fatal() is unreachable, just like after die().
+function validate_config(cfg) {
+	if (type(cfg) != "object")
+		fatal("config must be an object");
+
+	// Still reachable — the fatal() was inside a conditional.
+	printf("Config OK: %J\n", cfg);
 }
 
-// === After continue ===
-function after_continue() {
-	for (let i = 0; i < 10; i++) {
-		if (i == 5)  {
-			continue;
-			printf("skipped\n"); // unreachable
-		}
-		printf("%d\n", i);
-	}
+function strict_require(path) {
+	let mod = require(path);
+	if (!mod)
+		fatal("could not load module: " + path);
+	return mod;
 }
 
-// === After die() ===
-function after_die() {
-	die("fatal error");
-	printf("never printed\n"); // unreachable
+// ── Chained never-returns ──
+// outerDie() calls fatal() which calls die().
+// The LSP propagates through the chain automatically.
+function outerDie(reason) {
+	fatal("outer: " + reason);
 }
 
-// === After exit() ===
-function after_exit() {
-	exit(1);
-	printf("goodbye\n"); // unreachable
+function chained_demo() {
+	outerDie("something broke");
+	printf("this is dead code\n"); // unreachable (greyed out)
 }
 
-// === Return type narrowing ===
-// Hover over the function name to see the return type.
-// The unreachable "return" is excluded from type inference.
-
-// Hover: returns int (not int | string)
-function narrowed_return() {
-	return 42;
-	return "unreachable string"; // unreachable — excluded from return type
+// ── Conditional vs. unconditional ──
+function maybe_fail(x) {
+	if (x < 0)
+		fatal("negative value");
+	// Returns normally when x >= 0, so NOT inferred as never-returns.
 }
 
-// Hover: returns string (not string | array)
-function narrowed_after_die() {
-	return "ok";
-	die("fatal");
-	return [1, 2, 3]; // unreachable — excluded from return type
+function caller_of_maybe_fail() {
+	maybe_fail(42);
+	printf("still alive\n"); // reachable — maybe_fail can return
 }
 
-// Compare: both returns are reachable, so hover shows string | int
-function both_reachable(x) {
-	if (x)
-		return "hello";
-	return 99;
+// ── Multiple exit paths ──
+function abort_or_exit(code) {
+	if (code == 0)
+		exit(0);
+	else
+		die("non-zero exit: " + code);
 }
 
-// === NO false positives - these should all be clean ===
-
-function conditional_return(x) {
-	if (x > 0)
-		return "positive";
-
-	return "non-positive"; // reachable via else path
+function after_abort_or_exit() {
+	abort_or_exit(1);
+	printf("never reached\n"); // unreachable (both branches terminate)
 }
 
-function normal_flow() {
-	let a = 1;
-	let b = 2;
-	let c = a + b;
-	printf("sum = %d\n", c);
-	return c;
+// ─────────────────────────────────────────────────────────
+// 2. CALLBACK-AWARE CFG
+// ─────────────────────────────────────────────────────────
+// A return inside a map/filter/sort callback exits the
+// callback, NOT the enclosing function. The LSP correctly
+// keeps the outer code reachable (no false positives).
+
+function double_all(items) {
+	let doubled = map(items, function(x) {
+		return x * 2; // exits the callback only
+	});
+	printf("Doubled: %J\n", doubled); // reachable
+	return doubled;
 }
 
-function if_else_branches(x) {
-	if (x) {
-		printf("truthy\n");
-	} else {
-		printf("falsy\n");
-	}
-	printf("after if/else\n"); // reachable from both branches
+function keep_positive(items) {
+	let pos = filter(items, function(x) {
+		if (x > 0)
+			return true;
+		return false;
+	});
+	printf("Positive: %J\n", pos); // reachable
+	return pos;
+}
+
+function sort_desc(items) {
+	sort(items, function(a, b) {
+		return b - a;
+	});
+	printf("Sorted: %J\n", items); // reachable
+}
+
+// Arrow-style callbacks work too.
+function arrow_map(items) {
+	let result = map(items, (x) => x + 1);
+	printf("Result: %J\n", result); // reachable
+	return result;
+}
+
+// ─────────────────────────────────────────────────────────
+// 3. COMBINED — both features at once
+// ─────────────────────────────────────────────────────────
+
+function process_records(records) {
+	if (!records)
+		fatal("no records");
+
+	let names = map(records, function(r) {
+		if (type(r) != "object")
+			fatal("bad record"); // never-returns inside a callback
+		return r.name;
+	});
+
+	printf("Names: %J\n", names); // reachable
+	return names;
 }

@@ -157,6 +157,105 @@ describe('Unreachable Code Detection (UC4001)', function() {
     });
   });
 
+  describe('Never-returns function inference', () => {
+    it('should flag code after call to function that always dies', async () => {
+      const diags = await getUnreachable(`
+        function fatal(msg) {
+          die(msg);
+        }
+        function test() {
+          fatal("error");
+          let x = 1;
+        }
+      `);
+      assert.strictEqual(diags.length >= 1, true, 'Should flag unreachable code after call to never-returns function');
+      const afterFatal = diags.find(d => d.message.match(/[Uu]nreachable/));
+      assert.ok(afterFatal, 'Should have unreachable diagnostic');
+    });
+
+    it('should flag code after call to function that always exits', async () => {
+      const diags = await getUnreachable(`
+        function bail() {
+          exit(1);
+        }
+        function test() {
+          bail();
+          let x = 1;
+        }
+      `);
+      assert.strictEqual(diags.length >= 1, true, 'Should flag unreachable code after call to always-exiting function');
+    });
+
+    it('should not flag code after call to function that conditionally returns', async () => {
+      const diags = await getUnreachable(`
+        function maybeReturn(x) {
+          if (x) return 1;
+          die("error");
+        }
+        function test() {
+          maybeReturn(true);
+          let y = 2;
+        }
+      `);
+      // y = 2 is reachable because maybeReturn can return normally
+      const afterCall = diags.filter(d => {
+        const line = d.range.start.line;
+        return line >= 7 && line <= 8;
+      });
+      assert.strictEqual(afterCall.length, 0, 'Code after conditionally-returning function should be reachable');
+    });
+
+    it('should propagate through chains (A calls B which always dies)', async () => {
+      const diags = await getUnreachable(`
+        function innerDie() {
+          die("deep error");
+        }
+        function outerDie() {
+          innerDie();
+        }
+        function test() {
+          outerDie();
+          let x = 1;
+        }
+      `);
+      assert.strictEqual(diags.length >= 1, true, 'Should propagate never-returns through call chains');
+    });
+  });
+
+  describe('Callback-aware CFG', () => {
+    it('should not flag outer code after map with returning callback', async () => {
+      const diags = await getUnreachable(`
+        function test() {
+          let arr = [1, 2, 3];
+          map(arr, function(x) {
+            return x * 2;
+          });
+          let y = 1;
+        }
+      `);
+      // y = 1 should NOT be flagged as unreachable
+      const afterMap = diags.filter(d => {
+        const line = d.range.start.line;
+        return line >= 6;
+      });
+      assert.strictEqual(afterMap.length, 0, 'Callback return should not make outer code unreachable');
+    });
+
+    it('should not flag callback body as unreachable', async () => {
+      const diags = await getUnreachable(`
+        function test() {
+          let arr = [1, 2, 3];
+          filter(arr, function(x) {
+            if (x > 1) return true;
+            return false;
+          });
+          let y = 1;
+        }
+      `);
+      assert.strictEqual(diags.length, 0, 'Callback body and outer code should be reachable');
+    });
+  });
+
   describe('Return type narrowing', () => {
     it('should not include unreachable return types in hover', async () => {
       const getHover = lspServer.getHover;

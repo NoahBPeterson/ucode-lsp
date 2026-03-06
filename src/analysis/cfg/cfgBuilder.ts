@@ -66,11 +66,16 @@ export class CFGBuilder {
   /** Stack of loop/switch contexts for handling break/continue */
   private loopStack: LoopContext[] = [];
 
+  /** Set of function names that act as terminators (never return) */
+  private terminatorNames: Set<string>;
+
   /**
    * Creates a new CFGBuilder.
    * @param name Optional name for the CFG (e.g., function name)
+   * @param terminators Optional set of terminator function names (defaults to die/exit)
    */
-  constructor(name?: string) {
+  constructor(name?: string, terminators?: Set<string>) {
+    this.terminatorNames = terminators || new Set(['die', 'exit']);
     // Initialize empty CFG first
     this.cfg = {
       entry: undefined as any, // Will be set below
@@ -225,19 +230,21 @@ export class CFGBuilder {
         this.visitLogicalExpression(node as LogicalExpressionNode);
         break;
 
-      // Expression statements: check for die()/exit() calls
+      // Expression statements: check for terminator calls and callback builtins
       case 'ExpressionStatement': {
         const exprStmt = node as ExpressionStatementNode;
         this.addStatement(node);
         if (exprStmt.expression.type === 'CallExpression') {
           const call = exprStmt.expression as CallExpressionNode;
-          if (
-            call.callee.type === 'Identifier' &&
-            ((call.callee as any).name === 'die' || (call.callee as any).name === 'exit')
-          ) {
+          const calleeName = call.callee.type === 'Identifier' ? (call.callee as any).name : null;
+          if (calleeName && this.terminatorNames.has(calleeName)) {
             this.connect(this.currentBlock, this.cfg.exit);
             this.currentBlock = this.createBlock('after.die');
           }
+          // Note: map/filter/sort callbacks are analyzed per-function separately.
+          // FunctionExpression/ArrowFunctionExpression bodies are NOT visited here
+          // (they're handled by the default case as opaque statements), so callback
+          // returns don't affect the outer function's control flow.
         }
         break;
       }

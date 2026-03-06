@@ -2778,45 +2778,145 @@ private addDiagnostic(
       this.emitUnreachableDiagnostics(this.cfgQueryEngine, this.cfg);
     }
 
-    // Build per-function CFGs and check those too
+    // Build per-function CFGs with never-returns inference
     if (this.currentASTRoot) {
-      this.detectUnreachableCodeInFunctions(this.currentASTRoot);
+      // Collect all function declarations for multi-pass analysis
+      const funcNodes: any[] = [];
+      this.collectFunctionNodes(this.currentASTRoot, funcNodes);
+
+      // Phase 1: Initial pass with default terminators (die/exit)
+      const terminators = new Set(['die', 'exit']);
+      this.analyzeAllFunctions(funcNodes, terminators);
+
+      // Phase 2: Fixpoint iteration — infer never-returns and re-analyze
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const funcNode of funcNodes) {
+          const name = funcNode.id?.name;
+          if (!name || !funcNode.body) continue;
+          const symbol = this.symbolTable.lookup(name);
+          if (!symbol || symbol.neverReturns) continue;
+
+          try {
+            const builder = new CFGBuilder(name, terminators);
+            const cfg = builder.build(funcNode.body);
+            if (this.functionNeverReturns(cfg, terminators)) {
+              symbol.neverReturns = true;
+              terminators.add(name);
+              changed = true;
+            }
+          } catch (_) {
+            // skip
+          }
+        }
+      }
+
+      // Phase 3: Re-emit diagnostics with final terminator set if it grew
+      if (terminators.size > 2) {
+        // Clear previously emitted UC4001 diagnostics so we can re-emit with updated info
+        this.diagnostics = this.diagnostics.filter(
+          d => (d as any).code !== UcodeErrorCode.UNREACHABLE_CODE
+        );
+        // Re-emit top-level
+        if (this.cfgQueryEngine && this.cfg) {
+          this.emitUnreachableDiagnostics(this.cfgQueryEngine, this.cfg);
+        }
+        this.analyzeAllFunctions(funcNodes, terminators);
+      }
     }
   }
 
-  private detectUnreachableCodeInFunctions(node: AstNode): void {
+  /**
+   * Collect all function declaration/expression nodes from the AST.
+   */
+  private collectFunctionNodes(node: AstNode, result: any[]): void {
     if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
-      const funcNode = node as any;
-      if (funcNode.body) {
-        try {
-          const builder = new CFGBuilder(funcNode.id?.name || 'anonymous');
-          const cfg = builder.build(funcNode.body);
-          const engine = new CFGQueryEngine(cfg, builder.getNodeToBlockMap());
-          this.emitUnreachableDiagnostics(engine, cfg);
-
-          // Filter unreachable return statements from the function's return type
-          this.narrowFunctionReturnType(funcNode, engine, cfg);
-        } catch (_) {
-          // Best-effort; skip functions that fail CFG construction
-        }
-      }
+      result.push(node);
     }
-
-    // Recurse into child nodes
     for (const key of Object.keys(node)) {
       const val = (node as any)[key];
       if (val && typeof val === 'object') {
         if (Array.isArray(val)) {
           for (const child of val) {
             if (child && typeof child.type === 'string') {
-              this.detectUnreachableCodeInFunctions(child);
+              this.collectFunctionNodes(child, result);
             }
           }
         } else if (typeof val.type === 'string') {
-          this.detectUnreachableCodeInFunctions(val);
+          this.collectFunctionNodes(val, result);
         }
       }
     }
+  }
+
+  /**
+   * Build CFGs for all functions and emit unreachable diagnostics.
+   */
+  private analyzeAllFunctions(funcNodes: any[], terminators: Set<string>): void {
+    for (const funcNode of funcNodes) {
+      if (!funcNode.body) continue;
+      try {
+        const builder = new CFGBuilder(funcNode.id?.name || 'anonymous', terminators);
+        const cfg = builder.build(funcNode.body);
+        const engine = new CFGQueryEngine(cfg, builder.getNodeToBlockMap());
+        this.emitUnreachableDiagnostics(engine, cfg);
+        this.narrowFunctionReturnType(funcNode, engine, cfg);
+      } catch (_) {
+        // Best-effort; skip functions that fail CFG construction
+      }
+    }
+  }
+
+  /**
+   * Check if a function never returns normally.
+   * A function never returns if no reachable predecessor of the exit block
+   * provides a normal return path (ReturnStatement or fall-through).
+   */
+  private functionNeverReturns(cfg: ControlFlowGraph, terminators: Set<string>): boolean {
+    // Find reachable blocks
+    const reachable = new Set<number>();
+    const queue = [cfg.entry];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (reachable.has(current.id)) continue;
+      reachable.add(current.id);
+      for (const edge of current.successors) {
+        queue.push(edge.target);
+      }
+    }
+
+    // If exit is not reachable at all, function never returns
+    if (!reachable.has(cfg.exit.id)) return true;
+
+    // Check each reachable predecessor of exit
+    for (const pred of cfg.exit.predecessors) {
+      if (!reachable.has(pred.id)) continue;
+      if (pred.statements.length === 0) {
+        // Empty block reaching exit = fall-through = function can return
+        return false;
+      }
+      const lastStmt = pred.statements[pred.statements.length - 1]!;
+      if (lastStmt.type === 'ThrowStatement') {
+        // Abnormal termination — doesn't count as normal return
+        continue;
+      }
+      if (lastStmt.type === 'ExpressionStatement') {
+        const expr = (lastStmt as any).expression;
+        if (expr && expr.type === 'CallExpression' && expr.callee?.type === 'Identifier') {
+          const calleeName = (expr.callee as any).name;
+          if (calleeName && terminators.has(calleeName)) {
+            // Terminator call — doesn't count as normal return
+            continue;
+          }
+        }
+      }
+      // ReturnStatement or any other statement reaching exit = function can return
+      return false;
+    }
+
+    // No reachable predecessor provides a normal return
+    return true;
   }
 
   private emitUnreachableDiagnostics(engine: CFGQueryEngine, cfg: ControlFlowGraph): void {

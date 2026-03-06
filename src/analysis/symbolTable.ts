@@ -151,6 +151,7 @@ export interface Symbol {
     initialLiteralType?: UcodeDataType | undefined; // Initial literal type, if declared with a literal
     currentType?: UcodeDataType | undefined; // Current type after assignments (for SSA)
     currentTypeEffectiveFrom?: number | undefined; // Source offset where currentType becomes active
+    neverReturns?: boolean; // True if function always terminates (die/exit/throw on all paths)
 }
 
 export class SymbolTable {
