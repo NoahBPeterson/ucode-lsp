@@ -5,6 +5,61 @@
 import { AstNode, CallExpressionNode, LiteralNode } from '../../ast/nodes';
 import { UcodeType } from '../symbolTable';
 import { TypeError, TypeWarning } from '../types';
+import { UcodeErrorCode } from '../errorConstants';
+
+interface FormatSpecifier {
+  specifier: string;
+  expectedTypes: UcodeType[];
+  position: number;
+}
+
+/**
+ * Parse printf-style format specifiers from a format string.
+ * Returns an array of specifiers that consume arguments (excludes %%).
+ */
+function parseFormatSpecifiers(format: string): FormatSpecifier[] {
+  const specifiers: FormatSpecifier[] = [];
+  // Match format specifiers: % [flags] [width] [.precision] [length] conversion
+  // Flags: -, +, space, 0, #
+  // Width/precision: digits or *
+  // Length: h, hh, l, ll, z, j, t
+  const formatRegex = /%([#0\- +]*)(\*|\d*)?(?:\.(\*|\d*))?(?:hh?|ll?|[zjt])?([diouxXeEfFgGaAcspJn%])/g;
+  let match;
+  while ((match = formatRegex.exec(format)) !== null) {
+    const conversion = match[4]!;
+    if (conversion === '%') continue; // %% is literal percent, no argument consumed
+
+    let expectedTypes: UcodeType[] = [];
+    switch (conversion) {
+      case 'd': case 'i': case 'u': case 'o': case 'x': case 'X':
+        expectedTypes = [UcodeType.INTEGER, UcodeType.DOUBLE, UcodeType.BOOLEAN];
+        break;
+      case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': case 'a': case 'A':
+        expectedTypes = [UcodeType.INTEGER, UcodeType.DOUBLE, UcodeType.BOOLEAN];
+        break;
+      case 'c':
+        expectedTypes = [UcodeType.INTEGER, UcodeType.STRING];
+        break;
+      case 's':
+        expectedTypes = []; // ucode auto-casts all types to string — skip type check
+        break;
+      case 'J': case 'n': case 'p':
+        expectedTypes = []; // any type is valid
+        break;
+    }
+
+    // If width or precision uses *, that consumes an extra argument (integer)
+    if (match[2] === '*') {
+      specifiers.push({ specifier: '*', expectedTypes: [UcodeType.INTEGER], position: match.index });
+    }
+    if (match[3] === '*') {
+      specifiers.push({ specifier: '*', expectedTypes: [UcodeType.INTEGER], position: match.index });
+    }
+
+    specifiers.push({ specifier: conversion, expectedTypes, position: match.index });
+  }
+  return specifiers;
+}
 
 const VALID_SIGNAL_NAMES = new Set([
   'INT', 'ILL', 'ABRT', 'FPE', 'SEGV', 'TERM', 'HUP', 'QUIT', 'TRAP', 
@@ -964,16 +1019,73 @@ export class BuiltinValidator {
 
   validatePrintfFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'printf', 1)) return true;
-    // First argument should be a format string, but string conversion is allowed
     this.validateArgumentType(node.arguments[0], 'printf', 1, [UcodeType.STRING]);
+    this.validateFormatString(node, 'printf');
     return true;
   }
 
   validateSprintfFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'sprintf', 1)) return true;
-    // First argument should be a format string, but string conversion is allowed
     this.validateArgumentType(node.arguments[0], 'sprintf', 1, [UcodeType.STRING]);
+    this.validateFormatString(node, 'sprintf');
     return true;
+  }
+
+  private validateFormatString(node: CallExpressionNode, funcName: string): void {
+    const formatArg = node.arguments[0];
+    if (!formatArg || formatArg.type !== 'Literal') return;
+    const literal = formatArg as LiteralNode;
+    if (typeof literal.value !== 'string') return;
+
+    const specifiers = parseFormatSpecifiers(literal.value);
+    const dataArgs = node.arguments.slice(1); // arguments after the format string
+    const specCount = specifiers.length;
+    const argCount = dataArgs.length;
+
+    // Count mismatch check
+    if (specCount > argCount) {
+      this.warnings.push({
+        message: `${funcName}(): format string has ${specCount} specifier(s) but only ${argCount} argument(s) provided`,
+        start: formatArg.start,
+        end: formatArg.end,
+        severity: 'warning',
+        code: UcodeErrorCode.FORMAT_ARG_COUNT_MISMATCH
+      });
+    } else if (specCount < argCount) {
+      // Extra arguments are silently ignored — lower severity warning
+      const firstExtra = dataArgs[specCount]!;
+      const lastExtra = dataArgs[argCount - 1]!;
+      this.warnings.push({
+        message: `${funcName}(): format string has ${specCount} specifier(s) but ${argCount} argument(s) provided (extra arguments are ignored)`,
+        start: firstExtra.start,
+        end: lastExtra.end,
+        severity: 'warning',
+        code: UcodeErrorCode.FORMAT_ARG_COUNT_MISMATCH
+      });
+    }
+
+    // Type mismatch check for each specifier
+    for (let i = 0; i < Math.min(specCount, argCount); i++) {
+      const spec = specifiers[i]!;
+      if (spec.expectedTypes.length === 0) continue; // %s, %J, etc. accept any type
+
+      const arg = dataArgs[i];
+      if (!arg) continue;
+
+      const argType = this.getNodeType(arg);
+      if (argType === UcodeType.UNKNOWN || argType.includes(' | ')) continue; // Don't flag unknowns or unions
+
+      if (!spec.expectedTypes.includes(argType as UcodeType)) {
+        const expectedStr = spec.expectedTypes.map(t => t.toLowerCase()).join(' or ');
+        this.warnings.push({
+          message: `${funcName}(): argument ${i + 2} has type '${argType.toLowerCase()}' but format specifier '%${spec.specifier}' expects ${expectedStr}`,
+          start: arg.start,
+          end: arg.end,
+          severity: 'warning',
+          code: UcodeErrorCode.FORMAT_TYPE_MISMATCH
+        });
+      }
+    }
   }
 
   validateIptoarrFunction(node: CallExpressionNode): boolean {
