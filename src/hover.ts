@@ -539,8 +539,11 @@ export function handleHover(
 
             // Look up the object in the symbol table to determine its module
             if (analysisResult && analysisResult.symbolTable) {
-                // Try CFG-based lookup first for flow-sensitive types
+                // Try scope-chain lookup first, then position-aware fallback for nested scopes
                 let symbol = analysisResult.symbolTable.lookup(objectName);
+                if (!symbol) {
+                    symbol = analysisResult.symbolTable.lookupAtPosition(objectName, offset);
+                }
                 if (analysisResult.cfgQueryEngine && !symbol) {
                     const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, offset);
                     if (cfgType) {

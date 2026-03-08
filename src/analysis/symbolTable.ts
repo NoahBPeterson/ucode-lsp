@@ -147,6 +147,7 @@ export interface Symbol {
     range: { start: number; end: number };
   };
     propertyTypes?: Map<string, UcodeDataType>; // Known property types for object-like symbols (e.g., global)
+    returnPropertyTypes?: Map<string, UcodeDataType>; // Property types of objects returned by this function
     initNode?: AstNode; // Initial value node for SSA type protection
     initialLiteralType?: UcodeDataType | undefined; // Initial literal type, if declared with a literal
     currentType?: UcodeDataType | undefined; // Current type after assignments (for SSA)

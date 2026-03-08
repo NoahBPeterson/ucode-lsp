@@ -5,7 +5,16 @@
 
 import { UcodeType, UcodeDataType, SymbolTable, getUnionTypes } from './symbolTable';
 import { TypeNarrowingEngine } from './typeNarrowing';
-import { AstNode, IdentifierNode, BinaryExpressionNode, IfStatementNode } from '../ast/nodes';
+import { AstNode, IdentifierNode, BinaryExpressionNode, IfStatementNode, CallExpressionNode } from '../ast/nodes';
+
+// Builtins that return null when their key argument is null/wrong-type
+// Map of builtin name → argument index (0-based) that causes null return
+const NULL_PROPAGATING_BUILTINS: Record<string, number> = {
+  length: 0, keys: 0, values: 0, index: 0, rindex: 0,
+  sort: 0, reverse: 0, uniq: 0, pop: 0, shift: 0,
+  slice: 0, splice: 0, join: 1, trim: 0, ltrim: 0, rtrim: 0,
+  ord: 0, split: 0, substr: 0, b64enc: 0, b64dec: 0, hexdec: 0,
+};
 
 export interface FlowTypeInfo {
   variableName: string;
@@ -120,6 +129,74 @@ export class FlowSensitiveTypeTracker {
       const guard = this.extractTypeGuard(binaryExpr, ifStatement.test.start);
       if (guard) {
         guards.push(guard);
+      }
+
+      // Handle && where left side is a bare identifier (truthiness guard)
+      if (binaryExpr.operator === '&&' && binaryExpr.left.type === 'Identifier') {
+        const varName = (binaryExpr.left as IdentifierNode).name;
+        const originalType = this.getOriginalVariableType(varName, binaryExpr.left.start);
+        if (originalType) {
+          const narrowed = this.narrowingEngine.removeNullFromType(originalType);
+          guards.push({
+            variableName: varName,
+            guard: { type: 'null-check', expression: `${varName} && ...` },
+            positiveNarrowing: narrowed.narrowedType,
+            negativeNarrowing: originalType,
+          });
+        }
+      }
+    }
+
+    // Bare identifier truthiness: if (x) { ... }
+    if (ifStatement.test.type === 'Identifier') {
+      const varName = (ifStatement.test as IdentifierNode).name;
+      const originalType = this.getOriginalVariableType(varName, ifStatement.test.start);
+      if (originalType) {
+        const narrowed = this.narrowingEngine.removeNullFromType(originalType);
+        guards.push({
+          variableName: varName,
+          guard: { type: 'null-check', expression: varName },
+          positiveNarrowing: narrowed.narrowedType,
+          negativeNarrowing: originalType,
+        });
+      }
+    }
+
+    // Negated identifier: if (!x) { ... } else { x is non-null }
+    if (ifStatement.test.type === 'UnaryExpression') {
+      const unary = ifStatement.test as any;
+      if (unary.operator === '!' && unary.argument?.type === 'Identifier') {
+        const varName = unary.argument.name;
+        const originalType = this.getOriginalVariableType(varName, unary.argument.start);
+        if (originalType) {
+          const narrowed = this.narrowingEngine.removeNullFromType(originalType);
+          guards.push({
+            variableName: varName,
+            guard: { type: 'null-check', expression: `!${varName}` },
+            positiveNarrowing: originalType, // In the if body, x is falsy
+            negativeNarrowing: narrowed.narrowedType, // In else, x is truthy → non-null
+          });
+        }
+      }
+    }
+
+    // Truthiness of null-propagating builtin call: if (length(x)) { ... }
+    if (ifStatement.test.type === 'CallExpression') {
+      const np = this.getNullPropagatingArg(ifStatement.test);
+      if (np) {
+        const variableName = this.getVariableName(np.arg);
+        if (variableName) {
+          const originalType = this.getOriginalVariableType(variableName, ifStatement.test.start);
+          if (originalType) {
+            const narrowed = this.narrowingEngine.removeNullFromType(originalType);
+            guards.push({
+              variableName,
+              guard: { type: 'null-check', expression: `${np.funcName}(${variableName})` },
+              positiveNarrowing: narrowed.narrowedType,
+              negativeNarrowing: originalType,
+            });
+          }
+        }
       }
     }
 
@@ -268,6 +345,52 @@ export class FlowSensitiveTypeTracker {
     }
 
     return guards;
+  }
+
+  /**
+   * Check if a node is a call to a null-propagating builtin, returning the relevant argument
+   */
+  private getNullPropagatingArg(node: AstNode): { funcName: string; arg: AstNode } | null {
+    if (node.type !== 'CallExpression') return null;
+    const call = node as CallExpressionNode;
+    if (call.callee.type !== 'Identifier') return null;
+    const funcName = (call.callee as IdentifierNode).name;
+    const argIndex = NULL_PROPAGATING_BUILTINS[funcName];
+    if (argIndex === undefined) return null;
+    const arg = call.arguments[argIndex];
+    if (!arg) return null;
+    return { funcName, arg };
+  }
+
+  /**
+   * Check whether null <op> literal is false (i.e., the comparison excludes null)
+   */
+  private comparisonExcludesNull(operator: string, literalValue: any, callOnLeft: boolean): boolean {
+    if (callOnLeft) {
+      switch (operator) {
+        case '>':  return typeof literalValue === 'number' && literalValue >= 0;
+        case '>=': return typeof literalValue === 'number' && literalValue > 0;
+        case '<':  return typeof literalValue === 'number' && literalValue <= 0;
+        case '<=': return typeof literalValue === 'number' && literalValue < 0;
+        case '==': return literalValue !== null;
+        case '===': return literalValue !== null;
+        case '!=': return literalValue === null;
+        case '!==': return literalValue === null;
+        default: return false;
+      }
+    } else {
+      switch (operator) {
+        case '<':  return typeof literalValue === 'number' && literalValue >= 0;
+        case '<=': return typeof literalValue === 'number' && literalValue > 0;
+        case '>':  return typeof literalValue === 'number' && literalValue <= 0;
+        case '>=': return typeof literalValue === 'number' && literalValue < 0;
+        case '==': return literalValue !== null;
+        case '===': return literalValue !== null;
+        case '!=': return literalValue === null;
+        case '!==': return literalValue === null;
+        default: return false;
+      }
+    }
   }
 
   /**
@@ -568,6 +691,78 @@ export class FlowSensitiveTypeTracker {
               },
               positiveNarrowing: positiveNarrowing.narrowedType,
               negativeNarrowing: negativeNarrowing.narrowedType
+            };
+          }
+        }
+      }
+    }
+
+    // Handle negative type checks: type(variable) != 'array', etc.
+    if ((expr.operator === '!=' || expr.operator === '!==') && this.isTypeCall(expr.left) && this.isStringLiteral(expr.right)) {
+      const typeCall = expr.left as any;
+      if (typeCall.arguments && typeCall.arguments.length > 0) {
+        const variableName = this.getVariableName(typeCall.arguments[0]);
+        const testedTypeStr = (expr.right as any).value;
+        const testedType = this.stringToUcodeType(testedTypeStr);
+
+        if (variableName && testedType) {
+          const originalType = this.getOriginalVariableType(variableName, position);
+          if (originalType) {
+            // Swapped from == case: positive means "not this type", negative means "is this type"
+            const positiveNarrowing = this.narrowingEngine.removeTypesFromUnion(originalType, [testedType]);
+            const negativeNarrowing = this.narrowingEngine.keepOnlyTypes(originalType, [testedType]);
+
+            return {
+              variableName,
+              guard: {
+                type: 'type-check',
+                expression: `type(${variableName}) != '${testedTypeStr}'`,
+                testedType
+              },
+              positiveNarrowing: positiveNarrowing.narrowedType,
+              negativeNarrowing: negativeNarrowing.narrowedType
+            };
+          }
+        }
+      }
+    }
+
+    // Pattern: builtinCall(x) <op> literal — narrows x to non-null
+    const npLeft = this.getNullPropagatingArg(expr.left);
+    if (npLeft && expr.right.type === 'Literal') {
+      const literalValue = (expr.right as any).value;
+      if (this.comparisonExcludesNull(expr.operator, literalValue, true)) {
+        const variableName = this.getVariableName(npLeft.arg);
+        if (variableName) {
+          const originalType = this.getOriginalVariableType(variableName, position);
+          if (originalType) {
+            const narrowed = this.narrowingEngine.removeNullFromType(originalType);
+            return {
+              variableName,
+              guard: { type: 'null-check', expression: `${npLeft.funcName}(${variableName}) ${expr.operator} ${literalValue}` },
+              positiveNarrowing: narrowed.narrowedType,
+              negativeNarrowing: originalType,
+            };
+          }
+        }
+      }
+    }
+
+    // Reversed: literal <op> builtinCall(x)
+    const npRight = this.getNullPropagatingArg(expr.right);
+    if (npRight && expr.left.type === 'Literal') {
+      const literalValue = (expr.left as any).value;
+      if (this.comparisonExcludesNull(expr.operator, literalValue, false)) {
+        const variableName = this.getVariableName(npRight.arg);
+        if (variableName) {
+          const originalType = this.getOriginalVariableType(variableName, position);
+          if (originalType) {
+            const narrowed = this.narrowingEngine.removeNullFromType(originalType);
+            return {
+              variableName,
+              guard: { type: 'null-check', expression: `${literalValue} ${expr.operator} ${npRight.funcName}(${variableName})` },
+              positiveNarrowing: narrowed.narrowedType,
+              negativeNarrowing: originalType,
             };
           }
         }

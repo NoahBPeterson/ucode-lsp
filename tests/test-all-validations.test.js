@@ -124,6 +124,8 @@ const testFiles = [
     'tests/test-call-chain-completions.js',
     'tests/test-printf-format-diagnostics.js',
     'tests/test-unreachable-code.js',
+    'tests/test-object-property-inference.js',
+    'tests/test-pbr-cross-file-inference.js',
 ];
 
 // Mocha test files (run as a single combined mocha invocation with shared LSP server)
@@ -177,6 +179,8 @@ const mochaFileSet = new Set([
     'test-call-chain-completions.js',
     'test-printf-format-diagnostics.js',
     'test-unreachable-code.js',
+    'test-object-property-inference.js',
+    'test-pbr-cross-file-inference.js',
 ]);
 
 function getBaseName(filePath) {

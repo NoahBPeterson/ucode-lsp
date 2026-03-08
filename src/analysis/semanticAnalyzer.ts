@@ -10,7 +10,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
-         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode } from '../ast/nodes';
+         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -66,6 +66,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private commonjsImports: Map<string, { importedFrom: string; importSpecifier: string }> = new Map();
   private currentFunctionNode: FunctionDeclarationNode | null = null;
   private functionReturnTypes = new Map<FunctionDeclarationNode, { node: ReturnStatementNode, type: UcodeType }[]>();
+  private functionReturnPropertyTypes = new Map<FunctionDeclarationNode, Map<string, UcodeDataType>[]>();
   private processingFunctionCallCallee = false; // Track when processing function call callee
   private cfg: ControlFlowGraph | null = null;
   private cfgQueryEngine: CFGQueryEngine | null = null;
@@ -104,6 +105,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.switchScopes = [];
     this.currentFunctionNode = null;
     this.functionReturnTypes.clear();
+    this.functionReturnPropertyTypes.clear();
     this.disabledLines.clear();
     this.disabledRanges = [];
     this.linesWithSuppressedDiagnostics.clear();
@@ -435,6 +437,15 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (this.options.enableTypeChecking) {
           this.processInitializerTypeInference(node, name);
         }
+
+        // Case 1: Populate propertyTypes from object literal at declaration
+        if (node.init.type === 'ObjectExpression') {
+          const sym = this.symbolTable.lookup(name);
+          if (sym) {
+            const propTypes = this.inferObjectLiteralPropertyTypes(node.init as ObjectExpressionNode);
+            if (propTypes) sym.propertyTypes = propTypes;
+          }
+        }
       }
     } else {
       super.visitVariableDeclarator(node);
@@ -474,7 +485,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.visit(node.value);
   }
 
-  private processImportSpecifier(specifier: ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode, source: string): void {
+  private processImportSpecifier(specifier: ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode, source: string, defaultIsFunction: boolean = false, resolvedUri?: string | null): void {
     let localName: string;
     let importedName: string;
     
@@ -494,10 +505,14 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     // Mark default imports explicitly
     if (specifier.type === 'ImportDefaultSpecifier') {
-      dataType = {
-        type: UcodeType.OBJECT,
-        isDefaultImport: true
-      };
+      if (defaultIsFunction) {
+        dataType = UcodeType.FUNCTION as UcodeDataType;
+      } else {
+        dataType = {
+          type: UcodeType.OBJECT,
+          isDefaultImport: true
+        };
+      }
     }
 
     if (specifier.type === 'ImportNamespaceSpecifier') {
@@ -574,11 +589,27 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (this.isDotNotationModule(source)) {
           actualModulePath = this.convertDotNotationToPath(source);
         }
-        
-        const resolvedUri = this.fileResolver.resolveImportPath(actualModulePath, this.textDocument.uri);
-        symbol.importedFrom = this.normalizeImportedFrom(source, resolvedUri);
+
+        const effectiveUri = resolvedUri || this.fileResolver.resolveImportPath(actualModulePath, this.textDocument.uri);
+        symbol.importedFrom = this.normalizeImportedFrom(source, effectiveUri);
         symbol.importSpecifier = importedName;
-        // TODO: Resolve actual definition location
+
+        // Populate propertyTypes for object default imports (not function)
+        if (specifier.type === 'ImportDefaultSpecifier' && !defaultIsFunction && effectiveUri && effectiveUri.startsWith('file://')) {
+          const propTypes = this.fileResolver.getDefaultExportPropertyTypes(effectiveUri);
+          if (propTypes) {
+            symbol.propertyTypes = propTypes;
+          }
+        }
+
+        // Populate returnType and returnPropertyTypes for function default imports
+        if (specifier.type === 'ImportDefaultSpecifier' && defaultIsFunction && effectiveUri && effectiveUri.startsWith('file://')) {
+          const returnInfo = this.fileResolver.getDefaultExportFunctionReturnInfo(effectiveUri);
+          if (returnInfo) {
+            symbol.returnType = returnInfo.returnType;
+            symbol.returnPropertyTypes = returnInfo.returnPropertyTypes;
+          }
+        }
       }
     }
   }
@@ -641,8 +672,17 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
       // Namespace imports (import * as name) are always valid as they import everything
 
+      // For default imports, check if the exported value is a function
+      let defaultIsFunction = false;
+      if (specifier.type === 'ImportDefaultSpecifier' && moduleExports) {
+        const defaultExport = moduleExports.find(exp => exp.type === 'default');
+        if (defaultExport) {
+          defaultIsFunction = defaultExport.isFunction;
+        }
+      }
+
       // Process the import since the module was found
-      this.processImportSpecifier(specifier, modulePath);
+      this.processImportSpecifier(specifier, modulePath, defaultIsFunction, resolvedUri);
     } else {
       // Module cannot be resolved - add a warning on the source path, not the imported identifier
       this.addDiagnosticErrorCode(
@@ -694,6 +734,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const previousFunction = this.currentFunctionNode;
       this.currentFunctionNode = node;
       this.functionReturnTypes.set(node, []);
+      this.functionReturnPropertyTypes.set(node, []);
 
       // Enter function scope
       this.symbolTable.enterScope();
@@ -703,7 +744,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       for (const param of node.params) {
         this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
       }
-      
+
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
         this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
@@ -722,6 +763,21 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (symbol) {
         symbol.dataType = UcodeType.FUNCTION;  // Functions should always have type 'function'
         symbol.returnType = inferredReturnType; // Store the actual return type separately
+
+        // Merge return property types (intersection: keep props present in ALL return branches)
+        const returnPropEntries = this.functionReturnPropertyTypes.get(node) || [];
+        if (returnPropEntries.length > 0) {
+          const merged = new Map<string, UcodeDataType>(returnPropEntries[0]);
+          for (let i = 1; i < returnPropEntries.length; i++) {
+            const entry = returnPropEntries[i]!;
+            for (const key of merged.keys()) {
+              if (!entry.has(key)) {
+                merged.delete(key);
+              }
+            }
+          }
+          if (merged.size > 0) symbol.returnPropertyTypes = merged;
+        }
       }
 
       // Exit function scope
@@ -742,6 +798,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const previousFunction = this.currentFunctionNode;
       this.currentFunctionNode = node as any; // Type compatibility - both have id, params, body
       this.functionReturnTypes.set(node as any, []);
+      this.functionReturnPropertyTypes.set(node as any, []);
 
       // Enter function scope
       this.symbolTable.enterScope();
@@ -783,6 +840,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const previousFunction = this.currentFunctionNode;
       this.currentFunctionNode = node as any; // Type compatibility for analysis
       this.functionReturnTypes.set(node as any, []);
+      this.functionReturnPropertyTypes.set(node as any, []);
 
       // Enter function scope for parameters
       this.symbolTable.enterScope();
@@ -1472,6 +1530,23 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               this.symbolTable.updateSymbolType(variableName, dataType);
             }
           }
+
+          // Case 2: Update propertyTypes on reassignment with object literal
+          if (node.right.type === 'ObjectExpression' && symbol) {
+            const propTypes = this.inferObjectLiteralPropertyTypes(node.right as ObjectExpressionNode);
+            if (propTypes) symbol.propertyTypes = propTypes;
+          }
+
+          // Propagate return property types from function call at assignment
+          if (functionReturnType && symbol && node.right.type === 'CallExpression') {
+            const callExpr = node.right as CallExpressionNode;
+            if (callExpr.callee.type === 'Identifier') {
+              const funcSym = this.symbolTable.lookup((callExpr.callee as IdentifierNode).name);
+              if (funcSym?.returnPropertyTypes) {
+                symbol.propertyTypes = new Map(funcSym.returnPropertyTypes);
+              }
+            }
+          }
         }
       }
     }
@@ -1529,6 +1604,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         
         // Store it for later inference.
         this.functionReturnTypes.get(this.currentFunctionNode)?.push({ node, type: returnType });
+
+        // Collect property types from returned object literals
+        if (node.argument?.type === 'ObjectExpression') {
+          const propTypes = this.inferObjectLiteralPropertyTypes(node.argument as ObjectExpressionNode);
+          if (propTypes) {
+            this.functionReturnPropertyTypes.get(this.currentFunctionNode)?.push(propTypes);
+          }
+        }
       }
     }
   }
@@ -2141,6 +2224,38 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return inferredType as UcodeDataType;
   }
 
+  private inferObjectLiteralPropertyTypes(node: ObjectExpressionNode): Map<string, UcodeDataType> | null {
+    const propTypes = new Map<string, UcodeDataType>();
+    for (const prop of node.properties) {
+      const key = this.getStaticPropertyName(prop.key);
+      if (!key) continue;
+      const val = prop.value;
+      let valType: UcodeDataType;
+      if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
+        valType = UcodeType.FUNCTION as UcodeDataType;
+      } else if (val.type === 'Identifier') {
+        const sym = this.symbolTable.lookup((val as IdentifierNode).name);
+        valType = sym ? sym.dataType : UcodeType.UNKNOWN as UcodeDataType;
+      } else if (val.type === 'Literal') {
+        const lit = val as LiteralNode;
+        if (typeof lit.value === 'string') valType = UcodeType.STRING as UcodeDataType;
+        else if (typeof lit.value === 'boolean') valType = UcodeType.BOOLEAN as UcodeDataType;
+        else if (typeof lit.value === 'number') {
+          valType = (Number.isInteger(lit.value) ? UcodeType.INTEGER : UcodeType.DOUBLE) as UcodeDataType;
+        } else if (lit.value === null) valType = UcodeType.NULL as UcodeDataType;
+        else valType = UcodeType.UNKNOWN as UcodeDataType;
+      } else if (val.type === 'ObjectExpression') {
+        valType = UcodeType.OBJECT as UcodeDataType;
+      } else if (val.type === 'ArrayExpression') {
+        valType = UcodeType.ARRAY as UcodeDataType;
+      } else {
+        valType = this.typeChecker.checkNode(val) as UcodeDataType;
+      }
+      propTypes.set(key, valType);
+    }
+    return propTypes.size > 0 ? propTypes : null;
+  }
+
   private inferFunctionCallReturnType(node: AstNode): UcodeDataType | null {
     if (node.type !== 'CallExpression') {
       return null;
@@ -2154,8 +2269,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const funcName = (callExpr.callee as IdentifierNode).name;
     const symbol = this.symbolTable.lookup(funcName);
     
-    if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED || symbol.type === SymbolType.BUILTIN)) {
+    if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
       // Return the raw return type without conversion to preserve unions
+      // Builtins are handled by the type checker which narrows return types based on argument types
       return symbol.returnType || null;
     }
 
@@ -2331,6 +2447,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         if (functionReturnType) {
           symbol.dataType = functionReturnType;
           this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
+          // Propagate return property types from function to variable
+          if (node.init!.type === 'CallExpression') {
+            const callExpr = node.init! as CallExpressionNode;
+            if (callExpr.callee.type === 'Identifier') {
+              const funcSym = this.symbolTable.lookup((callExpr.callee as IdentifierNode).name);
+              if (funcSym?.returnPropertyTypes) {
+                symbol.propertyTypes = new Map(funcSym.returnPropertyTypes);
+              }
+            }
+          }
           return;
         }
         // For non-function calls, fall back to type checker result
@@ -3050,7 +3176,14 @@ private addDiagnostic(
       return true; // Filter this diagnostic
     }
 
-    // Fall back to AST-based guard detection when CFG data is unavailable
+    // Use type checker's comprehensive AST-based guard detection
+    // This handles null checks, truthy guards, builtin call guards, etc.
+    const narrowedType = this.typeChecker.getNarrowedTypeAtPosition(varName, argumentOffset);
+    if (narrowedType && typeNarrowing.isSubtypeOfUnion(narrowedType, expectedTypes)) {
+      return true;
+    }
+
+    // Fall back to semantic analyzer's type() guard detection
     const guardTypes = this.findTypeGuardNarrowedTypes(varName, argumentOffset);
     if (
       guardTypes &&

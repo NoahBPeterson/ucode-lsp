@@ -88,6 +88,13 @@ export class TypeNarrowingEngine {
           excludedTypes: []
         };
       }
+      // UNKNOWN means "could be anything" — a type guard narrows it to the tested type
+      if (type === UcodeType.UNKNOWN && typesToKeep.length > 0) {
+        return {
+          narrowedType: typesToKeep.length === 1 ? typesToKeep[0]! as UcodeDataType : createUnionType(typesToKeep),
+          excludedTypes: []
+        };
+      }
       return {
         narrowedType: UcodeType.UNKNOWN, // Completely narrowed away
         excludedTypes: [type as UcodeType]
