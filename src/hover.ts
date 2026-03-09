@@ -13,6 +13,12 @@ import { Option } from 'effect';
 import { MODULE_REGISTRIES, isKnownModule, isKnownObjectType, getModuleMemberDocumentation, getImportedSymbolDocumentation, getObjectMethodDocumentation, resolveReturnObjectType, type KnownObjectType } from './analysis/moduleDispatch';
 import { parseFormatSpecifiers } from './analysis/checkers/builtinValidation';
 
+const BUILTIN_METHOD_NOTE = '\n\n---\n*Built-in C method — no source definition available*';
+
+function appendBuiltinNote(doc: string): string {
+    return doc + BUILTIN_METHOD_NOTE;
+}
+
 function detectMemberHoverContext(position: any, tokens: any[], document: any): { objectName: string, memberName: string, memberTokenPos: number, memberTokenEnd: number, resolvedObjectType?: KnownObjectType } | undefined {
     // Look for pattern: LABEL DOT LABEL (where cursor is over the second LABEL)
     // Also handles call chains: LABEL(...) DOT LABEL, LABEL DOT LABEL(...) DOT LABEL
@@ -341,7 +347,7 @@ function getUnifiedMemberHover(
     const objType = detectObjectTypeFromDataType(symbol.dataType);
     if (objType) {
         const methodDoc = getObjectMethodDocumentation(objType, propertyName);
-        if (Option.isSome(methodDoc)) return methodDoc.value;
+        if (Option.isSome(methodDoc)) return appendBuiltinNote(methodDoc.value);
     }
 
     // 2. Check if it's a module namespace import (import * as fs from 'fs') or require('fs')
@@ -527,7 +533,7 @@ export function handleHover(
                 const methodDoc = getObjectMethodDocumentation(resolvedObjectType, memberName);
                 if (Option.isSome(methodDoc)) {
                     return {
-                        contents: { kind: MarkupKind.Markdown, value: methodDoc.value },
+                        contents: { kind: MarkupKind.Markdown, value: appendBuiltinNote(methodDoc.value) },
                         range: {
                             start: document.positionAt(memberContext.memberTokenPos),
                             end: document.positionAt(memberContext.memberTokenEnd)
@@ -608,7 +614,7 @@ export function handleHover(
                         const methodDoc = getObjectMethodDocumentation(objType, memberName);
                         if (Option.isSome(methodDoc)) {
                             return {
-                                contents: { kind: MarkupKind.Markdown, value: methodDoc.value },
+                                contents: { kind: MarkupKind.Markdown, value: appendBuiltinNote(methodDoc.value) },
                                 range: {
                                     start: document.positionAt(memberContext.memberTokenPos),
                                     end: document.positionAt(memberContext.memberTokenEnd)

@@ -52,7 +52,7 @@ describe('Number Conversion Function Validation', function() {
       `);
       const hexdecErrors = errors.filter(e => e.message.includes('hexdec'));
       assert.strictEqual(hexdecErrors.length, 1, 'Should have error for integer parameter');
-      assert.match(hexdecErrors[0].message, /hexdec\(\) expects string, got integer/);
+      assert(hexdecErrors[0].message.includes('hexdec') && hexdecErrors[0].message.includes('got integer'), 'Should mention hexdec and integer');
     });
 
     it('should reject double parameters', async function() {
@@ -61,7 +61,7 @@ describe('Number Conversion Function Validation', function() {
       `);
       const hexdecErrors = errors.filter(e => e.message.includes('hexdec'));
       assert.strictEqual(hexdecErrors.length, 1, 'Should have error for double parameter');
-      assert.match(hexdecErrors[0].message, /hexdec\(\) expects string, got double/);
+      assert(hexdecErrors[0].message.includes('hexdec') && hexdecErrors[0].message.includes('got double'), 'Should mention hexdec and double');
     });
 
     it('should require at least one parameter', async function() {
@@ -82,7 +82,7 @@ describe('Number Conversion Function Validation', function() {
       `);
       const hexdecErrors = errors.filter(e => e.message.includes('hexdec'));
       assert.strictEqual(hexdecErrors.length, 1, 'Should have error for array parameter');
-      assert.match(hexdecErrors[0].message, /hexdec\(\) expects string, got array/);
+      assert(hexdecErrors[0].message.includes('hexdec') && hexdecErrors[0].message.includes('got array'), 'Should mention hexdec and array');
     });
   });
 
@@ -111,7 +111,7 @@ describe('Number Conversion Function Validation', function() {
       `);
       const b64encErrors = errors.filter(e => e.message.includes('b64enc'));
       assert.strictEqual(b64encErrors.length, 1, 'Should have error for integer parameter');
-      assert.match(b64encErrors[0].message, /b64enc\(\) expects string, got integer/);
+      assert(b64encErrors[0].message.includes('b64enc') && b64encErrors[0].message.includes('got integer'), 'Should mention b64enc and integer');
     });
 
     it('should reject double parameters', async function() {
@@ -120,7 +120,7 @@ describe('Number Conversion Function Validation', function() {
       `);
       const b64encErrors = errors.filter(e => e.message.includes('b64enc'));
       assert.strictEqual(b64encErrors.length, 1, 'Should have error for double parameter');
-      assert.match(b64encErrors[0].message, /b64enc\(\) expects string, got double/);
+      assert(b64encErrors[0].message.includes('b64enc') && b64encErrors[0].message.includes('got double'), 'Should mention b64enc and double');
     });
 
     it('should require at least one parameter', async function() {
@@ -140,7 +140,7 @@ describe('Number Conversion Function Validation', function() {
       `);
       const b64encErrors = errors.filter(e => e.message.includes('b64enc'));
       assert.strictEqual(b64encErrors.length, 1, 'Should have error for object parameter');
-      assert.match(b64encErrors[0].message, /b64enc\(\) expects string, got object/);
+      assert(b64encErrors[0].message.includes('b64enc') && b64encErrors[0].message.includes('got object'), 'Should mention b64enc and object');
     });
   });
 
@@ -169,7 +169,7 @@ describe('Number Conversion Function Validation', function() {
       `);
       const b64decErrors = errors.filter(e => e.message.includes('b64dec'));
       assert.strictEqual(b64decErrors.length, 1, 'Should have error for integer parameter');
-      assert.match(b64decErrors[0].message, /b64dec\(\) expects string, got integer/);
+      assert(b64decErrors[0].message.includes('b64dec') && b64decErrors[0].message.includes('got integer'), 'Should mention b64dec and integer');
     });
 
     it('should reject double parameters', async function() {
@@ -178,7 +178,7 @@ describe('Number Conversion Function Validation', function() {
       `);
       const b64decErrors = errors.filter(e => e.message.includes('b64dec'));
       assert.strictEqual(b64decErrors.length, 1, 'Should have error for double parameter');
-      assert.match(b64decErrors[0].message, /b64dec\(\) expects string, got double/);
+      assert(b64decErrors[0].message.includes('b64dec') && b64decErrors[0].message.includes('got double'), 'Should mention b64dec and double');
     });
 
     it('should require at least one parameter', async function() {
@@ -197,7 +197,7 @@ describe('Number Conversion Function Validation', function() {
       `);
       const b64decErrors = errors.filter(e => e.message.includes('b64dec'));
       assert.strictEqual(b64decErrors.length, 1, 'Should have error for boolean parameter');
-      assert.match(b64decErrors[0].message, /b64dec\(\) expects string, got boolean/);
+      assert(b64decErrors[0].message.includes('b64dec') && b64decErrors[0].message.includes('got boolean'), 'Should mention b64dec and boolean');
     });
   });
 

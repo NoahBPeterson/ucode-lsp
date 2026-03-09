@@ -148,6 +148,7 @@ export interface Symbol {
   };
     propertyTypes?: Map<string, UcodeDataType>; // Known property types for object-like symbols (e.g., global)
     returnPropertyTypes?: Map<string, UcodeDataType>; // Property types of objects returned by this function
+    propertyFunctionReturnTypes?: Map<string, string>; // Return type hints for function-typed properties (e.g., "uci_ctx" -> "uci.cursor")
     initNode?: AstNode; // Initial value node for SSA type protection
     initialLiteralType?: UcodeDataType | undefined; // Initial literal type, if declared with a literal
     currentType?: UcodeDataType | undefined; // Current type after assignments (for SSA)
@@ -212,7 +213,7 @@ export class SymbolTable {
       { name: 'b64dec', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
       { name: 'hexenc', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
       { name: 'hexdec', returnType: UcodeType.STRING, params: [UcodeType.STRING, UcodeType.STRING] },
-      { name: 'hex', returnType: UcodeType.STRING, params: [UcodeType.INTEGER] },
+      { name: 'hex', returnType: UcodeType.INTEGER, params: [UcodeType.STRING] },
       { name: 'uchr', returnType: UcodeType.STRING, params: [UcodeType.INTEGER] },
       { name: 'iptoarr', returnType: UcodeType.ARRAY, params: [UcodeType.STRING] },
       { name: 'arrtoip', returnType: UcodeType.STRING, params: [UcodeType.ARRAY] },

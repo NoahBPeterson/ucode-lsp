@@ -245,13 +245,13 @@ if (exists(result, "keys")) {
       
       const diagnostics = await getDiagnostics(testContent, '/tmp/test-integration.uc');
       
-      const objectFunctionErrors = diagnostics.filter(d => 
-        d.severity === 1 && 
+      const objectFunctionErrors = diagnostics.filter(d =>
+        d.severity === 1 &&
         (d.message.includes("keys") || d.message.includes("values") || d.message.includes("exists")) &&
-        !d.message.includes("Undefined variable") // Allow undefined variable errors, just not type errors
+        !d.message.includes("Undefined variable")
       );
-      
-      assert.strictEqual(objectFunctionErrors.length, 0, 
+
+      assert.strictEqual(objectFunctionErrors.length, 0,
         `Object functions should work correctly in complex scenarios. Found: ${objectFunctionErrors.map(e => e.message).join(', ')}`);
     });
   });

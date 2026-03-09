@@ -58,11 +58,6 @@ function parseBSSConfigurations() {
 
         console.log('MAP WARNINGS:', JSON.stringify(mapWarnings.map(d => ({ line: d.range.start.line, message: d.message })), null, 2));
 
-        // BUG: We're getting 3 warnings but should only get 2
-        // - authentication line (INSIDE guard) should NOT warn
-        // - ciphers line (OUTSIDE guard) should warn
-        // - bands line (OUTSIDE guard) should warn
-
         const lines = content.split('\n');
         const authLine = lines.findIndex(line => line.includes('const authentication = map'));
         const ciphersLine = lines.findIndex(line => line.includes('const ciphers = map'));

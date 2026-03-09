@@ -20,11 +20,13 @@ describe('PBR Cross-File Property Inference', function() {
 
   let lspServer;
   let getHover;
+  let getDiagnostics;
 
   before(async function() {
     lspServer = createLSPTestServer();
     await lspServer.initialize();
     getHover = lspServer.getHover;
+    getDiagnostics = lspServer.getDiagnostics;
   });
 
   after(async function() {
@@ -111,6 +113,23 @@ describe('PBR Cross-File Property Inference', function() {
         `Expected 'function' for config.uci_ctx, got: ${text}`);
     });
 
+    it('should type config.uci_ctx() call result as uci.cursor (not function)', async function() {
+      const callLines = [
+        "import create_config from 'config';",
+        'let config = create_config(null, null, null);',
+        "let ctx = config.uci_ctx('test');",
+      ];
+      const callContent = callLines.join('\n');
+      const lineIdx = 2;
+      const charIdx = callLines[lineIdx].indexOf('ctx');
+      const hover = await getHover(callContent, TEST_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(!text.toLowerCase().includes('function'),
+        `ctx should not be 'function', should be cursor; got: ${text}`);
+      assert.ok(!text.toLowerCase().includes('unknown'),
+        `ctx should not be 'unknown', should be cursor; got: ${text}`);
+    });
+
     it('should type config.load as function', async function() {
       const lineIdx = 5;
       const charIdx = lines[lineIdx].indexOf('load');
@@ -169,6 +188,48 @@ describe('PBR Cross-File Property Inference', function() {
       const text = extractHoverText(hover);
       assert.ok(text.toLowerCase().includes('function'),
         `Expected 'function' for sh.run, got: ${text}`);
+    });
+  });
+
+  // ── sys.uc: function property return types ─────────────────────────
+
+  describe('sys.uc (function property return types)', function() {
+    const lines = [
+      "import create_sys from 'sys';",
+      "import _pkg_mod from 'pkg';",
+      'let pkg = _pkg_mod.pkg;',
+      'let sh = create_sys(null, pkg);',
+      "let result = sh.exec('ls');",
+      "let rc = sh.run('ls');",
+      "let q = sh.quote('hello');",
+    ];
+    const content = lines.join('\n');
+
+    it('should type sh.exec() call result as string (not function)', async function() {
+      const lineIdx = 4;
+      const charIdx = lines[lineIdx].indexOf('result');
+      const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('string'),
+        `Expected 'string' for sh.exec() result, got: ${text}`);
+    });
+
+    it('should type sh.run() call result as integer', async function() {
+      const lineIdx = 5;
+      const charIdx = lines[lineIdx].indexOf('rc');
+      const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('integer'),
+        `Expected 'integer' for sh.run() result, got: ${text}`);
+    });
+
+    it('should type sh.quote() call result as string', async function() {
+      const lineIdx = 6;
+      const charIdx = lines[lineIdx].indexOf('q =') ; // hover on 'q'
+      const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('string'),
+        `Expected 'string' for sh.quote() result, got: ${text}`);
     });
   });
 
@@ -310,6 +371,64 @@ describe('PBR Cross-File Property Inference', function() {
     });
   });
 
+  // ── double-nested scope: factory call results used two levels deep ──
+
+  describe('double-nested scope (factory results in inner function)', function() {
+    const lines = [
+      "import create_config from 'config';",
+      "import create_sys from 'sys';",
+      "import _pkg_mod from 'pkg';",
+      'let pkg = _pkg_mod.pkg;',
+      'function create_pbr() {',
+      '  let config = create_config(null, null, pkg);',
+      '  let sh = create_sys(null, pkg);',
+      '  function inner_check() {',
+      '    let cfg = config.cfg;',
+      '    let uc = config.uci_ctx;',
+      '    let ex = sh.exec;',
+      '    let rn = sh.run;',
+      '  }',
+      '}',
+    ];
+    const content = lines.join('\n');
+
+    it('should type config.cfg as object in double-nested function', async function() {
+      const lineIdx = 8;
+      const charIdx = lines[lineIdx].indexOf('cfg');
+      const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('object'),
+        `Expected 'object' for config.cfg in inner fn, got: ${text}`);
+    });
+
+    it('should type config.uci_ctx as function in double-nested function', async function() {
+      const lineIdx = 9;
+      const charIdx = lines[lineIdx].indexOf('uci_ctx');
+      const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('function'),
+        `Expected 'function' for config.uci_ctx in inner fn, got: ${text}`);
+    });
+
+    it('should type sh.exec as function in double-nested function', async function() {
+      const lineIdx = 10;
+      const charIdx = lines[lineIdx].indexOf('exec');
+      const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('function'),
+        `Expected 'function' for sh.exec in inner fn, got: ${text}`);
+    });
+
+    it('should type sh.run as function in double-nested function', async function() {
+      const lineIdx = 11;
+      const charIdx = lines[lineIdx].indexOf('run');
+      const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('function'),
+        `Expected 'function' for sh.run in inner fn, got: ${text}`);
+    });
+  });
+
   // ── pbr.uc itself: the full module as default export ─────────────
 
   describe('pbr.uc (factory function default export)', function() {
@@ -348,6 +467,177 @@ describe('PBR Cross-File Property Inference', function() {
       const text = extractHoverText(hover);
       assert.ok(text.toLowerCase().includes('function'),
         `Expected 'function' for pbr.stop_service, got: ${text}`);
+    });
+  });
+
+  // ── real pbr.uc file: verify types inside deeply nested functions ──
+
+  describe('real pbr.uc file analysis', function() {
+    const fs = require('fs');
+    const PBR_FILE = path.join(PBR_DIR, 'pbr.uc');
+    const pbrContent = fs.readFileSync(PBR_FILE, 'utf-8');
+    const pbrLines = pbrContent.split('\n');
+
+    it('should type config as object (not unknown) at line 152', async function() {
+      // line 152: let ctx_dhcp = config.uci_ctx('dhcp'); // config should not be unknown
+      const lineIdx = 151; // 0-indexed
+      const charIdx = pbrLines[lineIdx].indexOf('config');
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(!text.toLowerCase().includes('unknown'),
+        `config should not be 'unknown' at line 152, got: ${text}`);
+      assert.ok(text.toLowerCase().includes('object'),
+        `Expected 'object' for config at line 152, got: ${text}`);
+    });
+
+    it('should provide hover for config.uci_ctx at line 152', async function() {
+      const lineIdx = 151;
+      const charIdx = pbrLines[lineIdx].indexOf('uci_ctx');
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.length > 0,
+        `Expected hover for config.uci_ctx at line 152, got empty`);
+      assert.ok(text.toLowerCase().includes('function'),
+        `Expected 'function' for config.uci_ctx, got: ${text}`);
+    });
+
+    it('should type config.cfg as object at line 36', async function() {
+      // line 36: let cfg = config.cfg;
+      const lineIdx = 35;
+      const charIdx = pbrLines[lineIdx].indexOf('.cfg') + 1;
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('object'),
+        `Expected 'object' for config.cfg at line 36, got: ${text}`);
+    });
+
+    it('should type ctx_dhcp as object/cursor (not function) at line 152', async function() {
+      // line 152: let ctx_dhcp = config.uci_ctx('dhcp');
+      const lineIdx = 151;
+      const charIdx = pbrLines[lineIdx].indexOf('ctx_dhcp');
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      // ctx_dhcp should be a UCI cursor object, not 'function' or 'unknown'
+      assert.ok(!text.toLowerCase().includes('unknown'),
+        `ctx_dhcp should not be 'unknown', got: ${text}`);
+    });
+
+    it('should provide hover for ctx_dhcp.get at line 162', async function() {
+      // line 162: let dhcp_option = ctx_dhcp.get('dhcp', iface, 'dhcp_option');
+      const lineIdx = 161;
+      const charIdx = pbrLines[lineIdx].indexOf('.get') + 1;
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.length > 0,
+        `Expected hover for ctx_dhcp.get, got empty`);
+    });
+
+    it('should show built-in note in hover for ctx_dhcp.get', async function() {
+      const lineIdx = 161;
+      const charIdx = pbrLines[lineIdx].indexOf('.get') + 1;
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.includes('Built-in C method'),
+        `Expected built-in note in hover for ctx_dhcp.get, got: ${text}`);
+    });
+
+    it('should type dhcp_option from cursor.get as string | array | null at line 162', async function() {
+      const lineIdx = 161;
+      const charIdx = pbrLines[lineIdx].indexOf('dhcp_option');
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(!text.toLowerCase().includes('unknown'),
+        `dhcp_option should not be 'unknown', got: ${text}`);
+    });
+
+    it('should narrow dhcp_option to array after type guard at line 167', async function() {
+      // line 163: if (type(dhcp_option) != 'array') return;
+      // line 167: for (let opt in dhcp_option) {  -- should be array here
+      const lineIdx = 166;
+      const charIdx = pbrLines[lineIdx].indexOf('dhcp_option');
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('array'),
+        `Expected 'array' for dhcp_option after type guard, got: ${text}`);
+    });
+
+    it('should type ipaddr as string | array at line 164 (|| only eliminates null)', async function() {
+      // line 164: let ipaddr = ctx_net.get('network', iface, 'ipaddr') || '';
+      // get() returns string | string[] | null.
+      // || '' eliminates null (falsy), but arrays are truthy so string[] survives.
+      // Result: string | array
+      const lineIdx = 163;
+      const charIdx = pbrLines[lineIdx].indexOf('ipaddr');
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('string'),
+        `Expected 'string' in ipaddr type, got: ${text}`);
+      assert.ok(text.toLowerCase().includes('array'),
+        `Expected 'array' in ipaddr type (arrays are truthy, survive ||), got: ${text}`);
+      assert.ok(!text.toLowerCase().includes('null'),
+        `ipaddr should not include null (|| '' eliminates it), got: ${text}`);
+    });
+
+    it('should not show false positive UC2007 on hex() at line 879', async function() {
+      // line 879: let iface_mark = sprintf('0x%06x', hex(cfg.uplink_mark));
+      // hex() returns integer, so %x should be valid
+      const lineIdx = 878;
+      const charIdx = pbrLines[lineIdx].indexOf('hex');
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('integer'),
+        `Expected 'integer' for hex() return type, got: ${text}`);
+    });
+
+    it('should type sh.exec() result as string (not function) at line 742', async function() {
+      // line 742: let route_check = sh.exec(pkg.ip_full + ...);
+      const lineIdx = 741;
+      const charIdx = pbrLines[lineIdx].indexOf('route_check');
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('string'),
+        `Expected 'string' for sh.exec() result at line 742, got: ${text}`);
+      assert.ok(!text.toLowerCase().includes('function'),
+        `sh.exec() result should not be 'function', got: ${text}`);
+    });
+
+    it('should type dev6_out from sh.exec() as string at line 752', async function() {
+      // line 752: let dev6_out = sh.exec(...);
+      const lineIdx = 751;
+      const charIdx = pbrLines[lineIdx].indexOf('dev6_out');
+      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
+      const text = extractHoverText(hover);
+      assert.ok(text.toLowerCase().includes('string'),
+        `Expected 'string' for dev6_out at line 752, got: ${text}`);
+    });
+
+    it('should not have false positive diagnostic on index(route_check) at line 743', async function() {
+      // line 743: if (index(route_check, ...) >= 0) — route_check is string, not function
+      const diagnostics = await getDiagnostics(pbrContent, PBR_FILE);
+      const line743Diags = diagnostics.filter(d =>
+        d.range.start.line === 742 && d.message && d.message.includes('index')
+      );
+      assert.strictEqual(line743Diags.length, 0,
+        `Should not have false positive on index() at line 743, got: ${line743Diags.map(d => d.message).join('; ')}`);
+    });
+
+    it('should not have false positive diagnostic on trim(sh.exec()) at line 1841', async function() {
+      // line 1841: trim(sh.exec('echo $$')) — sh.exec returns string, not function
+      const diagnostics = await getDiagnostics(pbrContent, PBR_FILE);
+      const line1841Diags = diagnostics.filter(d =>
+        d.range.start.line === 1840 && d.message && d.message.includes('trim')
+      );
+      assert.strictEqual(line1841Diags.length, 0,
+        `Should not have false positive on trim() at line 1841, got: ${line1841Diags.map(d => d.message).join('; ')}`);
+    });
+
+    it('should not have false positive UC2007 diagnostic on sprintf with hex() at line 879', async function() {
+      const diagnostics = await getDiagnostics(pbrContent, PBR_FILE);
+      const line879Diags = diagnostics.filter(d =>
+        d.range.start.line === 878 && d.message && d.message.includes('UC2007')
+      );
+      assert.strictEqual(line879Diags.length, 0,
+        `Should not have UC2007 false positive on hex() at line 879, got: ${line879Diags.map(d => d.message).join('; ')}`);
     });
   });
 });

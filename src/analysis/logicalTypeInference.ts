@@ -7,7 +7,7 @@
  * - Both preserve the exact type of the returned operand
  */
 
-import { UcodeType, UcodeDataType, createUnionType } from './symbolTable';
+import { UcodeType, UcodeDataType, createUnionType, getUnionTypes } from './symbolTable';
 
 export class LogicalTypeInference {
   
@@ -44,18 +44,24 @@ export class LogicalTypeInference {
       // Left is always truthy, so always returns left operand
       return leftType as UcodeDataType;
     }
-    
+
     if (this.isDefinitelyFalsy(leftType)) {
       // Left is always falsy, so always returns right operand
       return rightType as UcodeDataType;
     }
-    
+
+    // If left is unknown but right is known, the result is at least the right type
+    // Common pattern: `expr || ''` guarantees a string fallback
+    if (leftType === UcodeType.UNKNOWN && rightType !== UcodeType.UNKNOWN) {
+      return rightType as UcodeDataType;
+    }
+
     // Left can be either truthy or falsy
     if (leftType === rightType) {
       // Same types, so result is that type
       return leftType as UcodeDataType;
     }
-    
+
     // Different types, could return either based on left's truthiness
     return createUnionType([leftType, rightType]);
   }
@@ -89,6 +95,79 @@ export class LogicalTypeInference {
     return createUnionType([leftType, rightType]);
   }
   
+  /**
+   * Union-aware logical OR inference.
+   * For `(string | string[] | null) || ''`:
+   *   - null is falsy → eliminated, falls to right (string)
+   *   - string can be falsy (empty) → could return left (string) or right (string)
+   *   - string[] (array) is always truthy → returns left (array)
+   * Result: string | array
+   */
+  inferLogicalOrFullType(leftFullType: UcodeDataType, rightFullType: UcodeDataType): UcodeDataType {
+    const leftTypes = getUnionTypes(leftFullType);
+    const rightTypes = getUnionTypes(rightFullType);
+
+    const resultTypes: UcodeType[] = [];
+
+    for (const lt of leftTypes) {
+      if (this.isDefinitelyTruthy(lt)) {
+        // Always returns left operand — add left type
+        if (!resultTypes.includes(lt)) resultTypes.push(lt);
+      } else if (this.isDefinitelyFalsy(lt)) {
+        // Always returns right operand — add right types
+        for (const rt of rightTypes) {
+          if (!resultTypes.includes(rt)) resultTypes.push(rt);
+        }
+      } else {
+        // Could be truthy or falsy — add both left and right types
+        if (!resultTypes.includes(lt)) resultTypes.push(lt);
+        for (const rt of rightTypes) {
+          if (!resultTypes.includes(rt)) resultTypes.push(rt);
+        }
+      }
+    }
+
+    if (resultTypes.length === 0) return UcodeType.UNKNOWN;
+    if (resultTypes.length === 1) return resultTypes[0] as UcodeDataType;
+    return createUnionType(resultTypes);
+  }
+
+  /**
+   * Union-aware logical AND inference.
+   * For `(string | null) && expr`:
+   *   - null is falsy → returns left (null)
+   *   - string can be falsy → could return left (string) or right
+   * Result: string | null | rightType
+   */
+  inferLogicalAndFullType(leftFullType: UcodeDataType, rightFullType: UcodeDataType): UcodeDataType {
+    const leftTypes = getUnionTypes(leftFullType);
+    const rightTypes = getUnionTypes(rightFullType);
+
+    const resultTypes: UcodeType[] = [];
+
+    for (const lt of leftTypes) {
+      if (this.isDefinitelyFalsy(lt)) {
+        // Always returns left operand — add left type
+        if (!resultTypes.includes(lt)) resultTypes.push(lt);
+      } else if (this.isDefinitelyTruthy(lt)) {
+        // Always returns right operand — add right types
+        for (const rt of rightTypes) {
+          if (!resultTypes.includes(rt)) resultTypes.push(rt);
+        }
+      } else {
+        // Could be truthy or falsy — add both left and right types
+        if (!resultTypes.includes(lt)) resultTypes.push(lt);
+        for (const rt of rightTypes) {
+          if (!resultTypes.includes(rt)) resultTypes.push(rt);
+        }
+      }
+    }
+
+    if (resultTypes.length === 0) return UcodeType.UNKNOWN;
+    if (resultTypes.length === 1) return resultTypes[0] as UcodeDataType;
+    return createUnionType(resultTypes);
+  }
+
   /**
    * Get common patterns for logical operator results
    */

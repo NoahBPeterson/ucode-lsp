@@ -8,6 +8,8 @@ import * as fs from 'fs';
 import { UcodeLexer, TokenType } from './lexer';
 import { SemanticAnalysisResult, Symbol, SymbolType } from './analysis';
 import { FileResolver } from './analysis/fileResolver';
+import { isKnownObjectType, OBJECT_REGISTRIES } from './analysis/moduleDispatch';
+import { Option } from 'effect';
 
 // Global file resolver instance
 let fileResolver: FileResolver | null = null;
@@ -42,11 +44,36 @@ export function handleDefinition(
         if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
             const symbolName = token.value;
             
-            // Look up the symbol in the symbol table
-            const symbol = analysisResult.symbolTable.lookup(symbolName);
-            
+            // Look up the symbol in the symbol table (position-aware for nested scopes)
+            const symbol = analysisResult.symbolTable.lookupAtPosition(symbolName, offset)
+                        || analysisResult.symbolTable.lookup(symbolName);
+
             if (symbol) {
                 return getSymbolDefinition(symbol, document, fileResolver);
+            }
+
+            // Check if this is a method on a known object type (e.g., ctx_dhcp.get)
+            // Look for preceding DOT + LABEL pattern in tokens
+            const tokenIndex = tokens.indexOf(token);
+            if (tokenIndex >= 2) {
+                const dotToken = tokens[tokenIndex - 1];
+                const objToken = tokens[tokenIndex - 2];
+                if (dotToken && dotToken.type === TokenType.TK_DOT &&
+                    objToken && objToken.type === TokenType.TK_LABEL && typeof objToken.value === 'string') {
+                    const objSymbol = analysisResult.symbolTable.lookupAtPosition(objToken.value, offset)
+                                   || analysisResult.symbolTable.lookup(objToken.value);
+                    if (objSymbol && objSymbol.dataType && typeof objSymbol.dataType === 'object' &&
+                        'moduleName' in objSymbol.dataType) {
+                        const moduleName = (objSymbol.dataType as any).moduleName as string;
+                        if (isKnownObjectType(moduleName)) {
+                            const method = OBJECT_REGISTRIES[moduleName].getMethod(symbolName);
+                            if (Option.isSome(method)) {
+                                // Known built-in method — navigate to the object's declaration instead
+                                return getSymbolDefinition(objSymbol, document, fileResolver);
+                            }
+                        }
+                    }
+                }
             }
         }
     } catch (error) {
@@ -54,7 +81,8 @@ export function handleDefinition(
         const wordRange = getWordRangeAtPosition(text, offset);
         if (wordRange) {
             const symbolName = text.substring(wordRange.start, wordRange.end);
-            const symbol = analysisResult.symbolTable.lookup(symbolName);
+            const symbol = analysisResult.symbolTable.lookupAtPosition(symbolName, offset)
+                        || analysisResult.symbolTable.lookup(symbolName);
             if (symbol) {
                 return getSymbolDefinition(symbol, document, fileResolver);
             }
@@ -101,7 +129,14 @@ function getImportedSymbolDefinition(symbol: Symbol, currentDocument: TextDocume
     }
     
     // Resolve the import path to an absolute URI
-    const targetUri = fileResolver.resolveImportPath(symbol.importedFrom, currentDocument.uri);
+    let targetUri: string | null;
+    if (symbol.importedFrom.startsWith('file://')) {
+        targetUri = symbol.importedFrom;
+    } else if (symbol.importedFrom.startsWith('builtin://')) {
+        return null;
+    } else {
+        targetUri = fileResolver.resolveImportPath(symbol.importedFrom, currentDocument.uri);
+    }
     if (!targetUri) {
         console.log(`Could not resolve import path: ${symbol.importedFrom}`);
         return null;

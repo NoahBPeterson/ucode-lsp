@@ -18,6 +18,7 @@ import {
   CallExpressionNode,
   LiteralNode,
   UnaryExpressionNode,
+  LogicalExpressionNode,
 } from '../../ast/nodes';
 import { ControlFlowGraph, BasicBlock } from './types';
 import { TypeState } from './typeState';
@@ -30,7 +31,10 @@ import {
 } from '../symbolTable';
 import { createIoHandleDataType } from '../ioTypes';
 import { createFsObjectDataType, FsObjectType } from '../fsTypes';
+import { LogicalTypeInference } from '../logicalTypeInference';
 import { Match } from 'effect';
+
+const logicalTypeInference = new LogicalTypeInference();
 
 /**
  * Configuration for data flow analysis
@@ -324,6 +328,19 @@ export class DataFlowAnalyzer {
 
       case 'CallExpression':
         return this.inferCallExpressionType(state, expr as CallExpressionNode);
+
+      case 'LogicalExpression': {
+        const logical = expr as LogicalExpressionNode;
+        const leftType = this.inferExpressionType(state, logical.left);
+        const rightType = this.inferExpressionType(state, logical.right);
+        if (logical.operator === '||') {
+          return logicalTypeInference.inferLogicalOrFullType(leftType, rightType);
+        } else if (logical.operator === '&&') {
+          return logicalTypeInference.inferLogicalAndFullType(leftType, rightType);
+        }
+        // ?? (nullish coalescing) — similar to || but only null triggers fallback
+        return leftType;
+      }
 
       default:
         return UcodeType.UNKNOWN;

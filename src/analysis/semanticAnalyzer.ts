@@ -608,6 +608,9 @@ export class SemanticAnalyzer extends BaseVisitor {
           if (returnInfo) {
             symbol.returnType = returnInfo.returnType;
             symbol.returnPropertyTypes = returnInfo.returnPropertyTypes;
+            if (returnInfo.propertyFunctionReturnTypes) {
+              symbol.propertyFunctionReturnTypes = returnInfo.propertyFunctionReturnTypes;
+            }
           }
         }
       }
@@ -1250,6 +1253,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             types.push(UcodeType.OBJECT);
             break;
           case 'array':
+          case 'string[]':
+          case 'array[]':
             types.push(UcodeType.ARRAY);
             break;
           case 'null':
@@ -1259,11 +1264,15 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             types.push(UcodeType.FUNCTION);
             break;
           default:
-            types.push(UcodeType.UNKNOWN);
+            if (isKnownObjectType(typeStr)) {
+              types.push(typeStr as UcodeType);
+            } else {
+              types.push(UcodeType.UNKNOWN);
+            }
             break;
         }
       }
-      
+
       return createUnionType(types);
     }
     
@@ -1287,6 +1296,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       case 'function':
         return UcodeType.FUNCTION;
       default:
+        // Handle known object types like "uci.cursor", "fs.file", etc.
+        if (isKnownObjectType(returnTypeStr)) {
+          return { moduleName: returnTypeStr } as UcodeDataType;
+        }
         return UcodeType.UNKNOWN;
     }
   }
@@ -1497,7 +1510,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           } else {
             // Use the inferred type from the right-hand side
             const rightType = this.typeChecker.checkNode(node.right);
-            dataType = rightType as UcodeDataType;
+            // Prefer _fullType (preserves unions) over simple UcodeType return
+            const fullType = (node.right as any)._fullType as UcodeDataType | undefined;
+            dataType = fullType || rightType as UcodeDataType;
           }
           
           if (symbol && symbol.type === SymbolType.VARIABLE) {
@@ -1544,6 +1559,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               const funcSym = this.symbolTable.lookup((callExpr.callee as IdentifierNode).name);
               if (funcSym?.returnPropertyTypes) {
                 symbol.propertyTypes = new Map(funcSym.returnPropertyTypes);
+              }
+              if (funcSym?.propertyFunctionReturnTypes) {
+                symbol.propertyFunctionReturnTypes = new Map(funcSym.propertyFunctionReturnTypes);
               }
             }
           }
@@ -1747,13 +1765,26 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const declarations = node.left.declarations;
         
         if (declarations.length === 1) {
-          // Single variable: gets the value
+          // Single variable: gets the value for arrays, the key for objects
           const declarator = declarations[0];
           if (declarator.id && declarator.id.type === 'Identifier') {
             const iteratorName = declarator.id.name;
             const iteratorNode = declarator.id;
-            
-            this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType, iteratorNode);
+
+            // Infer the iterator variable type from what's being iterated
+            const rightType = this.typeChecker.checkNode(node.right);
+            let iterType: UcodeDataType;
+            if (rightType === UcodeType.ARRAY) {
+              iterType = UcodeType.UNKNOWN as UcodeDataType; // array element type unknown
+            } else if (rightType === UcodeType.OBJECT) {
+              iterType = UcodeType.STRING as UcodeDataType; // object keys are strings
+            } else if (rightType === UcodeType.STRING) {
+              iterType = UcodeType.STRING as UcodeDataType; // iterating string chars
+            } else {
+              iterType = UcodeType.UNKNOWN as UcodeDataType;
+            }
+
+            this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, iterType, iteratorNode);
             this.symbolTable.markUsed(iteratorName, iteratorNode.start);
           }
         } else if (declarations.length === 2) {
@@ -2115,6 +2146,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           }
         }
 
+        // Check propertyFunctionReturnTypes — e.g., config.uci_ctx() -> uci.cursor
+        if (symbol.propertyFunctionReturnTypes?.has(methodName)) {
+          const returnTypeHint = symbol.propertyFunctionReturnTypes.get(methodName)!;
+          return this.parseReturnTypeString(returnTypeHint);
+        }
+
         // Check known object type methods (fs.file, uci.cursor, io.handle, etc.)
         if (symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
           const mn = (symbol.dataType as any).moduleName as string;
@@ -2455,13 +2492,18 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               if (funcSym?.returnPropertyTypes) {
                 symbol.propertyTypes = new Map(funcSym.returnPropertyTypes);
               }
+              if (funcSym?.propertyFunctionReturnTypes) {
+                symbol.propertyFunctionReturnTypes = new Map(funcSym.propertyFunctionReturnTypes);
+              }
             }
           }
           return;
         }
         // For non-function calls, fall back to type checker result
         const initType = this.typeChecker.checkNode(node.init);
-        symbol.dataType = initType as UcodeDataType;
+        // Prefer _fullType (preserves unions) over simple UcodeType return
+        const fullType = (node.init as any)._fullType as UcodeDataType | undefined;
+        symbol.dataType = fullType || initType as UcodeDataType;
         this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
         // Debug logging for arrow function variables
         if (node.init.type === 'ArrowFunctionExpression') {

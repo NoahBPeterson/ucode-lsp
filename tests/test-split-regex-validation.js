@@ -78,11 +78,11 @@ let words = split(text, 123);
 
       const typeErrors = diagnostics.filter(d =>
         d.severity === 1 &&
-        d.message.includes("expects string or regex pattern as second argument") &&
-        d.message.includes("split")
+        d.message.includes("split") &&
+        d.message.includes("argument 2") &&
+        d.message.includes("got integer")
       );
       assert.strictEqual(typeErrors.length, 1, 'Should have exactly one type error for invalid separator');
-      assert(typeErrors[0].message.includes('got integer'), 'Error message should mention getting integer');
     });
 
     it('should show error for array as separator', async function() {
@@ -95,11 +95,11 @@ let words = split(text, []);
 
       const typeErrors = diagnostics.filter(d =>
         d.severity === 1 &&
-        d.message.includes("expects string or regex pattern as second argument") &&
-        d.message.includes("split")
+        d.message.includes("split") &&
+        d.message.includes("argument 2") &&
+        d.message.includes("got array")
       );
       assert.strictEqual(typeErrors.length, 1, 'Should have exactly one type error for array separator');
-      assert(typeErrors[0].message.includes('got array'), 'Error message should mention getting array');
     });
 
     it('should show error for wrong limit parameter type', async function() {
@@ -112,11 +112,11 @@ let words = split(text, /\\s+/, "invalid");
 
       const typeErrors = diagnostics.filter(d =>
         d.severity === 1 &&
-        d.message.includes("expects integer as third argument") &&
-        d.message.includes("split")
+        d.message.includes("split") &&
+        d.message.includes("argument 3") &&
+        d.message.includes("got string")
       );
       assert.strictEqual(typeErrors.length, 1, 'Should have exactly one type error for invalid limit');
-      assert(typeErrors[0].message.includes('got string'), 'Error message should mention getting string');
     });
 
     it('should work with complex regex patterns', async function() {

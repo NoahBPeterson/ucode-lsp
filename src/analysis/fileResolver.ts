@@ -501,7 +501,7 @@ export class FileResolver {
      * Get return type and property types for a default export that is a function.
      * Analyzes the function's return statements for object literals.
      */
-    getDefaultExportFunctionReturnInfo(fileUri: string): { returnType: UcodeDataType; returnPropertyTypes: Map<string, UcodeDataType> } | null {
+    getDefaultExportFunctionReturnInfo(fileUri: string): { returnType: UcodeDataType; returnPropertyTypes: Map<string, UcodeDataType>; propertyFunctionReturnTypes?: Map<string, string> } | null {
         try {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
@@ -556,13 +556,15 @@ export class FileResolver {
             const funcBody = (funcNode as FunctionDeclarationNode).body;
             if (!funcBody) return null;
 
-            // Collect local function names and variable initializers within the function body
+            // Collect local function names/nodes and variable initializers within the function body
+            const localFuncNodes = new Map<string, AstNode>();
             const localFuncNames = new Set<string>();
             const localVarInits = new Map<string, AstNode>();
             const bodyStmts = (funcBody as any).body || [];
             for (const stmt of bodyStmts) {
                 if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
                     localFuncNames.add(stmt.id.name);
+                    localFuncNodes.set(stmt.id.name, stmt);
                 }
                 if (stmt.type === 'VariableDeclaration') {
                     for (const decl of stmt.declarations || []) {
@@ -592,10 +594,20 @@ export class FileResolver {
 
             if (merged.size === 0) return null;
 
-            return {
+            // Analyze return types of function-typed properties
+            const propertyFunctionReturnTypes = this.analyzePropertyFunctionReturnTypes(
+                merged, localFuncNodes, localVarInits, topLevelFuncs,
+                (funcNode as FunctionDeclarationNode).params || []
+            );
+
+            const returnInfo: { returnType: UcodeDataType; returnPropertyTypes: Map<string, UcodeDataType>; propertyFunctionReturnTypes?: Map<string, string> } = {
                 returnType: UcodeType.OBJECT as UcodeDataType,
                 returnPropertyTypes: merged
             };
+            if (propertyFunctionReturnTypes.size > 0) {
+                returnInfo.propertyFunctionReturnTypes = propertyFunctionReturnTypes;
+            }
+            return returnInfo;
         } catch {
             return null;
         }
@@ -687,6 +699,323 @@ export class FileResolver {
             }
         }
         return propertyTypes;
+    }
+
+    /**
+     * For function-typed properties in a factory return object, analyze what
+     * those inner functions return (e.g., uci_ctx returns a uci.cursor).
+     * Uses heuristic tracing: follows variable assignments and call patterns.
+     */
+    private analyzePropertyFunctionReturnTypes(
+        propertyTypes: Map<string, UcodeDataType>,
+        localFuncNodes: Map<string, AstNode>,
+        localVarInits: Map<string, AstNode>,
+        topLevelFuncs: Map<string, AstNode>,
+        params: AstNode[]
+    ): Map<string, string> {
+        const result = new Map<string, string>();
+
+        // Build a set of parameter names for heuristic module detection
+        const paramNames = new Set<string>();
+        for (const p of params) {
+            if (p.type === 'Identifier') paramNames.add((p as IdentifierNode).name);
+        }
+
+        for (const [propName, propType] of propertyTypes) {
+            if (propType !== UcodeType.FUNCTION as UcodeDataType) continue;
+
+            // Find the function node for this property
+            const funcNode = localFuncNodes.get(propName) || topLevelFuncs.get(propName);
+            if (!funcNode) continue;
+
+            const returnTypeHint = this.inferInnerFunctionReturnTypeHint(
+                funcNode, localVarInits, paramNames
+            );
+            if (returnTypeHint) {
+                result.set(propName, returnTypeHint);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Analyze an inner function's return statements to determine what known
+     * object type it returns (e.g., uci.cursor, fs.file).
+     */
+    private inferInnerFunctionReturnTypeHint(
+        funcNode: AstNode,
+        localVarInits: Map<string, AstNode>,
+        paramNames: Set<string>
+    ): string | null {
+        const body = (funcNode as FunctionDeclarationNode).body;
+        if (!body) return null;
+
+        const stmts = (body as any).body || [];
+
+        // Also collect assignments within the function body to augment localVarInits.
+        // e.g., _cursor = cursor_fn() where _cursor was initially null.
+        const augmentedInits = new Map(localVarInits);
+        this.collectAssignments(stmts, augmentedInits);
+
+        // Collect return values from the function (non-recursive, skip nested functions)
+        const returnValues: AstNode[] = [];
+        for (const stmt of stmts) {
+            this.collectReturnValues(stmt, returnValues);
+        }
+
+        // First try to resolve to a known object type (e.g., uci.cursor)
+        for (const retVal of returnValues) {
+            const hint = this.resolveNodeToKnownType(retVal, augmentedInits, paramNames);
+            if (hint) return hint;
+        }
+
+        // Fall back to inferring primitive return types from return expressions
+        if (returnValues.length > 0) {
+            return this.inferPrimitiveReturnType(returnValues);
+        }
+        return null;
+    }
+
+    /**
+     * Infer a primitive return type from a set of return value AST nodes.
+     * Returns type strings like "string", "integer", "boolean", "object", "array".
+     */
+    private inferPrimitiveReturnType(returnValues: AstNode[]): string | null {
+        const types = new Set<string>();
+        for (const node of returnValues) {
+            const t = this.inferReturnExprType(node);
+            if (t) types.add(t);
+        }
+        if (types.size === 0) return null;
+        if (types.size === 1) return [...types][0]!;
+        // Multiple types — return as union
+        return [...types].join(' | ');
+    }
+
+    /**
+     * Infer the type of a return expression.
+     */
+    private inferReturnExprType(node: AstNode): string | null {
+        if (!node) return null;
+
+        // Literals
+        if (node.type === 'Literal') {
+            const val = (node as any).value;
+            if (typeof val === 'string') return 'string';
+            if (typeof val === 'number') return Number.isInteger(val) ? 'integer' : 'double';
+            if (typeof val === 'boolean') return 'boolean';
+            if (val === null) return 'null';
+            return null;
+        }
+
+        // String operations: string concatenation, template literals
+        if (node.type === 'BinaryExpression' && (node as any).operator === '+') {
+            const left = this.inferReturnExprType((node as any).left);
+            const right = this.inferReturnExprType((node as any).right);
+            if (left === 'string' || right === 'string') return 'string';
+        }
+        if (node.type === 'TemplateLiteral') return 'string';
+
+        // Known builtin function calls that return specific types
+        if (node.type === 'CallExpression') {
+            const call = node as any;
+            if (call.callee?.type === 'Identifier') {
+                const name = call.callee.name;
+                const returnType = this.resolveBuiltinReturnType(name);
+                if (returnType) return returnType;
+            }
+        }
+
+        // Object/Array expressions
+        if (node.type === 'ObjectExpression') return 'object';
+        if (node.type === 'ArrayExpression') return 'array';
+
+        // Unary ! returns boolean
+        if (node.type === 'UnaryExpression' && (node as any).operator === '!') return 'boolean';
+
+        // Comparison operators return boolean
+        if (node.type === 'BinaryExpression') {
+            const op = (node as any).operator;
+            if (['==', '!=', '===', '!==', '<', '>', '<=', '>='].includes(op)) return 'boolean';
+        }
+
+        // Logical || — take the type of the right side if left could be falsy
+        if (node.type === 'LogicalExpression' && (node as any).operator === '||') {
+            return this.inferReturnExprType((node as any).right);
+        }
+
+        return null;
+    }
+
+    /**
+     * Map well-known ucode builtin function names to their return types.
+     */
+    private resolveBuiltinReturnType(funcName: string): string | null {
+        switch (funcName) {
+            // String functions
+            case 'trim': case 'ltrim': case 'rtrim':
+            case 'replace': case 'substr': case 'sprintf':
+            case 'join': case 'uc': case 'lc':
+            case 'chr': case 'hex': case 'b64enc':
+            case 'type': case 'proto':
+            case 'readline':
+                return 'string';
+            // Array functions
+            case 'split': case 'sort': case 'reverse':
+            case 'keys': case 'values': case 'filter':
+            case 'map': case 'slice':
+                return 'array';
+            // Number functions
+            case 'length': case 'index': case 'rindex':
+            case 'ord': case 'int': case 'time':
+            case 'system':
+                return 'integer';
+            // Boolean functions
+            case 'exists': case 'delete':
+                return 'boolean';
+            // Match returns array|null
+            case 'match':
+                return 'array | null';
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * Collect assignment expressions (x = expr) from statements to augment
+     * variable init tracking. Skips nested function bodies.
+     */
+    private collectAssignments(stmts: AstNode[], inits: Map<string, AstNode>): void {
+        for (const stmt of stmts) {
+            if (!stmt) continue;
+            // Skip nested functions
+            if (stmt.type === 'FunctionDeclaration' || stmt.type === 'FunctionExpression' ||
+                stmt.type === 'ArrowFunctionExpression') continue;
+
+            // Direct assignment: x = expr
+            if (stmt.type === 'ExpressionStatement') {
+                const expr = (stmt as any).expression;
+                if (expr?.type === 'AssignmentExpression' && expr.left?.type === 'Identifier' && expr.right) {
+                    const name = expr.left.name;
+                    // Only augment if current init is null/unknown
+                    const existing = inits.get(name);
+                    if (!existing || (existing.type === 'Literal' && (existing as any).value === null)) {
+                        inits.set(name, expr.right);
+                    }
+                }
+            }
+
+            // Recurse into control flow (if/for/while bodies)
+            for (const key of ['body', 'consequent', 'alternate', 'block']) {
+                const child = (stmt as any)[key];
+                if (Array.isArray(child)) {
+                    this.collectAssignments(child, inits);
+                } else if (child && typeof child === 'object' && child.type) {
+                    this.collectAssignments([child], inits);
+                }
+            }
+        }
+    }
+
+    /**
+     * Collect return value nodes from statements (skips nested function bodies).
+     */
+    private collectReturnValues(node: AstNode, results: AstNode[]): void {
+        if (!node) return;
+        // Skip nested function bodies
+        if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' ||
+            node.type === 'ArrowFunctionExpression') return;
+
+        if (node.type === 'ReturnStatement') {
+            const arg = (node as any).argument;
+            if (arg) results.push(arg);
+            return;
+        }
+
+        // Recurse into control flow
+        for (const key of ['body', 'consequent', 'alternate', 'block', 'handler', 'finalizer']) {
+            const child = (node as any)[key];
+            if (Array.isArray(child)) {
+                for (const c of child) this.collectReturnValues(c, results);
+            } else if (child && typeof child === 'object' && child.type) {
+                this.collectReturnValues(child, results);
+            }
+        }
+    }
+
+    /**
+     * Try to resolve an AST node to a known object type string by tracing
+     * variable assignments and call patterns.
+     * Returns hints like "uci.cursor", "fs.file", etc.
+     */
+    private resolveNodeToKnownType(
+        node: AstNode,
+        localVarInits: Map<string, AstNode>,
+        paramNames: Set<string>,
+        depth: number = 0
+    ): string | null {
+        if (depth > 5) return null; // prevent infinite loops
+
+        // Direct identifier — trace through variable inits
+        if (node.type === 'Identifier') {
+            const name = (node as IdentifierNode).name;
+            const init = localVarInits.get(name);
+            if (init) {
+                return this.resolveNodeToKnownType(init, localVarInits, paramNames, depth + 1);
+            }
+            return null;
+        }
+
+        // Call expression — check if it's a known pattern
+        if (node.type === 'CallExpression') {
+            const call = node as any;
+
+            if (call.callee?.type === 'Identifier') {
+                const funcName = call.callee.name;
+
+                // Direct call: cursor(), connect(), open(), etc.
+                const directResult = this.resolveKnownFunctionReturnType(funcName);
+                if (directResult) return directResult;
+
+                // Indirect call: variable holding a function reference — e.g., cursor_fn()
+                // where cursor_fn = uci_mod.cursor
+                const calleeInit = localVarInits.get(funcName);
+                if (calleeInit?.type === 'MemberExpression') {
+                    const member = calleeInit as any;
+                    if (member.property?.type === 'Identifier') {
+                        const methodName = member.property.name;
+                        const indirectResult = this.resolveKnownFunctionReturnType(methodName);
+                        if (indirectResult) return indirectResult;
+                    }
+                }
+            }
+
+            // Member call: obj.cursor(), param.cursor(), etc.
+            if (call.callee?.type === 'MemberExpression') {
+                const member = call.callee;
+                if (member.property?.type === 'Identifier') {
+                    const methodName = member.property.name;
+                    return this.resolveKnownFunctionReturnType(methodName);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Map well-known function/method names to the object types they return.
+     */
+    private resolveKnownFunctionReturnType(funcName: string): string | null {
+        switch (funcName) {
+            case 'cursor': return 'uci.cursor';
+            case 'connect': return 'ubus.connection';
+            case 'open': return 'fs.file';  // could be fs.open or io.open
+            case 'opendir': return 'fs.dir';
+            case 'popen': return 'fs.proc';
+            case 'listener': return 'nl80211.listener';
+            default: return null;
+        }
     }
 
     /**

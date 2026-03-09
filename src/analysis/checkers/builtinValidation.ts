@@ -3,7 +3,7 @@
  */
 
 import { AstNode, CallExpressionNode, LiteralNode } from '../../ast/nodes';
-import { UcodeType } from '../symbolTable';
+import { UcodeType, createUnionType } from '../symbolTable';
 import { TypeError, TypeWarning } from '../types';
 import { UcodeErrorCode } from '../errorConstants';
 
@@ -123,13 +123,24 @@ export class BuiltinValidator {
   private errors: TypeError[] = [];
   private warnings: TypeWarning[] = [];
   public narrowedReturnType: UcodeType | null = null;
+  private strictMode = false;
 
   constructor() {}
+
+  setStrictMode(strict: boolean): void {
+    this.strictMode = strict;
+  }
+
+  /** Push a definite type mismatch diagnostic — always an error */
+  private pushTypeMismatch(message: string, start: number, end: number): void {
+    this.errors.push({ message, start, end, severity: 'error' });
+  }
 
   /**
    * Set narrowedReturnType based on whether the argument matches valid types.
    * - Valid type → returnTypeIfValid (e.g., INTEGER, ARRAY, STRING)
-   * - Unknown or union type → null (use signature default)
+   * - Unknown → returnTypeIfValid | null (could be valid or not)
+   * - Union with some valid types → returnTypeIfValid | null
    * - Known invalid type → NULL (C function returns NULL)
    */
   private narrowForArgType(arg: AstNode | undefined, validTypes: UcodeType[], returnTypeIfValid: UcodeType): void {
@@ -137,8 +148,18 @@ export class BuiltinValidator {
     const argType = this.getNodeType(arg);
     if (validTypes.includes(argType as UcodeType)) {
       this.narrowedReturnType = returnTypeIfValid;
-    } else if (argType === UcodeType.UNKNOWN || argType.includes(' | ')) {
-      this.narrowedReturnType = null;
+    } else if (argType === UcodeType.UNKNOWN) {
+      // Unknown arg could be any type — return includes null since C returns NULL for wrong types
+      this.narrowedReturnType = createUnionType([returnTypeIfValid, UcodeType.NULL]) as UcodeType;
+    } else if (argType.includes(' | ')) {
+      const argTypes = argType.split(' | ').map(t => t.trim());
+      const allValid = argTypes.every(t => validTypes.includes(t as UcodeType));
+      if (allValid) {
+        this.narrowedReturnType = returnTypeIfValid;
+      } else {
+        // Some types would cause NULL return
+        this.narrowedReturnType = createUnionType([returnTypeIfValid, UcodeType.NULL]) as UcodeType;
+      }
     } else {
       this.narrowedReturnType = UcodeType.NULL;
     }
@@ -165,24 +186,20 @@ export class BuiltinValidator {
     const argType = this.getNodeType(arg);
 
     if (!isNumericConvertibleType(argType)) {
-      this.errors.push({
-        message: `Argument ${argPosition} of ${funcName}() cannot be a ${argType.toLowerCase()}. It must be a value convertible to a number.`,
-        start: arg.start,
-        end: arg.end,
-        severity: 'error'
-      });
+      this.pushTypeMismatch(
+        `Argument ${argPosition} of ${funcName}() cannot be a ${argType.toLowerCase()}. It must be a value convertible to a number.`,
+        arg.start, arg.end
+      );
       return false;
     }
 
     if (argType === UcodeType.STRING && arg.type === 'Literal') {
       const literal = arg as LiteralNode;
       if (typeof literal.value === 'string' && !isNumberLikeString(literal.value)) {
-        this.errors.push({
-          message: `String "${literal.value}" cannot be converted to a number for ${funcName}() argument ${argPosition}.`,
-          start: arg.start,
-          end: arg.end,
-          severity: 'error'
-        });
+        this.pushTypeMismatch(
+          `String "${literal.value}" cannot be converted to a number for ${funcName}() argument ${argPosition}.`,
+          arg.start, arg.end
+        );
         return false;
       }
     }
@@ -216,54 +233,49 @@ export class BuiltinValidator {
       );
 
       if (!hasAllowedType) {
-        // None of the types in the union are allowed - ERROR
+        // None of the types in the union are allowed — definitely wrong, always error
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
 
-        this.errors.push({
-          message: message,
-          start: arg.start,
-          end: arg.end,
-          severity: 'error'
-        });
+        this.errors.push({ message, start: arg.start, end: arg.end, severity: 'error' });
         return false;
       } else if (disallowedTypes.length > 0) {
-        // Some types are allowed, some are not - WARNING
+        // Some types are allowed, some are not - WARNING (error in strict mode)
         const message = customErrorMessage ||
           `Argument ${argPosition} of ${funcName}() may be ${disallowedTypes.join(' | ')}. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
 
         // Extract variable name for CFG-based filtering
         const variableName = this.getVariableName(arg);
 
-        this.warnings.push({
-          message: message,
-          start: arg.start,
-          end: arg.end,
-          severity: 'warning',
-          code: 'nullable-argument',
-          data: {
-            functionName: funcName,
-            argumentIndex: argPosition - 1,
-            expectedType: allowedTypes.join(' | '),
-            expectedTypes: [...allowedTypes],
-            actualType: argType,
-            variableName: variableName,
-            argumentOffset: arg.start
-          }
-        });
+        const diagData = {
+          functionName: funcName,
+          argumentIndex: argPosition - 1,
+          expectedType: allowedTypes.join(' | '),
+          expectedTypes: [...allowedTypes],
+          actualType: argType,
+          variableName: variableName,
+          argumentOffset: arg.start
+        };
+        if (this.strictMode) {
+          this.errors.push({
+            message, start: arg.start, end: arg.end,
+            severity: 'error', code: 'nullable-argument', data: diagData
+          });
+        } else {
+          this.warnings.push({
+            message, start: arg.start, end: arg.end,
+            severity: 'warning', code: 'nullable-argument', data: diagData
+          });
+        }
       }
     } else {
       // Single type - check if it's allowed
       if (!checkTypes.includes(argType)) {
+        // Definitely wrong — always error
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
 
-        this.errors.push({
-          message: message,
-          start: arg.start,
-          end: arg.end,
-          severity: 'error'
-        });
+        this.errors.push({ message, start: arg.start, end: arg.end, severity: 'error' });
         return false;
       }
     }
@@ -335,6 +347,8 @@ export class BuiltinValidator {
 
   validateMatchFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'match', 2)) return true;
+    // C: returns NULL if pattern not regex or subject missing
+    this.narrowForArgType(node.arguments[1], [UcodeType.REGEX], UcodeType.ARRAY);
     this.validateArgumentType(node.arguments[0], 'match', 1, [UcodeType.STRING]); // Include UcodeType.OBJECT when it includes tostring()
 
     // Custom check for argument 2: suggest regex conversion if a string literal is passed
@@ -346,12 +360,10 @@ export class BuiltinValidator {
           const literal = regexArg as any;
           if (literal.literalType === 'string') {
             const value = literal.value as string;
-            this.errors.push({
-              message: `Function 'match' expects regex for argument 2, but got string.\nDid you mean: /${value}/`,
-              start: regexArg.start,
-              end: regexArg.end,
-              severity: 'error'
-            });
+            this.pushTypeMismatch(
+              `Function 'match' expects regex for argument 2, but got string.\nDid you mean: /${value}/`,
+              regexArg.start, regexArg.end
+            );
             return true;
           }
         }
@@ -367,48 +379,21 @@ export class BuiltinValidator {
     const textArg = node.arguments[0];
     const separatorArg = node.arguments[1];
     if (textArg) this.narrowForArgType(textArg, [UcodeType.STRING], UcodeType.ARRAY);
-    
+
     if (textArg) {
-      const textType = this.getNodeType(textArg);
-      
-      if (textType !== UcodeType.STRING && textType !== UcodeType.UNKNOWN) {
-        this.errors.push({
-          message: `Function 'split' expects string as first argument, got ${textType}`,
-          start: textArg.start,
-          end: textArg.end,
-          severity: 'error'
-        });
-      }
+      this.validateArgumentType(textArg, 'split', 1, [UcodeType.STRING]);
     }
 
     if (separatorArg) {
-      const separatorType = this.getNodeType(separatorArg);
-      
       // In ucode, split() can accept string or regex pattern as separator
-      if (separatorType !== UcodeType.STRING && separatorType !== UcodeType.REGEX && separatorType !== UcodeType.UNKNOWN) {
-        this.errors.push({
-          message: `Function 'split' expects string or regex pattern as second argument, got ${separatorType}`,
-          start: separatorArg.start,
-          end: separatorArg.end,
-          severity: 'error'
-        });
-      }
+      this.validateArgumentType(separatorArg, 'split', 2, [UcodeType.STRING, UcodeType.REGEX]);
     }
 
     // Optional third argument (limit) should be a number
     if (node.arguments.length === 3) {
       const limitArg = node.arguments[2];
       if (limitArg) {
-        const limitType = this.getNodeType(limitArg);
-        
-        if (limitType !== UcodeType.INTEGER && limitType !== UcodeType.UNKNOWN) {
-          this.errors.push({
-            message: `Function 'split' expects integer as third argument, got ${limitType}`,
-            start: limitArg.start,
-            end: limitArg.end,
-            severity: 'error'
-          });
-        }
+        this.validateArgumentType(limitArg, 'split', 3, [UcodeType.INTEGER]);
       }
     }
 
@@ -454,18 +439,8 @@ export class BuiltinValidator {
 
     const arg = node.arguments[0];
     if (!arg) return true;
-    
-    const argType = this.getNodeType(arg);
 
-    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
-      this.errors.push({
-        message: `loadstring() expects string, got ${argType.toLowerCase()}`,
-        start: arg.start,
-        end: arg.end,
-        severity: 'error'
-      });
-    }
-
+    this.validateArgumentType(arg, 'loadstring', 1, [UcodeType.STRING]);
     return true;
   }
 
@@ -561,8 +536,10 @@ export class BuiltinValidator {
   validateWildcardFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'wildcard', 2)) return true;
 
+    // C: returns NULL if pattern not string or subject missing; returns boolean otherwise
     // 1st arg: any; because everything is convertible to string.
     // 2nd arg: must be string
+    this.narrowForArgType(node.arguments[1], [UcodeType.STRING], UcodeType.BOOLEAN);
     this.validateArgumentType(node.arguments[1], 'wildcard', 2, [UcodeType.STRING]);
 
     const patternArg = node.arguments[1];
@@ -960,7 +937,7 @@ export class BuiltinValidator {
                     }
                 }
             } else if (signalType === UcodeType.DOUBLE) {
-                this.errors.push({ message: `signal() first parameter cannot be a double`, start: signalArg.start, end: signalArg.end, severity: 'error' });
+                this.pushTypeMismatch(`signal() first parameter cannot be a double`, signalArg.start, signalArg.end);
             } else {
                 this.validateArgumentType(signalArg, 'signal', 1, [UcodeType.INTEGER, UcodeType.STRING]);
             }
@@ -1129,21 +1106,9 @@ export class BuiltinValidator {
       return true;
     }
 
-    const arg = node.arguments[0];
-    if (!arg) return true;
-    
-    const argType = this.getNodeType(arg);
-
-    if (argType !== UcodeType.STRING && argType !== UcodeType.INTEGER && 
-        argType !== UcodeType.DOUBLE && argType !== UcodeType.UNKNOWN) {
-      this.errors.push({
-        message: `int() expects string or number, got ${argType.toLowerCase()}`,
-        start: arg.start,
-        end: arg.end,
-        severity: 'error'
-      });
+    if (node.arguments[0]) {
+      this.validateArgumentType(node.arguments[0], 'int', 1, [UcodeType.STRING, UcodeType.INTEGER, UcodeType.DOUBLE]);
     }
-
     return true;
   }
 
@@ -1158,20 +1123,9 @@ export class BuiltinValidator {
       return true;
     }
 
-    const arg = node.arguments[0];
-    if (!arg) return true;
-    
-    const argType = this.getNodeType(arg);
-
-    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
-      this.errors.push({
-        message: `hex() expects string, got ${argType.toLowerCase()}`,
-        start: arg.start,
-        end: arg.end,
-        severity: 'error'
-      });
+    if (node.arguments[0]) {
+      this.validateArgumentType(node.arguments[0], 'hex', 1, [UcodeType.STRING]);
     }
-
     return true;
   }
 
@@ -1203,22 +1157,9 @@ export class BuiltinValidator {
 
   validateUchrFunction(node: CallExpressionNode): boolean {
     this.checkArgumentCount(node, 'uchr', 1);
-
-    const arg = node.arguments[0];
-    if (!arg) return true;
-    
-    const argType = this.getNodeType(arg);
-
-    if (argType !== UcodeType.STRING && argType !== UcodeType.INTEGER && 
-        argType !== UcodeType.DOUBLE && argType !== UcodeType.UNKNOWN) {
-      this.errors.push({
-        message: `uchr() expects string or number, got ${argType.toLowerCase()}`,
-        start: arg.start,
-        end: arg.end,
-        severity: 'error'
-      });
+    if (node.arguments[0]) {
+      this.validateArgumentType(node.arguments[0], 'uchr', 1, [UcodeType.STRING, UcodeType.INTEGER, UcodeType.DOUBLE]);
     }
-
     return true;
   }
 
@@ -1233,20 +1174,9 @@ export class BuiltinValidator {
       return true;
     }
 
-    const arg = node.arguments[0];
-    if (!arg) return true;
-    
-    const argType = this.getNodeType(arg);
-
-    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
-      this.errors.push({
-        message: `require() expects string, got ${argType.toLowerCase()}`,
-        start: arg.start,
-        end: arg.end,
-        severity: 'error'
-      });
+    if (node.arguments[0]) {
+      this.validateArgumentType(node.arguments[0], 'require', 1, [UcodeType.STRING]);
     }
-
     return true;
   }
 
@@ -1261,76 +1191,33 @@ export class BuiltinValidator {
       return true;
     }
 
-    const arg = node.arguments[0];
-    if (!arg) return true;
-    
-    const argType = this.getNodeType(arg);
-
-    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
-      this.errors.push({
-        message: `include() expects string, got ${argType.toLowerCase()}`,
-        start: arg.start,
-        end: arg.end,
-        severity: 'error'
-      });
+    if (node.arguments[0]) {
+      this.validateArgumentType(node.arguments[0], 'include', 1, [UcodeType.STRING]);
     }
-
     return true;
   }
 
   validateHexdecFunction(node: CallExpressionNode): boolean {
     if (this.checkArgumentCount(node, 'hexdec', 1) && node.arguments[0]) {
-      const arg = node.arguments[0];
-      this.narrowForArgType(arg, [UcodeType.STRING], UcodeType.STRING);
-      const argType = this.getNodeType(arg);
-
-      if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
-        this.errors.push({
-          message: `hexdec() expects string, got ${argType.toLowerCase()}`,
-          start: arg.start,
-          end: arg.end,
-          severity: 'error'
-        });
-      }
+      this.narrowForArgType(node.arguments[0], [UcodeType.STRING], UcodeType.STRING);
+      this.validateArgumentType(node.arguments[0], 'hexdec', 1, [UcodeType.STRING]);
     }
-
     return true;
   }
 
   validateB64encFunction(node: CallExpressionNode): boolean {
     if (this.checkArgumentCount(node, 'b64enc', 1) && node.arguments[0]) {
-        const arg = node.arguments[0];
-        this.narrowForArgType(arg, [UcodeType.STRING], UcodeType.STRING);
-        const argType = this.getNodeType(arg);
-
-        if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
-          this.errors.push({
-            message: `b64enc() expects string, got ${argType.toLowerCase()}`,
-            start: arg.start,
-            end: arg.end,
-            severity: 'error'
-          });
-        }
+      this.narrowForArgType(node.arguments[0], [UcodeType.STRING], UcodeType.STRING);
+      this.validateArgumentType(node.arguments[0], 'b64enc', 1, [UcodeType.STRING]);
     }
-
     return true;
   }
 
   validateB64decFunction(node: CallExpressionNode): boolean {
     if (this.checkArgumentCount(node, 'b64dec', 1) && node.arguments[0]) {
-        const arg = node.arguments[0];
-        this.narrowForArgType(arg, [UcodeType.STRING], UcodeType.STRING);
-        const argType = this.getNodeType(arg);
-        if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
-          this.errors.push({
-            message: `b64dec() expects string, got ${argType.toLowerCase()}`,
-            start: arg.start,
-            end: arg.end,
-            severity: 'error'
-          });
-        }
+      this.narrowForArgType(node.arguments[0], [UcodeType.STRING], UcodeType.STRING);
+      this.validateArgumentType(node.arguments[0], 'b64dec', 1, [UcodeType.STRING]);
     }
-
     return true;
   }
 
@@ -1347,17 +1234,10 @@ export class BuiltinValidator {
 
     const arg = node.arguments[0];
     if (!arg) return true;
-    
-    const argType = this.getNodeType(arg);
 
-    if (argType !== UcodeType.STRING && argType !== UcodeType.UNKNOWN) {
-      this.errors.push({
-        message: `loadfile() expects string, got ${argType.toLowerCase()}`,
-        start: arg.start,
-        end: arg.end,
-        severity: 'error'
-      });
-    }
+    // C: returns NULL if path not string; returns compiled function otherwise
+    this.narrowForArgType(arg, [UcodeType.STRING], UcodeType.FUNCTION);
+    this.validateArgumentType(arg, 'loadfile', 1, [UcodeType.STRING]);
 
     return true;
   }
@@ -1451,24 +1331,30 @@ export class BuiltinValidator {
 
   validatePushFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'push', 1)) return true;
+    // C: returns NULL if not mutable array; returns last pushed value otherwise
+    // Note: signature says INTEGER but C actually returns the last pushed value
     this.validateArgumentType(node.arguments[0], 'push', 1, [UcodeType.ARRAY]);
     return true;
   }
 
   validatePopFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'pop', 1)) return true;
+    // C: returns NULL if not mutable array; returns popped element otherwise
     this.validateArgumentType(node.arguments[0], 'pop', 1, [UcodeType.ARRAY]);
     return true;
   }
 
   validateShiftFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'shift', 1)) return true;
+    // C: returns NULL if not mutable array; returns shifted element otherwise
     this.validateArgumentType(node.arguments[0], 'shift', 1, [UcodeType.ARRAY]);
     return true;
   }
 
   validateUnshiftFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'unshift', 1)) return true;
+    // C: returns NULL if not mutable array; returns last value added otherwise
+    // Note: signature says INTEGER but C actually returns the last value added
     this.validateArgumentType(node.arguments[0], 'unshift', 1, [UcodeType.ARRAY]);
     return true;
   }
@@ -1534,8 +1420,23 @@ export class BuiltinValidator {
       this.narrowedReturnType = UcodeType.ARRAY;
     } else if (argType === UcodeType.STRING) {
       this.narrowedReturnType = UcodeType.STRING;
-    } else if (argType === UcodeType.UNKNOWN || argType.includes(' | ')) {
-      this.narrowedReturnType = null;
+    } else if (argType === UcodeType.UNKNOWN) {
+      // Unknown arg could be any type — include null since C returns NULL for wrong types
+      this.narrowedReturnType = createUnionType([UcodeType.ARRAY, UcodeType.STRING, UcodeType.NULL]) as UcodeType;
+    } else if (argType.includes(' | ')) {
+      const argTypes = argType.split(' | ').map(t => t.trim());
+      const validTypes = [UcodeType.ARRAY, UcodeType.STRING];
+      const matchedTypes = argTypes.filter(t => validTypes.includes(t as UcodeType));
+      const hasInvalid = argTypes.some(t => !validTypes.includes(t as UcodeType));
+      if (matchedTypes.length > 0 && hasInvalid) {
+        // Some valid, some invalid — return matched types + null
+        this.narrowedReturnType = createUnionType([...matchedTypes as UcodeType[], UcodeType.NULL]) as UcodeType;
+      } else if (matchedTypes.length > 0) {
+        // All valid
+        this.narrowedReturnType = createUnionType(matchedTypes as UcodeType[]) as UcodeType;
+      } else {
+        this.narrowedReturnType = UcodeType.NULL;
+      }
     } else {
       this.narrowedReturnType = UcodeType.NULL;
     }
