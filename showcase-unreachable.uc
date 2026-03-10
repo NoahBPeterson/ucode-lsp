@@ -116,7 +116,7 @@ function process_records(records) {
 	let names = map(records, function(r) {
 		if (type(r) != "object")
 			fatal("bad record"); // never-returns inside a callback
-		return r.name;
+		return r.name; // (parameter) r: unknown
 	});
 
 	printf("Names: %J\n", names); // reachable

@@ -19,6 +19,7 @@ import {
   LiteralNode,
   UnaryExpressionNode,
   LogicalExpressionNode,
+  ArrayExpressionNode,
 } from '../../ast/nodes';
 import { ControlFlowGraph, BasicBlock } from './types';
 import { TypeState } from './typeState';
@@ -28,6 +29,9 @@ import {
   UcodeType,
   UcodeDataType,
   getUnionTypes,
+  createArrayType,
+  createUnionType,
+  isUnionType,
 } from '../symbolTable';
 import { createIoHandleDataType } from '../ioTypes';
 import { createFsObjectDataType, FsObjectType } from '../fsTypes';
@@ -314,8 +318,29 @@ export class DataFlowAnalyzer {
         const varName = (expr as IdentifierNode).name;
         return state.get(varName) || UcodeType.UNKNOWN;
 
-      case 'ArrayExpression':
+      case 'ArrayExpression': {
+        const arrNode = expr as ArrayExpressionNode;
+        const elTypes: UcodeType[] = [];
+        for (const el of arrNode.elements) {
+          if (el) {
+            const et = this.inferExpressionType(state, el);
+            if (isUnionType(et)) {
+              for (const t of getUnionTypes(et)) {
+                if (!elTypes.includes(t)) elTypes.push(t);
+              }
+            } else if (typeof et === 'string' && et !== UcodeType.UNKNOWN) {
+              if (!elTypes.includes(et as UcodeType)) elTypes.push(et as UcodeType);
+            }
+          }
+        }
+        if (elTypes.length > 0) {
+          const elementType = elTypes.length === 1
+            ? elTypes[0] as UcodeDataType
+            : createUnionType(elTypes);
+          return createArrayType(elementType);
+        }
         return UcodeType.ARRAY;
+      }
 
       case 'ObjectExpression':
         return UcodeType.OBJECT;
@@ -491,7 +516,7 @@ export class DataFlowAnalyzer {
       sprintf: UcodeType.STRING,
       length: UcodeType.INTEGER,
       substr: UcodeType.STRING,
-      split: UcodeType.ARRAY,
+      split: createArrayType(UcodeType.STRING),
       join: UcodeType.STRING,
       trim: UcodeType.STRING,
       ltrim: UcodeType.STRING,
@@ -501,16 +526,16 @@ export class DataFlowAnalyzer {
       uc: UcodeType.STRING,
       lc: UcodeType.STRING,
       type: UcodeType.STRING,
-      keys: UcodeType.ARRAY,
+      keys: createArrayType(UcodeType.STRING),
       values: UcodeType.ARRAY,
       push: UcodeType.INTEGER,
       pop: UcodeType.UNKNOWN,
       shift: UcodeType.UNKNOWN,
       unshift: UcodeType.INTEGER,
-      iptoarr: UcodeType.ARRAY,
+      iptoarr: createArrayType(UcodeType.INTEGER),
       arrtoip: UcodeType.STRING,
       int: UcodeType.INTEGER,
-      match: UcodeType.ARRAY,
+      match: createArrayType(UcodeType.STRING),
       replace: UcodeType.STRING,
       system: UcodeType.INTEGER,
       time: UcodeType.INTEGER,

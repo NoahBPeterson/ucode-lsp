@@ -9,8 +9,11 @@ import {
   UcodeDataType,
   UcodeType,
   createUnionType,
+  createArrayType,
   getUnionTypes,
   isUnionType,
+  isArrayType,
+  getArrayElementType,
   typeToString,
 } from '../symbolTable';
 
@@ -130,6 +133,14 @@ export class TypeState {
       return type1;
     }
 
+    // Merge two ArrayTypes by unioning their element types
+    if (isArrayType(type1) && isArrayType(type2)) {
+      const elem1 = getArrayElementType(type1);
+      const elem2 = getArrayElementType(type2);
+      const mergedElem = this.computeUnion(elem1, elem2);
+      return createArrayType(mergedElem);
+    }
+
     // Get the constituent types from both (handling unions)
     const types1 = getUnionTypes(type1);
     const types2 = getUnionTypes(type2);
@@ -166,6 +177,16 @@ export class TypeState {
       }
 
       return true;
+    }
+
+    // If both are ArrayType, compare element types
+    if (isArrayType(type1) && isArrayType(type2)) {
+      return this.typesEqual(type1.elementType, type2.elementType);
+    }
+    // One is ArrayType, other is plain UcodeType.ARRAY — treat as equal (no element info lost)
+    if ((isArrayType(type1) && type2 === UcodeType.ARRAY) ||
+        (isArrayType(type2) && type1 === UcodeType.ARRAY)) {
+      return false; // Not equal — ArrayType carries more info
     }
 
     // If both are objects (ModuleType, DefaultImportType, etc.)

@@ -52,7 +52,9 @@ describe('Data Flow - Basic Type Inference', () => {
     const { cfg, dfResult } = analyzeDataFlow(code);
 
     expect(dfResult.converged).toBe(true);
-    expect(cfg.entry.typeStateOut.get('arr')).toBe('array');
+    const arrType = cfg.entry.typeStateOut.get('arr');
+    // Array<integer> — element type inferred from literal
+    expect(arrType).toEqual({ type: 'array', elementType: 'integer' });
   });
 
   test('should infer object type', () => {

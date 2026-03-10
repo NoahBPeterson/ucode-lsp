@@ -43,7 +43,12 @@ export interface DefaultImportType {
   isDefaultImport: boolean;
 }
 
-export type UcodeDataType = UcodeType | UnionType | ModuleType | DefaultImportType;
+export interface ArrayType {
+  type: UcodeType.ARRAY;
+  elementType: UcodeDataType;
+}
+
+export type UcodeDataType = UcodeType | UnionType | ModuleType | DefaultImportType | ArrayType;
 
 // Utility functions for working with union types
 export function createUnionType(types: UcodeType[]): UcodeDataType {
@@ -72,13 +77,39 @@ export function getUnionTypes(type: UcodeDataType): UcodeType[] {
   if (isUnionType(type)) {
     return type.types;
   }
+  // ArrayType is an object with type: UcodeType.ARRAY — flatten to the simple enum
+  if (isArrayType(type)) {
+    return [UcodeType.ARRAY];
+  }
   return [type as UcodeType];
+}
+
+export function isArrayType(type: UcodeDataType): type is ArrayType {
+  return typeof type === 'object' && type !== null && type.type === UcodeType.ARRAY && 'elementType' in type;
+}
+
+export function createArrayType(elementType: UcodeDataType): ArrayType {
+  return { type: UcodeType.ARRAY, elementType };
+}
+
+export function getArrayElementType(type: UcodeDataType): UcodeDataType {
+  if (isArrayType(type)) return type.elementType;
+  return UcodeType.UNKNOWN;
+}
+
+/** Returns true for both plain UcodeType.ARRAY and ArrayType (with element info) */
+export function isArrayLike(type: UcodeDataType): boolean {
+  return type === UcodeType.ARRAY || isArrayType(type);
 }
 
 export function typeToString(type: UcodeDataType): string {
   if (isUnionType(type)) {
     // Recursively convert each type in the union to a string
     return type.types.map(t => typeToString(t)).join(' | ');
+  }
+
+  if (isArrayType(type)) {
+    return `array<${typeToString(type.elementType)}>`;
   }
 
   // Handle object types (ModuleType, DefaultImportType, etc.)
@@ -112,13 +143,17 @@ export function typeToString(type: UcodeDataType): string {
 }
 
 export function isTypeCompatible(actual: UcodeDataType, expected: UcodeDataType): boolean {
+  // ArrayType is compatible with UcodeType.ARRAY and vice versa
+  if (isArrayType(actual) && (expected === UcodeType.ARRAY || isArrayType(expected))) return true;
+  if (isArrayType(expected) && actual === UcodeType.ARRAY) return true;
+
   const actualTypes = getUnionTypes(actual);
   const expectedTypes = getUnionTypes(expected);
-  
+
   // Check if any actual type is compatible with any expected type
-  return actualTypes.some(actualType => 
-    expectedTypes.some(expectedType => 
-      actualType === expectedType || 
+  return actualTypes.some(actualType =>
+    expectedTypes.some(expectedType =>
+      actualType === expectedType ||
       expectedType === UcodeType.UNKNOWN ||
       actualType === UcodeType.UNKNOWN ||
       // Allow integer to double conversion
