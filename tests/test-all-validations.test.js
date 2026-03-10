@@ -126,6 +126,7 @@ const testFiles = [
     'tests/test-unreachable-code.js',
     'tests/test-object-property-inference.js',
     'tests/test-pbr-cross-file-inference.js',
+    'tests/test-equality-narrowing-hover.mocha.js',
 ];
 
 // Mocha test files (run as a single combined mocha invocation with shared LSP server)
@@ -181,6 +182,7 @@ const mochaFileSet = new Set([
     'test-unreachable-code.js',
     'test-object-property-inference.js',
     'test-pbr-cross-file-inference.js',
+    'test-equality-narrowing-hover.mocha.js',
 ]);
 
 function getBaseName(filePath) {

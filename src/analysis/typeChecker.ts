@@ -26,8 +26,14 @@ interface TypeGuardInfo {
   isNegative: boolean;
   // Whether this is a combined OR guard (e.g., type(x) === 'array' || type(x) === 'string')
   isCombinedOr?: boolean;
+  // For variable-to-variable equality narrowing (e.g., if (x == y) → x gets y's type)
+  // When isNegative is false, the variable is narrowed to this full type.
+  // When isNegative is true (inequality), no narrowing is applied.
+  equalityNarrowType?: UcodeDataType;
+  // Symbol info from the other variable (for richer hover display)
+  equalitySymbol?: UcodeSymbol;
 }
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes, createUnionType, Symbol as UcodeSymbol } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, Symbol as UcodeSymbol } from './symbolTable';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
@@ -111,6 +117,7 @@ export class TypeChecker {
     // Inject type checker into builtin validator
     // Use a method that returns the full type description including unions
     this.builtinValidator.setTypeChecker(this.getNodeTypeDescription.bind(this));
+    this.builtinValidator.setFullTypeChecker(this.getFullTypeFromNode.bind(this));
 
     // Set up callback so flowSensitiveTracker can access guard contexts from typeChecker
     this.flowSensitiveTracker.setActiveGuardCallback(this.getActiveGuardType.bind(this));
@@ -434,6 +441,8 @@ export class TypeChecker {
         // For union types, return UNKNOWN to indicate it's a complex type
         // The actual union type is preserved in _fullType for narrowing purposes
         return UcodeType.UNKNOWN;
+      } else if (isArrayType(dataType)) {
+        return UcodeType.ARRAY;
       } else {
         // For other complex types like ModuleType, return OBJECT
         return UcodeType.OBJECT;
@@ -745,6 +754,9 @@ export class TypeChecker {
       // Recursively convert each type to string to handle nested unions
       return types.map(t => this.getTypeDescription(t)).join(' | ');
     }
+    if (isArrayType(type)) {
+      return UcodeType.ARRAY;
+    }
     return type as string;
   }
 
@@ -1047,7 +1059,12 @@ export class TypeChecker {
       const narrowed = this.builtinValidator.narrowedReturnType;
       this.builtinValidator.narrowedReturnType = null;
       if (narrowed !== null) {
-        return narrowed;
+        // Store rich type (ArrayType, UnionType) as _fullType on the call node
+        if (typeof narrowed !== 'string') {
+          (node as any)._fullType = narrowed;
+          return this.dataTypeToUcodeType(narrowed);
+        }
+        return narrowed as UcodeType;
       }
       return this.dataTypeToUcodeType(signature.returnType);
     }
@@ -1177,7 +1194,12 @@ export class TypeChecker {
     if (typeof dataType === 'string') {
       return dataType as UcodeType;
     }
-    
+
+    // Handle ArrayType (with element info) — still an array
+    if (isArrayType(dataType)) {
+      return UcodeType.ARRAY;
+    }
+
     // Handle complex types (UnionType, ModuleType)
     const complexType = dataType as any;
     if (complexType.type === UcodeType.UNION) {
@@ -1437,16 +1459,36 @@ export class TypeChecker {
     // For computed property access on arrays (e.g., uuid[0]), check if we have type info
     if (node.object.type === 'Identifier' && node.computed) {
       const symbol = this.symbolTable.lookup((node.object as IdentifierNode).name);
-      if (symbol && symbol.dataType === UcodeType.ARRAY && node.property.type === 'Literal') {
-        const indexKey = String((node.property as LiteralNode).value);
-        if (symbol.propertyTypes && symbol.propertyTypes.has(indexKey)) {
-          const elementType = symbol.propertyTypes.get(indexKey)!;
-          return this.dataTypeToUcodeType(elementType);
+      if (symbol && (symbol.dataType === UcodeType.ARRAY || isArrayType(symbol.dataType as UcodeDataType))) {
+        // Check for per-index property types first
+        if (node.property.type === 'Literal') {
+          const indexKey = String((node.property as LiteralNode).value);
+          if (symbol.propertyTypes && symbol.propertyTypes.has(indexKey)) {
+            const elementType = symbol.propertyTypes.get(indexKey)!;
+            return this.dataTypeToUcodeType(elementType);
+          }
+        }
+        // Fall back to ArrayType element type
+        if (isArrayType(symbol.dataType as UcodeDataType)) {
+          const elemType = getArrayElementType(symbol.dataType as UcodeDataType);
+          (node as any)._fullType = elemType;
+          return this.dataTypeToUcodeType(elemType);
         }
       }
     }
 
     const objectType = this.checkNode(node.object);
+
+    // For computed access on any array-typed expression (e.g., sort(arr)[0], split(s, d)[1])
+    // check _fullType for ArrayType element info
+    if (objectType === UcodeType.ARRAY && node.computed) {
+      const objFullType = (node.object as any)._fullType as UcodeDataType | undefined;
+      if (objFullType && isArrayType(objFullType)) {
+        const elemType = getArrayElementType(objFullType);
+        (node as any)._fullType = elemType;
+        return this.dataTypeToUcodeType(elemType);
+      }
+    }
 
     // Check for array type (with TypeScript workaround)
     if ((objectType as any) === UcodeType.ARRAY && !node.computed) {
@@ -1510,7 +1552,7 @@ export class TypeChecker {
         const symbol = this.symbolTable.lookup(arrayName);
 
         // If this is an array variable, track the element type
-        if (symbol && symbol.dataType === UcodeType.ARRAY) {
+        if (symbol && (symbol.dataType === UcodeType.ARRAY || isArrayType(symbol.dataType as UcodeDataType))) {
           // Get the index if it's a literal
           let indexKey: string | null = null;
           if (memberExpr.property.type === 'Literal') {
@@ -1557,12 +1599,50 @@ export class TypeChecker {
   }
 
   private checkArrayExpression(node: ArrayExpressionNode): UcodeType {
-    // Check all elements for type consistency
+    // Check all elements and collect their types for Array<T> inference
+    // Use UcodeDataType to preserve rich types (ArrayType for nested arrays, etc.)
+    const elementDataTypes: UcodeDataType[] = [];
     for (const element of node.elements) {
       if (element) {
-        this.checkNode(element);
+        const elType = this.checkNode(element);
+        const fullType = (element as any)._fullType as UcodeDataType | undefined;
+        if (fullType && (isUnionType(fullType) || isArrayType(fullType))) {
+          // Use rich type (union or ArrayType) — deduplicate by checking existing entries
+          const isDup = elementDataTypes.some(t =>
+            (typeof t === 'string' && typeof fullType === 'string' && t === fullType) ||
+            (typeof t !== 'string' && typeof fullType !== 'string' && JSON.stringify(t) === JSON.stringify(fullType))
+          );
+          if (!isDup) elementDataTypes.push(fullType);
+        } else if (elType !== UcodeType.UNKNOWN) {
+          if (!elementDataTypes.includes(elType as UcodeDataType)) {
+            elementDataTypes.push(elType as UcodeDataType);
+          }
+        }
       }
     }
+
+    // Store Array<T> as _fullType if we inferred element types
+    if (elementDataTypes.length > 0) {
+      let elementType: UcodeDataType;
+      if (elementDataTypes.length === 1) {
+        elementType = elementDataTypes[0]!;
+      } else {
+        // For multiple element types: if all are simple UcodeType strings, use createUnionType.
+        // Otherwise store as-is (mixed rich types can't form a standard union).
+        const allSimple = elementDataTypes.every(t => typeof t === 'string');
+        if (allSimple) {
+          elementType = createUnionType(elementDataTypes as UcodeType[]);
+        } else {
+          // Mix of rich types — flatten simple types into union, keep first rich type
+          // This handles cases like [[1], "two"] → array<array<integer> | string>
+          elementType = createUnionType(
+            elementDataTypes.map(t => typeof t === 'string' ? t as UcodeType : UcodeType.ARRAY)
+          );
+        }
+      }
+      (node as any)._fullType = createArrayType(elementType);
+    }
+
     return UcodeType.ARRAY;
   }
 
@@ -2005,6 +2085,20 @@ export class TypeChecker {
     return null; // No narrowing applies
   }
 
+  /**
+   * Get the symbol from a variable-to-variable equality guard at a position.
+   * Used by hover to display the full type signature from the other variable.
+   */
+  getEqualityNarrowSymbolAtPosition(variableName: string, position: number): UcodeSymbol | null {
+    const guards = this.getGuardsForPosition(this.currentAST, variableName, position);
+    for (const guard of guards) {
+      if (guard.equalitySymbol && !guard.isNegative) {
+        return guard.equalitySymbol;
+      }
+    }
+    return null;
+  }
+
   private inferTypeFromGuardsWithoutBase(guards: TypeGuardInfo[]): UcodeDataType | null {
     if (guards.length === 0) {
       return null;
@@ -2030,6 +2124,16 @@ export class TypeChecker {
    * Apply a type guard to narrow a type
    */
   private applyTypeGuard(baseType: UcodeDataType, guard: TypeGuardInfo): UcodeDataType {
+    // Handle variable-to-variable equality narrowing
+    if (guard.equalityNarrowType !== undefined) {
+      if (!guard.isNegative) {
+        // Positive: x == y proved, so x has y's type
+        return guard.equalityNarrowType;
+      }
+      // Negative: x != y, can't meaningfully narrow
+      return baseType;
+    }
+
     if (guard.narrowToType === null) {
       return baseType;
     }
@@ -2476,6 +2580,57 @@ export class TypeChecker {
     return null;
   }
 
+  /**
+   * Extract a variable-to-variable equality guard.
+   * For `if (x != y) return;`, after the early exit x is narrowed to y's type.
+   */
+  private extractVariableEqualityGuard(
+    binaryExpr: BinaryExpressionNode,
+    variableName: string,
+    isEquality: boolean
+  ): TypeGuardInfo | null {
+    let otherVarName: string | null = null;
+
+    // Check: variableName on left, other identifier on right
+    if (binaryExpr.left.type === 'Identifier' &&
+        (binaryExpr.left as IdentifierNode).name === variableName &&
+        binaryExpr.right.type === 'Identifier') {
+      otherVarName = (binaryExpr.right as IdentifierNode).name;
+    }
+    // Check: variableName on right, other identifier on left
+    else if (binaryExpr.right.type === 'Identifier' &&
+             (binaryExpr.right as IdentifierNode).name === variableName &&
+             binaryExpr.left.type === 'Identifier') {
+      otherVarName = (binaryExpr.left as IdentifierNode).name;
+    }
+
+    if (!otherVarName) return null;
+
+    // Look up the other variable's symbol — try regular lookup first, then position-aware
+    // (imports/outer-scope variables may not be in the current scope after analysis)
+    let otherSymbol = this.symbolTable.lookup(otherVarName);
+    if (!otherSymbol) {
+      // Use the other identifier's position for lookupAtPosition
+      const otherNode = (binaryExpr.left.type === 'Identifier' &&
+        (binaryExpr.left as IdentifierNode).name === otherVarName)
+        ? binaryExpr.left : binaryExpr.right;
+      otherSymbol = this.symbolTable.lookupAtPosition(otherVarName, otherNode.start);
+    }
+    if (!otherSymbol) return null;
+
+    const otherType = otherSymbol.dataType;
+    // Only narrow if the other variable has a known type
+    if (otherType === UcodeType.UNKNOWN) return null;
+
+    return {
+      variableName,
+      narrowToType: null,
+      isNegative: !isEquality, // == → positive (narrow to type), != → negative (flip by collectGuards)
+      equalityNarrowType: otherType,
+      equalitySymbol: otherSymbol
+    };
+  }
+
   private extractTypeGuard(condition: AstNode, variableName: string): TypeGuardInfo | null {
     // Handle OR operator for combining type guards
     if (condition.type === 'BinaryExpression') {
@@ -2631,6 +2786,19 @@ export class TypeChecker {
             return { variableName, narrowToType: UcodeType.NULL, isNegative: true };
           }
         }
+      }
+    }
+
+    // Variable-to-variable equality: if (x == y) or if (x != y)
+    // When one side is variableName and the other is a variable with known type,
+    // narrow variableName to the other variable's type
+    if (condition.type === 'BinaryExpression') {
+      const binaryExpr = condition as BinaryExpressionNode;
+      if (binaryExpr.operator === '==' || binaryExpr.operator === '===' ||
+          binaryExpr.operator === '!=' || binaryExpr.operator === '!==') {
+        const isEquality = binaryExpr.operator === '==' || binaryExpr.operator === '===';
+        const guard = this.extractVariableEqualityGuard(binaryExpr, variableName, isEquality);
+        if (guard) return guard;
       }
     }
 

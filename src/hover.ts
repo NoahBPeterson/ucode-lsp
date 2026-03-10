@@ -6,7 +6,7 @@ import {
 import { UcodeLexer, TokenType, isKeyword, Token } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
-import { typeToString, UcodeDataType } from './analysis/symbolTable';
+import { typeToString, UcodeDataType, UcodeType } from './analysis/symbolTable';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { Option } from 'effect';
@@ -823,6 +823,38 @@ export function handleHover(
                 }
             }
             
+            // 0. Check if we're inside an import specifier: import { WORD as ... } from 'module'
+            // Show the original module function's documentation, not a same-named variable
+            {
+                const lineStart = text.lastIndexOf('\n', offset) + 1;
+                const lineEnd = text.indexOf('\n', offset);
+                const line = text.substring(lineStart, lineEnd === -1 ? text.length : lineEnd);
+                const importMatch = line.match(/^\s*import\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/);
+                if (importMatch && importMatch[2]) {
+                    const moduleName = importMatch[2];
+                    // Check if the hovered word is an imported name (before 'as') in this import
+                    const specifiersPart = importMatch[1]!;
+                    const specifiers = specifiersPart.split(',').map((s: string) => s.trim());
+                    for (const spec of specifiers) {
+                        // Match "word as alias" or just "word"
+                        const parts = spec.split(/\s+as\s+/);
+                        const importedName = parts[0]?.trim();
+                        if (importedName === word && isKnownModule(moduleName)) {
+                            const doc = getImportedSymbolDocumentation(moduleName, importedName);
+                            if (Option.isSome(doc)) {
+                                return {
+                                    contents: { kind: MarkupKind.Markdown, value: doc.value },
+                                    range: {
+                                        start: document.positionAt(token.pos),
+                                        end: document.positionAt(token.end)
+                                    }
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+
             // 1. Check for user-defined symbols using the analysis cache (PRIORITY OVER GLOBAL FUNCTIONS)
             if (analysisResult) {
                 let symbol = analysisResult.symbolTable.lookup(word);
@@ -854,8 +886,9 @@ export function handleHover(
                 // If we have a symbol from symbol table, check if CFG has more precise type
                 if (symbol && analysisResult.cfgQueryEngine) {
                     const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(word, offset);
-                    if (cfgType && cfgType !== symbol.dataType) {
-                        // CFG provides flow-sensitive type - use it
+                    if (cfgType && cfgType !== UcodeType.UNKNOWN && cfgType !== symbol.dataType) {
+                        // CFG provides flow-sensitive type - use it (but not if it's UNKNOWN,
+                        // which is less precise than what the symbol table already has)
                         symbol = {
                             ...symbol,
                             dataType: cfgType
@@ -910,6 +943,19 @@ export function handleHover(
                             if (symbol.type === SymbolType.PARAMETER && (declaredTypeStr.includes('array') || declaredTypeStr.includes('Array'))) {
                                 hoverText = `**(rest parameter)** **${symbol.name}**: \`array\`\n\nRest parameter - collects remaining arguments into an array`;
                             } else {
+                                // Check if type was narrowed via variable equality (e.g., if (x != y) return;)
+                                // If so, show the other variable's full type info
+                                if (analysisResult?.typeChecker && effectiveType === UcodeType.FUNCTION) {
+                                    const eqSymbol = analysisResult.typeChecker.getEqualityNarrowSymbolAtPosition(symbol.name, offset);
+                                    if (eqSymbol?.importedFrom && isKnownModule(eqSymbol.importedFrom)) {
+                                        const originalName = eqSymbol.importSpecifier || eqSymbol.name;
+                                        const doc = getImportedSymbolDocumentation(eqSymbol.importedFrom, originalName);
+                                        if (Option.isSome(doc)) {
+                                            hoverText = `(${symbol.type}) **${symbol.name}** — narrowed via equality\n\n${doc.value}`;
+                                            break;
+                                        }
+                                    }
+                                }
                                 hoverText = `(${symbol.type}) **${symbol.name}**: \`${effectiveTypeStr}\``;
                             }
                             break;

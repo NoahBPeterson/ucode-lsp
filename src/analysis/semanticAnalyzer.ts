@@ -11,7 +11,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, isArrayType, getArrayElementType, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
@@ -436,6 +436,56 @@ export class SemanticAnalyzer extends BaseVisitor {
         // Type inference if type checking is enabled
         if (this.options.enableTypeChecking) {
           this.processInitializerTypeInference(node, name);
+        }
+
+        // Upgrade array literal type to ArrayType if element type can be inferred
+        if (node.init.type === 'ArrayExpression') {
+          const sym = this.symbolTable.lookup(name);
+          if (sym) {
+            // Trigger type checker to infer element types and set _fullType
+            this.typeChecker.checkNode(node.init);
+            const fullType = (node.init as any)._fullType;
+            if (fullType && isArrayType(fullType)) {
+              sym.dataType = fullType;
+              sym.initialLiteralType = fullType;
+            }
+          }
+        }
+
+        // Upgrade symbol type from function call results that have rich _fullType
+        // (e.g., split() → array<string>, reverse([1,2]) → array<integer>, pop(arr) → element type)
+        if (node.init.type === 'CallExpression' || node.init.type === 'MemberExpression') {
+          const sym = this.symbolTable.lookup(name);
+          if (sym) {
+            // Trigger type checker to process narrowedReturnType and set _fullType
+            this.typeChecker.checkNode(node.init);
+            const fullType = (node.init as any)._fullType;
+            if (fullType && typeof fullType === 'object') {
+              sym.dataType = fullType;
+            }
+          }
+        }
+
+        // When initializer is an identifier, check if it has a narrowed type at this position
+        // (e.g., after equality guard: if (readfile != rf) return; let d = readfile;)
+        if (node.init.type === 'Identifier') {
+          const sym = this.symbolTable.lookup(name);
+          if (sym && sym.dataType === UcodeType.UNKNOWN) {
+            const initName = (node.init as IdentifierNode).name;
+            const narrowedType = this.typeChecker.getNarrowedTypeAtPosition(initName, node.init.start);
+            if (narrowedType && narrowedType !== UcodeType.UNKNOWN) {
+              sym.dataType = narrowedType;
+              // Also propagate import info from the equality source for richer hover
+              const eqSymbol = this.typeChecker.getEqualityNarrowSymbolAtPosition(initName, node.init.start);
+              if (eqSymbol?.importedFrom) {
+                sym.importedFrom = eqSymbol.importedFrom;
+                if (eqSymbol.importSpecifier) {
+                  sym.importSpecifier = eqSymbol.importSpecifier;
+                }
+                sym.type = SymbolType.IMPORTED;
+              }
+            }
+          }
         }
 
         // Case 1: Populate propertyTypes from object literal at declaration
@@ -1775,7 +1825,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             const rightType = this.typeChecker.checkNode(node.right);
             let iterType: UcodeDataType;
             if (rightType === UcodeType.ARRAY) {
-              iterType = UcodeType.UNKNOWN as UcodeDataType; // array element type unknown
+              // Check for ArrayType element info from the symbol or _fullType
+              const rightFullType = this.getIterableFullType(node.right);
+              if (rightFullType && isArrayType(rightFullType)) {
+                iterType = getArrayElementType(rightFullType);
+              } else {
+                iterType = UcodeType.UNKNOWN as UcodeDataType;
+              }
             } else if (rightType === UcodeType.OBJECT) {
               iterType = UcodeType.STRING as UcodeDataType; // object keys are strings
             } else if (rightType === UcodeType.STRING) {
@@ -1818,7 +1874,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             const valueNode = valueDeclarator.id;
             
             // Value variable type depends on the array element type
-            this.symbolTable.declare(valueName, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType, valueNode);
+            const rightFullType = this.getIterableFullType(node.right);
+            let valueType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
+            if (rightFullType && isArrayType(rightFullType)) {
+              valueType = getArrayElementType(rightFullType);
+            }
+            this.symbolTable.declare(valueName, SymbolType.VARIABLE, valueType, valueNode);
             this.symbolTable.markUsed(valueName, valueNode.start);
           }
         }
@@ -1836,10 +1897,19 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // Fallback to default behavior if scope analysis is disabled
       super.visitForInStatement(node);
     }
-    
+
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.pop();
     }
+  }
+
+  /** Get the full UcodeDataType for an iterable expression (identifier lookup or _fullType). */
+  private getIterableFullType(node: any): UcodeDataType | null {
+    if (node.type === 'Identifier') {
+      const sym = this.symbolTable.lookup(node.name);
+      if (sym) return sym.dataType;
+    }
+    return (node as any)._fullType || null;
   }
 
   visitSwitchStatement(node: SwitchStatementNode): void {
@@ -2316,8 +2386,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   private setDeclarationTypeIfUnset(symbol: SymbolEntry, dataType: UcodeDataType): void {
-    if (symbol.initialLiteralType === undefined && typeof dataType === 'string' && dataType !== UcodeType.UNKNOWN) {
-      symbol.initialLiteralType = dataType;
+    if (symbol.initialLiteralType === undefined && dataType !== UcodeType.UNKNOWN) {
+      if (typeof dataType === 'string' || isArrayType(dataType)) {
+        symbol.initialLiteralType = dataType;
+      }
     }
   }
 
@@ -2327,7 +2399,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     
     switch (initNode.type) {
       case 'ArrayExpression':
-        return dataType === UcodeType.ARRAY;
+        return dataType === UcodeType.ARRAY || isArrayType(dataType);
       case 'ObjectExpression':
         return dataType === UcodeType.OBJECT;
       case 'Literal':
@@ -2347,7 +2419,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (!node.init) {
       return;
     }
-    
+
+
     const symbol = this.symbolTable.lookup(name);
     if (symbol) {
       // Handle simple aliasing of imported modules (e.g., let alias = fs;)
@@ -3260,6 +3333,18 @@ private addDiagnostic(
             return false; // Filter out this diagnostic
           }
         }
+
+        // Handle case where arg is a call to a null-propagating builtin (e.g., keys(obj.prop))
+        // and the inner argument is property-access guarded by an enclosing if-block
+        if (
+          diagnosticData &&
+          !diagnosticData.variableName &&
+          typeof diagnosticData.argumentOffset === 'number'
+        ) {
+          if (this.isNullableArgGuardedByPropertyAccess(diagnosticData.argumentOffset)) {
+            return false;
+          }
+        }
       }
 
       // Legacy: Check if this is a builtin argument warning about "may be X"
@@ -3502,6 +3587,204 @@ private addDiagnostic(
     }
 
     return offset >= (node as any).start && offset <= (node as any).end;
+  }
+
+  /**
+   * Check if a nullable-argument diagnostic at the given offset should be suppressed
+   * because the argument is a call to a null-propagating builtin whose inner argument
+   * is property-access guarded by an enclosing if-block.
+   *
+   * Example: if (obj.prop['key'] != null) length(keys(obj.prop)) — obj.prop is guarded
+   */
+  private isNullableArgGuardedByPropertyAccess(argumentOffset: number): boolean {
+    if (!this.currentASTRoot) return false;
+
+    // Find the AST node at the argument offset
+    const argNode = this.findCallExpressionAt(this.currentASTRoot, argumentOffset);
+    if (!argNode || argNode.type !== 'CallExpression') return false;
+
+    const callNode = argNode as CallExpressionNode;
+    // Check if it's a null-propagating builtin
+    if (callNode.callee.type !== 'Identifier') return false;
+    const funcName = (callNode.callee as IdentifierNode).name;
+    const nullPropagating = ['keys', 'values', 'length', 'sort', 'reverse', 'uniq',
+      'pop', 'shift', 'slice', 'splice', 'join', 'split', 'trim', 'ltrim', 'rtrim',
+      'index', 'rindex', 'filter', 'map', 'substr', 'match'];
+    if (!nullPropagating.includes(funcName)) return false;
+
+    // Get the first argument
+    if (!callNode.arguments || callNode.arguments.length === 0) return false;
+    const innerArg = callNode.arguments[0];
+    if (!innerArg) return false;
+
+    // Build the dotted path for the inner argument (e.g., env.netifd_mark)
+    const memberPath = this.getMemberExpressionPath(innerArg);
+    if (!memberPath) return false;
+
+    // Check if there's an enclosing if-block that property-access guards this path
+    return this.hasPropertyAccessGuard(this.currentASTRoot, memberPath, argumentOffset);
+  }
+
+  /**
+   * Build a dotted path string from a MemberExpression node.
+   * Returns null for computed access or non-identifier bases.
+   * e.g., env.netifd_mark → "env.netifd_mark"
+   */
+  private getMemberExpressionPath(node: AstNode): string | null {
+    if (node.type === 'Identifier') {
+      return (node as IdentifierNode).name;
+    }
+    if (node.type === 'MemberExpression') {
+      const member = node as MemberExpressionNode;
+      if (!member.computed && member.property.type === 'Identifier') {
+        const objPath = this.getMemberExpressionPath(member.object);
+        if (objPath) {
+          return `${objPath}.${(member.property as IdentifierNode).name}`;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Check if there's an enclosing if-block whose condition implies the given
+   * member path is an object (non-null). This is detected when the condition
+   * contains path['key'] != null or path.prop != null.
+   *
+   * In ucode, if obj['key'] != null, then obj must be a non-null object
+   * (null[anything] returns null).
+   */
+  private hasPropertyAccessGuard(node: AstNode, memberPath: string, position: number): boolean {
+    if (node.type === 'IfStatement') {
+      const ifNode = node as IfStatementNode;
+
+      // Check if position is inside the consequent (then-block)
+      if (ifNode.consequent &&
+          position >= ifNode.consequent.start &&
+          position <= ifNode.consequent.end) {
+        // Check if the condition is a property-access null check on memberPath
+        if (this.conditionImpliesObjectType(ifNode.test, memberPath)) {
+          return true;
+        }
+      }
+    }
+
+    // Recurse into child nodes
+    const childProps = ['body', 'consequent', 'alternate'];
+    for (const prop of childProps) {
+      const child = (node as any)[prop];
+      if (child) {
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            if (item && typeof item === 'object' && item.type &&
+                position >= item.start && position <= item.end) {
+              if (this.hasPropertyAccessGuard(item, memberPath, position)) {
+                return true;
+              }
+            }
+          }
+        } else if (typeof child === 'object' && child.type &&
+                   position >= child.start && position <= child.end) {
+          if (this.hasPropertyAccessGuard(child, memberPath, position)) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Check if a condition expression implies that memberPath is an object.
+   * Patterns detected:
+   *   - memberPath.prop != null
+   *   - memberPath['key'] != null
+   *   - null != memberPath.prop
+   *   - null != memberPath['key']
+   *   - memberPath != null (direct null check)
+   * Also handles && combinations.
+   */
+  private conditionImpliesObjectType(condition: AstNode, memberPath: string): boolean {
+    if (!condition) return false;
+
+    if (condition.type === 'BinaryExpression') {
+      const expr = condition as BinaryExpressionNode;
+
+      // Handle && — check both sides
+      if (expr.operator === '&&') {
+        return this.conditionImpliesObjectType(expr.left, memberPath) ||
+               this.conditionImpliesObjectType(expr.right, memberPath);
+      }
+
+      // Handle != null / !== null
+      if (expr.operator === '!=' || expr.operator === '!==') {
+        const nullSide = this.isNullLiteral(expr.right) ? expr.left :
+                         this.isNullLiteral(expr.left) ? expr.right : null;
+        if (!nullSide) return false;
+
+        // Direct null check: memberPath != null
+        const directPath = this.getMemberExpressionPath(nullSide);
+        if (directPath === memberPath) return true;
+
+        // Property access null check: memberPath.X != null or memberPath['X'] != null
+        if (nullSide.type === 'MemberExpression') {
+          const parentPath = this.getMemberExpressionPath((nullSide as MemberExpressionNode).object);
+          if (parentPath === memberPath) return true;
+        }
+      }
+    }
+
+    // Handle LogicalExpression (&&, ||)
+    if (condition.type === 'LogicalExpression') {
+      const logical = condition as LogicalExpressionNode;
+      if (logical.operator === '&&') {
+        return this.conditionImpliesObjectType(logical.left, memberPath) ||
+               this.conditionImpliesObjectType(logical.right, memberPath);
+      }
+    }
+
+    return false;
+  }
+
+  private isNullLiteral(node: AstNode): boolean {
+    return node.type === 'Literal' && (node as LiteralNode).value === null;
+  }
+
+  /**
+   * Find a CallExpression AST node at the given offset.
+   */
+  private findCallExpressionAt(node: AstNode, offset: number): AstNode | null {
+    if (!node || typeof node !== 'object') return null;
+    if (node.start > offset || node.end < offset) return null;
+
+    // Check if this node is a CallExpression starting at the offset
+    if (node.type === 'CallExpression' && node.start === offset) {
+      return node;
+    }
+
+    // Recurse into children
+    const childProps = ['body', 'consequent', 'alternate', 'test', 'left', 'right',
+      'argument', 'callee', 'arguments', 'init', 'update', 'declarations',
+      'expression', 'elements', 'properties', 'value', 'object', 'property'];
+    for (const prop of childProps) {
+      const child = (node as any)[prop];
+      if (child) {
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            if (item && typeof item === 'object' && item.type) {
+              const found = this.findCallExpressionAt(item, offset);
+              if (found) return found;
+            }
+          }
+        } else if (typeof child === 'object' && child.type) {
+          const found = this.findCallExpressionAt(child, offset);
+          if (found) return found;
+        }
+      }
+    }
+
+    return null;
   }
 
   private findNullGuardAtPosition(node: AstNode, position: number): boolean {

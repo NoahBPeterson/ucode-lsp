@@ -3,7 +3,7 @@
  */
 
 import { AstNode, CallExpressionNode, LiteralNode } from '../../ast/nodes';
-import { UcodeType, createUnionType } from '../symbolTable';
+import { UcodeType, UcodeDataType, createUnionType, createArrayType, isArrayType, getArrayElementType } from '../symbolTable';
 import { TypeError, TypeWarning } from '../types';
 import { UcodeErrorCode } from '../errorConstants';
 
@@ -122,7 +122,7 @@ export function isStringCastableType(_type: UcodeType): boolean {
 export class BuiltinValidator {
   private errors: TypeError[] = [];
   private warnings: TypeWarning[] = [];
-  public narrowedReturnType: UcodeType | null = null;
+  public narrowedReturnType: UcodeDataType | null = null;
   private strictMode = false;
 
   constructor() {}
@@ -162,6 +162,18 @@ export class BuiltinValidator {
       }
     } else {
       this.narrowedReturnType = UcodeType.NULL;
+    }
+  }
+
+  /**
+   * If the narrowedReturnType is plain ARRAY and the argument has a known ArrayType,
+   * upgrade to preserve element type information.
+   */
+  private preserveArrayElementType(arg: AstNode | undefined): void {
+    if (!arg || this.narrowedReturnType !== UcodeType.ARRAY) return;
+    const fullType = this.getNodeFullType(arg);
+    if (fullType && isArrayType(fullType)) {
+      this.narrowedReturnType = fullType;
     }
   }
 
@@ -349,6 +361,10 @@ export class BuiltinValidator {
     if (!this.checkArgumentCount(node, 'match', 2)) return true;
     // C: returns NULL if pattern not regex or subject missing
     this.narrowForArgType(node.arguments[1], [UcodeType.REGEX], UcodeType.ARRAY);
+    // Upgrade to array<string> if valid
+    if (this.narrowedReturnType === UcodeType.ARRAY) {
+      this.narrowedReturnType = createArrayType(UcodeType.STRING);
+    }
     this.validateArgumentType(node.arguments[0], 'match', 1, [UcodeType.STRING]); // Include UcodeType.OBJECT when it includes tostring()
 
     // Custom check for argument 2: suggest regex conversion if a string literal is passed
@@ -378,7 +394,13 @@ export class BuiltinValidator {
     if (!this.checkArgumentCount(node, 'split', 2)) return true;
     const textArg = node.arguments[0];
     const separatorArg = node.arguments[1];
-    if (textArg) this.narrowForArgType(textArg, [UcodeType.STRING], UcodeType.ARRAY);
+    if (textArg) {
+      this.narrowForArgType(textArg, [UcodeType.STRING], UcodeType.ARRAY);
+      // Upgrade to array<string> if valid
+      if (this.narrowedReturnType === UcodeType.ARRAY) {
+        this.narrowedReturnType = createArrayType(UcodeType.STRING);
+      }
+    }
 
     if (textArg) {
       this.validateArgumentType(textArg, 'split', 1, [UcodeType.STRING]);
@@ -1005,6 +1027,7 @@ export class BuiltinValidator {
   validateUniqFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'uniq', 1)) return true;
     this.narrowForArgType(node.arguments[0], [UcodeType.ARRAY], UcodeType.ARRAY);
+    this.preserveArrayElementType(node.arguments[0]);
     this.validateArgumentType(node.arguments[0], 'uniq', 1, [UcodeType.ARRAY]);
     return true;
   }
@@ -1084,6 +1107,10 @@ export class BuiltinValidator {
   validateIptoarrFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'iptoarr', 1)) return true;
     this.narrowForArgType(node.arguments[0], [UcodeType.STRING], UcodeType.ARRAY);
+    // iptoarr() always returns array<integer> (IP octets)
+    if (this.narrowedReturnType === UcodeType.ARRAY) {
+      this.narrowedReturnType = createArrayType(UcodeType.INTEGER);
+    }
     this.validateArgumentType(node.arguments[0], 'iptoarr', 1, [UcodeType.STRING]);
     return true;
   }
@@ -1332,14 +1359,32 @@ export class BuiltinValidator {
   validatePushFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'push', 1)) return true;
     // C: returns NULL if not mutable array; returns last pushed value otherwise
-    // Note: signature says INTEGER but C actually returns the last pushed value
     this.validateArgumentType(node.arguments[0], 'push', 1, [UcodeType.ARRAY]);
+    // Return type is the last pushed value
+    if (node.arguments.length >= 2) {
+      const lastArg = node.arguments[node.arguments.length - 1];
+      if (lastArg) {
+        const fullType = this.getNodeFullType(lastArg);
+        if (fullType) {
+          this.narrowedReturnType = fullType;
+        } else {
+          const basicType = this.getNodeType(lastArg);
+          if (basicType !== UcodeType.UNKNOWN) {
+            this.narrowedReturnType = basicType;
+          }
+        }
+      }
+    }
     return true;
   }
 
   validatePopFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'pop', 1)) return true;
     // C: returns NULL if not mutable array; returns popped element otherwise
+    const fullType = node.arguments[0] ? this.getNodeFullType(node.arguments[0]) : null;
+    if (fullType && isArrayType(fullType)) {
+      this.narrowedReturnType = getArrayElementType(fullType);
+    }
     this.validateArgumentType(node.arguments[0], 'pop', 1, [UcodeType.ARRAY]);
     return true;
   }
@@ -1347,6 +1392,10 @@ export class BuiltinValidator {
   validateShiftFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'shift', 1)) return true;
     // C: returns NULL if not mutable array; returns shifted element otherwise
+    const fullType = node.arguments[0] ? this.getNodeFullType(node.arguments[0]) : null;
+    if (fullType && isArrayType(fullType)) {
+      this.narrowedReturnType = getArrayElementType(fullType);
+    }
     this.validateArgumentType(node.arguments[0], 'shift', 1, [UcodeType.ARRAY]);
     return true;
   }
@@ -1354,8 +1403,22 @@ export class BuiltinValidator {
   validateUnshiftFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'unshift', 1)) return true;
     // C: returns NULL if not mutable array; returns last value added otherwise
-    // Note: signature says INTEGER but C actually returns the last value added
     this.validateArgumentType(node.arguments[0], 'unshift', 1, [UcodeType.ARRAY]);
+    // Return type is the last unshifted value
+    if (node.arguments.length >= 2) {
+      const lastArg = node.arguments[node.arguments.length - 1];
+      if (lastArg) {
+        const fullType = this.getNodeFullType(lastArg);
+        if (fullType) {
+          this.narrowedReturnType = fullType;
+        } else {
+          const basicType = this.getNodeType(lastArg);
+          if (basicType !== UcodeType.UNKNOWN) {
+            this.narrowedReturnType = basicType;
+          }
+        }
+      }
+    }
     return true;
   }
 
@@ -1364,8 +1427,9 @@ export class BuiltinValidator {
 
     // First parameter must be array
     this.narrowForArgType(node.arguments[0], [UcodeType.ARRAY], UcodeType.ARRAY);
+    this.preserveArrayElementType(node.arguments[0]);
     this.validateArgumentType(node.arguments[0], 'slice', 1, [UcodeType.ARRAY]);
-    
+
     // Second parameter (start index) must be number
     this.validateArgumentType(node.arguments[1], 'slice', 2, [UcodeType.INTEGER, UcodeType.DOUBLE]);
     
@@ -1382,6 +1446,7 @@ export class BuiltinValidator {
 
     // First parameter must be array
     this.narrowForArgType(node.arguments[0], [UcodeType.ARRAY], UcodeType.ARRAY);
+    this.preserveArrayElementType(node.arguments[0]);
     this.validateArgumentType(node.arguments[0], 'splice', 1, [UcodeType.ARRAY]);
     
     // Second parameter (start index) must be number
@@ -1401,6 +1466,7 @@ export class BuiltinValidator {
 
     // First parameter must be array
     this.narrowForArgType(node.arguments[0], [UcodeType.ARRAY], UcodeType.ARRAY);
+    this.preserveArrayElementType(node.arguments[0]);
     this.validateArgumentType(node.arguments[0], 'sort', 1, [UcodeType.ARRAY]);
     
     // Second parameter (comparator) is optional but must be function if present
@@ -1418,6 +1484,7 @@ export class BuiltinValidator {
     const argType = this.getNodeType(arg);
     if (argType === UcodeType.ARRAY) {
       this.narrowedReturnType = UcodeType.ARRAY;
+      this.preserveArrayElementType(arg);
     } else if (argType === UcodeType.STRING) {
       this.narrowedReturnType = UcodeType.STRING;
     } else if (argType === UcodeType.UNKNOWN) {
@@ -1449,6 +1516,7 @@ export class BuiltinValidator {
 
     // First parameter must be array
     this.narrowForArgType(node.arguments[0], [UcodeType.ARRAY], UcodeType.ARRAY);
+    this.preserveArrayElementType(node.arguments[0]);
     this.validateArgumentType(node.arguments[0], 'filter', 1, [UcodeType.ARRAY]);
     
     // Second parameter must be function
@@ -1473,6 +1541,10 @@ export class BuiltinValidator {
   validateKeysFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'keys', 1)) return true;
     this.narrowForArgType(node.arguments[0], [UcodeType.OBJECT], UcodeType.ARRAY);
+    // keys() always returns array<string> (object keys are strings)
+    if (this.narrowedReturnType === UcodeType.ARRAY) {
+      this.narrowedReturnType = createArrayType(UcodeType.STRING);
+    }
     this.validateArgumentType(node.arguments[0], 'keys', 1, [UcodeType.OBJECT]);
     return true;
   }
@@ -1556,8 +1628,17 @@ export class BuiltinValidator {
     return UcodeType.UNKNOWN;
   }
 
+  private getNodeFullType(_node: any): UcodeDataType | null {
+    // This will be injected by the main type checker
+    return null;
+  }
+
   // Method to inject the type checker
   setTypeChecker(typeChecker: (node: any) => UcodeType): void {
     this.getNodeType = typeChecker;
+  }
+
+  setFullTypeChecker(checker: (node: any) => UcodeDataType | null): void {
+    this.getNodeFullType = checker;
   }
 }
