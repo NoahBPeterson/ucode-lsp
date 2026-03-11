@@ -403,7 +403,7 @@ export class FileResolver {
      * Get property types for a default export that is an object.
      * Resolves identifiers to their declarations (ObjectExpression, etc.).
      */
-    getDefaultExportPropertyTypes(fileUri: string): Map<string, UcodeDataType> | null {
+    getDefaultExportPropertyTypes(fileUri: string): { propertyTypes: Map<string, UcodeDataType>; nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>; functionReturnTypes?: Map<string, UcodeDataType> } | null {
         try {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
@@ -417,12 +417,14 @@ export class FileResolver {
 
             const body = (result.ast as any).body || [];
 
-            // Build maps of top-level variable initializers and function names
+            // Build maps of top-level variable initializers, function names, and function nodes
             const varInits = new Map<string, AstNode>();
             const funcNames = new Set<string>();
+            const funcNodes = new Map<string, AstNode>();
             for (const stmt of body) {
                 if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
                     funcNames.add(stmt.id.name);
+                    funcNodes.set(stmt.id.name, stmt);
                 }
                 if (stmt.type === 'VariableDeclaration') {
                     for (const decl of stmt.declarations || []) {
@@ -453,6 +455,9 @@ export class FileResolver {
             if (objNode.type !== 'ObjectExpression') return null;
 
             const propertyTypes = new Map<string, UcodeDataType>();
+            const nestedPropertyTypes = new Map<string, Map<string, UcodeDataType>>();
+            const functionReturnTypes = new Map<string, UcodeDataType>();
+
             for (const prop of (objNode as any).properties || []) {
                 const key = prop.key?.name || prop.key?.value;
                 if (!key) continue;
@@ -462,8 +467,17 @@ export class FileResolver {
 
                 if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
                     propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                    // Infer return type of inline function
+                    const retType = this.inferFunctionReturnType(val);
+                    if (retType) functionReturnTypes.set(key, retType);
                 } else if (val.type === 'Identifier' && funcNames.has(val.name)) {
                     propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                    // Infer return type of referenced top-level function
+                    const funcNode = funcNodes.get(val.name);
+                    if (funcNode) {
+                        const retType = this.inferFunctionReturnType(funcNode);
+                        if (retType) functionReturnTypes.set(key, retType);
+                    }
                 } else if (val.type === 'Literal' || val.type === 'StringLiteral') {
                     if (typeof val.value === 'number') {
                         propertyTypes.set(key, UcodeType.INTEGER as UcodeDataType);
@@ -476,6 +490,11 @@ export class FileResolver {
                     }
                 } else if (val.type === 'ObjectExpression') {
                     propertyTypes.set(key, UcodeType.OBJECT as UcodeDataType);
+                    // Extract nested property types for object-valued properties
+                    const nested = this.extractObjectPropertyTypes(val, funcNames, varInits, new Map());
+                    if (nested.size > 0) {
+                        nestedPropertyTypes.set(key, nested);
+                    }
                 } else if (val.type === 'ArrayExpression') {
                     propertyTypes.set(key, UcodeType.ARRAY as UcodeDataType);
                 } else if (val.type === 'Identifier') {
@@ -483,6 +502,13 @@ export class FileResolver {
                     const init = varInits.get(val.name);
                     if (init) {
                         propertyTypes.set(key, this.inferNodeType(init));
+                        // If the resolved initializer is an object, extract nested types
+                        if (init.type === 'ObjectExpression') {
+                            const nested = this.extractObjectPropertyTypes(init, funcNames, varInits, new Map());
+                            if (nested.size > 0) {
+                                nestedPropertyTypes.set(key, nested);
+                            }
+                        }
                     } else {
                         propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
                     }
@@ -491,7 +517,15 @@ export class FileResolver {
                 }
             }
 
-            return propertyTypes.size > 0 ? propertyTypes : null;
+            if (propertyTypes.size === 0) return null;
+            const exportResult: { propertyTypes: Map<string, UcodeDataType>; nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>; functionReturnTypes?: Map<string, UcodeDataType> } = { propertyTypes };
+            if (nestedPropertyTypes.size > 0) {
+                exportResult.nestedPropertyTypes = nestedPropertyTypes;
+            }
+            if (functionReturnTypes.size > 0) {
+                exportResult.functionReturnTypes = functionReturnTypes;
+            }
+            return exportResult;
         } catch {
             return null;
         }
@@ -1027,6 +1061,7 @@ export class FileResolver {
             case 'ArrayExpression': return UcodeType.ARRAY as UcodeDataType;
             case 'FunctionExpression':
             case 'ArrowFunctionExpression': return UcodeType.FUNCTION as UcodeDataType;
+            case 'TemplateLiteral': return UcodeType.STRING as UcodeDataType;
             case 'Literal': {
                 const val = (node as any).value;
                 if (typeof val === 'string') return UcodeType.STRING as UcodeDataType;
@@ -1035,7 +1070,111 @@ export class FileResolver {
                 if (val === null) return UcodeType.NULL as UcodeDataType;
                 return UcodeType.UNKNOWN as UcodeDataType;
             }
+            case 'BinaryExpression': {
+                // String concatenation: any + with a string operand → string
+                const binNode = node as any;
+                if (binNode.operator === '+') {
+                    const leftType = this.inferNodeType(binNode.left);
+                    const rightType = this.inferNodeType(binNode.right);
+                    if (leftType === UcodeType.STRING || rightType === UcodeType.STRING) {
+                        return UcodeType.STRING as UcodeDataType;
+                    }
+                    // Numeric operations
+                    if ((leftType === UcodeType.INTEGER || leftType === UcodeType.DOUBLE) &&
+                        (rightType === UcodeType.INTEGER || rightType === UcodeType.DOUBLE)) {
+                        return (leftType === UcodeType.DOUBLE || rightType === UcodeType.DOUBLE)
+                            ? UcodeType.DOUBLE as UcodeDataType : UcodeType.INTEGER as UcodeDataType;
+                    }
+                }
+                // Comparison operators return boolean
+                if (['==', '!=', '<', '>', '<=', '>=', '===', '!=='].includes(binNode.operator)) {
+                    return UcodeType.BOOLEAN as UcodeDataType;
+                }
+                // Arithmetic operators with known numeric operands
+                if (['-', '*', '/', '%'].includes(binNode.operator)) {
+                    return UcodeType.INTEGER as UcodeDataType;
+                }
+                return UcodeType.UNKNOWN as UcodeDataType;
+            }
+            case 'CallExpression': {
+                // sprintf always returns string
+                const callNode = node as any;
+                if (callNode.callee?.type === 'Identifier') {
+                    const name = callNode.callee.name;
+                    if (name === 'sprintf' || name === 'substr' || name === 'trim' || name === 'ltrim' || name === 'rtrim' ||
+                        name === 'join' || name === 'replace' || name === 'uchr' || name === 'lc' || name === 'uc') {
+                        return UcodeType.STRING as UcodeDataType;
+                    }
+                    if (name === 'length' || name === 'index' || name === 'rindex' || name === 'ord' ||
+                        name === 'hex' || name === 'int' || name === 'time' || name === 'printf') {
+                        return UcodeType.INTEGER as UcodeDataType;
+                    }
+                    if (name === 'split' || name === 'keys' || name === 'values' || name === 'sort' || name === 'reverse' ||
+                        name === 'splice' || name === 'filter' || name === 'map') {
+                        return UcodeType.ARRAY as UcodeDataType;
+                    }
+                    if (name === 'type') return UcodeType.STRING as UcodeDataType;
+                }
+                return UcodeType.UNKNOWN as UcodeDataType;
+            }
             default: return UcodeType.UNKNOWN as UcodeDataType;
+        }
+    }
+
+    /**
+     * Infer the return type of a function from its return statements.
+     * Only handles simple cases (literal returns, string concat, etc.)
+     */
+    private inferFunctionReturnType(funcNode: AstNode): UcodeDataType | null {
+        const body = (funcNode as any).body;
+        if (!body) return null;
+        const stmts = body.body || body;
+        if (!Array.isArray(stmts)) return null;
+
+        const returnTypes: UcodeDataType[] = [];
+        this.collectReturnTypes(stmts, returnTypes);
+        if (returnTypes.length === 0) return null;
+
+        // If all return the same type, use that
+        const unique = [...new Set(returnTypes.map(t => typeof t === 'string' ? t : 'complex'))];
+        if (unique.length === 1) return returnTypes[0]!;
+        return null; // mixed return types — can't infer simply
+    }
+
+    /**
+     * Collect return value types from statements, skipping nested functions.
+     */
+    private collectReturnTypes(stmts: AstNode[], result: UcodeDataType[]): void {
+        for (const stmt of stmts) {
+            if (stmt.type === 'FunctionDeclaration' || stmt.type === 'FunctionExpression' || stmt.type === 'ArrowFunctionExpression') {
+                continue; // Skip nested function bodies
+            }
+            if (stmt.type === 'ReturnStatement') {
+                const arg = (stmt as any).argument;
+                if (arg) {
+                    result.push(this.inferNodeType(arg));
+                }
+            }
+            // Recurse into control flow
+            if ((stmt as any).body) {
+                const inner = (stmt as any).body;
+                if (Array.isArray(inner)) {
+                    this.collectReturnTypes(inner, result);
+                } else if (inner.body && Array.isArray(inner.body)) {
+                    this.collectReturnTypes(inner.body, result);
+                }
+            }
+            if ((stmt as any).consequent) {
+                const c = (stmt as any).consequent;
+                if (Array.isArray(c)) this.collectReturnTypes(c, result);
+                else if (c.body && Array.isArray(c.body)) this.collectReturnTypes(c.body, result);
+            }
+            if ((stmt as any).alternate) {
+                const a = (stmt as any).alternate;
+                if (Array.isArray(a)) this.collectReturnTypes(a, result);
+                else if (a.body && Array.isArray(a.body)) this.collectReturnTypes(a.body, result);
+                else if (a.type === 'IfStatement') this.collectReturnTypes([a], result);
+            }
         }
     }
 

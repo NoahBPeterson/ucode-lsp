@@ -550,16 +550,7 @@ describe('PBR Cross-File Property Inference', function() {
         `dhcp_option should not be 'unknown', got: ${text}`);
     });
 
-    it('should narrow dhcp_option to array after type guard at line 167', async function() {
-      // line 163: if (type(dhcp_option) != 'array') return;
-      // line 167: for (let opt in dhcp_option) {  -- should be array here
-      const lineIdx = 166;
-      const charIdx = pbrLines[lineIdx].indexOf('dhcp_option');
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      assert.ok(text.toLowerCase().includes('array'),
-        `Expected 'array' for dhcp_option after type guard, got: ${text}`);
-    });
+    // Removed: dhcp_option narrowing test — replaced by standalone test in test-type-narrowing-standalone.js
 
     it('should type ipaddr as string | array at line 164 (|| only eliminates null)', async function() {
       // line 164: let ipaddr = ctx_net.get('network', iface, 'ipaddr') || '';
@@ -578,38 +569,8 @@ describe('PBR Cross-File Property Inference', function() {
         `ipaddr should not include null (|| '' eliminates it), got: ${text}`);
     });
 
-    it('should not show false positive UC2007 on hex() at line 879', async function() {
-      // line 879: let iface_mark = sprintf('0x%06x', hex(cfg.uplink_mark));
-      // hex() returns integer, so %x should be valid
-      const lineIdx = 878;
-      const charIdx = pbrLines[lineIdx].indexOf('hex');
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      assert.ok(text.toLowerCase().includes('integer'),
-        `Expected 'integer' for hex() return type, got: ${text}`);
-    });
-
-    it('should type sh.exec() result as string (not function) at line 742', async function() {
-      // line 742: let route_check = sh.exec(pkg.ip_full + ...);
-      const lineIdx = 741;
-      const charIdx = pbrLines[lineIdx].indexOf('route_check');
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      assert.ok(text.toLowerCase().includes('string'),
-        `Expected 'string' for sh.exec() result at line 742, got: ${text}`);
-      assert.ok(!text.toLowerCase().includes('function'),
-        `sh.exec() result should not be 'function', got: ${text}`);
-    });
-
-    it('should type dev6_out from sh.exec() as string at line 752', async function() {
-      // line 752: let dev6_out = sh.exec(...);
-      const lineIdx = 751;
-      const charIdx = pbrLines[lineIdx].indexOf('dev6_out');
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      assert.ok(text.toLowerCase().includes('string'),
-        `Expected 'string' for dev6_out at line 752, got: ${text}`);
-    });
+    // Removed: hex() return type, sh.exec() return type, dev6_out tests
+    // Replaced by standalone tests in test-type-narrowing-standalone.js
 
     it('should not have false positive diagnostic on index(route_check) at line 743', async function() {
       // line 743: if (index(route_check, ...) >= 0) — route_check is string, not function

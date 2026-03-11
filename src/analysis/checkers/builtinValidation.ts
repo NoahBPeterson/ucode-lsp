@@ -231,7 +231,6 @@ export class BuiltinValidator {
     }
 
     const argType = this.getNodeType(arg);
-    const checkTypes = [...allowedTypes, UcodeType.UNKNOWN];
 
     // Check if argType is a union type
     const argTypes = argType.split(' | ').map(t => t.trim());
@@ -239,12 +238,14 @@ export class BuiltinValidator {
 
     if (isUnion) {
       // For union types, check if ANY type is allowed
-      const hasAllowedType = argTypes.some(t => checkTypes.includes(t as UcodeType));
+      const hasAllowedType = argTypes.some(t =>
+        t !== UcodeType.UNKNOWN && allowedTypes.includes(t as UcodeType)
+      );
       const disallowedTypes = argTypes.filter(t =>
-        t !== UcodeType.UNKNOWN && !allowedTypes.includes(t as UcodeType)
+        !allowedTypes.includes(t as UcodeType)
       );
 
-      if (!hasAllowedType) {
+      if (!hasAllowedType && !argTypes.includes(UcodeType.UNKNOWN)) {
         // None of the types in the union are allowed — definitely wrong, always error
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
@@ -280,9 +281,36 @@ export class BuiltinValidator {
           });
         }
       }
+    } else if (argType === UcodeType.UNKNOWN) {
+      // Unknown type — could be anything, warn to narrow
+      const message = customErrorMessage ||
+        `Argument ${argPosition} of ${funcName}() is unknown. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
+
+      const variableName = this.getVariableName(arg);
+
+      const diagData = {
+        functionName: funcName,
+        argumentIndex: argPosition - 1,
+        expectedType: allowedTypes.join(' | '),
+        expectedTypes: [...allowedTypes],
+        actualType: argType,
+        variableName: variableName,
+        argumentOffset: arg.start
+      };
+      if (this.strictMode) {
+        this.errors.push({
+          message, start: arg.start, end: arg.end,
+          severity: 'error', code: 'incompatible-function-argument', data: diagData
+        });
+      } else {
+        this.warnings.push({
+          message, start: arg.start, end: arg.end,
+          severity: 'warning', code: 'incompatible-function-argument', data: diagData
+        });
+      }
     } else {
-      // Single type - check if it's allowed
-      if (!checkTypes.includes(argType)) {
+      // Single known type - check if it's allowed
+      if (!allowedTypes.includes(argType as UcodeType)) {
         // Definitely wrong — always error
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
@@ -394,12 +422,19 @@ export class BuiltinValidator {
     if (!this.checkArgumentCount(node, 'split', 2)) return true;
     const textArg = node.arguments[0];
     const separatorArg = node.arguments[1];
-    if (textArg) {
-      this.narrowForArgType(textArg, [UcodeType.STRING], UcodeType.ARRAY);
-      // Upgrade to array<string> if valid
-      if (this.narrowedReturnType === UcodeType.ARRAY) {
-        this.narrowedReturnType = createArrayType(UcodeType.STRING);
-      }
+
+    // split() returns NULL when first arg is not string or separator is not string/regex.
+    // Only return array<string> when both args are confirmed correct types.
+    const textType = textArg ? this.getNodeType(textArg) : UcodeType.UNKNOWN;
+    const sepType = separatorArg ? this.getNodeType(separatorArg) : UcodeType.UNKNOWN;
+    const textIsString = textType === UcodeType.STRING;
+    const sepIsValid = sepType === UcodeType.STRING || sepType === UcodeType.REGEX;
+
+    if (textIsString && sepIsValid) {
+      this.narrowedReturnType = createArrayType(UcodeType.STRING);
+    } else {
+      // Could return null — use array | null (without element type info for uncertain case)
+      this.narrowedReturnType = createUnionType([UcodeType.ARRAY, UcodeType.NULL]) as UcodeType;
     }
 
     if (textArg) {

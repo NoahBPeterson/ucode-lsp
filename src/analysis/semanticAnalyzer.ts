@@ -79,6 +79,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private assignmentLeftDepth = 0;
   private fileResolver: FileResolver;
   private currentASTRoot: ProgramNode | null = null;
+  private thisPropertyStack: Map<string, UcodeDataType>[] = []; // Track `this` context for object method property types
 
   constructor(textDocument: TextDocument, options: SemanticAnalysisOptions = {}) {
     super();
@@ -646,9 +647,22 @@ export class SemanticAnalyzer extends BaseVisitor {
 
         // Populate propertyTypes for object default imports (not function)
         if (specifier.type === 'ImportDefaultSpecifier' && !defaultIsFunction && effectiveUri && effectiveUri.startsWith('file://')) {
-          const propTypes = this.fileResolver.getDefaultExportPropertyTypes(effectiveUri);
-          if (propTypes) {
-            symbol.propertyTypes = propTypes;
+          const exportInfo = this.fileResolver.getDefaultExportPropertyTypes(effectiveUri);
+          if (exportInfo) {
+            symbol.propertyTypes = exportInfo.propertyTypes;
+            if (exportInfo.nestedPropertyTypes) {
+              symbol.nestedPropertyTypes = exportInfo.nestedPropertyTypes;
+            }
+            // Populate return types for function-valued properties (e.g., sh.exec() → string)
+            if (exportInfo.functionReturnTypes) {
+              const pfrt = new Map<string, string>();
+              for (const [name, retType] of exportInfo.functionReturnTypes) {
+                pfrt.set(name, typeof retType === 'string' ? retType : 'unknown');
+              }
+              if (pfrt.size > 0) {
+                symbol.propertyFunctionReturnTypes = pfrt;
+              }
+            }
           }
         }
 
@@ -834,11 +848,23 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
 
       // Exit function scope
-      this.symbolTable.exitScope();
+      this.symbolTable.exitScope(node.end);
       this.functionScopes.pop();
       this.currentFunctionNode = previousFunction;
     } else {
       super.visitFunctionDeclaration(node);
+    }
+  }
+
+  visitObjectExpression(node: ObjectExpressionNode): void {
+    // Extract property types for `this` context inside method bodies
+    const propTypes = this.inferObjectLiteralPropertyTypes(node);
+    if (propTypes) {
+      this.thisPropertyStack.push(propTypes);
+    }
+    super.visitObjectExpression(node);
+    if (propTypes) {
+      this.thisPropertyStack.pop();
     }
   }
 
@@ -872,11 +898,21 @@ export class SemanticAnalyzer extends BaseVisitor {
         this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
       }
 
+      // Declare `this` with property types from enclosing object literal
+      if (this.thisPropertyStack.length > 0) {
+        const thisProps = this.thisPropertyStack[this.thisPropertyStack.length - 1]!;
+        this.symbolTable.declare('this', SymbolType.VARIABLE, UcodeType.OBJECT as UcodeDataType, node);
+        const thisSym = this.symbolTable.lookup('this');
+        if (thisSym) {
+          thisSym.propertyTypes = new Map(thisProps);
+        }
+      }
+
       // Visit the function body
       this.visit(node.body);
 
       // Exit function scope
-      this.symbolTable.exitScope();
+      this.symbolTable.exitScope(node.end);
       this.functionScopes.pop();
       this.currentFunctionNode = previousFunction;
     } else {
@@ -922,7 +958,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
 
       // Exit function scope
-      this.symbolTable.exitScope();
+      this.symbolTable.exitScope(node.end);
       this.functionScopes.pop();
       this.currentFunctionNode = previousFunction;
     } else {
@@ -942,7 +978,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
 
       // Exit block scope
-      this.symbolTable.exitScope();
+      this.symbolTable.exitScope(node.end);
     } else {
       super.visitBlockStatement(node);
     }
@@ -998,7 +1034,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.visit(node.body);
 
       // Exit catch scope
-      this.symbolTable.exitScope();
+      this.symbolTable.exitScope(node.end);
     } else {
       super.visit(node);
     }
@@ -1777,7 +1813,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       this.visit(node.body);
       
       // Exit the for loop scope
-      this.symbolTable.exitScope();
+      this.symbolTable.exitScope(node.end);
     } else {
       // Fallback to default behavior if scope analysis is disabled
       super.visitForStatement(node);
@@ -1892,7 +1928,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       this.visit(node.body);
       
       // Exit the for-in loop scope
-      this.symbolTable.exitScope();
+      this.symbolTable.exitScope(node.end);
     } else {
       // Fallback to default behavior if scope analysis is disabled
       super.visitForInStatement(node);
@@ -2473,6 +2509,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               symbol.dataType = propertyType;
               this.symbolTable.updateSymbolType(name, propertyType);
               this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
+              // Propagate nested property types (e.g., _pkg_mod.pkg → pkg with its own propertyTypes)
+              if (objectSymbol.nestedPropertyTypes && objectSymbol.nestedPropertyTypes.has(propertyName)) {
+                symbol.propertyTypes = objectSymbol.nestedPropertyTypes.get(propertyName)!;
+              }
               return;
             }
           }

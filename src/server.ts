@@ -409,6 +409,10 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
 
     const codeActions: CodeAction[] = [];
 
+    // Get cached AST for context detection
+    const cacheEntry = analysisCache.get(params.textDocument.uri);
+    const ast = cacheEntry?.result?.ast;
+
     // Get diagnostics for the current range
     const diagnostics = params.context.diagnostics;
 
@@ -424,7 +428,7 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // Add type narrowing specific quick fixes
             if (diagnostic.code) {
                 const typeNarrowingActions = generateTypeNarrowingQuickFixes(
-                    diagnostic, document, params.textDocument.uri
+                    diagnostic, document, params.textDocument.uri, lineText, ast
                 );
                 codeActions.push(...typeNarrowingActions);
             }
@@ -467,78 +471,272 @@ connection.onDefinition((params) => {
     return handleDefinition(params, documents, legacyCache);
 });
 
+// --- Quick Fix helpers ---
+
+interface EnclosingContext {
+    inFunction: boolean;
+    inLoop: boolean;
+}
+
+/**
+ * Walk the AST top-down to determine if a position is inside a function body,
+ * a loop body, or top-level code. When entering a nested function, loop context
+ * is reset (continue inside a callback doesn't apply to the outer loop).
+ */
+function findEnclosingContext(ast: any, document: TextDocument, position: { line: number; character: number }): EnclosingContext {
+    const result: EnclosingContext = { inFunction: false, inLoop: false };
+    if (!ast) return result;
+
+    const offset = document.offsetAt(position);
+
+    function walk(node: any, inFunc: boolean, inLoop: boolean): void {
+        if (!node || typeof node !== 'object' || typeof node.start !== 'number') return;
+        if (offset < node.start || offset > node.end) return;
+
+        const isFunc = node.type === 'FunctionDeclaration' ||
+                       node.type === 'FunctionExpression' ||
+                       node.type === 'ArrowFunctionExpression';
+        const isLoop = node.type === 'ForStatement' ||
+                       node.type === 'ForInStatement' ||
+                       node.type === 'WhileStatement' ||
+                       node.type === 'DoWhileStatement';
+
+        const newInFunc = isFunc || inFunc;
+        // Reset loop flag when entering nested function
+        const newInLoop = isFunc ? false : (isLoop || inLoop);
+
+        result.inFunction = newInFunc;
+        result.inLoop = newInLoop;
+
+        // Visit all child nodes
+        for (const key of Object.keys(node)) {
+            if (key === 'type' || key === 'start' || key === 'end') continue;
+            const val = node[key];
+            if (Array.isArray(val)) {
+                for (const item of val) {
+                    if (item && typeof item === 'object' && typeof item.start === 'number') {
+                        walk(item, newInFunc, newInLoop);
+                    }
+                }
+            } else if (val && typeof val === 'object' && typeof val.start === 'number') {
+                walk(val, newInFunc, newInLoop);
+            }
+        }
+    }
+
+    walk(ast, false, false);
+    return result;
+}
+
+/** Check whether the diagnostic is about null in a union (vs a wrong-type problem) */
+function isNullProblem(data: any): boolean {
+    if (!data.actualType) return true;
+    const actualStr = typeof data.actualType === 'string' ? data.actualType : '';
+    const types = actualStr.split(' | ').map((t: string) => t.trim());
+    return types.includes('null');
+}
+
+/** Create a code action that inserts text before a given line */
+function makeInsertBeforeAction(
+    title: string, insertText: string, line: number,
+    uri: string, diagnostic: any
+): CodeAction {
+    return {
+        title,
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        edit: {
+            changes: {
+                [uri]: [TextEdit.insert({ line, character: 0 }, insertText)]
+            }
+        }
+    };
+}
+
+/** Create a code action that replaces a full line */
+function makeReplaceLineAction(
+    title: string, newText: string, line: number, lineLength: number,
+    uri: string, diagnostic: any
+): CodeAction {
+    return {
+        title,
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        edit: {
+            changes: {
+                [uri]: [TextEdit.replace(
+                    { start: { line, character: 0 }, end: { line, character: lineLength } },
+                    newText
+                )]
+            }
+        }
+    };
+}
+
 // Generate quick fixes for type narrowing diagnostics
-function generateTypeNarrowingQuickFixes(diagnostic: any, document: any, uri: string): CodeAction[] {
+function generateTypeNarrowingQuickFixes(
+    diagnostic: any, document: TextDocument, uri: string, lineText: string, ast?: any
+): CodeAction[] {
     const actions: CodeAction[] = [];
-    
+
     if (!diagnostic.code || !diagnostic.data) {
         return actions;
     }
 
     const { code, data } = diagnostic;
-    
-    if (code === 'nullable-in-operator' && data.variableName) {
-        // Quick fix for null safety in 'in' operator
-        const nullGuardAction: CodeAction = {
-            title: `Wrap ${data.variableName} in null guard`,
-            kind: CodeActionKind.QuickFix,
-            diagnostics: [diagnostic],
-            edit: {
-                changes: {
-                    [uri]: [
-                        TextEdit.replace(
-                            diagnostic.range,
-                            `if (${data.variableName} != null) {\n    ${document.getText(diagnostic.range)}\n}`
-                        )
-                    ]
-                }
-            }
-        };
-        actions.push(nullGuardAction);
+    const line = diagnostic.range.start.line;
+    const indent = lineText.match(/^(\s*)/)?.[1] || '';
+    const trimmedContent = lineText.trim();
+    const lineLength = lineText.length;
+
+    // Determine enclosing context
+    const ctx = findEnclosingContext(ast, document, diagnostic.range.start);
+
+    const varName: string | null = data.variableName || null;
+    const expectedType: string = data.expectedType || data.expectedTypes?.[0] || '';
+    const nullish = isNullProblem(data);
+
+    // Handle all three diagnostic codes uniformly
+    if (code !== 'nullable-argument' && code !== 'incompatible-function-argument' && code !== 'nullable-in-operator') {
+        return actions;
     }
-    
-    if (code === 'incompatible-function-argument' && data.variableName && data.expectedType) {
-        // Quick fix for function argument type mismatch
-        const typeGuardAction: CodeAction = {
-            title: `Wrap ${data.variableName} in ${data.expectedType} guard`,
-            kind: CodeActionKind.QuickFix,
-            diagnostics: [diagnostic],
-            edit: {
-                changes: {
-                    [uri]: [
-                        TextEdit.replace(
-                            diagnostic.range,
-                            `if (type(${data.variableName}) == '${data.expectedType}') {\n    ${document.getText(diagnostic.range)}\n}`
-                        )
-                    ]
+
+    // Check if the line declares a variable that is used later (wrapping would
+    // scope it inside the if-block, making it inaccessible afterwards).
+    const declaredVar = trimmedContent.match(/^(?:let|const)\s+(\w+)\s*=/)?.[1];
+    const varUsedLater = declaredVar ? isVariableUsedAfterLine(document, line, declaredVar) : false;
+
+    if (varName) {
+        // === SIMPLE IDENTIFIER ===
+        if (nullish) {
+            // In loop: only continue (not return — that exits the function)
+            if (ctx.inLoop) {
+                actions.push(makeInsertBeforeAction(
+                    `Add null guard`,
+                    `${indent}if (${varName} == null)\n${indent}\tcontinue;\n`,
+                    line, uri, diagnostic
+                ));
+            } else if (ctx.inFunction) {
+                actions.push(makeInsertBeforeAction(
+                    `Add null guard`,
+                    `${indent}if (${varName} == null)\n${indent}\treturn;\n`,
+                    line, uri, diagnostic
+                ));
+            }
+
+            // Wrapping guard (only if the line doesn't declare a variable used later)
+            if (!varUsedLater) {
+                actions.push(makeReplaceLineAction(
+                    `Wrap in null guard`,
+                    `${indent}if (${varName} != null) {\n${indent}\t${trimmedContent}\n${indent}}`,
+                    line, lineLength, uri, diagnostic
+                ));
+            }
+        } else {
+            // Type mismatch (not null)
+            if (ctx.inLoop) {
+                actions.push(makeInsertBeforeAction(
+                    `Add type guard`,
+                    `${indent}if (type(${varName}) != "${expectedType}")\n${indent}\tcontinue;\n`,
+                    line, uri, diagnostic
+                ));
+            } else if (ctx.inFunction) {
+                actions.push(makeInsertBeforeAction(
+                    `Add type guard`,
+                    `${indent}if (type(${varName}) != "${expectedType}")\n${indent}\treturn;\n`,
+                    line, uri, diagnostic
+                ));
+            }
+
+            if (!varUsedLater) {
+                actions.push(makeReplaceLineAction(
+                    `Wrap in type guard`,
+                    `${indent}if (type(${varName}) == "${expectedType}") {\n${indent}\t${trimmedContent}\n${indent}}`,
+                    line, lineLength, uri, diagnostic
+                ));
+            }
+        }
+    } else {
+        // === COMPLEX EXPRESSION (no variable name) ===
+        const exprText = document.getText(diagnostic.range);
+        if (!exprText) return actions;
+
+        if (nullish) {
+            if (ctx.inLoop) {
+                const replaced = lineText.replace(exprText, '_val');
+                if (replaced !== lineText) {
+                    actions.push(makeReplaceLineAction(
+                        `Extract to variable and add null guard`,
+                        `${indent}let _val = ${exprText};\n${indent}if (_val == null)\n${indent}\tcontinue;\n${replaced}`,
+                        line, lineLength, uri, diagnostic
+                    ));
+                }
+            } else if (ctx.inFunction) {
+                const replaced = lineText.replace(exprText, '_val');
+                if (replaced !== lineText) {
+                    actions.push(makeReplaceLineAction(
+                        `Extract to variable and add null guard`,
+                        `${indent}let _val = ${exprText};\n${indent}if (_val == null)\n${indent}\treturn;\n${replaced}`,
+                        line, lineLength, uri, diagnostic
+                    ));
+                }
+            } else {
+                const replaced = lineText.replace(exprText, '_val');
+                if (replaced !== lineText) {
+                    actions.push(makeReplaceLineAction(
+                        `Extract to variable and add null guard`,
+                        `${indent}let _val = ${exprText};\n${indent}if (_val != null) {\n${indent}\t${replaced.trim()}\n${indent}}`,
+                        line, lineLength, uri, diagnostic
+                    ));
                 }
             }
-        };
-        actions.push(typeGuardAction);
-        
-        // Also offer assertion option
-        const assertionAction: CodeAction = {
-            title: `Add ${data.expectedType} assertion to ${data.variableName}`,
-            kind: CodeActionKind.QuickFix,
-            diagnostics: [diagnostic],
-            edit: {
-                changes: {
-                    [uri]: [
-                        TextEdit.replace(
-                            diagnostic.range,
-                            document.getText(diagnostic.range).replace(
-                                data.variableName,
-                                `(${data.variableName} as ${data.expectedType})`
-                            )
-                        )
-                    ]
+        } else {
+            if (ctx.inLoop) {
+                const replaced = lineText.replace(exprText, '_val');
+                if (replaced !== lineText) {
+                    actions.push(makeReplaceLineAction(
+                        `Extract to variable and add type guard`,
+                        `${indent}let _val = ${exprText};\n${indent}if (type(_val) != "${expectedType}")\n${indent}\tcontinue;\n${replaced}`,
+                        line, lineLength, uri, diagnostic
+                    ));
+                }
+            } else if (ctx.inFunction) {
+                const replaced = lineText.replace(exprText, '_val');
+                if (replaced !== lineText) {
+                    actions.push(makeReplaceLineAction(
+                        `Extract to variable and add type guard`,
+                        `${indent}let _val = ${exprText};\n${indent}if (type(_val) != "${expectedType}")\n${indent}\treturn;\n${replaced}`,
+                        line, lineLength, uri, diagnostic
+                    ));
+                }
+            } else {
+                const replaced = lineText.replace(exprText, '_val');
+                if (replaced !== lineText) {
+                    actions.push(makeReplaceLineAction(
+                        `Extract to variable and add type guard`,
+                        `${indent}let _val = ${exprText};\n${indent}if (type(_val) == "${expectedType}") {\n${indent}\t${replaced.trim()}\n${indent}}`,
+                        line, lineLength, uri, diagnostic
+                    ));
                 }
             }
-        };
-        actions.push(assertionAction);
+        }
     }
-    
+
     return actions;
+}
+
+/** Check if a variable declared on `line` is referenced on any subsequent line */
+function isVariableUsedAfterLine(document: TextDocument, line: number, varName: string): boolean {
+    const totalLines = document.lineCount;
+    const pattern = new RegExp(`\\b${varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+    for (let i = line + 1; i < totalLines; i++) {
+        const text = document.getText({
+            start: { line: i, character: 0 },
+            end: { line: i + 1, character: 0 }
+        });
+        if (pattern.test(text)) return true;
+    }
+    return false;
 }
 
 documents.listen(connection);

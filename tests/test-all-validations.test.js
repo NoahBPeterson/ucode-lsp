@@ -127,6 +127,12 @@ const testFiles = [
     'tests/test-object-property-inference.js',
     'tests/test-pbr-cross-file-inference.js',
     'tests/test-equality-narrowing-hover.mocha.js',
+    'tests/test-quick-fix-type-narrowing.js',
+    'tests/test-split-return-type.js',
+    'tests/test-nested-property-inference.js',
+    'tests/test-this-property-inference.js',
+    'tests/test-type-narrowing-standalone.js',
+    'tests/test-hover-scope-resolution.js',
 ];
 
 // Mocha test files (run as a single combined mocha invocation with shared LSP server)
@@ -183,6 +189,11 @@ const mochaFileSet = new Set([
     'test-object-property-inference.js',
     'test-pbr-cross-file-inference.js',
     'test-equality-narrowing-hover.mocha.js',
+    'test-quick-fix-type-narrowing.js',
+    'test-nested-property-inference.js',
+    'test-this-property-inference.js',
+    'test-type-narrowing-standalone.js',
+    'test-hover-scope-resolution.js',
 ]);
 
 function getBaseName(filePath) {

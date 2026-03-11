@@ -182,6 +182,7 @@ export interface Symbol {
     range: { start: number; end: number };
   };
     propertyTypes?: Map<string, UcodeDataType>; // Known property types for object-like symbols (e.g., global)
+    nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>; // Nested property types (propName → sub-property types)
     returnPropertyTypes?: Map<string, UcodeDataType>; // Property types of objects returned by this function
     propertyFunctionReturnTypes?: Map<string, string>; // Return type hints for function-typed properties (e.g., "uci_ctx" -> "uci.cursor")
     initNode?: AstNode; // Initial value node for SSA type protection
@@ -189,6 +190,7 @@ export interface Symbol {
     currentType?: UcodeDataType | undefined; // Current type after assignments (for SSA)
     currentTypeEffectiveFrom?: number | undefined; // Source offset where currentType becomes active
     neverReturns?: boolean; // True if function always terminates (die/exit/throw on all paths)
+    scopeEnd?: number; // End offset of the scope this symbol was declared in (set when scope exits)
 }
 
 export class SymbolTable {
@@ -396,8 +398,18 @@ export class SymbolTable {
     this.currentScope++;
   }
 
-  exitScope(): void {
+  exitScope(endOffset?: number): void {
     if (this.scopes.length > 1) {
+      // Stamp scopeEnd on all symbols in the exiting scope so lookupAtPosition
+      // can determine if a position falls within a symbol's scope
+      if (endOffset !== undefined) {
+        const exitingScope = this.scopes[this.scopes.length - 1];
+        if (exitingScope) {
+          for (const symbol of exitingScope.values()) {
+            symbol.scopeEnd = endOffset;
+          }
+        }
+      }
       this.scopes.pop();
       this.currentScope--;
     }
@@ -461,30 +473,33 @@ export class SymbolTable {
 
   // Position-aware lookup that searches all scopes for symbols that contain the given position
   lookupAtPosition(name: string, position: number): Symbol | null {
-    // First search active scopes for symbols with the given name
-    for (let i = this.scopes.length - 1; i >= 0; i--) {
-      const scope = this.scopes[i];
-      if (scope) {
-        const symbol = scope.get(name);
-        if (symbol) {
-          // Check if the symbol is accessible from this position (symbol was declared before this position)
-          if (symbol.declaredAt !== undefined && symbol.declaredAt <= position) {
-            return symbol;
-          }
+    // Search allSymbols which includes both active and exited scopes.
+    // Pick the innermost scope that contains the position.
+    let bestMatch: Symbol | null = null;
+    for (const symbol of this.allSymbols) {
+      if (symbol.name === name && symbol.declaredAt !== undefined && symbol.declaredAt <= position) {
+        // If scopeEnd is set, the symbol's scope has exited — check position is within range
+        if (symbol.scopeEnd !== undefined && position > symbol.scopeEnd) {
+          continue; // Position is outside this symbol's scope
+        }
+        // Prefer the symbol with the closest (most recent) declaredAt — innermost scope wins
+        if (!bestMatch || symbol.declaredAt > bestMatch.declaredAt) {
+          bestMatch = symbol;
         }
       }
     }
 
-    // If not found in active scopes, search allSymbols (includes symbols from exited scopes like catch clauses)
-    // Find the most recent symbol with the given name that was declared before or at the position
-    let bestMatch: Symbol | null = null;
-    for (const symbol of this.allSymbols) {
-      if (symbol.name === name && symbol.declaredAt !== undefined && symbol.declaredAt <= position) {
-        // Check if this symbol's scope contains the position
-        // A symbol is accessible if it was declared before the position and its scope hasn't ended yet
-        // For now, we use a simple heuristic: the symbol with the closest declaredAt to position wins
-        if (!bestMatch || symbol.declaredAt > bestMatch.declaredAt) {
-          bestMatch = symbol;
+    // Fall back to active scopes if allSymbols didn't find anything
+    if (!bestMatch) {
+      for (let i = this.scopes.length - 1; i >= 0; i--) {
+        const scope = this.scopes[i];
+        if (scope) {
+          const symbol = scope.get(name);
+          if (symbol) {
+            if (symbol.declaredAt !== undefined && symbol.declaredAt <= position) {
+              return symbol;
+            }
+          }
         }
       }
     }

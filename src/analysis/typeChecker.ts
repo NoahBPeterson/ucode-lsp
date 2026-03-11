@@ -10,7 +10,7 @@ import {
   FunctionExpressionNode, IfStatementNode, ProgramNode, BlockStatementNode,
   ExpressionStatementNode, FunctionDeclarationNode, VariableDeclarationNode,
   VariableDeclaratorNode, ExportDefaultDeclarationNode, ReturnStatementNode,
-  PropertyNode, SwitchStatementNode, SwitchCaseNode
+  PropertyNode, SwitchStatementNode, SwitchCaseNode, ForInStatementNode
 } from '../ast/nodes';
 
 /**
@@ -373,6 +373,8 @@ export class TypeChecker {
         return this.checkTryStatement(node as any);
       case 'CatchClause':
         return this.checkCatchClause(node as any);
+      case 'ThisExpression':
+        return UcodeType.OBJECT;
       default:
         return UcodeType.UNKNOWN;
     }
@@ -1343,10 +1345,31 @@ export class TypeChecker {
   }
 
   private checkMemberExpression(node: MemberExpressionNode): UcodeType {
+    // Handle `this.property` — look up `this` in symbol table (declared by semantic analyzer)
+    if (node.object.type === 'ThisExpression') {
+      const thisSym = this.symbolTable.lookup('this');
+      if (thisSym && thisSym.propertyTypes && !node.computed) {
+        let propertyName: string | null = null;
+        if (node.property.type === 'Identifier') {
+          propertyName = (node.property as IdentifierNode).name;
+        } else if (node.property.type === 'Literal') {
+          const lit = node.property as LiteralNode;
+          if (lit.value !== undefined && lit.value !== null) {
+            propertyName = String(lit.value);
+          }
+        }
+        if (propertyName && thisSym.propertyTypes.has(propertyName)) {
+          const propType = thisSym.propertyTypes.get(propertyName)!;
+          return this.dataTypeToUcodeType(propType);
+        }
+      }
+      return UcodeType.UNKNOWN;
+    }
+
     // Check if the object is a module
     if (node.object.type === 'Identifier') {
       const symbol = this.symbolTable.lookup((node.object as IdentifierNode).name);
-      
+
       // If symbol doesn't exist, let the semantic analyzer handle the "Undefined variable" error
       // Don't duplicate the error here by calling checkNode(node.object)
       if (!symbol) {
@@ -1957,7 +1980,7 @@ export class TypeChecker {
     }
 
     // Exit catch scope
-    this.symbolTable.exitScope();
+    this.symbolTable.exitScope(node.end);
 
     return UcodeType.UNKNOWN;
   }
@@ -3105,6 +3128,10 @@ export class TypeChecker {
         if (forNode.test) children.push(forNode.test);
         if (forNode.update) children.push(forNode.update);
         children.push(forNode.body);
+        break;
+      case 'ForInStatement':
+        const forInNode = node as ForInStatementNode;
+        children.push(forInNode.left, forInNode.right, forInNode.body);
         break;
       case 'ArrowFunctionExpression':
         const arrowNode = node as ArrowFunctionExpressionNode;

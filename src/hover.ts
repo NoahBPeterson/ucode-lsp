@@ -70,6 +70,18 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
         };
     }
 
+    // Handle `this` keyword: THIS DOT LABEL
+    if (objectToken.type === TokenType.TK_THIS &&
+        objectToken.end === dotToken.pos) {
+
+        return {
+            objectName: 'this',
+            memberName: hoverToken.value as string,
+            memberTokenPos: hoverToken.pos,
+            memberTokenEnd: hoverToken.end
+        };
+    }
+
     // Handle call chain pattern: ...LABEL(...) DOT LABEL
     if (objectToken.type === TokenType.TK_RPAREN &&
         objectToken.end === dotToken.pos) {
@@ -545,10 +557,10 @@ export function handleHover(
 
             // Look up the object in the symbol table to determine its module
             if (analysisResult && analysisResult.symbolTable) {
-                // Try scope-chain lookup first, then position-aware fallback for nested scopes
-                let symbol = analysisResult.symbolTable.lookup(objectName);
+                // Try position-aware lookup first for correct scoping, then fall back
+                let symbol = analysisResult.symbolTable.lookupAtPosition(objectName, offset);
                 if (!symbol) {
-                    symbol = analysisResult.symbolTable.lookupAtPosition(objectName, offset);
+                    symbol = analysisResult.symbolTable.lookup(objectName);
                 }
                 if (analysisResult.cfgQueryEngine && !symbol) {
                     const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, offset);
@@ -714,7 +726,10 @@ export function handleHover(
             // Check if this is a function call (e.g., test() instead of just test)
             const isFunctionCall = detectFunctionCall(offset, tokens);
             if (isFunctionCall && analysisResult) {
-                let symbol = analysisResult.symbolTable.lookup(word);
+                let symbol = analysisResult.symbolTable.lookupAtPosition(word, offset);
+                if (!symbol) {
+                    symbol = analysisResult.symbolTable.lookup(word);
+                }
 
                 // Try CFG-based type lookup for flow-sensitive function types
                 if (!symbol && analysisResult.cfgQueryEngine) {
@@ -857,11 +872,13 @@ export function handleHover(
 
             // 1. Check for user-defined symbols using the analysis cache (PRIORITY OVER GLOBAL FUNCTIONS)
             if (analysisResult) {
-                let symbol = analysisResult.symbolTable.lookup(word);
+                // Try position-aware lookup first for correct scoping (local vars shadow globals)
+                let symbol = analysisResult.symbolTable.lookupAtPosition(word, offset);
+                const hadPositionMatch = !!symbol;
 
-                // If regular lookup fails, try position-aware lookup for scope-sensitive symbols
+                // Fall back to regular lookup if position-aware lookup fails
                 if (!symbol) {
-                    symbol = analysisResult.symbolTable.lookupAtPosition(word, offset);
+                    symbol = analysisResult.symbolTable.lookup(word);
                 }
 
                 // Try CFG-based flow-sensitive type lookup
@@ -883,8 +900,9 @@ export function handleHover(
                     }
                 }
 
-                // If we have a symbol from symbol table, check if CFG has more precise type
-                if (symbol && analysisResult.cfgQueryEngine) {
+                // If we have a symbol from non-positional lookup, check if CFG has more precise type.
+                // Skip CFG override when we already have a position-aware match (it's scope-correct).
+                if (symbol && !hadPositionMatch && analysisResult.cfgQueryEngine) {
                     const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(word, offset);
                     if (cfgType && cfgType !== UcodeType.UNKNOWN && cfgType !== symbol.dataType) {
                         // CFG provides flow-sensitive type - use it (but not if it's UNKNOWN,
