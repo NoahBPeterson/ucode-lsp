@@ -133,6 +133,9 @@ const testFiles = [
     'tests/test-this-property-inference.js',
     'tests/test-type-narrowing-standalone.js',
     'tests/test-hover-scope-resolution.js',
+    'tests/test-truthiness-suppression.js',
+    'tests/test-callback-element-types.js',
+    'tests/test-member-expression-narrowing.js',
 ];
 
 // Mocha test files (run as a single combined mocha invocation with shared LSP server)

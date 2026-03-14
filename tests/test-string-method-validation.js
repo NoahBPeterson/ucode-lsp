@@ -46,7 +46,7 @@ describe('String Method Validation Tests', function() {
       const error = errors[0];
       assert.strictEqual(error.range.start.line, 8, 'Error should be on line 9 (0-indexed line 8)');
       assert.strictEqual(error.range.start.character, 17, 'Error should start at character 17');
-      assert.strictEqual(error.range.end.character, 28, 'Error should end at character 28');
+      assert.strictEqual(error.range.end.character, 29, 'Error should end at character 29 (exclusive)');
     });
 
     it('should detect toLowerCase() as invalid string method', function() {

@@ -123,6 +123,7 @@ export class BuiltinValidator {
   private errors: TypeError[] = [];
   private warnings: TypeWarning[] = [];
   public narrowedReturnType: UcodeDataType | null = null;
+  public inTruthinessContext = false;
   private strictMode = false;
 
   constructor() {}
@@ -224,13 +225,44 @@ export class BuiltinValidator {
     funcName: string,
     argPosition: number,
     allowedTypes: UcodeType[],
+    toleratedTypes?: UcodeType[],
     customErrorMessage?: string
   ): boolean {
     if (!arg) {
       return true; // Argument presence should be checked before this call
     }
 
+    // Detect || fallback pattern: int(s.timeout || '600')
+    // The problem is the left side's type, not the fallback — narrow diagnostic range accordingly.
+    let diagStart = arg.start;
+    let diagEnd = arg.end;
+    let fallbackStart: number | null = null;
+    let fallbackEnd: number | null = null;
+    let fallbackValid = false;
+
+    if ((arg as any).operator === '||' && (arg as any).left && (arg as any).right) {
+      const fallbackType = this.getNodeType((arg as any).right);
+      const fallbackTypes = fallbackType.split(' | ').map((t: string) => t.trim());
+      fallbackValid = fallbackTypes.every(t => allowedTypes.includes(t as UcodeType));
+
+      // Always narrow diagnostic to left operand — the fallback isn't the problem
+      diagStart = (arg as any).left.start;
+      diagEnd = (arg as any).left.end;
+      fallbackStart = (arg as any).right.start;
+      fallbackEnd = (arg as any).right.end;
+
+      // In non-strict mode, valid fallback suppresses the diagnostic entirely
+      if (fallbackValid && !this.strictMode) {
+        return true;
+      }
+    }
+
     const argType = this.getNodeType(arg);
+
+    // toleratedTypes: types that don't trigger warnings but don't appear in "narrow to" messages.
+    // e.g. length() tolerates null (returns null safely), so array | null → no diagnostic.
+    // In strict mode ('use strict'), no tolerance — null and unknown are always errors.
+    const effectiveAllowed = (toleratedTypes && !this.strictMode) ? [...allowedTypes, ...toleratedTypes] : allowedTypes;
 
     // Check if argType is a union type
     const argTypes = argType.split(' | ').map(t => t.trim());
@@ -239,10 +271,10 @@ export class BuiltinValidator {
     if (isUnion) {
       // For union types, check if ANY type is allowed
       const hasAllowedType = argTypes.some(t =>
-        t !== UcodeType.UNKNOWN && allowedTypes.includes(t as UcodeType)
+        t !== UcodeType.UNKNOWN && effectiveAllowed.includes(t as UcodeType)
       );
       const disallowedTypes = argTypes.filter(t =>
-        !allowedTypes.includes(t as UcodeType)
+        !effectiveAllowed.includes(t as UcodeType)
       );
 
       if (!hasAllowedType && !argTypes.includes(UcodeType.UNKNOWN)) {
@@ -250,72 +282,95 @@ export class BuiltinValidator {
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
 
-        this.errors.push({ message, start: arg.start, end: arg.end, severity: 'error' });
+        this.errors.push({ message, start: diagStart, end: diagEnd, severity: 'error' });
         return false;
       } else if (disallowedTypes.length > 0) {
         // Some types are allowed, some are not - WARNING (error in strict mode)
         const message = customErrorMessage ||
           `Argument ${argPosition} of ${funcName}() may be ${disallowedTypes.join(' | ')}. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
 
-        // Extract variable name for CFG-based filtering
-        const variableName = this.getVariableName(arg);
+        // For || fallback, get the variable name from the left operand
+        const variableName = fallbackStart != null ? this.getVariableName((arg as any).left) : this.getVariableName(arg);
 
-        const diagData = {
+        const diagData: Record<string, any> = {
           functionName: funcName,
           argumentIndex: argPosition - 1,
           expectedType: allowedTypes.join(' | '),
           expectedTypes: [...allowedTypes],
           actualType: argType,
           variableName: variableName,
-          argumentOffset: arg.start
+          argumentOffset: diagStart
         };
+        if (toleratedTypes && toleratedTypes.length > 0) {
+          diagData.toleratedTypes = [...toleratedTypes];
+        }
+        if (fallbackValid && fallbackStart != null && fallbackEnd != null) {
+          diagData.fallbackStart = fallbackStart;
+          diagData.fallbackEnd = fallbackEnd;
+          diagData.fullExprStart = arg.start;
+          diagData.fullExprEnd = arg.end;
+        }
         if (this.strictMode) {
           this.errors.push({
-            message, start: arg.start, end: arg.end,
+            message, start: diagStart, end: diagEnd,
             severity: 'error', code: 'nullable-argument', data: diagData
           });
         } else {
           this.warnings.push({
-            message, start: arg.start, end: arg.end,
+            message, start: diagStart, end: diagEnd,
             severity: 'warning', code: 'nullable-argument', data: diagData
           });
         }
       }
     } else if (argType === UcodeType.UNKNOWN) {
-      // Unknown type — could be anything, warn to narrow
-      const message = customErrorMessage ||
-        `Argument ${argPosition} of ${funcName}() is unknown. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
+      // Unknown type — could be anything.
+      // Suppress warning in truthiness context (e.g., if (!length(x))) since builtins
+      // safely return null for invalid types, making this a valid type-check pattern.
+      // In strict mode, always warn — no suppressions.
+      if (this.strictMode || !this.inTruthinessContext) {
+        const message = customErrorMessage ||
+          `Argument ${argPosition} of ${funcName}() is unknown. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
 
-      const variableName = this.getVariableName(arg);
+        const variableName = fallbackStart != null ? this.getVariableName((arg as any).left) : this.getVariableName(arg);
 
-      const diagData = {
-        functionName: funcName,
-        argumentIndex: argPosition - 1,
-        expectedType: allowedTypes.join(' | '),
-        expectedTypes: [...allowedTypes],
-        actualType: argType,
-        variableName: variableName,
-        argumentOffset: arg.start
-      };
-      if (this.strictMode) {
-        this.errors.push({
-          message, start: arg.start, end: arg.end,
-          severity: 'error', code: 'incompatible-function-argument', data: diagData
-        });
-      } else {
-        this.warnings.push({
-          message, start: arg.start, end: arg.end,
-          severity: 'warning', code: 'incompatible-function-argument', data: diagData
-        });
+        const diagData: Record<string, any> = {
+          functionName: funcName,
+          argumentIndex: argPosition - 1,
+          expectedType: allowedTypes.join(' | '),
+          expectedTypes: [...allowedTypes],
+          actualType: argType,
+          variableName: variableName,
+          argumentOffset: diagStart
+        };
+        if (toleratedTypes && toleratedTypes.length > 0) {
+          diagData.toleratedTypes = [...toleratedTypes];
+        }
+        if (fallbackValid && fallbackStart != null && fallbackEnd != null) {
+          diagData.fallbackStart = fallbackStart;
+          diagData.fallbackEnd = fallbackEnd;
+          diagData.fullExprStart = arg.start;
+          diagData.fullExprEnd = arg.end;
+        }
+        if (this.strictMode) {
+          this.errors.push({
+            message, start: diagStart, end: diagEnd,
+            severity: 'error', code: 'incompatible-function-argument', data: diagData
+          });
+        } else {
+          this.warnings.push({
+            message, start: diagStart, end: diagEnd,
+            severity: 'warning', code: 'incompatible-function-argument', data: diagData
+          });
+        }
       }
     } else {
       // Single known type - check if it's allowed
-      if (!allowedTypes.includes(argType as UcodeType)) {
+      if (!effectiveAllowed.includes(argType as UcodeType)) {
         // Definitely wrong — always error
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
 
-        this.errors.push({ message, start: arg.start, end: arg.end, severity: 'error' });
+        this.errors.push({ message, start: diagStart, end: diagEnd, severity: 'error' });
         return false;
       }
     }
@@ -359,7 +414,31 @@ export class BuiltinValidator {
     if (node.type === 'Identifier') {
       return (node as any).name;
     }
-    // For complex expressions, return null
+    // For member expressions, return the dotted path (e.g., "data.platform")
+    if (node.type === 'MemberExpression') {
+      return this.getDottedPath(node);
+    }
+    // For X || fallback patterns, extract the variable from the left side
+    if (node.type === 'BinaryExpression') {
+      const bin = node as any;
+      if (bin.operator === '||' || bin.operator === '??') {
+        return this.getVariableName(bin.left);
+      }
+    }
+    return null;
+  }
+
+  private getDottedPath(node: AstNode): string | null {
+    if (node.type === 'Identifier') return (node as any).name;
+    if (node.type === 'MemberExpression') {
+      const member = node as any;
+      if (member.computed) return null;
+      const objPath = this.getDottedPath(member.object);
+      if (!objPath) return null;
+      if (member.property?.type === 'Identifier')
+        return `${objPath}.${member.property.name}`;
+      return null;
+    }
     return null;
   }
 
@@ -367,7 +446,10 @@ export class BuiltinValidator {
     if (!this.checkArgumentCount(node, 'length', 1)) return true;
     const arg = node.arguments[0];
     this.narrowForArgType(arg, [UcodeType.STRING, UcodeType.ARRAY, UcodeType.OBJECT], UcodeType.INTEGER);
-    this.validateArgumentType(arg, 'length', 1, [UcodeType.STRING, UcodeType.ARRAY, UcodeType.OBJECT]);
+    // length(null) safely returns null — tolerate null so array|null doesn't warn.
+    // Unknown still warns: unresolved types deserve attention even in truthiness context.
+    this.validateArgumentType(arg, 'length', 1, [UcodeType.STRING, UcodeType.ARRAY, UcodeType.OBJECT],
+      [UcodeType.NULL]);
     return true;
   }
 
@@ -517,10 +599,38 @@ export class BuiltinValidator {
 
   validateExistsFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'exists', 2)) return true;
-    this.validateArgumentType(node.arguments[0], 'exists', 1, [UcodeType.OBJECT]);
+    // exists() is an introspection function — tolerates null/unknown even in strict mode.
+    // exists(null, "key") safely returns false.  Still error on definitely wrong types
+    // like exists(42, "key").
+    this.validateExistsArg(node.arguments[0]);
     this.validateArgumentType(node.arguments[1], 'exists', 2, [UcodeType.STRING]);
-    // Second argument is converted to a string, so no type check is needed.
     return true;
+  }
+
+  /** Validate exists() first arg: allow object, null, unknown; error on other types */
+  private validateExistsArg(arg: CallExpressionNode['arguments'][0] | undefined): void {
+    if (!arg) return;
+    const argType = this.getNodeType(arg);
+    const argTypes = argType.split(' | ').map(t => t.trim());
+    // Accept object, null, unknown — reject everything else
+    const exempt = [UcodeType.OBJECT as string, UcodeType.NULL as string, UcodeType.UNKNOWN as string];
+    const bad = argTypes.filter(t => !exempt.includes(t));
+    if (bad.length > 0 && bad.length === argTypes.length) {
+      // ALL types are bad — definitely wrong
+      this.errors.push({
+        message: `Function 'exists' expects object for argument 1, but got ${argType.toLowerCase()}`,
+        start: arg.start, end: arg.end, severity: 'error'
+      });
+    } else if (bad.length > 0) {
+      // Mix of valid and invalid — warning only if not all exempt
+      const hasObject = argTypes.includes(UcodeType.OBJECT);
+      if (!hasObject && !argTypes.includes(UcodeType.UNKNOWN)) {
+        this.errors.push({
+          message: `Function 'exists' expects object for argument 1, but got ${argType.toLowerCase()}`,
+          start: arg.start, end: arg.end, severity: 'error'
+        });
+      }
+    }
   }
 
   validateAssertFunction(node: CallExpressionNode): boolean {
@@ -949,6 +1059,7 @@ export class BuiltinValidator {
       'json',
       1,
       [UcodeType.STRING, UcodeType.OBJECT],
+      undefined,
       `Function 'json' expects string or object as argument`
     );
     return true;

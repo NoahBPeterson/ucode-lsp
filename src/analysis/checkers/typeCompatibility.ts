@@ -193,8 +193,9 @@ export class TypeCompatibilityChecker {
       case '~':
         // If operand is unknown, assume it might be integer and allow the operation
         if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
-        // Allow bitwise complement on integers and booleans (booleans coerce to integers)
-        if (operandType === UcodeType.INTEGER || operandType === UcodeType.BOOLEAN) {
+        // Allow bitwise complement on integers, doubles, and booleans (all coerce to integers)
+        // In ucode, ~ on a double truncates to integer first, then applies bitwise NOT
+        if (operandType === UcodeType.INTEGER || operandType === UcodeType.BOOLEAN || operandType === UcodeType.DOUBLE) {
           return UcodeType.INTEGER;
         }
         return UcodeType.UNKNOWN;
