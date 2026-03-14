@@ -101,6 +101,7 @@ export class TypeChecker {
   private flowSensitiveTracker: FlowSensitiveTypeTracker;
   private guardContextStack: Array<{variableName: string, narrowedType: UcodeDataType, startPos: number, endPos: number}> = [];
   private assignmentTargetDepth = 0;
+  private truthinessDepth = 0;
   private currentAST: ProgramNode | null = null;
   private constantAssignmentProperties = new Map<string, Set<string>>();
   private strictMode = false;
@@ -130,6 +131,10 @@ export class TypeChecker {
    */
   public setCFGQueryEngine(cfgQueryEngine: CFGQueryEngine | null): void {
     this.cfgQueryEngine = cfgQueryEngine;
+  }
+
+  public setTruthinessDepth(depth: number): void {
+    this.truthinessDepth = depth;
   }
 
   /**
@@ -595,7 +600,9 @@ export class TypeChecker {
   }
 
   private checkUnaryExpression(node: UnaryExpressionNode): UcodeType {
+    if (node.operator === '!') this.truthinessDepth++;
     const argType = this.checkNode(node.argument);
+    if (node.operator === '!') this.truthinessDepth--;
     const resultType = this.typeCompatibility.getUnaryResultType(argType, node.operator);
     
     // Only throw error if we get UNKNOWN result from a known non-compatible type
@@ -629,10 +636,10 @@ export class TypeChecker {
         return operandType === UcodeType.STRING ||
                operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT;
       case '~':
-        // Bitwise complement requires integer type or booleans (which coerce to integers)
+        // Bitwise complement requires numeric types or booleans (which coerce to integers)
+        // Doubles are truncated to integer by ucode before applying ~
         return operandType === UcodeType.STRING ||
-               operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT ||
-               operandType === UcodeType.DOUBLE; // doubles can't be used with bitwise ops
+               operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT;
       case '!':
         // Logical NOT can be applied to any type (truthy/falsy)
         return false;
@@ -777,10 +784,7 @@ export class TypeChecker {
       const variableName = identifierNode.name;
 
       // First check for active guard from outer scope (guardContextStack)
-      let baseType = this.getFullTypeFromNode(node);
-      if (!baseType) {
-        return UcodeType.UNKNOWN;
-      }
+      let baseType: UcodeDataType = this.getFullTypeFromNode(node) || UcodeType.UNKNOWN;
 
       const activeGuardType = this.getActiveGuardType(variableName, node.start);
       if (activeGuardType) {
@@ -799,6 +803,38 @@ export class TypeChecker {
 
       // Return the base type (possibly narrowed by outer guard)
       return this.getTypeDescription(baseType) as UcodeType;
+    }
+
+    // For MemberExpressions, check if there's a guard on the dotted path (e.g., state.errors)
+    if (node.type === 'MemberExpression') {
+      const dottedPath = this.getDottedPath(node);
+      if (dottedPath) {
+        const guards = this.getGuardsForPosition(this.currentAST, dottedPath, node.start);
+        if (guards.length > 0) {
+          let baseType: UcodeDataType = this.getFullTypeFromNode(node) || UcodeType.UNKNOWN;
+          for (const guardInfo of guards) {
+            baseType = this.applyTypeGuard(baseType, guardInfo);
+          }
+          return this.getTypeDescription(baseType) as UcodeType;
+        }
+      }
+    }
+
+    // For logical expressions (||, &&), resolve narrowed types of sub-expressions
+    // so that guards on identifiers/member expressions propagate through e.g. keys(data.platform || {})
+    if (node.type === 'BinaryExpression') {
+      const binNode = node as BinaryExpressionNode;
+      if (binNode.operator === '||' || binNode.operator === '&&') {
+        const leftType = this.getNodeTypeDescription(binNode.left);
+        const rightType = this.getNodeTypeDescription(binNode.right);
+        if (binNode.operator === '||') {
+          const result = logicalTypeInference.inferLogicalOrFullType(leftType, rightType);
+          return (isUnionType(result) ? this.getTypeDescription(result) : result) as UcodeType;
+        } else {
+          const result = logicalTypeInference.inferLogicalAndFullType(leftType, rightType);
+          return (isUnionType(result) ? this.getTypeDescription(result) : result) as UcodeType;
+        }
+      }
     }
 
     // Get the full type data (which includes unions)
@@ -1057,6 +1093,7 @@ export class TypeChecker {
     }
 
     // First check special cases
+    this.builtinValidator.inTruthinessContext = this.truthinessDepth > 0;
     if (this.validateSpecialBuiltins(node, signature)) {
       const narrowed = this.builtinValidator.narrowedReturnType;
       this.builtinValidator.narrowedReturnType = null;
@@ -1102,7 +1139,7 @@ export class TypeChecker {
       let actualTypeData = this.getFullTypeFromNode(arg) || this.getTypeAsDataType(actualType);
 
       // Apply AST-based guard narrowing for identifier arguments
-      if (arg.type === 'Identifier' && isUnionType(actualTypeData)) {
+      if (arg.type === 'Identifier' && (isUnionType(actualTypeData) || actualTypeData === UcodeType.UNKNOWN)) {
         const varName = (arg as IdentifierNode).name;
         const guards = this.getGuardsForPosition(this.currentAST, varName, arg.start);
         if (guards.length > 0) {
@@ -1111,6 +1148,21 @@ export class TypeChecker {
             narrowed = this.applyTypeGuard(narrowed, g);
           }
           actualTypeData = narrowed;
+        }
+      }
+
+      // Apply AST-based guard narrowing for member expression arguments (e.g., state.errors)
+      if (arg.type === 'MemberExpression') {
+        const dottedPath = this.getDottedPath(arg);
+        if (dottedPath) {
+          const guards = this.getGuardsForPosition(this.currentAST, dottedPath, arg.start);
+          if (guards.length > 0) {
+            let narrowed: UcodeDataType = actualTypeData;
+            for (const g of guards) {
+              narrowed = this.applyTypeGuard(narrowed, g);
+            }
+            actualTypeData = narrowed;
+          }
         }
       }
 
@@ -1679,7 +1731,9 @@ export class TypeChecker {
   }
 
   private checkConditionalExpression(node: ConditionalExpressionNode): UcodeType {
+    this.truthinessDepth++;
     this.checkNode(node.test);
+    this.truthinessDepth--;
     const consequentType = this.checkNode(node.consequent);
     const alternateType = this.checkNode(node.alternate);
 
@@ -1701,8 +1755,10 @@ export class TypeChecker {
   }
 
   private checkIfStatement(node: IfStatementNode): UcodeType {
-    // Type check the condition
+    // Type check the condition (in truthiness context)
+    this.truthinessDepth++;
     this.checkNode(node.test);
+    this.truthinessDepth--;
 
     // Analyze type guards and get the guard info
     const guards = this.flowSensitiveTracker.analyzeIfStatement(node);
@@ -1935,6 +1991,9 @@ export class TypeChecker {
         return UcodeType.FUNCTION;
       case 'null':
         return UcodeType.NULL;
+      case 'regex':
+      case 'regexp':
+        return UcodeType.REGEX;
       default:
         return null;
     }
@@ -2413,6 +2472,30 @@ export class TypeChecker {
               const guardInfo = this.extractTypeGuard(sibIf.test, variableName);
               if (guardInfo) {
                 guards.push({ ...guardInfo, isNegative: !guardInfo.isNegative });
+              } else {
+                // Handle AND chains: if (type(x) != "string" && type(x) != "array") return;
+                // When negated (early-return), this means x IS string OR array.
+                const andGuards = this.extractAndChainGuards(sibIf.test, variableName);
+                if (andGuards.length >= 2 && andGuards.every(g => g.isNegative)) {
+                  // All negative guards in AND: !(A && B) = !A || !B
+                  // Flip each to positive and combine as union
+                  const types = andGuards.map(g => g.narrowToType).filter((t): t is UcodeType => t !== null);
+                  if (types.length >= 2) {
+                    guards.push({
+                      variableName,
+                      narrowToType: createUnionType(types) as UcodeType,
+                      isNegative: false,
+                      isCombinedOr: true
+                    } as TypeGuardInfo);
+                  }
+                }
+                // Handle OR chains: if (type(x) != "string" || !x) return;
+                // After early-return, !A && !B — each OR branch is independently false.
+                // Extract type guards from individual OR branches and negate each.
+                const orGuards = this.extractOrChainGuards(sibIf.test, variableName);
+                for (const og of orGuards) {
+                  guards.push({ ...og, isNegative: !og.isNegative });
+                }
               }
               // Handle: if (!x) die() → x is non-null after
               // Only when variable has a known union type containing null
@@ -2429,10 +2512,49 @@ export class TypeChecker {
             }
           }
         }
+        // If entering a function scope where the variable is shadowed by a local
+        // declaration or parameter, outer guards don't apply to the inner variable.
+        const isFuncScope = child.type === 'FunctionDeclaration' ||
+                            child.type === 'FunctionExpression' ||
+                            child.type === 'ArrowFunctionExpression';
+        if (isFuncScope && this.isShadowedInFunction(child, variableName)) {
+          guards.length = 0;
+        }
         this.collectGuards(child, variableName, position, guards);
         return;
       }
     }
+  }
+
+  /**
+   * Check if a variable name is redeclared (shadowed) inside a function node
+   * as either a parameter or a local let/const/var declaration.
+   */
+  private isShadowedInFunction(funcNode: AstNode, variableName: string): boolean {
+    // Dotted paths (e.g., pkg.prop) can't be directly shadowed by declarations
+    if (variableName.includes('.')) return false;
+
+    // Check parameters
+    const params = (funcNode as any).params || [];
+    for (const param of params) {
+      if (param.type === 'Identifier' && (param as IdentifierNode).name === variableName) {
+        return true;
+      }
+    }
+    // Check top-level body for variable declarations
+    const body = (funcNode as any).body;
+    if (body && body.type === 'BlockStatement') {
+      for (const stmt of (body as BlockStatementNode).body) {
+        if (stmt.type === 'VariableDeclaration') {
+          for (const decl of (stmt as VariableDeclarationNode).declarations) {
+            if (decl.id?.type === 'Identifier' && (decl.id as IdentifierNode).name === variableName) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
   }
 
   /**
@@ -2682,6 +2804,20 @@ export class TypeChecker {
           const originalType = symbol.dataType;
           let originalTypes = getUnionTypes(originalType);
 
+          // For UNKNOWN type with all-positive OR guards, narrow to the union of guarded types
+          // e.g., type(x) == "string" || type(x) == "array" → narrow to string | array
+          if (originalType === UcodeType.UNKNOWN && allGuards.every(g => !g.isNegative && g.narrowToType)) {
+            const types = allGuards.map(g => g.narrowToType).filter((t): t is UcodeType => t !== null);
+            if (types.length >= 2) {
+              return {
+                variableName,
+                narrowToType: createUnionType(types) as UcodeType,
+                isNegative: false,
+                isCombinedOr: true
+              };
+            }
+          }
+
           // For OR guards: a type satisfies the condition if it satisfies ANY guard
           const satisfyingTypes = originalTypes.filter(type => {
             return allGuards.some(guard => {
@@ -2902,6 +3038,67 @@ export class TypeChecker {
   /**
    * Extract type from type(variable) == 'typename' pattern
    */
+  /**
+   * Get a dotted path string from a node (Identifier or MemberExpression).
+   * Returns null for computed properties or non-static expressions.
+   * e.g., `state.errors` → "state.errors", `x` → "x"
+   */
+  private getDottedPath(node: AstNode): string | null {
+    if (node.type === 'Identifier') {
+      return (node as IdentifierNode).name;
+    }
+    if (node.type === 'MemberExpression') {
+      const member = node as MemberExpressionNode;
+      if (member.computed) return null;
+      const objPath = this.getDottedPath(member.object);
+      if (!objPath) return null;
+      if (member.property.type === 'Identifier') {
+        return `${objPath}.${(member.property as IdentifierNode).name}`;
+      }
+      return null;
+    }
+    return null;
+  }
+
+  /**
+   * Decompose an AND chain into individual type guards.
+   * e.g., type(x) != "string" && type(x) != "array" → [neg-string, neg-array]
+   */
+  private extractAndChainGuards(condition: AstNode, variableName: string): TypeGuardInfo[] {
+    if (condition.type !== 'BinaryExpression') {
+      const single = this.extractTypeGuard(condition, variableName);
+      return single ? [single] : [];
+    }
+    const bin = condition as BinaryExpressionNode;
+    if (bin.operator === '&&') {
+      const left = this.extractAndChainGuards(bin.left, variableName);
+      const right = this.extractAndChainGuards(bin.right, variableName);
+      return [...left, ...right];
+    }
+    const single = this.extractTypeGuard(condition, variableName);
+    return single ? [single] : [];
+  }
+
+  /**
+   * Decompose an OR chain into individual type guards.
+   * e.g., type(x) != "string" || !x → [neg-string] (non-guard branches are skipped)
+   * Used in early-return context where each OR branch is independently negated.
+   */
+  private extractOrChainGuards(condition: AstNode, variableName: string): TypeGuardInfo[] {
+    if (condition.type !== 'BinaryExpression') {
+      const single = this.extractTypeGuard(condition, variableName);
+      return single ? [single] : [];
+    }
+    const bin = condition as BinaryExpressionNode;
+    if (bin.operator === '||') {
+      const left = this.extractOrChainGuards(bin.left, variableName);
+      const right = this.extractOrChainGuards(bin.right, variableName);
+      return [...left, ...right];
+    }
+    const single = this.extractTypeGuard(condition, variableName);
+    return single ? [single] : [];
+  }
+
   private extractTypeCallGuard(condition: AstNode, variableName: string): UcodeType | null {
     if (condition.type !== 'BinaryExpression') {
       return null;
@@ -2940,11 +3137,12 @@ export class TypeChecker {
       return null;
     }
 
-    // Verify it has one argument and it's our variable
-    if (typeCall.arguments.length !== 1 ||
-        !typeCall.arguments[0] ||
-        typeCall.arguments[0].type !== 'Identifier' ||
-        (typeCall.arguments[0] as IdentifierNode).name !== variableName) {
+    // Verify it has one argument matching our variable name (supports dotted paths like "state.errors")
+    if (typeCall.arguments.length !== 1 || !typeCall.arguments[0]) {
+      return null;
+    }
+    const argPath = this.getDottedPath(typeCall.arguments[0]);
+    if (argPath !== variableName) {
       return null;
     }
 
@@ -2965,6 +3163,9 @@ export class TypeChecker {
         return UcodeType.BOOLEAN;
       case 'function':
         return UcodeType.FUNCTION;
+      case 'regex':
+      case 'regexp':
+        return UcodeType.REGEX;
       default:
         return null;
     }
@@ -3011,11 +3212,12 @@ export class TypeChecker {
       return null;
     }
 
-    // Verify it has one argument and it's our variable
-    if (typeCall.arguments.length !== 1 ||
-        !typeCall.arguments[0] ||
-        typeCall.arguments[0].type !== 'Identifier' ||
-        (typeCall.arguments[0] as IdentifierNode).name !== variableName) {
+    // Verify it has one argument matching our variable name (supports dotted paths like "state.errors")
+    if (typeCall.arguments.length !== 1 || !typeCall.arguments[0]) {
+      return null;
+    }
+    const argPath = this.getDottedPath(typeCall.arguments[0]);
+    if (argPath !== variableName) {
       return null;
     }
 
@@ -3036,6 +3238,9 @@ export class TypeChecker {
         return UcodeType.BOOLEAN;
       case 'function':
         return UcodeType.FUNCTION;
+      case 'regex':
+      case 'regexp':
+        return UcodeType.REGEX;
       default:
         return null;
     }

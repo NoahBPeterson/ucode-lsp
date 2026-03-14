@@ -121,6 +121,45 @@ let anotherError = undefinedVar2();
       }
     });
 
+    it('should use return (not continue) for type guard in for-in header', async function() {
+      // When split() is in the for-in iterator expression, the diagnostic is in the
+      // loop header, not the body. A "continue" guard before the for line is invalid.
+      const testContent = `function get_chains(out) {
+  for (let line in split(out, '\\n')) {
+    print(line);
+  }
+}
+`;
+      const uniqueFileName = `/tmp/test-for-in-header-guard-${Date.now()}.uc`;
+      const diags = await getDiagnostics(testContent, uniqueFileName);
+
+      // Find the incompatible-function-argument diagnostic for split
+      const splitDiag = diags.find(d =>
+        d.message && d.message.includes('split') && d.code === 'incompatible-function-argument'
+      );
+      assert.ok(splitDiag, `Expected a split() diagnostic, got: ${diags.map(d => d.message).join('; ')}`);
+
+      const actions = await getCodeActions(uniqueFileName, [splitDiag], splitDiag.range.start.line, splitDiag.range.start.character);
+
+      // "Add type guard" should use return, not continue
+      const guardAction = actions.find(a => a.title === 'Add type guard');
+      if (guardAction) {
+        const changes = guardAction.edit && guardAction.edit.changes;
+        const edits = changes && Object.values(changes)[0];
+        const insertText = edits && edits[0] && edits[0].newText;
+        assert.ok(insertText, 'Expected insert text in code action');
+        assert.ok(!insertText.includes('continue'),
+          `Type guard in for-in header should not use continue, got: ${JSON.stringify(insertText)}`);
+        assert.ok(insertText.includes('return'),
+          `Type guard in for-in header should use return, got: ${JSON.stringify(insertText)}`);
+      }
+
+      // "Wrap in type guard" should NOT be offered — wrapping a for-in line breaks the loop
+      const wrapAction = actions.find(a => a.title.includes('Wrap'));
+      assert.ok(!wrapAction,
+        `Should not offer wrap action for for-in header, got: ${actions.map(a => a.title).join(', ')}`);
+    });
+
     it('should provide separate code actions for multiple diagnostics', async function() {
       // Find multiple diagnostics if available
       const semanticDiagnostics = diagnostics.filter(d => d.source === 'ucode-semantic');

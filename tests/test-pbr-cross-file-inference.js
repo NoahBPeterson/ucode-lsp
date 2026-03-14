@@ -470,135 +470,153 @@ describe('PBR Cross-File Property Inference', function() {
     });
   });
 
-  // ── real pbr.uc file: verify types inside deeply nested functions ──
+  // ── pbr-like patterns: standalone inline tests (no pbr.uc line dependency) ──
 
-  describe('real pbr.uc file analysis', function() {
-    const fs = require('fs');
-    const PBR_FILE = path.join(PBR_DIR, 'pbr.uc');
-    const pbrContent = fs.readFileSync(PBR_FILE, 'utf-8');
-    const pbrLines = pbrContent.split('\n');
+  describe('pbr-like patterns (config factory, cursor, diagnostics)', function() {
 
-    it('should type config as object (not unknown) at line 152', async function() {
-      // line 152: let ctx_dhcp = config.uci_ctx('dhcp'); // config should not be unknown
-      const lineIdx = 151; // 0-indexed
-      const charIdx = pbrLines[lineIdx].indexOf('config');
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      assert.ok(!text.toLowerCase().includes('unknown'),
-        `config should not be 'unknown' at line 152, got: ${text}`);
-      assert.ok(text.toLowerCase().includes('object'),
-        `Expected 'object' for config at line 152, got: ${text}`);
+    // config factory → uci_ctx → cursor.get chain
+    describe('config → uci_ctx → cursor.get chain', function() {
+      const lines = [
+        "import create_config from 'config';",
+        'let config = create_config(null, null, null);',
+        'let cfg = config.cfg;',
+        "let ctx_dhcp = config.uci_ctx('dhcp');",
+        "let ctx_net = config.uci_ctx('network');",
+        "let dhcp_option = ctx_dhcp.get('dhcp', 'lan', 'dhcp_option');",
+        "let ipaddr = ctx_net.get('network', 'lan', 'ipaddr') || '';",
+      ];
+      const content = lines.join('\n');
+
+      it('should type config as object (not unknown)', async function() {
+        const lineIdx = 3;
+        const charIdx = lines[lineIdx].indexOf('config.uci');
+        const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+        const text = extractHoverText(hover);
+        assert.ok(!text.toLowerCase().includes('unknown'),
+          `config should not be 'unknown', got: ${text}`);
+        assert.ok(text.toLowerCase().includes('object'),
+          `Expected 'object' for config, got: ${text}`);
+      });
+
+      it('should type config.uci_ctx as function', async function() {
+        const lineIdx = 3;
+        const charIdx = lines[lineIdx].indexOf('uci_ctx');
+        const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+        const text = extractHoverText(hover);
+        assert.ok(text.length > 0,
+          `Expected hover for config.uci_ctx, got empty`);
+        assert.ok(text.toLowerCase().includes('function'),
+          `Expected 'function' for config.uci_ctx, got: ${text}`);
+      });
+
+      it('should type config.cfg as object', async function() {
+        const lineIdx = 2;
+        const charIdx = lines[lineIdx].indexOf('.cfg') + 1;
+        const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+        const text = extractHoverText(hover);
+        assert.ok(text.toLowerCase().includes('object'),
+          `Expected 'object' for config.cfg, got: ${text}`);
+      });
+
+      it('should type ctx_dhcp as object/cursor (not function, not unknown)', async function() {
+        const lineIdx = 3;
+        const charIdx = lines[lineIdx].indexOf('ctx_dhcp');
+        const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+        const text = extractHoverText(hover);
+        assert.ok(!text.toLowerCase().includes('unknown'),
+          `ctx_dhcp should not be 'unknown', got: ${text}`);
+      });
+
+      it('should provide hover for ctx_dhcp.get', async function() {
+        const lineIdx = 5;
+        const charIdx = lines[lineIdx].indexOf('.get') + 1;
+        const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+        const text = extractHoverText(hover);
+        assert.ok(text.length > 0,
+          `Expected hover for ctx_dhcp.get, got empty`);
+      });
+
+      it('should show built-in note in hover for ctx_dhcp.get', async function() {
+        const lineIdx = 5;
+        const charIdx = lines[lineIdx].indexOf('.get') + 1;
+        const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+        const text = extractHoverText(hover);
+        assert.ok(text.includes('Built-in C method'),
+          `Expected built-in note in hover for ctx_dhcp.get, got: ${text}`);
+      });
+
+      it('should type dhcp_option from cursor.get (not unknown)', async function() {
+        const lineIdx = 5;
+        const charIdx = lines[lineIdx].indexOf('dhcp_option');
+        const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+        const text = extractHoverText(hover);
+        assert.ok(!text.toLowerCase().includes('unknown'),
+          `dhcp_option should not be 'unknown', got: ${text}`);
+      });
+
+      it('should type ipaddr as string | array (|| eliminates null)', async function() {
+        const lineIdx = 6;
+        const charIdx = lines[lineIdx].indexOf('ipaddr');
+        const hover = await getHover(content, TEST_FILE, lineIdx, charIdx);
+        const text = extractHoverText(hover);
+        assert.ok(text.toLowerCase().includes('string'),
+          `Expected 'string' in ipaddr type, got: ${text}`);
+        assert.ok(text.toLowerCase().includes('array'),
+          `Expected 'array' in ipaddr type (arrays are truthy, survive ||), got: ${text}`);
+        assert.ok(!text.toLowerCase().includes('null'),
+          `ipaddr should not include null (|| '' eliminates it), got: ${text}`);
+      });
     });
 
-    it('should provide hover for config.uci_ctx at line 152', async function() {
-      const lineIdx = 151;
-      const charIdx = pbrLines[lineIdx].indexOf('uci_ctx');
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      assert.ok(text.length > 0,
-        `Expected hover for config.uci_ctx at line 152, got empty`);
-      assert.ok(text.toLowerCase().includes('function'),
-        `Expected 'function' for config.uci_ctx, got: ${text}`);
-    });
+    // false-positive diagnostics on known-type builtins
+    describe('no false-positive diagnostics on known-type args', function() {
+      it('should not warn on index(string_var, ...)', async function() {
+        const content = [
+          "import create_sys from 'sys';",
+          "import _pkg_mod from 'pkg';",
+          'let pkg = _pkg_mod.pkg;',
+          'let sh = create_sys(null, pkg);',
+          "let route_check = sh.exec('ip route');",
+          "if (index(route_check, ' dev eth0 ') >= 0) {",
+          '  print(route_check);',
+          '}',
+        ].join('\n');
+        const diagnostics = await getDiagnostics(content, TEST_FILE);
+        const indexDiags = diagnostics.filter(d =>
+          d.message && d.message.includes('index')
+        );
+        assert.strictEqual(indexDiags.length, 0,
+          `Should not have false positive on index(string), got: ${indexDiags.map(d => d.message).join('; ')}`);
+      });
 
-    it('should type config.cfg as object at line 36', async function() {
-      // line 36: let cfg = config.cfg;
-      const lineIdx = 35;
-      const charIdx = pbrLines[lineIdx].indexOf('.cfg') + 1;
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      assert.ok(text.toLowerCase().includes('object'),
-        `Expected 'object' for config.cfg at line 36, got: ${text}`);
-    });
+      it('should not warn on trim(sh.exec(...))', async function() {
+        const content = [
+          "import create_sys from 'sys';",
+          "import _pkg_mod from 'pkg';",
+          'let pkg = _pkg_mod.pkg;',
+          'let sh = create_sys(null, pkg);',
+          "let pid = trim(sh.exec('echo $$'));",
+        ].join('\n');
+        const diagnostics = await getDiagnostics(content, TEST_FILE);
+        const trimDiags = diagnostics.filter(d =>
+          d.message && d.message.includes('trim')
+        );
+        assert.strictEqual(trimDiags.length, 0,
+          `Should not have false positive on trim(sh.exec()), got: ${trimDiags.map(d => d.message).join('; ')}`);
+      });
 
-    it('should type ctx_dhcp as object/cursor (not function) at line 152', async function() {
-      // line 152: let ctx_dhcp = config.uci_ctx('dhcp');
-      const lineIdx = 151;
-      const charIdx = pbrLines[lineIdx].indexOf('ctx_dhcp');
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      // ctx_dhcp should be a UCI cursor object, not 'function' or 'unknown'
-      assert.ok(!text.toLowerCase().includes('unknown'),
-        `ctx_dhcp should not be 'unknown', got: ${text}`);
-    });
-
-    it('should provide hover for ctx_dhcp.get at line 162', async function() {
-      // line 162: let dhcp_option = ctx_dhcp.get('dhcp', iface, 'dhcp_option');
-      const lineIdx = 161;
-      const charIdx = pbrLines[lineIdx].indexOf('.get') + 1;
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      assert.ok(text.length > 0,
-        `Expected hover for ctx_dhcp.get, got empty`);
-    });
-
-    it('should show built-in note in hover for ctx_dhcp.get', async function() {
-      const lineIdx = 161;
-      const charIdx = pbrLines[lineIdx].indexOf('.get') + 1;
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      assert.ok(text.includes('Built-in C method'),
-        `Expected built-in note in hover for ctx_dhcp.get, got: ${text}`);
-    });
-
-    it('should type dhcp_option from cursor.get as string | array | null at line 162', async function() {
-      const lineIdx = 161;
-      const charIdx = pbrLines[lineIdx].indexOf('dhcp_option');
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      assert.ok(!text.toLowerCase().includes('unknown'),
-        `dhcp_option should not be 'unknown', got: ${text}`);
-    });
-
-    // Removed: dhcp_option narrowing test — replaced by standalone test in test-type-narrowing-standalone.js
-
-    it('should type ipaddr as string | array at line 164 (|| only eliminates null)', async function() {
-      // line 164: let ipaddr = ctx_net.get('network', iface, 'ipaddr') || '';
-      // get() returns string | string[] | null.
-      // || '' eliminates null (falsy), but arrays are truthy so string[] survives.
-      // Result: string | array
-      const lineIdx = 163;
-      const charIdx = pbrLines[lineIdx].indexOf('ipaddr');
-      const hover = await getHover(pbrContent, PBR_FILE, lineIdx, charIdx);
-      const text = extractHoverText(hover);
-      assert.ok(text.toLowerCase().includes('string'),
-        `Expected 'string' in ipaddr type, got: ${text}`);
-      assert.ok(text.toLowerCase().includes('array'),
-        `Expected 'array' in ipaddr type (arrays are truthy, survive ||), got: ${text}`);
-      assert.ok(!text.toLowerCase().includes('null'),
-        `ipaddr should not include null (|| '' eliminates it), got: ${text}`);
-    });
-
-    // Removed: hex() return type, sh.exec() return type, dev6_out tests
-    // Replaced by standalone tests in test-type-narrowing-standalone.js
-
-    it('should not have false positive diagnostic on index(route_check) at line 743', async function() {
-      // line 743: if (index(route_check, ...) >= 0) — route_check is string, not function
-      const diagnostics = await getDiagnostics(pbrContent, PBR_FILE);
-      const line743Diags = diagnostics.filter(d =>
-        d.range.start.line === 742 && d.message && d.message.includes('index')
-      );
-      assert.strictEqual(line743Diags.length, 0,
-        `Should not have false positive on index() at line 743, got: ${line743Diags.map(d => d.message).join('; ')}`);
-    });
-
-    it('should not have false positive diagnostic on trim(sh.exec()) at line 1841', async function() {
-      // line 1841: trim(sh.exec('echo $$')) — sh.exec returns string, not function
-      const diagnostics = await getDiagnostics(pbrContent, PBR_FILE);
-      const line1841Diags = diagnostics.filter(d =>
-        d.range.start.line === 1840 && d.message && d.message.includes('trim')
-      );
-      assert.strictEqual(line1841Diags.length, 0,
-        `Should not have false positive on trim() at line 1841, got: ${line1841Diags.map(d => d.message).join('; ')}`);
-    });
-
-    it('should not have false positive UC2007 diagnostic on sprintf with hex() at line 879', async function() {
-      const diagnostics = await getDiagnostics(pbrContent, PBR_FILE);
-      const line879Diags = diagnostics.filter(d =>
-        d.range.start.line === 878 && d.message && d.message.includes('UC2007')
-      );
-      assert.strictEqual(line879Diags.length, 0,
-        `Should not have UC2007 false positive on hex() at line 879, got: ${line879Diags.map(d => d.message).join('; ')}`);
+      it('should not have false positive UC2007 on sprintf with hex()', async function() {
+        const content = [
+          "let mark = '0x100';",
+          "let result = sprintf('0x%06x', hex(mark));",
+        ].join('\n');
+        const diagnostics = await getDiagnostics(content, TEST_FILE);
+        const uc2007Diags = diagnostics.filter(d =>
+          d.message && d.message.includes('UC2007')
+        );
+        assert.strictEqual(uc2007Diags.length, 0,
+          `Should not have UC2007 false positive on sprintf with hex(), got: ${uc2007Diags.map(d => d.message).join('; ')}`);
+      });
     });
   });
 });

@@ -10,7 +10,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
-         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode } from '../ast/nodes';
+         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, isArrayType, getArrayElementType, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -80,6 +80,8 @@ export class SemanticAnalyzer extends BaseVisitor {
   private fileResolver: FileResolver;
   private currentASTRoot: ProgramNode | null = null;
   private thisPropertyStack: Map<string, UcodeDataType>[] = []; // Track `this` context for object method property types
+  private truthinessDepth = 0; // Track when we're inside a truthiness context (if test, !, ternary test)
+  private callbackElementType: UcodeDataType | null = null; // Element type to pass to callback parameters (filter/map/sort)
 
   constructor(textDocument: TextDocument, options: SemanticAnalysisOptions = {}) {
     super();
@@ -936,8 +938,11 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.functionScopes.push(this.symbolTable.getCurrentScope());
 
       // Declare parameters in the function scope
-      for (const param of node.params) {
-        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
+      // For callback parameters (filter/map/sort), infer first param type from array element type
+      for (let i = 0; i < node.params.length; i++) {
+        const param = node.params[i]!;
+        const paramType = (i === 0 && this.callbackElementType) ? this.callbackElementType : UcodeType.UNKNOWN as UcodeDataType;
+        this.symbolTable.declare(param.name, SymbolType.PARAMETER, paramType, param);
       }
 
       // Declare rest parameter if present (as array type)
@@ -1423,15 +1428,18 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
     
     if (this.options.enableTypeChecking) {
-      // Type check the function call
+      // Pass truthiness context to the type checker so builtins in if-test contexts
+      // don't warn about unknown args (e.g., if (!length(args)) is a valid pattern)
+      this.typeChecker.setTruthinessDepth(this.truthinessDepth);
       this.typeChecker.checkNode(node);
+      this.typeChecker.setTruthinessDepth(0);
       const result = this.typeChecker.getResult();
-      
+
       // Add type errors to diagnostics
       for (const error of result.errors) {
         this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
       }
-      
+
       // Add type warnings to diagnostics
       for (const warning of result.warnings) {
         this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
@@ -1442,12 +1450,29 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     this.processingFunctionCallCallee = true;
     this.visit(node.callee);
     this.processingFunctionCallCallee = false;
-    
+
+    // For filter/map/sort, infer callback parameter types from array element type
+    const savedCallbackElementType = this.callbackElementType;
+    if (node.callee.type === 'Identifier' &&
+        node.arguments.length >= 2) {
+      const funcName = (node.callee as IdentifierNode).name;
+      if (funcName === 'filter' || funcName === 'map' || funcName === 'sort') {
+        const arrArg = node.arguments[0]!;
+        const arrType = this.resolveNodeFullType(arrArg);
+        if (arrType && isArrayType(arrType)) {
+          this.callbackElementType = getArrayElementType(arrType);
+        }
+      }
+    }
+
     // Visit arguments normally
     for (const arg of node.arguments) {
       this.visit(arg);
     }
-    
+
+    // Restore callback element type
+    this.callbackElementType = savedCallbackElementType;
+
     // DON'T call super.visitCallExpression() to avoid double traversal
   }
 
@@ -1659,10 +1684,15 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   visitUnaryExpression(node: UnaryExpressionNode): void {
+    // Track ! operator as truthiness context
+    if (node.operator === '!') this.truthinessDepth++;
     super.visitUnaryExpression(node);
+    if (node.operator === '!') this.truthinessDepth--;
 
     if (this.options.enableTypeChecking) {
+      this.typeChecker.setTruthinessDepth(this.truthinessDepth);
       this.typeChecker.checkNode(node);
+      this.typeChecker.setTruthinessDepth(0);
       const result = this.typeChecker.getResult();
 
       for (const error of result.errors) {
@@ -1675,21 +1705,42 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
+  visitConditionalExpression(node: ConditionalExpressionNode): void {
+    // Ternary test is a truthiness context
+    this.truthinessDepth++;
+    this.visit(node.test);
+    this.truthinessDepth--;
+    this.visit(node.consequent);
+    this.visit(node.alternate);
+  }
+
   visitBinaryExpression(node: BinaryExpressionNode): void {
-    // Continue with default traversal first to ensure child nodes are visited
+    // Comparison operators make builtin calls safe — null compares harmlessly
+    // (e.g., length(x) > 0 → null > 0 is false, not an error)
+    const isComparison = node.operator === '>' || node.operator === '>=' ||
+                         node.operator === '<' || node.operator === '<=' ||
+                         node.operator === '==' || node.operator === '!=' ||
+                         node.operator === '===' || node.operator === '!==';
+    if (isComparison) this.truthinessDepth++;
     super.visitBinaryExpression(node);
+    if (isComparison) this.truthinessDepth--;
 
     if (this.options.enableTypeChecking) {
-      
+
       // Type check the binary expression for type warnings
+      // Propagate truthiness context so builtins in if-tests don't warn
+      // Include comparison context: the type checker re-checks children via checkBinaryExpression
+      const effectiveTruthiness = isComparison ? this.truthinessDepth + 1 : this.truthinessDepth;
+      this.typeChecker.setTruthinessDepth(effectiveTruthiness);
       this.typeChecker.checkNode(node);
+      this.typeChecker.setTruthinessDepth(0);
       const result = this.typeChecker.getResult();
-      
+
       // Add type errors to diagnostics
       for (const error of result.errors) {
         this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
       }
-      
+
       // Add type warnings to diagnostics
       for (const warning of result.warnings) {
         this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
@@ -1757,8 +1808,15 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   visitIfStatement(node: IfStatementNode): void {
-    // First visit the statement to populate symbol table with declarations
-    super.visitIfStatement(node);
+    // Visit the test in truthiness context so builtins with unknown args don't warn
+    // (e.g., if (!length(args)) is a valid type-check pattern)
+    this.truthinessDepth++;
+    this.visit(node.test);
+    this.truthinessDepth--;
+
+    // Visit consequent and alternate normally
+    if (node.consequent) this.visit(node.consequent);
+    if (node.alternate) this.visit(node.alternate);
 
     if (this.options.enableTypeChecking) {
       // Type check the if statement AFTER visiting to ensure all local variables are declared
@@ -1955,7 +2013,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
 
     if (this.options.enableTypeChecking) {
-      this.typeChecker.checkNode(node);
+      // Only type-check the discriminant here. The full switch body will be
+      // type-checked by individual visit methods (visitCallExpression, etc.)
+      // which run after super.visitSwitchStatement declares local variables.
+      // Running checkNode on the whole switch would produce spurious warnings
+      // for variables not yet declared in the symbol table.
+      this.typeChecker.checkNode(node.discriminant);
       const result = this.typeChecker.getResult();
 
       for (const error of result.errors) {
@@ -1963,7 +2026,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
 
       for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning);
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
       }
     }
 
@@ -2309,6 +2372,22 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return null;
   }
 
+  /**
+   * Resolve the full data type of a node (including ArrayType with element info).
+   * Used to extract array element types for callback parameter inference.
+   */
+  private resolveNodeFullType(node: AstNode): UcodeDataType | null {
+    // Check _fullType set by the type checker (e.g., split() → ArrayType)
+    if ((node as any)._fullType) {
+      return (node as any)._fullType;
+    }
+    if (node.type === 'Identifier') {
+      const sym = this.symbolTable.lookup((node as IdentifierNode).name);
+      if (sym) return sym.dataType;
+    }
+    return null;
+  }
+
   private inferAssignmentDataType(expression: AstNode): UcodeDataType {
     if (expression.type === 'Identifier') {
       const sourceName = (expression as IdentifierNode).name;
@@ -2612,8 +2691,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           }
           return;
         }
-        // For non-function calls, fall back to type checker result
+        // For non-function calls, fall back to type checker result.
+        // Suppress validation warnings — this call is for type inference only;
+        // validation was already done during the visit pass.
+        this.typeChecker.setTruthinessDepth(1);
         const initType = this.typeChecker.checkNode(node.init);
+        this.typeChecker.setTruthinessDepth(0);
         // Prefer _fullType (preserves unions) over simple UcodeType return
         const fullType = (node.init as any)._fullType as UcodeDataType | undefined;
         symbol.dataType = fullType || initType as UcodeDataType;
@@ -2707,9 +2790,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
     // Check for duplicate diagnostics to prevent multiple identical errors
     const startPos = this.textDocument.positionAt(start);
-    const endPos = this.textDocument.positionAt(end);
-    
-    const isDuplicate = this.diagnostics.some(existing => 
+    // Parser node.end is inclusive (points to last char); LSP ranges need exclusive end
+    const endPos = this.textDocument.positionAt(end + 1);
+
+    const isDuplicate = this.diagnostics.some(existing =>
       existing.message === message &&
       existing.severity === severity &&
       existing.range.start.line === startPos.line &&
@@ -2717,7 +2801,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       existing.range.end.line === endPos.line &&
       existing.range.end.character === endPos.character
     );
-    
+
     if (!isDuplicate) {
       const diagnostic: Diagnostic = {
         severity: severity,
@@ -2766,7 +2850,8 @@ private addDiagnostic(
 
     // Check for duplicate diagnostics to prevent multiple identical errors
     const startPos = this.textDocument.positionAt(start);
-    const endPos = this.textDocument.positionAt(end);
+    // Parser node.end is inclusive (points to last char); LSP ranges need exclusive end
+    const endPos = this.textDocument.positionAt(end + 1);
     
     const isDuplicate = this.diagnostics.some(existing => 
       existing.message === message &&

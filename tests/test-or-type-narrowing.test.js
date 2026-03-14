@@ -75,13 +75,15 @@ if (type(unionValue) === "array" || type(unionValue) == "string")
     expect(line18Warnings.length).toBeGreaterThan(0);
     console.log('✓ Line 18: Warning for index(unionValue, "key") where unionValue is object | array');
 
-    // Check line 22: index inside type(x) === "string" guard - should NOT warn
+    // Check line 22: index inside type(x) === "string" guard
+    // unionValue is object | array, narrowing to "string" yields unknown (string not in union)
+    // so index(unknown) correctly warns
     const line22Warnings = diagnostics.filter(d =>
       d.range.start.line === 21 &&
       d.message.includes('index')
     );
-    expect(line22Warnings.length).toBe(0);
-    console.log('✓ Line 22: No warning for index after narrowing to string (unknown)');
+    expect(line22Warnings.length).toBe(1);
+    console.log('✓ Line 22: Warning for index(unknown) after narrowing to string (not in union)');
 
     // Check line 26: index inside type(x) === "array" guard - should NOT warn
     const line26Warnings = diagnostics.filter(d =>
