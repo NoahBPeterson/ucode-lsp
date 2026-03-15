@@ -9,7 +9,7 @@ import { Option, Either } from 'effect';
 // ---- Existing registry imports ----
 import { debugTypeRegistry } from './debugTypes';
 import { digestTypeRegistry } from './digestTypes';
-import { fsModuleTypeRegistry } from './fsModuleTypes';
+import { fsModuleTypeRegistry, fsConstants, fsConstantDocumentation, statvfsTypeRegistry } from './fsModuleTypes';
 import { ioModuleTypeRegistry, ioFunctions, ioConstants, ioHandleFunctions } from './ioTypes';
 import { logTypeRegistry, logConstants } from './logTypes';
 import { mathTypeRegistry } from './mathTypes';
@@ -35,17 +35,16 @@ export const KNOWN_MODULES = [
 
 export type KnownModule = typeof KNOWN_MODULES[number];
 
-export const KNOWN_OBJECT_TYPES = [
-  'fs.file', 'fs.dir', 'fs.proc',
-  'io.handle',
-  'uloop.timer', 'uloop.handle', 'uloop.process',
-  'uloop.task', 'uloop.interval', 'uloop.signal', 'uloop.pipe',
-  'uci.cursor',
-  'nl80211.listener',
-  'exception'
-] as const;
-
-export type KnownObjectType = typeof KNOWN_OBJECT_TYPES[number];
+// KnownObjectType is derived from OBJECT_REGISTRIES keys (defined later in this file).
+// To add a new object type, add it to OBJECT_REGISTRIES — KNOWN_OBJECT_TYPES updates automatically.
+export type KnownObjectType =
+  | 'fs.file' | 'fs.dir' | 'fs.proc' | 'fs.statvfs'
+  | 'io.handle'
+  | 'uloop.timer' | 'uloop.handle' | 'uloop.process'
+  | 'uloop.task' | 'uloop.interval' | 'uloop.signal' | 'uloop.pipe'
+  | 'uci.cursor'
+  | 'nl80211.listener'
+  | 'exception';
 
 // ---- Common function signature (shared shape across all registries) ----
 
@@ -77,6 +76,7 @@ export interface ModuleRegistry {
 
 export interface ObjectTypeRegistry {
   readonly objectType: KnownObjectType;
+  readonly isPropertyBased?: boolean;
   getMethodNames(): string[];
   getMethod(name: string): Option.Option<FunctionSignature>;
   getMethodDocumentation(name: string): Option.Option<string>;
@@ -244,10 +244,13 @@ const fsRegistry: ModuleRegistry = {
     const doc = fsModuleTypeRegistry.getFunctionDocumentation(name);
     return doc ? Option.some(doc) : Option.none();
   },
-  getConstantNames: () => [],
-  getConstantDocumentation: () => Option.none(),
-  isValidImport: (name: string) => fsModuleTypeRegistry.getFunctionNames().includes(name),
-  getValidImports: () => fsModuleTypeRegistry.getFunctionNames(),
+  getConstantNames: () => Array.from(fsConstants.keys()),
+  getConstantDocumentation: (name: string) => {
+    const doc = fsConstantDocumentation.get(name);
+    return doc ? Option.some(doc) : Option.none();
+  },
+  isValidImport: (name: string) => fsModuleTypeRegistry.getFunctionNames().includes(name) || fsConstants.has(name),
+  getValidImports: () => [...fsModuleTypeRegistry.getFunctionNames(), ...fsConstants.keys()],
   getModuleDocumentation: () => `## FS Module
 
 **File system operations for ucode scripts**
@@ -1262,9 +1265,31 @@ const nl80211ListenerObjectRegistry: ObjectTypeRegistry = {
   },
 };
 
+// Adapter for fs.statvfs result object (properties, not methods)
+const statvfsObjectRegistry: ObjectTypeRegistry = {
+  objectType: 'fs.statvfs',
+  isPropertyBased: true,
+  getMethodNames: () => statvfsTypeRegistry.getPropertyNames(),
+  getMethod: (name: string) => {
+    const prop = statvfsTypeRegistry.getProperty(name);
+    if (!prop) return Option.none();
+    return Option.some({
+      name: prop.name,
+      parameters: [],
+      returnType: prop.type,
+      description: prop.description,
+    });
+  },
+  getMethodDocumentation: (name: string) => {
+    const doc = statvfsTypeRegistry.getPropertyDocumentation(name);
+    return doc ? Option.some(doc) : Option.none();
+  },
+};
+
 // Adapter for exception object (properties, not methods, but we expose them as "methods" for uniform dispatch)
 const exceptionObjectRegistry: ObjectTypeRegistry = {
   objectType: 'exception',
+  isPropertyBased: true,
   getMethodNames: () => exceptionTypeRegistry.getPropertyNames(),
   getMethod: (name: string) => {
     const prop = exceptionTypeRegistry.getProperty(name);
@@ -1286,6 +1311,7 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'fs.file': makeFsObjectRegistry(FsObjectType.FS_FILE),
   'fs.dir': makeFsObjectRegistry(FsObjectType.FS_DIR),
   'fs.proc': makeFsObjectRegistry(FsObjectType.FS_PROC),
+  'fs.statvfs': statvfsObjectRegistry,
   'io.handle': ioHandleObjectRegistry,
   'uloop.timer': makeUloopObjectRegistry(UloopObjectType.ULOOP_TIMER),
   'uloop.handle': makeUloopObjectRegistry(UloopObjectType.ULOOP_HANDLE),
@@ -1298,6 +1324,9 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'nl80211.listener': nl80211ListenerObjectRegistry,
   'exception': exceptionObjectRegistry,
 };
+
+// Derived from OBJECT_REGISTRIES — no separate list to maintain
+export const KNOWN_OBJECT_TYPES: readonly KnownObjectType[] = Object.keys(OBJECT_REGISTRIES) as KnownObjectType[];
 
 // ---- Utility functions ----
 

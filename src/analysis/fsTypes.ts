@@ -7,8 +7,9 @@ import { UcodeType, UcodeDataType } from './symbolTable';
 
 export enum FsObjectType {
   FS_PROC = 'fs.proc',
-  FS_DIR = 'fs.dir', 
-  FS_FILE = 'fs.file'
+  FS_DIR = 'fs.dir',
+  FS_FILE = 'fs.file',
+  FS_STATVFS = 'fs.statvfs'
 }
 
 export interface FsTypeDefinition {

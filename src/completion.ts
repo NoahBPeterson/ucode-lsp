@@ -111,13 +111,13 @@ export function handleCompletion(
             if (resolvedObjectType) {
                 const reg = OBJECT_REGISTRIES[resolvedObjectType];
                 const completions: CompletionItem[] = [];
-                const isException = resolvedObjectType === 'exception';
+                const isPropertyType = OBJECT_REGISTRIES[resolvedObjectType]?.isPropertyBased ?? false;
                 for (const methodName of reg.getMethodNames()) {
                     const methodDoc = reg.getMethodDocumentation(methodName);
                     const item: CompletionItem = {
                         label: methodName,
-                        kind: isException ? CompletionItemKind.Property : CompletionItemKind.Method,
-                        detail: `${resolvedObjectType} ${isException ? 'property' : 'method'}`,
+                        kind: isPropertyType ? CompletionItemKind.Property : CompletionItemKind.Method,
+                        detail: `${resolvedObjectType} ${isPropertyType ? 'property' : 'method'}`,
                         insertText: methodName
                     };
                     if (Option.isSome(methodDoc)) {
@@ -425,11 +425,11 @@ function getUnifiedObjectTypeCompletions(objectName: string, analysisResult?: Se
 
     for (const methodName of reg.getMethodNames()) {
         const methodDoc = reg.getMethodDocumentation(methodName);
-        const isException = objectType === 'exception';
+        const isPropertyType = objectType === 'exception' || objectType === 'fs.statvfs';
         const item: CompletionItem = {
             label: methodName,
-            kind: isException ? CompletionItemKind.Property : CompletionItemKind.Method,
-            detail: `${objectType} ${isException ? 'property' : 'method'}`,
+            kind: isPropertyType ? CompletionItemKind.Property : CompletionItemKind.Method,
+            detail: `${objectType} ${isPropertyType ? 'property' : 'method'}`,
             insertText: methodName
         };
         if (Option.isSome(methodDoc)) {

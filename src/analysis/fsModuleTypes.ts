@@ -3,6 +3,25 @@
  * Based on static const uc_function_list_t global_fns[] in ucode fs module
  */
 
+import { FsObjectType } from './fsTypes';
+
+/**
+ * Look up an fs function by name and extract its FsObjectType from the return type string.
+ * e.g. "statvfs" → FsObjectType.FS_STATVFS (from "fs.statvfs | null")
+ *      "open"    → FsObjectType.FS_FILE    (from "fs.file | null")
+ *      "stat"    → null                    (from "object | null")
+ */
+export function getFsReturnObjectType(funcName: string): FsObjectType | null {
+  const sig = fsModuleFunctions.get(funcName);
+  if (!sig) return null;
+  for (const fsType of Object.values(FsObjectType)) {
+    if (sig.returnType.includes(fsType)) {
+      return fsType;
+    }
+  }
+  return null;
+}
+
 export interface FsModuleFunctionSignature {
   name: string;
   parameters: Array<{
@@ -296,7 +315,84 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     ],
     returnType: "array | null",
     description: "Matches file paths using glob patterns (variadic function)"
+  }],
+  ["statvfs", {
+    name: "statvfs",
+    parameters: [
+      { name: "path", type: "string", optional: false }
+    ],
+    returnType: "fs.statvfs | null",
+    description: "Queries filesystem statistics for a given pathname. Returns an object with properties: bsize, frsize, blocks, bfree, bavail, files, ffree, favail, fsid, flag, namemax, freesize (frsize * bfree), totalsize (frsize * blocks). On Linux, an additional `type` field (filesystem magic number) is provided. Returns null on failure."
   }]
+]);
+
+// StatVFS result object properties
+export interface StatvfsPropertySignature {
+  name: string;
+  type: string;
+  description: string;
+}
+
+export const statvfsProperties: Map<string, StatvfsPropertySignature> = new Map([
+  ["bsize", { name: "bsize", type: "integer", description: "File system block size" }],
+  ["frsize", { name: "frsize", type: "integer", description: "Fragment size" }],
+  ["blocks", { name: "blocks", type: "integer", description: "Total number of blocks in the filesystem" }],
+  ["bfree", { name: "bfree", type: "integer", description: "Total number of free blocks" }],
+  ["bavail", { name: "bavail", type: "integer", description: "Free blocks available to unprivileged users" }],
+  ["files", { name: "files", type: "integer", description: "Total number of file nodes (inodes)" }],
+  ["ffree", { name: "ffree", type: "integer", description: "Total number of free file nodes" }],
+  ["favail", { name: "favail", type: "integer", description: "Free file nodes available to unprivileged users" }],
+  ["fsid", { name: "fsid", type: "integer", description: "File system ID" }],
+  ["flag", { name: "flag", type: "integer", description: "Mount flags (bitmask of ST_* constants)" }],
+  ["namemax", { name: "namemax", type: "integer", description: "Maximum filename length" }],
+  ["freesize", { name: "freesize", type: "integer", description: "Free space in bytes (frsize * bfree)" }],
+  ["totalsize", { name: "totalsize", type: "integer", description: "Total filesystem size in bytes (frsize * blocks)" }],
+  ["type", { name: "type", type: "integer", description: "Filesystem magic number from statfs (Linux only)" }],
+]);
+
+export class StatvfsTypeRegistry {
+  getPropertyNames(): string[] {
+    return Array.from(statvfsProperties.keys());
+  }
+
+  getProperty(name: string): StatvfsPropertySignature | undefined {
+    return statvfsProperties.get(name);
+  }
+
+  getPropertyDocumentation(name: string): string {
+    const prop = statvfsProperties.get(name);
+    if (!prop) return '';
+    return `**(fs.statvfs property) ${prop.name}**: \`${prop.type}\`\n\n${prop.description}`;
+  }
+}
+
+export const statvfsTypeRegistry = new StatvfsTypeRegistry();
+
+// FS module constants (mount flags from statvfs)
+export const fsConstants: Map<string, number> = new Map([
+  ["ST_RDONLY", 1],
+  ["ST_NOSUID", 2],
+  ["ST_NODEV", 4],
+  ["ST_NOEXEC", 8],
+  ["ST_SYNCHRONOUS", 16],
+  ["ST_MANDLOCK", 64],
+  ["ST_NOATIME", 1024],
+  ["ST_NODIRATIME", 2048],
+  ["ST_RELATIME", 4096],
+  ["ST_NOSYMFOLLOW", 256],
+]);
+
+export const fsConstantDocumentation: Map<string, string> = new Map([
+  ["ST_RDONLY", `**(constant) ST_RDONLY** = 1\n\nRead-only filesystem`],
+  ["ST_NOSUID", `**(constant) ST_NOSUID** = 2\n\nDo not allow set-user-identifier or set-group-identifier bits`],
+  ["ST_NODEV", `**(constant) ST_NODEV** = 4\n\nDo not allow device files (Linux only)`],
+  ["ST_NOEXEC", `**(constant) ST_NOEXEC** = 8\n\nDo not allow execution of binaries (Linux only)`],
+  ["ST_SYNCHRONOUS", `**(constant) ST_SYNCHRONOUS** = 16\n\nSynchronous writes (Linux only)`],
+  ["ST_MANDLOCK", `**(constant) ST_MANDLOCK** = 64\n\nMandatory locking (Linux only)`],
+  ["ST_NOATIME", `**(constant) ST_NOATIME** = 1024\n\nDo not update access times (Linux only)`],
+  ["ST_NODIRATIME", `**(constant) ST_NODIRATIME** = 2048\n\nDo not update directory access times (Linux only)`],
+  ["ST_RELATIME", `**(constant) ST_RELATIME** = 4096\n\nUpdate access times relative to modification time (Linux only)`],
+  ["ST_NOSYMFOLLOW", `**(constant) ST_NOSYMFOLLOW** = 256\n\nDo not follow symbolic links (Linux only)`],
 ]);
 
 export class FsModuleTypeRegistry {

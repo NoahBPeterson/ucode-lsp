@@ -23,7 +23,7 @@ import { DataFlowAnalyzer } from './cfg/dataFlowAnalyzer';
 import { CFGQueryEngine } from './cfg/queryEngine';
 import { type ControlFlowGraph } from './cfg/types';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
-import { fsModuleTypeRegistry } from './fsModuleTypes';
+import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType } from './fsModuleTypes';
 import { Nl80211ObjectType, createNl80211ObjectDataType } from './nl80211Types';
 import { nl80211TypeRegistry } from './nl80211Types';
 import { rtnlTypeRegistry } from './rtnlTypes';
@@ -692,7 +692,17 @@ export class SemanticAnalyzer extends BaseVisitor {
     const isBuiltinModule = isKnownModule(modulePath);
 
     if (isBuiltinModule) {
-      // For built-in modules, skip validation and directly process the import
+      // Builtin C modules don't have default exports — only named and namespace imports are valid
+      if (specifier.type === 'ImportDefaultSpecifier') {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.EXPORT_NOT_FOUND,
+          `Builtin module '${modulePath}' does not have a default export. Use: import * as ${specifier.local.name} from '${modulePath}'; or import { ... } from '${modulePath}';`,
+          specifier.local.start,
+          specifier.local.start + specifier.local.name.length,
+          DiagnosticSeverity.Error
+        );
+        return;
+      }
       this.processImportSpecifier(specifier, modulePath);
       return;
     }
@@ -1261,18 +1271,10 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
   
   private isValidFsModuleMethod(methodName: string): boolean {
-    // Valid fs module methods from the C code
-    const validFsMethods = new Set([
-      'error', 'open', 'fdopen', 'opendir', 'popen', 'readlink', 
-      'stat', 'lstat', 'mkdir', 'rmdir', 'symlink', 'unlink', 
-      'getcwd', 'chdir', 'chmod', 'chown', 'rename', 'glob', 
-      'dirname', 'basename', 'lsdir', 'mkstemp', 'access', 
-      'readfile', 'writefile', 'realpath', 'pipe',
-      // Pre-defined handles
-      'stdin', 'stdout', 'stderr'
-    ]);
-    
-    return validFsMethods.has(methodName);
+    // Check against the fs module registry (functions + constants) and pre-defined handles
+    return fsModuleTypeRegistry.isFsModuleFunction(methodName) ||
+      fsConstants.has(methodName) ||
+      methodName === 'stdin' || methodName === 'stdout' || methodName === 'stderr';
   }
 
 private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
@@ -2065,53 +2067,31 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
   private inferFsType(node: AstNode): FsObjectType | null {
     // Check if this is a call expression that returns an fs object
-    if (node.type === 'CallExpression') {
-      const callNode = node as CallExpressionNode;
-      if (callNode.callee.type === 'Identifier') {
-        const funcName = (callNode.callee as IdentifierNode).name;
+    if (node.type !== 'CallExpression') return null;
 
-        // Skip if this function was imported from a non-fs module (e.g. io.open)
-        const symbol = this.symbolTable.lookup(funcName);
-        if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom && symbol.importedFrom !== 'fs') {
-          return null;
-        }
+    const callNode = node as CallExpressionNode;
 
-        // Map fs functions to their return types
-        switch (funcName) {
-          case 'open':
-          case 'fdopen':
-          case 'mkstemp':
-            return FsObjectType.FS_FILE;
-          case 'opendir':
-            return FsObjectType.FS_DIR;
-          case 'popen':
-            return FsObjectType.FS_PROC;
-          default:
-            return null;
-        }
+    // Named import: open(), statvfs(), etc.
+    if (callNode.callee.type === 'Identifier') {
+      const funcName = (callNode.callee as IdentifierNode).name;
+      // Skip if imported from a non-fs module (e.g. io.open)
+      const symbol = this.symbolTable.lookup(funcName);
+      if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom && symbol.importedFrom !== 'fs') {
+        return null;
       }
-      // Handle module member calls like fs.open()
-      else if (callNode.callee.type === 'MemberExpression') {
-        const memberNode = callNode.callee as MemberExpressionNode;
-        if (memberNode.object.type === 'Identifier' && 
-            (memberNode.object as IdentifierNode).name === 'fs' &&
-            memberNode.property.type === 'Identifier') {
-          const methodName = (memberNode.property as IdentifierNode).name;
-          
-          switch (methodName) {
-            case 'open':
-            case 'fdopen':
-            case 'mkstemp':
-              return FsObjectType.FS_FILE;
-            case 'opendir':
-              return FsObjectType.FS_DIR;
-            case 'popen':
-              return FsObjectType.FS_PROC;
-          }
-        }
+      return getFsReturnObjectType(funcName);
+    }
+
+    // Member expression: fs.open(), fs.statvfs(), etc.
+    if (callNode.callee.type === 'MemberExpression') {
+      const memberNode = callNode.callee as MemberExpressionNode;
+      if (memberNode.object.type === 'Identifier' &&
+          (memberNode.object as IdentifierNode).name === 'fs' &&
+          memberNode.property.type === 'Identifier') {
+        return getFsReturnObjectType((memberNode.property as IdentifierNode).name);
       }
     }
-    
+
     return null;
   }
 
