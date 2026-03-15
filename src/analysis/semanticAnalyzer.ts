@@ -698,7 +698,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           UcodeErrorCode.EXPORT_NOT_FOUND,
           `Builtin module '${modulePath}' does not have a default export. Use: import * as ${specifier.local.name} from '${modulePath}'; or import { ... } from '${modulePath}';`,
           specifier.local.start,
-          specifier.local.start + specifier.local.name.length,
+          specifier.local.start + specifier.local.name.length - 1,
           DiagnosticSeverity.Error
         );
         return;
