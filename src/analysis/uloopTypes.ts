@@ -1,33 +1,21 @@
 /**
  * uloop module type definitions and function signatures
  * Based on ucode/lib/uloop.c
- * 
+ *
  * The uloop module provides OpenWrt uloop event loop integration for handling
  * timers, file descriptors, processes, signals, and background tasks.
  */
 
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
+import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 import { UcodeType, UcodeDataType } from './symbolTable';
 
-export interface UloopFunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
+// Backwards-compat type aliases
+export type UloopFunctionSignature = FunctionSignature;
+export type UloopConstantSignature = ConstantDefinition;
 
-export interface UloopConstantSignature {
-  name: string;
-  value: string | number;
-  type: string;
-  description: string;
-}
-
-export const uloopFunctions: Map<string, UloopFunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["error", {
     name: "error",
     parameters: [],
@@ -38,7 +26,16 @@ export const uloopFunctions: Map<string, UloopFunctionSignature> = new Map([
     name: "init",
     parameters: [],
     returnType: "boolean | null",
-    description: "Initializes the uloop event loop, allowing subsequent usage of uloop functionalities. Returns true on success, null on error."
+    description: `Initializes the uloop event loop, allowing subsequent usage of uloop functionalities. Returns true on success, null on error.
+
+**Example:**
+\`\`\`ucode
+// Initialize the uloop event loop
+if (init())
+  printf("uloop initialized successfully\\n");
+else
+  die(\`Initialization failed: \${error()}\\n\`);
+\`\`\``
   }],
   ["run", {
     name: "run",
@@ -46,7 +43,16 @@ export const uloopFunctions: Map<string, UloopFunctionSignature> = new Map([
       { name: "timeout", type: "integer", optional: true, defaultValue: -1 }
     ],
     returnType: "integer | null",
-    description: "Runs the uloop event loop. If timeout is provided and non-negative, runs for that many milliseconds. If timeout is omitted or negative, runs indefinitely until stopped."
+    description: `Runs the uloop event loop. If timeout is provided and non-negative, runs for that many milliseconds. If timeout is omitted or negative, runs indefinitely until stopped.
+
+**Example:**
+\`\`\`ucode
+// Run event loop for 5 seconds
+run(5000);
+
+// Run event loop indefinitely
+run();
+\`\`\``
   }],
   ["cancelling", {
     name: "cancelling",
@@ -79,7 +85,15 @@ export const uloopFunctions: Map<string, UloopFunctionSignature> = new Map([
       { name: "callback", type: "function", optional: false }
     ],
     returnType: "uloop.timer | null",
-    description: "Creates a timer instance for scheduling callbacks. Takes an optional timeout in milliseconds and a callback function to execute when the timer expires."
+    description: `Creates a timer instance for scheduling callbacks. Takes an optional timeout in milliseconds and a callback function to execute when the timer expires.
+
+**Example:**
+\`\`\`ucode
+// Create a timer that fires after 1000ms
+let myTimer = timer(1000, () => {
+  printf("Timer expired!\\n");
+});
+\`\`\``
   }],
   ["handle", {
     name: "handle",
@@ -89,7 +103,16 @@ export const uloopFunctions: Map<string, UloopFunctionSignature> = new Map([
       { name: "events", type: "integer", optional: false }
     ],
     returnType: "uloop.handle | null",
-    description: "Creates a handle instance for monitoring file descriptor events. Takes a file handle, callback function, and bitwise OR-ed flags of IO events (ULOOP_READ, ULOOP_WRITE)."
+    description: `Creates a handle instance for monitoring file descriptor events. Takes a file handle, callback function, and bitwise OR-ed flags of IO events (ULOOP_READ, ULOOP_WRITE).
+
+**Example:**
+\`\`\`ucode
+// Monitor a file descriptor for read events
+let myHandle = handle(3, (events) => {
+  if (events & ULOOP_READ)
+    printf("Data ready to read!\\n");
+}, ULOOP_READ);
+\`\`\``
   }],
   ["process", {
     name: "process",
@@ -140,107 +163,70 @@ export const uloopFunctions: Map<string, UloopFunctionSignature> = new Map([
   }]
 ]);
 
-export const uloopConstants: Map<string, UloopConstantSignature> = new Map([
-  // Event Mode Constants
+// Backwards-compat export
+export { functions as uloopFunctions };
+
+const uloopConstants: Map<string, ConstantDefinition> = new Map([
   ["ULOOP_READ", { name: "ULOOP_READ", value: 1, type: "integer", description: "File or socket is readable - used with handle() to monitor read events" }],
   ["ULOOP_WRITE", { name: "ULOOP_WRITE", value: 2, type: "integer", description: "File or socket is writable - used with handle() to monitor write events" }],
   ["ULOOP_EDGE_TRIGGER", { name: "ULOOP_EDGE_TRIGGER", value: 4, type: "integer", description: "Enable edge-triggered event mode - used with handle() for edge-triggered notifications" }],
   ["ULOOP_BLOCKING", { name: "ULOOP_BLOCKING", value: 8, type: "integer", description: "Do not make descriptor non-blocking - used with handle() to keep descriptor in blocking mode" }]
 ]);
 
-export class UloopTypeRegistry {
-  getFunctionNames(): string[] {
-    return Array.from(uloopFunctions.keys());
-  }
+// Backwards-compat export
+export { uloopConstants };
 
-  getFunction(name: string): UloopFunctionSignature | undefined {
-    return uloopFunctions.get(name);
-  }
+export const uloopModule: ModuleDefinition = {
+  name: 'uloop',
+  functions,
+  constants: uloopConstants,
+  documentation: `## uloop Module
 
-  isUloopFunction(name: string): boolean {
-    return uloopFunctions.has(name);
-  }
+**OpenWrt uloop event loop module**
 
-  getConstantNames(): string[] {
-    return Array.from(uloopConstants.keys());
-  }
+Provides event-driven programming capabilities for handling timers, file descriptors, processes, signals, and background tasks.
 
-  getConstant(name: string): UloopConstantSignature | undefined {
-    return uloopConstants.get(name);
-  }
+### Usage
 
-  isUloopConstant(name: string): boolean {
-    return uloopConstants.has(name);
-  }
+**Named import syntax:**
+\`\`\`ucode
+import { init, run, timer, handle, ULOOP_READ } from 'uloop';
 
-  formatFunctionSignature(name: string): string {
-    const func = this.getFunction(name);
-    if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
+init();
+let t = timer(1000, () => printf("tick\\n"));
+run();
+\`\`\`
 
-  getFunctionDocumentation(name: string): string {
-    const func = this.getFunction(name);
-    if (!func) return '';
-    
-    const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\`\n\n`;
-    
-    // Add usage examples
-    if (name === 'init') {
-      doc += '**Example:**\n```ucode\n// Initialize the uloop event loop\nif (init())\n  printf("uloop initialized successfully\\n");\nelse\n  die(`Initialization failed: ${error()}\\n`);\n```';
-    } else if (name === 'timer') {
-      doc += '**Example:**\n```ucode\n// Create a timer that fires after 1000ms\nlet myTimer = timer(1000, () => {\n  printf("Timer expired!\\n");\n});\n```';
-    } else if (name === 'handle') {
-      doc += '**Example:**\n```ucode\n// Monitor a file descriptor for read events\nlet myHandle = handle(3, (events) => {\n  if (events & ULOOP_READ)\n    printf("Data ready to read!\\n");\n}, ULOOP_READ);\n```';
-    } else if (name === 'run') {
-      doc += '**Example:**\n```ucode\n// Run event loop for 5 seconds\nrun(5000);\n\n// Run event loop indefinitely\nrun();\n```';
-    }
-    
-    return doc;
-  }
+**Namespace import syntax:**
+\`\`\`ucode
+import * as uloop from 'uloop';
 
-  getConstantDocumentation(name: string): string {
-    const constant = this.getConstant(name);
-    if (!constant) return '';
-    
-    return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
-  }
+uloop.init();
+let t = uloop.timer(1000, () => printf("tick\\n"));
+uloop.run();
+\`\`\`
 
-  // Import validation methods
-  isValidImport(name: string): boolean {
-    return this.isUloopFunction(name) || this.isUloopConstant(name);
-  }
+### Available Functions
 
-  getValidImports(): string[] {
-    return [...this.getFunctionNames(), ...this.getConstantNames()];
-  }
-}
+- **\`init()\`** - Initialize the event loop
+- **\`run()\`** - Run the event loop
+- **\`end()\`** / **\`done()\`** - Stop the event loop
+- **\`timer()\`** - Create a one-shot timer
+- **\`interval()\`** - Create a repeating interval
+- **\`handle()\`** - Monitor file descriptor events
+- **\`process()\`** - Launch and monitor external processes
+- **\`task()\`** - Run background tasks
+- **\`signal()\`** - Handle Unix signals
+- **\`guard()\`** - Set exception handler
+- **\`cancelling()\`** / **\`running()\`** - Query event loop state
+- **\`error()\`** - Get last error message
 
-export const uloopTypeRegistry = new UloopTypeRegistry();
+### Constants
+
+**Event flags:** ULOOP_READ, ULOOP_WRITE, ULOOP_EDGE_TRIGGER, ULOOP_BLOCKING
+
+*Hover over individual function names for detailed parameter and return type information.*`,
+};
 
 // ============================================================================
 // Uloop Object Types (timer, handle, process, task, interval, signal, pipe)
@@ -256,264 +242,162 @@ export enum UloopObjectType {
   ULOOP_PIPE = 'uloop.pipe'
 }
 
-export interface UloopObjectDefinition {
-  type: UloopObjectType;
-  methods: Map<string, UloopFunctionSignature>;
-}
+const timerMethods = new Map<string, FunctionSignature>([
+  ['set', {
+    name: 'set',
+    parameters: [{ name: 'timeout', type: 'integer', optional: true, defaultValue: -1 }],
+    returnType: 'boolean | null',
+    description: 'Rearms the uloop timer with the specified timeout in milliseconds. Returns true on success, null on error.'
+  }],
+  ['remaining', {
+    name: 'remaining',
+    parameters: [],
+    returnType: 'integer',
+    description: 'Returns the number of milliseconds until the timer expires, or -1 if the timer is not armed.'
+  }],
+  ['cancel', {
+    name: 'cancel',
+    parameters: [],
+    returnType: 'boolean',
+    description: 'Cancels the uloop timer, disarming it and removing it from the event loop. Returns true on success.'
+  }]
+]);
 
-export class UloopObjectRegistry {
-  private static instance: UloopObjectRegistry;
-  private types: Map<UloopObjectType, UloopObjectDefinition> = new Map();
+const handleMethods = new Map<string, FunctionSignature>([
+  ['fileno', {
+    name: 'fileno',
+    parameters: [],
+    returnType: 'integer',
+    description: 'Returns the file descriptor number associated with the handle.'
+  }],
+  ['handle', {
+    name: 'handle',
+    parameters: [],
+    returnType: 'fs.file | fs.proc | socket.socket',
+    description: 'Returns the underlying file or socket instance associated with the uloop handle.'
+  }],
+  ['delete', {
+    name: 'delete',
+    parameters: [],
+    returnType: 'null',
+    description: 'Unregisters the uloop handle from the event loop and frees associated resources.'
+  }]
+]);
 
-  private constructor() {
-    this.initializeUloopObjectTypes();
-  }
+const processMethods = new Map<string, FunctionSignature>([
+  ['pid', {
+    name: 'pid',
+    parameters: [],
+    returnType: 'integer',
+    description: 'Returns the process ID (PID) of the operating system process launched by process().'
+  }],
+  ['delete', {
+    name: 'delete',
+    parameters: [],
+    returnType: 'boolean',
+    description: 'Unregisters the process from the uloop event loop and releases associated resources. Returns true on success.'
+  }]
+]);
 
-  public static getInstance(): UloopObjectRegistry {
-    if (!UloopObjectRegistry.instance) {
-      UloopObjectRegistry.instance = new UloopObjectRegistry();
-    }
-    return UloopObjectRegistry.instance;
-  }
+const taskMethods = new Map<string, FunctionSignature>([
+  ['pid', {
+    name: 'pid',
+    parameters: [],
+    returnType: 'integer',
+    description: 'Returns the process ID (PID) of the underlying forked process launched by task().'
+  }],
+  ['kill', {
+    name: 'kill',
+    parameters: [],
+    returnType: 'boolean | null',
+    description: 'Terminates the task process by sending SIGTERM. Returns true on success, null on error.'
+  }],
+  ['finished', {
+    name: 'finished',
+    parameters: [],
+    returnType: 'boolean',
+    description: 'Checks if the task function has already run to completion. Returns true if finished, false otherwise.'
+  }]
+]);
 
-  private initializeUloopObjectTypes(): void {
-    // Timer methods
-    const timerMethods = new Map<string, UloopFunctionSignature>([
-      ['set', {
-        name: 'set',
-        parameters: [
-          { name: 'timeout', type: 'integer', optional: true, defaultValue: -1 }
-        ],
-        returnType: 'boolean | null',
-        description: 'Rearms the uloop timer with the specified timeout in milliseconds. Returns true on success, null on error.'
-      }],
-      ['remaining', {
-        name: 'remaining',
-        parameters: [],
-        returnType: 'integer',
-        description: 'Returns the number of milliseconds until the timer expires, or -1 if the timer is not armed.'
-      }],
-      ['cancel', {
-        name: 'cancel',
-        parameters: [],
-        returnType: 'boolean',
-        description: 'Cancels the uloop timer, disarming it and removing it from the event loop. Returns true on success.'
-      }]
-    ]);
+const intervalMethods = new Map<string, FunctionSignature>([
+  ['set', {
+    name: 'set',
+    parameters: [{ name: 'interval', type: 'integer', optional: true, defaultValue: -1 }],
+    returnType: 'boolean | null',
+    description: 'Rearms the uloop interval with the specified interval in milliseconds. Returns true on success, null on error.'
+  }],
+  ['remaining', {
+    name: 'remaining',
+    parameters: [],
+    returnType: 'integer',
+    description: 'Returns the milliseconds until the next expiration of the interval, or -1 if not armed.'
+  }],
+  ['expirations', {
+    name: 'expirations',
+    parameters: [],
+    returnType: 'integer',
+    description: 'Returns the number of times the interval timer has expired (fired) since instantiation.'
+  }],
+  ['cancel', {
+    name: 'cancel',
+    parameters: [],
+    returnType: 'boolean',
+    description: 'Cancels the uloop interval, disarming it and removing it from the event loop. Returns true on success.'
+  }]
+]);
 
-    // Handle methods
-    const handleMethods = new Map<string, UloopFunctionSignature>([
-      ['fileno', {
-        name: 'fileno',
-        parameters: [],
-        returnType: 'integer',
-        description: 'Returns the file descriptor number associated with the handle.'
-      }],
-      ['handle', {
-        name: 'handle',
-        parameters: [],
-        returnType: 'fs.file | fs.proc | socket.socket',
-        description: 'Returns the underlying file or socket instance associated with the uloop handle.'
-      }],
-      ['delete', {
-        name: 'delete',
-        parameters: [],
-        returnType: 'null',
-        description: 'Unregisters the uloop handle from the event loop and frees associated resources.'
-      }]
-    ]);
+const signalMethods = new Map<string, FunctionSignature>([
+  ['signo', {
+    name: 'signo',
+    parameters: [],
+    returnType: 'integer',
+    description: 'Returns the signal number that this uloop signal handler is configured to respond to.'
+  }],
+  ['delete', {
+    name: 'delete',
+    parameters: [],
+    returnType: 'boolean',
+    description: 'Uninstalls the signal handler, restoring the previous or default handler for the signal. Returns true on success.'
+  }]
+]);
 
-    // Process methods
-    const processMethods = new Map<string, UloopFunctionSignature>([
-      ['pid', {
-        name: 'pid',
-        parameters: [],
-        returnType: 'integer',
-        description: 'Returns the process ID (PID) of the operating system process launched by process().'
-      }],
-      ['delete', {
-        name: 'delete',
-        parameters: [],
-        returnType: 'boolean',
-        description: 'Unregisters the process from the uloop event loop and releases associated resources. Returns true on success.'
-      }]
-    ]);
+const pipeMethods = new Map<string, FunctionSignature>([
+  ['send', {
+    name: 'send',
+    parameters: [{ name: 'msg', type: 'any', optional: false }],
+    returnType: 'boolean | null',
+    description: 'Sends a serialized message to the task handle. Returns true on success, null on error.'
+  }],
+  ['receive', {
+    name: 'receive',
+    parameters: [],
+    returnType: 'any | null',
+    description: 'Reads input from the task communication pipe. Returns the deserialized message or null on error.'
+  }],
+  ['sending', {
+    name: 'sending',
+    parameters: [],
+    returnType: 'boolean',
+    description: 'Checks if the remote task handle has an input callback registered. Returns true if available, false otherwise.'
+  }],
+  ['receiving', {
+    name: 'receiving',
+    parameters: [],
+    returnType: 'boolean',
+    description: 'Checks if the task handle has an output callback registered. Returns true if available, false otherwise.'
+  }]
+]);
 
-    // Task methods
-    const taskMethods = new Map<string, UloopFunctionSignature>([
-      ['pid', {
-        name: 'pid',
-        parameters: [],
-        returnType: 'integer',
-        description: 'Returns the process ID (PID) of the underlying forked process launched by task().'
-      }],
-      ['kill', {
-        name: 'kill',
-        parameters: [],
-        returnType: 'boolean | null',
-        description: 'Terminates the task process by sending SIGTERM. Returns true on success, null on error.'
-      }],
-      ['finished', {
-        name: 'finished',
-        parameters: [],
-        returnType: 'boolean',
-        description: 'Checks if the task function has already run to completion. Returns true if finished, false otherwise.'
-      }]
-    ]);
+// Object type definitions for factory
+export const uloopTimerObjectType: ObjectTypeDefinition = { typeName: 'uloop.timer', methods: timerMethods };
+export const uloopHandleObjectType: ObjectTypeDefinition = { typeName: 'uloop.handle', methods: handleMethods };
+export const uloopProcessObjectType: ObjectTypeDefinition = { typeName: 'uloop.process', methods: processMethods };
+export const uloopTaskObjectType: ObjectTypeDefinition = { typeName: 'uloop.task', methods: taskMethods };
+export const uloopIntervalObjectType: ObjectTypeDefinition = { typeName: 'uloop.interval', methods: intervalMethods };
+export const uloopSignalObjectType: ObjectTypeDefinition = { typeName: 'uloop.signal', methods: signalMethods };
+export const uloopPipeObjectType: ObjectTypeDefinition = { typeName: 'uloop.pipe', methods: pipeMethods };
 
-    // Interval methods
-    const intervalMethods = new Map<string, UloopFunctionSignature>([
-      ['set', {
-        name: 'set',
-        parameters: [
-          { name: 'interval', type: 'integer', optional: true, defaultValue: -1 }
-        ],
-        returnType: 'boolean | null',
-        description: 'Rearms the uloop interval with the specified interval in milliseconds. Returns true on success, null on error.'
-      }],
-      ['remaining', {
-        name: 'remaining',
-        parameters: [],
-        returnType: 'integer',
-        description: 'Returns the milliseconds until the next expiration of the interval, or -1 if not armed.'
-      }],
-      ['expirations', {
-        name: 'expirations',
-        parameters: [],
-        returnType: 'integer',
-        description: 'Returns the number of times the interval timer has expired (fired) since instantiation.'
-      }],
-      ['cancel', {
-        name: 'cancel',
-        parameters: [],
-        returnType: 'boolean',
-        description: 'Cancels the uloop interval, disarming it and removing it from the event loop. Returns true on success.'
-      }]
-    ]);
-
-    // Signal methods
-    const signalMethods = new Map<string, UloopFunctionSignature>([
-      ['signo', {
-        name: 'signo',
-        parameters: [],
-        returnType: 'integer',
-        description: 'Returns the signal number that this uloop signal handler is configured to respond to.'
-      }],
-      ['delete', {
-        name: 'delete',
-        parameters: [],
-        returnType: 'boolean',
-        description: 'Uninstalls the signal handler, restoring the previous or default handler for the signal. Returns true on success.'
-      }]
-    ]);
-
-    // Pipe methods (used inside task functions)
-    const pipeMethods = new Map<string, UloopFunctionSignature>([
-      ['send', {
-        name: 'send',
-        parameters: [
-          { name: 'msg', type: 'any', optional: false }
-        ],
-        returnType: 'boolean | null',
-        description: 'Sends a serialized message to the task handle. Returns true on success, null on error.'
-      }],
-      ['receive', {
-        name: 'receive',
-        parameters: [],
-        returnType: 'any | null',
-        description: 'Reads input from the task communication pipe. Returns the deserialized message or null on error.'
-      }],
-      ['sending', {
-        name: 'sending',
-        parameters: [],
-        returnType: 'boolean',
-        description: 'Checks if the remote task handle has an input callback registered. Returns true if available, false otherwise.'
-      }],
-      ['receiving', {
-        name: 'receiving',
-        parameters: [],
-        returnType: 'boolean',
-        description: 'Checks if the task handle has an output callback registered. Returns true if available, false otherwise.'
-      }]
-    ]);
-
-    // Register all object types
-    this.types.set(UloopObjectType.ULOOP_TIMER, {
-      type: UloopObjectType.ULOOP_TIMER,
-      methods: timerMethods
-    });
-
-    this.types.set(UloopObjectType.ULOOP_HANDLE, {
-      type: UloopObjectType.ULOOP_HANDLE,
-      methods: handleMethods
-    });
-
-    this.types.set(UloopObjectType.ULOOP_PROCESS, {
-      type: UloopObjectType.ULOOP_PROCESS,
-      methods: processMethods
-    });
-
-    this.types.set(UloopObjectType.ULOOP_TASK, {
-      type: UloopObjectType.ULOOP_TASK,
-      methods: taskMethods
-    });
-
-    this.types.set(UloopObjectType.ULOOP_INTERVAL, {
-      type: UloopObjectType.ULOOP_INTERVAL,
-      methods: intervalMethods
-    });
-
-    this.types.set(UloopObjectType.ULOOP_SIGNAL, {
-      type: UloopObjectType.ULOOP_SIGNAL,
-      methods: signalMethods
-    });
-
-    this.types.set(UloopObjectType.ULOOP_PIPE, {
-      type: UloopObjectType.ULOOP_PIPE,
-      methods: pipeMethods
-    });
-  }
-
-  public getUloopType(typeName: string): UloopObjectDefinition | undefined {
-    return this.types.get(typeName as UloopObjectType);
-  }
-
-  public isUloopType(typeName: string): boolean {
-    return this.types.has(typeName as UloopObjectType);
-  }
-
-  public getUloopMethod(typeName: string, methodName: string): UloopFunctionSignature | undefined {
-    const uloopType = this.getUloopType(typeName);
-    return uloopType?.methods.get(methodName);
-  }
-
-  public getMethodsForType(typeName: string): string[] {
-    const uloopType = this.getUloopType(typeName);
-    return uloopType ? Array.from(uloopType.methods.keys()) : [];
-  }
-
-  // Check if a variable type represents a uloop object
-  public isVariableOfUloopType(dataType: any): UloopObjectType | null {
-    if (typeof dataType === 'string') {
-      return null;
-    }
-    
-    // Check if it's a module type with uloop object type name
-    if ('moduleName' in dataType && typeof dataType.moduleName === 'string') {
-      const moduleName = dataType.moduleName;
-      if (this.isUloopType(moduleName)) {
-        return moduleName as UloopObjectType;
-      }
-    }
-
-    return null;
-  }
-}
-
-// Singleton instance
-export const uloopObjectRegistry = UloopObjectRegistry.getInstance();
-
-// Helper functions for type checking
 export function isUloopObjectType(typeName: string): typeName is UloopObjectType {
   return Object.values(UloopObjectType).includes(typeName as UloopObjectType);
 }
@@ -524,3 +408,67 @@ export function createUloopObjectDataType(uloopType: UloopObjectType): UcodeData
     moduleName: uloopType
   };
 }
+
+// Map of all uloop object type methods for backwards-compat
+const objectMethodMaps: Record<string, Map<string, FunctionSignature>> = {
+  [UloopObjectType.ULOOP_TIMER]: timerMethods,
+  [UloopObjectType.ULOOP_HANDLE]: handleMethods,
+  [UloopObjectType.ULOOP_PROCESS]: processMethods,
+  [UloopObjectType.ULOOP_TASK]: taskMethods,
+  [UloopObjectType.ULOOP_INTERVAL]: intervalMethods,
+  [UloopObjectType.ULOOP_SIGNAL]: signalMethods,
+  [UloopObjectType.ULOOP_PIPE]: pipeMethods,
+};
+
+// Backwards compatibility
+export const uloopTypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  isUloopFunction: (name: string) => functions.has(name),
+  getConstantNames: () => Array.from(uloopConstants.keys()),
+  getConstant: (name: string) => uloopConstants.get(name),
+  isUloopConstant: (name: string) => uloopConstants.has(name),
+  formatFunctionSignature: (name: string) => {
+    const func = functions.get(name);
+    if (!func) return '';
+    return formatFunctionSignature('uloop', func);
+  },
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
+    if (!func) return '';
+    return formatFunctionDoc('uloop', func);
+  },
+  getConstantDocumentation: (name: string) => {
+    const constant = uloopConstants.get(name);
+    if (!constant) return '';
+    return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
+  },
+  isValidImport: (name: string) => functions.has(name) || uloopConstants.has(name),
+  getValidImports: () => [...Array.from(functions.keys()), ...Array.from(uloopConstants.keys())],
+};
+
+export const uloopObjectRegistry = {
+  getUloopType: (typeName: string) => {
+    const methods = objectMethodMaps[typeName];
+    if (!methods) return undefined;
+    return { type: typeName as UloopObjectType, methods };
+  },
+  isUloopType: (typeName: string) => typeName in objectMethodMaps,
+  getUloopMethod: (typeName: string, methodName: string) => {
+    const methods = objectMethodMaps[typeName];
+    return methods?.get(methodName);
+  },
+  getMethodsForType: (typeName: string) => {
+    const methods = objectMethodMaps[typeName];
+    return methods ? Array.from(methods.keys()) : [];
+  },
+  isVariableOfUloopType: (dataType: any): UloopObjectType | null => {
+    if (typeof dataType === 'string') return null;
+    if ('moduleName' in dataType && typeof dataType.moduleName === 'string') {
+      if (dataType.moduleName in objectMethodMaps) {
+        return dataType.moduleName as UloopObjectType;
+      }
+    }
+    return null;
+  },
+};

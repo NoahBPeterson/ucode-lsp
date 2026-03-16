@@ -4,6 +4,7 @@
  */
 
 import { FsObjectType } from './fsTypes';
+import type { ModuleDefinition, PropertyDefinition, ObjectTypeDefinition } from './registryFactory';
 
 /**
  * Look up an fs function by name and extract its FsObjectType from the return type string.
@@ -434,3 +435,86 @@ export class FsModuleTypeRegistry {
 
 // Export singleton instance
 export const fsModuleTypeRegistry = FsModuleTypeRegistry.getInstance();
+
+// ---- New-style definitions for registryFactory ----
+
+export const fsModule: ModuleDefinition = {
+  name: 'fs',
+  functions: fsModuleFunctions,
+  constantDocumentation: fsConstantDocumentation,
+  documentation: `## FS Module
+
+**File system operations for ucode scripts**
+
+The fs module provides comprehensive file system functionality for reading, writing, and manipulating files and directories.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { open, readlink, stat } from 'fs';
+
+let file = open("file.txt", "r");
+let target = readlink("/sys/class/net/eth0");
+let info = stat("/etc/passwd");
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as fs from 'fs';
+
+let file = fs.open("file.txt", "r");
+let content = file.read("all");
+file.close();
+\`\`\`
+
+### Available Functions
+
+**File operations:**
+- **\`open()\`** - Open files for reading/writing
+- **\`fdopen()\`** - Associate file descriptor with handle
+- **\`popen()\`** - Execute commands and handle I/O
+
+**Directory operations:**
+- **\`opendir()\`** - Open directories for reading
+- **\`mkdir()\`** - Create directories
+- **\`rmdir()\`** - Remove directories
+
+**File system information:**
+- **\`stat()\`** - Get file/directory information
+- **\`lstat()\`** - Get info without following symlinks
+- **\`readlink()\`** - Read symbolic link targets
+- **\`statvfs()\`** - Query filesystem statistics
+
+**File manipulation:**
+- **\`unlink()\`** - Remove files
+- **\`symlink()\`** - Create symbolic links
+- **\`chmod()\`** - Change file permissions
+- **\`chown()\`** - Change file ownership
+
+**Utility functions:**
+- **\`error()\`** - Get last error information
+- **\`getcwd()\`** - Get current working directory
+- **\`chdir()\`** - Change current directory
+
+### File Handle Objects
+
+- **\`fs.file\`** - File handles with read/write/seek methods
+- **\`fs.proc\`** - Process handles for command execution
+- **\`fs.dir\`** - Directory handles for listing entries
+
+*Hover over individual function names for detailed parameter and return type information.*`,
+  importValidation: {
+    isValid: (name: string) => fsModuleFunctions.has(name) || fsConstants.has(name),
+    getValidImports: () => [...Array.from(fsModuleFunctions.keys()), ...Array.from(fsConstants.keys())],
+  },
+};
+
+export const statvfsObjectType: ObjectTypeDefinition = {
+  typeName: 'fs.statvfs',
+  isPropertyBased: true,
+  methods: new Map(),
+  properties: statvfsProperties as ReadonlyMap<string, PropertyDefinition>,
+  formatPropertyDoc: (_name: string, prop: PropertyDefinition) =>
+    `**(fs.statvfs property) ${prop.name}**: \`${prop.type}\`\n\n${prop.description}`,
+};

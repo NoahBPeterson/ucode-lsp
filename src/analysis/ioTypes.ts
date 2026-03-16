@@ -3,6 +3,9 @@
  * Based on ucode/lib/io.c
  */
 
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
+
 import { UcodeType, UcodeDataType } from './symbolTable';
 
 export enum IoObjectType {
@@ -13,20 +16,8 @@ export function createIoHandleDataType(): UcodeDataType {
   return { type: UcodeType.OBJECT, moduleName: IoObjectType.IO_HANDLE };
 }
 
-export interface IoModuleFunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
-
 // Module-level functions (io_fns[])
-export const ioFunctions: Map<string, IoModuleFunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["error", {
     name: "error",
     parameters: [],
@@ -68,8 +59,12 @@ export const ioFunctions: Map<string, IoModuleFunctionSignature> = new Map([
   }],
 ]);
 
+// Backwards-compat exports
+export { functions as ioFunctions };
+export type IoModuleFunctionSignature = FunctionSignature;
+
 // Handle method functions (io_handle_fns[])
-export const ioHandleFunctions: Map<string, IoModuleFunctionSignature> = new Map([
+const handleMethods = new Map<string, FunctionSignature>([
   ["read", {
     name: "read",
     parameters: [
@@ -194,155 +189,140 @@ export const ioHandleFunctions: Map<string, IoModuleFunctionSignature> = new Map
   }],
 ]);
 
+// Backwards-compat export
+export { handleMethods as ioHandleFunctions };
+
 // Constants exported by the io module
-export const ioConstants: Map<string, number> = new Map([
+export const ioConstants: Map<string, ConstantDefinition> = new Map([
   // File open flags
-  ["O_RDONLY", 0],
-  ["O_WRONLY", 1],
-  ["O_RDWR", 2],
-  ["O_CREAT", 64],
-  ["O_EXCL", 128],
-  ["O_TRUNC", 512],
-  ["O_APPEND", 1024],
-  ["O_NONBLOCK", 2048],
-  ["O_NOCTTY", 256],
-  ["O_SYNC", 1052672],
-  ["O_CLOEXEC", 524288],
-  ["O_DIRECTORY", 65536],
-  ["O_NOFOLLOW", 131072],
+  ["O_RDONLY", { name: "O_RDONLY", value: 0, type: "number", description: "Read-only file open flag" }],
+  ["O_WRONLY", { name: "O_WRONLY", value: 1, type: "number", description: "Write-only file open flag" }],
+  ["O_RDWR", { name: "O_RDWR", value: 2, type: "number", description: "Read-write file open flag" }],
+  ["O_CREAT", { name: "O_CREAT", value: 64, type: "number", description: "Create file if it does not exist" }],
+  ["O_EXCL", { name: "O_EXCL", value: 128, type: "number", description: "Fail if file already exists (used with O_CREAT)" }],
+  ["O_TRUNC", { name: "O_TRUNC", value: 512, type: "number", description: "Truncate file to zero length on open" }],
+  ["O_APPEND", { name: "O_APPEND", value: 1024, type: "number", description: "Append writes to end of file" }],
+  ["O_NONBLOCK", { name: "O_NONBLOCK", value: 2048, type: "number", description: "Open in non-blocking mode" }],
+  ["O_NOCTTY", { name: "O_NOCTTY", value: 256, type: "number", description: "Do not make the opened file the controlling terminal" }],
+  ["O_SYNC", { name: "O_SYNC", value: 1052672, type: "number", description: "Synchronous I/O \u2014 writes block until data is physically written" }],
+  ["O_CLOEXEC", { name: "O_CLOEXEC", value: 524288, type: "number", description: "Close file descriptor on exec()" }],
+  ["O_DIRECTORY", { name: "O_DIRECTORY", value: 65536, type: "number", description: "Fail if path is not a directory" }],
+  ["O_NOFOLLOW", { name: "O_NOFOLLOW", value: 131072, type: "number", description: "Do not follow symbolic links" }],
 
   // Seek constants
-  ["SEEK_SET", 0],
-  ["SEEK_CUR", 1],
-  ["SEEK_END", 2],
+  ["SEEK_SET", { name: "SEEK_SET", value: 0, type: "number", description: "Seek relative to beginning of file" }],
+  ["SEEK_CUR", { name: "SEEK_CUR", value: 1, type: "number", description: "Seek relative to current position" }],
+  ["SEEK_END", { name: "SEEK_END", value: 2, type: "number", description: "Seek relative to end of file" }],
 
   // fcntl commands
-  ["F_DUPFD", 0],
-  ["F_DUPFD_CLOEXEC", 1030],
-  ["F_GETFD", 1],
-  ["F_SETFD", 2],
-  ["F_GETFL", 3],
-  ["F_SETFL", 4],
-  ["F_GETLK", 5],
-  ["F_SETLK", 6],
-  ["F_SETLKW", 7],
-  ["F_GETOWN", 9],
-  ["F_SETOWN", 8],
+  ["F_DUPFD", { name: "F_DUPFD", value: 0, type: "number", description: "Duplicate file descriptor (fcntl command)" }],
+  ["F_DUPFD_CLOEXEC", { name: "F_DUPFD_CLOEXEC", value: 1030, type: "number", description: "Duplicate file descriptor with close-on-exec (fcntl command)" }],
+  ["F_GETFD", { name: "F_GETFD", value: 1, type: "number", description: "Get file descriptor flags (fcntl command)" }],
+  ["F_SETFD", { name: "F_SETFD", value: 2, type: "number", description: "Set file descriptor flags (fcntl command)" }],
+  ["F_GETFL", { name: "F_GETFL", value: 3, type: "number", description: "Get file status flags (fcntl command)" }],
+  ["F_SETFL", { name: "F_SETFL", value: 4, type: "number", description: "Set file status flags (fcntl command)" }],
+  ["F_GETLK", { name: "F_GETLK", value: 5, type: "number", description: "Get record lock (fcntl command)" }],
+  ["F_SETLK", { name: "F_SETLK", value: 6, type: "number", description: "Set record lock (fcntl command)" }],
+  ["F_SETLKW", { name: "F_SETLKW", value: 7, type: "number", description: "Set record lock and wait (fcntl command)" }],
+  ["F_GETOWN", { name: "F_GETOWN", value: 9, type: "number", description: "Get process/group receiving SIGIO (fcntl command)" }],
+  ["F_SETOWN", { name: "F_SETOWN", value: 8, type: "number", description: "Set process/group to receive SIGIO (fcntl command)" }],
 
   // File descriptor flags
-  ["FD_CLOEXEC", 1],
+  ["FD_CLOEXEC", { name: "FD_CLOEXEC", value: 1, type: "number", description: "Close-on-exec file descriptor flag" }],
 
   // Terminal control
-  ["TCSANOW", 0],
-  ["TCSADRAIN", 1],
-  ["TCSAFLUSH", 2],
+  ["TCSANOW", { name: "TCSANOW", value: 0, type: "number", description: "Apply terminal changes immediately" }],
+  ["TCSADRAIN", { name: "TCSADRAIN", value: 1, type: "number", description: "Apply terminal changes after output is drained" }],
+  ["TCSAFLUSH", { name: "TCSAFLUSH", value: 2, type: "number", description: "Apply terminal changes after output is drained, discarding pending input" }],
 
   // ioctl direction constants (Linux only)
-  ["IOC_DIR_NONE", 0],
-  ["IOC_DIR_READ", 2],
-  ["IOC_DIR_WRITE", 1],
-  ["IOC_DIR_RW", 3],
+  ["IOC_DIR_NONE", { name: "IOC_DIR_NONE", value: 0, type: "number", description: "No data transfer direction (ioctl)" }],
+  ["IOC_DIR_READ", { name: "IOC_DIR_READ", value: 2, type: "number", description: "Read direction (ioctl)" }],
+  ["IOC_DIR_WRITE", { name: "IOC_DIR_WRITE", value: 1, type: "number", description: "Write direction (ioctl)" }],
+  ["IOC_DIR_RW", { name: "IOC_DIR_RW", value: 3, type: "number", description: "Read-write direction (ioctl)" }],
 ]);
 
-// Constant documentation grouped by category
-const ioConstantDocs: Map<string, string> = new Map([
-  // File open flags
-  ["O_RDONLY", `**(constant) O_RDONLY** = 0\n\nRead-only file open flag`],
-  ["O_WRONLY", `**(constant) O_WRONLY** = 1\n\nWrite-only file open flag`],
-  ["O_RDWR", `**(constant) O_RDWR** = 2\n\nRead-write file open flag`],
-  ["O_CREAT", `**(constant) O_CREAT** = 64\n\nCreate file if it does not exist`],
-  ["O_EXCL", `**(constant) O_EXCL** = 128\n\nFail if file already exists (used with O_CREAT)`],
-  ["O_TRUNC", `**(constant) O_TRUNC** = 512\n\nTruncate file to zero length on open`],
-  ["O_APPEND", `**(constant) O_APPEND** = 1024\n\nAppend writes to end of file`],
-  ["O_NONBLOCK", `**(constant) O_NONBLOCK** = 2048\n\nOpen in non-blocking mode`],
-  ["O_NOCTTY", `**(constant) O_NOCTTY** = 256\n\nDo not make the opened file the controlling terminal`],
-  ["O_SYNC", `**(constant) O_SYNC** = 1052672\n\nSynchronous I/O — writes block until data is physically written`],
-  ["O_CLOEXEC", `**(constant) O_CLOEXEC** = 524288\n\nClose file descriptor on exec()`],
-  ["O_DIRECTORY", `**(constant) O_DIRECTORY** = 65536\n\nFail if path is not a directory`],
-  ["O_NOFOLLOW", `**(constant) O_NOFOLLOW** = 131072\n\nDo not follow symbolic links`],
-  // Seek constants
-  ["SEEK_SET", `**(constant) SEEK_SET** = 0\n\nSeek relative to beginning of file`],
-  ["SEEK_CUR", `**(constant) SEEK_CUR** = 1\n\nSeek relative to current position`],
-  ["SEEK_END", `**(constant) SEEK_END** = 2\n\nSeek relative to end of file`],
-  // fcntl commands
-  ["F_DUPFD", `**(constant) F_DUPFD** = 0\n\nDuplicate file descriptor (fcntl command)`],
-  ["F_DUPFD_CLOEXEC", `**(constant) F_DUPFD_CLOEXEC** = 1030\n\nDuplicate file descriptor with close-on-exec (fcntl command)`],
-  ["F_GETFD", `**(constant) F_GETFD** = 1\n\nGet file descriptor flags (fcntl command)`],
-  ["F_SETFD", `**(constant) F_SETFD** = 2\n\nSet file descriptor flags (fcntl command)`],
-  ["F_GETFL", `**(constant) F_GETFL** = 3\n\nGet file status flags (fcntl command)`],
-  ["F_SETFL", `**(constant) F_SETFL** = 4\n\nSet file status flags (fcntl command)`],
-  ["F_GETLK", `**(constant) F_GETLK** = 5\n\nGet record lock (fcntl command)`],
-  ["F_SETLK", `**(constant) F_SETLK** = 6\n\nSet record lock (fcntl command)`],
-  ["F_SETLKW", `**(constant) F_SETLKW** = 7\n\nSet record lock and wait (fcntl command)`],
-  ["F_GETOWN", `**(constant) F_GETOWN** = 9\n\nGet process/group receiving SIGIO (fcntl command)`],
-  ["F_SETOWN", `**(constant) F_SETOWN** = 8\n\nSet process/group to receive SIGIO (fcntl command)`],
-  // File descriptor flags
-  ["FD_CLOEXEC", `**(constant) FD_CLOEXEC** = 1\n\nClose-on-exec file descriptor flag`],
-  // Terminal control
-  ["TCSANOW", `**(constant) TCSANOW** = 0\n\nApply terminal changes immediately`],
-  ["TCSADRAIN", `**(constant) TCSADRAIN** = 1\n\nApply terminal changes after output is drained`],
-  ["TCSAFLUSH", `**(constant) TCSAFLUSH** = 2\n\nApply terminal changes after output is drained, discarding pending input`],
-  // ioctl direction constants
-  ["IOC_DIR_NONE", `**(constant) IOC_DIR_NONE** = 0\n\nNo data transfer direction (ioctl)`],
-  ["IOC_DIR_READ", `**(constant) IOC_DIR_READ** = 2\n\nRead direction (ioctl)`],
-  ["IOC_DIR_WRITE", `**(constant) IOC_DIR_WRITE** = 1\n\nWrite direction (ioctl)`],
-  ["IOC_DIR_RW", `**(constant) IOC_DIR_RW** = 3\n\nRead-write direction (ioctl)`],
-]);
+export const ioModule: ModuleDefinition = {
+  name: 'io',
+  functions,
+  constants: ioConstants,
+  documentation: `## IO Module
 
-export class IoModuleTypeRegistry {
-  private static instance: IoModuleTypeRegistry;
+**Object-oriented access to UNIX file descriptors**
 
-  private constructor() {}
+The io module provides low-level I/O operations using POSIX file descriptors, with support for terminal control and pseudo-terminal operations.
 
-  public static getInstance(): IoModuleTypeRegistry {
-    if (!IoModuleTypeRegistry.instance) {
-      IoModuleTypeRegistry.instance = new IoModuleTypeRegistry();
-    }
-    return IoModuleTypeRegistry.instance;
-  }
+### Usage
 
-  getFunctionNames(): string[] {
-    return Array.from(ioFunctions.keys());
-  }
+**Named import syntax:**
+\`\`\`ucode
+import { open, O_RDWR } from 'io';
 
-  getFunction(name: string): IoModuleFunctionSignature | undefined {
-    return ioFunctions.get(name);
-  }
+let handle = open('/tmp/test.txt', O_RDWR);
+handle.write('Hello World\\n');
+handle.close();
+\`\`\`
 
-  getHandleFunction(name: string): IoModuleFunctionSignature | undefined {
-    return ioHandleFunctions.get(name);
-  }
+**Namespace import syntax:**
+\`\`\`ucode
+import * as io from 'io';
 
-  isIoModuleFunction(name: string): boolean {
-    return ioFunctions.has(name);
-  }
+let handle = io.open('/tmp/test.txt', io.O_RDWR);
+handle.write('Hello World\\n');
+handle.close();
+\`\`\`
 
-  isIoHandleFunction(name: string): boolean {
-    return ioHandleFunctions.has(name);
-  }
+### Module Functions
 
-  isIoConstant(name: string): boolean {
-    return ioConstants.has(name);
-  }
+- **\`open()\`** - Open a file (POSIX open semantics)
+- **\`new()\`** - Create handle from existing fd number
+- **\`from()\`** - Create handle from existing file resource
+- **\`pipe()\`** - Create a pipe (returns [read, write] handles)
+- **\`error()\`** - Get last error message
 
-  getConstantDocumentation(name: string): string {
-    return ioConstantDocs.get(name) || '';
-  }
+### Handle Methods
 
-  isVariableOfIoType(dataType: UcodeDataType): boolean {
+- **\`read()\`**, **\`write()\`** - Read/write data
+- **\`seek()\`**, **\`tell()\`** - File position
+- **\`dup()\`**, **\`dup2()\`** - Duplicate file descriptors
+- **\`fileno()\`** - Get underlying fd number
+- **\`fcntl()\`**, **\`ioctl()\`** - File/device control
+- **\`isatty()\`** - Test if fd is a terminal
+- **\`close()\`** - Close the handle
+- **\`ptsname()\`**, **\`grantpt()\`**, **\`unlockpt()\`** - Pseudoterminal ops
+- **\`tcgetattr()\`**, **\`tcsetattr()\`** - Terminal attributes
+
+*Hover over individual function names for detailed parameter and return type information.*`,
+};
+
+export const ioHandleObjectType: ObjectTypeDefinition = {
+  typeName: 'io.handle',
+  methods: handleMethods,
+};
+
+// Backwards compatibility
+export const ioModuleTypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  getHandleFunction: (name: string) => handleMethods.get(name),
+  isIoModuleFunction: (name: string) => functions.has(name),
+  isIoHandleFunction: (name: string) => handleMethods.has(name),
+  isIoConstant: (name: string) => ioConstants.has(name),
+  getConstantDocumentation: (name: string) => {
+    const c = ioConstants.get(name);
+    if (!c) return '';
+    return `**(constant) ${c.name}** = ${c.value}\n\n${c.description}`;
+  },
+  isVariableOfIoType: (dataType: UcodeDataType) => {
     if (typeof dataType === 'string') return false;
     if (typeof dataType === 'object' && 'moduleName' in dataType) {
       return dataType.moduleName === IoObjectType.IO_HANDLE;
     }
     return false;
-  }
-
-  getIoHandleMethod(methodName: string): IoModuleFunctionSignature | undefined {
-    return ioHandleFunctions.get(methodName);
-  }
-
-  getFunctionDocumentation(name: string): string {
-    const func = ioFunctions.get(name);
+  },
+  getIoHandleMethod: (methodName: string) => handleMethods.get(methodName),
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
 
     const params = func.parameters.map(p => {
@@ -351,19 +331,14 @@ export class IoModuleTypeRegistry {
     }).join(', ');
 
     return `**io.${func.name}(${params}): ${func.returnType}**\n\n${func.description}`;
-  }
-
-  getHandleFunctionDocumentation(name: string): string {
-    const func = ioHandleFunctions.get(name);
+  },
+  getHandleFunctionDocumentation: (name: string) => {
+    const func = handleMethods.get(name);
     if (!func) return '';
-
     const params = func.parameters.map(p => {
       const typeStr = p.optional ? `${p.name}?: ${p.type}` : `${p.name}: ${p.type}`;
       return p.defaultValue !== undefined ? `${typeStr} = ${p.defaultValue}` : typeStr;
     }).join(', ');
-
     return `**handle.${func.name}(${params}): ${func.returnType}**\n\n${func.description}`;
-  }
-}
-
-export const ioModuleTypeRegistry = IoModuleTypeRegistry.getInstance();
+  },
+};

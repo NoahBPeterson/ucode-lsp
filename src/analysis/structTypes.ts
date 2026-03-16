@@ -3,19 +3,11 @@
  * Based on ucode/lib/struct.c
  */
 
-export interface StructFunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition } from './registryFactory';
+import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 
-export const structFunctions: Map<string, StructFunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["pack", {
     name: "pack",
     parameters: [
@@ -23,7 +15,39 @@ export const structFunctions: Map<string, StructFunctionSignature> = new Map([
       { name: "values", type: "any", optional: false }
     ],
     returnType: "string",
-    description: "Pack given values according to specified format. Creates a byte string containing the argument values packed according to the given format string."
+    description: `Pack given values according to specified format. Creates a byte string containing the argument values packed according to the given format string.
+
+**Examples:**
+\`\`\`ucode
+// Pack three integers as network byte order
+let data = pack('!III', 1, 2, 3);
+
+// Pack string and integer
+let buffer = pack('10sI', 'hello', 12345);
+\`\`\`
+
+**Format Characters:**
+- \`b\` - signed char (-128 to 127)
+- \`B\` - unsigned char (0 to 255)
+- \`h\` - short (2 bytes)
+- \`H\` - unsigned short (2 bytes)
+- \`i\` - int (4 bytes)
+- \`I\` - unsigned int (4 bytes)
+- \`l\` - long (4 bytes)
+- \`L\` - unsigned long (4 bytes)
+- \`q\` - long long (8 bytes)
+- \`Q\` - unsigned long long (8 bytes)
+- \`f\` - float (4 bytes)
+- \`d\` - double (8 bytes)
+- \`s\` - string
+- \`p\` - Pascal string
+- \`?\` - bool
+
+**Byte Order:**
+- \`@\` - native (default)
+- \`<\` - little-endian
+- \`>\` - big-endian
+- \`!\` - network (big-endian)`
   }],
   ["unpack", {
     name: "unpack",
@@ -33,7 +57,17 @@ export const structFunctions: Map<string, StructFunctionSignature> = new Map([
       { name: "offset", type: "number", optional: true, defaultValue: 0 }
     ],
     returnType: "array",
-    description: "Unpack given byte string according to specified format. Interprets a byte string according to the given format string and returns the resulting values."
+    description: `Unpack given byte string according to specified format. Interprets a byte string according to the given format string and returns the resulting values.
+
+**Examples:**
+\`\`\`ucode
+// Unpack three integers from network byte order
+let values = unpack('!III', data);
+print(values); // [1, 2, 3]
+
+// Unpack with offset
+let result = unpack('I', buffer, 4);
+\`\`\``
   }],
   ["new", {
     name: "new",
@@ -41,7 +75,15 @@ export const structFunctions: Map<string, StructFunctionSignature> = new Map([
       { name: "format", type: "string", optional: false }
     ],
     returnType: "struct.instance",
-    description: "Precompile format string. Returns a struct object instance useful for packing and unpacking multiple items without having to recompute the internal format each time."
+    description: `Precompile format string. Returns a struct object instance useful for packing and unpacking multiple items without having to recompute the internal format each time.
+
+**Examples:**
+\`\`\`ucode
+// Create reusable format
+let fmt = struct.new('!III');
+let data = fmt.pack(1, 2, 3);
+let values = fmt.unpack(data);
+\`\`\``
   }],
   ["buffer", {
     name: "buffer",
@@ -49,82 +91,94 @@ export const structFunctions: Map<string, StructFunctionSignature> = new Map([
       { name: "initialData", type: "string", optional: true }
     ],
     returnType: "struct.buffer",
-    description: "Creates a new struct buffer instance for incremental packing and unpacking of binary data. If initial data is provided, the buffer is initialized with this content."
+    description: `Creates a new struct buffer instance for incremental packing and unpacking of binary data. If initial data is provided, the buffer is initialized with this content.
+
+**Examples:**
+\`\`\`ucode
+// Create empty buffer
+let buf = struct.buffer();
+buf.put('I', 1234);
+let value = buf.get('I');
+
+// Create buffer with initial data
+let buf2 = struct.buffer("\\x01\\x02\\x03\\x04");
+let num = buf2.get('I');
+\`\`\``
   }]
 ]);
 
-export class StructTypeRegistry {
-  getFunctionNames(): string[] {
-    return Array.from(structFunctions.keys());
-  }
+export const structModule: ModuleDefinition = {
+  name: 'struct',
+  functions,
+  documentation: `## Struct Module
 
-  getFunction(name: string): StructFunctionSignature | undefined {
-    return structFunctions.get(name);
-  }
+**Binary data packing/unpacking module for ucode scripts**
 
-  isStructFunction(name: string): boolean {
-    return structFunctions.has(name);
-  }
+The struct module provides routines for interpreting byte strings as packed binary data, similar to Python's struct module.
 
-  formatFunctionSignature(name: string): string {
-    const func = this.getFunction(name);
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { pack, unpack } from 'struct';
+
+let buffer = pack('bhl', -13, 1234, 444555666);
+let values = unpack('bhl', buffer);
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as struct from 'struct';
+
+let buffer = struct.pack('bhl', -13, 1234, 444555666);
+let values = struct.unpack('bhl', buffer);
+\`\`\`
+
+### Available Functions
+
+**Core functions:**
+- **\`pack()\`** - Pack values into binary string according to format
+- **\`unpack()\`** - Unpack binary string into values according to format
+- **\`new()\`** - Create precompiled format instance for efficiency
+- **\`buffer()\`** - Create struct buffer for incremental operations
+
+### Format String Syntax
+
+**Format characters:**
+- **\`b/B\`** - signed/unsigned char (1 byte)
+- **\`h/H\`** - signed/unsigned short (2 bytes)
+- **\`i/I\`** - signed/unsigned int (4 bytes)
+- **\`l/L\`** - signed/unsigned long (4 bytes)
+- **\`q/Q\`** - signed/unsigned long long (8 bytes)
+- **\`f\`** - float (4 bytes)
+- **\`d\`** - double (8 bytes)
+- **\`s\`** - string
+- **\`?\`** - boolean
+
+**Byte order prefixes:**
+- **\`@\`** - native (default)
+- **\`<\`** - little-endian
+- **\`>\`** - big-endian
+- **\`!\`** - network (big-endian)
+
+*Hover over individual function names for detailed parameter and return type information.*`,
+};
+
+// Backwards compatibility
+export const structTypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  isStructFunction: (name: string) => functions.has(name),
+  isValidImport: (name: string) => functions.has(name),
+  getValidImports: () => Array.from(functions.keys()),
+  formatFunctionSignature: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
-
-  getFunctionDocumentation(name: string): string {
-    const func = this.getFunction(name);
+    return formatFunctionSignature('struct', func);
+  },
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\`\n\n`;
-
-    // Add format string examples for pack/unpack functions
-    if (name === 'pack') {
-      doc += `**Examples:**\n\`\`\`ucode\n// Pack three integers as network byte order\nlet data = pack('!III', 1, 2, 3);\n\n// Pack string and integer\nlet buffer = pack('10sI', 'hello', 12345);\n\`\`\`\n\n`;
-      doc += `**Format Characters:**\n- \`b\` - signed char (-128 to 127)\n- \`B\` - unsigned char (0 to 255)\n- \`h\` - short (2 bytes)\n- \`H\` - unsigned short (2 bytes)\n- \`i\` - int (4 bytes)\n- \`I\` - unsigned int (4 bytes)\n- \`l\` - long (4 bytes)\n- \`L\` - unsigned long (4 bytes)\n- \`q\` - long long (8 bytes)\n- \`Q\` - unsigned long long (8 bytes)\n- \`f\` - float (4 bytes)\n- \`d\` - double (8 bytes)\n- \`s\` - string\n- \`p\` - Pascal string\n- \`?\` - bool\n\n**Byte Order:**\n- \`@\` - native (default)\n- \`<\` - little-endian\n- \`>\` - big-endian\n- \`!\` - network (big-endian)`;
-    } else if (name === 'unpack') {
-      doc += `**Examples:**\n\`\`\`ucode\n// Unpack three integers from network byte order\nlet values = unpack('!III', data);\nprint(values); // [1, 2, 3]\n\n// Unpack with offset\nlet result = unpack('I', buffer, 4);\n\`\`\``;
-    } else if (name === 'new') {
-      doc += `**Examples:**\n\`\`\`ucode\n// Create reusable format\nlet fmt = struct.new('!III');\nlet data = fmt.pack(1, 2, 3);\nlet values = fmt.unpack(data);\n\`\`\``;
-    } else if (name === 'buffer') {
-      doc += `**Examples:**\n\`\`\`ucode\n// Create empty buffer\nlet buf = struct.buffer();\nbuf.put('I', 1234);\nlet value = buf.get('I');\n\n// Create buffer with initial data\nlet buf2 = struct.buffer("\\x01\\x02\\x03\\x04");\nlet num = buf2.get('I');\n\`\`\``;
-    }
-    
-    return doc;
-  }
-
-  // Import validation methods
-  isValidImport(name: string): boolean {
-    return this.isStructFunction(name);
-  }
-
-  getValidImports(): string[] {
-    return this.getFunctionNames();
-  }
-}
-
-export const structTypeRegistry = new StructTypeRegistry();
+    return formatFunctionDoc('struct', func);
+  },
+};

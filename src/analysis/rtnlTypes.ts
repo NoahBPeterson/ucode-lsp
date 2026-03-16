@@ -1,31 +1,20 @@
 /**
  * rtnl module type definitions and function signatures
  * Based on ucode/lib/rtnl.c
- * 
+ *
  * The rtnl module provides routing netlink interface operations
  * for communicating with the Linux kernel's routing subsystem.
  */
 
-export interface RtnlFunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition, ConstantDefinition } from './registryFactory';
+import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 
-export interface RtnlConstantSignature {
-  name: string;
-  value: string | number;
-  type: string;
-  description: string;
-}
+// Backwards-compat type aliases
+export type RtnlFunctionSignature = FunctionSignature;
+export type RtnlConstantSignature = ConstantDefinition;
 
-export const rtnlFunctions: Map<string, RtnlFunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["request", {
     name: "request",
     parameters: [
@@ -34,7 +23,20 @@ export const rtnlFunctions: Map<string, RtnlFunctionSignature> = new Map([
       { name: "payload", type: "object", optional: true }
     ],
     returnType: "object | null",
-    description: "Send a netlink request to the routing subsystem. The cmd parameter specifies the RTM_* command to execute. Optional flags can modify the request behavior (NLM_F_*). The payload object contains command-specific attributes."
+    description: `Send a netlink request to the routing subsystem. The cmd parameter specifies the RTM_* command to execute. Optional flags can modify the request behavior (NLM_F_*). The payload object contains command-specific attributes.
+
+**Example:**
+\`\`\`ucode
+// Get all routes
+let routes = request(RTM_GETROUTE, NLM_F_DUMP);
+
+// Add a new route
+let result = request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, {
+    dst: "192.168.1.0/24",
+    gateway: "192.168.1.1",
+    oif: 2
+});
+\`\`\``
   }],
   ["listener", {
     name: "listener",
@@ -44,17 +46,42 @@ export const rtnlFunctions: Map<string, RtnlFunctionSignature> = new Map([
       { name: "groups", type: "array", optional: true }
     ],
     returnType: "rtnl.listener",
-    description: "Create an event listener for routing netlink messages. The callback function is called when events are received. Optional cmds array contains RTM_* command constants to listen for. Optional groups array contains multicast groups to join."
+    description: `Create an event listener for routing netlink messages. The callback function is called when events are received. Optional cmds array contains RTM_* command constants to listen for. Optional groups array contains multicast groups to join.
+
+**Example:**
+\`\`\`ucode
+// Listen for route changes
+let l = listener(function(msg) {
+  printf("Route event: %J\\n", msg);
+}, [RTM_NEWROUTE, RTM_DELROUTE]);
+
+// Listen for link changes
+let linkListener = listener(function(msg) {
+  printf("Link event: %J\\n", msg);
+}, [RTM_NEWLINK, RTM_DELLINK]);
+\`\`\``
   }],
   ["error", {
     name: "error",
     parameters: [],
     returnType: "string | null",
-    description: "Returns the last rtnl error message, or null if no error occurred. This is typically called after a failed rtnl operation to get detailed error information."
+    description: `Returns the last rtnl error message, or null if no error occurred. This is typically called after a failed rtnl operation to get detailed error information.
+
+**Example:**
+\`\`\`ucode
+let result = request(RTM_GETROUTE, NLM_F_DUMP);
+if (!result) {
+    let errorMsg = error();
+    printf("RTNL error: %s\\n", errorMsg);
+}
+\`\`\``
   }]
 ]);
 
-export const rtnlConstants: Map<string, RtnlConstantSignature> = new Map([
+// Backwards-compat export
+export { functions as rtnlFunctions };
+
+export const rtnlConstants: Map<string, ConstantDefinition> = new Map([
   // RTNL Family Constants
   ["RTNL_FAMILY_IPMR", { name: "RTNL_FAMILY_IPMR", value: 128, type: "integer", description: "IP multicast routing family" }],
   ["RTNL_FAMILY_IP6MR", { name: "RTNL_FAMILY_IP6MR", value: 129, type: "integer", description: "IPv6 multicast routing family" }],
@@ -377,98 +404,70 @@ export const rtnlConstants: Map<string, RtnlConstantSignature> = new Map([
   ["RTEXT_FILTER_CFM_STATUS", { name: "RTEXT_FILTER_CFM_STATUS", value: 64, type: "integer", description: "Connectivity Fault Management status filter" }]
 ]);
 
-export class RtnlTypeRegistry {
-  getFunctionNames(): string[] {
-    return Array.from(rtnlFunctions.keys());
-  }
+export const rtnlModule: ModuleDefinition = {
+  name: 'rtnl',
+  functions,
+  constants: rtnlConstants,
+  documentation: `## RTNL Module
 
-  getFunction(name: string): RtnlFunctionSignature | undefined {
-    return rtnlFunctions.get(name);
-  }
+**Routing Netlink functionality for ucode scripts**
 
-  isRtnlFunction(name: string): boolean {
-    return rtnlFunctions.has(name);
-  }
+The rtnl module provides routing netlink functionality for ucode, allowing you to interact with the Linux kernel's routing and network interface subsystem.
 
-  getConstantNames(): string[] {
-    return Array.from(rtnlConstants.keys());
-  }
+### Usage
 
-  getConstant(name: string): RtnlConstantSignature | undefined {
-    return rtnlConstants.get(name);
-  }
+**Named import syntax:**
+\`\`\`ucode
+import { request, listener, error, RTM_GETROUTE, NLM_F_DUMP } from 'rtnl';
 
-  isRtnlConstant(name: string): boolean {
-    return rtnlConstants.has(name);
-  }
+let routes = request(RTM_GETROUTE, NLM_F_DUMP);
+if (!routes) print('Error: ', error(), '\\n');
+\`\`\`
 
-  formatFunctionSignature(name: string): string {
-    const func = this.getFunction(name);
+**Namespace import syntax:**
+\`\`\`ucode
+import * as rtnl from 'rtnl';
+
+let routes = rtnl.request(rtnl.RTM_GETROUTE, rtnl.NLM_F_DUMP);
+\`\`\`
+
+### Available Functions
+
+- **\`request()\`** - Send a netlink request to the routing subsystem
+- **\`listener()\`** - Create an event listener for routing netlink messages
+- **\`error()\`** - Get the last rtnl error message
+
+*Hover over individual function and constant names for detailed information.*`,
+  importValidation: {
+    isValid: (name: string) => functions.has(name) || rtnlConstants.has(name) || name === 'const',
+    getValidImports: () => [...Array.from(functions.keys()), ...Array.from(rtnlConstants.keys()), 'const'],
+  },
+};
+
+// Backwards compatibility
+export const rtnlTypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  isRtnlFunction: (name: string) => functions.has(name),
+  getConstantNames: () => Array.from(rtnlConstants.keys()),
+  getConstant: (name: string) => rtnlConstants.get(name),
+  isRtnlConstant: (name: string) => rtnlConstants.has(name),
+  formatFunctionSignature: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
-
-  getFunctionDocumentation(name: string): string {
-    const func = this.getFunction(name);
+    return formatFunctionSignature('rtnl', func);
+  },
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\`\n\n`;
-    
-    // Add usage examples
-    if (name === 'request') {
-      doc += '**Example:**\n```ucode\n// Get all routes\nlet routes = request(RTM_GETROUTE, NLM_F_DUMP);\n\n// Add a new route\nlet result = request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, {\n    dst: "192.168.1.0/24",\n    gateway: "192.168.1.1",\n    oif: 2\n});\n```';
-    } else if (name === 'listener') {
-      doc += '**Example:**\n```ucode\n// Listen for route changes\nlet l = listener(function(msg) {\n  printf("Route event: %J\\n", msg);\n}, [RTM_NEWROUTE, RTM_DELROUTE]);\n\n// Listen for link changes\nlet linkListener = listener(function(msg) {\n  printf("Link event: %J\\n", msg);\n}, [RTM_NEWLINK, RTM_DELLINK]);\n```';
-    } else if (name === 'error') {
-      doc += '**Example:**\n```ucode\nlet result = request(RTM_GETROUTE, NLM_F_DUMP);\nif (!result) {\n    let errorMsg = error();\n    printf("RTNL error: %s\\n", errorMsg);\n}\n```';
-    }
-    
-    return doc;
-  }
-
-  getConstantDocumentation(name: string): string {
-    const constant = this.getConstant(name);
+    return formatFunctionDoc('rtnl', func);
+  },
+  getConstantDocumentation: (name: string) => {
+    const constant = rtnlConstants.get(name);
     if (!constant) return '';
-    
     return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
-  }
-
-  // Import validation methods
-  isValidImport(name: string): boolean {
-    return this.isRtnlFunction(name) || this.isRtnlConstant(name);
-  }
-
-  getValidImports(): string[] {
-    return [...this.getFunctionNames(), ...this.getConstantNames(), 'const'];
-  }
-
-  isValidRtnlImport(name: string): boolean {
-    return this.getValidImports().includes(name);
-  }
-}
-
-export const rtnlTypeRegistry = new RtnlTypeRegistry();
+  },
+  isValidImport: (name: string) => functions.has(name) || rtnlConstants.has(name) || name === 'const',
+  getValidImports: () => [...Array.from(functions.keys()), ...Array.from(rtnlConstants.keys()), 'const'],
+  isValidRtnlImport: (name: string) => functions.has(name) || rtnlConstants.has(name) || name === 'const',
+};

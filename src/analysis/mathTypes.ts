@@ -3,19 +3,11 @@
  * Based on ucode/lib/math.c
  */
 
-export interface MathFunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition } from './registryFactory';
+import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 
-export const mathFunctions: Map<string, MathFunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["abs", {
     name: "abs",
     parameters: [
@@ -109,65 +101,85 @@ export const mathFunctions: Map<string, MathFunctionSignature> = new Map([
   }]
 ]);
 
-export class MathTypeRegistry {
-  getFunctionNames(): string[] {
-    return Array.from(mathFunctions.keys());
-  }
+export const mathModule: ModuleDefinition = {
+  name: 'math',
+  functions,
+  documentation: `## Math Module
 
-  getFunction(name: string): MathFunctionSignature | undefined {
-    return mathFunctions.get(name);
-  }
+**Mathematical and trigonometric functions for ucode scripts**
 
-  isMathFunction(name: string): boolean {
-    return mathFunctions.has(name);
-  }
+The math module provides comprehensive mathematical operations including basic arithmetic, trigonometry, logarithms, and random number generation.
 
-  formatFunctionSignature(name: string): string {
-    const func = this.getFunction(name);
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { sin, cos, pow, sqrt, abs } from 'math';
+
+let angle = 3.14159 / 4;  // 45 degrees in radians
+let x = cos(angle);       // ~0.707
+let y = sin(angle);       // ~0.707
+let hypotenuse = sqrt(pow(x, 2) + pow(y, 2));  // ~1.0
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as math from 'math';
+
+let angle = 3.14159 / 4;  // 45 degrees in radians
+let x = math.cos(angle);  // ~0.707
+let y = math.sin(angle);  // ~0.707
+let hypotenuse = math.sqrt(math.pow(x, 2) + math.pow(y, 2));  // ~1.0
+\`\`\`
+
+### Available Functions
+
+**Basic operations:**
+- **\`abs()\`** - Absolute value
+- **\`pow()\`** - Exponentiation (x^y)
+- **\`sqrt()\`** - Square root
+
+**Trigonometric functions:**
+- **\`sin()\`** - Sine (radians)
+- **\`cos()\`** - Cosine (radians)
+- **\`atan2()\`** - Arc tangent of y/x (radians)
+
+**Logarithmic and exponential:**
+- **\`log()\`** - Natural logarithm
+- **\`exp()\`** - e raised to the power of x
+
+**Random number generation:**
+- **\`rand()\`** - Generate pseudo-random integer
+- **\`srand()\`** - Seed the random number generator
+
+**Utility functions:**
+- **\`isnan()\`** - Test if value is NaN (not a number)
+
+### Notes
+
+- All trigonometric functions use radians, not degrees
+- Functions return NaN for invalid inputs
+- \`rand()\` returns integers in range [0, RAND_MAX] (at least 32767)
+- \`srand()\` can be used to create reproducible random sequences
+
+*Hover over individual function names for detailed parameter and return type information.*`,
+};
+
+// Backwards compatibility
+export const mathTypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  isMathFunction: (name: string) => functions.has(name),
+  isValidMathImport: (name: string) => functions.has(name),
+  getValidMathImports: () => Array.from(functions.keys()),
+  formatFunctionSignature: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
-
-  getFunctionDocumentation(name: string): string {
-    const func = this.getFunction(name);
+    return formatFunctionSignature('math', func);
+  },
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\``;
-    return doc;
-  }
-
-  // Import validation methods
-  isValidMathImport(name: string): boolean {
-    return this.isMathFunction(name);
-  }
-
-  getValidMathImports(): string[] {
-    return this.getFunctionNames();
-  }
-}
-
-export const mathTypeRegistry = new MathTypeRegistry();
+    return formatFunctionDoc('math', func);
+  },
+};

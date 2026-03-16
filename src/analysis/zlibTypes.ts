@@ -3,26 +3,11 @@
  * Based on ucode/lib/zlib.c
  */
 
-export interface ZlibFunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition, ConstantDefinition } from './registryFactory';
+import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 
-export interface ZlibConstantSignature {
-  name: string;
-  value: string | number;
-  type: string;
-  description: string;
-}
-
-export const zlibFunctions: Map<string, ZlibFunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["deflate", {
     name: "deflate",
     parameters: [
@@ -31,7 +16,16 @@ export const zlibFunctions: Map<string, ZlibFunctionSignature> = new Map([
       { name: "level", type: "number", optional: true, defaultValue: "Z_DEFAULT_COMPRESSION" }
     ],
     returnType: "string | null",
-    description: "Compresses data in Zlib or gzip format. If the input is a string, it is directly compressed. If an object/resource with a read() method is given, it will be read in chunks for incremental compression."
+    description: `Compresses data in Zlib or gzip format. If the input is a string, it is directly compressed. If an object/resource with a read() method is given, it will be read in chunks for incremental compression.
+
+**Example:**
+\`\`\`ucode
+// deflate content using default compression
+const deflated = deflate(content);
+
+// deflate content with gzip format and fastest compression
+const deflated = deflate(content, true, Z_BEST_SPEED);
+\`\`\``
   }],
   ["inflate", {
     name: "inflate",
@@ -39,7 +33,13 @@ export const zlibFunctions: Map<string, ZlibFunctionSignature> = new Map([
       { name: "str_or_resource", type: "string | object", optional: false }
     ],
     returnType: "string | null",
-    description: "Decompresses data in Zlib or gzip format. If the input is a string, it is directly decompressed. If an object/resource with a read() method is given, it will be read in chunks for incremental decompression."
+    description: `Decompresses data in Zlib or gzip format. If the input is a string, it is directly decompressed. If an object/resource with a read() method is given, it will be read in chunks for incremental decompression.
+
+**Example:**
+\`\`\`ucode
+// inflate compressed data
+const inflated = inflate(compressed_data);
+\`\`\``
   }],
   ["deflater", {
     name: "deflater",
@@ -48,17 +48,38 @@ export const zlibFunctions: Map<string, ZlibFunctionSignature> = new Map([
       { name: "level", type: "number", optional: true, defaultValue: "Z_DEFAULT_COMPRESSION" }
     ],
     returnType: "zlib.deflate | null",
-    description: "Initializes a deflate stream for streaming compression. Returns a stream handle that can be used with write() and read() methods."
+    description: `Initializes a deflate stream for streaming compression. Returns a stream handle that can be used with write() and read() methods.
+
+**Example:**
+\`\`\`ucode
+// create streaming deflate
+const zstrmd = deflater(true, Z_BEST_SPEED);
+zstrmd.write("data", Z_NO_FLUSH);
+const compressed = zstrmd.read();
+\`\`\``
   }],
   ["inflater", {
     name: "inflater",
     parameters: [],
     returnType: "zlib.inflate | null",
-    description: "Initializes an inflate stream for streaming decompression. Can process either Zlib or gzip data. Returns a stream handle that can be used with write() and read() methods."
+    description: `Initializes an inflate stream for streaming decompression. Can process either Zlib or gzip data. Returns a stream handle that can be used with write() and read() methods.
+
+**Example:**
+\`\`\`ucode
+// create streaming inflate
+const zstrmi = inflater();
+zstrmi.write(compressed_data, Z_NO_FLUSH);
+const decompressed = zstrmi.read();
+\`\`\``
   }]
 ]);
 
-export const zlibConstants: Map<string, ZlibConstantSignature> = new Map([
+// Backwards-compat exports
+export { functions as zlibFunctions };
+export type ZlibFunctionSignature = FunctionSignature;
+export type ZlibConstantSignature = ConstantDefinition;
+
+export const zlibConstants: Map<string, ConstantDefinition> = new Map([
   // Compression levels
   ["Z_NO_COMPRESSION", {
     name: "Z_NO_COMPRESSION",
@@ -67,7 +88,7 @@ export const zlibConstants: Map<string, ZlibConstantSignature> = new Map([
     description: "No compression level - store data without compression"
   }],
   ["Z_BEST_SPEED", {
-    name: "Z_BEST_SPEED", 
+    name: "Z_BEST_SPEED",
     value: 1,
     type: "number",
     description: "Fastest compression level with minimal compression ratio"
@@ -75,7 +96,7 @@ export const zlibConstants: Map<string, ZlibConstantSignature> = new Map([
   ["Z_BEST_COMPRESSION", {
     name: "Z_BEST_COMPRESSION",
     value: 9,
-    type: "number", 
+    type: "number",
     description: "Highest compression level with maximum compression ratio but slowest speed"
   }],
   ["Z_DEFAULT_COMPRESSION", {
@@ -84,7 +105,7 @@ export const zlibConstants: Map<string, ZlibConstantSignature> = new Map([
     type: "number",
     description: "Default compromise between speed and compression (currently equivalent to level 6)"
   }],
-  
+
   // Flush options
   ["Z_NO_FLUSH", {
     name: "Z_NO_FLUSH",
@@ -118,95 +139,73 @@ export const zlibConstants: Map<string, ZlibConstantSignature> = new Map([
   }]
 ]);
 
-export class ZlibTypeRegistry {
-  getFunctionNames(): string[] {
-    return Array.from(zlibFunctions.keys());
-  }
+export const zlibModule: ModuleDefinition = {
+  name: 'zlib',
+  functions,
+  constants: zlibConstants,
+  documentation: `## Zlib Module
 
-  getFunction(name: string): ZlibFunctionSignature | undefined {
-    return zlibFunctions.get(name);
-  }
+**Data compression and decompression module**
 
-  isZlibFunction(name: string): boolean {
-    return zlibFunctions.has(name);
-  }
+The zlib module provides single-call and stream-oriented functions for interacting with zlib data compression.
 
-  formatFunctionSignature(name: string): string {
-    const func = this.getFunction(name);
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { deflate, inflate, Z_BEST_SPEED } from 'zlib';
+
+let compressed = deflate("Hello World", false, Z_BEST_SPEED);
+let original = inflate(compressed);
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as zlib from 'zlib';
+
+let compressed = zlib.deflate("Hello World");
+let original = zlib.inflate(compressed);
+\`\`\`
+
+### Available Functions
+
+- **\`deflate()\`** - Compress data in Zlib or gzip format
+- **\`inflate()\`** - Decompress data in Zlib or gzip format
+- **\`deflater()\`** - Create streaming deflate handle
+- **\`inflater()\`** - Create streaming inflate handle
+
+### Constants
+
+**Compression levels:** Z_NO_COMPRESSION, Z_BEST_SPEED, Z_BEST_COMPRESSION, Z_DEFAULT_COMPRESSION
+
+**Flush options:** Z_NO_FLUSH, Z_PARTIAL_FLUSH, Z_SYNC_FLUSH, Z_FULL_FLUSH, Z_FINISH
+
+*Hover over individual function names for detailed parameter and return type information.*`,
+};
+
+// Backwards compatibility
+export const zlibTypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  isZlibFunction: (name: string) => functions.has(name),
+  formatFunctionSignature: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
-
-  getFunctionDocumentation(name: string): string {
-    const func = this.getFunction(name);
+    return formatFunctionSignature('zlib', func);
+  },
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\``;
-    
-    if (name === 'deflate') {
-      doc += '\n\n**Example:**\n```ucode\n// deflate content using default compression\nconst deflated = deflate(content);\n\n// deflate content with gzip format and fastest compression\nconst deflated = deflate(content, true, Z_BEST_SPEED);\n```';
-    } else if (name === 'inflate') {
-      doc += '\n\n**Example:**\n```ucode\n// inflate compressed data\nconst inflated = inflate(compressed_data);\n```';
-    } else if (name === 'deflater') {
-      doc += '\n\n**Example:**\n```ucode\n// create streaming deflate\nconst zstrmd = deflater(true, Z_BEST_SPEED);\nzstrmd.write("data", Z_NO_FLUSH);\nconst compressed = zstrmd.read();\n```';
-    } else if (name === 'inflater') {
-      doc += '\n\n**Example:**\n```ucode\n// create streaming inflate\nconst zstrmi = inflater();\nzstrmi.write(compressed_data, Z_NO_FLUSH);\nconst decompressed = zstrmi.read();\n```';
-    }
-    
-    return doc;
-  }
-
-  getConstantNames(): string[] {
-    return Array.from(zlibConstants.keys());
-  }
-
-  getConstant(name: string): ZlibConstantSignature | undefined {
-    return zlibConstants.get(name);
-  }
-
-  isZlibConstant(name: string): boolean {
-    return zlibConstants.has(name);
-  }
-
-  getConstantDocumentation(name: string): string {
-    const constant = this.getConstant(name);
+    return formatFunctionDoc('zlib', func);
+  },
+  getConstantNames: () => Array.from(zlibConstants.keys()),
+  getConstant: (name: string) => zlibConstants.get(name),
+  isZlibConstant: (name: string) => zlibConstants.has(name),
+  getConstantDocumentation: (name: string) => {
+    const constant = zlibConstants.get(name);
     if (!constant) return '';
-    
     return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
-  }
-
-  // Import validation methods
-  isValidImport(name: string): boolean {
-    return this.isZlibFunction(name) || this.isZlibConstant(name);
-  }
-
-  getValidImports(): string[] {
-    return [...this.getFunctionNames(), ...this.getConstantNames()];
-  }
-}
-
-export const zlibTypeRegistry = new ZlibTypeRegistry();
+  },
+  isValidImport: (name: string) => functions.has(name) || zlibConstants.has(name),
+  getValidImports: () => [...Array.from(functions.keys()), ...Array.from(zlibConstants.keys())],
+};

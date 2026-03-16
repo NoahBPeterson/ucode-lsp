@@ -3,26 +3,11 @@
  * Based on ucode/lib/ubus.c global_fns[]
  */
 
-export interface UbusFunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition, ConstantDefinition } from './registryFactory';
+import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 
-export interface UbusConstantSignature {
-  name: string;
-  value: string | number;
-  type: string;
-  description: string;
-}
-
-export const ubusFunctions: Map<string, UbusFunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["error", {
     name: "error",
     parameters: [
@@ -49,7 +34,16 @@ export const ubusFunctions: Map<string, UbusFunctionSignature> = new Map([
       { name: "timeout", type: "integer", optional: true, defaultValue: 30 }
     ],
     returnType: "object",
-    description: "Create a ubus channel connection using an existing file descriptor. Used for bidirectional communication over established connections."
+    description: `Create a ubus channel connection using an existing file descriptor. Used for bidirectional communication over established connections.
+
+**Example:**
+\`\`\`ucode
+import { open_channel } from 'ubus';
+
+let chan = open_channel(fd, function(msg) {
+    printf("Received: %J\\n", msg);
+});
+\`\`\``
   }],
   ["guard", {
     name: "guard",
@@ -61,7 +55,12 @@ export const ubusFunctions: Map<string, UbusFunctionSignature> = new Map([
   }]
 ]);
 
-export const ubusConstants: Map<string, UbusConstantSignature> = new Map([
+// Backwards-compat exports
+export { functions as ubusFunctions };
+export type UbusFunctionSignature = FunctionSignature;
+export type UbusConstantSignature = ConstantDefinition;
+
+export const ubusConstants: Map<string, ConstantDefinition> = new Map([
   ["STATUS_OK", {
     name: "STATUS_OK",
     value: 0,
@@ -160,86 +159,74 @@ export const ubusConstants: Map<string, UbusConstantSignature> = new Map([
   }]
 ]);
 
-export class UbusTypeRegistry {
-  getFunctionNames(): string[] {
-    return Array.from(ubusFunctions.keys());
-  }
+export const ubusModule: ModuleDefinition = {
+  name: 'ubus',
+  functions,
+  constants: ubusConstants,
+  documentation: `## ubus Module
 
-  getFunction(name: string): UbusFunctionSignature | undefined {
-    return ubusFunctions.get(name);
-  }
+**OpenWrt unified bus communication for ucode scripts**
 
-  isUbusFunction(name: string): boolean {
-    return ubusFunctions.has(name);
-  }
+The ubus module provides comprehensive access to the OpenWrt unified bus (ubus) system, enabling communication with system services and daemons.
 
-  formatFunctionSignature(name: string): string {
-    const func = this.getFunction(name);
-    if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
+### Usage
 
-  getFunctionDocumentation(name: string): string {
-    const func = this.getFunction(name);
-    if (!func) return '';
-    
-    const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\`\n\n`;
-    doc += `**Example:**\n\`\`\`ucode\nimport { ${name} } from 'ubus';\n${name}();\n\`\`\``;
-    return doc;
-  }
+**Named import syntax:**
+\`\`\`ucode
+import { connect, error } from 'ubus';
 
-  // Constants support
-  getConstantNames(): string[] {
-    return Array.from(ubusConstants.keys());
-  }
-
-  getConstant(name: string): UbusConstantSignature | undefined {
-    return ubusConstants.get(name);
-  }
-
-  isUbusConstant(name: string): boolean {
-    return ubusConstants.has(name);
-  }
-
-  getConstantDocumentation(name: string): string {
-    const constant = this.getConstant(name);
-    if (!constant) return '';
-    
-    return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
-  }
-
-  // Import validation methods
-  isValidImport(name: string): boolean {
-    return this.isUbusFunction(name) || this.isUbusConstant(name);
-  }
-
-  getValidImports(): string[] {
-    return [...this.getFunctionNames(), ...this.getConstantNames()];
-  }
+let conn = connect();
+let result = conn.call('system', 'info');
+if (!result) {
+    print('ubus error: ', error(), '\\n');
 }
+\`\`\`
 
-export const ubusTypeRegistry = new UbusTypeRegistry();
+**Namespace import syntax:**
+\`\`\`ucode
+import * as ubus from 'ubus';
+
+let conn = ubus.connect();
+let result = conn.call('system', 'info');
+\`\`\`
+
+### Available Functions
+
+- **\`error()\`** - Retrieve the last ubus error
+- **\`connect()\`** - Establish connection to ubus daemon
+- **\`open_channel()\`** - Create ubus channel from file descriptor
+- **\`guard()\`** - Set/get global ubus exception handler
+
+### Status Constants
+
+STATUS_OK, STATUS_INVALID_COMMAND, STATUS_INVALID_ARGUMENT, STATUS_METHOD_NOT_FOUND, STATUS_NOT_FOUND, STATUS_NO_DATA, STATUS_PERMISSION_DENIED, STATUS_TIMEOUT, STATUS_NOT_SUPPORTED, STATUS_UNKNOWN_ERROR, STATUS_CONNECTION_FAILED, STATUS_NO_MEMORY, STATUS_PARSE_ERROR, STATUS_SYSTEM_ERROR, STATUS_CONTINUE
+
+*Hover over individual function names for detailed parameter and return type information.*`,
+};
+
+// Backwards compatibility
+export const ubusTypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  isUbusFunction: (name: string) => functions.has(name),
+  formatFunctionSignature: (name: string) => {
+    const func = functions.get(name);
+    if (!func) return '';
+    return formatFunctionSignature('ubus', func);
+  },
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
+    if (!func) return '';
+    return formatFunctionDoc('ubus', func);
+  },
+  getConstantNames: () => Array.from(ubusConstants.keys()),
+  getConstant: (name: string) => ubusConstants.get(name),
+  isUbusConstant: (name: string) => ubusConstants.has(name),
+  getConstantDocumentation: (name: string) => {
+    const constant = ubusConstants.get(name);
+    if (!constant) return '';
+    return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
+  },
+  isValidImport: (name: string) => functions.has(name) || ubusConstants.has(name),
+  getValidImports: () => [...Array.from(functions.keys()), ...Array.from(ubusConstants.keys())],
+};

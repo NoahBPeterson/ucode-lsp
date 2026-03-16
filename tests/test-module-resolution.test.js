@@ -131,35 +131,35 @@ print(content);
     expect(importErrors.length).toBe(0);
   });
 
-  test('default import from builtin module', async () => {
+  test('default import from builtin module produces error', async () => {
     const errors = await getErrors(`
 import mathmod from 'math';
 print(mathmod);
 `);
-    const importErrors = errors.filter(d => d.message.includes('import') || d.message.includes('not defined'));
-    expect(importErrors.length).toBe(0);
+    const defaultErrors = errors.filter(d => d.message.includes('does not have a default export'));
+    expect(defaultErrors.length).toBe(1);
   });
 
-  test('mixed default + namespace import from builtin module', async () => {
+  test('mixed default + namespace import from builtin module errors on default', async () => {
     const errors = await getErrors(`
 import fsDefault, * as fsAll from 'fs';
 print(fsDefault);
 let c = fsAll.readfile("/tmp/a.txt");
 print(c);
 `);
-    const importErrors = errors.filter(d => d.message.includes('import') || d.message.includes('not defined'));
-    expect(importErrors.length).toBe(0);
+    const defaultErrors = errors.filter(d => d.message.includes('does not have a default export'));
+    expect(defaultErrors.length).toBe(1);
   });
 
-  test('mixed default + named import from builtin module', async () => {
+  test('mixed default + named import from builtin module errors on default', async () => {
     const errors = await getErrors(`
 import fsDefault, { readfile } from 'fs';
 print(fsDefault);
 let c = readfile("/tmp/a.txt");
 print(c);
 `);
-    const importErrors = errors.filter(d => d.message.includes('import') || d.message.includes('not defined'));
-    expect(importErrors.length).toBe(0);
+    const defaultErrors = errors.filter(d => d.message.includes('does not have a default export'));
+    expect(defaultErrors.length).toBe(1);
   });
 
   test('multiple named imports from builtin module', async () => {

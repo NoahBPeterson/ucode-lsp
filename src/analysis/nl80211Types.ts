@@ -1,36 +1,34 @@
 /**
  * nl80211 module type definitions and function signatures
  * Based on ucode/lib/nl80211.c
- * 
+ *
  * The nl80211 module provides WiFi/802.11 networking interface operations
  * for communicating with the Linux kernel's nl80211 subsystem.
  */
 
-export interface Nl80211FunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
+import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 
-export interface Nl80211ConstantSignature {
-  name: string;
-  value: string | number;
-  type: string;
-  description: string;
-}
+// Backwards-compat type aliases
+export type Nl80211FunctionSignature = FunctionSignature;
+export type Nl80211ConstantSignature = ConstantDefinition;
 
-export const nl80211Functions: Map<string, Nl80211FunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["error", {
     name: "error",
     parameters: [],
     returnType: "string | null",
-    description: "Returns the last nl80211 error message, or null if no error occurred. This is typically called after a failed nl80211 operation to get detailed error information."
+    description: `Returns the last nl80211 error message, or null if no error occurred. This is typically called after a failed nl80211 operation to get detailed error information.
+
+**Example:**
+\`\`\`ucode
+let result = request(NL80211_CMD_GET_WIPHY);
+if (!result) {
+    let errorMsg = error();
+    printf("NL80211 error: %s\\n", errorMsg);
+}
+\`\`\``
   }],
   ["request", {
     name: "request",
@@ -40,7 +38,19 @@ export const nl80211Functions: Map<string, Nl80211FunctionSignature> = new Map([
       { name: "payload", type: "object", optional: true }
     ],
     returnType: "object | null",
-    description: "Sends a netlink request to the nl80211 subsystem. The cmd parameter specifies the NL80211_CMD_* command to execute. Optional flags can modify the request behavior (NLM_F_*). The payload object contains command-specific attributes."
+    description: `Sends a netlink request to the nl80211 subsystem. The cmd parameter specifies the NL80211_CMD_* command to execute. Optional flags can modify the request behavior (NLM_F_*). The payload object contains command-specific attributes.
+
+**Example:**
+\`\`\`ucode
+// Get wiphy information
+let wiphy = request(NL80211_CMD_GET_WIPHY, NLM_F_DUMP);
+
+// Start access point
+let result = request(NL80211_CMD_START_AP, NLM_F_ACK, {
+    ssid: "MyAP",
+    channel: 6
+});
+\`\`\``
   }],
   ["waitfor", {
     name: "waitfor",
@@ -49,7 +59,18 @@ export const nl80211Functions: Map<string, Nl80211FunctionSignature> = new Map([
       { name: "timeout", type: "integer", optional: true }
     ],
     returnType: "object | null",
-    description: "Waits for specific nl80211 commands to be received. The cmds array contains NL80211_CMD_* constants to wait for. Optional timeout specifies the maximum wait time in milliseconds. Returns the received message object or null on timeout."
+    description: `Waits for specific nl80211 commands to be received. The cmds array contains NL80211_CMD_* constants to wait for. Optional timeout specifies the maximum wait time in milliseconds. Returns the received message object or null on timeout.
+
+**Example:**
+\`\`\`ucode
+// Wait for scan completion
+let result = waitfor([NL80211_CMD_NEW_SCAN_RESULTS, NL80211_CMD_SCAN_ABORTED], 5000);
+if (result) {
+    printf("Scan completed: %J\\n", result);
+} else {
+    printf("Scan timeout\\n");
+}
+\`\`\``
   }],
   ["listener", {
     name: "listener",
@@ -58,11 +79,27 @@ export const nl80211Functions: Map<string, Nl80211FunctionSignature> = new Map([
       { name: "cmds", type: "array", optional: false }
     ],
     returnType: "nl80211.listener",
-    description: "Creates an event listener for nl80211 messages. The callback function is called when any of the specified commands (NL80211_CMD_* constants) are received. Returns a listener object with set_commands() and close() methods."
+    description: `Creates an event listener for nl80211 messages. The callback function is called when any of the specified commands (NL80211_CMD_* constants) are received. Returns a listener object with set_commands() and close() methods.
+
+**Example:**
+\`\`\`ucode
+// Listen for scan results
+let l = listener(function(msg) {
+  printf("Scan event: %J\\n", msg);
+}, [NL80211_CMD_NEW_SCAN_RESULTS]);
+
+// Listen for connection events
+let connListener = listener(function(msg) {
+  printf("Connection event: %J\\n", msg);
+}, [NL80211_CMD_CONNECT, NL80211_CMD_DISCONNECT]);
+\`\`\``
   }]
 ]);
 
-export const nl80211Constants: Map<string, Nl80211ConstantSignature> = new Map([
+// Backwards-compat export
+export { functions as nl80211Functions };
+
+export const nl80211Constants: Map<string, ConstantDefinition> = new Map([
   // Netlink Message Flags
   ["NLM_F_ACK", { name: "NLM_F_ACK", value: 4, type: "integer", description: "Request an acknowledgment on errors" }],
   ["NLM_F_ACK_TLVS", { name: "NLM_F_ACK_TLVS", value: 512, type: "integer", description: "Extended ACK TLVs were included" }],
@@ -227,214 +264,79 @@ export const nl80211Constants: Map<string, Nl80211ConstantSignature> = new Map([
   ["HWSIM_CMD_REPORT_PMSR", { name: "HWSIM_CMD_REPORT_PMSR", value: 11, type: "integer", description: "Report peer measurement" }]
 ]);
 
-export class Nl80211TypeRegistry {
-  getFunctionNames(): string[] {
-    return Array.from(nl80211Functions.keys());
-  }
+// Listener object methods
+const listenerMethods = new Map<string, FunctionSignature>([
+  ['set_commands', {
+    name: 'set_commands',
+    parameters: [
+      { name: 'cmds', type: 'array', optional: false }
+    ],
+    returnType: 'null',
+    description: 'Set the list of NL80211_CMD_* commands to listen for.'
+  }],
+  ['close', {
+    name: 'close',
+    parameters: [],
+    returnType: 'null',
+    description: 'Close the listener and stop monitoring nl80211 events.'
+  }]
+]);
 
-  getFunction(name: string): Nl80211FunctionSignature | undefined {
-    return nl80211Functions.get(name);
-  }
+export const nl80211Module: ModuleDefinition = {
+  name: 'nl80211',
+  functions,
+  constants: nl80211Constants,
+  importValidation: {
+    isValid: (name: string) => functions.has(name) || nl80211Constants.has(name) || name === 'const',
+    getValidImports: () => [...Array.from(functions.keys()), ...Array.from(nl80211Constants.keys()), 'const'],
+  },
+  documentation: `## NL80211 Module
 
-  isNl80211Function(name: string): boolean {
-    return nl80211Functions.has(name);
-  }
+**WiFi/802.11 networking interface for ucode scripts**
 
-  getConstantNames(): string[] {
-    return Array.from(nl80211Constants.keys());
-  }
+The nl80211 module provides access to the Linux kernel's nl80211 subsystem for managing WiFi interfaces and wireless networking operations.
 
-  getConstant(name: string): Nl80211ConstantSignature | undefined {
-    return nl80211Constants.get(name);
-  }
+### Usage
 
-  isNl80211Constant(name: string): boolean {
-    return nl80211Constants.has(name);
-  }
+**Named import syntax:**
+\`\`\`ucode
+import { request, listener, NL80211_CMD_GET_WIPHY, NLM_F_DUMP } from 'nl80211';
 
-  formatFunctionSignature(name: string): string {
-    const func = this.getFunction(name);
-    if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
+let wiphy = request(NL80211_CMD_GET_WIPHY, NLM_F_DUMP);
+\`\`\`
 
-  getFunctionDocumentation(name: string): string {
-    const func = this.getFunction(name);
-    if (!func) return '';
-    
-    const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\`\n\n`;
-    
-    // Add usage examples
-    if (name === 'request') {
-      doc += '**Example:**\n```ucode\n// Get wiphy information\nlet wiphy = request(NL80211_CMD_GET_WIPHY, NLM_F_DUMP);\n\n// Start access point\nlet result = request(NL80211_CMD_START_AP, NLM_F_ACK, {\n    ssid: "MyAP",\n    channel: 6\n});\n```';
-    } else if (name === 'listener') {
-      doc += '**Example:**\n```ucode\n// Listen for scan results\nlet l = listener(function(msg) {\n  printf("Scan event: %J\\n", msg);\n}, [NL80211_CMD_NEW_SCAN_RESULTS]);\n\n// Listen for connection events\nlet connListener = listener(function(msg) {\n  printf("Connection event: %J\\n", msg);\n}, [NL80211_CMD_CONNECT, NL80211_CMD_DISCONNECT]);\n```';
-    } else if (name === 'waitfor') {
-      doc += '**Example:**\n```ucode\n// Wait for scan completion\nlet result = waitfor([NL80211_CMD_NEW_SCAN_RESULTS, NL80211_CMD_SCAN_ABORTED], 5000);\nif (result) {\n    printf("Scan completed: %J\\n", result);\n} else {\n    printf("Scan timeout\\n");\n}\n```';
-    } else if (name === 'error') {
-      doc += '**Example:**\n```ucode\nlet result = request(NL80211_CMD_GET_WIPHY);\nif (!result) {\n    let errorMsg = error();\n    printf("NL80211 error: %s\\n", errorMsg);\n}\n```';
-    }
-    
-    return doc;
-  }
+**Namespace import syntax:**
+\`\`\`ucode
+import * as nl80211 from 'nl80211';
 
-  getConstantDocumentation(name: string): string {
-    const constant = this.getConstant(name);
-    if (!constant) return '';
-    
-    return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
-  }
+let wiphy = nl80211.request(nl80211.NL80211_CMD_GET_WIPHY, nl80211.NLM_F_DUMP);
+\`\`\`
 
-  // Import validation methods
-  isValidImport(name: string): boolean {
-    return this.isNl80211Function(name) || this.isNl80211Constant(name);
-  }
+### Available Functions
 
-  getValidImports(): string[] {
-    return [...this.getFunctionNames(), ...this.getConstantNames(), 'const'];
-  }
+- **\`error()\`** - Get last nl80211 error message
+- **\`request()\`** - Send netlink request to nl80211 subsystem
+- **\`waitfor()\`** - Wait for specific nl80211 commands
+- **\`listener()\`** - Create event listener for nl80211 messages
 
-  isValidNl80211Import(name: string): boolean {
-    return this.getValidImports().includes(name);
-  }
-}
+### Constants
 
-export const nl80211TypeRegistry = new Nl80211TypeRegistry();
+**Netlink Message Flags:** NLM_F_ACK, NLM_F_DUMP, NLM_F_REQUEST, NLM_F_CREATE, NLM_F_EXCL, ...
 
-// ============================================================================
-// NL80211 Listener Object Type (similar to fs objects)
-// ============================================================================
+**NL80211 Commands:** NL80211_CMD_GET_WIPHY, NL80211_CMD_GET_INTERFACE, NL80211_CMD_TRIGGER_SCAN, NL80211_CMD_CONNECT, ...
+
+**Interface Types:** NL80211_IFTYPE_STATION, NL80211_IFTYPE_AP, NL80211_IFTYPE_MONITOR, ...
+
+*Hover over individual function names and constants for detailed parameter and return type information.*`,
+};
+
+export const nl80211ListenerObjectType: ObjectTypeDefinition = {
+  typeName: 'nl80211.listener',
+  methods: listenerMethods,
+};
+
 export enum Nl80211ObjectType {
   NL80211_LISTENER = 'nl80211.listener'
-}
-
-export interface Nl80211ObjectDefinition {
-  type: Nl80211ObjectType;
-  methods: Map<string, Nl80211FunctionSignature>;
-}
-
-export interface Nl80211MethodSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
-
-export class Nl80211ObjectRegistry {
-  private static instance: Nl80211ObjectRegistry;
-  private types: Map<Nl80211ObjectType, Nl80211ObjectDefinition> = new Map();
-
-  private constructor() {
-    this.initializeNl80211ListenerType();
-  }
-
-  public static getInstance(): Nl80211ObjectRegistry {
-    if (!Nl80211ObjectRegistry.instance) {
-      Nl80211ObjectRegistry.instance = new Nl80211ObjectRegistry();
-    }
-    return Nl80211ObjectRegistry.instance;
-  }
-
-  private initializeNl80211ListenerType(): void {
-    // Initialize nl80211.listener type with its methods
-    const listenerMethods = new Map<string, Nl80211FunctionSignature>([
-      ['set_commands', {
-        name: 'set_commands',
-        parameters: [
-          { name: 'cmds', type: 'array', optional: false }
-        ],
-        returnType: 'null',
-        description: 'Set the list of NL80211_CMD_* commands to listen for.'
-      }],
-      ['close', {
-        name: 'close',
-        parameters: [],
-        returnType: 'null',
-        description: 'Close the listener and stop monitoring nl80211 events.'
-      }]
-    ]);
-
-    this.types.set(Nl80211ObjectType.NL80211_LISTENER, {
-      type: Nl80211ObjectType.NL80211_LISTENER,
-      methods: listenerMethods
-    });
-  }
-
-  public getNl80211Type(typeName: string): Nl80211ObjectDefinition | undefined {
-    return this.types.get(typeName as Nl80211ObjectType);
-  }
-
-  public isNl80211Type(typeName: string): boolean {
-    return this.types.has(typeName as Nl80211ObjectType);
-  }
-
-  public getNl80211Method(typeName: string, methodName: string): Nl80211FunctionSignature | undefined {
-    const nl80211Type = this.getNl80211Type(typeName);
-    return nl80211Type?.methods.get(methodName);
-  }
-
-  public getNl80211MethodNames(typeName: string): string[] {
-    const nl80211Type = this.getNl80211Type(typeName);
-    return nl80211Type ? Array.from(nl80211Type.methods.keys()) : [];
-  }
-
-  public getMethodsForType(typeName: string): string[] {
-    const nl80211Type = this.getNl80211Type(typeName);
-    return nl80211Type ? Array.from(nl80211Type.methods.keys()) : [];
-  }
-
-  // Check if a variable type represents an nl80211 object
-  public isVariableOfNl80211Type(dataType: any): Nl80211ObjectType | null {
-    if (typeof dataType === 'string') {
-      return null;
-    }
-    
-    // Check if it's a module type with nl80211 object type name
-    if ('moduleName' in dataType && typeof dataType.moduleName === 'string') {
-      const moduleName = dataType.moduleName;
-      if (this.isNl80211Type(moduleName)) {
-        return moduleName as Nl80211ObjectType;
-      }
-    }
-    return null;
-  }
-}
-
-// Singleton instance
-export const nl80211ObjectRegistry = Nl80211ObjectRegistry.getInstance();
-
-// Helper functions for type checking
-export function isNl80211ObjectType(typeName: string): typeName is Nl80211ObjectType {
-  return Object.values(Nl80211ObjectType).includes(typeName as Nl80211ObjectType);
 }
 
 export function createNl80211ObjectDataType(nl80211Type: Nl80211ObjectType): any {
@@ -443,3 +345,72 @@ export function createNl80211ObjectDataType(nl80211Type: Nl80211ObjectType): any
     moduleName: nl80211Type
   };
 }
+
+export function isNl80211ObjectType(typeName: string): typeName is Nl80211ObjectType {
+  return Object.values(Nl80211ObjectType).includes(typeName as Nl80211ObjectType);
+}
+
+// Backwards compatibility
+export const nl80211TypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  isNl80211Function: (name: string) => functions.has(name),
+  getConstantNames: () => Array.from(nl80211Constants.keys()),
+  getConstant: (name: string) => nl80211Constants.get(name),
+  isNl80211Constant: (name: string) => nl80211Constants.has(name),
+  formatFunctionSignature: (name: string) => {
+    const func = functions.get(name);
+    if (!func) return '';
+    return formatFunctionSignature('nl80211', func);
+  },
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
+    if (!func) return '';
+    return formatFunctionDoc('nl80211', func);
+  },
+  getConstantDocumentation: (name: string) => {
+    const constant = nl80211Constants.get(name);
+    if (!constant) return '';
+    return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
+  },
+  isValidImport: (name: string) => functions.has(name) || nl80211Constants.has(name),
+  getValidImports: () => [...Array.from(functions.keys()), ...Array.from(nl80211Constants.keys()), 'const'],
+  isValidNl80211Import: (name: string) => functions.has(name) || nl80211Constants.has(name) || name === 'const',
+};
+
+export const nl80211ObjectRegistry = {
+  getNl80211Type: (typeName: string) => {
+    if (typeName === Nl80211ObjectType.NL80211_LISTENER) {
+      return { type: Nl80211ObjectType.NL80211_LISTENER, methods: listenerMethods };
+    }
+    return undefined;
+  },
+  isNl80211Type: (typeName: string) => typeName === Nl80211ObjectType.NL80211_LISTENER,
+  getNl80211Method: (typeName: string, methodName: string) => {
+    if (typeName === Nl80211ObjectType.NL80211_LISTENER) {
+      return listenerMethods.get(methodName);
+    }
+    return undefined;
+  },
+  getNl80211MethodNames: (typeName: string) => {
+    if (typeName === Nl80211ObjectType.NL80211_LISTENER) {
+      return Array.from(listenerMethods.keys());
+    }
+    return [];
+  },
+  getMethodsForType: (typeName: string) => {
+    if (typeName === Nl80211ObjectType.NL80211_LISTENER) {
+      return Array.from(listenerMethods.keys());
+    }
+    return [];
+  },
+  isVariableOfNl80211Type: (dataType: any): Nl80211ObjectType | null => {
+    if (typeof dataType === 'string') return null;
+    if ('moduleName' in dataType && typeof dataType.moduleName === 'string') {
+      if (dataType.moduleName === Nl80211ObjectType.NL80211_LISTENER) {
+        return Nl80211ObjectType.NL80211_LISTENER;
+      }
+    }
+    return null;
+  },
+};

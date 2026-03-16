@@ -3,19 +3,11 @@
  * Based on ucode/lib/log.c
  */
 
-export interface LogFunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition, ConstantDefinition } from './registryFactory';
+import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 
-export const logFunctions: Map<string, LogFunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["openlog", {
     name: "openlog",
     parameters: [
@@ -114,21 +106,25 @@ export const logFunctions: Map<string, LogFunctionSignature> = new Map([
   }]
 ]);
 
+// Backwards-compat export
+export { functions as logFunctions };
+export type LogFunctionSignature = FunctionSignature;
+
 // Valid log module constants (from log.c)
 export const logConstants = new Set([
   // Log options
   'LOG_PID', 'LOG_CONS', 'LOG_NDELAY', 'LOG_ODELAY', 'LOG_NOWAIT',
-  
+
   // Log facilities
   'LOG_AUTH', 'LOG_AUTHPRIV', 'LOG_CRON', 'LOG_DAEMON', 'LOG_FTP', 'LOG_KERN',
   'LOG_LPR', 'LOG_MAIL', 'LOG_NEWS', 'LOG_SYSLOG', 'LOG_USER', 'LOG_UUCP',
   'LOG_LOCAL0', 'LOG_LOCAL1', 'LOG_LOCAL2', 'LOG_LOCAL3', 'LOG_LOCAL4',
   'LOG_LOCAL5', 'LOG_LOCAL6', 'LOG_LOCAL7',
-  
+
   // Log priorities
   'LOG_EMERG', 'LOG_ALERT', 'LOG_CRIT', 'LOG_ERR', 'LOG_WARNING', 'LOG_NOTICE',
   'LOG_INFO', 'LOG_DEBUG',
-  
+
   // Ulog channels (OpenWrt specific)
   'ULOG_KMSG', 'ULOG_SYSLOG', 'ULOG_STDIO'
 ]);
@@ -141,7 +137,7 @@ export const logConstantDocs = new Map<string, string>([
   ['LOG_NDELAY', '**LOG_NDELAY** - Open the connection to the logger immediately.\n\n*Log Option Constant*\n\nWhen passed to `openlog()`, this option opens the connection to the logger immediately instead of waiting for the first message.'],
   ['LOG_ODELAY', '**LOG_ODELAY** - Delay open until the first message is logged.\n\n*Log Option Constant*\n\nWhen passed to `openlog()`, this option delays opening the connection until the first message is logged.'],
   ['LOG_NOWAIT', '**LOG_NOWAIT** - Do not wait for child processes created during logging.\n\n*Log Option Constant*\n\nWhen passed to `openlog()`, this option prevents waiting for child processes that might be created during logging.'],
-  
+
   // Log facilities
   ['LOG_AUTH', '**LOG_AUTH** - Authentication/authorization messages.\n\n*Log Facility Constant*\n\nUsed with `openlog()` to specify that messages relate to authentication or authorization.'],
   ['LOG_AUTHPRIV', '**LOG_AUTHPRIV** - Private authentication messages.\n\n*Log Facility Constant*\n\nUsed with `openlog()` to specify that messages relate to private authentication.'],
@@ -163,7 +159,7 @@ export const logConstantDocs = new Map<string, string>([
   ['LOG_LOCAL5', '**LOG_LOCAL5** - Local use 5 (custom facility).\n\n*Log Facility Constant*\n\nUsed with `openlog()` to specify custom local facility 5.'],
   ['LOG_LOCAL6', '**LOG_LOCAL6** - Local use 6 (custom facility).\n\n*Log Facility Constant*\n\nUsed with `openlog()` to specify custom local facility 6.'],
   ['LOG_LOCAL7', '**LOG_LOCAL7** - Local use 7 (custom facility).\n\n*Log Facility Constant*\n\nUsed with `openlog()` to specify custom local facility 7.'],
-  
+
   // Log priorities
   ['LOG_EMERG', '**LOG_EMERG** - System is unusable.\n\n*Log Priority Constant*\n\nUsed with `syslog()` to indicate emergency conditions - system is unusable.'],
   ['LOG_ALERT', '**LOG_ALERT** - Action must be taken immediately.\n\n*Log Priority Constant*\n\nUsed with `syslog()` to indicate alert conditions - action must be taken immediately.'],
@@ -173,82 +169,98 @@ export const logConstantDocs = new Map<string, string>([
   ['LOG_NOTICE', '**LOG_NOTICE** - Normal, but significant, condition.\n\n*Log Priority Constant*\n\nUsed with `syslog()` to indicate normal but significant conditions.'],
   ['LOG_INFO', '**LOG_INFO** - Informational message.\n\n*Log Priority Constant*\n\nUsed with `syslog()` to indicate informational messages.'],
   ['LOG_DEBUG', '**LOG_DEBUG** - Debug-level message.\n\n*Log Priority Constant*\n\nUsed with `syslog()` to indicate debug-level messages.'],
-  
+
   // Ulog channels (OpenWrt specific)
   ['ULOG_KMSG', '**ULOG_KMSG** - Log messages to `/dev/kmsg` (dmesg).\n\n*Ulog Channel Constant (OpenWrt)*\n\nUsed with `ulog_open()` to specify that messages should be logged to `/dev/kmsg`, making them appear in dmesg output.'],
   ['ULOG_SYSLOG', '**ULOG_SYSLOG** - Log messages to syslog.\n\n*Ulog Channel Constant (OpenWrt)*\n\nUsed with `ulog_open()` to specify that messages should be logged using the standard syslog mechanism.'],
   ['ULOG_STDIO', '**ULOG_STDIO** - Log messages to stdout.\n\n*Ulog Channel Constant (OpenWrt)*\n\nUsed with `ulog_open()` to specify that messages should be logged to stdout.']
 ]);
 
-export class LogTypeRegistry {
-  getFunctionNames(): string[] {
-    return Array.from(logFunctions.keys());
-  }
+// Build constants map for the factory (keys used for getConstantNames)
+const constantDefs = new Map<string, ConstantDefinition>(
+  Array.from(logConstants).map(name => [name, { name, value: 'number', type: 'number', description: '' }])
+);
 
-  getFunction(name: string): LogFunctionSignature | undefined {
-    return logFunctions.get(name);
-  }
+export const logModule: ModuleDefinition = {
+  name: 'log',
+  functions,
+  constants: constantDefs,
+  constantDocumentation: logConstantDocs,
+  documentation: `## Log Module
 
-  isLogFunction(name: string): boolean {
-    return logFunctions.has(name);
-  }
+**System logging functions for ucode scripts**
 
-  isLogConstant(name: string): boolean {
-    return logConstants.has(name);
-  }
+The log module provides bindings to the POSIX syslog functions as well as OpenWrt specific ulog library functions.
 
-  isValidLogImport(name: string): boolean {
-    return this.isLogFunction(name) || this.isLogConstant(name);
-  }
+### Usage
 
-  getValidLogImports(): string[] {
-    return [...Array.from(logFunctions.keys()), ...Array.from(logConstants)];
-  }
+**Named import syntax:**
+\`\`\`ucode
+import { openlog, syslog, LOG_PID, LOG_USER, LOG_ERR } from 'log';
 
-  getConstantDocumentation(name: string): string {
-    const constant = logConstantDocs.get(name);
-    if (!constant) return '';
+openlog("my-log-ident", LOG_PID, LOG_USER);
+syslog(LOG_ERR, "An error occurred!");
 
-    return constant;
-  }
+// OpenWrt specific ulog functions
+import { ulog_open, ulog, ULOG_SYSLOG, LOG_DAEMON, LOG_INFO } from 'log';
 
-  formatFunctionSignature(name: string): string {
-    const func = this.getFunction(name);
+ulog_open(ULOG_SYSLOG, LOG_DAEMON, "my-log-ident");
+ulog(LOG_INFO, "The current epoch is %d", time());
+\`\`\`
+
+### Available Functions
+
+**Standard syslog functions:**
+- **\`openlog()\`** - Open connection to system logger
+- **\`syslog()\`** - Log a message to the system logger
+- **\`closelog()\`** - Close connection to system logger
+
+**OpenWrt ulog functions:**
+- **\`ulog_open()\`** - Configure ulog logger
+- **\`ulog()\`** - Log a message via ulog mechanism
+- **\`ulog_close()\`** - Close ulog logger
+- **\`ulog_threshold()\`** - Set ulog priority threshold
+
+**Convenience functions:**
+- **\`INFO()\`** - Log with LOG_INFO priority
+- **\`NOTE()\`** - Log with LOG_NOTICE priority
+- **\`WARN()\`** - Log with LOG_WARNING priority
+- **\`ERR()\`** - Log with LOG_ERR priority
+
+### Constants
+
+**Log options:** LOG_PID, LOG_CONS, LOG_NDELAY, LOG_ODELAY, LOG_NOWAIT
+
+**Log facilities:** LOG_AUTH, LOG_AUTHPRIV, LOG_CRON, LOG_DAEMON, LOG_FTP, LOG_KERN, LOG_LPR, LOG_MAIL, LOG_NEWS, LOG_SYSLOG, LOG_USER, LOG_UUCP, LOG_LOCAL0-7
+
+**Log priorities:** LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG
+
+**Ulog channels:** ULOG_KMSG, ULOG_STDIO, ULOG_SYSLOG
+
+*Hover over individual function names for detailed parameter and return type information.*`,
+  importValidation: {
+    isValid: (name: string) => functions.has(name) || logConstants.has(name),
+    getValidImports: () => [...Array.from(functions.keys()), ...Array.from(logConstants)],
+  },
+};
+
+// Backwards compatibility
+export const logTypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  isLogFunction: (name: string) => functions.has(name),
+  isLogConstant: (name: string) => logConstants.has(name),
+  isValidLogImport: (name: string) => functions.has(name) || logConstants.has(name),
+  getValidLogImports: () => [...Array.from(functions.keys()), ...Array.from(logConstants)],
+  getConstantDocumentation: (name: string) => logConstantDocs.get(name) || '',
+  formatFunctionSignature: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
-
-  getFunctionDocumentation(name: string): string {
-    const func = this.getFunction(name);
+    return formatFunctionSignature('log', func);
+  },
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\``;
-    return doc;
-  }
-}
-
-export const logTypeRegistry = new LogTypeRegistry();
+    return formatFunctionDoc('log', func);
+  },
+};

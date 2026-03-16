@@ -3,26 +3,15 @@
  * Based on ucode/lib/socket.c
  */
 
-export interface SocketFunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition, ConstantDefinition } from './registryFactory';
+import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 
-export interface SocketConstantSignature {
-  name: string;
-  value: string | number;
-  type: string;
-  description: string;
-}
+// Backwards-compat type aliases
+export type SocketFunctionSignature = FunctionSignature;
+export type SocketConstantSignature = ConstantDefinition;
 
-export const socketFunctions: Map<string, SocketFunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["create", {
     name: "create",
     parameters: [
@@ -87,7 +76,7 @@ export const socketFunctions: Map<string, SocketFunctionSignature> = new Map([
     name: "poll",
     parameters: [
       { name: "timeout", type: "number", optional: false },
-      { name: "sockets", type: "socket | PollSpec", optional: false, variadic: true }
+      { name: "sockets", type: "socket | PollSpec", optional: false }
     ],
     returnType: "PollSpec[] | null",
     description: "Polls a number of sockets for state changes."
@@ -367,85 +356,76 @@ const socketConstantEntries: Array<[string, SocketConstantSignature]> = [
   buildConstant("POLLRDHUP", 8192, "Peer closed or shutdown writing (Linux only)")
 ];
 
-export const socketConstants: Map<string, SocketConstantSignature> = new Map(socketConstantEntries);
+export const socketConstants: Map<string, ConstantDefinition> = new Map(socketConstantEntries);
 
-export class SocketTypeRegistry {
-  getFunctionNames(): string[] {
-    return Array.from(socketFunctions.keys());
-  }
+// Backwards-compat export
+export { functions as socketFunctions };
 
-  getFunction(name: string): SocketFunctionSignature | undefined {
-    return socketFunctions.get(name);
-  }
+export const socketModule: ModuleDefinition = {
+  name: 'socket',
+  functions,
+  constants: socketConstants,
+  documentation: `## Socket Module
 
-  isSocketFunction(name: string): boolean {
-    return socketFunctions.has(name);
-  }
+**Network socket functionality for ucode scripts**
 
-  formatFunctionSignature(name: string): string {
-    const func = this.getFunction(name);
+The socket module provides comprehensive network socket functionality for creating TCP/UDP connections, listening for incoming connections, and handling network communication.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { connect, listen, AF_INET, SOCK_STREAM } from 'socket';
+
+let client = connect('example.com', 80);
+let server = listen('0.0.0.0', 8080);
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as socket from 'socket';
+
+let client = socket.connect('example.com', 80);
+\`\`\`
+
+### Available Functions
+
+- **\`create()\`** - Create a network socket instance
+- **\`connect()\`** - Create and connect a socket
+- **\`listen()\`** - Bind a listening socket
+- **\`sockaddr()\`** - Parse address into socket address
+- **\`nameinfo()\`** - Resolve address to hostname/service
+- **\`addrinfo()\`** - Resolve hostname to addresses
+- **\`poll()\`** - Poll sockets for state changes
+- **\`error()\`** - Query error information
+- **\`strerror()\`** - Get error description string
+
+*Hover over individual function names and constants for detailed parameter and return type information.*`,
+};
+
+// Backwards compatibility
+export const socketTypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  isSocketFunction: (name: string) => functions.has(name),
+  formatFunctionSignature: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
-
-  getFunctionDocumentation(name: string): string {
-    const func = this.getFunction(name);
+    return formatFunctionSignature('socket', func);
+  },
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\``;
-    return doc;
-  }
-
-  getConstantNames(): string[] {
-    return Array.from(socketConstants.keys());
-  }
-
-  getConstant(name: string): SocketConstantSignature | undefined {
-    return socketConstants.get(name);
-  }
-
-  isSocketConstant(name: string): boolean {
-    return socketConstants.has(name);
-  }
-
-  getConstantDocumentation(name: string): string {
-    const constant = this.getConstant(name);
+    return formatFunctionDoc('socket', func);
+  },
+  getConstantNames: () => Array.from(socketConstants.keys()),
+  getConstant: (name: string) => socketConstants.get(name),
+  isSocketConstant: (name: string) => socketConstants.has(name),
+  getConstantDocumentation: (name: string) => {
+    const constant = socketConstants.get(name);
     if (!constant) return '';
-    
     return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
-  }
-
-  isValidImport(name: string): boolean {
-    return this.isSocketFunction(name) || this.isSocketConstant(name);
-  }
-
-  getValidImports(): string[] {
-    return [...this.getFunctionNames(), ...this.getConstantNames()];
-  }
-}
-
-export const socketTypeRegistry = new SocketTypeRegistry();
+  },
+  isValidImport: (name: string) => functions.has(name) || socketConstants.has(name),
+  getValidImports: () => [...Array.from(functions.keys()), ...Array.from(socketConstants.keys())],
+};

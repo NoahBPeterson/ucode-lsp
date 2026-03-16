@@ -3,19 +3,11 @@
  * Based on ucode/lib/resolv.c
  */
 
-export interface ResolvFunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition } from './registryFactory';
+import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 
-export const resolvFunctions: Map<string, ResolvFunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["query", {
     name: "query",
     parameters: [
@@ -23,89 +15,13 @@ export const resolvFunctions: Map<string, ResolvFunctionSignature> = new Map([
       { name: "options", type: "object", optional: true }
     ],
     returnType: "object",
-    description: "Perform DNS queries for specified domain names. Returns an object containing DNS query results organized by domain name."
-  }],
-  ["error", {
-    name: "error",
-    parameters: [],
-    returnType: "string | null",
-    description: "Get the last error message from DNS operations. Returns a descriptive error message for the last failed DNS operation, or null if no error occurred."
-  }]
-]);
+    description: `Perform DNS queries for specified domain names. Returns an object containing DNS query results organized by domain name.
 
-export class ResolvTypeRegistry {
-  getFunctionNames(): string[] {
-    return Array.from(resolvFunctions.keys());
-  }
+Domain name(s) to query. Can be a single domain name string or an array of domain name strings. IP addresses can also be provided for reverse DNS lookups.
 
-  getFunction(name: string): ResolvFunctionSignature | undefined {
-    return resolvFunctions.get(name);
-  }
-
-  isResolvFunction(name: string): boolean {
-    return resolvFunctions.has(name);
-  }
-
-  formatFunctionSignature(name: string): string {
-    const func = this.getFunction(name);
-    if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
-
-  getFunctionDocumentation(name: string): string {
-    const func = this.getFunction(name);
-    if (!func) return '';
-    
-    const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (name === 'query') {
-      doc += this.getQueryDocumentation();
-    } else if (name === 'error') {
-      doc += this.getErrorDocumentation();
-    }
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        
-        if (param.name === 'names') {
-          doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal}) - Domain name(s) to query. Can be a single domain name string or an array of domain name strings. IP addresses can also be provided for reverse DNS lookups.\n`;
-        } else if (param.name === 'options') {
-          doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal}) - Query options object with the following properties:\n`;
-          doc += `  - \`type\` (string[], optional) - Array of DNS record types: 'A', 'AAAA', 'CNAME', 'MX', 'NS', 'PTR', 'SOA', 'SRV', 'TXT', 'ANY'\n`;
-          doc += `  - \`nameserver\` (string[], optional) - Array of DNS nameserver addresses (e.g., '8.8.8.8#53')\n`;
-          doc += `  - \`timeout\` (number, optional, default: 5000) - Total timeout in milliseconds\n`;
-          doc += `  - \`retries\` (number, optional, default: 2) - Number of retry attempts\n`;
-          doc += `  - \`edns_maxsize\` (number, optional, default: 4096) - Maximum UDP packet size for EDNS\n`;
-        } else {
-          doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-        }
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\``;
-    return doc;
-  }
-
-  private getQueryDocumentation(): string {
-    return `**Supported DNS Record Types:**
+**Supported DNS Record Types:**
 - **A** - IPv4 address record
-- **AAAA** - IPv6 address record  
+- **AAAA** - IPv6 address record
 - **CNAME** - Canonical name record
 - **MX** - Mail exchange record
 - **NS** - Name server record
@@ -115,14 +31,12 @@ export class ResolvTypeRegistry {
 - **TXT** - Text record
 - **ANY** - Any available record type
 
-**Response Codes:**
-- **NOERROR** - Query successful
-- **FORMERR** - Format error in query
-- **SERVFAIL** - Server failure
-- **NXDOMAIN** - Non-existent domain
-- **NOTIMP** - Not implemented
-- **REFUSED** - Query refused
-- **TIMEOUT** - Query timed out
+The \`options\` parameter is an object with the following properties:
+- \`type\` (string[], optional) - Array of DNS record types: 'A', 'AAAA', 'CNAME', 'MX', 'NS', 'PTR', 'SOA', 'SRV', 'TXT', 'ANY'
+- \`nameserver\` (string[], optional) - Array of DNS nameserver addresses (e.g., '8.8.8.8#53')
+- \`timeout\` (number, optional, default: 5000) - Total timeout in milliseconds
+- \`retries\` (number, optional, default: 2) - Number of retry attempts
+- \`edns_maxsize\` (number, optional, default: 4096) - Maximum UDP packet size for EDNS
 
 **Example:**
 \`\`\`ucode
@@ -143,13 +57,15 @@ const results = query(['example.com', 'google.com'], {
 
 // Reverse DNS
 const ptr = query(['192.0.2.1'], { type: ['PTR'] });
-\`\`\`
+\`\`\``
+  }],
+  ["error", {
+    name: "error",
+    parameters: [],
+    returnType: "string | null",
+    description: `Get the last error message from DNS operations. Returns a descriptive error message for the last failed DNS operation, or null if no error occurred.
 
-`;
-  }
-
-  private getErrorDocumentation(): string {
-    return `**Example:**
+**Example:**
 \`\`\`ucode
 import { query, error } from 'resolv';
 
@@ -158,19 +74,80 @@ const err = error();
 if (err) {
   print('DNS query failed: ', err, '\\n');
 }
+\`\`\``
+  }]
+]);
+
+export const resolvModule: ModuleDefinition = {
+  name: 'resolv',
+  functions,
+  documentation: `## Resolv Module
+
+**DNS resolution functionality for ucode scripts**
+
+The resolv module provides DNS resolution functionality for ucode, allowing you to perform DNS queries for various record types and handle responses.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { query, error } from 'resolv';
+
+let result = query('example.com', { type: ['A'] });
+if (!result) {
+    let err = error();
+    print('DNS error: ', err, '\\n');
+}
 \`\`\`
 
-`;
-  }
+**Namespace import syntax:**
+\`\`\`ucode
+import * as resolv from 'resolv';
 
-  // Import validation methods
-  isValidImport(name: string): boolean {
-    return this.isResolvFunction(name);
-  }
-
-  getValidImports(): string[] {
-    return this.getFunctionNames();
-  }
+let result = resolv.query('example.com', { type: ['A'] });
+if (!result) {
+    let err = resolv.error();
+    print('DNS error: ', err, '\\n');
 }
+\`\`\`
 
-export const resolvTypeRegistry = new ResolvTypeRegistry();
+### Available Functions
+
+**Core operations:**
+- **\`query()\`** - Perform DNS queries for specified domain names
+- **\`error()\`** - Get the last error message from DNS operations
+
+### Supported DNS Record Types
+
+- **A** - IPv4 address record
+- **AAAA** - IPv6 address record
+- **CNAME** - Canonical name record
+- **MX** - Mail exchange record
+- **NS** - Name server record
+- **PTR** - Pointer record (reverse DNS)
+- **SOA** - Start of authority record
+- **SRV** - Service record
+- **TXT** - Text record
+- **ANY** - Any available record type
+
+*Hover over individual function names for detailed parameter and return type information.*`,
+};
+
+// Backwards compatibility
+export const resolvTypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  isResolvFunction: (name: string) => functions.has(name),
+  isValidImport: (name: string) => functions.has(name),
+  getValidImports: () => Array.from(functions.keys()),
+  formatFunctionSignature: (name: string) => {
+    const func = functions.get(name);
+    if (!func) return '';
+    return formatFunctionSignature('resolv', func);
+  },
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
+    if (!func) return '';
+    return formatFunctionDoc('resolv', func);
+  },
+};

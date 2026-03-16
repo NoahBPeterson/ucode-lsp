@@ -3,21 +3,15 @@
  * Based on ucode/lib/uci.c
  */
 
+import type { FunctionSignature } from './moduleTypes';
+import type { ModuleDefinition, ObjectTypeDefinition } from './registryFactory';
+import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 import { UcodeDataType, ModuleType, UcodeType } from './symbolTable';
 
-export interface UciFunctionSignature {
-  name: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    optional: boolean;
-    defaultValue?: any;
-  }>;
-  returnType: string;
-  description: string;
-}
+// Backwards-compat type alias
+export type UciFunctionSignature = FunctionSignature;
 
-export const uciFunctions: Map<string, UciFunctionSignature> = new Map([
+const functions = new Map<string, FunctionSignature>([
   ["error", {
     name: "error",
     parameters: [],
@@ -37,7 +31,10 @@ export const uciFunctions: Map<string, UciFunctionSignature> = new Map([
   }]
 ]);
 
-export const uciCursorMethods: Map<string, UciFunctionSignature> = new Map([
+// Backwards-compat export
+export { functions as uciFunctions };
+
+const cursorMethods = new Map<string, FunctionSignature>([
   ["load", {
     name: "load",
     parameters: [
@@ -212,6 +209,9 @@ export const uciCursorMethods: Map<string, UciFunctionSignature> = new Map([
   }]
 ]);
 
+// Backwards-compat export
+export { cursorMethods as uciCursorMethods };
+
 export enum UciObjectType {
   UCI_CURSOR = 'uci.cursor',
 }
@@ -223,6 +223,84 @@ export function createUciObjectDataType(type: UciObjectType): ModuleType {
   };
 }
 
+export const uciModule: ModuleDefinition = {
+  name: 'uci',
+  functions,
+  documentation: `## UCI Module
+
+**OpenWrt UCI configuration interface for ucode scripts**
+
+The uci module provides access to the native OpenWrt libuci API for reading and manipulating UCI configuration files.
+
+### Usage
+
+**Named import syntax:**
+\`\`\`ucode
+import { cursor, error } from 'uci';
+
+let ctx = cursor();
+let val = ctx.get('network', 'lan', 'proto');
+\`\`\`
+
+**Namespace import syntax:**
+\`\`\`ucode
+import * as uci from 'uci';
+
+let ctx = uci.cursor();
+let val = ctx.get('network', 'lan', 'proto');
+\`\`\`
+
+### Available Functions
+
+- **\`error()\`** - Get last error description
+- **\`cursor()\`** - Create a UCI cursor for configuration access
+
+### Cursor Methods
+
+- **\`load()\`**, **\`unload()\`** - Load/unload configuration files
+- **\`get()\`**, **\`get_all()\`**, **\`get_first()\`** - Query configuration
+- **\`set()\`**, **\`add()\`**, **\`delete()\`** - Modify configuration
+- **\`list_append()\`**, **\`list_remove()\`** - List operations
+- **\`rename()\`**, **\`reorder()\`** - Rename/reorder sections
+- **\`save()\`**, **\`commit()\`**, **\`revert()\`** - Persistence
+- **\`changes()\`** - Enumerate pending changes
+- **\`foreach()\`** - Iterate sections
+- **\`configs()\`** - List available configurations
+
+*Hover over individual function names for detailed parameter and return type information.*`,
+};
+
+export const uciCursorObjectType: ObjectTypeDefinition = {
+  typeName: 'uci.cursor',
+  methods: cursorMethods,
+  formatDoc: (_name: string, sig: FunctionSignature) => {
+    const params = sig.parameters.map(p => {
+      if (p.optional && p.defaultValue !== undefined) {
+        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
+      } else if (p.optional) {
+        return `[${p.name}: ${p.type}]`;
+      }
+      return `${p.name}: ${p.type}`;
+    }).join(', ');
+
+    let doc = `**${sig.name}(${params}): ${sig.returnType}**\n\n${sig.description}\n\n`;
+
+    if (sig.parameters.length > 0) {
+      doc += '**Parameters:**\n';
+      sig.parameters.forEach(param => {
+        const optional = param.optional ? ' (optional)' : '';
+        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
+        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
+      });
+      doc += '\n';
+    }
+
+    doc += `**Returns:** \`${sig.returnType}\``;
+    return doc;
+  },
+};
+
+// Backwards compatibility
 class UciCursorObjectRegistry {
   isVariableOfUciType(dataType: UcodeDataType): UciObjectType | null {
     if (typeof dataType === 'object' && 'moduleName' in dataType) {
@@ -234,9 +312,9 @@ class UciCursorObjectRegistry {
     return null;
   }
 
-  getUciMethod(type: UciObjectType, methodName: string): UciFunctionSignature | undefined {
+  getUciMethod(type: UciObjectType, methodName: string): FunctionSignature | undefined {
     if (type === UciObjectType.UCI_CURSOR) {
-      return uciCursorMethods.get(methodName);
+      return cursorMethods.get(methodName);
     }
     return undefined;
   }
@@ -244,115 +322,33 @@ class UciCursorObjectRegistry {
 
 export const uciCursorObjectRegistry = new UciCursorObjectRegistry();
 
-export class UciTypeRegistry {
-  getFunctionNames(): string[] {
-    return Array.from(uciFunctions.keys());
-  }
-
-  getFunction(name: string): UciFunctionSignature | undefined {
-    return uciFunctions.get(name);
-  }
-
-  isUciFunction(name: string): boolean {
-    return uciFunctions.has(name);
-  }
-
-  getCursorMethodNames(): string[] {
-    return Array.from(uciCursorMethods.keys());
-  }
-
-  getCursorMethod(name: string): UciFunctionSignature | undefined {
-    return uciCursorMethods.get(name);
-  }
-
-  isUciCursorMethod(name: string): boolean {
-    return uciCursorMethods.has(name);
-  }
-
-  formatFunctionSignature(name: string): string {
-    const func = this.getFunction(name);
+export const uciTypeRegistry = {
+  getFunctionNames: () => Array.from(functions.keys()),
+  getFunction: (name: string) => functions.get(name),
+  isUciFunction: (name: string) => functions.has(name),
+  getCursorMethodNames: () => Array.from(cursorMethods.keys()),
+  getCursorMethod: (name: string) => cursorMethods.get(name),
+  isUciCursorMethod: (name: string) => cursorMethods.has(name),
+  formatFunctionSignature: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
-
-  formatCursorMethodSignature(name: string): string {
-    const func = this.getCursorMethod(name);
+    return formatFunctionSignature('uci', func);
+  },
+  formatCursorMethodSignature: (name: string) => {
+    const func = cursorMethods.get(name);
     if (!func) return '';
-    
-    const params = func.parameters.map(p => {
-      if (p.optional && p.defaultValue !== undefined) {
-        return `[${p.name}: ${p.type}] = ${p.defaultValue}`;
-      } else if (p.optional) {
-        return `[${p.name}: ${p.type}]`;
-      } else {
-        return `${p.name}: ${p.type}`;
-      }
-    }).join(', ');
-    
-    return `${name}(${params}): ${func.returnType}`;
-  }
-
-  getFunctionDocumentation(name: string): string {
-    const func = this.getFunction(name);
+    return formatFunctionSignature('uci', func);
+  },
+  getFunctionDocumentation: (name: string) => {
+    const func = functions.get(name);
     if (!func) return '';
-    
-    const signature = this.formatFunctionSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\``;
-    return doc;
-  }
-
-  getCursorMethodDocumentation(name: string): string {
-    const func = this.getCursorMethod(name);
+    return formatFunctionDoc('uci', func);
+  },
+  getCursorMethodDocumentation: (name: string) => {
+    const func = cursorMethods.get(name);
     if (!func) return '';
-    
-    const signature = this.formatCursorMethodSignature(name);
-    let doc = `**${signature}**\n\n${func.description}\n\n`;
-    
-    if (func.parameters.length > 0) {
-      doc += '**Parameters:**\n';
-      func.parameters.forEach(param => {
-        const optional = param.optional ? ' (optional)' : '';
-        const defaultVal = param.defaultValue !== undefined ? ` (default: ${param.defaultValue})` : '';
-        doc += `- \`${param.name}\` (${param.type}${optional}${defaultVal})\n`;
-      });
-      doc += '\n';
-    }
-    
-    doc += `**Returns:** \`${func.returnType}\``;
-    return doc;
-  }
-
-  // Import validation methods
-  isValidImport(name: string): boolean {
-    return this.isUciFunction(name);
-  }
-
-  getValidImports(): string[] {
-    return this.getFunctionNames();
-  }
-}
-
-export const uciTypeRegistry = new UciTypeRegistry();
+    return formatFunctionDoc('uci', func);
+  },
+  isValidImport: (name: string) => functions.has(name),
+  getValidImports: () => Array.from(functions.keys()),
+};
