@@ -277,6 +277,7 @@ export abstract class PrimaryExpressions extends ParseRules {
 
   protected parseFunctionExpression(): FunctionExpressionNode | null {
     const start = this.previous()!.pos;
+    const leadingJsDoc = this.findLeadingJsDoc(start);
 
     // Function expressions can be anonymous, so ID is optional
     let id: IdentifierNode | null = null;
@@ -321,11 +322,14 @@ export abstract class PrimaryExpressions extends ParseRules {
       params,
       body
     };
-    
+
     if (restParam) {
       result.restParam = restParam;
     }
-    
+    if (leadingJsDoc) {
+      result.leadingJsDoc = leadingJsDoc;
+    }
+
     return result;
   }
 

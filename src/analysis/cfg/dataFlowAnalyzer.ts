@@ -36,6 +36,7 @@ import {
 import { createIoHandleDataType } from '../ioTypes';
 import { createFsObjectDataType, FsObjectType } from '../fsTypes';
 import { LogicalTypeInference } from '../logicalTypeInference';
+import { isKnownModule } from '../moduleDispatch';
 import { Match } from 'effect';
 
 const logicalTypeInference = new LogicalTypeInference();
@@ -314,9 +315,15 @@ export class DataFlowAnalyzer {
       case 'Literal':
         return this.inferLiteralType(expr as LiteralNode);
 
-      case 'Identifier':
+      case 'Identifier': {
         const varName = (expr as IdentifierNode).name;
-        return state.get(varName) || UcodeType.UNKNOWN;
+        const stateType = state.get(varName);
+        if (stateType) return stateType;
+        // Fall back to symbol table for JSDoc-typed parameters, imports, etc.
+        const sym = this.symbolTable.lookup(varName);
+        if (sym && sym.dataType && sym.dataType !== UcodeType.UNKNOWN) return sym.dataType;
+        return UcodeType.UNKNOWN;
+      }
 
       case 'ArrayExpression': {
         const arrNode = expr as ArrayExpressionNode;
@@ -410,9 +417,12 @@ export class DataFlowAnalyzer {
       return UcodeType.BOOLEAN;
     }
 
-    // Logical operators
-    if (node.operator === '&&' || node.operator === '||') {
-      return UcodeType.BOOLEAN;
+    // Logical operators — return one of the operands, not boolean
+    if (node.operator === '||') {
+      return logicalTypeInference.inferLogicalOrFullType(leftType, rightType);
+    }
+    if (node.operator === '&&') {
+      return logicalTypeInference.inferLogicalAndFullType(leftType, rightType);
     }
 
     // Arithmetic operators
@@ -465,6 +475,17 @@ export class DataFlowAnalyzer {
   ): UcodeDataType {
     if (node.callee.type === 'Identifier') {
       const funcName = (node.callee as IdentifierNode).name;
+
+      // Handle require() with known builtin module argument
+      if (funcName === 'require' && node.arguments.length === 1) {
+        const arg = node.arguments[0];
+        if (arg && arg.type === 'Literal' && typeof (arg as LiteralNode).value === 'string') {
+          const moduleName = (arg as LiteralNode).value as string;
+          if (isKnownModule(moduleName)) {
+            return { type: UcodeType.OBJECT, moduleName };
+          }
+        }
+      }
 
       // Look up function in symbol table
       const symbol = this.symbolTable.lookup(funcName);

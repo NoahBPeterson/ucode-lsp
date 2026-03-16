@@ -10,11 +10,7 @@ import { BasicStatements } from './basicStatements';
 export abstract class StatementParser extends BasicStatements {
 
   protected parseStatement(): AstNode | null {
-    // Skip comments and handle error tokens
-    if (this.match(TokenType.TK_COMMENT)) {
-      return null; // Skip comments
-    }
-
+    // Handle error tokens
     if (this.check(TokenType.TK_ERROR)) {
       const errorToken = this.advance()!;
       const message = errorToken.value ? String(errorToken.value) : "Unexpected token";

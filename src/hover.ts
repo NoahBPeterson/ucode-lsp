@@ -976,6 +976,9 @@ export function handleHover(
                                 }
                                 hoverText = `(${symbol.type}) **${symbol.name}**: \`${effectiveTypeStr}\``;
                             }
+                            if (symbol.jsdocDescription) {
+                                hoverText += `\n\n${symbol.jsdocDescription}`;
+                            }
                             break;
                         case SymbolType.FUNCTION:
                             // Show function type with return type information

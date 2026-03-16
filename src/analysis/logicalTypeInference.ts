@@ -104,6 +104,13 @@ export class LogicalTypeInference {
    * Result: string | array
    */
   inferLogicalOrFullType(leftFullType: UcodeDataType, rightFullType: UcodeDataType): UcodeDataType {
+    // Short-circuit: if both sides are the same complex type (e.g., same module), preserve it
+    if (typeof leftFullType === 'object' && typeof rightFullType === 'object' &&
+        'moduleName' in leftFullType && 'moduleName' in rightFullType &&
+        leftFullType.moduleName === rightFullType.moduleName) {
+      return leftFullType;
+    }
+
     const leftTypes = getUnionTypes(leftFullType);
     const rightTypes = getUnionTypes(rightFullType);
 

@@ -191,6 +191,7 @@ export interface Symbol {
     currentTypeEffectiveFrom?: number | undefined; // Source offset where currentType becomes active
     neverReturns?: boolean; // True if function always terminates (die/exit/throw on all paths)
     scopeEnd?: number; // End offset of the scope this symbol was declared in (set when scope exits)
+    jsdocDescription?: string; // Description from @param JSDoc tag
 }
 
 export class SymbolTable {

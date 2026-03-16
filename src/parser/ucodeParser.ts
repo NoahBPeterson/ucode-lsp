@@ -10,8 +10,9 @@ import { StatementParser } from './statements/statementParser';
 
 export class UcodeParser extends StatementParser {
   
-  constructor(tokens: Token[], _sourceCode: string = '') {
+  constructor(tokens: Token[], sourceCode: string = '') {
     super(tokens);
+    this.sourceText = sourceCode;
     this.initializeParseRules();
   }
 

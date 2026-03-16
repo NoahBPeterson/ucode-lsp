@@ -223,6 +223,7 @@ export class FileResolver {
             const lexer = new UcodeLexer(content, { rawMode: true });
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, content);
+            parser.setComments(lexer.comments);
             const parseResult = parser.parse();
 
             if (!parseResult.ast) {
@@ -295,6 +296,7 @@ export class FileResolver {
             const lexer = new UcodeLexer(source, { rawMode: true });
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, source);
+            parser.setComments(lexer.comments);
             const result = parser.parse();
 
             if (!result.ast) {
@@ -412,6 +414,7 @@ export class FileResolver {
             const lexer = new UcodeLexer(source, { rawMode: true });
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, source);
+            parser.setComments(lexer.comments);
             const result = parser.parse();
             if (!result.ast) return null;
 
@@ -544,6 +547,7 @@ export class FileResolver {
             const lexer = new UcodeLexer(source, { rawMode: true });
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, source);
+            parser.setComments(lexer.comments);
             const result = parser.parse();
             if (!result.ast) return null;
 

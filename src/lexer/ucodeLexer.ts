@@ -49,20 +49,24 @@ export class UcodeLexer {
         }
     }
 
+    public comments: Token[] = [];
+
     public tokenize(): Token[] {
         const tokens: Token[] = [];
         let token: Token | null;
-        
+
         while ((token = this.nextToken()) !== null) {
             if (token.type === TokenType.TK_EOF) {
                 tokens.push(token);
                 break;
             }
-            if (token.type !== TokenType.TK_COMMENT) { // Skip comments by default
+            if (token.type === TokenType.TK_COMMENT) {
+                this.comments.push(token); // Collect comments in side-channel
+            } else {
                 tokens.push(token);
             }
         }
-        
+
         return tokens;
     }
 

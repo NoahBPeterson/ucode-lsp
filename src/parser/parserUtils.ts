@@ -4,6 +4,7 @@
 
 import { Token, TokenType } from '../lexer';
 import { ParseWarning, RecoveryMode, STATEMENT_SYNC_TOKENS, EXPRESSION_SYNC_TOKENS, ParseError } from './types';
+import { JsDocCommentNode } from '../ast/nodes';
 
 export class ParserUtils {
   protected tokens: Token[];
@@ -11,9 +12,37 @@ export class ParserUtils {
   protected errors: ParseError[] = [];
   protected warnings: ParseWarning[] = [];
   protected panicMode = false;
+  protected comments: Token[] = [];
+  protected sourceText: string = '';
 
   constructor(tokens: Token[]) {
     this.tokens = tokens;
+  }
+
+  setComments(comments: Token[]) {
+    this.comments = comments;
+  }
+
+  setSourceText(text: string) {
+    this.sourceText = text;
+  }
+
+  protected findLeadingJsDoc(nodeStartPos: number): JsDocCommentNode | undefined {
+    // Reverse scan to find the comment whose end is closest to nodeStartPos
+    for (let i = this.comments.length - 1; i >= 0; i--) {
+      const c = this.comments[i]!;
+      if (c.end > nodeStartPos) continue;  // Comment ends after node start
+      if (c.end < nodeStartPos - 500) break; // Too far away
+      const val = String(c.value);
+      if (!val.startsWith('*')) break; // Only JSDoc (/** ... */) has value starting with '*'
+      // Check that only whitespace exists between comment end and node start
+      if (this.sourceText) {
+        const between = this.sourceText.substring(c.end, nodeStartPos);
+        if (between.trim().length > 0) break; // Non-whitespace between comment and node
+      }
+      return { type: 'JsDocComment', value: val, start: c.pos, end: c.end };
+    }
+    return undefined;
   }
 
   protected tokenToOperator(tokenType: TokenType): string {

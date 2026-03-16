@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
 import { discoverAvailableModules, getModuleMembers, DiscoveredModule, ModuleMember } from './moduleDiscovery';
-import { UcodeLexer, TokenType } from './lexer';
+import { UcodeLexer, TokenType, Token } from './lexer';
 import { UcodeParser } from './parser';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
@@ -76,7 +76,13 @@ export function handleCompletion(
     try {
         const lexer = new UcodeLexer(text, { rawMode: true });
         const tokens = lexer.tokenize();
-        
+
+        // Check if cursor is inside a JSDoc comment
+        const jsDocCompletion = detectJsDocCompletionContext(text, offset, lexer.comments);
+        if (jsDocCompletion) {
+            return createJsDocCompletions(jsDocCompletion);
+        }
+
         // Check if we're in a destructured import context (e.g., import { open, l| } from 'fs')
         const destructuredImportContext = detectDestructuredImportContext(offset, tokens);
         if (destructuredImportContext) {
@@ -947,6 +953,7 @@ function extractDefaultExportProperties(fileContent: string, filePath?: string):
         const lexer = new UcodeLexer(fileContent, { rawMode: true });
         const tokens = lexer.tokenize();
         const parser = new UcodeParser(tokens, fileContent);
+        parser.setComments(lexer.comments);
         const parseResult = parser.parse();
 
         if (!parseResult.ast) {
@@ -1599,6 +1606,107 @@ function createFileSystemCompletions(currentPath: string, documentUri: string, c
         connection.console.log(`[FS_COMPLETION] Error: ${error instanceof Error ? error.message : String(error)}`);
         return [];
     }
+}
+
+// ---- JSDoc completion support ----
+
+interface JsDocCompletionContext {
+    kind: 'tag' | 'type';
+}
+
+function detectJsDocCompletionContext(text: string, offset: number, comments: Token[]): JsDocCompletionContext | null {
+    // Find the comment token that contains the cursor offset
+    for (const comment of comments) {
+        if (offset >= comment.pos && offset <= comment.end) {
+            const val = String(comment.value);
+            if (!val.startsWith('*')) continue; // Not a JSDoc comment
+
+            // Get text from comment start to cursor position
+            const textBeforeCursor = text.substring(comment.pos, offset);
+
+            // Check if we're right after @ or typing a tag name
+            const afterAtMatch = textBeforeCursor.match(/@(\w*)$/);
+            if (afterAtMatch) {
+                return { kind: 'tag' };
+            }
+
+            // Check if we're in a type position:
+            // After @param {, @param name , @returns {, @returns , @param {type} name (no - we want after the tag)
+            // Simplified: after @param name or @param { or @returns { or @returns
+            const typeContextPatterns = [
+                /@param\s+\{[^}]*$/,           // @param {partial_type
+                /@param\s+\w+\s+\{?[^-]*$/,    // @param name partial_type or @param name {partial
+                /@returns?\s+\{?[^-]*$/,        // @returns partial_type
+            ];
+
+            for (const pattern of typeContextPatterns) {
+                if (pattern.test(textBeforeCursor)) {
+                    return { kind: 'type' };
+                }
+            }
+
+            return null;
+        }
+    }
+    return null;
+}
+
+function createJsDocCompletions(context: JsDocCompletionContext): CompletionItem[] {
+    if (context.kind === 'tag') {
+        return [
+            { label: 'param', kind: CompletionItemKind.Keyword, detail: '@param {type} name - description', insertText: 'param ', sortText: '0param' },
+            { label: 'returns', kind: CompletionItemKind.Keyword, detail: '@returns {type} description', insertText: 'returns ', sortText: '0returns' },
+            { label: 'typedef', kind: CompletionItemKind.Keyword, detail: '@typedef {object} TypeName', insertText: 'typedef ', sortText: '0typedef' },
+            { label: 'property', kind: CompletionItemKind.Keyword, detail: '@property {type} name - description', insertText: 'property ', sortText: '0property' },
+            { label: 'type', kind: CompletionItemKind.Keyword, detail: '@type {type}', insertText: 'type ', sortText: '0type' },
+            { label: 'description', kind: CompletionItemKind.Keyword, detail: '@description text', insertText: 'description ', sortText: '0description' },
+        ];
+    }
+
+    // Type completions
+    const items: CompletionItem[] = [];
+
+    // Primitive types
+    const primitives = ['string', 'number', 'integer', 'boolean', 'array', 'object', 'function', 'null'];
+    for (const prim of primitives) {
+        items.push({
+            label: prim,
+            kind: CompletionItemKind.TypeParameter,
+            sortText: `1${prim}`,
+        });
+    }
+
+    // Module types
+    for (const moduleName of Object.keys(MODULE_REGISTRIES)) {
+        items.push({
+            label: `module:${moduleName}`,
+            kind: CompletionItemKind.Module,
+            detail: `${moduleName} module`,
+            sortText: `2module:${moduleName}`,
+        });
+    }
+
+    // Object types
+    for (const objectType of Object.keys(OBJECT_REGISTRIES)) {
+        items.push({
+            label: objectType,
+            kind: CompletionItemKind.Class,
+            detail: `${objectType} object type`,
+            sortText: `3${objectType}`,
+        });
+    }
+
+    // import() type syntax
+    items.push({
+        label: "import('module').type",
+        kind: CompletionItemKind.Snippet,
+        detail: 'Cross-file type reference',
+        insertText: "import('$1').$2",
+        insertTextFormat: InsertTextFormat.Snippet,
+        sortText: '4import',
+    });
+
+    return items;
 }
 
 export function handleCompletionResolve(item: CompletionItem): CompletionItem {

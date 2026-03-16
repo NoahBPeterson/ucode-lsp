@@ -86,8 +86,8 @@ export abstract class OperatorExpressions extends CompositeExpressions {
   }
 
   protected parseArrowFunction(left: AstNode): ArrowFunctionExpressionNode | null {
-    // arrowToken is the => token, but we don't need to use it currently
-    
+    const leadingJsDoc = this.findLeadingJsDoc(left.start);
+
     // Parse parameters from the left side
     const params: IdentifierNode[] = [];
     let restParam: IdentifierNode | undefined = undefined;
@@ -152,6 +152,9 @@ export abstract class OperatorExpressions extends CompositeExpressions {
 
     if (restParam) {
       arrowFunctionNode.restParam = restParam;
+    }
+    if (leadingJsDoc) {
+      arrowFunctionNode.leadingJsDoc = leadingJsDoc;
     }
 
     return arrowFunctionNode;

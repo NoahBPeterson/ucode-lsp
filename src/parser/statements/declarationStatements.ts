@@ -17,6 +17,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
 
   protected parseVariableDeclaration(): VariableDeclarationNode {
     const start = this.previous()!.pos;
+    const leadingJsDoc = this.findLeadingJsDoc(start);
     const kind = this.previous()!.type === TokenType.TK_CONST ? 'const' : 'let';
     const declarations: VariableDeclaratorNode[] = [];
 
@@ -40,13 +41,17 @@ export abstract class DeclarationStatements extends ExpressionParser {
       this.panicMode = false;
     }
 
-    return {
+    const result: VariableDeclarationNode = {
       type: 'VariableDeclaration',
       start,
       end: this.previous()!.end,
       kind,
       declarations
     };
+    if (leadingJsDoc) {
+      result.leadingJsDoc = leadingJsDoc;
+    }
+    return result;
   }
 
   private parseVariableDeclarator(): VariableDeclaratorNode | null {
@@ -76,6 +81,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
 
   protected parseFunctionDeclaration(isExported: boolean = false): FunctionDeclarationNode | FunctionExpressionNode | null {
     const start = this.previous()!.pos;
+    const leadingJsDoc = this.findLeadingJsDoc(start);
 
     // For export default functions, the name is optional (anonymous functions allowed)
     let id: IdentifierNode | null = null;
@@ -143,11 +149,14 @@ export abstract class DeclarationStatements extends ExpressionParser {
         params,
         body
       };
-      
+
       if (restParam) {
         result.restParam = restParam;
       }
-      
+      if (leadingJsDoc) {
+        result.leadingJsDoc = leadingJsDoc;
+      }
+
       return result;
     } else {
       // Anonymous function - use FunctionExpressionNode
@@ -159,11 +168,14 @@ export abstract class DeclarationStatements extends ExpressionParser {
         params,
         body
       };
-      
+
       if (restParam) {
         result.restParam = restParam;
       }
-      
+      if (leadingJsDoc) {
+        result.leadingJsDoc = leadingJsDoc;
+      }
+
       return result;
     }
   }

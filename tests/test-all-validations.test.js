@@ -136,6 +136,7 @@ const testFiles = [
     'tests/test-truthiness-suppression.js',
     'tests/test-callback-element-types.js',
     'tests/test-member-expression-narrowing.js',
+    'tests/test-jsdoc-annotations.js',
 ];
 
 // Mocha test files (run as a single combined mocha invocation with shared LSP server)
@@ -197,6 +198,7 @@ const mochaFileSet = new Set([
     'test-this-property-inference.js',
     'test-type-narrowing-standalone.js',
     'test-hover-scope-resolution.js',
+    'test-jsdoc-annotations.js',
 ]);
 
 function getBaseName(filePath) {

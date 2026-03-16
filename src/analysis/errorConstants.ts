@@ -48,6 +48,11 @@ export enum UcodeErrorCode {
   MISSING_SEMICOLON = 'UC6003',
   PARSER_ERROR = 'UC6004',
 
+  // JSDoc annotation errors (7000-7999)
+  JSDOC_UNKNOWN_TYPE = 'UC7001',
+  JSDOC_PARAM_MISMATCH = 'UC7002',
+  JSDOC_MISSING_ANNOTATIONS = 'UC7003',
+
   // System and internal errors (9000-9999)
   INTERNAL_ERROR = 'UC9001',
   ANALYSIS_ERROR = 'UC9002'

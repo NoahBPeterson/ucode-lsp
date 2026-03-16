@@ -2054,7 +2054,7 @@ if (type(a) == 'object') {
   try {
     const diagnostics = await getDiagnostics(content, testPath);
     const nullDiagnostics = diagnostics.filter(d =>
-      d.message.includes("null") || d.message.includes("possibly")
+      d.code !== 'UC7003' && (d.message.includes("null") || d.message.includes("possibly"))
     );
 
     // After narrowing to 'object', no null/possibly diagnostics should appear

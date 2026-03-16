@@ -29,6 +29,7 @@ import { handleDefinition } from './definition';
 import { SemanticAnalyzer, SemanticAnalysisResult } from './analysis';
 import { UcodeParser } from './parser';
 import { UcodeLexer } from './lexer';
+import { FileResolver } from './analysis/fileResolver';
 
 const connection = createConnection(ProposedFeatures.all);
 
@@ -178,7 +179,7 @@ connection.onInitialize((params: InitializeParams) => {
             textDocumentSync: TextDocumentSyncKind.Incremental,
             completionProvider: {
                 resolveProvider: true,
-                triggerCharacters: ['.', "'", '"', ','],
+                triggerCharacters: ['.', "'", '"', ',', '@', '{'],
                 allCommitCharacters: ['(', '['],
                 completionItem: {
                     labelDetailsSupport: true
@@ -298,6 +299,7 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
     const lexer = new UcodeLexer(text, { rawMode: true });
     const tokens = lexer.tokenize();
     const parser = new UcodeParser(tokens, text);
+    parser.setComments(lexer.comments);
     const parseResult = parser.parse();
 
     let diagnostics: Diagnostic[] = parseResult.errors.map(err => {
@@ -432,6 +434,24 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                     diagnostic, document, params.textDocument.uri, lineText, ast
                 );
                 codeActions.push(...typeNarrowingActions);
+            }
+
+            // Add import() type quick fix for UC7001 (unknown type in @param)
+            if (diagnostic.code === 'UC7001') {
+                const importActions = generateImportTypeQuickFix(
+                    diagnostic, document, params.textDocument.uri
+                );
+                codeActions.push(...importActions);
+            }
+
+            // Add JSDoc annotation quick fix for UC7003
+            if (diagnostic.code === 'UC7003' && ast && cacheEntry?.result) {
+                const diagOffset = document.offsetAt(diagnostic.range.start);
+                const jsDocAction = generateJsDocQuickFix(ast, diagOffset, document, params.textDocument.uri, cacheEntry.result);
+                if (jsDocAction) {
+                    jsDocAction.diagnostics = [diagnostic];
+                    codeActions.push(jsDocAction);
+                }
             }
 
             // Check if line already has disable comment
@@ -768,6 +788,167 @@ function makeReplaceRangeAction(
             }
         }
     };
+}
+
+// Generate JSDoc annotation quick fix for functions with unknown-typed parameters
+function generateJsDocQuickFix(
+    ast: any, cursorOffset: number, document: TextDocument, uri: string,
+    analysisResult: SemanticAnalysisResult
+): CodeAction | null {
+    // Walk AST to find function declarations/expressions containing cursor
+    const funcNode = findFunctionAtOffset(ast, cursorOffset);
+    if (!funcNode) return null;
+    if (!funcNode.params || funcNode.params.length === 0) return null;
+    if (funcNode.leadingJsDoc) return null; // Already has JSDoc
+
+    // Check if any params are unknown-typed
+    const symbolTable = analysisResult.symbolTable;
+    const unknownParams: string[] = [];
+    for (const param of funcNode.params) {
+        const sym = symbolTable.lookupAtPosition ? symbolTable.lookupAtPosition(param.name, param.start) : symbolTable.lookup(param.name);
+        if (!sym || sym.dataType === 'unknown') {
+            unknownParams.push(param.name);
+        }
+    }
+    if (unknownParams.length === 0) return null;
+
+    // Build JSDoc comment text
+    const funcStartPos = document.positionAt(funcNode.start);
+    const funcLine = funcStartPos.line;
+    const indentText = document.getText({
+        start: { line: funcLine, character: 0 },
+        end: { line: funcLine, character: funcStartPos.character }
+    });
+
+    const jsDocLines = [`${indentText}/**`];
+    for (const paramName of funcNode.params.map((p: any) => p.name)) {
+        jsDocLines.push(`${indentText} * @param {unknown} ${paramName}`);
+    }
+    jsDocLines.push(`${indentText} */`);
+    const finalJsDoc = jsDocLines.join('\n') + '\n';
+
+    return {
+        title: `Add JSDoc type annotations for ${unknownParams.length} parameter${unknownParams.length > 1 ? 's' : ''}`,
+        kind: CodeActionKind.QuickFix,
+        edit: {
+            changes: {
+                [uri]: [TextEdit.insert(
+                    { line: funcLine, character: 0 },
+                    finalJsDoc
+                )]
+            }
+        }
+    };
+}
+
+// Walk AST to find the innermost function declaration/expression containing the given offset
+function findFunctionAtOffset(node: any, offset: number): any | null {
+    if (!node || typeof node !== 'object') return null;
+    if (node.start > offset || node.end < offset) return null;
+
+    // Check if this node is a function
+    const isFunctionNode = node.type === 'FunctionDeclaration' ||
+                           node.type === 'FunctionExpression' ||
+                           node.type === 'ArrowFunctionExpression';
+
+    let deepest: any | null = isFunctionNode ? node : null;
+
+    // Recurse into children
+    for (const key of Object.keys(node)) {
+        if (key === 'leadingJsDoc') continue;
+        const child = node[key];
+        if (Array.isArray(child)) {
+            for (const item of child) {
+                if (item && typeof item === 'object' && 'type' in item) {
+                    const found = findFunctionAtOffset(item, offset);
+                    if (found) deepest = found;
+                }
+            }
+        } else if (child && typeof child === 'object' && 'type' in child) {
+            const found = findFunctionAtOffset(child, offset);
+            if (found) deepest = found;
+        }
+    }
+
+    return deepest;
+}
+
+/**
+ * Generate quick fix for UC7001 (unknown type in @param annotation).
+ * If the unknown type name matches a resolvable module, offer import() replacement.
+ */
+function generateImportTypeQuickFix(
+    diagnostic: any, document: TextDocument, uri: string
+): CodeAction[] {
+    const actions: CodeAction[] = [];
+
+    // Extract type name from message: "Unknown type 'xxx' in @param annotation"
+    const typeMatch = /Unknown type '([^']+)'/.exec(diagnostic.message);
+    if (!typeMatch) return actions;
+    const typeName = typeMatch[1]!;
+
+    // Find the {typeName} in the JSDoc comment to get exact replacement range
+    // The diagnostic range covers the JSDoc comment
+    const diagStartOffset = document.offsetAt(diagnostic.range.start);
+    const commentText = document.getText({
+        start: diagnostic.range.start,
+        end: diagnostic.range.end
+    });
+
+    // Find {typeName} in the comment text
+    const bracePattern = new RegExp(`\\{${typeName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}`);
+    const braceMatch = bracePattern.exec(commentText);
+    if (!braceMatch) return actions;
+
+    const replaceStart = document.positionAt(diagStartOffset + braceMatch.index + 1); // +1 to skip {
+    const replaceEnd = document.positionAt(diagStartOffset + braceMatch.index + braceMatch[0].length - 1); // -1 to skip }
+
+    // Try to resolve as a module file
+    const workspaceRoot = workspaceFolders.length > 0 ? workspaceFolders[0]! : path.dirname(uri.replace('file://', ''));
+    const fileResolver = new FileResolver(workspaceRoot);
+    const resolvedUri = fileResolver.resolveImportPath(typeName, uri);
+
+    if (resolvedUri && resolvedUri.startsWith('file://')) {
+        // Module found — offer import() replacement
+        // Get the module's exports to offer property-specific replacements
+        const exportInfo = fileResolver.getDefaultExportPropertyTypes(resolvedUri);
+        if (exportInfo?.propertyTypes && exportInfo.propertyTypes.size > 0) {
+            // Offer import('module').property for each exported property
+            for (const [propName, propType] of exportInfo.propertyTypes) {
+                const typeStr = typeof propType === 'string' ? propType : 'object';
+                actions.push({
+                    title: `Replace with import('${typeName}').${propName} (${typeStr})`,
+                    kind: CodeActionKind.QuickFix,
+                    diagnostics: [diagnostic],
+                    edit: {
+                        changes: {
+                            [uri]: [TextEdit.replace(
+                                { start: replaceStart, end: replaceEnd },
+                                `import('${typeName}').${propName}`
+                            )]
+                        }
+                    }
+                });
+            }
+        }
+
+        // Always offer the bare import('module') option
+        actions.push({
+            title: `Replace with import('${typeName}')`,
+            kind: CodeActionKind.QuickFix,
+            diagnostics: [diagnostic],
+            edit: {
+                changes: {
+                    [uri]: [TextEdit.replace(
+                        { start: replaceStart, end: replaceEnd },
+                        `import('${typeName}')`
+                    )]
+                }
+            }
+        });
+    }
+
+    return actions;
 }
 
 // Generate quick fixes for type narrowing diagnostics

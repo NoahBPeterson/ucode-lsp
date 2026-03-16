@@ -31,6 +31,8 @@ import { UciObjectType, createUciObjectDataType } from './uciTypes';
 import { UloopObjectType, createUloopObjectDataType, uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
+import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
+import { JsDocCommentNode } from '../ast/nodes';
 import { IoObjectType, createIoHandleDataType } from './ioTypes';
 import { Either, Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, validateImport } from './moduleDispatch';
@@ -82,6 +84,8 @@ export class SemanticAnalyzer extends BaseVisitor {
   private thisPropertyStack: Map<string, UcodeDataType>[] = []; // Track `this` context for object method property types
   private truthinessDepth = 0; // Track when we're inside a truthiness context (if test, !, ternary test)
   private callbackElementType: UcodeDataType | null = null; // Element type to pass to callback parameters (filter/map/sort)
+  private typedefRegistry: Map<string, ParsedTypedef> = new Map(); // File-level @typedef definitions
+  private strictMode = false; // Whether 'use strict'; is present
 
   constructor(textDocument: TextDocument, options: SemanticAnalysisOptions = {}) {
     super();
@@ -118,11 +122,16 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.currentASTRoot = ast as ProgramNode;
       // Pass the AST to TypeChecker for direct analysis
       this.typeChecker.setAST(this.currentASTRoot);
+      // Detect 'use strict'; directive
+      this.strictMode = this.detectStrictMode(this.currentASTRoot);
     }
 
     try {
       // Parse disable comments before analysis
       this.parseDisableComments();
+
+      // Scan JSDoc comments for @typedef definitions
+      this.scanTypedefs();
 
       // Visit the AST to perform semantic analysis
       this.visit(ast);
@@ -244,6 +253,17 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   visitVariableDeclaration(node: VariableDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
+      // Propagate JSDoc from variable declaration to function init expressions
+      if (node.leadingJsDoc && node.declarations.length === 1) {
+        const init = node.declarations[0]?.init;
+        if (init) {
+          if (init.type === 'FunctionExpression' && !(init as FunctionExpressionNode).leadingJsDoc) {
+            (init as FunctionExpressionNode).leadingJsDoc = node.leadingJsDoc;
+          } else if (init.type === 'ArrowFunctionExpression' && !(init as ArrowFunctionExpressionNode).leadingJsDoc) {
+            (init as ArrowFunctionExpressionNode).leadingJsDoc = node.leadingJsDoc;
+          }
+        }
+      }
       for (const declarator of node.declarations) {
         this.visitVariableDeclarator(declarator, node.kind);
       }
@@ -332,6 +352,29 @@ export class SemanticAnalyzer extends BaseVisitor {
                     importedFrom: this.normalizeImportedFrom(filePath, resolvedUri),
                     importSpecifier: 'default'
                   });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Handle || require('module') pattern (e.g., let _fs = fs_mod || require('fs'))
+      // Parser emits BinaryExpression for || and ??, not LogicalExpression
+      if (node.init && node.init.type === 'BinaryExpression') {
+        const binary = node.init as BinaryExpressionNode;
+        if (binary.operator === '||' || binary.operator === '??') {
+          const requireCall = binary.right;
+          if (requireCall && requireCall.type === 'CallExpression') {
+            const call = requireCall as CallExpressionNode;
+            if (call.callee?.type === 'Identifier' && (call.callee as IdentifierNode).name === 'require' &&
+                call.arguments?.length === 1) {
+              const arg = call.arguments[0];
+              if (arg && arg.type === 'Literal' && typeof (arg as LiteralNode).value === 'string') {
+                const moduleName = (arg as LiteralNode).value as string;
+                if (isKnownModule(moduleName)) {
+                  symbolType = SymbolType.MODULE;
+                  dataType = { type: UcodeType.OBJECT, moduleName };
                 }
               }
             }
@@ -784,6 +827,177 @@ export class SemanticAnalyzer extends BaseVisitor {
     return resolvedUri || source;
   }
 
+  private applyJsDocToParams(
+    jsDocNode: JsDocCommentNode | undefined,
+    params: IdentifierNode[]
+  ): void {
+    if (!jsDocNode) {
+      // No JSDoc — declare all params as UNKNOWN
+      for (const param of params) {
+        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
+      }
+      return;
+    }
+
+    const parsed = parseJsDocComment(jsDocNode.value);
+    const paramTags = parsed.tags.filter(t => t.tag === 'param');
+
+    // Build map of JSDoc param names to their resolved info
+    interface JsDocParamInfo {
+      type: UcodeDataType;
+      description?: string | undefined;
+      propertyTypes?: Map<string, UcodeDataType> | undefined;
+      nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>> | undefined;
+      propertyFunctionReturnTypes?: Map<string, string> | undefined;
+    }
+    const jsdocParams = new Map<string, JsDocParamInfo>();
+    for (const tag of paramTags) {
+      if (!tag.name) continue;
+
+      // Try import() type expression first: @param {import('pkg').property} name
+      const importExpr = parseImportTypeExpression(tag.typeExpression);
+      if (importExpr) {
+        const importResolved = this.resolveImportTypeExpression(importExpr.modulePath, importExpr.propertyName);
+        if (importResolved) {
+          jsdocParams.set(tag.name, { ...importResolved, description: tag.description });
+          continue;
+        }
+        // Fall through to unknown type diagnostic
+      }
+
+      const resolved = resolveTypeExpression(tag.typeExpression);
+      if (resolved === null) {
+        // Check typedef registry before emitting UC7001
+        const typedef = this.typedefRegistry.get(tag.typeExpression);
+        if (typedef) {
+          const propTypes = new Map<string, UcodeDataType>();
+          for (const [propName, propInfo] of typedef.properties) {
+            propTypes.set(propName, propInfo.type);
+          }
+          jsdocParams.set(tag.name, {
+            type: UcodeType.OBJECT as UcodeDataType,
+            description: tag.description,
+            propertyTypes: propTypes.size > 0 ? propTypes : undefined,
+          });
+          continue;
+        }
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.JSDOC_UNKNOWN_TYPE,
+          `Unknown type '${tag.typeExpression}' in @param annotation`,
+          jsDocNode.start, jsDocNode.end - 1,
+          DiagnosticSeverity.Warning
+        );
+        continue;
+      }
+      jsdocParams.set(tag.name, { type: resolved, description: tag.description });
+    }
+
+    // Check for @param names that don't match any actual parameter
+    const actualParamNames = new Set(params.map(p => p.name));
+    for (const tag of paramTags) {
+      if (tag.name && !actualParamNames.has(tag.name)) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.JSDOC_PARAM_MISMATCH,
+          `@param '${tag.name}' does not match any parameter. Parameters: ${params.map(p => p.name).join(', ')}`,
+          jsDocNode.start, jsDocNode.end - 1,
+          DiagnosticSeverity.Warning
+        );
+      }
+    }
+
+    // Apply types to parameters
+    for (const param of params) {
+      const jsdocInfo = jsdocParams.get(param.name);
+      if (jsdocInfo) {
+        this.symbolTable.declare(param.name, SymbolType.PARAMETER, jsdocInfo.type, param);
+        const sym = this.symbolTable.lookup(param.name);
+        if (sym) {
+          if (jsdocInfo.description) sym.jsdocDescription = jsdocInfo.description;
+          if (jsdocInfo.propertyTypes) sym.propertyTypes = jsdocInfo.propertyTypes;
+          if (jsdocInfo.nestedPropertyTypes) sym.nestedPropertyTypes = jsdocInfo.nestedPropertyTypes;
+          if (jsdocInfo.propertyFunctionReturnTypes) sym.propertyFunctionReturnTypes = jsdocInfo.propertyFunctionReturnTypes;
+        }
+      } else {
+        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
+      }
+    }
+  }
+
+  /**
+   * Resolve an import() type expression via fileResolver.
+   * Handles: import('module') and import('module').property
+   */
+  private resolveImportTypeExpression(
+    modulePath: string,
+    propertyName?: string | undefined
+  ): { type: UcodeDataType; propertyTypes?: Map<string, UcodeDataType> | undefined; nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>> | undefined; propertyFunctionReturnTypes?: Map<string, string> | undefined } | null {
+    // Check if it's a known builtin module
+    if (isKnownModule(modulePath)) {
+      if (propertyName) {
+        // import('fs').file → known object type like 'fs.file'
+        const objectTypeName = `${modulePath}.${propertyName}`;
+        if (isKnownObjectType(objectTypeName)) {
+          return { type: { type: UcodeType.OBJECT, moduleName: objectTypeName } };
+        }
+        return null;
+      }
+      // import('fs') → the module itself
+      return { type: { type: UcodeType.OBJECT, moduleName: modulePath } };
+    }
+
+    // Resolve user module via fileResolver
+    const resolvedUri = this.fileResolver.resolveImportPath(modulePath, this.textDocument.uri);
+    if (!resolvedUri || !resolvedUri.startsWith('file://')) return null;
+
+    // Get the module's default export info
+    const exports = this.fileResolver.getModuleExports(resolvedUri);
+    const defaultExport = exports?.find(e => e.type === 'default');
+
+    if (defaultExport?.isFunction) {
+      // Default export is a factory function
+      const returnInfo = this.fileResolver.getDefaultExportFunctionReturnInfo(resolvedUri);
+      if (!returnInfo) return null;
+
+      if (propertyName) {
+        // import('config').cfg → a property of the factory return value
+        const propType = returnInfo.returnPropertyTypes?.get(propertyName);
+        if (!propType) return null;
+        return { type: propType };
+      }
+      // import('config') → the factory function return type with all properties
+      return {
+        type: returnInfo.returnType ?? UcodeType.OBJECT as UcodeDataType,
+        propertyTypes: returnInfo.returnPropertyTypes,
+        propertyFunctionReturnTypes: returnInfo.propertyFunctionReturnTypes
+      };
+    }
+
+    // Default export is an object
+    const exportInfo = this.fileResolver.getDefaultExportPropertyTypes(resolvedUri);
+    if (!exportInfo) return null;
+
+    if (propertyName) {
+      // import('pkg').pkg → the 'pkg' property of the default export
+      const propType = exportInfo.propertyTypes?.get(propertyName);
+      if (!propType) return null;
+
+      // Get nested property types for this property (enables member completions)
+      const nestedProps = exportInfo.nestedPropertyTypes?.get(propertyName);
+      const result: { type: UcodeDataType; propertyTypes?: Map<string, UcodeDataType> | undefined; propertyFunctionReturnTypes?: Map<string, string> | undefined } = { type: propType };
+      if (nestedProps) {
+        result.propertyTypes = nestedProps;
+      }
+      return result;
+    }
+
+    // import('pkg') → the default export itself with all properties
+    return {
+      type: { type: UcodeType.OBJECT, isDefaultImport: true },
+      propertyTypes: exportInfo.propertyTypes,
+      nestedPropertyTypes: exportInfo.nestedPropertyTypes
+    };
+  }
+
   visitFunctionDeclaration(node: FunctionDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
@@ -819,9 +1033,25 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.symbolTable.enterScope();
       this.functionScopes.push(this.symbolTable.getCurrentScope());
 
-      // Declare parameters
-      for (const param of node.params) {
-        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
+      // Declare parameters (with JSDoc type annotations if present)
+      this.applyJsDocToParams(node.leadingJsDoc, node.params);
+
+      // Emit diagnostic for unknown-typed params (strict mode only)
+      if (this.strictMode && !node.leadingJsDoc && node.params.length > 0) {
+        const unknownParams = node.params.filter(p => {
+          const sym = this.symbolTable.lookup(p.name);
+          return !sym || sym.dataType === UcodeType.UNKNOWN;
+        });
+        if (unknownParams.length > 0) {
+          const names = unknownParams.map(p => p.name).join(', ');
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.JSDOC_MISSING_ANNOTATIONS,
+            `Function '${name}' has ${unknownParams.length} parameter${unknownParams.length > 1 ? 's' : ''} with unknown type${unknownParams.length > 1 ? 's' : ''}: ${names}. Add /** @param */ annotations.`,
+            node.id.start,
+            node.id.end,
+            DiagnosticSeverity.Information
+          );
+        }
       }
 
       // Declare rest parameter if present (as array type)
@@ -900,10 +1130,8 @@ export class SemanticAnalyzer extends BaseVisitor {
         this.symbolTable.declare(node.id.name, SymbolType.FUNCTION, UcodeType.UNKNOWN as UcodeDataType, node.id);
       }
 
-      // Declare parameters in the function scope
-      for (const param of node.params) {
-        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
-      }
+      // Declare parameters in the function scope (with JSDoc type annotations if present)
+      this.applyJsDocToParams(node.leadingJsDoc, node.params);
 
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
@@ -947,12 +1175,16 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.symbolTable.enterScope();
       this.functionScopes.push(this.symbolTable.getCurrentScope());
 
-      // Declare parameters in the function scope
-      // For callback parameters (filter/map/sort), infer first param type from array element type
-      for (let i = 0; i < node.params.length; i++) {
-        const param = node.params[i]!;
-        const paramType = (i === 0 && this.callbackElementType) ? this.callbackElementType : UcodeType.UNKNOWN as UcodeDataType;
-        this.symbolTable.declare(param.name, SymbolType.PARAMETER, paramType, param);
+      // Declare parameters — JSDoc takes priority over callback inference
+      if (node.leadingJsDoc) {
+        this.applyJsDocToParams(node.leadingJsDoc, node.params);
+      } else {
+        // For callback parameters (filter/map/sort), infer first param type from array element type
+        for (let i = 0; i < node.params.length; i++) {
+          const param = node.params[i]!;
+          const paramType = (i === 0 && this.callbackElementType) ? this.callbackElementType : UcodeType.UNKNOWN as UcodeDataType;
+          this.symbolTable.declare(param.name, SymbolType.PARAMETER, paramType, param);
+        }
       }
 
       // Declare rest parameter if present (as array type)
@@ -2860,6 +3092,38 @@ private addDiagnostic(
       }
 
       this.diagnostics.push(diagnostic);
+    }
+  }
+
+  private detectStrictMode(ast: ProgramNode): boolean {
+    if (!ast.body || ast.body.length === 0) return false;
+    const first = ast.body[0];
+    if (first?.type === 'ExpressionStatement') {
+      const expr = (first as any).expression;
+      if (expr?.type === 'Literal' && expr.value === 'use strict') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Scan document for JSDoc @typedef definitions and populate the typedef registry.
+   */
+  private scanTypedefs(): void {
+    this.typedefRegistry.clear();
+    const text = this.textDocument.getText();
+    // Match /** ... */ blocks containing @typedef
+    const jsdocRegex = /\/\*\*([\s\S]*?)\*\//g;
+    let match: RegExpExecArray | null;
+    while ((match = jsdocRegex.exec(text)) !== null) {
+      const commentBody = match[1]!;
+      if (!commentBody.includes('@typedef')) continue;
+      const parsed = parseJsDocComment(commentBody);
+      const typedef = extractTypedef(parsed);
+      if (typedef) {
+        this.typedefRegistry.set(typedef.name, typedef);
+      }
     }
   }
 

@@ -11,6 +11,12 @@ export interface AstNode {
   // parent?: AstNode; // REMOVED: Causes memory leaks due to circular references
 }
 
+// JSDoc comment node (attached to function declarations/expressions)
+export interface JsDocCommentNode extends AstNode {
+  type: 'JsDocComment';
+  value: string;       // Raw comment text (between /** and */)
+}
+
 // Program root - contains all top-level statements
 export interface ProgramNode extends AstNode {
   type: 'Program';
@@ -161,6 +167,7 @@ export interface VariableDeclarationNode extends AstNode {
   type: 'VariableDeclaration';
   kind: 'let' | 'const';
   declarations: VariableDeclaratorNode[];
+  leadingJsDoc?: JsDocCommentNode;
 }
 
 export interface VariableDeclaratorNode extends AstNode {
@@ -208,6 +215,7 @@ export interface FunctionDeclarationNode extends AstNode {
   params: IdentifierNode[];
   restParam?: IdentifierNode; // for ...args parameters
   body: BlockStatementNode;
+  leadingJsDoc?: JsDocCommentNode;
 }
 
 // Function expressions: function(params) { body }
@@ -217,6 +225,7 @@ export interface FunctionExpressionNode extends AstNode {
   params: IdentifierNode[];
   restParam?: IdentifierNode; // for ...args parameters
   body: BlockStatementNode;
+  leadingJsDoc?: JsDocCommentNode;
 }
 
 // Arrow functions: (params) => body
@@ -226,6 +235,7 @@ export interface ArrowFunctionExpressionNode extends AstNode {
   restParam?: IdentifierNode; // for ...args parameters
   body: AstNode; // can be BlockStatement or Expression
   expression: boolean; // true if body is expression, false if block
+  leadingJsDoc?: JsDocCommentNode;
 }
 
 // Return statements: return value;

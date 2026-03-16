@@ -45,6 +45,7 @@ export function validateWithAst(
         
         // 2. Parse into AST
         const parser = new UcodeParser(tokens, text);
+        parser.setComments(lexer.comments);
         const parseResult = parser.parse();
         
         // 3. Add parsing errors to diagnostics
