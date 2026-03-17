@@ -611,6 +611,30 @@ function findEnclosingContext(ast: any, document: TextDocument, position: { line
     return result;
 }
 
+/**
+ * Check if a guard condition already exists above the diagnostic line.
+ * Looks for `if (guardCondition) return/continue;` in the preceding code.
+ */
+function guardAlreadyExists(document: TextDocument, beforeLine: number, guardCondition: string): boolean {
+    for (let i = Math.max(0, beforeLine - 50); i < beforeLine; i++) {
+        const lineText = document.getText({
+            start: { line: i, character: 0 },
+            end: { line: i + 1, character: 0 }
+        });
+        if (lineText.includes(guardCondition)) {
+            // Check if this line or the next has return/continue (handles multi-line guards)
+            const nextLine = i + 1 < beforeLine ? document.getText({
+                start: { line: i + 1, character: 0 },
+                end: { line: i + 2, character: 0 }
+            }) : '';
+            if (/\b(return|continue)\b/.test(lineText) || /\b(return|continue)\b/.test(nextLine)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 /** Check whether the diagnostic is about null in a union (vs a wrong-type problem) */
 function isNullProblem(data: any): boolean {
     if (!data.actualType) return true;
@@ -1038,6 +1062,11 @@ function generateTypeNarrowingQuickFixes(
             const guardLabel = 'Add null guard';
             const wrapLabel = 'Wrap in null guard';
 
+            // Skip if this exact guard already exists above
+            if (guardAlreadyExists(document, line, guardCond)) {
+                return actions;
+            }
+
             const keyword = ctx.inLoop ? 'continue' : 'return';
             if (needsStatementRedirect) {
                 const tl = stmtLine;
@@ -1113,6 +1142,11 @@ function generateTypeNarrowingQuickFixes(
             const wrapGuard = isUnionExpected
                 ? expectedTypes.map((t: string) => `type(${varName}) == "${t}"`).join(' || ')
                 : `type(${varName}) == "${expectedTypes[0]}"`;
+
+            // Skip if this exact guard already exists above
+            if (guardAlreadyExists(document, line, earlyReturnGuard)) {
+                return actions;
+            }
 
             const keyword2 = ctx.inLoop ? 'continue' : 'return';
             if (needsStatementRedirect) {
@@ -1238,27 +1272,31 @@ function generateTypeNarrowingQuickFixes(
                     ? innerExpectedTypes.map((t: string) => `type(${innerInfo.varName}) != "${t}"`).join(' && ')
                     : `type(${innerInfo.varName}) != "${innerExpected}"`;
 
-                if (needsStatementRedirect) {
-                    const tl = stmtLine;
-                    const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
-                    const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
-                    actions.push(makeInsertBeforeAction(`Add type guard`,
-                        `${tlIndent}if (${innerEarlyGuard})\n${tlIndent}\treturn;\n`, tl, uri, diagnostic, document));
-                } else if (ctx.inCondition) {
-                    const targetLine = ctx.conditionOwnerLine >= 0 ? ctx.conditionOwnerLine : line;
-                    const targetLineText = document.getText({ start: { line: targetLine, character: 0 }, end: { line: targetLine + 1, character: 0 } }).replace(/\r?\n$/, '');
-                    const targetIndent = targetLineText.match(/^(\s*)/)?.[1] || '';
-                    const kw2 = ctx.inLoop ? 'continue' : 'return';
-                    actions.push(makeInsertBeforeAction(`Add type guard`,
-                        `${targetIndent}if (${innerEarlyGuard})\n${targetIndent}\t${kw2};\n`, targetLine, uri, diagnostic, document));
-                } else if (ctx.inLoop) {
-                    actions.push(makeInsertBeforeAction(`Add type guard`,
-                        `${indent}if (${innerEarlyGuard})\n${indent}\tcontinue;\n`, line, uri, diagnostic, document));
-                } else if (ctx.inFunction) {
-                    actions.push(makeInsertBeforeAction(`Add type guard`,
-                        `${indent}if (${innerEarlyGuard})\n${indent}\treturn;\n`, line, uri, diagnostic, document));
+                // Skip if this exact guard already exists above — fall through to extract-to-variable
+                if (!guardAlreadyExists(document, line, innerEarlyGuard)) {
+                    if (needsStatementRedirect) {
+                        const tl = stmtLine;
+                        const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
+                        const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
+                        actions.push(makeInsertBeforeAction(`Add type guard`,
+                            `${tlIndent}if (${innerEarlyGuard})\n${tlIndent}\treturn;\n`, tl, uri, diagnostic, document));
+                    } else if (ctx.inCondition) {
+                        const targetLine = ctx.conditionOwnerLine >= 0 ? ctx.conditionOwnerLine : line;
+                        const targetLineText = document.getText({ start: { line: targetLine, character: 0 }, end: { line: targetLine + 1, character: 0 } }).replace(/\r?\n$/, '');
+                        const targetIndent = targetLineText.match(/^(\s*)/)?.[1] || '';
+                        const kw2 = ctx.inLoop ? 'continue' : 'return';
+                        actions.push(makeInsertBeforeAction(`Add type guard`,
+                            `${targetIndent}if (${innerEarlyGuard})\n${targetIndent}\t${kw2};\n`, targetLine, uri, diagnostic, document));
+                    } else if (ctx.inLoop) {
+                        actions.push(makeInsertBeforeAction(`Add type guard`,
+                            `${indent}if (${innerEarlyGuard})\n${indent}\tcontinue;\n`, line, uri, diagnostic, document));
+                    } else if (ctx.inFunction) {
+                        actions.push(makeInsertBeforeAction(`Add type guard`,
+                            `${indent}if (${innerEarlyGuard})\n${indent}\treturn;\n`, line, uri, diagnostic, document));
+                    }
+                    return actions;
                 }
-                return actions;
+                // Guard already exists — fall through to extract-to-variable path
             }
         }
 
@@ -1562,6 +1600,14 @@ function getDottedPath(node: any): string | null {
 function findCallExpressionAtOffset(node: any, offset: number): any | null {
     if (!node || typeof node !== 'object' || typeof node.start !== 'number') return null;
     if (offset < node.start || offset > node.end) return null;
+
+    // If this is a computed MemberExpression wrapping a CallExpression (e.g., match(...)[1]),
+    // don't recurse into the call — the null comes from the member access, not the call's args.
+    // Guarding the inner call's argument won't fix the nullable result of indexing.
+    if (node.type === 'MemberExpression' && node.computed &&
+        node.object?.type === 'CallExpression') {
+        return null;
+    }
 
     // Try to find a more specific CallExpression in children
     for (const key of Object.keys(node)) {
