@@ -636,6 +636,23 @@ export function handleHover(
                             };
                         }
                     }
+                    // Check if it's a module type (e.g., let _fs = require('fs'); _fs.readfile)
+                    let moduleName: string | undefined;
+                    if (symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
+                        moduleName = (symbol.dataType as any).moduleName as string;
+                    }
+                    if (moduleName && isKnownModule(moduleName)) {
+                        const doc = getModuleMemberDocumentation(moduleName, memberName);
+                        if (Option.isSome(doc)) {
+                            return {
+                                contents: { kind: MarkupKind.Markdown, value: doc.value },
+                                range: {
+                                    start: document.positionAt(memberContext.memberTokenPos),
+                                    end: document.positionAt(memberContext.memberTokenEnd)
+                                }
+                            };
+                        }
+                    }
                     // For other non-imported objects, don't show builtin hover
                     return undefined;
                 }

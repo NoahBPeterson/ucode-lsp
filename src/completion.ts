@@ -208,8 +208,8 @@ export function handleCompletion(
         }
         
         // Only show general completions when NOT in a member expression context
-        return createGeneralCompletions(analysisResult, connection);
-        
+        return createGeneralCompletions(analysisResult, connection, offset);
+
     } catch (error) {
         connection.console.log('Completion error: ' + error);
         return createGeneralCompletions(analysisResult, connection);
@@ -449,7 +449,7 @@ function getUnifiedObjectTypeCompletions(objectName: string, analysisResult?: Se
 
 // Legacy per-module completion functions removed - now handled by getUnifiedModuleCompletions/getUnifiedObjectTypeCompletions
 
-function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, connection?: any): CompletionItem[] {
+function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, connection?: any, offset?: number): CompletionItem[] {
     const completions: CompletionItem[] = [];
     
     // Debug: Check if we have analysis result
@@ -486,11 +486,13 @@ function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, conne
         });
     }
     
-    // Add variables from symbol table
+    // Add variables from symbol table (position-aware to include scoped imports)
     if (analysisResult && analysisResult.symbolTable) {
-        const variables = analysisResult.symbolTable.getAllSymbols();
+        const variables = offset !== undefined
+            ? analysisResult.symbolTable.getSymbolsAtPosition(offset)
+            : analysisResult.symbolTable.getAllSymbols();
         if (connection) {
-            connection.console.log(`[INFO] Found ${variables.length} symbols in symbol table`);
+            connection.console.log(`[INFO] Found ${variables.length} symbols in symbol table (offset: ${offset})`);
         }
         for (const symbol of variables) {
             const varName = symbol.name;

@@ -670,4 +670,37 @@ export class SymbolTable {
     }
     return allSymbols;
   }
+
+  // Get all symbols visible at a specific position (includes exited scopes)
+  getSymbolsAtPosition(position: number): Symbol[] {
+    const seen = new Map<string, Symbol>();
+
+    // Active scopes (innermost wins)
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      const scope = this.scopes[i];
+      if (scope) {
+        for (const symbol of scope.values()) {
+          if (symbol.declaredAt <= position && !seen.has(symbol.name)) {
+            seen.set(symbol.name, symbol);
+          }
+        }
+      }
+    }
+
+    // Exited scopes — only if the position falls within the symbol's scope range
+    for (const symbol of this.allSymbols) {
+      if (seen.has(symbol.name)) continue;
+      if (symbol.declaredAt <= position) {
+        if (symbol.scopeEnd === undefined || position <= symbol.scopeEnd) {
+          // Prefer the innermost (latest declaredAt)
+          const existing = seen.get(symbol.name);
+          if (!existing || symbol.declaredAt > existing.declaredAt) {
+            seen.set(symbol.name, symbol);
+          }
+        }
+      }
+    }
+
+    return Array.from(seen.values());
+  }
 }
