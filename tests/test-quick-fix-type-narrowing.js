@@ -1112,4 +1112,37 @@ print(process({}));
       }
     });
   });
+
+  describe('Extract-to-variable for nested call in sort()', function() {
+    it('should not include comma in extracted expression from sort(slice(cpus), ...)', async function() {
+      const code = `
+function get_next_cpu(weight, prev_cpu) {
+    if (disable)
+        return 0;
+    let sort_cpus = sort(slice(cpus), (a, b) => a.load - b.load);
+    let idx = 0;
+    let cpu = sort_cpus[idx].id;
+    return cpu;
+}
+`;
+      const { actions, matching, diag } = await getActionsForCode(code, 'nullable-argument');
+      if (matching.length > 0) {
+        // Diagnostic range should NOT include the comma
+        const diagText = code.split('\n')[diag.range.start.line];
+        const rangeText = diagText.substring(diag.range.start.character, diag.range.end.character);
+        assert(!rangeText.includes(','), `Diagnostic range should not include comma, got: ${JSON.stringify(rangeText)}`);
+
+        // Quick fix should extract slice(cpus) to a variable, not suggest type(cpus)
+        const extract = findAction(actions, 'Extract to variable');
+        assert(extract, `Should offer extract-to-variable, got: ${actions.map(a => a.title).join(', ')}`);
+        const text = getEditText(extract);
+        assert(text.includes('slice(cpus)'), `Should extract slice(cpus), got: ${text}`);
+        assert(!text.includes('slice(cpus),'), `Should NOT include comma in extraction, got: ${text}`);
+
+        // "Disable" action should be last
+        const lastAction = actions[actions.length - 1];
+        assert(lastAction.title.includes('Disable'), `Last action should be Disable, got: ${lastAction.title}`);
+      }
+    });
+  });
 });

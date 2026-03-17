@@ -454,31 +454,36 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 }
             }
 
-            // Check if line already has disable comment
-            if (lineText.includes('// ucode-lsp disable')) {
-                continue; // Skip if already has disable comment
-            }
-
-            // Only add one disable action per line
-            if (!disableLines.has(line)) {
+            // Track lines needing disable action (added after all other actions)
+            if (!lineText.includes('// ucode-lsp disable') && !disableLines.has(line)) {
                 disableLines.add(line);
-                codeActions.push({
-                    title: 'Disable ucode-lsp for this line',
-                    kind: CodeActionKind.QuickFix,
-                    diagnostics: [diagnostic],
-                    edit: {
-                        changes: {
-                            [params.textDocument.uri]: [
-                                TextEdit.insert(
-                                    { line: line, character: lineText.length },
-                                    ' // ucode-lsp disable'
-                                )
-                            ]
-                        }
-                    }
-                });
             }
         }
+    }
+
+    // Add "Disable ucode-lsp" actions last so they appear at the bottom of the Quick Fix menu
+    for (const line of disableLines) {
+        const lineText = document.getText({
+            start: { line: line, character: 0 },
+            end: { line: line + 1, character: 0 }
+        }).replace(/\r?\n$/, '');
+        codeActions.push({
+            title: 'Disable ucode-lsp for this line',
+            kind: CodeActionKind.QuickFix,
+            diagnostics: params.context.diagnostics.filter(
+                (d: any) => d.source === 'ucode-semantic' && d.range.start.line === line
+            ),
+            edit: {
+                changes: {
+                    [params.textDocument.uri]: [
+                        TextEdit.insert(
+                            { line: line, character: lineText.length },
+                            ' // ucode-lsp disable'
+                        )
+                    ]
+                }
+            }
+        });
     }
 
     return codeActions;

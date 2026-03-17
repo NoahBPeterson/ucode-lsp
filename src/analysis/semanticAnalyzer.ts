@@ -741,7 +741,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           UcodeErrorCode.EXPORT_NOT_FOUND,
           `Builtin module '${modulePath}' does not have a default export. Use: import * as ${specifier.local.name} from '${modulePath}'; or import { ... } from '${modulePath}';`,
           specifier.local.start,
-          specifier.local.start + specifier.local.name.length - 1,
+          specifier.local.start + specifier.local.name.length,
           DiagnosticSeverity.Error
         );
         return;
@@ -3043,8 +3043,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
     // Check for duplicate diagnostics to prevent multiple identical errors
     const startPos = this.textDocument.positionAt(start);
-    // Parser node.end is inclusive (points to last char); LSP ranges need exclusive end
-    const endPos = this.textDocument.positionAt(end + 1);
+    // Parser node.end is exclusive (points past the last char) — same as LSP ranges
+    const endPos = this.textDocument.positionAt(end);
 
     const isDuplicate = this.diagnostics.some(existing =>
       existing.message === message &&
@@ -3103,8 +3103,8 @@ private addDiagnostic(
 
     // Check for duplicate diagnostics to prevent multiple identical errors
     const startPos = this.textDocument.positionAt(start);
-    // Parser node.end is inclusive (points to last char); LSP ranges need exclusive end
-    const endPos = this.textDocument.positionAt(end + 1);
+    // Parser node.end is exclusive (points past the last char) — same as LSP ranges
+    const endPos = this.textDocument.positionAt(end);
     
     const isDuplicate = this.diagnostics.some(existing => 
       existing.message === message &&

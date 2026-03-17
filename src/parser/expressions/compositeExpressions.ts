@@ -182,21 +182,26 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
     
     let property: AstNode;
     
+    let endPos: number;
+
     if (computed) {
       property = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
       this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property");
+      // Use position after ']' for consistent exclusive end
+      endPos = this.previous()!.end;
     } else {
       if (!this.check(TokenType.TK_LABEL)) {
         this.error("Expected property name after '.' or '?.'");
         return null;
       }
       property = this.parseIdentifierName() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
+      endPos = property.end;
     }
 
     return {
       type: 'MemberExpression',
       start: left.start,
-      end: property.end,
+      end: endPos,
       object: left,
       property,
       computed,

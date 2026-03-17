@@ -1572,16 +1572,18 @@ export class BuiltinValidator {
   }
 
   validateSliceFunction(node: CallExpressionNode): boolean {
-    if (!this.checkArgumentCount(node, 'slice', 2)) return true;
+    if (!this.checkArgumentCount(node, 'slice', 1)) return true;
 
     // First parameter must be array
     this.narrowForArgType(node.arguments[0], [UcodeType.ARRAY], UcodeType.ARRAY);
     this.preserveArrayElementType(node.arguments[0]);
     this.validateArgumentType(node.arguments[0], 'slice', 1, [UcodeType.ARRAY]);
 
-    // Second parameter (start index) must be number
-    this.validateArgumentType(node.arguments[1], 'slice', 2, [UcodeType.INTEGER, UcodeType.DOUBLE]);
-    
+    // Second parameter (start index) is optional but must be number if present
+    if (node.arguments.length >= 2 && node.arguments[1]) {
+      this.validateArgumentType(node.arguments[1], 'slice', 2, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+    }
+
     // Third parameter (end index) is optional but must be number if present
     if (node.arguments.length >= 3 && node.arguments[2]) {
       this.validateArgumentType(node.arguments[2], 'slice', 3, [UcodeType.INTEGER, UcodeType.DOUBLE]);
