@@ -516,6 +516,8 @@ interface EnclosingContext {
      *  the diagnostic is inside a multi-line expression (object literal, array, nested call, etc.)
      *  and guards must be inserted before this line instead. */
     enclosingStatementLine: number;
+    /** Line of the nearest enclosing function declaration/expression */
+    enclosingFunctionLine: number;
 }
 
 /**
@@ -528,7 +530,8 @@ function findEnclosingContext(ast: any, document: TextDocument, position: { line
         inFunction: false, inLoop: false, inLoopHeader: false,
         inCondition: false, conditionOwnerLine: -1,
         enclosingControl: null, enclosingControlBody: null,
-        enclosingStatementLine: -1
+        enclosingStatementLine: -1,
+        enclosingFunctionLine: -1
     };
     if (!ast) return result;
 
@@ -552,6 +555,9 @@ function findEnclosingContext(ast: any, document: TextDocument, position: { line
         const newInLoop = isFunc ? false : (isLoop || inLoop);
 
         result.inFunction = newInFunc;
+        if (isFunc) {
+            result.enclosingFunctionLine = document.positionAt(node.start).line;
+        }
         result.inLoop = newInLoop;
         result.inLoopHeader = inLoopHeader;
         result.inCondition = inCondition;
@@ -620,13 +626,21 @@ function findEnclosingContext(ast: any, document: TextDocument, position: { line
  * Check if a guard condition already exists above the diagnostic line.
  * Looks for `if (guardCondition) return/continue;` in the preceding code.
  */
-function guardAlreadyExists(document: TextDocument, beforeLine: number, guardCondition: string): boolean {
-    for (let i = Math.max(0, beforeLine - 50); i < beforeLine; i++) {
+function guardAlreadyExists(document: TextDocument, beforeLine: number, guardCondition: string, afterLine: number = -1): boolean {
+    const searchStart = afterLine >= 0 ? afterLine : Math.max(0, beforeLine - 50);
+    for (let i = searchStart; i < beforeLine; i++) {
         const lineText = document.getText({
             start: { line: i, character: 0 },
             end: { line: i + 1, character: 0 }
         });
         if (lineText.includes(guardCondition)) {
+            // Don't match if the guard is part of a compound condition (&&/||).
+            // e.g., `if (type(x) != "string" && type(x) != "array")` narrows to
+            // string|array, NOT just string — so the individual guard doesn't apply.
+            const condMatch = lineText.match(/if\s*\((.+)\)/);
+            if (condMatch && condMatch[1]!.includes('&&') || condMatch && condMatch[1]!.includes('||')) {
+                continue;
+            }
             // Check if this line or the next has return/continue (handles multi-line guards)
             const nextLine = i + 1 < beforeLine ? document.getText({
                 start: { line: i + 1, character: 0 },
@@ -1068,7 +1082,7 @@ function generateTypeNarrowingQuickFixes(
             const wrapLabel = 'Wrap in null guard';
 
             // Skip if this exact guard already exists above
-            if (guardAlreadyExists(document, line, guardCond)) {
+            if (guardAlreadyExists(document, line, guardCond, ctx.enclosingFunctionLine)) {
                 return actions;
             }
 
@@ -1115,7 +1129,9 @@ function generateTypeNarrowingQuickFixes(
                     `${indent}if (${guardCond})\n${indent}\treturn;\n`, line, uri, diagnostic, document));
             }
 
-            if (!needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader && !needsBlockExpansion && inlineDeclPos == null) {
+            // Don't offer "Wrap" when the line opens a block — wrapping just
+            // the header without the body produces broken code.
+            if (!needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader && !needsBlockExpansion && inlineDeclPos == null && !trimmedContent.endsWith('{')) {
                 actions.push(makeReplaceLineAction(
                     wrapLabel,
                     `${indent}if (${wrapCond}) {\n${indent}\t${trimmedContent}\n${indent}}`,
@@ -1149,7 +1165,7 @@ function generateTypeNarrowingQuickFixes(
                 : `type(${varName}) == "${expectedTypes[0]}"`;
 
             // Skip if this exact guard already exists above
-            if (guardAlreadyExists(document, line, earlyReturnGuard)) {
+            if (guardAlreadyExists(document, line, earlyReturnGuard, ctx.enclosingFunctionLine)) {
                 return actions;
             }
 
@@ -1249,7 +1265,9 @@ function generateTypeNarrowingQuickFixes(
                 }
             }
 
-            if (!needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader && !needsBlockExpansion && inlineDeclPos == null) {
+            // Don't offer "Wrap" when the line opens a block — wrapping just
+            // the header without the body produces broken code.
+            if (!needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader && !needsBlockExpansion && inlineDeclPos == null && !trimmedContent.endsWith('{')) {
                 actions.push(makeReplaceLineAction(
                     `Wrap in type guard`,
                     `${indent}if (${wrapGuard}) {\n${indent}\t${trimmedContent}\n${indent}}`,
@@ -1278,7 +1296,7 @@ function generateTypeNarrowingQuickFixes(
                     : `type(${innerInfo.varName}) != "${innerExpected}"`;
 
                 // Skip if this exact guard already exists above — fall through to extract-to-variable
-                if (!guardAlreadyExists(document, line, innerEarlyGuard)) {
+                if (!guardAlreadyExists(document, line, innerEarlyGuard, ctx.enclosingFunctionLine)) {
                     if (needsStatementRedirect) {
                         const tl = stmtLine;
                         const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
@@ -1499,6 +1517,20 @@ function findTightestTypeConstraint(ast: any, varName: string, afterOffset: numb
             // Skip nodes entirely before the diagnostic — but still descend
             // into container nodes that may span past afterOffset
             if (typeof node.end === 'number' && node.end < afterOffset) return;
+        }
+
+        // Track whether we're inside the function containing the diagnostic.
+        // Don't collect constraints from other functions with same-named params.
+        const isFunc = node.type === 'FunctionDeclaration' ||
+                       node.type === 'FunctionExpression' ||
+                       node.type === 'ArrowFunctionExpression';
+        if (isFunc) {
+            if (afterOffset >= node.start && afterOffset <= node.end) {
+                // This is the function containing the diagnostic — descend into it
+            } else {
+                // Different function — skip entirely
+                return;
+            }
         }
 
         if (node.type === 'CallExpression' && node.callee?.type === 'Identifier') {

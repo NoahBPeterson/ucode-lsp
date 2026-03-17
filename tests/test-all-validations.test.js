@@ -138,6 +138,8 @@ const testFiles = [
     'tests/test-member-expression-narrowing.js',
     'tests/test-jsdoc-annotations.js',
     'tests/test-scoped-completions.js',
+    'tests/test-hover-type-narrowing.js',
+    'tests/test-hover-type-consistency.js',
 ];
 
 // Mocha test files (run as a single combined mocha invocation with shared LSP server)

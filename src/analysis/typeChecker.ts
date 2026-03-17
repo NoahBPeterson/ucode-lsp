@@ -33,6 +33,10 @@ interface TypeGuardInfo {
   equalityNarrowType?: UcodeDataType;
   // Symbol info from the other variable (for richer hover display)
   equalitySymbol?: UcodeSymbol;
+  // Whether this guard came from null-propagating builtin pattern (e.g., length(x) > 0).
+  // These should NOT be negated in early-exit fall-through because the negation
+  // (e.g., length(x) <= 0) doesn't imply x is null — x could just be empty.
+  isNullPropagation?: boolean;
 }
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, Symbol as UcodeSymbol } from './symbolTable';
 import { logicalTypeInference } from './logicalTypeInference';
@@ -2192,16 +2196,9 @@ export class TypeChecker {
 
     // Check if this position is inside a type guard
     if (guards.length > 0) {
-      const positiveGuards = guards.filter(g => !g.isNegative && g.narrowToType !== null);
-
-      if (positiveGuards.length > 1) {
-        // Multiple positive guards - combine into union (fall-through case without default)
-        const types = positiveGuards.map(g => g.narrowToType!);
-        const narrowingResult = this.typeNarrowing.keepOnlyTypes(baseType, types);
-        return narrowingResult.narrowedType;
-      }
-
-      // Single guard or all negative - apply sequentially
+      // Apply guards sequentially — each guard further narrows the result.
+      // Combined union guards (isCombinedOr from switch fall-through or OR chains)
+      // return their union type directly via applyTypeGuard.
       let narrowedType = baseType;
       for (const guardInfo of guards) {
         narrowedType = this.applyTypeGuard(narrowedType, guardInfo);
@@ -2487,14 +2484,13 @@ export class TypeChecker {
                 isNegative: false
               });
             } else if (reachableTypes.length > 1) {
-              // Multiple types due to fall-through in non-default case
-              for (const reachableType of reachableTypes) {
-                guards.push({
-                  variableName,
-                  narrowToType: reachableType,
-                  isNegative: false
-                });
-              }
+              // Multiple types due to fall-through in non-default case — combine into single union guard
+              guards.push({
+                variableName,
+                narrowToType: createUnionType(reachableTypes) as UcodeType,
+                isNegative: false,
+                isCombinedOr: true
+              });
             }
 
             this.collectGuards(info.caseNode.consequent[0] || info.caseNode, variableName, position, guards);
@@ -2517,7 +2513,11 @@ export class TypeChecker {
               // Apply negative narrowing (condition was false for code to be reachable)
               const guardInfo = this.extractTypeGuard(sibIf.test, variableName);
               if (guardInfo) {
-                guards.push({ ...guardInfo, isNegative: !guardInfo.isNegative });
+                // Skip negating null-propagation guards — length(x) > N returning false
+                // doesn't mean x is null, just that the comparison failed.
+                if (!guardInfo.isNullPropagation) {
+                  guards.push({ ...guardInfo, isNegative: !guardInfo.isNegative });
+                }
               } else {
                 // Handle AND chains: if (type(x) != "string" && type(x) != "array") return;
                 // When negated (early-return), this means x IS string OR array.
@@ -2988,7 +2988,7 @@ export class TypeChecker {
         if (argVarName === variableName) {
           const literalValue = (binaryExpr.right as any).value;
           if (this.comparisonExcludesNull(binaryExpr.operator, literalValue, true)) {
-            return { variableName, narrowToType: UcodeType.NULL, isNegative: true };
+            return { variableName, narrowToType: UcodeType.NULL, isNegative: true, isNullPropagation: true };
           }
         }
       }
@@ -2999,7 +2999,7 @@ export class TypeChecker {
         if (argVarName === variableName) {
           const literalValue = (binaryExpr.left as any).value;
           if (this.comparisonExcludesNull(binaryExpr.operator, literalValue, false)) {
-            return { variableName, narrowToType: UcodeType.NULL, isNegative: true };
+            return { variableName, narrowToType: UcodeType.NULL, isNegative: true, isNullPropagation: true };
           }
         }
       }

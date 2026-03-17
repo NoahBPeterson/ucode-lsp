@@ -328,5 +328,49 @@ function __type_parsers()
     check('transitive object narrowing no false diags', argDiags.length, 0);
 }
 
+// Test 17: Nested guards should narrow sequentially, not union
+// Outer guard narrows to string|array|object, inner guard narrows further to string
+{
+    const code = `function foo(x) {
+    if (type(x) != "string" && type(x) != "array" && type(x) != "object")
+        return;
+    if (type(x) != "string")
+        return;
+    split(x, ",");
+}
+`;
+    const result = analyze(code);
+    const splitPos = code.indexOf('split(x');
+    const xInSplit = code.indexOf('x', splitPos + 6);
+    const narrowed = result.typeChecker.getNarrowedTypeAtPosition('x', xInSplit);
+    // Must be just "string", NOT "string | array | object | string"
+    check('nested guards narrow to string only', narrowed ? typeToString(narrowed) : 'null', 'string');
+}
+
+// Test 18: Nested guards inside an if-body
+{
+    const code = `function bar(x) {
+    if (type(x) != "string" && type(x) != "array" && type(x) != "object")
+        return;
+    if (length(x) > 0) {
+        if (type(x) != "string")
+            return;
+        split(x, ",");
+    }
+}
+`;
+    const result = analyze(code);
+    const splitPos = code.indexOf('split(x');
+    const xInSplit = code.indexOf('x', splitPos + 6);
+    const narrowed = result.typeChecker.getNarrowedTypeAtPosition('x', xInSplit);
+    check('nested guard inside if-body narrows to string', narrowed ? typeToString(narrowed) : 'null', 'string');
+
+    // No false diagnostics
+    const diags = result.diagnostics.filter(d =>
+        d.code === 'incompatible-function-argument' || d.code === 'nullable-argument'
+    );
+    check('nested guard inside if-body no false diags', diags.length, 0);
+}
+
 console.log(`\n${passed} passed, ${failed} failed out of ${passed + failed} tests`);
 if (failed > 0) process.exit(1);
