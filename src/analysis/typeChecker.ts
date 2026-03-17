@@ -10,7 +10,8 @@ import {
   FunctionExpressionNode, IfStatementNode, ProgramNode, BlockStatementNode,
   ExpressionStatementNode, FunctionDeclarationNode, VariableDeclarationNode,
   VariableDeclaratorNode, ExportDefaultDeclarationNode, ReturnStatementNode,
-  PropertyNode, SwitchStatementNode, SwitchCaseNode, ForInStatementNode
+  PropertyNode, SwitchStatementNode, SwitchCaseNode, ForInStatementNode,
+  ExportNamedDeclarationNode
 } from '../ast/nodes';
 
 /**
@@ -105,6 +106,8 @@ export class TypeChecker {
   private currentAST: ProgramNode | null = null;
   private constantAssignmentProperties = new Map<string, Set<string>>();
   private strictMode = false;
+  private transitiveTypeAliases: string[] = [];
+  private diagnosticTypeAliases: Map<string, string[]> = new Map();
 
   constructor(symbolTable: SymbolTable, cfgQueryEngine?: CFGQueryEngine) {
     this.cfgQueryEngine = cfgQueryEngine || null;
@@ -1768,6 +1771,19 @@ export class TypeChecker {
     // Analyze type guards and get the guard info
     const guards = this.flowSensitiveTracker.analyzeIfStatement(node);
 
+    // Add guards for transitively type-aliased variables
+    // e.g., if t1 = type(val1) and earlier guard established type(val1) == type(val2),
+    // then a guard on val1 also applies to val2
+    const extraGuards: typeof guards = [];
+    for (const guard of guards) {
+      const aliases = this.diagnosticTypeAliases.get(guard.variableName);
+      if (aliases) {
+        for (const alias of aliases) {
+          extraGuards.push({ ...guard, variableName: alias });
+        }
+      }
+    }
+    guards.push(...extraGuards);
 
     // Process the consequent (then block) with positive narrowing
     if (node.consequent) {
@@ -1781,14 +1797,14 @@ export class TypeChecker {
       }
 
       this.checkNode(node.consequent);
-      
+
       // Clean up guard contexts
       for (let i = 0; i < guards.length; i++) {
         this.popGuardContext();
       }
     }
-    
-    // Process the alternate (else block) with negative narrowing  
+
+    // Process the alternate (else block) with negative narrowing
     if (node.alternate) {
       for (const guard of guards) {
         this.pushGuardContext(
@@ -1824,6 +1840,8 @@ export class TypeChecker {
   }
 
   private checkBlockStatement(node: BlockStatementNode): UcodeType {
+    const savedDiagAliases = this.diagnosticTypeAliases;
+    this.diagnosticTypeAliases = new Map(savedDiagAliases);
     for (let i = 0; i < node.body.length; i++) {
       const statement = node.body[i]!;
 
@@ -1831,7 +1849,28 @@ export class TypeChecker {
       if (statement.type === 'IfStatement') {
         const ifStmt = statement as IfStatementNode;
         if (ifStmt.consequent && this.blockAlwaysTerminates(ifStmt.consequent)) {
+          // Detect type-equality aliases for transitive narrowing in diagnostic path
+          const alias = this.detectTypeEqualityAlias(ifStmt.test);
+          if (alias) {
+            if (!this.diagnosticTypeAliases.has(alias.var1)) this.diagnosticTypeAliases.set(alias.var1, []);
+            if (!this.diagnosticTypeAliases.get(alias.var1)!.includes(alias.var2))
+              this.diagnosticTypeAliases.get(alias.var1)!.push(alias.var2);
+            if (!this.diagnosticTypeAliases.has(alias.var2)) this.diagnosticTypeAliases.set(alias.var2, []);
+            if (!this.diagnosticTypeAliases.get(alias.var2)!.includes(alias.var1))
+              this.diagnosticTypeAliases.get(alias.var2)!.push(alias.var1);
+          }
           const guards = this.flowSensitiveTracker.analyzeIfStatement(ifStmt);
+          // Extend early-exit guards with transitive type aliases
+          const extraEarlyGuards: typeof guards = [];
+          for (const guard of guards) {
+            const aliases = this.diagnosticTypeAliases.get(guard.variableName);
+            if (aliases) {
+              for (const a of aliases) {
+                extraEarlyGuards.push({ ...guard, variableName: a });
+              }
+            }
+          }
+          guards.push(...extraEarlyGuards);
           if (guards.length > 0) {
             this.checkNode(statement);
             // Push negative narrowing for the rest of the block
@@ -1857,6 +1896,7 @@ export class TypeChecker {
 
       this.checkNode(statement);
     }
+    this.diagnosticTypeAliases = savedDiagAliases;
     return UcodeType.UNKNOWN;
   }
 
@@ -2269,6 +2309,7 @@ export class TypeChecker {
       return [];
     }
 
+    this.transitiveTypeAliases = [];
     const guards: TypeGuardInfo[] = [];
     this.collectGuards(ast, variableName, position, guards);
     return guards;
@@ -2512,6 +2553,17 @@ export class TypeChecker {
                   if (sym && isUnionType(sym.dataType) && getUnionTypes(sym.dataType).includes(UcodeType.NULL)) {
                     guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
                   }
+                }
+              }
+              // Detect type-equality aliases for transitive narrowing:
+              // if (t != type(variableName)) return; where t = type(otherVar)
+              // After return, type(otherVar) == type(variableName)
+              const alias = this.detectTypeEqualityAlias(sibIf.test);
+              if (alias) {
+                if (alias.var1 === variableName && !this.transitiveTypeAliases.includes(alias.var2)) {
+                  this.transitiveTypeAliases.push(alias.var2);
+                } else if (alias.var2 === variableName && !this.transitiveTypeAliases.includes(alias.var1)) {
+                  this.transitiveTypeAliases.push(alias.var1);
                 }
               }
             }
@@ -3132,6 +3184,17 @@ export class TypeChecker {
       typeLiteral = binaryExpr.left;
     }
 
+    // Indirect pattern: t == "object" where t = type(variable)
+    let resolvedIndirect = false;
+    if (!typeCall || !typeLiteral) {
+      const resolved = this.resolveIndirectTypeCall(binaryExpr, variableName);
+      if (resolved) {
+        typeCall = resolved.typeCall;
+        typeLiteral = resolved.typeLiteral;
+        resolvedIndirect = true;
+      }
+    }
+
     if (!typeCall || !typeLiteral) {
       return null;
     }
@@ -3143,12 +3206,15 @@ export class TypeChecker {
     }
 
     // Verify it has one argument matching our variable name (supports dotted paths like "state.errors")
-    if (typeCall.arguments.length !== 1 || !typeCall.arguments[0]) {
-      return null;
-    }
-    const argPath = this.getDottedPath(typeCall.arguments[0]);
-    if (argPath !== variableName) {
-      return null;
+    // Skip this check for indirect resolution which already verified the match (possibly transitively)
+    if (!resolvedIndirect) {
+      if (typeCall.arguments.length !== 1 || !typeCall.arguments[0]) {
+        return null;
+      }
+      const argPath = this.getDottedPath(typeCall.arguments[0]);
+      if (argPath !== variableName) {
+        return null;
+      }
     }
 
     // Map type string to UcodeType
@@ -3207,6 +3273,17 @@ export class TypeChecker {
       typeLiteral = binaryExpr.left;
     }
 
+    // Indirect pattern: t != "object" where t = type(variable)
+    let resolvedIndirect = false;
+    if (!typeCall || !typeLiteral) {
+      const resolved = this.resolveIndirectTypeCall(binaryExpr, variableName);
+      if (resolved) {
+        typeCall = resolved.typeCall;
+        typeLiteral = resolved.typeLiteral;
+        resolvedIndirect = true;
+      }
+    }
+
     if (!typeCall || !typeLiteral) {
       return null;
     }
@@ -3218,12 +3295,15 @@ export class TypeChecker {
     }
 
     // Verify it has one argument matching our variable name (supports dotted paths like "state.errors")
-    if (typeCall.arguments.length !== 1 || !typeCall.arguments[0]) {
-      return null;
-    }
-    const argPath = this.getDottedPath(typeCall.arguments[0]);
-    if (argPath !== variableName) {
-      return null;
+    // Skip this check for indirect resolution which already verified the match (possibly transitively)
+    if (!resolvedIndirect) {
+      if (typeCall.arguments.length !== 1 || !typeCall.arguments[0]) {
+        return null;
+      }
+      const argPath = this.getDottedPath(typeCall.arguments[0]);
+      if (argPath !== variableName) {
+        return null;
+      }
     }
 
     // Map type string to UcodeType
@@ -3252,6 +3332,104 @@ export class TypeChecker {
   }
 
   /**
+   * Resolve indirect type() call pattern: t == "object" where t = type(variable)
+   * Returns the original type() call and the literal if the pattern matches.
+   */
+  private resolveIndirectTypeCall(
+    binaryExpr: BinaryExpressionNode,
+    variableName: string
+  ): { typeCall: CallExpressionNode; typeLiteral: any } | null {
+    let identNode: IdentifierNode | null = null;
+    let literalNode: any = null;
+
+    if (binaryExpr.left.type === 'Identifier' && binaryExpr.right.type === 'Literal') {
+      identNode = binaryExpr.left as IdentifierNode;
+      literalNode = binaryExpr.right;
+    } else if (binaryExpr.right.type === 'Identifier' && binaryExpr.left.type === 'Literal') {
+      identNode = binaryExpr.right as IdentifierNode;
+      literalNode = binaryExpr.left;
+    }
+
+    if (!identNode || !literalNode || typeof literalNode.value !== 'string') {
+      return null;
+    }
+
+    // Use position-aware lookup since the variable may be in an exited scope (e.g., export function)
+    const sym = this.symbolTable.lookupAtPosition(identNode.name, identNode.start)
+             || this.symbolTable.lookup(identNode.name);
+    if (!sym?.initNode || sym.initNode.type !== 'CallExpression') {
+      return null;
+    }
+
+    const initCall = sym.initNode as CallExpressionNode;
+    if (initCall.callee.type !== 'Identifier' ||
+        (initCall.callee as IdentifierNode).name !== 'type' ||
+        initCall.arguments.length !== 1 || !initCall.arguments[0]) {
+      return null;
+    }
+
+    const argPath = this.getDottedPath(initCall.arguments[0]);
+    if (!argPath) {
+      return null;
+    }
+    if (argPath !== variableName) {
+      // Check transitive type-equality aliases: if variableName is aliased to argPath
+      if (!this.transitiveTypeAliases.includes(argPath)) {
+        return null;
+      }
+    }
+
+    return { typeCall: initCall, typeLiteral: literalNode };
+  }
+
+  /**
+   * Get the variable name from a type() call (direct or indirect via identifier).
+   * For CallExpression: type(x) → "x"
+   * For Identifier: t where t = type(x) → "x"
+   */
+  private getTypeCallVariable(node: AstNode): string | null {
+    if (node.type === 'CallExpression') {
+      const call = node as CallExpressionNode;
+      if (call.callee.type === 'Identifier' &&
+          (call.callee as IdentifierNode).name === 'type' &&
+          call.arguments.length === 1 && call.arguments[0]) {
+        return this.getDottedPath(call.arguments[0]);
+      }
+    } else if (node.type === 'Identifier') {
+      const ident = node as IdentifierNode;
+      const sym = this.symbolTable.lookupAtPosition(ident.name, ident.start)
+               || this.symbolTable.lookup(ident.name);
+      if (sym?.initNode?.type === 'CallExpression') {
+        const initCall = sym.initNode as CallExpressionNode;
+        if (initCall.callee.type === 'Identifier' &&
+            (initCall.callee as IdentifierNode).name === 'type' &&
+            initCall.arguments.length === 1 && initCall.arguments[0]) {
+          return this.getDottedPath(initCall.arguments[0]);
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Detect type-equality alias from a != condition: t != type(var2) where t = type(var1)
+   * Returns the two variables whose types are being compared, or null.
+   */
+  private detectTypeEqualityAlias(condition: AstNode): { var1: string, var2: string } | null {
+    if (condition.type !== 'BinaryExpression') return null;
+    const bin = condition as BinaryExpressionNode;
+    if (bin.operator !== '!=' && bin.operator !== '!==') return null;
+
+    const leftVar = this.getTypeCallVariable(bin.left);
+    const rightVar = this.getTypeCallVariable(bin.right);
+
+    if (leftVar && rightVar && leftVar !== rightVar) {
+      return { var1: leftVar, var2: rightVar };
+    }
+    return null;
+  }
+
+  /**
    * Get child nodes of an AST node for traversal
    */
   private getChildNodes(node: AstNode): AstNode[] {
@@ -3268,6 +3446,12 @@ export class TypeChecker {
         const exportNode = node as ExportDefaultDeclarationNode;
         if (exportNode.declaration) {
           children.push(exportNode.declaration);
+        }
+        break;
+      case 'ExportNamedDeclaration':
+        const exportNamedNode = node as ExportNamedDeclarationNode;
+        if (exportNamedNode.declaration) {
+          children.push(exportNamedNode.declaration);
         }
         break;
       case 'IfStatement':
@@ -3400,6 +3584,19 @@ export class TypeChecker {
       }
     }
     return null;
+  }
+
+  // Public wrappers for guard context management (used by semantic analyzer)
+  analyzeIfGuards(node: IfStatementNode): { variableName: string; positiveNarrowing: UcodeDataType; negativeNarrowing: UcodeDataType }[] {
+    return this.flowSensitiveTracker.analyzeIfStatement(node);
+  }
+
+  pushGuardContextPublic(variableName: string, narrowedType: UcodeDataType, startPos: number, endPos: number): void {
+    this.pushGuardContext(variableName, narrowedType, startPos, endPos);
+  }
+
+  popGuardContextPublic(): void {
+    this.popGuardContext();
   }
 
 }

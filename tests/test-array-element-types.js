@@ -215,5 +215,118 @@ function __type_parsers()
     check('param hover in multi-fn file', typeToString(effective), 'unknown');
 }
 
+// Test 12: Indirect type guard narrows variable in hover
+// let t = type(value); if (t == "object") { ... } should narrow value to object
+{
+    const code = `export function sorted_json(value) {
+    let t = type(value);
+    if (t == "object") {
+        keys(value);
+    }
+    return value;
+}
+`;
+    const result = analyze(code);
+    const keysPos = code.indexOf('keys(value)');
+    const valueInKeys = code.indexOf('value)', keysPos);
+    const narrowed = result.typeChecker.getNarrowedTypeAtPosition('value', valueInKeys);
+    check('indirect type guard narrows hover', narrowed ? typeToString(narrowed) : 'null', 'object');
+
+    // No false diagnostics inside the guarded block
+    const argDiags = result.diagnostics.filter(d =>
+        d.code === 'incompatible-function-argument' || d.code === 'nullable-argument'
+    );
+    check('indirect type guard suppresses diagnostics', argDiags.length, 0);
+}
+
+// Test 13: Indirect negative type guard (t != "array")
+{
+    const code = `function foo(value) {
+    let t = type(value);
+    if (t != "array") {
+        return;
+    }
+    sort(value);
+}
+`;
+    const result = analyze(code);
+    const sortPos = code.indexOf('sort(value)');
+    const valueInSort = code.indexOf('value)', sortPos);
+    // After if (t != "array") return, value is narrowed to array in the fall-through
+    // (This uses the early-return guard pattern, not the negative guard directly)
+    // The important thing: no false diagnostic on sort(value)
+    const argDiags = result.diagnostics.filter(d =>
+        d.code === 'incompatible-function-argument' || d.code === 'nullable-argument'
+    );
+    check('indirect negative type guard no false diags', argDiags.length, 0);
+}
+
+// Test 14: Direct type guard still works (regression check)
+{
+    const code = `export function foo(value) {
+    if (type(value) == "object") {
+        keys(value);
+    }
+}
+`;
+    const result = analyze(code);
+    const keysPos = code.indexOf('keys(value)');
+    const valueInKeys = code.indexOf('value)', keysPos);
+    const narrowed = result.typeChecker.getNarrowedTypeAtPosition('value', valueInKeys);
+    check('direct type guard narrows hover', narrowed ? typeToString(narrowed) : 'null', 'object');
+}
+
+// Test 15: Transitive type equality narrowing via intermediate variable
+// let t1 = type(val1); if (t1 != type(val2)) return; if (t1 == "array") { ... }
+// Both val1 AND val2 should be narrowed to array inside the if block
+{
+    const code = `function deepEqual(val1, val2) {
+    let t1 = type(val1);
+    if (t1 != type(val2)) return false;
+    if (t1 == "array") {
+        sort(val1);
+        sort(val2);
+    }
+}
+`;
+    const result = analyze(code);
+
+    // No false diagnostics inside the guarded block
+    const argDiags = result.diagnostics.filter(d =>
+        d.code === 'incompatible-function-argument' || d.code === 'nullable-argument'
+    );
+    check('transitive type narrowing no false diags', argDiags.length, 0);
+
+    // val2 should be narrowed to array inside the if block (hover path)
+    const sortVal2Pos = code.lastIndexOf('sort(val2)');
+    const val2InSort = code.indexOf('val2)', sortVal2Pos);
+    const narrowed = result.typeChecker.getNarrowedTypeAtPosition('val2', val2InSort);
+    check('transitive type narrowing val2 hover', narrowed ? typeToString(narrowed) : 'null', 'array');
+
+    // val1 should still be narrowed too (regression check)
+    const sortVal1Pos = code.indexOf('sort(val1)');
+    const val1InSort = code.indexOf('val1)', sortVal1Pos);
+    const narrowed1 = result.typeChecker.getNarrowedTypeAtPosition('val1', val1InSort);
+    check('transitive type narrowing val1 hover', narrowed1 ? typeToString(narrowed1) : 'null', 'array');
+}
+
+// Test 16: Transitive narrowing with object type
+{
+    const code = `function merge(a, b) {
+    let t = type(a);
+    if (t != type(b)) return;
+    if (t == "object") {
+        keys(a);
+        keys(b);
+    }
+}
+`;
+    const result = analyze(code);
+    const argDiags = result.diagnostics.filter(d =>
+        d.code === 'incompatible-function-argument' || d.code === 'nullable-argument'
+    );
+    check('transitive object narrowing no false diags', argDiags.length, 0);
+}
+
 console.log(`\n${passed} passed, ${failed} failed out of ${passed + failed} tests`);
 if (failed > 0) process.exit(1);

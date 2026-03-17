@@ -727,6 +727,39 @@ export class FlowSensitiveTypeTracker {
       }
     }
 
+    // Handle indirect type checks: t == "object" where t = type(variable)
+    if ((expr.operator === '==' || expr.operator === '===' ||
+         expr.operator === '!=' || expr.operator === '!==') &&
+        expr.left.type === 'Identifier' && this.isStringLiteral(expr.right)) {
+      const resolved = this.resolveIndirectTypeCall(expr.left as IdentifierNode);
+      if (resolved) {
+        const testedType = this.stringToUcodeType((expr.right as any).value);
+        if (testedType) {
+          const originalType = this.getOriginalVariableType(resolved.variableName, position);
+          if (originalType) {
+            const isEquality = expr.operator === '==' || expr.operator === '===';
+            const positiveNarrowing = isEquality
+              ? this.narrowingEngine.keepOnlyTypes(originalType, [testedType])
+              : this.narrowingEngine.removeTypesFromUnion(originalType, [testedType]);
+            const negativeNarrowing = isEquality
+              ? this.narrowingEngine.removeTypesFromUnion(originalType, [testedType])
+              : this.narrowingEngine.keepOnlyTypes(originalType, [testedType]);
+
+            return {
+              variableName: resolved.variableName,
+              guard: {
+                type: 'type-check',
+                expression: `type(${resolved.variableName}) ${expr.operator} '${(expr.right as any).value}'`,
+                testedType
+              },
+              positiveNarrowing: positiveNarrowing.narrowedType,
+              negativeNarrowing: negativeNarrowing.narrowedType
+            };
+          }
+        }
+      }
+    }
+
     // Pattern: builtinCall(x) <op> literal — narrows x to non-null
     const npLeft = this.getNullPropagatingArg(expr.left);
     if (npLeft && expr.right.type === 'Literal') {
@@ -791,6 +824,27 @@ export class FlowSensitiveTypeTracker {
       return (node as IdentifierNode).name;
     }
     return null;
+  }
+
+  /**
+   * Resolve indirect type() call: given an identifier like `t`, check if `t = type(someVar)`
+   * and return the variable name that type() was called on.
+   */
+  private resolveIndirectTypeCall(identNode: IdentifierNode): { variableName: string } | null {
+    const sym = this.symbolTable.lookupAtPosition(identNode.name, identNode.start)
+             || this.symbolTable.lookup(identNode.name);
+    if (!sym?.initNode || sym.initNode.type !== 'CallExpression') {
+      return null;
+    }
+    const initCall = sym.initNode as CallExpressionNode;
+    if (initCall.callee.type !== 'Identifier' ||
+        (initCall.callee as IdentifierNode).name !== 'type' ||
+        initCall.arguments.length !== 1 || !initCall.arguments[0]) {
+      return null;
+    }
+    const varName = this.getVariableName(initCall.arguments[0]);
+    if (!varName) return null;
+    return { variableName: varName };
   }
 
   private getOriginalVariableType(variableName: string, position: number): UcodeDataType | null {
