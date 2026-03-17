@@ -180,16 +180,18 @@ function isLikelyAssignmentTarget(tokens: Token[], tokenIndex: number): boolean 
             return true;
         }
 
+        // Allow member access patterns: x.foo =, x[0] =
         if (
-            nextToken.type === TokenType.TK_NEWLINE ||
-            nextToken.type === TokenType.TK_SCOL ||
-            nextToken.type === TokenType.TK_COMMA ||
-            nextToken.type === TokenType.TK_COLON ||
-            nextToken.type === TokenType.TK_ARROW ||
-            nextToken.type === TokenType.TK_EOF
+            nextToken.type === TokenType.TK_DOT ||
+            nextToken.type === TokenType.TK_LBRACK ||
+            nextToken.type === TokenType.TK_RBRACK ||
+            nextToken.type === TokenType.TK_LABEL  // identifier after dot
         ) {
-            return false;
+            continue;
         }
+
+        // Any other token means this isn't an assignment target
+        return false;
     }
 
     return false;
@@ -956,9 +958,8 @@ export function handleHover(
                     switch (symbol.type) {
                         case SymbolType.VARIABLE:
                         case SymbolType.PARAMETER:
-                            // Check if this parameter is a rest parameter (array type)
-                            const declaredTypeStr = typeToString(symbol.dataType);
-                            if (symbol.type === SymbolType.PARAMETER && (declaredTypeStr.includes('array') || declaredTypeStr.includes('Array'))) {
+                            // Check if this parameter is a rest parameter (declared with ...spread)
+                            if (symbol.type === SymbolType.PARAMETER && symbol.isRestParam) {
                                 hoverText = `**(rest parameter)** **${symbol.name}**: \`array\`\n\nRest parameter - collects remaining arguments into an array`;
                             } else {
                                 // Check if type was narrowed via variable equality (e.g., if (x != y) return;)

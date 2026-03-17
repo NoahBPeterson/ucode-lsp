@@ -90,12 +90,12 @@ describe('Module Functions Validation Tests', function() {
       assert(errors[0].message.includes('include') && errors[0].message.includes('got integer'), 'Should mention include and integer');
     });
 
-    it('should require exactly one parameter', async () => {
+    it('should require at least one parameter', async () => {
       const errors = await getValidationErrors(`
         print(include());
       `);
       assert.strictEqual(errors.length, 1, 'Should have error for no parameters');
-      assert.match(errors[0].message, /include\(\) expects 1 argument, got 0/);
+      assert.match(errors[0].message, /include\(\) expects 1-2 arguments, got 0/);
     });
   });
 

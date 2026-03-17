@@ -17,7 +17,8 @@ vsc-extension-quickstart.md
 ucode/**
 u1905/**
 umpad/**
-umpad/*
+umpad/**
+openwrt/**
 linguist-proposal/**
 payload_processor_ucode/**
 ucode_gotchas.md

@@ -1543,11 +1543,13 @@ export class TypeChecker {
             return this.dataTypeToUcodeType(elementType);
           }
         }
-        // Fall back to ArrayType element type
+        // Fall back to ArrayType element type (element | null since index may be out of bounds)
         if (isArrayType(symbol.dataType as UcodeDataType)) {
           const elemType = getArrayElementType(symbol.dataType as UcodeDataType);
-          (node as any)._fullType = elemType;
-          return this.dataTypeToUcodeType(elemType);
+          const elemBase = this.dataTypeToUcodeType(elemType);
+          const nullableType = createUnionType([elemBase, UcodeType.NULL]);
+          (node as any)._fullType = nullableType;
+          return UcodeType.UNKNOWN; // union → UNKNOWN for simple type system
         }
       }
     }
@@ -1560,8 +1562,10 @@ export class TypeChecker {
       const objFullType = (node.object as any)._fullType as UcodeDataType | undefined;
       if (objFullType && isArrayType(objFullType)) {
         const elemType = getArrayElementType(objFullType);
-        (node as any)._fullType = elemType;
-        return this.dataTypeToUcodeType(elemType);
+        const elemBase = this.dataTypeToUcodeType(elemType);
+        const nullableType = createUnionType([elemBase, UcodeType.NULL]);
+        (node as any)._fullType = nullableType;
+        return UcodeType.UNKNOWN; // union → UNKNOWN for simple type system
       }
     }
 
@@ -1724,6 +1728,7 @@ export class TypeChecker {
   private checkObjectExpression(node: ObjectExpressionNode): UcodeType {
     // Check all properties
     for (const property of node.properties) {
+      if (property.type === 'SpreadElement') continue;
       this.checkNode(property.key);
       this.checkNode(property.value);
     }

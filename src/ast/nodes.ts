@@ -100,7 +100,7 @@ export interface ArrayExpressionNode extends AstNode {
 // Object literals: {key: value, ...}
 export interface ObjectExpressionNode extends AstNode {
   type: 'ObjectExpression';
-  properties: PropertyNode[];
+  properties: (PropertyNode | SpreadElementNode)[];
 }
 
 // Object property: key: value

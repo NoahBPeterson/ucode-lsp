@@ -192,6 +192,7 @@ export interface Symbol {
     neverReturns?: boolean; // True if function always terminates (die/exit/throw on all paths)
     scopeEnd?: number; // End offset of the scope this symbol was declared in (set when scope exits)
     jsdocDescription?: string; // Description from @param JSDoc tag
+    isRestParam?: boolean; // True if this parameter was declared with ...spread syntax
 }
 
 export class SymbolTable {
@@ -292,7 +293,7 @@ export class SymbolTable {
     this.globalScope.set('ARGV', {
       name: 'ARGV',
       type: SymbolType.VARIABLE,
-      dataType: UcodeType.ARRAY as UcodeDataType,
+      dataType: createArrayType(UcodeType.STRING),
       scope: 0,
       declared: true,
       used: false,

@@ -1354,9 +1354,9 @@ export class BuiltinValidator {
   }
 
   validateIncludeFunction(node: CallExpressionNode): boolean {
-    if (node.arguments.length !== 1) {
+    if (node.arguments.length < 1 || node.arguments.length > 2) {
       this.errors.push({
-        message: `include() expects 1 argument, got ${node.arguments.length}`,
+        message: `include() expects 1-2 arguments, got ${node.arguments.length}`,
         start: node.start,
         end: node.end,
         severity: 'error'
@@ -1366,6 +1366,9 @@ export class BuiltinValidator {
 
     if (node.arguments[0]) {
       this.validateArgumentType(node.arguments[0], 'include', 1, [UcodeType.STRING]);
+    }
+    if (node.arguments[1]) {
+      this.validateArgumentType(node.arguments[1], 'include', 2, [UcodeType.OBJECT]);
     }
     return true;
   }

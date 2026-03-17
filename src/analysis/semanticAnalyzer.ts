@@ -1057,6 +1057,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
         this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
+        const restSym = this.symbolTable.lookup(node.restParam.name);
+        if (restSym) restSym.isRestParam = true;
       }
 
       // Visit the function body to find all return statements.
@@ -1136,6 +1138,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
         this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
+        const restSym = this.symbolTable.lookup(node.restParam.name);
+        if (restSym) restSym.isRestParam = true;
       }
 
       // Declare `this` with property types from enclosing object literal
@@ -1190,6 +1194,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
         this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
+        const restSym = this.symbolTable.lookup(node.restParam.name);
+        if (restSym) restSym.isRestParam = true;
       }
 
       // Visit the function body
@@ -1876,6 +1882,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             }
           } else if (!symbol) {
             this.symbolTable.declare(variableName, SymbolType.VARIABLE, dataType, node.left as IdentifierNode);
+          } else if (symbol.type === SymbolType.PARAMETER) {
+            // Parameters: preserve declared type (unknown), track reassigned type via SSA
+            symbol.currentType = dataType;
+            symbol.currentTypeEffectiveFrom = node.end;
           } else {
             // SSA: If this is a literal type, preserve original but track current type
             const isLiteralVariable = symbol && symbol.initialLiteralType !== undefined;
@@ -2661,6 +2671,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private inferObjectLiteralPropertyTypes(node: ObjectExpressionNode): Map<string, UcodeDataType> | null {
     const propTypes = new Map<string, UcodeDataType>();
     for (const prop of node.properties) {
+      // Skip spread elements — they don't have key/value
+      if (prop.type === 'SpreadElement') continue;
       const key = this.getStaticPropertyName(prop.key);
       if (!key) continue;
       const val = prop.value;
