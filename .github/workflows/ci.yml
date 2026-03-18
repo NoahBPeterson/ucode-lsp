@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Run tests
+        run: |
+          bun install
+          bun test
+
+      - name: Build packages
+        run: ./scripts/build-packages.sh
+
+      - name: Get version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: ucode-lsp-${{ steps.version.outputs.version }}.vsix
+          path: ucode-lsp-${{ steps.version.outputs.version }}.vsix
+
+      - name: Upload LSP server bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ucode-lsp-server-${{ steps.version.outputs.version }}
+          path: dist/server.js

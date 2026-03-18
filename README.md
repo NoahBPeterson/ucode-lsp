@@ -27,20 +27,33 @@ A comprehensive Language Server Protocol implementation for the [ucode scripting
 
 ## Quick Start
 
-### Installation
-1. Install the VS Code extension from the marketplace (once I upload it to the marketplace)
+### VS Code
+Install the extension from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=noahbpeterson.ucode-lsp).
 
-### Development Setup
+### Neovim
+The LSP server works with Neovim's built-in LSP client. Add to your `init.lua`:
+```lua
+vim.lsp.start({
+  name = 'ucode-lsp',
+  cmd = { 'node', '/path/to/dist/server.js', '--stdio' },
+  filetypes = { 'ucode' },
+  root_dir = vim.fs.dirname(vim.fs.find({ '.git' }, { upward = true })[1]),
+})
+```
+
+### Other Editors (Sublime Text, Emacs, Helix, Zed, etc.)
+Any editor with LSP support can use the server. Point your editor's LSP client at `node dist/server.js --stdio`.
+
+### Building from Source
 ```bash
 git clone https://github.com/NoahBPeterson/ucode-lsp.git
 cd ucode-lsp
-
-bun install
-
-bun run compile
-
-bun run package && vsce package
+./scripts/build-packages.sh
 ```
+
+This produces:
+- `ucode-lsp-<version>.vsix` — VS Code extension
+- `dist/server.js` — standalone LSP server for any editor
 
 ## Language Support
 
@@ -110,7 +123,7 @@ function process() {
 - Lexer (`src/lexer/`) - Tokenization and basic syntax validation
 - Parser (`src/parser/`) - AST generation with error recovery
 - Semantic Analyzer (`src/analysis/`) - Type checking and scope analysis
-- LSP Server (`src/server.ts`) - VS Code integration
+- LSP Server (`src/server.ts`) - Editor integration via LSP (editor-agnostic)
 
 ## Configuration
 
