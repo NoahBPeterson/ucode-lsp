@@ -10,10 +10,10 @@ function extractHoverText(hover) {
   return contents.value || '';
 }
 
-// The consumer file must live in the same directory as the real pbr modules
-// so that bare imports like 'config' resolve to config.uc in that directory.
-const PBR_DIR = path.join(__dirname, '..', 'pbr', 'files', 'lib', 'pbr');
-const TEST_FILE = path.join(PBR_DIR, '_test_cross_file_consumer.uc');
+// Fixture files live in tests/fixtures/cross-file/ so bare imports like
+// 'config' resolve to config.uc in that directory.
+const PBR_DIR = path.join(__dirname, 'fixtures', 'cross-file');
+const TEST_FILE = path.join(PBR_DIR, '_test_consumer.uc');
 
 describe('PBR Cross-File Property Inference', function() {
   this.timeout(30000);

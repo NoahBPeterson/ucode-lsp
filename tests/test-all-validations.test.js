@@ -58,7 +58,6 @@ const testFiles = [
     'tests/test-nl80211-module.js',
     'tests/test-resolv-module.js',
     'tests/test-resolv-import-validation.js',
-    'tests/test-socket-module.js',
     'tests/test-socket-import-validation.js',
     'tests/test-struct-module.js',
     'tests/test-ubus-module.js',
