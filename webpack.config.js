@@ -34,6 +34,37 @@ const extensionConfig = {
     },
 };
 
+const cliConfig = {
+    target: 'node',
+    mode: 'none',
+    entry: './src/cli.ts',
+    output: {
+        path: path.resolve(__dirname, 'dist'),
+        filename: 'cli.js',
+        libraryTarget: 'commonjs2'
+    },
+    resolve: {
+        extensions: ['.ts', '.js']
+    },
+    module: {
+        rules: [
+            {
+                test: /\.ts$/,
+                exclude: /node_modules/,
+                use: [
+                    {
+                        loader: 'ts-loader'
+                    }
+                ]
+            }
+        ]
+    },
+    devtool: 'nosources-source-map',
+    infrastructureLogging: {
+        level: "log",
+    },
+};
+
 const serverConfig = {
     target: 'node',
     mode: 'none',
@@ -65,4 +96,4 @@ const serverConfig = {
     },
 };
 
-module.exports = [extensionConfig, serverConfig];
+module.exports = [extensionConfig, serverConfig, cliConfig];

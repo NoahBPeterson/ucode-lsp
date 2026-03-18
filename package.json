@@ -2,13 +2,24 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.6.15",
+  "version": "0.6.16",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
     "url": "https://github.com/NoahBPeterson/ucode-lsp"
   },
   "license": "MIT",
+  "bin": {
+    "ucode-lsp": "./bin/ucode-lsp.js"
+  },
+  "man": "./man/ucode-lsp.1",
+  "files": [
+    "dist/cli.js",
+    "dist/server.js",
+    "bin/ucode-lsp.js",
+    "man/ucode-lsp.1",
+    "scripts/postinstall.sh"
+  ],
   "engines": {
     "vscode": "^1.86.0"
   },
@@ -75,7 +86,8 @@
     "vscode:prepublish": "bun run package",
     "compile": "webpack",
     "package": "webpack --mode production --devtool hidden-source-map",
-    "watch": "webpack --watch"
+    "watch": "webpack --watch",
+    "postinstall": "./scripts/postinstall.sh"
   },
   "dependencies": {
     "effect": "^3.19.19",

@@ -535,6 +535,134 @@ export class FileResolver {
     }
 
     /**
+     * Get the type info for a named export (export const foo = ..., export function foo() {}).
+     * Returns the type and property types if the export is an object.
+     */
+    getNamedExportTypeInfo(fileUri: string, exportName: string): {
+        type: UcodeDataType;
+        propertyTypes?: Map<string, UcodeDataType>;
+        nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>;
+        propertyFunctionReturnTypes?: Map<string, string>;
+    } | null {
+        try {
+            const filePath = this.uriToFilePath(fileUri);
+            if (!filePath || !fs.existsSync(filePath)) return null;
+
+            const source = fs.readFileSync(filePath, 'utf-8');
+            const lexer = new UcodeLexer(source, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, source);
+            parser.setComments(lexer.comments);
+            const result = parser.parse();
+            if (!result.ast) return null;
+
+            const body = (result.ast as any).body || [];
+
+            // Build maps of top-level variable initializers and function names
+            const varInits = new Map<string, AstNode>();
+            const funcNames = new Set<string>();
+            for (const stmt of body) {
+                if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
+                    funcNames.add(stmt.id.name);
+                }
+                if (stmt.type === 'VariableDeclaration') {
+                    for (const decl of stmt.declarations || []) {
+                        if (decl.id?.name && decl.init) {
+                            varInits.set(decl.id.name, decl.init);
+                        }
+                    }
+                }
+            }
+
+            // Find the named export
+            for (const stmt of body) {
+                if (stmt.type !== 'ExportNamedDeclaration') continue;
+                const exportNode = stmt as ExportNamedDeclarationNode;
+
+                if (exportNode.declaration) {
+                    if (exportNode.declaration.type === 'FunctionDeclaration') {
+                        const funcDecl = exportNode.declaration as FunctionDeclarationNode;
+                        if (funcDecl.id.name === exportName) {
+                            return { type: UcodeType.FUNCTION as UcodeDataType };
+                        }
+                    } else if (exportNode.declaration.type === 'VariableDeclaration') {
+                        const varDecl = exportNode.declaration as any;
+                        for (const declarator of varDecl.declarations) {
+                            if (declarator.id?.name !== exportName) continue;
+
+                            const init = declarator.init;
+                            if (!init) return { type: UcodeType.UNKNOWN as UcodeDataType };
+
+                            const nodeType = this.inferNodeType(init);
+                            if (init.type === 'ObjectExpression') {
+                                const propertyTypes = new Map<string, UcodeDataType>();
+                                const nestedPropertyTypes = new Map<string, Map<string, UcodeDataType>>();
+
+                                for (const prop of init.properties || []) {
+                                    const key = prop.key?.name || prop.key?.value;
+                                    if (!key || !prop.value) continue;
+
+                                    const val = prop.value;
+                                    if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
+                                        propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                                    } else if (val.type === 'ObjectExpression') {
+                                        propertyTypes.set(key, UcodeType.OBJECT as UcodeDataType);
+                                        const nested = this.extractObjectPropertyTypes(val, funcNames, varInits, new Map());
+                                        if (nested.size > 0) nestedPropertyTypes.set(key, nested);
+                                    } else {
+                                        propertyTypes.set(key, this.inferNodeType(val));
+                                    }
+                                }
+
+                                const res: {
+                                    type: UcodeDataType;
+                                    propertyTypes?: Map<string, UcodeDataType>;
+                                    nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>;
+                                } = { type: nodeType };
+                                if (propertyTypes.size > 0) res.propertyTypes = propertyTypes;
+                                if (nestedPropertyTypes.size > 0) res.nestedPropertyTypes = nestedPropertyTypes;
+                                return res;
+                            }
+
+                            return { type: nodeType };
+                        }
+                    }
+                } else if (exportNode.specifiers) {
+                    // export { foo, bar }
+                    for (const specifier of exportNode.specifiers) {
+                        if (specifier.exported.name !== exportName) continue;
+                        const localName = specifier.local.name;
+
+                        // Check if it's a function
+                        if (funcNames.has(localName)) {
+                            return { type: UcodeType.FUNCTION as UcodeDataType };
+                        }
+
+                        // Check if it's a variable with an initializer
+                        const init = varInits.get(localName);
+                        if (init) {
+                            const nodeType = this.inferNodeType(init);
+                            if (init.type === 'ObjectExpression') {
+                                const propertyTypes = this.extractObjectPropertyTypes(init, funcNames, varInits, new Map());
+                                const res: { type: UcodeDataType; propertyTypes?: Map<string, UcodeDataType> } = { type: nodeType };
+                                if (propertyTypes.size > 0) res.propertyTypes = propertyTypes;
+                                return res;
+                            }
+                            return { type: nodeType };
+                        }
+
+                        return { type: UcodeType.UNKNOWN as UcodeDataType };
+                    }
+                }
+            }
+
+            return null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Get return type and property types for a default export that is a function.
      * Analyzes the function's return statements for object literals.
      */

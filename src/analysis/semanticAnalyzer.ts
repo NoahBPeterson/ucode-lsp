@@ -949,6 +949,16 @@ export class SemanticAnalyzer extends BaseVisitor {
     const resolvedUri = this.fileResolver.resolveImportPath(modulePath, this.textDocument.uri);
     if (!resolvedUri || !resolvedUri.startsWith('file://')) return null;
 
+    // Check named exports first when propertyName is provided
+    if (propertyName) {
+      const moduleExports = this.fileResolver.getModuleExports(resolvedUri);
+      const namedExport = moduleExports?.find(e => e.type === 'named' && e.name === propertyName);
+      if (namedExport) {
+        const namedInfo = this.fileResolver.getNamedExportTypeInfo(resolvedUri, propertyName);
+        if (namedInfo) return namedInfo;
+      }
+    }
+
     // Get the module's default export info
     const exports = this.fileResolver.getModuleExports(resolvedUri);
     const defaultExport = exports?.find(e => e.type === 'default');

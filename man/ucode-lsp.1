@@ -1,0 +1,298 @@
+.TH UCODE-LSP 1 "2026-03-18" "0.6.16" "ucode-lsp manual"
+.SH NAME
+ucode-lsp \- language server and static checker for ucode
+.SH SYNOPSIS
+.B ucode-lsp
+[\fIoptions\fR] [\fIpaths\fR...]
+.br
+.B ucode-lsp \-\-stdio
+.SH DESCRIPTION
+.B ucode-lsp
+is a language server and static analysis tool for the ucode scripting
+language used in OpenWrt.
+.PP
+When invoked without a transport flag, it scans \fB.uc\fR files and prints
+diagnostics (errors and warnings) to stdout, similar to \fBtsc\fR.
+When invoked with \fB\-\-stdio\fR, it runs as an LSP server for use with
+editors like Neovim or VS Code.
+.SH MODES
+.TP
+.B (default)
+Check mode. Scans \fB.uc\fR files in the given paths (or the current
+directory) and prints diagnostics. Exits with code 1 if errors are found.
+.TP
+.B \-\-stdio
+LSP server mode. Communicates over stdin/stdout using the Language Server
+Protocol. Used by editors.
+.SH OPTIONS
+.TP
+.B \-\-verbose
+Show all diagnostics including info and hints. By default, only errors and
+warnings are shown.
+.TP
+.B \-\-help
+Show a brief help message and exit.
+.TP
+.B \-\-version
+Show the version number and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+No errors found (warnings may still be present).
+.TP
+.B 1
+One or more errors found.
+.TP
+.B 2
+Invalid usage (unknown option, missing file, etc.).
+.SH OUTPUT FORMAT
+Diagnostic lines are printed to stdout in the format:
+.PP
+.RS
+\fIfile\fR(\fIline\fR,\fIcol\fR): \fIseverity\fR [\fIcode\fR]: \fImessage\fR
+.RE
+.PP
+Summary and error messages are printed to stderr.
+.SH TYPE ANNOTATIONS
+.B ucode-lsp
+uses JSDoc comments to provide type information for static analysis.
+Annotations must use the \fB/** ... */\fR comment style.
+.SS @param \- Parameter Types
+Annotate function parameters with their expected types:
+.PP
+.RS
+.nf
+/**
+ * @param {string} name \- The user's name
+ * @param {number} age
+ */
+function greet(name, age) { ... }
+.fi
+.RE
+.PP
+An alternative bare syntax is also supported:
+.PP
+.RS
+.nf
+/** @param name string \- The user's name */
+.fi
+.RE
+.SS @returns \- Return Types
+Document the return type of a function:
+.PP
+.RS
+.nf
+/** @returns {string} The greeting message */
+function greet(name) { ... }
+.fi
+.RE
+.PP
+Note: return types are currently parsed for documentation but type inference
+uses the actual return statements.
+.SS @typedef / @property \- Custom Types
+Define named object types with typed properties:
+.PP
+.RS
+.nf
+/**
+ * @typedef {object} PkgInfo
+ * @property {string} name \- Package name
+ * @property {string} version \- Semantic version
+ * @property {boolean?} installed \- Whether installed
+ */
+
+/** @param {PkgInfo} pkg */
+function install(pkg) {
+    pkg.name;       // autocomplete + type: string
+    pkg.installed;  // type: boolean | null
+}
+.fi
+.RE
+.PP
+Typedefs are scoped to the file they are defined in.
+.SS Supported Types
+.TP
+.B Primitives
+\fBstring\fR, \fBnumber\fR, \fBinteger\fR (\fBint\fR), \fBdouble\fR (\fBfloat\fR),
+\fBboolean\fR (\fBbool\fR), \fBarray\fR, \fBobject\fR, \fBfunction\fR, \fBnull\fR,
+\fBregex\fR (\fBregexp\fR)
+.TP
+.B Module types
+Builtin modules can be used directly as types:
+\fBfs\fR, \fBuci\fR, \fBubus\fR, \fBuloop\fR, \fBmath\fR, \fBio\fR, \fBlog\fR,
+\fBdebug\fR, \fBdigest\fR, \fBnl80211\fR, \fBresolv\fR, \fBrtnl\fR, \fBsocket\fR,
+\fBstruct\fR, \fBzlib\fR.
+The \fBmodule:\fR prefix is also accepted: \fB{module:fs}\fR.
+.TP
+.B Object types
+Module object types provide method/property completion:
+\fBfs.file\fR, \fBfs.dir\fR, \fBfs.proc\fR, \fBfs.statvfs\fR,
+\fBio.handle\fR, \fBuci.cursor\fR, \fBnl80211.listener\fR,
+\fBuloop.timer\fR, \fBuloop.handle\fR, \fBuloop.process\fR, \fBuloop.task\fR,
+\fBuloop.interval\fR, \fBuloop.signal\fR, \fBuloop.pipe\fR,
+\fBexception\fR.
+.TP
+.B Union types
+Combine types with \fB|\fR: \fB{string|number}\fR, \fB{fs.file|null}\fR.
+.TP
+.B Optional types
+Append \fB?\fR to make a type nullable: \fB{string?}\fR is equivalent to
+\fB{string|null}\fR.
+.TP
+.B import() expressions
+Reference types from other modules:
+.RS
+.nf
+{import('fs')}           \- builtin module type
+{import('fs').file}      \- object type from module
+{import('./config')}      \- default export from local file
+{import('./config').name} \- named export or default export property
+.fi
+.RE
+.SS Cross\-File Types with import()
+You can reference types from other \fB.uc\fR files using import().
+.PP
+Named exports (\fBexport const\fR, \fBexport function\fR):
+.PP
+.RS
+.nf
+// lib/types.uc
+export const config = {
+    host: 'localhost',
+    port: 8080,
+    enabled: true,
+};
+
+// main.uc
+/** @param {import('./lib/types').config} cfg */
+function start(cfg) {
+    cfg.host;     // autocomplete + type: string
+    cfg.port;     // type: number
+    cfg.enabled;  // type: boolean
+}
+.fi
+.RE
+.PP
+Default exports:
+.PP
+.RS
+.nf
+// lib/types.uc
+export default {
+    host: 'localhost',
+    port: 8080,
+};
+
+// main.uc
+/** @param {import('./lib/types')} config */
+function start(config) {
+    config.host;  // type: string
+    config.port;  // type: number
+}
+.fi
+.RE
+.PP
+You can also access a property of the default export:
+.PP
+.RS
+.nf
+// lib/types.uc
+export default {
+    db: { host: 'localhost', port: 5432 },
+    app: { name: 'myapp', debug: false },
+};
+
+// main.uc
+/** @param {import('./lib/types').db} conn */
+function connect(conn) {
+    conn.host;  // type: string
+    conn.port;  // type: number
+}
+.fi
+.RE
+.PP
+When a name matches both a named export and a default export property,
+the named export takes priority.
+.SS Strict Mode
+When a file contains \fB'use strict'\fR, the analyzer emits info\-level
+diagnostics (UC7003) for function parameters that lack \fB@param\fR
+annotations. Use \fB\-\-verbose\fR in check mode to see these.
+.SH DIAGNOSTIC CODES
+.SS Parser Errors
+Syntax errors detected during parsing.
+.SS Semantic Diagnostics (ucode-semantic)
+.TP
+.B UC1005
+Variable shadows a variable from an outer scope.
+.TP
+.B UC2006, UC2007
+printf/sprintf format string errors: wrong number of arguments or
+incompatible argument types.
+.TP
+.B UC4001
+Unreachable code after return, break, continue, or die()/exit().
+.TP
+.B UC7001
+Unknown type in @param annotation.
+.TP
+.B UC7002
+@param name does not match any function parameter.
+.TP
+.B UC7003
+Function parameters missing @param annotations (strict mode only).
+.TP
+.B incompatible\-function\-argument
+Argument type does not match what the builtin function expects.
+.TP
+.B nullable\-argument
+Argument may be null where a non\-null value is required.
+.SH EDITOR SETUP
+.SS Neovim (0.11+)
+Add to \fB~/.config/nvim/init.lua\fR:
+.PP
+.RS
+.nf
+vim.filetype.add({ extension = { uc = 'ucode' } })
+
+vim.lsp.config('ucode', {
+  cmd = { 'ucode-lsp', '\-\-stdio' },
+  filetypes = { 'ucode' },
+  root_markers = { '.git' },
+})
+vim.lsp.enable('ucode')
+.fi
+.RE
+.SS VS Code
+Install the \fBucode Language Support\fR extension from the VS Code
+marketplace.
+.SH EXAMPLES
+Check all .uc files in the current directory:
+.PP
+.RS
+.B ucode-lsp
+.RE
+.PP
+Check a specific directory:
+.PP
+.RS
+.B ucode-lsp src/
+.RE
+.PP
+Check a single file with verbose output:
+.PP
+.RS
+.B ucode-lsp \-\-verbose router.uc
+.RE
+.PP
+Pipe diagnostics to count errors:
+.PP
+.RS
+.B ucode-lsp src/ | grep \-c error
+.RE
+.SH AUTHORS
+Noah B. Peterson
+.SH SEE ALSO
+.BR node (1),
+.BR nvim (1)
+.PP
+GitHub: https://github.com/NoahBPeterson/ucode-lsp
