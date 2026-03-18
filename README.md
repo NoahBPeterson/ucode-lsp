@@ -30,20 +30,6 @@ A comprehensive Language Server Protocol implementation for the [ucode scripting
 ### VS Code
 Install the extension from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=noahbpeterson.ucode-lsp).
 
-### Neovim
-The LSP server works with Neovim's built-in LSP client. Add to your `init.lua`:
-```lua
-vim.lsp.start({
-  name = 'ucode-lsp',
-  cmd = { 'node', '/path/to/dist/server.js', '--stdio' },
-  filetypes = { 'ucode' },
-  root_dir = vim.fs.dirname(vim.fs.find({ '.git' }, { upward = true })[1]),
-})
-```
-
-### Other Editors (Sublime Text, Emacs, Helix, Zed, etc.)
-Any editor with LSP support can use the server. Point your editor's LSP client at `node dist/server.js --stdio`.
-
 ### Building from Source
 ```bash
 git clone https://github.com/NoahBPeterson/ucode-lsp.git
