@@ -1,0 +1,10 @@
+# Only publish what's needed for the npm CLI package
+*
+!dist/cli.js
+!dist/server.js
+!bin/ucode-lsp.js
+!man/ucode-lsp.1
+!scripts/postinstall.sh
+!package.json
+!README.md
+!LICENSE

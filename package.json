@@ -13,13 +13,6 @@
     "ucode-lsp": "./bin/ucode-lsp.js"
   },
   "man": "./man/ucode-lsp.1",
-  "files": [
-    "dist/cli.js",
-    "dist/server.js",
-    "bin/ucode-lsp.js",
-    "man/ucode-lsp.1",
-    "scripts/postinstall.sh"
-  ],
   "engines": {
     "vscode": "^1.86.0"
   },
