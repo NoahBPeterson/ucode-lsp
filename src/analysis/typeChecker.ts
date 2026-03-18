@@ -11,7 +11,10 @@ import {
   ExpressionStatementNode, FunctionDeclarationNode, VariableDeclarationNode,
   VariableDeclaratorNode, ExportDefaultDeclarationNode, ReturnStatementNode,
   PropertyNode, SwitchStatementNode, SwitchCaseNode, ForInStatementNode,
-  ExportNamedDeclarationNode
+  ExportNamedDeclarationNode, ForStatementNode, WhileStatementNode,
+  ThrowStatementNode, TryStatementNode, CatchClauseNode, LogicalExpressionNode,
+  DeleteExpressionNode, SpreadElementNode, TemplateLiteralNode,
+  ImportDeclarationNode, LabeledStatementNode
 } from '../ast/nodes';
 
 /**
@@ -1075,7 +1078,7 @@ export class TypeChecker {
     }
 
     // For other callees (but not Identifiers, which we already handled above)
-    if (node.callee.type !== 'Identifier') {
+    if ((node.callee.type as string) !== 'Identifier') {
       const calleeType = this.checkNode(node.callee);
       if (!this.typeCompatibility.isValidCallTarget(calleeType)) {
         this.errors.push({
@@ -3436,130 +3439,232 @@ export class TypeChecker {
     const children: AstNode[] = [];
 
     switch (node.type) {
+      // Container nodes
       case 'Program':
         children.push(...(node as ProgramNode).body);
         break;
       case 'BlockStatement':
         children.push(...(node as BlockStatementNode).body);
         break;
-      case 'ExportDefaultDeclaration':
-        const exportNode = node as ExportDefaultDeclarationNode;
-        if (exportNode.declaration) {
-          children.push(exportNode.declaration);
-        }
-        break;
-      case 'ExportNamedDeclaration':
-        const exportNamedNode = node as ExportNamedDeclarationNode;
-        if (exportNamedNode.declaration) {
-          children.push(exportNamedNode.declaration);
-        }
-        break;
-      case 'IfStatement':
-        const ifNode = node as IfStatementNode;
-        children.push(ifNode.test);
-        children.push(ifNode.consequent);
-        if (ifNode.alternate) children.push(ifNode.alternate);
-        break;
+
+      // Statements
       case 'ExpressionStatement':
         children.push((node as ExpressionStatementNode).expression);
         break;
-      case 'ReturnStatement':
-        const returnNode = node as ReturnStatementNode;
-        if (returnNode.argument) {
-          children.push(returnNode.argument);
-        }
-        break;
-      case 'BinaryExpression':
-        const binaryNode = node as BinaryExpressionNode;
-        children.push(binaryNode.left, binaryNode.right);
-        break;
       case 'VariableDeclaration':
-        const varDeclNode = node as VariableDeclarationNode;
-        // Variable declarations contain declarators, each with optional init expressions
-        for (const declarator of varDeclNode.declarations) {
-          if (declarator.init) {
-            children.push(declarator.init);
-          }
+        for (const declarator of (node as VariableDeclarationNode).declarations) {
+          children.push(declarator);
         }
         break;
-      case 'ObjectExpression':
-        const objNode = node as ObjectExpressionNode;
-        // Object literals contain properties with values
-        for (const prop of objNode.properties) {
-          children.push(prop);
-        }
+      case 'VariableDeclarator': {
+        const decl = node as VariableDeclaratorNode;
+        children.push(decl.id);
+        if (decl.init) children.push(decl.init);
         break;
-      case 'Property':
-        const propNode = node as PropertyNode;
-        if (propNode.value) {
-          children.push(propNode.value);
-        }
+      }
+      case 'IfStatement': {
+        const ifNode = node as IfStatementNode;
+        children.push(ifNode.test, ifNode.consequent);
+        if (ifNode.alternate) children.push(ifNode.alternate);
         break;
-      case 'ArrayExpression':
-        const arrayNode = node as ArrayExpressionNode;
-        // Array literals contain element expressions
-        children.push(...arrayNode.elements.filter(el => el != null));
-        break;
-      case 'FunctionDeclaration':
-        const funcNode = node as FunctionDeclarationNode;
-        children.push(funcNode.id, ...funcNode.params, funcNode.body);
-        break;
-      case 'FunctionExpression':
-        const funcExpr = node as FunctionExpressionNode;
-        if (funcExpr.id) {
-          children.push(funcExpr.id);
-        }
-        children.push(...funcExpr.params);
-        children.push(funcExpr.body);
-        break;
-      case 'WhileStatement':
-        const whileNode = node as any;
-        children.push(whileNode.test, whileNode.body);
-        break;
-      case 'ForStatement':
-        const forNode = node as any;
+      }
+      case 'ForStatement': {
+        const forNode = node as ForStatementNode;
         if (forNode.init) children.push(forNode.init);
         if (forNode.test) children.push(forNode.test);
         if (forNode.update) children.push(forNode.update);
         children.push(forNode.body);
         break;
-      case 'ForInStatement':
-        const forInNode = node as ForInStatementNode;
-        children.push(forInNode.left, forInNode.right, forInNode.body);
+      }
+      case 'ForInStatement': {
+        const fin = node as ForInStatementNode;
+        children.push(fin.left, fin.right, fin.body);
         break;
-      case 'ArrowFunctionExpression':
-        const arrowNode = node as ArrowFunctionExpressionNode;
-        children.push(...arrowNode.params);
-        if (arrowNode.body && typeof arrowNode.body === 'object') {
-          children.push(arrowNode.body as AstNode);
-        }
+      }
+      case 'WhileStatement': {
+        const wh = node as WhileStatementNode;
+        children.push(wh.test, wh.body);
         break;
-      case 'VariableDeclarator':
-        const declaratorNode = node as VariableDeclaratorNode;
-        if (declaratorNode.init) {
-          children.push(declaratorNode.init);
-        }
+      }
+      case 'DoWhileStatement': {
+        const dw = node as any;
+        children.push(dw.body, dw.test);
         break;
-      case 'CallExpression':
-        const callNode = node as CallExpressionNode;
-        children.push(callNode.callee);
-        children.push(...callNode.arguments.filter(arg => arg != null));
+      }
+      case 'ReturnStatement': {
+        const ret = node as ReturnStatementNode;
+        if (ret.argument) children.push(ret.argument);
         break;
-      case 'AssignmentExpression':
-        const assignNode = node as any;
-        children.push(assignNode.left, assignNode.right);
+      }
+      case 'ThrowStatement': {
+        const thr = node as ThrowStatementNode;
+        if (thr.argument) children.push(thr.argument);
         break;
-      case 'SwitchStatement':
-        const switchNode = node as any;
-        children.push(switchNode.discriminant);
-        if (switchNode.cases) {
-          for (const caseNode of switchNode.cases) {
-            if (caseNode.test) children.push(caseNode.test);
-            children.push(...caseNode.consequent);
+      }
+      case 'BreakStatement':
+      case 'ContinueStatement':
+      case 'EmptyStatement':
+        // Leaf statements — no children
+        break;
+      case 'LabeledStatement': {
+        const lbl = node as LabeledStatementNode;
+        children.push(lbl.body);
+        break;
+      }
+      case 'SwitchStatement': {
+        const sw = node as SwitchStatementNode;
+        children.push(sw.discriminant);
+        if (sw.cases) {
+          for (const c of sw.cases) {
+            if (c.test) children.push(c.test);
+            children.push(...c.consequent);
           }
         }
         break;
-      // Add more node types as needed
+      }
+      case 'SwitchCase':
+        // Handled inline by SwitchStatement above; if reached standalone:
+        break;
+      case 'TryStatement': {
+        const tr = node as TryStatementNode;
+        children.push(tr.block);
+        if (tr.handler) children.push(tr.handler);
+        break;
+      }
+      case 'CatchClause': {
+        const cc = node as CatchClauseNode;
+        children.push(cc.body);
+        break;
+      }
+
+      // Functions
+      case 'FunctionDeclaration': {
+        const fd = node as FunctionDeclarationNode;
+        children.push(fd.id, ...fd.params, fd.body);
+        break;
+      }
+      case 'FunctionExpression': {
+        const fe = node as FunctionExpressionNode;
+        if (fe.id) children.push(fe.id);
+        children.push(...fe.params, fe.body);
+        break;
+      }
+      case 'ArrowFunctionExpression': {
+        const ae = node as ArrowFunctionExpressionNode;
+        children.push(...ae.params);
+        if (ae.body && typeof ae.body === 'object') {
+          children.push(ae.body as AstNode);
+        }
+        break;
+      }
+
+      // Expressions
+      case 'BinaryExpression': {
+        const bin = node as BinaryExpressionNode;
+        children.push(bin.left, bin.right);
+        break;
+      }
+      case 'LogicalExpression': {
+        const log = node as LogicalExpressionNode;
+        children.push(log.left, log.right);
+        break;
+      }
+      case 'UnaryExpression': {
+        const un = node as UnaryExpressionNode;
+        children.push(un.argument);
+        break;
+      }
+      case 'AssignmentExpression': {
+        const asg = node as AssignmentExpressionNode;
+        children.push(asg.left, asg.right);
+        break;
+      }
+      case 'ConditionalExpression': {
+        const cond = node as ConditionalExpressionNode;
+        children.push(cond.test, cond.consequent, cond.alternate);
+        break;
+      }
+      case 'CallExpression': {
+        const call = node as CallExpressionNode;
+        children.push(call.callee);
+        children.push(...call.arguments.filter(arg => arg != null));
+        break;
+      }
+      case 'MemberExpression': {
+        const mem = node as MemberExpressionNode;
+        children.push(mem.object, mem.property);
+        break;
+      }
+      case 'DeleteExpression': {
+        const del = node as DeleteExpressionNode;
+        children.push(del.argument);
+        break;
+      }
+      case 'SpreadElement': {
+        const spr = node as SpreadElementNode;
+        children.push(spr.argument);
+        break;
+      }
+
+      // Literals and atoms
+      case 'ObjectExpression':
+        for (const prop of (node as ObjectExpressionNode).properties) {
+          children.push(prop);
+        }
+        break;
+      case 'Property': {
+        const prop = node as PropertyNode;
+        if (prop.key) children.push(prop.key);
+        if (prop.value) children.push(prop.value);
+        break;
+      }
+      case 'ArrayExpression':
+        children.push(...(node as ArrayExpressionNode).elements.filter(el => el != null));
+        break;
+      case 'TemplateLiteral': {
+        const tl = node as TemplateLiteralNode;
+        for (const expr of tl.expressions) children.push(expr);
+        break;
+      }
+      case 'TemplateElement':
+      case 'Literal':
+      case 'Identifier':
+      case 'ThisExpression':
+      case 'JsDocComment':
+        // Leaf nodes — no children to traverse
+        break;
+
+      // Imports/exports
+      case 'ImportDeclaration': {
+        const imp = node as ImportDeclarationNode;
+        children.push(...imp.specifiers);
+        break;
+      }
+      case 'ImportSpecifier':
+      case 'ImportDefaultSpecifier':
+      case 'ImportNamespaceSpecifier':
+      case 'ExportSpecifier':
+        // Leaf specifier nodes
+        break;
+      case 'ExportDefaultDeclaration': {
+        const ed = node as ExportDefaultDeclarationNode;
+        if (ed.declaration) children.push(ed.declaration);
+        break;
+      }
+      case 'ExportNamedDeclaration': {
+        const en = node as ExportNamedDeclarationNode;
+        if (en.declaration) children.push(en.declaration);
+        break;
+      }
+      case 'ExportAllDeclaration':
+        break;
+
+      default: {
+        // Exhaustive check — if this errors, a new AstNodeKind was added without a case here
+        const _exhaustive: never = node.type;
+        void _exhaustive;
+        break;
+      }
     }
 
     return children.filter(child => child != null);

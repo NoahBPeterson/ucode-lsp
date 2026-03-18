@@ -415,8 +415,13 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
     const cacheEntry = analysisCache.get(params.textDocument.uri);
     const ast = cacheEntry?.result?.ast;
 
-    // Get diagnostics for the current range
-    const diagnostics = params.context.diagnostics;
+    // Get diagnostics for the current range, sorted by range size (smallest/innermost first).
+    // This ensures inner diagnostic fixes (root causes) take priority during deduplication.
+    const diagnostics = [...params.context.diagnostics].sort((a: any, b: any) => {
+        const sizeA = (a.range.end.line - a.range.start.line) * 10000 + (a.range.end.character - a.range.start.character);
+        const sizeB = (b.range.end.line - b.range.start.line) * 10000 + (b.range.end.character - b.range.start.character);
+        return sizeA - sizeB;
+    });
     const disableLines = new Set<number>();
 
     for (const diagnostic of diagnostics) {
@@ -486,7 +491,19 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
         });
     }
 
-    return codeActions;
+    // Deduplicate actions with the same title — overlapping diagnostics
+    // (e.g., length(iptoarr(m[0]))) can produce identical "Extract to variable"
+    // actions from both the inner and outer diagnostic.
+    const seen = new Set<string>();
+    const dedupedActions: typeof codeActions = [];
+    for (const action of codeActions) {
+        if (!seen.has(action.title)) {
+            seen.add(action.title);
+            dedupedActions.push(action);
+        }
+    }
+
+    return dedupedActions;
 });
 
 connection.onDefinition((params) => {
@@ -1078,8 +1095,8 @@ function generateTypeNarrowingQuickFixes(
         if (nullish) {
             const guardCond = `${varName} == null`;
             const wrapCond = `${varName} != null`;
-            const guardLabel = 'Add null guard';
-            const wrapLabel = 'Wrap in null guard';
+            const guardLabel = `Add null guard for \`${varName}\``;
+            const wrapLabel = `Wrap in null guard for \`${varName}\``;
 
             // Skip if this exact guard already exists above
             if (guardAlreadyExists(document, line, guardCond, ctx.enclosingFunctionLine)) {
@@ -1131,7 +1148,7 @@ function generateTypeNarrowingQuickFixes(
 
             // Don't offer "Wrap" when the line opens a block — wrapping just
             // the header without the body produces broken code.
-            if (!needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader && !needsBlockExpansion && inlineDeclPos == null && !trimmedContent.endsWith('{')) {
+            if (!needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader && !ctx.inCondition && !needsBlockExpansion && inlineDeclPos == null && !trimmedContent.endsWith('{')) {
                 actions.push(makeReplaceLineAction(
                     wrapLabel,
                     `${indent}if (${wrapCond}) {\n${indent}\t${trimmedContent}\n${indent}}`,
@@ -1174,39 +1191,39 @@ function generateTypeNarrowingQuickFixes(
                 const tl = stmtLine;
                 const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
                 const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
-                actions.push(makeInsertBeforeAction(`Add type guard`,
+                actions.push(makeInsertBeforeAction(`Add type guard for \`${varName}\``,
                     `${tlIndent}if (${earlyReturnGuard})\n${tlIndent}\treturn;\n`, tl, uri, diagnostic, document));
             } else if (ctx.inCondition) {
                 const targetLine = ctx.conditionOwnerLine >= 0 ? ctx.conditionOwnerLine : line;
                 const targetLineText = document.getText({ start: { line: targetLine, character: 0 }, end: { line: targetLine + 1, character: 0 } }).replace(/\r?\n$/, '');
                 const targetIndent = targetLineText.match(/^(\s*)/)?.[1] || '';
-                actions.push(makeInsertBeforeAction(`Add type guard`,
+                actions.push(makeInsertBeforeAction(`Add type guard for \`${varName}\``,
                     `${targetIndent}if (${earlyReturnGuard})\n${targetIndent}\t${keyword2};\n`, targetLine, uri, diagnostic, document));
             } else if (inlineDeclPos != null) {
                 actions.push({
-                    title: `Add type guard`,
+                    title: `Add type guard for \`${varName}\``,
                     kind: CodeActionKind.QuickFix,
                     diagnostics: [diagnostic],
                     edit: { changes: { [uri]: [TextEdit.insert({ line, character: inlineDeclPos }, ` if (${earlyReturnGuard}) ${keyword2};`)] } }
                 });
             } else if (oneLiner) {
                 actions.push(makeReplaceLineAction(
-                    `Add type guard`,
+                    `Add type guard for \`${varName}\``,
                     `${oneLiner.indent}${oneLiner.prefix} {\n${oneLiner.indent}\tif (${earlyReturnGuard}) ${keyword2};\n${oneLiner.indent}\t${oneLiner.body}\n${oneLiner.indent}}`,
                     line, lineLength, uri, diagnostic
                 ));
             } else if (bracelessParent) {
                 const bp = bracelessParent;
                 actions.push(makeReplaceRangeAction(
-                    `Add type guard`,
+                    `Add type guard for \`${varName}\``,
                     `${bp.parentIndent}${bp.prefix} {\n${indent}if (${earlyReturnGuard}) ${keyword2};\n${lineText}\n${bp.parentIndent}}`,
                     bp.parentLine, line, lineLength, uri, diagnostic
                 ));
             } else if (ctx.inLoop) {
-                actions.push(makeInsertBeforeAction(`Add type guard`,
+                actions.push(makeInsertBeforeAction(`Add type guard for \`${varName}\``,
                     `${indent}if (${earlyReturnGuard})\n${indent}\tcontinue;\n`, line, uri, diagnostic, document));
             } else if (ctx.inFunction) {
-                actions.push(makeInsertBeforeAction(`Add type guard`,
+                actions.push(makeInsertBeforeAction(`Add type guard for \`${varName}\``,
                     `${indent}if (${earlyReturnGuard})\n${indent}\treturn;\n`, line, uri, diagnostic, document));
             }
 
@@ -1267,9 +1284,9 @@ function generateTypeNarrowingQuickFixes(
 
             // Don't offer "Wrap" when the line opens a block — wrapping just
             // the header without the body produces broken code.
-            if (!needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader && !needsBlockExpansion && inlineDeclPos == null && !trimmedContent.endsWith('{')) {
+            if (!needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader && !ctx.inCondition && !needsBlockExpansion && inlineDeclPos == null && !trimmedContent.endsWith('{')) {
                 actions.push(makeReplaceLineAction(
-                    `Wrap in type guard`,
+                    `Wrap in type guard for \`${varName}\``,
                     `${indent}if (${wrapGuard}) {\n${indent}\t${trimmedContent}\n${indent}}`,
                     line, lineLength, uri, diagnostic
                 ));
@@ -1301,20 +1318,20 @@ function generateTypeNarrowingQuickFixes(
                         const tl = stmtLine;
                         const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
                         const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
-                        actions.push(makeInsertBeforeAction(`Add type guard`,
+                        actions.push(makeInsertBeforeAction(`Add type guard for \`${innerInfo.varName}\``,
                             `${tlIndent}if (${innerEarlyGuard})\n${tlIndent}\treturn;\n`, tl, uri, diagnostic, document));
                     } else if (ctx.inCondition) {
                         const targetLine = ctx.conditionOwnerLine >= 0 ? ctx.conditionOwnerLine : line;
                         const targetLineText = document.getText({ start: { line: targetLine, character: 0 }, end: { line: targetLine + 1, character: 0 } }).replace(/\r?\n$/, '');
                         const targetIndent = targetLineText.match(/^(\s*)/)?.[1] || '';
                         const kw2 = ctx.inLoop ? 'continue' : 'return';
-                        actions.push(makeInsertBeforeAction(`Add type guard`,
+                        actions.push(makeInsertBeforeAction(`Add type guard for \`${innerInfo.varName}\``,
                             `${targetIndent}if (${innerEarlyGuard})\n${targetIndent}\t${kw2};\n`, targetLine, uri, diagnostic, document));
                     } else if (ctx.inLoop) {
-                        actions.push(makeInsertBeforeAction(`Add type guard`,
+                        actions.push(makeInsertBeforeAction(`Add type guard for \`${innerInfo.varName}\``,
                             `${indent}if (${innerEarlyGuard})\n${indent}\tcontinue;\n`, line, uri, diagnostic, document));
                     } else if (ctx.inFunction) {
-                        actions.push(makeInsertBeforeAction(`Add type guard`,
+                        actions.push(makeInsertBeforeAction(`Add type guard for \`${innerInfo.varName}\``,
                             `${indent}if (${innerEarlyGuard})\n${indent}\treturn;\n`, line, uri, diagnostic, document));
                     }
                     return actions;
@@ -1336,7 +1353,10 @@ function generateTypeNarrowingQuickFixes(
             : (exIsUnion
                 ? exExpectedTypes.map((t: string) => `type(${vn}) != "${t}"`).join(' && ')
                 : `type(${vn}) != "${expectedType}"`);
-        const actionLabel = nullish ? 'Extract to variable and add null guard' : 'Extract to variable and add type guard';
+        const shortExpr = exprText.length > 30 ? exprText.substring(0, 27) + '...' : exprText;
+        const actionLabel = nullish
+            ? `Extract \`${shortExpr}\` and add null guard`
+            : `Extract \`${shortExpr}\` and add type guard`;
 
         // Replace the expression at the diagnostic position, not the first match on the line.
         const exprCharPos = diagnostic.range.start.character;

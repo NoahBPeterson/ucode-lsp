@@ -3,9 +3,54 @@
  * Based on the ucode compiler's grammar and token types
  */
 
+// AST node type discriminants, split by semantic category
+
+/** Structural containers that hold ordered lists of children */
+export type AstContainerKind =
+  | 'Program' | 'BlockStatement';
+
+/** Control flow and declaration statements */
+export type AstStatementKind =
+  | 'ExpressionStatement' | 'VariableDeclaration'
+  | 'IfStatement' | 'ForStatement' | 'ForInStatement' | 'WhileStatement' | 'DoWhileStatement'
+  | 'SwitchStatement' | 'SwitchCase'
+  | 'TryStatement' | 'CatchClause'
+  | 'ReturnStatement' | 'ThrowStatement' | 'BreakStatement' | 'ContinueStatement'
+  | 'EmptyStatement' | 'LabeledStatement';
+
+/** Function declarations and expressions */
+export type AstFunctionKind =
+  | 'FunctionDeclaration' | 'FunctionExpression' | 'ArrowFunctionExpression';
+
+/** Expressions that produce values */
+export type AstExpressionKind =
+  | 'BinaryExpression' | 'LogicalExpression' | 'UnaryExpression'
+  | 'AssignmentExpression' | 'ConditionalExpression'
+  | 'CallExpression' | 'MemberExpression' | 'DeleteExpression' | 'SpreadElement'
+  | 'ArrayExpression' | 'ObjectExpression' | 'TemplateLiteral';
+
+/** Leaf nodes with no children to traverse */
+export type AstLeafKind =
+  | 'Literal' | 'Identifier' | 'ThisExpression'
+  | 'TemplateElement' | 'JsDocComment';
+
+/** Module import/export nodes */
+export type AstModuleKind =
+  | 'ImportDeclaration' | 'ImportSpecifier' | 'ImportDefaultSpecifier' | 'ImportNamespaceSpecifier'
+  | 'ExportDefaultDeclaration' | 'ExportNamedDeclaration' | 'ExportAllDeclaration' | 'ExportSpecifier';
+
+/** Structural sub-nodes (parts of larger constructs) */
+export type AstSubNodeKind =
+  | 'VariableDeclarator' | 'Property';
+
+/** All possible AST node type discriminants */
+export type AstNodeKind =
+  | AstContainerKind | AstStatementKind | AstFunctionKind
+  | AstExpressionKind | AstLeafKind | AstModuleKind | AstSubNodeKind;
+
 // Base AST Node with position tracking
 export interface AstNode {
-  type: string;
+  type: AstNodeKind;
   start: number;
   end: number;
   // parent?: AstNode; // REMOVED: Causes memory leaks due to circular references

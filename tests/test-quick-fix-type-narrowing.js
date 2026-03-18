@@ -485,12 +485,13 @@ print(outer());
       }
     });
 
-    it('guard actions should have simple generic titles', async function() {
+    it('guard actions should include variable name in title', async function() {
       const { actions } = await getActionsForCode(funcCode, 'nullable-argument');
       const guard = findAction(actions, 'Add null guard');
       assert(guard, 'Should have guard action');
-      // Title should be simple, not mention "early return" or "continue"
-      assert.strictEqual(guard.title, 'Add null guard', `Title should be simple, got: ${guard.title}`);
+      // Title should include the variable name for disambiguation
+      assert(guard.title.includes('Add null guard'), `Title should start with 'Add null guard', got: ${guard.title}`);
+      assert(guard.title.includes('`'), `Title should include variable name in backticks, got: ${guard.title}`);
     });
   });
 
@@ -609,7 +610,7 @@ print(process({}, "a", ["x"]));
 `;
       const { actions, matching } = await getActionsForCode(code, 'incompatible-function-argument');
       assert(matching.length > 0, 'Should have incompatible-function-argument diagnostic');
-      const extract = findAction(actions, 'Extract to variable');
+      const extract = findAction(actions, 'Extract');
       assert(extract, `Should offer extract action, got: ${actions.map(a => a.title).join(', ')}`);
       const text = getEditText(extract);
       // Should wrap the for-loop body in braces
@@ -633,7 +634,7 @@ print(quiet_mode('on', null));
       // int(uci_getter()) where uci_getter() returns unknown → incompatible-function-argument
       const { actions, matching } = await getActionsForCode(code, 'incompatible-function-argument');
       assert(matching.length > 0, 'Should have incompatible-function-argument diagnostic');
-      const extract = findAction(actions, 'Extract to variable');
+      const extract = findAction(actions, 'Extract');
       assert(extract, `Should offer extract action, got: ${actions.map(a => a.title).join(', ')}`);
       const text = getEditText(extract);
       // Should preserve else-if chain and expand body into block
@@ -778,7 +779,7 @@ install(['x']);
 `;
       const { actions, matching } = await getActionsForCode(code, 'incompatible-function-argument');
       if (matching.length > 0) {
-        const extract = findAction(actions, 'Extract to variable');
+        const extract = findAction(actions, 'Extract');
         if (extract) {
           const text = getEditText(extract);
           // The extracted variable should replace the targets[target] inside length(),
@@ -1133,7 +1134,7 @@ function get_next_cpu(weight, prev_cpu) {
         assert(!rangeText.includes(','), `Diagnostic range should not include comma, got: ${JSON.stringify(rangeText)}`);
 
         // Quick fix should extract slice(cpus) to a variable, not suggest type(cpus)
-        const extract = findAction(actions, 'Extract to variable');
+        const extract = findAction(actions, 'Extract');
         assert(extract, `Should offer extract-to-variable, got: ${actions.map(a => a.title).join(', ')}`);
         const text = getEditText(extract);
         assert(text.includes('slice(cpus)'), `Should extract slice(cpus), got: ${text}`);
