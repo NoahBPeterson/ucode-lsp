@@ -18,7 +18,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: oven-sh/setup-bun@v2
 
@@ -33,13 +33,13 @@ jobs:
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Upload VSIX
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ucode-lsp-${{ steps.version.outputs.version }}.vsix
           path: ucode-lsp-${{ steps.version.outputs.version }}.vsix
 
       - name: Upload LSP server bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ucode-lsp-server-${{ steps.version.outputs.version }}
           path: dist/server.js
