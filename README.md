@@ -120,16 +120,21 @@ let content = fs.readfile("data.txt");    // ✅ All 27 fs module functions avai
 ```
 
 **Supported Modules:**
-- **socket** - Network socket functionality (create, connect, listen, etc.)
-- **math** - Mathematical functions (sin, cos, sqrt, etc.)
-- **log** - System logging (syslog, ulog functions)
-- **resolv** - DNS resolution (query, error functions)
-- **nl80211** - WiFi/802.11 networking
 - **debug** - Runtime debugging and introspection
 - **digest** - Cryptographic hash functions
-- **fs** - File system operations with comprehensive autocompletion for all 27 functions (open, readfile, writefile, stat, access, etc.)
+- **fs** - File system operations (open, readfile, writefile, stat, access, etc.)
+- **io** - I/O handle operations
+- **log** - System logging (syslog, ulog functions)
+- **math** - Mathematical functions (sin, cos, sqrt, etc.)
+- **nl80211** - WiFi/802.11 networking
+- **resolv** - DNS resolution (query, error functions)
+- **rtnl** - Netlink routing (routes, links, addresses)
+- **socket** - Network socket functionality (create, connect, listen, etc.)
+- **struct** - Binary data packing/unpacking
+- **ubus** - OpenWrt inter-process communication
 - **uci** - OpenWrt UCI configuration management
 - **uloop** - Event loop and timer functionality
+- **zlib** - Compression/decompression
 
 ### Code Navigation
 ```ucode
