@@ -1134,5 +1134,50 @@ function test50(x) {
     check('Test 60: path.complete pattern val narrowed', narrowedStr(result, 'val', offset), 'string');
 }
 
+// Test 61: numeric comparison narrows unknown to integer | double in true branch
+{
+    const code = `function cpu_mask(cpu) {
+    let mask;
+    if (cpu < 0)
+        mask = cpu;
+    else
+        mask = cpu;
+    return mask;
+}`;
+    const result = analyze(code);
+    const truePos = code.indexOf('mask = cpu;');
+    const trueOffset = code.indexOf('cpu', truePos);
+    check('Test 61: numeric comparison cpu < 0 narrows to numeric in true branch',
+        narrowedStr(result, 'cpu', trueOffset), 'integer | double');
+}
+
+// Test 62: numeric comparison — else branch keeps original type
+{
+    const code = `function check(x) {
+    if (x > 10)
+        return x;
+    return x;
+}`;
+    const result = analyze(code);
+    const returnPos = code.lastIndexOf('return x;');
+    const offset = code.indexOf('x', returnPos);
+    check('Test 62: numeric comparison else branch keeps original type',
+        narrowedStr(result, 'x', offset), 'unknown');
+}
+
+// Test 63: reversed numeric comparison — numericLiteral <op> variable
+{
+    const code = `function check(val) {
+    if (0 <= val)
+        return val;
+    return val;
+}`;
+    const result = analyze(code);
+    const truePos = code.indexOf('return val;');
+    const trueOffset = code.indexOf('val', truePos);
+    check('Test 63: reversed numeric comparison 0 <= val narrows to numeric',
+        narrowedStr(result, 'val', trueOffset), 'integer | double');
+}
+
 console.log(`\n${passed} passed, ${failed} failed out of ${passed + failed} tests`);
 if (failed > 0) process.exit(1);

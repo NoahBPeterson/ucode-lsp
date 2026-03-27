@@ -3021,6 +3021,31 @@ export class TypeChecker {
       }
     }
 
+    // Numeric comparison narrowing: variable <op> numericLiteral or numericLiteral <op> variable
+    // e.g., if (cpu < 0) narrows cpu to integer | double in the true branch
+    if (condition.type === 'BinaryExpression') {
+      const binaryExpr = condition as BinaryExpressionNode;
+      if (binaryExpr.operator === '<' || binaryExpr.operator === '>' ||
+          binaryExpr.operator === '<=' || binaryExpr.operator === '>=') {
+        let matchedName: string | null = null;
+        if (binaryExpr.left.type === 'Identifier' && binaryExpr.right.type === 'Literal' &&
+            typeof (binaryExpr.right as any).value === 'number') {
+          matchedName = (binaryExpr.left as any).name;
+        } else if (binaryExpr.right.type === 'Identifier' && binaryExpr.left.type === 'Literal' &&
+                   typeof (binaryExpr.left as any).value === 'number') {
+          matchedName = (binaryExpr.right as any).name;
+        }
+        if (matchedName === variableName) {
+          return {
+            variableName,
+            narrowToType: null,
+            isNegative: false,
+            equalityNarrowType: createUnionType([UcodeType.INTEGER, UcodeType.DOUBLE])
+          };
+        }
+      }
+    }
+
     return null;
   }
 

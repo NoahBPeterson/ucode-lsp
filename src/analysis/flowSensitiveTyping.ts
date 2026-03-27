@@ -802,6 +802,29 @@ export class FlowSensitiveTypeTracker {
       }
     }
 
+    // Numeric comparison narrowing: variable <op> numericLiteral or numericLiteral <op> variable
+    // e.g., if (cpu < 0) narrows cpu to integer | double in the true branch
+    if (expr.operator === '<' || expr.operator === '>' || expr.operator === '<=' || expr.operator === '>=') {
+      let variableName: string | null = null;
+      if (expr.left.type === 'Identifier' && expr.right.type === 'Literal' && typeof (expr.right as any).value === 'number') {
+        variableName = (expr.left as IdentifierNode).name;
+      } else if (expr.right.type === 'Identifier' && expr.left.type === 'Literal' && typeof (expr.left as any).value === 'number') {
+        variableName = (expr.right as IdentifierNode).name;
+      }
+      if (variableName) {
+        const originalType = this.getOriginalVariableType(variableName, position);
+        if (originalType) {
+          const narrowed = this.narrowingEngine.keepOnlyTypes(originalType, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+          return {
+            variableName,
+            guard: { type: 'type-check', expression: `${variableName} ${expr.operator} <number>`, testedType: UcodeType.INTEGER },
+            positiveNarrowing: narrowed.narrowedType,
+            negativeNarrowing: originalType,
+          };
+        }
+      }
+    }
+
     return null;
   }
 

@@ -741,16 +741,24 @@ function findBracelessParent(
         const trimmed = prevText.trim();
         if (!trimmed) continue; // skip empty lines
 
+        // Strip trailing line comment for structure detection
+        const trimmedNoComment = trimmed.replace(/\/\/.*$/, '').trimEnd();
+
         // Check for control structure ending with ) and no {
         const parenKeywords = ['for', 'while', 'if', 'else if'];
         for (const kw of parenKeywords) {
-            if (!trimmed.startsWith(kw)) continue;
-            const after = trimmed[kw.length];
+            if (!trimmedNoComment.startsWith(kw)) continue;
+            const after = trimmedNoComment[kw.length];
             if (after && after !== ' ' && after !== '\t' && after !== '(') continue;
             // Verify it ends with ) (no opening brace)
-            if (trimmed.endsWith(')')) {
+            if (trimmedNoComment.endsWith(')')) {
                 const parentIndent = prevText.match(/^(\s*)/)?.[1] || '';
-                return { parentIndent, prefix: trimmed, parentLine: prevLine };
+                // Preserve trailing comment: insert { before the comment
+                const trailingComment = trimmed.substring(trimmedNoComment.length).trim();
+                const prefix = trailingComment
+                    ? `${trimmedNoComment} { ${trailingComment}`
+                    : `${trimmedNoComment} {`;
+                return { parentIndent, prefix, parentLine: prevLine };
             }
         }
         // Plain else without brace
@@ -1051,6 +1059,25 @@ function generateTypeNarrowingQuickFixes(
     const bodyNeedsBlock = ctx.enclosingControlBody != null &&
         ctx.enclosingControlBody.type !== 'BlockStatement';
     const needsBlockExpansion = !ctx.inCondition && (bodyNeedsBlock || !!(oneLiner || bracelessParent));
+
+    // Detect else clause that would be orphaned when expanding a braceless if-body to a block.
+    // e.g., `if (x < 0)\n    stmt;\nelse\n    other;` → the else must be preserved after `}`.
+    let elseClauseText: string | null = null;
+    let elseClauseEndLine = -1;
+    if (bracelessParent && ctx.enclosingControl?.type === 'IfStatement' && ctx.enclosingControl.alternate) {
+        const altEnd = document.positionAt(ctx.enclosingControl.alternate.end);
+        // The "else" keyword is between the consequent end and alternate start.
+        // Get the full text from the line after the diagnostic to the end of the alternate.
+        const elseKeywordLine = line + 1;
+        if (elseKeywordLine <= altEnd.line) {
+            const elseText = document.getText({
+                start: { line: elseKeywordLine, character: 0 },
+                end: { line: altEnd.line, character: altEnd.character }
+            });
+            elseClauseText = elseText;
+            elseClauseEndLine = altEnd.line;
+        }
+    }
     const nullish = isNullProblem(data);
 
     // Handle all three diagnostic codes uniformly
@@ -1133,10 +1160,15 @@ function generateTypeNarrowingQuickFixes(
                 ));
             } else if (bracelessParent) {
                 const bp = bracelessParent;
+                const elseSuffix = elseClauseText ? `\n${elseClauseText}` : '';
+                const endLine = elseClauseEndLine >= 0 ? elseClauseEndLine : line;
+                const endLen = elseClauseEndLine >= 0
+                    ? document.getText({ start: { line: endLine, character: 0 }, end: { line: endLine + 1, character: 0 } }).replace(/\r?\n$/, '').length
+                    : lineLength;
                 actions.push(makeReplaceRangeAction(
                     guardLabel,
-                    `${bp.parentIndent}${bp.prefix} {\n${indent}if (${guardCond}) ${keyword};\n${lineText}\n${bp.parentIndent}}`,
-                    bp.parentLine, line, lineLength, uri, diagnostic
+                    `${bp.parentIndent}${bp.prefix}\n${indent}if (${guardCond}) ${keyword};\n${lineText}\n${bp.parentIndent}}${elseSuffix}`,
+                    bp.parentLine, endLine, endLen, uri, diagnostic
                 ));
             } else if (ctx.inLoop) {
                 actions.push(makeInsertBeforeAction(guardLabel,
@@ -1214,10 +1246,15 @@ function generateTypeNarrowingQuickFixes(
                 ));
             } else if (bracelessParent) {
                 const bp = bracelessParent;
+                const elseSuffix = elseClauseText ? `\n${elseClauseText}` : '';
+                const endLine = elseClauseEndLine >= 0 ? elseClauseEndLine : line;
+                const endLen = elseClauseEndLine >= 0
+                    ? document.getText({ start: { line: endLine, character: 0 }, end: { line: endLine + 1, character: 0 } }).replace(/\r?\n$/, '').length
+                    : lineLength;
                 actions.push(makeReplaceRangeAction(
                     `Add type guard for \`${varName}\``,
-                    `${bp.parentIndent}${bp.prefix} {\n${indent}if (${earlyReturnGuard}) ${keyword2};\n${lineText}\n${bp.parentIndent}}`,
-                    bp.parentLine, line, lineLength, uri, diagnostic
+                    `${bp.parentIndent}${bp.prefix}\n${indent}if (${earlyReturnGuard}) ${keyword2};\n${lineText}\n${bp.parentIndent}}${elseSuffix}`,
+                    bp.parentLine, endLine, endLen, uri, diagnostic
                 ));
             } else if (ctx.inLoop) {
                 actions.push(makeInsertBeforeAction(`Add type guard for \`${varName}\``,
@@ -1440,7 +1477,7 @@ function generateTypeNarrowingQuickFixes(
             const replacedLine = replaceAt(lineText, exprText, vn, exprCharPos);
             if (replacedLine !== lineText) {
                 actions.push(makeReplaceRangeAction(actionLabel,
-                    `${bp.parentIndent}${bp.prefix} {\n${indent}let ${vn} = ${exprText};\n${indent}if (${exEarlyGuard}) ${kw};\n${replacedLine}\n${bp.parentIndent}}`,
+                    `${bp.parentIndent}${bp.prefix}\n${indent}let ${vn} = ${exprText};\n${indent}if (${exEarlyGuard}) ${kw};\n${replacedLine}\n${bp.parentIndent}}`,
                     bp.parentLine, line, lineLength, uri, diagnostic));
             }
         } else if (ctx.inLoop || ctx.inFunction) {
