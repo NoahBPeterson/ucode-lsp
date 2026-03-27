@@ -923,9 +923,11 @@ export function handleHover(
                 // Skip CFG override when we already have a position-aware match (it's scope-correct).
                 if (symbol && !hadPositionMatch && analysisResult.cfgQueryEngine) {
                     const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(word, offset);
-                    if (cfgType && cfgType !== UcodeType.UNKNOWN && cfgType !== symbol.dataType) {
-                        // CFG provides flow-sensitive type - use it (but not if it's UNKNOWN,
-                        // which is less precise than what the symbol table already has)
+                    if (cfgType !== undefined && cfgType !== symbol.dataType) {
+                        // CFG provides flow-sensitive type — use it even if UNKNOWN.
+                        // CFG returning UNKNOWN means the variable genuinely has no known type
+                        // at this position (e.g., `let cpus;` before a later `cpus = map(...)`).
+                        // Only skip when CFG has no data at all (returns undefined).
                         symbol = {
                             ...symbol,
                             dataType: cfgType

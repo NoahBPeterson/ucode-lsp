@@ -11,7 +11,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, isArrayType, getArrayElementType, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, isArrayType, getArrayElementType, getUnionTypes, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
@@ -3803,6 +3803,28 @@ private addDiagnostic(
           // Find if this position contains a null guard
           if (this.currentASTRoot && this.findNullGuardAtPosition(this.currentASTRoot, charPosition)) {
             return false; // Filter out this diagnostic
+          }
+        }
+      }
+
+      // Filter incompatible-function-argument diagnostics for globals whose final type
+      // satisfies the constraint. During the walk, globals referenced in function bodies
+      // may appear as 'unknown' because their assignment hasn't been processed yet.
+      // At runtime, functions are typically called after global initialization.
+      if ((diagnostic as any).code === 'incompatible-function-argument') {
+        const diagnosticData = (diagnostic as any).data;
+        if (diagnosticData?.variableName && diagnosticData.actualType === UcodeType.UNKNOWN) {
+          const sym = this.symbolTable.lookup(diagnosticData.variableName);
+          if (sym && sym.dataType !== UcodeType.UNKNOWN && sym.type === SymbolType.VARIABLE) {
+            // Re-check: parse the expected type string and verify the final type is compatible
+            const expectedTypes = (diagnosticData.expectedType as string).split(' | ');
+            const finalTypes = getUnionTypes(sym.dataType);
+            const allCompatible = finalTypes.every(ft =>
+              ft === UcodeType.NULL || expectedTypes.includes(ft as string)
+            );
+            if (allCompatible) {
+              return false;
+            }
           }
         }
       }
