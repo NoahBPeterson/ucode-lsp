@@ -6,7 +6,7 @@ import {
 import { UcodeLexer, TokenType, isKeyword, Token } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
-import { typeToString, UcodeDataType, UcodeType } from './analysis/symbolTable';
+import { typeToString, UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes } from './analysis/symbolTable';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { Option } from 'effect';
@@ -317,10 +317,25 @@ function inferPropertyTypeFromValue(propertyValue: string): string | undefined {
 /**
  * Detect known object type from a symbol's dataType.
  */
-function detectObjectTypeFromDataType(dataType: any): KnownObjectType | null {
-    if (!dataType || typeof dataType !== 'object' || !('moduleName' in dataType)) return null;
-    const mn = dataType.moduleName as string;
-    if (isKnownObjectType(mn)) return mn;
+function detectObjectTypeFromDataType(dataType: UcodeDataType): KnownObjectType | null {
+    // Check ObjectType directly (the canonical path)
+    if (isObjectType(dataType)) {
+        const name = getObjectTypeName(dataType);
+        if (name && isKnownObjectType(name)) return name;
+    }
+    // Check union types — find the first ObjectType member
+    if (isUnionType(dataType)) {
+        for (const member of getUnionTypes(dataType)) {
+            if (isObjectType(member) && isKnownObjectType(member.name)) {
+                return member.name as KnownObjectType;
+            }
+        }
+    }
+    // Legacy: ModuleType with known object type name
+    if (typeof dataType === 'object' && dataType !== null && 'moduleName' in dataType) {
+        const mn = (dataType as any).moduleName as string;
+        if (isKnownObjectType(mn)) return mn;
+    }
     return null;
 }
 

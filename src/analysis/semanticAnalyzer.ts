@@ -499,14 +499,15 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
 
         // Upgrade symbol type from function call results that have rich _fullType
-        // (e.g., split() → array<string>, reverse([1,2]) → array<integer>, pop(arr) → element type)
+        // (e.g., split() → array<string>, reverse([1,2]) → array<integer>, pop(arr) → element type,
+        //  glob("/path") → array (narrowed from array | null), open() → fs.file | null)
         if (node.init.type === 'CallExpression' || node.init.type === 'MemberExpression') {
           const sym = this.symbolTable.lookup(name);
           if (sym) {
             // Trigger type checker to process narrowedReturnType and set _fullType
             this.typeChecker.checkNode(node.init);
             const fullType = (node.init as any)._fullType;
-            if (fullType && typeof fullType === 'object') {
+            if (fullType !== undefined && fullType !== null) {
               sym.dataType = fullType;
             }
           }

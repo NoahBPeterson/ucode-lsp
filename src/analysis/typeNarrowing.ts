@@ -3,11 +3,21 @@
  * Handles union type narrowing and flow-sensitive typing
  */
 
-import { UcodeType, UcodeDataType, isUnionType, getUnionTypes, createUnionType } from './symbolTable';
+import { UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, singleTypeToBase, isObjectType, isArrayType } from './symbolTable';
+
+/** Check if a SingleType matches any entry in a list (by base type for refined types) */
+function singleTypeIn(t: SingleType, list: SingleType[]): boolean {
+  const base = singleTypeToBase(t);
+  return list.some(item => {
+    if (typeof item === 'string' && typeof t === 'string') return item === t;
+    // For refined types, match by base type
+    return singleTypeToBase(item) === base;
+  });
+}
 
 export interface TypeNarrowingResult {
   narrowedType: UcodeDataType;
-  excludedTypes: UcodeType[];
+  excludedTypes: SingleType[];
 }
 
 export class TypeNarrowingEngine {
@@ -51,13 +61,13 @@ export class TypeNarrowingEngine {
   /**
    * Removes specific types from a union type
    */
-  removeTypesFromUnion(type: UcodeDataType, typesToRemove: UcodeType[]): TypeNarrowingResult {
+  removeTypesFromUnion(type: UcodeDataType, typesToRemove: SingleType[]): TypeNarrowingResult {
     if (!isUnionType(type)) {
       // Single type - check if it should be removed
-      if (typesToRemove.includes(type as UcodeType)) {
+      if (singleTypeIn(type as SingleType, typesToRemove)) {
         return {
           narrowedType: UcodeType.UNKNOWN, // Completely narrowed away
-          excludedTypes: [type as UcodeType]
+          excludedTypes: [type as SingleType]
         };
       }
       return {
@@ -67,8 +77,8 @@ export class TypeNarrowingEngine {
     }
 
     const unionTypes = getUnionTypes(type);
-    const remainingTypes = unionTypes.filter(t => !typesToRemove.includes(t));
-    const excludedTypes = unionTypes.filter(t => typesToRemove.includes(t));
+    const remainingTypes = unionTypes.filter(t => !singleTypeIn(t, typesToRemove));
+    const excludedTypes = unionTypes.filter(t => singleTypeIn(t, typesToRemove));
 
     return {
       narrowedType: createUnionType(remainingTypes),
@@ -79,10 +89,10 @@ export class TypeNarrowingEngine {
   /**
    * Keeps only specific types from a union type (inverse of removeTypesFromUnion)
    */
-  keepOnlyTypes(type: UcodeDataType, typesToKeep: UcodeType[]): TypeNarrowingResult {
+  keepOnlyTypes(type: UcodeDataType, typesToKeep: SingleType[]): TypeNarrowingResult {
     if (!isUnionType(type)) {
       // Single type - check if it should be kept
-      if (typesToKeep.includes(type as UcodeType)) {
+      if (singleTypeIn(type as SingleType, typesToKeep)) {
         return {
           narrowedType: type,
           excludedTypes: []
@@ -97,13 +107,13 @@ export class TypeNarrowingEngine {
       }
       return {
         narrowedType: UcodeType.UNKNOWN, // Completely narrowed away
-        excludedTypes: [type as UcodeType]
+        excludedTypes: [type as SingleType]
       };
     }
 
     const unionTypes = getUnionTypes(type);
-    const keptTypes = unionTypes.filter(t => typesToKeep.includes(t));
-    const excludedTypes = unionTypes.filter(t => !typesToKeep.includes(t));
+    const keptTypes = unionTypes.filter(t => singleTypeIn(t, typesToKeep));
+    const excludedTypes = unionTypes.filter(t => !singleTypeIn(t, typesToKeep));
 
     return {
       narrowedType: createUnionType(keptTypes),
@@ -114,7 +124,7 @@ export class TypeNarrowingEngine {
   /**
    * Get the types that are incompatible with a given expected type
    */
-  getIncompatibleTypes(actualType: UcodeDataType, expectedType: UcodeType): UcodeType[] {
+  getIncompatibleTypes(actualType: UcodeDataType, expectedType: UcodeType): SingleType[] {
     const actualTypes = getUnionTypes(actualType);
     return actualTypes.filter(type => !this.isTypeCompatible(type, expectedType));
   }
@@ -124,19 +134,19 @@ export class TypeNarrowingEngine {
    */
   isSubtype(actualType: UcodeDataType, expectedType: UcodeType): boolean {
     const actualTypes = getUnionTypes(actualType);
-    return actualTypes.every(type => this.isTypeCompatible(type, expectedType));
+    return actualTypes.every(t => this.isTypeCompatible(t, expectedType));
   }
 
   /**
    * Check if an actual type is assignable to any of the expected union types
    */
-  isSubtypeOfUnion(actualType: UcodeDataType, expectedTypes: UcodeType[]): boolean {
+  isSubtypeOfUnion(actualType: UcodeDataType, expectedTypes: SingleType[]): boolean {
     if (!expectedTypes || expectedTypes.length === 0) {
       return false;
     }
 
     const actualTypes = getUnionTypes(actualType);
-    const allowed = new Set(expectedTypes);
+    const allowed = new Set<SingleType>(expectedTypes);
 
     return actualTypes.every(actual => allowed.has(actual));
   }
@@ -152,18 +162,21 @@ export class TypeNarrowingEngine {
   /**
    * Check if a single type is compatible with an expected type
    */
-  private isTypeCompatible(actualType: UcodeType, expectedType: UcodeType): boolean {
-    if (actualType === expectedType) return true;
+  private isTypeCompatible(actualType: SingleType, expectedType: UcodeType): boolean {
+    // Resolve refined types (ObjectType, ArrayType) to their base UcodeType
+    const actualBase = singleTypeToBase(actualType);
+
+    if (actualBase === expectedType) return true;
     if (expectedType === UcodeType.UNKNOWN) return true;
-    if (actualType === UcodeType.UNKNOWN) return true;
-    
+    if (actualBase === UcodeType.UNKNOWN) return true;
+
     // Allow integer to double conversion
-    if (actualType === UcodeType.INTEGER && expectedType === UcodeType.DOUBLE) return true;
-    
+    if (actualBase === UcodeType.INTEGER && expectedType === UcodeType.DOUBLE) return true;
+
     // For 'in' operator: both array and object are compatible
-    if (expectedType === UcodeType.OBJECT && actualType === UcodeType.ARRAY) return true;
-    if (expectedType === UcodeType.ARRAY && actualType === UcodeType.OBJECT) return true;
-    
+    if (expectedType === UcodeType.OBJECT && actualBase === UcodeType.ARRAY) return true;
+    if (expectedType === UcodeType.ARRAY && actualBase === UcodeType.OBJECT) return true;
+
     return false;
   }
 
@@ -172,7 +185,7 @@ export class TypeNarrowingEngine {
    */
   containsNull(type: UcodeDataType): boolean {
     const types = getUnionTypes(type);
-    return types.includes(UcodeType.NULL);
+    return types.some(t => singleTypeToBase(t) === UcodeType.NULL);
   }
 
   /**
@@ -180,7 +193,7 @@ export class TypeNarrowingEngine {
    */
   containsType(type: UcodeDataType, searchType: UcodeType): boolean {
     const types = getUnionTypes(type);
-    return types.includes(searchType);
+    return types.some(t => singleTypeToBase(t) === searchType);
   }
 
   /**
@@ -188,16 +201,24 @@ export class TypeNarrowingEngine {
    */
   getIncompatibilityDescription(actualType: UcodeDataType, expectedType: UcodeType): string {
     const incompatibleTypes = this.getIncompatibleTypes(actualType, expectedType);
-    
+
     if (incompatibleTypes.length === 0) {
       return ''; // No incompatibility
     }
 
-    if (incompatibleTypes.length === 1) {
-      return `Argument is possibly '${incompatibleTypes[0]}', expected '${expectedType}'`;
+    // Convert SingleType values to display strings
+    const typeNames = incompatibleTypes.map(t => {
+      if (typeof t === 'string') return t;
+      if (isObjectType(t)) return t.name;
+      if (isArrayType(t)) return 'array';
+      return 'unknown';
+    });
+
+    if (typeNames.length === 1) {
+      return `Argument is possibly '${typeNames[0]}', expected '${expectedType}'`;
     }
 
-    return `Argument is possibly '${incompatibleTypes.join("' or '")}', expected '${expectedType}'`;
+    return `Argument is possibly '${typeNames.join("' or '")}', expected '${expectedType}'`;
   }
 
   /**

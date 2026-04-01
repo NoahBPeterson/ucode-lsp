@@ -597,6 +597,16 @@ export class BuiltinValidator {
     return true;
   }
 
+  validateGetenvFunction(node: CallExpressionNode): boolean {
+    // getenv() with 0 args → object (all env vars, never null)
+    // getenv(name) with 1 arg → string | null (env var may not exist)
+    if (node.arguments.length === 0) {
+      this.narrowedReturnType = UcodeType.OBJECT;
+    }
+    // With 1 arg, the default return type (string | null) is correct
+    return true;
+  }
+
   validateExistsFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'exists', 2)) return true;
     // exists() is an introspection function — tolerates null/unknown even in strict mode.
@@ -703,10 +713,17 @@ export class BuiltinValidator {
   validateWildcardFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'wildcard', 2)) return true;
 
-    // C: returns NULL if pattern not string or subject missing; returns boolean otherwise
-    // 1st arg: any; because everything is convertible to string.
+    // C: returns NULL if subject is null/missing OR pattern not string; returns boolean otherwise.
+    // 1st arg: must be non-null (any non-null type is converted to string)
     // 2nd arg: must be string
-    this.narrowForArgType(node.arguments[1], [UcodeType.STRING], UcodeType.BOOLEAN);
+    // Only narrow to boolean when BOTH args are known to satisfy constraints.
+    const arg1Type = this.getNodeType ? this.getNodeType(node.arguments[0]) : 'unknown';
+    const arg2Type = this.getNodeType ? this.getNodeType(node.arguments[1]) : 'unknown';
+    const arg1Ok = arg1Type !== 'unknown' && arg1Type !== 'null' && !arg1Type.includes('null');
+    const arg2Ok = arg2Type === 'string';
+    if (arg1Ok && arg2Ok) {
+      this.narrowedReturnType = UcodeType.BOOLEAN;
+    }
     this.validateArgumentType(node.arguments[1], 'wildcard', 2, [UcodeType.STRING]);
 
     const patternArg = node.arguments[1];
@@ -1043,6 +1060,14 @@ export class BuiltinValidator {
 
   validateTypelocalFunction(node: CallExpressionNode): boolean {
     this.checkArgumentCount(node, 'type', 1);
+    // type(null) returns null; type(non-null) returns string.
+    // Narrow to string when arg is known non-null.
+    if (node.arguments[0] && this.getNodeType) {
+      const argType = this.getNodeType(node.arguments[0]);
+      if (argType !== 'unknown' && argType !== 'null' && !argType.includes('null')) {
+        this.narrowedReturnType = UcodeType.STRING;
+      }
+    }
     return true;
   }
 
@@ -1499,8 +1524,24 @@ export class BuiltinValidator {
       }
     }
 
-    // No validation for the second parameter (dironly) because any type can be
-    // evaluated as truthy or falsy at runtime in ucode.
+    // Narrow return type based on gc operation:
+    // gc() or gc("collect") → boolean (true)
+    // gc("start") → boolean | null
+    // gc("stop") → boolean
+    // gc("count") → integer
+    if (argCount === 0) {
+      this.narrowedReturnType = UcodeType.BOOLEAN;
+    } else if (argCount >= 1 && node.arguments[0]?.type === 'Literal') {
+      const lit = node.arguments[0] as LiteralNode;
+      if (typeof lit.value === 'string') {
+        switch (lit.value) {
+          case 'collect': this.narrowedReturnType = UcodeType.BOOLEAN; break;
+          case 'stop': this.narrowedReturnType = UcodeType.BOOLEAN; break;
+          case 'count': this.narrowedReturnType = UcodeType.INTEGER; break;
+          case 'start': this.narrowedReturnType = createUnionType([UcodeType.BOOLEAN, UcodeType.NULL]); break;
+        }
+      }
+    }
 
     return true;
   }

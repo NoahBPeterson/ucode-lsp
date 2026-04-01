@@ -41,7 +41,7 @@ interface TypeGuardInfo {
   // (e.g., length(x) <= 0) doesn't imply x is null — x could just be empty.
   isNullPropagation?: boolean;
 }
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, Symbol as UcodeSymbol } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, createObjectType, singleTypeToBase, Symbol as UcodeSymbol } from './symbolTable';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
@@ -71,6 +71,12 @@ export interface FunctionSignature {
   variadic?: boolean;
   minParams?: number;
   maxParams?: number;
+  /** When true, null in returnType means only "wrong argument type" — safe to narrow
+   *  away when argument types are known to be correct. */
+  nullMeansWrongType?: boolean;
+  /** Indices of parameters that must match for null narrowing (default: all required params).
+   *  e.g., join(sep, arr) only cares about arg index 1 (the array). */
+  narrowingArgs?: number[];
 }
 
 export interface TypeCheckResult {
@@ -159,75 +165,75 @@ export class TypeChecker {
       { name: 'print', parameters: [], returnType: UcodeType.INTEGER, variadic: true },
       { name: 'printf', parameters: [UcodeType.STRING], returnType: UcodeType.INTEGER, variadic: true },
       { name: 'sprintf', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, variadic: true },
-      { name: 'length', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
-      { name: 'substr', parameters: [UcodeType.STRING, UcodeType.INTEGER], returnType: UcodeType.STRING, minParams: 2, maxParams: 3 },
-      { name: 'split', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), minParams: 2, maxParams: 3 },
-      { name: 'join', parameters: [UcodeType.STRING, UcodeType.ARRAY], returnType: UcodeType.STRING },
-      { name: 'trim', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
-      { name: 'ltrim', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
-      { name: 'rtrim', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
+      { name: 'length', parameters: [UcodeType.UNKNOWN], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]), nullMeansWrongType: true },
+      { name: 'substr', parameters: [UcodeType.STRING, UcodeType.INTEGER], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0], minParams: 2, maxParams: 3 },
+      { name: 'split', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), nullMeansWrongType: true, minParams: 2, maxParams: 3 },
+      { name: 'join', parameters: [UcodeType.STRING, UcodeType.ARRAY], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [1] },
+      { name: 'trim', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0], minParams: 1, maxParams: 2 },
+      { name: 'ltrim', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0], minParams: 1, maxParams: 2 },
+      { name: 'rtrim', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0], minParams: 1, maxParams: 2 },
       { name: 'chr', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
-      { name: 'ord', parameters: [UcodeType.STRING], returnType: UcodeType.INTEGER },
-      { name: 'uc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'lc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'type', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.STRING },
-      { name: 'keys', parameters: [UcodeType.OBJECT], returnType: UcodeType.ARRAY },
-      { name: 'values', parameters: [UcodeType.OBJECT], returnType: UcodeType.ARRAY },
+      { name: 'ord', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]) },
+      { name: 'uc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true },
+      { name: 'lc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true },
+      { name: 'type', parameters: [UcodeType.UNKNOWN], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
+      { name: 'keys', parameters: [UcodeType.OBJECT], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), nullMeansWrongType: true },
+      { name: 'values', parameters: [UcodeType.OBJECT], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), nullMeansWrongType: true },
       { name: 'push', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN, variadic: true },
       { name: 'pop', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN },
       { name: 'shift', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN },
       { name: 'unshift', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN, variadic: true },
-      { name: 'filter', parameters: [UcodeType.ARRAY, UcodeType.FUNCTION], returnType: UcodeType.ARRAY },
-      { name: 'index', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
-      { name: 'rindex', parameters: [UcodeType.STRING, UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
+      { name: 'filter', parameters: [UcodeType.ARRAY, UcodeType.FUNCTION], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]) },
+      { name: 'index', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0] },
+      { name: 'rindex', parameters: [UcodeType.STRING, UcodeType.UNKNOWN], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0] },
       { name: 'require', parameters: [UcodeType.STRING], returnType: UcodeType.UNKNOWN },
       { name: 'include', parameters: [UcodeType.STRING], returnType: UcodeType.UNKNOWN },
       { name: 'json', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
       { name: 'match', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]) },
-      { name: 'replace', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.STRING },
+      { name: 'replace', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true },
       { name: 'system', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.INTEGER, minParams: 1, maxParams: 2 },
       { name: 'time', parameters: [], returnType: UcodeType.INTEGER },
       { name: 'sleep', parameters: [UcodeType.INTEGER], returnType: UcodeType.BOOLEAN },
-      { name: 'localtime', parameters: [], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 1 },
-      { name: 'gmtime', parameters: [], returnType: UcodeType.OBJECT, minParams: 0, maxParams: 1 },
-      { name: 'timelocal', parameters: [UcodeType.OBJECT], returnType: UcodeType.INTEGER },
-      { name: 'timegm', parameters: [UcodeType.OBJECT], returnType: UcodeType.INTEGER },
+      { name: 'localtime', parameters: [], returnType: createUnionType([UcodeType.OBJECT, UcodeType.NULL]), minParams: 0, maxParams: 1 },
+      { name: 'gmtime', parameters: [], returnType: createUnionType([UcodeType.OBJECT, UcodeType.NULL]), minParams: 0, maxParams: 1 },
+      { name: 'timelocal', parameters: [UcodeType.OBJECT], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]) },
+      { name: 'timegm', parameters: [UcodeType.OBJECT], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]) },
       { name: 'min', parameters: [], returnType: UcodeType.UNKNOWN, variadic: true },
       { name: 'max', parameters: [], returnType: UcodeType.UNKNOWN, variadic: true },
-      { name: 'uniq', parameters: [UcodeType.ARRAY], returnType: UcodeType.ARRAY },
-      { name: 'b64enc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'b64dec', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'hexenc', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'hexdec', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
+      { name: 'uniq', parameters: [UcodeType.ARRAY], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), nullMeansWrongType: true },
+      { name: 'b64enc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true },
+      { name: 'b64dec', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
+      { name: 'hexenc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true },
+      { name: 'hexdec', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), minParams: 1, maxParams: 2 },
       { name: 'hex', parameters: [UcodeType.STRING], returnType: UcodeType.INTEGER },
       { name: 'uchr', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
-      { name: 'iptoarr', parameters: [UcodeType.STRING], returnType: UcodeType.ARRAY },
-      { name: 'arrtoip', parameters: [UcodeType.ARRAY], returnType: UcodeType.STRING },
+      { name: 'iptoarr', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]) },
+      { name: 'arrtoip', parameters: [UcodeType.ARRAY], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
       { name: 'int', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.INTEGER },
-      { name: 'loadstring', parameters: [UcodeType.STRING], returnType: UcodeType.FUNCTION },
-      { name: 'loadfile', parameters: [UcodeType.STRING], returnType: UcodeType.FUNCTION },
-      { name: 'wildcard', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
+      { name: 'loadstring', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.FUNCTION, UcodeType.NULL]) },
+      { name: 'loadfile', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.FUNCTION, UcodeType.NULL]) },
+      { name: 'wildcard', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.BOOLEAN, UcodeType.NULL]), nullMeansWrongType: true },
       { name: 'regexp', parameters: [UcodeType.STRING], returnType: UcodeType.REGEX, minParams: 1, maxParams: 2 },
       { name: 'assert', parameters: [], returnType: UcodeType.UNKNOWN, variadic: true, minParams: 0 }, // Returns first argument (reflective) - accepts any truish types
       { name: 'call', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, variadic: true },
       { name: 'signal', parameters: [UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
       { name: 'clock', parameters: [UcodeType.BOOLEAN], returnType: UcodeType.ARRAY, minParams: 0, maxParams: 1 },
       
-      { name: 'sourcepath', parameters: [UcodeType.INTEGER, UcodeType.BOOLEAN], minParams: 0, maxParams: 2, returnType: UcodeType.STRING },
-      { name: 'gc', parameters: [], returnType: UcodeType.NULL },
+      { name: 'sourcepath', parameters: [UcodeType.INTEGER, UcodeType.BOOLEAN], minParams: 0, maxParams: 2, returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
+      { name: 'gc', parameters: [], returnType: UcodeType.BOOLEAN, minParams: 0, maxParams: 2 },
       { name: 'die', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },
       { name: 'exists', parameters: [UcodeType.OBJECT, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
       { name: 'exit', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },
-      { name: 'getenv', parameters: [UcodeType.STRING], returnType: UcodeType.STRING },
-      { name: 'map', parameters: [UcodeType.ARRAY, UcodeType.FUNCTION], returnType: UcodeType.ARRAY },
+      { name: 'getenv', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), minParams: 0, maxParams: 1 },
+      { name: 'map', parameters: [UcodeType.ARRAY, UcodeType.FUNCTION], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]) },
       { name: 'reverse', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
-      { name: 'sort', parameters: [UcodeType.ARRAY], returnType: UcodeType.ARRAY, minParams: 1, maxParams: 2 },
-      { name: 'splice', parameters: [UcodeType.ARRAY, UcodeType.INTEGER], returnType: UcodeType.ARRAY, variadic: true },
+      { name: 'sort', parameters: [UcodeType.ARRAY], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), minParams: 1, maxParams: 2 },
+      { name: 'splice', parameters: [UcodeType.ARRAY, UcodeType.INTEGER], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0], variadic: true },
       { name: 'slice', parameters: [UcodeType.UNKNOWN, UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 2, maxParams: 3 },
       { name: 'warn', parameters: [], returnType: UcodeType.INTEGER, variadic: true },
       { name: 'trace', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },
-      { name: 'proto', parameters: [UcodeType.OBJECT], returnType: UcodeType.OBJECT, minParams: 1, maxParams: 2 },
-      { name: 'render', parameters: [UcodeType.STRING], returnType: UcodeType.STRING, minParams: 1, maxParams: 2 },
+      { name: 'proto', parameters: [UcodeType.OBJECT], returnType: createUnionType([UcodeType.OBJECT, UcodeType.NULL]), minParams: 1, maxParams: 2 },
+      { name: 'render', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), minParams: 1, maxParams: 2 },
       
       // NOTE: File System functions (error, open, readfile, etc.) are now fs.* module functions only
       
@@ -770,8 +776,10 @@ export class TypeChecker {
   private getTypeDescription(type: UcodeDataType): string {
     if (isUnionType(type)) {
       const types = getUnionTypes(type);
-      // Recursively convert each type to string to handle nested unions
-      return types.map(t => this.getTypeDescription(t)).join(' | ');
+      return types.map(t => this.getTypeDescription(t as UcodeDataType)).join(' | ');
+    }
+    if (isObjectType(type)) {
+      return type.name;
     }
     if (isArrayType(type)) {
       return UcodeType.ARRAY;
@@ -794,7 +802,10 @@ export class TypeChecker {
       const variableName = identifierNode.name;
 
       // First check for active guard from outer scope (guardContextStack)
-      let baseType: UcodeDataType = this.getFullTypeFromNode(node) || UcodeType.UNKNOWN;
+      // Try CFG/fullType first, then symbol table, then UNKNOWN
+      let baseType: UcodeDataType = this.getFullTypeFromNode(node)
+        || this.symbolTable.lookup(variableName)?.dataType
+        || UcodeType.UNKNOWN;
 
       const activeGuardType = this.getActiveGuardType(variableName, node.start);
       if (activeGuardType) {
@@ -871,71 +882,90 @@ export class TypeChecker {
     return this.checkNode(node);
   }
 
-  private parseReturnType(returnTypeStr: string): UcodeDataType {
-    // Handle union types like "boolean | null"
-    if (returnTypeStr.includes(' | ')) {
-      const typeStrings = returnTypeStr.split(' | ').map(s => s.trim());
-      const types: UcodeType[] = [];
-      
-      for (const typeStr of typeStrings) {
-        switch (typeStr) {
-          case 'boolean':
-            types.push(UcodeType.BOOLEAN);
-            break;
-          case 'string':
-            types.push(UcodeType.STRING);
-            break;
-          case 'number':
-          case 'integer':
-            types.push(UcodeType.INTEGER);
-            break;
-          case 'double':
-            types.push(UcodeType.DOUBLE);
-            break;
-          case 'object':
-            types.push(UcodeType.OBJECT);
-            break;
-          case 'array':
-          case 'string[]':
-            types.push(UcodeType.ARRAY);
-            break;
-          case 'null':
-            types.push(UcodeType.NULL);
-            break;
-          case 'function':
-            types.push(UcodeType.FUNCTION);
-            break;
-          default:
-            types.push(UcodeType.UNKNOWN);
-            break;
-        }
-      }
-      
-      return createUnionType(types);
-    }
-    
-    // Handle single types
-    switch (returnTypeStr) {
-      case 'boolean':
-        return UcodeType.BOOLEAN;
-      case 'string':
-        return UcodeType.STRING;
-      case 'number':
-      case 'integer':
-        return UcodeType.INTEGER;
-      case 'double':
-        return UcodeType.DOUBLE;
-      case 'object':
-        return UcodeType.OBJECT;
-      case 'array':
-        return UcodeType.ARRAY;
-      case 'null':
-        return UcodeType.NULL;
-      case 'function':
-        return UcodeType.FUNCTION;
+  private parseSingleType(typeStr: string): SingleType {
+    switch (typeStr) {
+      case 'boolean': return UcodeType.BOOLEAN;
+      case 'string': return UcodeType.STRING;
+      case 'number': case 'integer': return UcodeType.INTEGER;
+      case 'double': return UcodeType.DOUBLE;
+      case 'object': return UcodeType.OBJECT;
+      case 'array': case 'string[]': return UcodeType.ARRAY;
+      case 'null': return UcodeType.NULL;
+      case 'function': return UcodeType.FUNCTION;
       default:
+        // Known object types like "fs.file", "uci.cursor", "io.handle"
+        if (isKnownObjectType(typeStr)) {
+          return createObjectType(typeStr);
+        }
         return UcodeType.UNKNOWN;
     }
+  }
+
+  private parseReturnType(returnTypeStr: string): UcodeDataType {
+    if (returnTypeStr.includes(' | ')) {
+      const types = returnTypeStr.split(' | ').map(s => this.parseSingleType(s.trim()));
+      return createUnionType(types);
+    }
+    return this.parseSingleType(returnTypeStr);
+  }
+
+  /**
+   * Narrow an fs module function's return type based on actual argument types.
+   * Many fs functions return X | null where null means the C function got a wrong-type argument.
+   * If we can prove the argument satisfies the parameter constraint, eliminate null.
+   * If we can prove it doesn't, return just null.
+   */
+  private narrowFsReturnType(
+    returnType: UcodeDataType,
+    fsFunction: { parameters: Array<{ type: string; optional?: boolean }>; nullMeansWrongType?: boolean },
+    node: CallExpressionNode
+  ): UcodeDataType {
+    // Only narrow when null strictly means "wrong argument type"
+    if (!fsFunction.nullMeansWrongType) return returnType;
+    // Only narrow union types that contain null
+    if (!isUnionType(returnType)) return returnType;
+    const members = getUnionTypes(returnType);
+    if (!members.some(m => singleTypeToBase(m) === UcodeType.NULL)) return returnType;
+
+    // Check each required parameter against the actual argument
+    const nonNullMembers = members.filter(m => singleTypeToBase(m) !== UcodeType.NULL);
+    let allArgsMatch = true;
+    let anyArgDefinitelyWrong = false;
+
+    for (let i = 0; i < fsFunction.parameters.length; i++) {
+      const param = fsFunction.parameters[i];
+      if (!param || param.optional) continue;
+      const arg = node.arguments[i];
+      if (!arg) { anyArgDefinitelyWrong = true; break; }
+
+      const argType = this.getNodeTypeDescription(arg);
+      const expectedBase = this.parseSingleType(param.type);
+      const expectedUcode = singleTypeToBase(expectedBase);
+
+      if (argType === UcodeType.UNKNOWN) {
+        // Unknown — could match or not
+        allArgsMatch = false;
+      } else if (argType.includes(' | ')) {
+        // Union arg — check if all members are compatible
+        const argTypes = argType.split(' | ').map(t => t.trim());
+        const allCompatible = argTypes.every(t => t === expectedUcode || t === 'unknown');
+        const noneCompatible = !argTypes.some(t => t === expectedUcode || t === 'unknown');
+        if (noneCompatible) { anyArgDefinitelyWrong = true; break; }
+        if (!allCompatible) allArgsMatch = false;
+      } else if (argType !== expectedUcode) {
+        anyArgDefinitelyWrong = true;
+        break;
+      }
+    }
+
+    if (anyArgDefinitelyWrong) {
+      return UcodeType.NULL;
+    }
+    if (allArgsMatch && nonNullMembers.length > 0) {
+      return nonNullMembers.length === 1 ? nonNullMembers[0] as UcodeDataType : createUnionType(nonNullMembers);
+    }
+    // Mixed — keep the full union
+    return returnType;
   }
 
   private checkCallExpression(node: CallExpressionNode): UcodeType {
@@ -972,18 +1002,16 @@ export class TypeChecker {
           if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'fs') {
             const fsFunction = fsModuleTypeRegistry.getFunction(funcName);
             if (fsFunction) {
-              const returnTypeData = this.parseReturnType(fsFunction.returnType);
-              // Convert UcodeDataType back to UcodeType for compatibility
-              if (typeof returnTypeData === 'string') {
-                return returnTypeData as UcodeType;
-              } else if (isUnionType(returnTypeData)) {
-                // For union types, we need to return a union type, but the interface expects UcodeType
-                // For now, return the first type - this needs to be improved in the future
-                const types = getUnionTypes(returnTypeData);
-                return types[0] || UcodeType.UNKNOWN;
-              } else {
-                return UcodeType.UNKNOWN;
-              }
+              let returnTypeData = this.parseReturnType(fsFunction.returnType);
+
+              // Narrow return type based on argument types.
+              // Many fs functions return X | null where null means "wrong arg type".
+              // If we can prove the arg type matches, eliminate null.
+              // If we can prove it doesn't match, return just null.
+              returnTypeData = this.narrowFsReturnType(returnTypeData, fsFunction, node);
+
+              (node as any)._fullType = returnTypeData;
+              return this.dataTypeToUcodeType(returnTypeData);
             }
           }
           
@@ -1108,14 +1136,20 @@ export class TypeChecker {
       const narrowed = this.builtinValidator.narrowedReturnType;
       this.builtinValidator.narrowedReturnType = null;
       if (narrowed !== null) {
-        // Store rich type (ArrayType, UnionType) as _fullType on the call node
-        if (typeof narrowed !== 'string') {
-          (node as any)._fullType = narrowed;
-          return this.dataTypeToUcodeType(narrowed);
-        }
-        return narrowed as UcodeType;
+        // Store the narrowed type on the call node for semantic analyzer propagation
+        (node as any)._fullType = narrowed;
+        return this.dataTypeToUcodeType(narrowed);
       }
-      return this.dataTypeToUcodeType(signature.returnType);
+      // Apply nullMeansWrongType narrowing even for special builtins
+      let returnType = signature.returnType;
+      if (signature.nullMeansWrongType && isUnionType(returnType)) {
+        returnType = this.narrowBuiltinReturnType(returnType, signature, node);
+        (node as any)._fullType = returnType;
+      } else if (isUnionType(returnType)) {
+        // Propagate union return types (e.g., string | null) so semantic analyzer can use them
+        (node as any)._fullType = returnType;
+      }
+      return this.dataTypeToUcodeType(returnType);
     }
 
     const argCount = node.arguments.length;
@@ -1210,9 +1244,76 @@ export class TypeChecker {
       }
     }
 
-    return this.dataTypeToUcodeType(signature.returnType);
+    // Narrow return type based on argument types when nullMeansWrongType is set
+    let returnType = signature.returnType;
+    if (signature.nullMeansWrongType && isUnionType(returnType)) {
+      returnType = this.narrowBuiltinReturnType(returnType, signature, node);
+      (node as any)._fullType = returnType;
+    } else if (isUnionType(returnType)) {
+      // Propagate union return types so semantic analyzer can use them
+      (node as any)._fullType = returnType;
+    }
+    return this.dataTypeToUcodeType(returnType);
   }
 
+  /**
+   * Narrow a builtin function's return type based on actual argument types.
+   * When nullMeansWrongType is set and all relevant args match expected types,
+   * eliminate null from the return type.
+   */
+  private narrowBuiltinReturnType(
+    returnType: UcodeDataType,
+    signature: FunctionSignature,
+    node: CallExpressionNode
+  ): UcodeDataType {
+    if (!isUnionType(returnType)) return returnType;
+    const members = getUnionTypes(returnType);
+    if (!members.some(m => m === UcodeType.NULL)) return returnType;
+
+    // Determine which parameter indices to check
+    const indicesToCheck = signature.narrowingArgs
+      ?? signature.parameters.map((_, i) => i);
+
+    let allArgsMatch = true;
+
+    for (const i of indicesToCheck) {
+      const expectedType = signature.parameters[i];
+      if (!expectedType || expectedType === UcodeType.UNKNOWN) continue;
+
+      const arg = node.arguments[i];
+      if (!arg) { allArgsMatch = false; break; }
+
+      const argType = this.getNodeTypeDescription(arg);
+
+      if (argType === 'unknown') {
+        allArgsMatch = false;
+      } else if (argType.includes(' | ')) {
+        // Union arg — check if all members are compatible
+        const argTypes = argType.split(' | ').map(t => t.trim());
+        if (!argTypes.every(t => t === expectedType || t === 'unknown')) {
+          allArgsMatch = false;
+        }
+      } else if (argType !== expectedType) {
+        // For length(), index(), rindex() — multiple acceptable types
+        if (signature.name === 'length' && (argType === 'string' || argType === 'array' || argType === 'object')) {
+          continue;
+        }
+        if ((signature.name === 'index' || signature.name === 'rindex') && (argType === 'string' || argType === 'array')) {
+          continue;
+        }
+        allArgsMatch = false;
+      }
+    }
+
+    if (allArgsMatch) {
+      // Remove null from the union
+      const nonNullMembers = members.filter(m => m !== UcodeType.NULL);
+      if (nonNullMembers.length === 1) return nonNullMembers[0] as UcodeDataType;
+      return createUnionType(nonNullMembers);
+    }
+
+    return returnType;
+  }
 
   /**
    * Detect if a data type represents a known object type from the dispatch layer.
@@ -1262,6 +1363,11 @@ export class TypeChecker {
     // Handle ArrayType (with element info) — still an array
     if (isArrayType(dataType)) {
       return UcodeType.ARRAY;
+    }
+
+    // Handle ObjectType (known object types like fs.file) — still an object
+    if (isObjectType(dataType)) {
+      return UcodeType.OBJECT;
     }
 
     // Handle complex types (UnionType, ModuleType)
@@ -1393,6 +1499,8 @@ export class TypeChecker {
         return this.builtinValidator.validateValuesFunction(node);
       case 'exists':
         return this.builtinValidator.validateExistsFunction(node);
+      case 'getenv':
+        return this.builtinValidator.validateGetenvFunction(node);
       case 'trim':
         return this.builtinValidator.validateTrimFunction(node);
       case 'ltrim':

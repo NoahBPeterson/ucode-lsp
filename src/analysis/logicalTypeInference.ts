@@ -7,14 +7,14 @@
  * - Both preserve the exact type of the returned operand
  */
 
-import { UcodeType, UcodeDataType, createUnionType, getUnionTypes } from './symbolTable';
+import { UcodeType, UcodeDataType, SingleType, createUnionType, getUnionTypes } from './symbolTable';
 
 export class LogicalTypeInference {
   
   /**
    * Determine if a type is definitely always falsy
    */
-  private isDefinitelyFalsy(type: UcodeType): boolean {
+  private isDefinitelyFalsy(type: SingleType): boolean {
     // These types can only have falsy values
     return type === UcodeType.NULL;
   }
@@ -22,7 +22,7 @@ export class LogicalTypeInference {
   /**
    * Determine if a type is definitely always truthy
    */
-  private isDefinitelyTruthy(type: UcodeType): boolean {
+  private isDefinitelyTruthy(type: SingleType): boolean {
     // These types are always truthy in ucode
     return type === UcodeType.ARRAY ||
            type === UcodeType.OBJECT ||
@@ -114,7 +114,7 @@ export class LogicalTypeInference {
     const leftTypes = getUnionTypes(leftFullType);
     const rightTypes = getUnionTypes(rightFullType);
 
-    const resultTypes: UcodeType[] = [];
+    const resultTypes: SingleType[] = [];
 
     for (const lt of leftTypes) {
       if (this.isDefinitelyTruthy(lt)) {
@@ -150,7 +150,7 @@ export class LogicalTypeInference {
     const leftTypes = getUnionTypes(leftFullType);
     const rightTypes = getUnionTypes(rightFullType);
 
-    const resultTypes: UcodeType[] = [];
+    const resultTypes: SingleType[] = [];
 
     for (const lt of leftTypes) {
       if (this.isDefinitelyFalsy(lt)) {

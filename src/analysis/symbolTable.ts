@@ -4,6 +4,7 @@
  */
 
 import { AstNode, IdentifierNode } from '../ast/nodes';
+import { Match } from 'effect';
 
 export enum SymbolType {
   VARIABLE = 'variable',
@@ -28,9 +29,18 @@ export enum UcodeType {
   UNION = 'union'
 }
 
+/** A known object type like fs.file, uci.cursor, io.handle, etc. */
+export interface ObjectType {
+  type: 'objectKind';
+  name: string;
+}
+
+/** A concrete (non-union) type — can appear as a union member */
+export type SingleType = UcodeType | ObjectType | ArrayType;
+
 export interface UnionType {
   type: UcodeType.UNION;
-  types: UcodeType[];
+  types: SingleType[];
 }
 
 export interface ModuleType {
@@ -48,44 +58,87 @@ export interface ArrayType {
   elementType: UcodeDataType;
 }
 
-export type UcodeDataType = UcodeType | UnionType | ModuleType | DefaultImportType | ArrayType;
+export type UcodeDataType = UcodeType | UnionType | ModuleType | DefaultImportType | ArrayType | ObjectType;
 
-// Utility functions for working with union types
-export function createUnionType(types: UcodeType[]): UcodeDataType {
-  // Remove duplicates but preserve UNKNOWN types (they represent valid unknown return types)
-  const uniqueTypes = [...new Set(types)];
-  
+// --- ObjectType helpers ---
+
+export function isObjectType(type: UcodeDataType): type is ObjectType {
+  return typeof type === 'object' && type !== null && (type as any).type === 'objectKind';
+}
+
+export function createObjectType(name: string): ObjectType {
+  return { type: 'objectKind', name };
+}
+
+export function getObjectTypeName(type: UcodeDataType): string | null {
+  if (isObjectType(type)) return type.name;
+  return null;
+}
+
+/** Convert a SingleType to the base UcodeType (for comparisons, type narrowing) */
+export const singleTypeToBase: (t: SingleType) => UcodeType = Match.type<SingleType>().pipe(
+  Match.when(Match.string, (s) => s as UcodeType),
+  Match.when({ type: 'objectKind' as const }, () => UcodeType.OBJECT),
+  Match.when({ type: UcodeType.ARRAY }, () => UcodeType.ARRAY),
+  Match.orElse(() => UcodeType.UNKNOWN)
+);
+
+// --- Union type utilities ---
+
+export function createUnionType(types: SingleType[]): UcodeDataType {
+  // Deduplicate: use string representation for comparison
+  const seen = new Set<string>();
+  const uniqueTypes: SingleType[] = [];
+  for (const t of types) {
+    const key = singleTypeKey(t);
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueTypes.push(t);
+    }
+  }
+
   if (uniqueTypes.length === 0) {
     return UcodeType.UNKNOWN;
   }
-  
+
   if (uniqueTypes.length === 1) {
     return uniqueTypes[0] as UcodeDataType;
   }
-  
+
   return {
     type: UcodeType.UNION,
     types: uniqueTypes
   };
 }
 
-export function isUnionType(type: UcodeDataType): type is UnionType {
-  return typeof type === 'object' && type.type === UcodeType.UNION;
+/** String key for deduplication */
+function singleTypeKey(t: SingleType): string {
+  if (typeof t === 'string') return t;
+  if (isObjectType(t)) return `objectKind:${t.name}`;
+  if (isArrayType(t)) return `array:${JSON.stringify(t.elementType)}`;
+  return 'unknown';
 }
 
-export function getUnionTypes(type: UcodeDataType): UcodeType[] {
+export function isUnionType(type: UcodeDataType): type is UnionType {
+  return typeof type === 'object' && (type as any).type === UcodeType.UNION;
+}
+
+export function getUnionTypes(type: UcodeDataType): SingleType[] {
   if (isUnionType(type)) {
     return type.types;
   }
-  // ArrayType is an object with type: UcodeType.ARRAY — flatten to the simple enum
+  // ArrayType and ObjectType are single refined types
   if (isArrayType(type)) {
-    return [UcodeType.ARRAY];
+    return [type];
+  }
+  if (isObjectType(type)) {
+    return [type];
   }
   return [type as UcodeType];
 }
 
 export function isArrayType(type: UcodeDataType): type is ArrayType {
-  return typeof type === 'object' && type !== null && type.type === UcodeType.ARRAY && 'elementType' in type;
+  return typeof type === 'object' && type !== null && (type as any).type === UcodeType.ARRAY && 'elementType' in type;
 }
 
 export function createArrayType(elementType: UcodeDataType): ArrayType {
@@ -102,10 +155,21 @@ export function isArrayLike(type: UcodeDataType): boolean {
   return type === UcodeType.ARRAY || isArrayType(type);
 }
 
+/** Convert a SingleType to its display string */
+export const singleTypeToString: (t: SingleType) => string = Match.type<SingleType>().pipe(
+  Match.when(Match.string, (s) => s),
+  Match.when({ type: 'objectKind' as const }, (o) => o.name),
+  Match.when({ type: UcodeType.ARRAY }, (a) => `array<${typeToString(a.elementType)}>`),
+  Match.orElse(() => 'unknown')
+);
+
 export function typeToString(type: UcodeDataType): string {
   if (isUnionType(type)) {
-    // Recursively convert each type in the union to a string
-    return type.types.map(t => typeToString(t)).join(' | ');
+    return type.types.map(singleTypeToString).join(' | ');
+  }
+
+  if (isObjectType(type)) {
+    return type.name;
   }
 
   if (isArrayType(type)) {

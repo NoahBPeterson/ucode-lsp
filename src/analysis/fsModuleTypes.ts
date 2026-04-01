@@ -33,6 +33,10 @@ export interface FsModuleFunctionSignature {
   }>;
   returnType: string;
   description: string;
+  /** When true, null in returnType means only "wrong argument type" — safe to narrow away
+   *  when argument types are known to be correct. When false/absent, null can occur at runtime
+   *  even with correct argument types (e.g., open() failing because file doesn't exist). */
+  nullMeansWrongType?: boolean;
 }
 
 export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map([
@@ -184,6 +188,7 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
       { name: "pattern", type: "string", optional: false }
     ],
     returnType: "array | null",
+    nullMeansWrongType: true,
     description: "Finds files matching a pattern using shell wildcards"
   }],
   ["dirname", {
@@ -315,6 +320,7 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
       { name: "patterns", type: "string", optional: false }
     ],
     returnType: "array | null",
+    nullMeansWrongType: true,
     description: "Matches file paths using glob patterns (variadic function)"
   }],
   ["statvfs", {

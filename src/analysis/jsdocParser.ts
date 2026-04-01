@@ -3,7 +3,7 @@
  * Parses @param and @returns tags from JSDoc comments and resolves type expressions
  */
 
-import { UcodeType, UcodeDataType, createUnionType } from './symbolTable';
+import { UcodeType, UcodeDataType, SingleType, createUnionType, isObjectType, isArrayType } from './symbolTable';
 import { isKnownModule, isKnownObjectType } from './moduleDispatch';
 
 export interface JsDocTag {
@@ -130,7 +130,7 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
   // Handle union types: type1|type2
   if (typeExpr.includes('|')) {
     const parts = typeExpr.split('|').map(p => p.trim()).filter(Boolean);
-    const types: UcodeType[] = [];
+    const types: SingleType[] = [];
     for (const part of parts) {
       const resolved = resolveTypeExpression(part);
       if (resolved === null) return null;
@@ -138,6 +138,9 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
         types.push(resolved as UcodeType);
       } else if (typeof resolved === 'object' && resolved.type === UcodeType.UNION) {
         types.push(...(resolved as any).types);
+      } else if (isObjectType(resolved) || isArrayType(resolved)) {
+        // ObjectType or ArrayType can be used directly as SingleType
+        types.push(resolved);
       } else {
         // Complex type in union (module type etc.) — flatten to base
         types.push(resolved.type);
