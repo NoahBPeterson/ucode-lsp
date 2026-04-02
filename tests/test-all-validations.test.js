@@ -145,6 +145,7 @@ const testFiles = [
     'tests/test-array-element-types-glob.js',
     'tests/test-module-return-type-fixes.js',
     'tests/test-small-fixes-0624.js',
+    'tests/test-hex-int-nan.js',
 ];
 
 // Mocha test files (run as a single combined mocha invocation with shared LSP server)

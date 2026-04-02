@@ -1323,35 +1323,43 @@ export class BuiltinValidator {
   }
 
   validateIntFunction(node: CallExpressionNode): boolean {
-    if (node.arguments.length !== 1) {
-      this.errors.push({
-        message: `int() expects 1 argument, got ${node.arguments.length}`,
-        start: node.start,
-        end: node.end,
-        severity: 'error'
-      });
-      return true;
-    }
+    if (!this.checkArgumentCount(node, 'int', 1)) return true;
 
+    // C source: int() accepts any type.
+    // integer/double/boolean/null → always integer (ucv_to_integer succeeds)
+    // string → integer | double (depends on content — "abc" → NaN)
+    // array/object/function/regex → double (NaN — ucv_to_number fails)
+    // unknown → integer | double (can't tell)
     if (node.arguments[0]) {
-      this.validateArgumentType(node.arguments[0], 'int', 1, [UcodeType.STRING, UcodeType.INTEGER, UcodeType.DOUBLE]);
+      const argType = this.getNodeType(node.arguments[0]);
+      const alwaysInteger: UcodeType[] = [UcodeType.INTEGER, UcodeType.DOUBLE, UcodeType.BOOLEAN, UcodeType.NULL];
+      const alwaysNaN: UcodeType[] = [UcodeType.ARRAY, UcodeType.OBJECT, UcodeType.FUNCTION, UcodeType.REGEX];
+
+      if (alwaysInteger.includes(argType as UcodeType)) {
+        this.narrowedReturnType = UcodeType.INTEGER;
+      } else if (alwaysNaN.includes(argType as UcodeType)) {
+        this.narrowedReturnType = UcodeType.DOUBLE;
+      }
+      // string and unknown: keep full integer | double union
     }
     return true;
   }
 
   validateHexFunction(node: CallExpressionNode): boolean {
-    if (node.arguments.length !== 1) {
-      this.errors.push({
-        message: `hex() expects 1 argument, got ${node.arguments.length}`,
-        start: node.start,
-        end: node.end,
-        severity: 'error'
-      });
-      return true;
-    }
+    if (!this.checkArgumentCount(node, 'hex', 1)) return true;
 
+    // C source: hex() only accepts strings.
+    // string → integer | double (valid hex → integer, invalid → NaN)
+    // everything else → double (NaN — ucv_string_get returns NULL)
     if (node.arguments[0]) {
-      this.validateArgumentType(node.arguments[0], 'hex', 1, [UcodeType.STRING]);
+      const argType = this.getNodeType(node.arguments[0]);
+      if (argType === UcodeType.STRING || argType === UcodeType.UNKNOWN) {
+        // String could be valid or invalid hex — keep full union
+        // Unknown could be string or not — keep full union
+      } else {
+        // Definitely not a string → always NaN
+        this.narrowedReturnType = UcodeType.DOUBLE;
+      }
     }
     return true;
   }
