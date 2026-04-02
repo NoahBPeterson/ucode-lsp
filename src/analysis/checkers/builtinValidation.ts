@@ -597,6 +597,17 @@ export class BuiltinValidator {
     return true;
   }
 
+  validateRandFunction(node: CallExpressionNode): boolean {
+    // rand() with 0 args → integer (rand() returns int)
+    // rand(max) with 1+ args → double (returns double in [0, max))
+    if (node.arguments.length === 0) {
+      this.narrowedReturnType = UcodeType.INTEGER;
+    } else {
+      this.narrowedReturnType = UcodeType.DOUBLE;
+    }
+    return true;
+  }
+
   validateGetenvFunction(node: CallExpressionNode): boolean {
     // getenv() with 0 args → object (all env vars, never null)
     // getenv(name) with 1 arg → string | null (env var may not exist)
@@ -1162,6 +1173,24 @@ export class BuiltinValidator {
       }
     }
 
+    // Narrow return type based on argument count and handler type:
+    // 1 arg (query): function | string | null (handler, "ignore"/"default", or null)
+    // 2 args (set): returns arg2 back — function|null if callable, string|null if string,
+    //               null if arg2 is any other type (C else branch returns NULL)
+    if (node.arguments.length === 1) {
+      // Query mode — full union
+    } else if (node.arguments.length === 2 && node.arguments[1]) {
+      const handlerType = this.getNodeType ? this.getNodeType(node.arguments[1]) : 'unknown';
+      if (handlerType === 'function') {
+        this.narrowedReturnType = createUnionType([UcodeType.FUNCTION, UcodeType.NULL]);
+      } else if (handlerType === 'string') {
+        this.narrowedReturnType = createUnionType([UcodeType.STRING, UcodeType.NULL]);
+      } else if (handlerType !== 'unknown') {
+        // Definitely not string or function — C code hits else branch, returns NULL
+        this.narrowedReturnType = UcodeType.NULL;
+      }
+    }
+
     return true;
   }
 
@@ -1656,16 +1685,21 @@ export class BuiltinValidator {
   validateSortFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'sort', 1)) return true;
 
-    // First parameter must be array
-    this.narrowForArgType(node.arguments[0], [UcodeType.ARRAY], UcodeType.ARRAY);
-    this.preserveArrayElementType(node.arguments[0]);
-    this.validateArgumentType(node.arguments[0], 'sort', 1, [UcodeType.ARRAY]);
-    
+    // First parameter must be array or object (per C source, sort works on both)
+    const argType = this.getNodeType ? this.getNodeType(node.arguments[0]) : 'unknown';
+    if (argType === 'array') {
+      this.narrowedReturnType = UcodeType.ARRAY;
+      this.preserveArrayElementType(node.arguments[0]);
+    } else if (argType === 'object') {
+      this.narrowedReturnType = createUnionType([UcodeType.OBJECT, UcodeType.NULL]);
+    }
+    this.validateArgumentType(node.arguments[0], 'sort', 1, [UcodeType.ARRAY, UcodeType.OBJECT]);
+
     // Second parameter (comparator) is optional but must be function if present
     if (node.arguments.length >= 2 && node.arguments[1]) {
       this.validateArgumentType(node.arguments[1], 'sort', 2, [UcodeType.FUNCTION]);
     }
-    
+
     return true;
   }
 

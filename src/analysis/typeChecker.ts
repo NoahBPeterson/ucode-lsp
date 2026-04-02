@@ -216,7 +216,7 @@ export class TypeChecker {
       { name: 'regexp', parameters: [UcodeType.STRING], returnType: UcodeType.REGEX, minParams: 1, maxParams: 2 },
       { name: 'assert', parameters: [], returnType: UcodeType.UNKNOWN, variadic: true, minParams: 0 }, // Returns first argument (reflective) - accepts any truish types
       { name: 'call', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, variadic: true },
-      { name: 'signal', parameters: [UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 1, maxParams: 2 },
+      { name: 'signal', parameters: [UcodeType.INTEGER], returnType: createUnionType([UcodeType.FUNCTION, UcodeType.STRING, UcodeType.NULL]), minParams: 1, maxParams: 2 },
       { name: 'clock', parameters: [UcodeType.BOOLEAN], returnType: UcodeType.ARRAY, minParams: 0, maxParams: 1 },
       
       { name: 'sourcepath', parameters: [UcodeType.INTEGER, UcodeType.BOOLEAN], minParams: 0, maxParams: 2, returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
@@ -227,11 +227,11 @@ export class TypeChecker {
       { name: 'getenv', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), minParams: 0, maxParams: 1 },
       { name: 'map', parameters: [UcodeType.ARRAY, UcodeType.FUNCTION], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]) },
       { name: 'reverse', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
-      { name: 'sort', parameters: [UcodeType.ARRAY], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), minParams: 1, maxParams: 2 },
+      { name: 'sort', parameters: [UcodeType.UNKNOWN], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), minParams: 1, maxParams: 2 },
       { name: 'splice', parameters: [UcodeType.ARRAY, UcodeType.INTEGER], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0], variadic: true },
-      { name: 'slice', parameters: [UcodeType.UNKNOWN, UcodeType.INTEGER], returnType: UcodeType.UNKNOWN, minParams: 2, maxParams: 3 },
+      { name: 'slice', parameters: [UcodeType.ARRAY, UcodeType.INTEGER], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0], minParams: 2, maxParams: 3 },
       { name: 'warn', parameters: [], returnType: UcodeType.INTEGER, variadic: true },
-      { name: 'trace', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },
+      { name: 'trace', parameters: [UcodeType.INTEGER], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]), minParams: 0, maxParams: 1 },
       { name: 'proto', parameters: [UcodeType.OBJECT], returnType: createUnionType([UcodeType.OBJECT, UcodeType.NULL]), minParams: 1, maxParams: 2 },
       { name: 'render', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), minParams: 1, maxParams: 2 },
       
@@ -1275,6 +1275,7 @@ export class TypeChecker {
       ?? signature.parameters.map((_, i) => i);
 
     let allArgsMatch = true;
+    let anyArgDefinitelyWrong = false;
 
     for (const i of indicesToCheck) {
       const expectedType = signature.parameters[i];
@@ -1285,24 +1286,30 @@ export class TypeChecker {
 
       const argType = this.getNodeTypeDescription(arg);
 
+      // Build the set of acceptable types for this parameter
+      const acceptableTypes: string[] = [expectedType];
+      if (signature.name === 'length') {
+        acceptableTypes.push('string', 'array', 'object');
+      } else if (signature.name === 'index' || signature.name === 'rindex') {
+        acceptableTypes.push('string', 'array');
+      }
+
       if (argType === 'unknown') {
         allArgsMatch = false;
       } else if (argType.includes(' | ')) {
-        // Union arg — check if all members are compatible
         const argTypes = argType.split(' | ').map(t => t.trim());
-        if (!argTypes.every(t => t === expectedType || t === 'unknown')) {
-          allArgsMatch = false;
-        }
-      } else if (argType !== expectedType) {
-        // For length(), index(), rindex() — multiple acceptable types
-        if (signature.name === 'length' && (argType === 'string' || argType === 'array' || argType === 'object')) {
-          continue;
-        }
-        if ((signature.name === 'index' || signature.name === 'rindex') && (argType === 'string' || argType === 'array')) {
-          continue;
-        }
-        allArgsMatch = false;
+        const allCompatible = argTypes.every(t => acceptableTypes.includes(t) || t === 'unknown');
+        const noneCompatible = !argTypes.some(t => acceptableTypes.includes(t) || t === 'unknown');
+        if (noneCompatible) { anyArgDefinitelyWrong = true; break; }
+        if (!allCompatible) allArgsMatch = false;
+      } else if (!acceptableTypes.includes(argType)) {
+        anyArgDefinitelyWrong = true;
+        break;
       }
+    }
+
+    if (anyArgDefinitelyWrong) {
+      return UcodeType.NULL;
     }
 
     if (allArgsMatch) {
@@ -1501,6 +1508,8 @@ export class TypeChecker {
         return this.builtinValidator.validateExistsFunction(node);
       case 'getenv':
         return this.builtinValidator.validateGetenvFunction(node);
+      case 'rand':
+        return this.builtinValidator.validateRandFunction(node);
       case 'trim':
         return this.builtinValidator.validateTrimFunction(node);
       case 'ltrim':

@@ -301,5 +301,171 @@ function check(label, actual, expected) {
     check('gc("stop") -> boolean', getType(r, 'a'), 'boolean');
 }
 
+// ============================================================================
+// Workstream A2: Definitely-wrong-type narrowing (narrow to null)
+// When arg is definitely the wrong type, return should be just null.
+// ============================================================================
+
+// --- length: expects string|array|object ---
+{
+    const r = analyze(`let a = length(true);`);
+    check('length(bool) -> null', getType(r, 'a'), 'null');
+}
+{
+    const r = analyze(`let a = length(42);`);
+    check('length(int) -> null', getType(r, 'a'), 'null');
+}
+
+// --- index: arg1 must be string|array ---
+{
+    const r = analyze(`let a = index(42, "x");`);
+    check('index(int, string) -> null', getType(r, 'a'), 'null');
+}
+
+// --- join: arg2 must be array ---
+{
+    const r = analyze(`let a = join(",", "notarray");`);
+    check('join(string, string) -> null', getType(r, 'a'), 'null');
+}
+
+// --- keys: arg1 must be object ---
+{
+    const r = analyze(`let a = keys("string");`);
+    check('keys(string) -> null', getType(r, 'a'), 'null');
+}
+{
+    const r = analyze(`let a = keys(42);`);
+    check('keys(int) -> null', getType(r, 'a'), 'null');
+}
+
+// --- values: arg1 must be object ---
+{
+    const r = analyze(`let a = values([1,2]);`);
+    check('values(array) -> null', getType(r, 'a'), 'null');
+}
+
+// --- substr: arg1 must be string ---
+{
+    const r = analyze(`let a = substr(42, 0);`);
+    check('substr(int, int) -> null', getType(r, 'a'), 'null');
+}
+
+// --- trim: arg1 must be string ---
+{
+    const r = analyze(`let a = trim(42);`);
+    check('trim(int) -> null', getType(r, 'a'), 'null');
+}
+
+// --- uniq: arg1 must be array ---
+{
+    const r = analyze(`let a = uniq("string");`);
+    check('uniq(string) -> null', getType(r, 'a'), 'null');
+}
+
+// --- b64enc: arg1 must be string ---
+{
+    const r = analyze(`let a = b64enc(42);`);
+    check('b64enc(int) -> null', getType(r, 'a'), 'null');
+}
+
+// --- splice: arg1 must be array ---
+{
+    const r = analyze(`let a = splice("str", 0, 1);`);
+    check('splice(string, int, int) -> null', getType(r, 'a'), 'null');
+}
+
+// --- slice: arg1 must be array ---
+{
+    const r = analyze(`let a = slice("str", 0, 1);`);
+    check('slice(string, int, int) -> null', getType(r, 'a'), 'null');
+}
+
+// ============================================================================
+// Workstream C: Remaining lib.c return type fixes
+// ============================================================================
+
+// --- trace(level): returns previous trace level (integer) or null ---
+{
+    const r = analyze(`let a = trace(1);`);
+    check('trace(integer) -> integer | null', getType(r, 'a'), 'integer | null');
+}
+
+// --- slice(arr, start, end?): arg1 is array -> array; C only handles arrays ---
+{
+    const r = analyze(`let a = slice([1,2,3,4], 1, 3);`);
+    // slice preserves element types from array literal
+    check('slice(array<integer>, int, int) -> array<integer>', getType(r, 'a'), 'array<integer>');
+}
+{
+    const r = analyze(`let x; let a = slice(x, 1, 3);`);
+    check('slice(unknown, int, int) -> array | null', getType(r, 'a'), 'array | null');
+}
+
+// --- sort(val): works on arrays AND objects ---
+{
+    const r = analyze(`let a = sort([3,1,2]);`);
+    // sort preserves element types from array literal
+    check('sort(array<integer>) -> array<integer>', getType(r, 'a'), 'array<integer>');
+}
+{
+    const r = analyze(`let a = sort({a:1, b:2});`);
+    check('sort(object) -> object | null', getType(r, 'a'), 'object | null');
+}
+
+// --- signal(sig): 1 arg -> query handler; 2 args -> narrows to arg2 type ---
+{
+    const r = analyze(`let a = signal(15);`);
+    check('signal(int) query -> function | string | null', getType(r, 'a'), 'function | string | null');
+}
+{
+    const r = analyze(`let a = signal(15, function() {});`);
+    check('signal(int, function) -> function | null', getType(r, 'a'), 'function | null');
+}
+{
+    const r = analyze(`let a = signal(15, "ignore");`);
+    check('signal(int, string) -> string | null', getType(r, 'a'), 'string | null');
+}
+// Invalid arg2 types — C else branch returns NULL
+{
+    const r = analyze(`let a = signal(15, true);`);
+    check('signal(int, bool) -> null', getType(r, 'a'), 'null');
+}
+{
+    const r = analyze(`let a = signal(15, 42);`);
+    check('signal(int, number) -> null', getType(r, 'a'), 'null');
+}
+{
+    const r = analyze(`let a = signal(15, {});`);
+    check('signal(int, object) -> null', getType(r, 'a'), 'null');
+}
+{
+    const r = analyze(`let a = signal(15, [1,2]);`);
+    check('signal(int, array) -> null', getType(r, 'a'), 'null');
+}
+// Unknown arg2 — can't narrow, keep full union
+{
+    const r = analyze(`let x; let a = signal(15, x);`);
+    check('signal(int, unknown) -> function | string | null', getType(r, 'a'), 'function | string | null');
+}
+
+// --- proto: 1 arg -> object|null (getter); 2 args -> first arg type ---
+// proto(obj) already tested above
+// proto(obj, newproto) returns obj — for now just test it doesn't crash
+{
+    const r = analyze(`let obj = {}; let a = proto(obj, {});`);
+    // 2-arg proto returns input, type depends on first arg
+    check('proto(object, object) -> object | null', getType(r, 'a'), 'object | null');
+}
+
+// --- math.rand(): 0 args -> integer; 1+ args -> double ---
+{
+    const r = analyze(`let a = rand();`);
+    check('rand() -> integer', getType(r, 'a'), 'integer');
+}
+{
+    const r = analyze(`let a = rand(100);`);
+    check('rand(number) -> double', getType(r, 'a'), 'double');
+}
+
 console.log(`\n${passed}/${passed + failed} tests passed`);
 if (failed > 0) process.exit(1);
