@@ -51,7 +51,7 @@ import { fsModuleTypeRegistry } from './fsModuleTypes';
 import { rtnlTypeRegistry } from './rtnlTypes';
 import { nl80211TypeRegistry } from './nl80211Types';
 import { Option } from 'effect';
-import { isKnownObjectType, OBJECT_REGISTRIES, type KnownObjectType } from './moduleDispatch';
+import { isKnownObjectType, isKnownModule, MODULE_REGISTRIES, OBJECT_REGISTRIES, type KnownObjectType } from './moduleDispatch';
 import { TypeNarrowingEngine } from './typeNarrowing';
 import { FlowSensitiveTypeTracker } from './flowSensitiveTyping';
 import { CFGQueryEngine } from './cfg/queryEngine';
@@ -899,8 +899,10 @@ export class TypeChecker {
           return createArrayType(this.parseSingleType(innerType) as UcodeDataType);
         }
         // Known object types like "fs.file", "uci.cursor", "io.handle"
+        // Create ModuleType (not ObjectType) so downstream code that checks
+        // 'moduleName' in dataType works for method resolution, hover, and completions
         if (isKnownObjectType(typeStr)) {
-          return createObjectType(typeStr);
+          return { type: UcodeType.OBJECT, moduleName: typeStr } as any;
         }
         return UcodeType.UNKNOWN;
     }
@@ -1003,17 +1005,17 @@ export class TypeChecker {
       if (symbol) {
         // Check for functions and imported functions
         if (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED) {
-          // Special handling for imported fs functions
-          if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'fs') {
-            const fsFunction = fsModuleTypeRegistry.getFunction(funcName);
-            if (fsFunction) {
-              let returnTypeData = this.parseReturnType(fsFunction.returnType);
+          // Return type inference for imported module functions
+          if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom && isKnownModule(symbol.importedFrom)) {
+            const registry = MODULE_REGISTRIES[symbol.importedFrom];
+            const moduleFunctionOpt = registry.getFunction(funcName);
+            if (Option.isSome(moduleFunctionOpt)) {
+              const moduleFunction = moduleFunctionOpt.value;
+              let returnTypeData = this.parseReturnType(moduleFunction.returnType);
 
               // Narrow return type based on argument types.
-              // Many fs functions return X | null where null means "wrong arg type".
-              // If we can prove the arg type matches, eliminate null.
-              // If we can prove it doesn't match, return just null.
-              returnTypeData = this.narrowFsReturnType(returnTypeData, fsFunction, node);
+              // Many module functions return X | null where null means "wrong arg type".
+              returnTypeData = this.narrowFsReturnType(returnTypeData, moduleFunction, node);
 
               (node as any)._fullType = returnTypeData;
               return this.dataTypeToUcodeType(returnTypeData);

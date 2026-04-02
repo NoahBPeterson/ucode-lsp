@@ -500,15 +500,20 @@ export class SemanticAnalyzer extends BaseVisitor {
 
         // Upgrade symbol type from function call results that have rich _fullType
         // (e.g., split() → array<string>, reverse([1,2]) → array<integer>, pop(arr) → element type,
-        //  glob("/path") → array (narrowed from array | null), open() → fs.file | null)
+        //  glob("/path") → array<string> (narrowed from array<string> | null))
+        // Skip if processInitializerTypeInference already set a module type (e.g., fs.file, io.handle)
+        // — those types enable method resolution/hover and should not be clobbered.
         if (node.init.type === 'CallExpression' || node.init.type === 'MemberExpression') {
           const sym = this.symbolTable.lookup(name);
           if (sym) {
-            // Trigger type checker to process narrowedReturnType and set _fullType
-            this.typeChecker.checkNode(node.init);
-            const fullType = (node.init as any)._fullType;
-            if (fullType !== undefined && fullType !== null) {
-              sym.dataType = fullType;
+            const alreadyModuleType = typeof sym.dataType === 'object' && sym.dataType !== null && 'moduleName' in sym.dataType;
+            if (!alreadyModuleType) {
+              // Trigger type checker to process narrowedReturnType and set _fullType
+              this.typeChecker.checkNode(node.init);
+              const fullType = (node.init as any)._fullType;
+              if (fullType !== undefined && fullType !== null) {
+                sym.dataType = fullType;
+              }
             }
           }
         }
@@ -637,15 +642,12 @@ export class SemanticAnalyzer extends BaseVisitor {
       };
     }
     
-    // Special case: importing rtnl functions - set proper function type  
-    // Set function data type for rtnl imported functions
-    if (source === 'rtnl' && MODULE_REGISTRIES.rtnl.getFunctionNames().includes(importedName)) {
-      dataType = UcodeType.FUNCTION as UcodeDataType;
-    }
-
-    // Set function data type for fs imported functions
-    if (source === 'fs' && MODULE_REGISTRIES.fs.getFunctionNames().includes(importedName)) {
-      dataType = UcodeType.FUNCTION as UcodeDataType;
+    // Set function data type for all known module imported functions
+    if (isKnownModule(source) && specifier.type === 'ImportSpecifier') {
+      const reg = MODULE_REGISTRIES[source];
+      if (reg && reg.getFunctionNames().includes(importedName)) {
+        dataType = UcodeType.FUNCTION as UcodeDataType;
+      }
     }
 
     // Validate imports from known modules (skips debug/digest/io/zlib which allow any import)
@@ -2428,7 +2430,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       const callNode = node as CallExpressionNode;
       if (callNode.callee.type === 'Identifier') {
         const funcName = (callNode.callee as IdentifierNode).name;
-        
+
+        // Only match if imported from 'nl80211' (not rtnl.listener, etc.)
+        const symbol = this.symbolTable.lookup(funcName);
+        if (!symbol || symbol.type !== SymbolType.IMPORTED || symbol.importedFrom !== 'nl80211') {
+          return null;
+        }
+
         // Map nl80211 functions to their return types
         switch (funcName) {
           case 'listener':
@@ -2497,7 +2505,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       
       if (callNode.callee.type === 'Identifier') {
         const funcName = (callNode.callee as IdentifierNode).name;
-        
+
+        // Only match if imported from 'uloop' (not builtins like signal())
+        const symbol = this.symbolTable.lookup(funcName);
+        if (!symbol || symbol.type !== SymbolType.IMPORTED || symbol.importedFrom !== 'uloop') {
+          return null;
+        }
+
         // Map uloop functions to their return types
         switch (funcName) {
           case 'timer':

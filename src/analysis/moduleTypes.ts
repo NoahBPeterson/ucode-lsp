@@ -37,6 +37,9 @@ export interface FunctionSignature {
   }>;
   returnType: string;
   description: string;
+  /** When true, null in returnType means only "wrong argument type" — safe to narrow away
+   *  when argument types are known to be correct. */
+  nullMeansWrongType?: boolean;
 }
 
 // ---- Uniform adapter interfaces ----
