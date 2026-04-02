@@ -96,6 +96,24 @@ const functions = new Map<string, FunctionSignature>([
     ],
     returnType: "string | null",
     description: "Returns a string containing a description of the error code."
+  }],
+  ["pair", {
+    name: "pair",
+    parameters: [
+      { name: "domain", type: "number", optional: true, defaultValue: "AF_UNIX" },
+      { name: "type", type: "number", optional: true, defaultValue: "SOCK_STREAM" },
+      { name: "protocol", type: "number", optional: true, defaultValue: 0 }
+    ],
+    returnType: "array | null",
+    description: "Creates a pair of connected sockets. Returns an array of two socket instances or null on failure."
+  }],
+  ["open", {
+    name: "open",
+    parameters: [
+      { name: "fd", type: "integer", optional: false }
+    ],
+    returnType: "socket | null",
+    description: "Wraps an existing file descriptor into a socket resource."
   }]
 ]);
 

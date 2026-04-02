@@ -15,8 +15,11 @@ import type { ModuleDefinition, PropertyDefinition, ObjectTypeDefinition } from 
 export function getFsReturnObjectType(funcName: string): FsObjectType | null {
   const sig = fsModuleFunctions.get(funcName);
   if (!sig) return null;
+  // Don't match object types wrapped in array<...> — pipe() returns array<fs.file>,
+  // not a single fs.file object
+  const returnType = sig.returnType;
   for (const fsType of Object.values(FsObjectType)) {
-    if (sig.returnType.includes(fsType)) {
+    if (returnType.includes(fsType) && !returnType.includes(`array<${fsType}>`)) {
       return fsType;
     }
   }
@@ -167,8 +170,8 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     name: "chown",
     parameters: [
       { name: "path", type: "string", optional: false },
-      { name: "uid", type: "number", optional: false },
-      { name: "gid", type: "number", optional: false }
+      { name: "uid", type: "number | string | null", optional: false },
+      { name: "gid", type: "number | string | null", optional: false }
     ],
     returnType: "boolean | null",
     description: "Changes file ownership. Returns true on success, null on failure"
@@ -238,10 +241,11 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
   ["readfile", {
     name: "readfile",
     parameters: [
-      { name: "path", type: "string", optional: false }
+      { name: "path", type: "string", optional: false },
+      { name: "size", type: "integer", optional: true }
     ],
     returnType: "string | null",
-    description: "Reads the entire contents of a file as a string"
+    description: "Reads the contents of a file as a string. If size is specified, reads at most that many bytes"
   }],
   ["writefile", {
     name: "writefile",
@@ -264,7 +268,7 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
   ["pipe", {
     name: "pipe",
     parameters: [],
-    returnType: "array | null",
+    returnType: "array<fs.file> | null",
     description: "Creates a pipe and returns an array with read and write file handles"
   }],
   ["dup2", {
