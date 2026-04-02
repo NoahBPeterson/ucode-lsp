@@ -14,7 +14,7 @@ const functions = new Map<string, FunctionSignature>([
       { name: "names", type: "string | string[]", optional: false },
       { name: "options", type: "object", optional: true }
     ],
-    returnType: "object",
+    returnType: "object | null",
     description: `Perform DNS queries for specified domain names. Returns an object containing DNS query results organized by domain name.
 
 Domain name(s) to query. Can be a single domain name string or an array of domain name strings. IP addresses can also be provided for reverse DNS lookups.

@@ -31,7 +31,7 @@ expectedFunctions.forEach(funcName => {
 console.log('\n🧪 Test 2: Function Signature Formatting');
 testResult(
   'query() signature formatting',
-  resolvTypeRegistry.formatFunctionSignature('query') === 'query(names: string | string[], [options: object]): object'
+  resolvTypeRegistry.formatFunctionSignature('query') === 'query(names: string | string[], [options: object]): object | null'
 );
 
 testResult(
@@ -107,8 +107,8 @@ testResult(
 // Test 6: Return type handling
 console.log('\n🧪 Test 6: Return Type Validation');
 testResult(
-  'query() returns object',
-  queryFunc && queryFunc.returnType === 'object'
+  'query() returns object | null',
+  queryFunc && queryFunc.returnType === 'object | null'
 );
 
 testResult(

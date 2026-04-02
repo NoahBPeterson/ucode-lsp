@@ -22,7 +22,7 @@ const functions = new Map<string, FunctionSignature>([
       { name: "flags", type: "integer", optional: true },
       { name: "payload", type: "object", optional: true }
     ],
-    returnType: "object | null",
+    returnType: "object | array | boolean | null",
     description: `Send a netlink request to the routing subsystem. The cmd parameter specifies the RTM_* command to execute. Optional flags can modify the request behavior (NLM_F_*). The payload object contains command-specific attributes.
 
 **Example:**
@@ -45,7 +45,7 @@ let result = request(RTM_NEWROUTE, NLM_F_CREATE | NLM_F_EXCL, {
       { name: "cmds", type: "array", optional: true },
       { name: "groups", type: "array", optional: true }
     ],
-    returnType: "rtnl.listener",
+    returnType: "rtnl.listener | null",
     description: `Create an event listener for routing netlink messages. The callback function is called when events are received. Optional cmds array contains RTM_* command constants to listen for. Optional groups array contains multicast groups to join.
 
 **Example:**

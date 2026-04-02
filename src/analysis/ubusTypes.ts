@@ -22,8 +22,8 @@ const functions = new Map<string, FunctionSignature>([
       { name: "socket", type: "string", optional: true },
       { name: "timeout", type: "integer", optional: true, defaultValue: 30 }
     ],
-    returnType: "object",
-    description: "Establish a connection to the ubus daemon. Returns a connection object that can be used for further ubus operations."
+    returnType: "object | null",
+    description: "Establish a connection to the ubus daemon. Returns a connection object that can be used for further ubus operations, or null on connection failure."
   }],
   ["open_channel", {
     name: "open_channel",
@@ -33,7 +33,7 @@ const functions = new Map<string, FunctionSignature>([
       { name: "disconnect_cb", type: "function", optional: true },
       { name: "timeout", type: "integer", optional: true, defaultValue: 30 }
     ],
-    returnType: "object",
+    returnType: "object | null",
     description: `Create a ubus channel connection using an existing file descriptor. Used for bidirectional communication over established connections.
 
 **Example:**
@@ -50,7 +50,7 @@ let chan = open_channel(fd, function(msg) {
     parameters: [
       { name: "handler", type: "function", optional: true }
     ],
-    returnType: "function | boolean",
+    returnType: "function | boolean | null",
     description: "Set or get the global ubus exception handler. If called without arguments, returns current handler. If called with a handler function, sets it as the exception handler."
   }]
 ]);

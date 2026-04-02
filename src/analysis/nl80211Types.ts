@@ -37,7 +37,7 @@ if (!result) {
       { name: "flags", type: "integer", optional: true },
       { name: "payload", type: "object", optional: true }
     ],
-    returnType: "object | null",
+    returnType: "object | array | boolean | null",
     description: `Sends a netlink request to the nl80211 subsystem. The cmd parameter specifies the NL80211_CMD_* command to execute. Optional flags can modify the request behavior (NLM_F_*). The payload object contains command-specific attributes.
 
 **Example:**
@@ -78,7 +78,7 @@ if (result) {
       { name: "callback", type: "function", optional: false },
       { name: "cmds", type: "array", optional: false }
     ],
-    returnType: "nl80211.listener",
+    returnType: "nl80211.listener | null",
     description: `Creates an event listener for nl80211 messages. The callback function is called when any of the specified commands (NL80211_CMD_* constants) are received. Returns a listener object with set_commands() and close() methods.
 
 **Example:**

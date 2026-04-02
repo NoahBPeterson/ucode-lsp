@@ -21,7 +21,7 @@ const functions = new Map<string, FunctionSignature>([
     parameters: [
       { name: "level", type: "number", optional: true, defaultValue: 1 }
     ],
-    returnType: "module:debug.StackTraceEntry[]",
+    returnType: "module:debug.StackTraceEntry[] | null",
     description: "Capture call stack trace. The optional level parameter controls how many calls up the trace should start. Returns an array of stack trace entries describing the function invocations up to the point where `traceback()` is called."
   }],
   ["sourcepos", {

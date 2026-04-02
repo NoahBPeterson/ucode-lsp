@@ -166,7 +166,7 @@ test('getValidImports() returns all expected exports', () => {
 console.log('\n🧪 Testing return types:');
 test('connect() returns object type', () => {
   const func = ubusTypeRegistry.getFunction('connect');
-  return func && func.returnType === 'object';
+  return func && func.returnType === 'object | null';
 });
 
 test('error() returns union type', () => {

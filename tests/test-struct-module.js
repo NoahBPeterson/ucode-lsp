@@ -130,7 +130,7 @@ const packFunc = structTypeRegistry.getFunction('pack');
 testStructValidation(
   'pack function return type',
   packFunc ? packFunc.returnType : null,
-  'string'
+  'string | null'
 );
 
 // Test 12: Return type handling for unpack
@@ -138,7 +138,7 @@ const unpackFunc = structTypeRegistry.getFunction('unpack');
 testStructValidation(
   'unpack function return type',
   unpackFunc ? unpackFunc.returnType : null,
-  'array'
+  'array | null'
 );
 
 // Test 13: Optional parameter handling for unpack
@@ -161,14 +161,14 @@ const newFunc = structTypeRegistry.getFunction('new');
 testStructValidation(
   'new function returns struct.instance',
   newFunc ? newFunc.returnType : null,
-  'struct.instance'
+  'struct.instance | null'
 );
 
 // Test 16: Complex type signatures - struct.buffer
 testStructValidation(
   'buffer function returns struct.buffer',
   bufferFunc ? bufferFunc.returnType : null,
-  'struct.buffer'
+  'struct.buffer | null'
 );
 
 // Test 17: Mock completion integration test
@@ -230,7 +230,7 @@ testStructValidation(
 testStructStringIncludes(
   'pack documentation includes return type',
   packDoc,
-  '**Returns:** `string`'
+  '**Returns:** `string | null`'
 );
 
 // Test 25: Buffer documentation includes examples

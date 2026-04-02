@@ -14,7 +14,7 @@ const functions = new Map<string, FunctionSignature>([
       { name: "format", type: "string", optional: false },
       { name: "values", type: "any", optional: false }
     ],
-    returnType: "string",
+    returnType: "string | null",
     description: `Pack given values according to specified format. Creates a byte string containing the argument values packed according to the given format string.
 
 **Examples:**
@@ -56,7 +56,7 @@ let buffer = pack('10sI', 'hello', 12345);
       { name: "input", type: "string", optional: false },
       { name: "offset", type: "number", optional: true, defaultValue: 0 }
     ],
-    returnType: "array",
+    returnType: "array | null",
     description: `Unpack given byte string according to specified format. Interprets a byte string according to the given format string and returns the resulting values.
 
 **Examples:**
@@ -74,7 +74,7 @@ let result = unpack('I', buffer, 4);
     parameters: [
       { name: "format", type: "string", optional: false }
     ],
-    returnType: "struct.instance",
+    returnType: "struct.instance | null",
     description: `Precompile format string. Returns a struct object instance useful for packing and unpacking multiple items without having to recompute the internal format each time.
 
 **Examples:**
@@ -90,7 +90,7 @@ let values = fmt.unpack(data);
     parameters: [
       { name: "initialData", type: "string", optional: true }
     ],
-    returnType: "struct.buffer",
+    returnType: "struct.buffer | null",
     description: `Creates a new struct buffer instance for incremental packing and unpacking of binary data. If initial data is provided, the buffer is initialized with this content.
 
 **Examples:**

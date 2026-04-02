@@ -66,7 +66,7 @@ testNl80211Validation('All expected constants are present', () => {
 testNl80211Validation('Function signature formatting', () => {
     const signature = nl80211TypeRegistry.formatFunctionSignature('request');
     console.log(`  Signature: ${signature}`);
-    const expected = 'request(cmd: integer, [flags: integer], [payload: object]): object | null';
+    const expected = 'request(cmd: integer, [flags: integer], [payload: object]): object | array | boolean | null';
     return signature === expected;
 });
 
@@ -112,7 +112,7 @@ testNl80211Validation('Constant identification', () => {
 testNl80211Validation('Return type handling', () => {
     const listenerFunc = nl80211TypeRegistry.getFunction('listener');
     console.log(`  listener return type: ${listenerFunc.returnType}`);
-    return listenerFunc.returnType === 'nl80211.listener';
+    return listenerFunc.returnType === 'nl80211.listener | null';
 });
 
 // Test 10: Import validation
