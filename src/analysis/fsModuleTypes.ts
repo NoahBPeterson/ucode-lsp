@@ -112,33 +112,33 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
       { name: "path", type: "string", optional: false },
       { name: "mode", type: "number", optional: true, defaultValue: 0o755 }
     ],
-    returnType: "boolean",
-    description: "Creates a directory. Returns true on success, false on failure"
+    returnType: "boolean | null",
+    description: "Creates a directory. Returns true on success, null on failure"
   }],
   ["rmdir", {
     name: "rmdir",
     parameters: [
       { name: "path", type: "string", optional: false }
     ],
-    returnType: "boolean",
-    description: "Removes an empty directory. Returns true on success, false on failure"
+    returnType: "boolean | null",
+    description: "Removes an empty directory. Returns true on success, null on failure"
   }],
   ["symlink", {
-    name: "symlink", 
+    name: "symlink",
     parameters: [
       { name: "target", type: "string", optional: false },
       { name: "linkpath", type: "string", optional: false }
     ],
-    returnType: "boolean",
-    description: "Creates a symbolic link. Returns true on success, false on failure"
+    returnType: "boolean | null",
+    description: "Creates a symbolic link. Returns true on success, null on failure"
   }],
   ["unlink", {
     name: "unlink",
     parameters: [
       { name: "path", type: "string", optional: false }
     ],
-    returnType: "boolean",
-    description: "Removes a file or symbolic link. Returns true on success, false on failure"
+    returnType: "boolean | null",
+    description: "Removes a file or symbolic link. Returns true on success, null on failure"
   }],
   ["getcwd", {
     name: "getcwd",
@@ -151,8 +151,8 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     parameters: [
       { name: "path", type: "string", optional: false }
     ],
-    returnType: "boolean",
-    description: "Changes the current working directory. Returns true on success, false on failure"
+    returnType: "boolean | null",
+    description: "Changes the current working directory. Returns true on success, null on failure"
   }],
   ["chmod", {
     name: "chmod",
@@ -179,8 +179,8 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
       { name: "oldpath", type: "string", optional: false },
       { name: "newpath", type: "string", optional: false }
     ],
-    returnType: "boolean",
-    description: "Renames or moves a file. Returns true on success, false on failure"
+    returnType: "boolean | null",
+    description: "Renames or moves a file. Returns true on success, null on failure"
   }],
   ["glob", {
     name: "glob",
@@ -196,7 +196,8 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     parameters: [
       { name: "path", type: "string", optional: false }
     ],
-    returnType: "string",
+    returnType: "string | null",
+    nullMeansWrongType: true,
     description: "Returns the directory portion of a path"
   }],
   ["basename", {
@@ -205,7 +206,8 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
       { name: "path", type: "string", optional: false },
       { name: "suffix", type: "string", optional: true }
     ],
-    returnType: "string",
+    returnType: "string | null",
+    nullMeansWrongType: true,
     description: "Returns the filename portion of a path, optionally removing suffix"
   }],
   ["lsdir", {
@@ -228,10 +230,10 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     name: "access",
     parameters: [
       { name: "path", type: "string", optional: false },
-      { name: "mode", type: "number", optional: true, defaultValue: 0 }
+      { name: "mode", type: "string", optional: true, defaultValue: "f" }
     ],
-    returnType: "boolean",
-    description: "Tests file accessibility. Returns true if accessible, false otherwise"
+    returnType: "boolean | null",
+    description: "Tests file accessibility. Mode is a string: 'r' (read), 'w' (write), 'x' (execute), 'f' (exists). Returns true if accessible, null otherwise"
   }],
   ["readfile", {
     name: "readfile",
@@ -242,14 +244,14 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     description: "Reads the entire contents of a file as a string"
   }],
   ["writefile", {
-    name: "writefile", 
+    name: "writefile",
     parameters: [
       { name: "path", type: "string", optional: false },
       { name: "content", type: "string", optional: false },
       { name: "mode", type: "number", optional: true, defaultValue: 0o644 }
     ],
-    returnType: "boolean",
-    description: "Writes content to a file. Returns true on success, false on failure"
+    returnType: "integer | null",
+    description: "Writes content to a file. Returns number of bytes written on success, null on failure"
   }],
   ["realpath", {
     name: "realpath",
@@ -281,47 +283,6 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     ],
     returnType: "string | null",
     description: "Creates a unique temporary directory using the given template. Returns the path of the created directory on success, null on error"
-  }],
-  ["getcwd", {
-    name: "getcwd",
-    parameters: [],
-    returnType: "string | null",
-    description: "Gets the current working directory path"
-  }],
-  ["chdir", {
-    name: "chdir", 
-    parameters: [
-      { name: "path", type: "string", optional: false }
-    ],
-    returnType: "boolean | null",
-    description: "Changes the current working directory"
-  }],
-  ["rename", {
-    name: "rename",
-    parameters: [
-      { name: "oldpath", type: "string", optional: false },
-      { name: "newpath", type: "string", optional: false }
-    ],
-    returnType: "boolean | null",
-    description: "Renames a file or directory"
-  }],
-  ["symlink", {
-    name: "symlink",
-    parameters: [
-      { name: "target", type: "string", optional: false },
-      { name: "linkpath", type: "string", optional: false }
-    ],
-    returnType: "boolean | null",
-    description: "Creates a symbolic link"
-  }],
-  ["glob", {
-    name: "glob",
-    parameters: [
-      { name: "patterns", type: "string", optional: false }
-    ],
-    returnType: "array | null",
-    nullMeansWrongType: true,
-    description: "Matches file paths using glob patterns (variadic function)"
   }],
   ["statvfs", {
     name: "statvfs",
