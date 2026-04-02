@@ -187,7 +187,7 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     parameters: [
       { name: "pattern", type: "string", optional: false }
     ],
-    returnType: "array | null",
+    returnType: "array<string> | null",
     nullMeansWrongType: true,
     description: "Finds files matching a pattern using shell wildcards"
   }],
@@ -215,7 +215,7 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     parameters: [
       { name: "path", type: "string", optional: false }
     ],
-    returnType: "array | null",
+    returnType: "array<string> | null",
     description: "Lists directory contents as an array of filenames"
   }],
   ["mkstemp", {

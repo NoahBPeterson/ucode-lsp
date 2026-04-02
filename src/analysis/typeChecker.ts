@@ -893,6 +893,11 @@ export class TypeChecker {
       case 'null': return UcodeType.NULL;
       case 'function': return UcodeType.FUNCTION;
       default:
+        // Typed arrays like "array<string>"
+        if (typeStr.startsWith('array<') && typeStr.endsWith('>')) {
+          const innerType = typeStr.slice(6, -1);
+          return createArrayType(this.parseSingleType(innerType) as UcodeDataType);
+        }
         // Known object types like "fs.file", "uci.cursor", "io.handle"
         if (isKnownObjectType(typeStr)) {
           return createObjectType(typeStr);
@@ -1518,6 +1523,8 @@ export class TypeChecker {
         return this.builtinValidator.validateRtrimFunction(node);
       case 'substr':
         return this.builtinValidator.validateSubstrFunction(node);
+      case 'proto':
+        return this.builtinValidator.validateProtoFunction(node);
       default:
         return false;
     }

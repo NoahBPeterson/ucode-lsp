@@ -139,6 +139,10 @@ const testFiles = [
     'tests/test-scoped-completions.js',
     'tests/test-hover-type-narrowing.js',
     'tests/test-hover-type-consistency.js',
+    'tests/test-builtin-return-narrowing.js',
+    'tests/test-fs-return-type-fixes.js',
+    'tests/test-fs-glob-return-types.js',
+    'tests/test-array-element-types-glob.js',
 ];
 
 // Mocha test files (run as a single combined mocha invocation with shared LSP server)

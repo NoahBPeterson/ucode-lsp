@@ -412,6 +412,36 @@ function check(label, actual, expected) {
     check('sort(object) -> object | null', getType(r, 'a'), 'object | null');
 }
 
+// sort: wrong types → null
+{
+    const r = analyze(`let a = sort("hello");`);
+    check('sort(string) -> null', getType(r, 'a'), 'null');
+}
+{
+    const r = analyze(`let a = sort(42);`);
+    check('sort(integer) -> null', getType(r, 'a'), 'null');
+}
+{
+    const r = analyze(`let a = sort(3.14);`);
+    check('sort(double) -> null', getType(r, 'a'), 'null');
+}
+{
+    const r = analyze(`let a = sort(true);`);
+    check('sort(boolean) -> null', getType(r, 'a'), 'null');
+}
+{
+    const r = analyze(`let a = sort(null);`);
+    check('sort(null) -> null', getType(r, 'a'), 'null');
+}
+{
+    const r = analyze(`let f = () => 1; let a = sort(f);`);
+    check('sort(function) -> null', getType(r, 'a'), 'null');
+}
+{
+    const r = analyze(`let x; let a = sort(x);`);
+    check('sort(unknown) -> array | null', getType(r, 'a'), 'array | null');
+}
+
 // --- signal(sig): 1 arg -> query handler; 2 args -> narrows to arg2 type ---
 {
     const r = analyze(`let a = signal(15);`);
@@ -453,8 +483,8 @@ function check(label, actual, expected) {
 // proto(obj, newproto) returns obj — for now just test it doesn't crash
 {
     const r = analyze(`let obj = {}; let a = proto(obj, {});`);
-    // 2-arg proto returns input, type depends on first arg
-    check('proto(object, object) -> object | null', getType(r, 'a'), 'object | null');
+    // 2-arg proto returns input (first arg) — null only if first arg wrong type
+    check('proto(object, object) -> object', getType(r, 'a'), 'object');
 }
 
 // --- math.rand(): 0 args -> integer; 1+ args -> double ---

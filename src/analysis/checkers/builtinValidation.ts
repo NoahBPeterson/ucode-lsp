@@ -1686,12 +1686,15 @@ export class BuiltinValidator {
     if (!this.checkArgumentCount(node, 'sort', 1)) return true;
 
     // First parameter must be array or object (per C source, sort works on both)
+    // C returns NULL for non-array/non-object args
     const argType = this.getNodeType ? this.getNodeType(node.arguments[0]) : 'unknown';
     if (argType === 'array') {
       this.narrowedReturnType = UcodeType.ARRAY;
       this.preserveArrayElementType(node.arguments[0]);
     } else if (argType === 'object') {
       this.narrowedReturnType = createUnionType([UcodeType.OBJECT, UcodeType.NULL]);
+    } else if (argType !== UcodeType.UNKNOWN && !argType.includes(' | ')) {
+      this.narrowedReturnType = UcodeType.NULL;
     }
     this.validateArgumentType(node.arguments[0], 'sort', 1, [UcodeType.ARRAY, UcodeType.OBJECT]);
 
@@ -1852,6 +1855,31 @@ export class BuiltinValidator {
   private getNodeType(_node: any): UcodeType {
     // This will be injected by the main type checker
     return UcodeType.UNKNOWN;
+  }
+
+  validateProtoFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'proto', 1)) return true;
+
+    if (node.arguments.length === 1) {
+      // 1-arg form: proto(obj) — query prototype, returns object | null
+      this.validateArgumentType(node.arguments[0], 'proto', 1, [UcodeType.OBJECT, UcodeType.ARRAY]);
+    } else {
+      // 2-arg form: proto(obj, proto_obj) — set prototype, returns first arg
+      // C source: returns the first argument directly (ucv_get)
+      const argType = this.getNodeType(node.arguments[0]);
+      if (argType === UcodeType.OBJECT || argType === UcodeType.ARRAY) {
+        this.narrowedReturnType = argType;
+      } else if (argType !== UcodeType.UNKNOWN && !argType.includes(' | ')) {
+        // Definitely wrong type — returns null
+        this.narrowedReturnType = UcodeType.NULL;
+      }
+      this.validateArgumentType(node.arguments[0], 'proto', 1, [UcodeType.OBJECT, UcodeType.ARRAY]);
+      if (node.arguments[1]) {
+        this.validateArgumentType(node.arguments[1], 'proto', 2, [UcodeType.OBJECT, UcodeType.NULL]);
+      }
+    }
+
+    return true;
   }
 
   private getNodeFullType(_node: any): UcodeDataType | null {
