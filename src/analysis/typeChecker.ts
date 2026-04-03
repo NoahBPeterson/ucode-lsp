@@ -1721,19 +1721,34 @@ export class TypeChecker {
       }
     }
 
-    // Check for array type (with TypeScript workaround)
-    if ((objectType as any) === UcodeType.ARRAY && !node.computed) {
-      // Arrays in ucode have no properties or methods at all
-      const propertyName = (node.property as IdentifierNode).name;
-      
-      // Invalid property/method access on array
-      this.errors.push({
-        message: `Property '${propertyName}' does not exist on array type. Arrays in ucode have no properties or methods. Use builtin functions instead (e.g., length(array), filter(array, callback)).`,
-        start: node.property.start,
-        end: node.property.end,
-        severity: 'error'
-      });
-      return UcodeType.UNKNOWN;
+    // Check for array type — arrays in ucode have no properties or methods.
+    // Also check union types containing array (e.g., array | null from sort/filter).
+    if (!node.computed) {
+      let isArrayAccess = (objectType as any) === UcodeType.ARRAY;
+      if (!isArrayAccess && node.object.type === 'Identifier') {
+        const sym = this.symbolTable.lookup((node.object as IdentifierNode).name);
+        if (sym) {
+          const dt = sym.currentType || sym.dataType;
+          if (dt === UcodeType.ARRAY || isArrayType(dt as UcodeDataType)) {
+            isArrayAccess = true;
+          } else if (isUnionType(dt as UcodeDataType)) {
+            const members = getUnionTypes(dt as UcodeDataType);
+            isArrayAccess = members.some(m => singleTypeToBase(m) === UcodeType.ARRAY);
+          }
+        }
+      }
+      if (isArrayAccess) {
+        const propertyName = node.property.type === 'Identifier'
+          ? (node.property as IdentifierNode).name
+          : String((node.property as LiteralNode).value);
+        this.errors.push({
+          message: `Property '${propertyName}' does not exist on array type. Arrays in ucode have no properties or methods. Use builtin functions instead (e.g., length(array), filter(array, callback)).`,
+          start: node.property.start,
+          end: node.property.end,
+          severity: 'error'
+        });
+        return UcodeType.UNKNOWN;
+      }
     }
     
     if (objectType === UcodeType.OBJECT) {
