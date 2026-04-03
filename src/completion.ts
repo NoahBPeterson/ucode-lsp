@@ -13,6 +13,7 @@ import { UcodeLexer, TokenType, Token } from './lexer';
 import { UcodeParser } from './parser';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
+import { extractModuleType } from './analysis/symbolTable';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { rtnlTypeRegistry } from './analysis/rtnlTypes';
 import { Option } from 'effect';
@@ -350,8 +351,9 @@ function getUnifiedModuleCompletions(objectName: string, analysisResult?: Semant
     // 3. Variable alias: symbol.type === VARIABLE && dataType.moduleName
     let moduleName: string | undefined;
 
-    if (symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
-        const mn = (symbol.dataType as any).moduleName as string;
+    const modType = extractModuleType(symbol.dataType);
+    if (modType) {
+        const mn = modType.moduleName;
         // Skip nl80211-const / rtnl-const objects — they use the const object completion path
         if (mn === 'nl80211-const' || mn === 'rtnl-const') return [];
         if (isKnownModule(mn)) {
@@ -417,8 +419,9 @@ function getUnifiedObjectTypeCompletions(objectName: string, analysisResult?: Se
     // Detect the object type from the symbol's dataType
     let objectType: KnownObjectType | null = null;
 
-    if (typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
-        const mn = (symbol.dataType as any).moduleName as string;
+    const modType = extractModuleType(symbol.dataType);
+    if (modType) {
+        const mn = modType.moduleName;
         if (isKnownObjectType(mn)) {
             objectType = mn;
         }
@@ -504,8 +507,9 @@ function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, conne
             // Skip module constants objects to prevent constants from leaking globally
             // But we DO want to show the variables themselves (wlconst, rtconst) in completions  
             // The issue is we're filtering out the variable, not individual constants
-            if (symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
-              const moduleName = symbol.dataType.moduleName;
+            const symModType = extractModuleType(symbol.dataType);
+            if (symModType) {
+              const moduleName = symModType.moduleName;
               if (moduleName === 'nl80211-const' || moduleName === 'rtnl-const') {
                 // Actually, let's NOT filter these out - they are valid variables
                 // The constants leak protection should happen elsewhere
@@ -1206,8 +1210,7 @@ function getNl80211ConstObjectCompletions(objectName: string, analysisResult?: S
     console.log(`[NL80211_CONST_COMPLETION] Symbol found: ${objectName}, dataType: ${JSON.stringify(symbol.dataType)}`);
 
     // Check if this is an nl80211 constants object (imported as 'const' from nl80211)
-    if (symbol.dataType && typeof symbol.dataType === 'object' && 
-        'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'nl80211-const') {
+    if (extractModuleType(symbol.dataType)?.moduleName === 'nl80211-const') {
         
         console.log(`[NL80211_CONST_COMPLETION] NL80211 constants object detected for ${objectName}`);
         
@@ -1255,8 +1258,7 @@ function getRtnlConstObjectCompletions(objectName: string, analysisResult?: Sema
     console.log(`[RTNL_CONST_COMPLETION] Symbol found: ${objectName}, dataType: ${JSON.stringify(symbol.dataType)}`);
     
     // Check if this is an rtnl constants object (imported as 'const' from rtnl)
-    if (symbol.dataType && typeof symbol.dataType === 'object' && 
-        'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'rtnl-const') {
+    if (extractModuleType(symbol.dataType)?.moduleName === 'rtnl-const') {
         
         console.log(`[RTNL_CONST_COMPLETION] RTNL constants object detected for ${objectName}`);
         

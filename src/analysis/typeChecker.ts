@@ -41,13 +41,12 @@ interface TypeGuardInfo {
   // (e.g., length(x) <= 0) doesn't imply x is null — x could just be empty.
   isNullPropagation?: boolean;
 }
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, createObjectType, singleTypeToBase, Symbol as UcodeSymbol } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, extractModuleType, Symbol as UcodeSymbol } from './symbolTable';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { allBuiltinFunctions } from '../builtins';
-import { fsModuleTypeRegistry } from './fsModuleTypes';
 import { rtnlTypeRegistry } from './rtnlTypes';
 import { nl80211TypeRegistry } from './nl80211Types';
 import { Option } from 'effect';
@@ -519,7 +518,7 @@ export class TypeChecker {
   }
 
   private isModuleLikeType(type: UcodeDataType): boolean {
-    return typeof type === 'object' && !isUnionType(type) && 'moduleName' in (type as any);
+    return extractModuleType(type) !== null;
   }
 
   private checkBinaryExpression(node: BinaryExpressionNode): UcodeType {
@@ -1334,9 +1333,9 @@ export class TypeChecker {
    */
   private detectObjectType(dataType: UcodeDataType): KnownObjectType | null {
     if (typeof dataType === 'string') return null;
-    if (typeof dataType === 'object' && 'moduleName' in dataType) {
-      const name = (dataType as any).moduleName as string;
-      if (isKnownObjectType(name)) return name;
+    const moduleType = extractModuleType(dataType);
+    if (moduleType) {
+      if (isKnownObjectType(moduleType.moduleName)) return moduleType.moduleName;
     }
     return null;
   }
@@ -1391,7 +1390,7 @@ export class TypeChecker {
       // This could be enhanced later to return a more specific type
       return UcodeType.UNKNOWN;
     }
-    if (complexType.type === UcodeType.OBJECT && 'moduleName' in complexType) {
+    if (extractModuleType(dataType)) {
       return UcodeType.OBJECT;
     }
     if (complexType.type) {
@@ -1607,8 +1606,7 @@ export class TypeChecker {
       }
 
       // Check if this is an rtnl constants object with a specific property
-      if (symbol.dataType && typeof symbol.dataType === 'object' &&
-          'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'rtnl-const' && !node.computed) {
+      if (extractModuleType(symbol.dataType)?.moduleName === 'rtnl-const' && !node.computed) {
         const propertyName = this.getStaticPropertyName(node.property);
         if (!propertyName) {
           return UcodeType.UNKNOWN;
@@ -1637,8 +1635,7 @@ export class TypeChecker {
       }
       
       // Check if this is an nl80211 constants object with a specific property
-      if (symbol.dataType && typeof symbol.dataType === 'object' && 
-          'moduleName' in symbol.dataType && symbol.dataType.moduleName === 'nl80211-const' && !node.computed) {
+      if (extractModuleType(symbol.dataType)?.moduleName === 'nl80211-const' && !node.computed) {
         const propertyName = this.getStaticPropertyName(node.property);
         if (!propertyName) {
           return UcodeType.UNKNOWN;

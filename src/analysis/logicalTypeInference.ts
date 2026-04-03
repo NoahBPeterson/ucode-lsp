@@ -7,7 +7,7 @@
  * - Both preserve the exact type of the returned operand
  */
 
-import { UcodeType, UcodeDataType, SingleType, createUnionType, getUnionTypes } from './symbolTable';
+import { UcodeType, UcodeDataType, SingleType, createUnionType, getUnionTypes, extractModuleType } from './symbolTable';
 
 export class LogicalTypeInference {
   
@@ -105,9 +105,9 @@ export class LogicalTypeInference {
    */
   inferLogicalOrFullType(leftFullType: UcodeDataType, rightFullType: UcodeDataType): UcodeDataType {
     // Short-circuit: if both sides are the same complex type (e.g., same module), preserve it
-    if (typeof leftFullType === 'object' && typeof rightFullType === 'object' &&
-        'moduleName' in leftFullType && 'moduleName' in rightFullType &&
-        leftFullType.moduleName === rightFullType.moduleName) {
+    const leftModule = extractModuleType(leftFullType);
+    const rightModule = extractModuleType(rightFullType);
+    if (leftModule && rightModule && leftModule.moduleName === rightModule.moduleName) {
       return leftFullType;
     }
 

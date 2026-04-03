@@ -6,7 +6,7 @@ import {
 import { UcodeLexer, TokenType, isKeyword, Token } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
-import { typeToString, UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes } from './analysis/symbolTable';
+import { typeToString, UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType } from './analysis/symbolTable';
 import { exceptionTypeRegistry } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { Option } from 'effect';
@@ -332,10 +332,8 @@ function detectObjectTypeFromDataType(dataType: UcodeDataType): KnownObjectType 
         }
     }
     // Legacy: ModuleType with known object type name
-    if (typeof dataType === 'object' && dataType !== null && 'moduleName' in dataType) {
-        const mn = (dataType as any).moduleName as string;
-        if (isKnownObjectType(mn)) return mn;
-    }
+    const modType = extractModuleType(dataType);
+    if (modType && isKnownObjectType(modType.moduleName)) return modType.moduleName;
     return null;
 }
 
@@ -383,8 +381,9 @@ function getUnifiedMemberHover(
     let moduleName: string | undefined;
     if (symbol.type === SymbolType.IMPORTED && symbol.importedFrom) {
         moduleName = symbol.importedFrom;
-    } else if (symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
-        moduleName = (symbol.dataType as any).moduleName as string;
+    } else {
+        const modType = extractModuleType(symbol.dataType);
+        if (modType) moduleName = modType.moduleName;
     }
 
     if (moduleName && isKnownModule(moduleName)) {
@@ -653,8 +652,9 @@ export function handleHover(
                     }
                     // Check if it's a module type (e.g., let _fs = require('fs'); _fs.readfile)
                     let moduleName: string | undefined;
-                    if (symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
-                        moduleName = (symbol.dataType as any).moduleName as string;
+                    const modType = extractModuleType(symbol.dataType);
+                    if (modType) {
+                        moduleName = modType.moduleName;
                     }
                     if (moduleName && isKnownModule(moduleName)) {
                         const doc = getModuleMemberDocumentation(moduleName, memberName);
@@ -1029,9 +1029,8 @@ export function handleHover(
                             break;
                         case SymbolType.IMPORTED:
                             // Special handling for nl80211-const / rtnl-const objects
-                            if (symbol.dataType && typeof symbol.dataType === 'object' &&
-                                'moduleName' in symbol.dataType) {
-                                const mn = (symbol.dataType as any).moduleName;
+                            {
+                                const mn = extractModuleType(symbol.dataType)?.moduleName;
                                 if (mn === 'nl80211-const') {
                                     hoverText = `(const object) **${symbol.name}**: \`object\`\n\nContainer for nl80211 module constants.`;
                                     break;

@@ -627,11 +627,11 @@ print(process({}, "a", ["x"]));
 let verbosity = 1;
 function quiet_mode(mode, uci_getter) {
     if (mode == 'on') verbosity = 0;
-    else if (uci_getter) verbosity = int(uci_getter());
+    else if (uci_getter) verbosity = length(uci_getter());
 }
 print(quiet_mode('on', null));
 `;
-      // int(uci_getter()) where uci_getter() returns unknown → incompatible-function-argument
+      // length(uci_getter()) where uci_getter() returns unknown → incompatible-function-argument
       const { actions, matching } = await getActionsForCode(code, 'incompatible-function-argument');
       assert(matching.length > 0, 'Should have incompatible-function-argument diagnostic');
       const extract = findAction(actions, 'Extract');
@@ -814,13 +814,13 @@ print(process(null));
     });
 
     it('should narrow diagnostic range to left operand of || fallback', async function() {
-      // In strict mode, int(s.timeout || '600') should highlight just s.timeout, not the whole expr
+      // In strict mode, length(s.timeout || '600') should highlight just s.timeout, not the whole expr
       const code = `'use strict';
-function get_timeout(s) {
-    let timeout = int(s.timeout || '600');
-    return timeout;
+function get_len(s) {
+    let len = length(s.timeout || '600');
+    return len;
 }
-print(get_timeout({timeout: '30'}));
+print(get_len({timeout: '30'}));
 `;
       const diagnostics = await getDiagnostics(code, `/tmp/test-qf-range-${Date.now()}.uc`);
       const matching = diagnostics.filter(d =>
@@ -837,11 +837,11 @@ print(get_timeout({timeout: '30'}));
 
     it('should offer "type guard with default" when || fallback exists', async function() {
       const code = `'use strict';
-function get_timeout(s) {
-    let timeout = int(s.timeout || '600');
-    return timeout;
+function get_len(s) {
+    let len = length(s.timeout || '600');
+    return len;
 }
-print(get_timeout({timeout: '30'}));
+print(get_len({timeout: '30'}));
 `;
       const { actions, matching } = await getActionsForCode(code, 'nullable-argument');
       if (matching.length === 0) {
@@ -858,7 +858,7 @@ print(get_timeout({timeout: '30'}));
       // Should extract variable, add type guard with fallback
       assert(text.includes('let _val = s.timeout'), `Should extract s.timeout, got: ${text}`);
       assert(text.includes("_val = '600'"), `Should assign fallback '600', got: ${text}`);
-      assert(text.includes('int(_val)'), `Should replace expr with _val, got: ${text}`);
+      assert(text.includes('length(_val)'), `Should replace expr with _val, got: ${text}`);
       assert(text.includes('type(_val)'), `Should use type() guard, got: ${text}`);
     });
 
@@ -870,7 +870,7 @@ print(get_timeout({timeout: '30'}));
       const code = `'use strict';
 function get_config(uci_get) {
     return {
-        logging: int(uci_get('globals', 'logging') || '0'),
+        logging: length(uci_get('globals', 'logging') || '0'),
     };
 }
 print(get_config(null));
@@ -891,7 +891,7 @@ print(get_config(null));
         const insertText = edits.map(e => e.newText).join('');
         assert(insertText.includes('let _val'), `Should extract to variable, got: ${insertText}`);
         assert(insertText.includes("_val = '0'"), `Should assign fallback, got: ${insertText}`);
-        assert(insertText.includes('int(_val)'), `Should replace in object, got: ${insertText}`);
+        assert(insertText.includes('length(_val)'), `Should replace in object, got: ${insertText}`);
       }
       // Should NOT offer "Wrap" — can't wrap an object property
       const wrapAction = findAction(actions, 'Wrap in');

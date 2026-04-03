@@ -6,7 +6,7 @@
 import type { FunctionSignature } from './moduleTypes';
 import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
 
-import { UcodeType, UcodeDataType } from './symbolTable';
+import { UcodeType, UcodeDataType, extractModuleType } from './symbolTable';
 
 export enum IoObjectType {
   IO_HANDLE = 'io.handle'
@@ -315,8 +315,9 @@ export const ioModuleTypeRegistry = {
   },
   isVariableOfIoType: (dataType: UcodeDataType) => {
     if (typeof dataType === 'string') return false;
-    if (typeof dataType === 'object' && 'moduleName' in dataType) {
-      return dataType.moduleName === IoObjectType.IO_HANDLE;
+    const moduleType = extractModuleType(dataType);
+    if (moduleType) {
+      return moduleType.moduleName === IoObjectType.IO_HANDLE;
     }
     return false;
   },

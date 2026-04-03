@@ -5,7 +5,7 @@
 
 import type { FunctionSignature } from './moduleTypes';
 import type { ObjectTypeDefinition } from './registryFactory';
-import { UcodeType, UcodeDataType } from './symbolTable';
+import { UcodeType, UcodeDataType, extractModuleType } from './symbolTable';
 
 export enum FsObjectType {
   FS_PROC = 'fs.proc',
@@ -268,8 +268,9 @@ export const fsTypeRegistry = {
   },
   isVariableOfFsType: (dataType: UcodeDataType): FsObjectType | null => {
     if (typeof dataType === 'string') return null;
-    if ('moduleName' in dataType && typeof dataType.moduleName === 'string') {
-      const moduleName = dataType.moduleName;
+    const moduleType = extractModuleType(dataType);
+    if (moduleType) {
+      const moduleName = moduleType.moduleName;
       if (moduleName in objectMethodMaps) {
         return moduleName as FsObjectType;
       }

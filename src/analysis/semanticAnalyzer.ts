@@ -11,7 +11,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, isArrayType, getArrayElementType, getUnionTypes, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
@@ -506,7 +506,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (node.init.type === 'CallExpression' || node.init.type === 'MemberExpression') {
           const sym = this.symbolTable.lookup(name);
           if (sym) {
-            const alreadyModuleType = typeof sym.dataType === 'object' && sym.dataType !== null && 'moduleName' in sym.dataType;
+            const alreadyModuleType = extractModuleType(sym.dataType) !== null;
             if (!alreadyModuleType) {
               // Trigger type checker to process narrowedReturnType and set _fullType
               this.typeChecker.checkNode(node.init);
@@ -1609,7 +1609,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             break;
           default:
             if (isKnownObjectType(typeStr)) {
-              types.push(typeStr as UcodeType);
+              types.push({ type: UcodeType.OBJECT, moduleName: typeStr } as any);
             } else {
               types.push(UcodeType.UNKNOWN);
             }
@@ -1642,7 +1642,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       default:
         // Handle known object types like "uci.cursor", "fs.file", etc.
         if (isKnownObjectType(returnTypeStr)) {
-          return { moduleName: returnTypeStr } as UcodeDataType;
+          return { type: UcodeType.OBJECT, moduleName: returnTypeStr } as UcodeDataType;
         }
         return UcodeType.UNKNOWN;
     }
@@ -2598,8 +2598,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         }
 
         // Check known object type methods (fs.file, uci.cursor, io.handle, etc.)
-        if (symbol.dataType && typeof symbol.dataType === 'object' && 'moduleName' in symbol.dataType) {
-          const mn = (symbol.dataType as any).moduleName as string;
+        const mt = extractModuleType(symbol.dataType);
+        if (mt) {
+          const mn = mt.moduleName;
           if (isKnownObjectType(mn)) {
             const methodSig = OBJECT_REGISTRIES[mn].getMethod(methodName);
             if (Option.isSome(methodSig)) {

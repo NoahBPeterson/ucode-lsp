@@ -599,10 +599,13 @@ describe('Equality Narrowing Hover', function () {
         'print(test11b);',
       ];
       const text = await hoverAt(lines, '11b', 'let d = mycursor', 'mycursor');
-      assert.ok(text.includes('unknown'), `uci import has unknown dataType, no narrowing, got: ${text}`);
+      // uci.cursor now has function dataType (via unified MODULE_REGISTRIES inference),
+      // so equality narrowing correctly applies
+      assert.ok(text.includes('narrowed via equality'),
+        `uci.cursor import now has function dataType, narrowing should apply, got: ${text}`);
     });
 
-    it('should NOT narrow via ubus.connect (import dataType is unknown, not function)', async function () {
+    it('should narrow via ubus.connect (import dataType is function)', async function () {
       const lines = [
         'import { connect as conn } from "ubus";',
         'function test11c(mod) {',
@@ -614,7 +617,10 @@ describe('Equality Narrowing Hover', function () {
         'print(test11c);',
       ];
       const text = await hoverAt(lines, '11c', 'let d = myconn', 'myconn');
-      assert.ok(text.includes('unknown'), `ubus import has unknown dataType, no narrowing, got: ${text}`);
+      // ubus.connect now has function dataType (via unified MODULE_REGISTRIES inference),
+      // so equality narrowing correctly applies
+      assert.ok(text.includes('narrowed via equality'),
+        `ubus.connect import now has function dataType, narrowing should apply, got: ${text}`);
     });
   });
 

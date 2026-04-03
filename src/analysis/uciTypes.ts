@@ -6,7 +6,7 @@
 import type { FunctionSignature } from './moduleTypes';
 import type { ModuleDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
-import { UcodeDataType, ModuleType, UcodeType } from './symbolTable';
+import { UcodeDataType, ModuleType, UcodeType, extractModuleType } from './symbolTable';
 
 // Backwards-compat type alias
 export type UciFunctionSignature = FunctionSignature;
@@ -303,8 +303,9 @@ export const uciCursorObjectType: ObjectTypeDefinition = {
 // Backwards compatibility
 class UciCursorObjectRegistry {
   isVariableOfUciType(dataType: UcodeDataType): UciObjectType | null {
-    if (typeof dataType === 'object' && 'moduleName' in dataType) {
-      const moduleName = (dataType as ModuleType).moduleName;
+    const moduleType = extractModuleType(dataType);
+    if (moduleType) {
+      const moduleName = moduleType.moduleName;
       if (moduleName === UciObjectType.UCI_CURSOR) {
         return UciObjectType.UCI_CURSOR;
       }

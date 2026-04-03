@@ -75,12 +75,45 @@ export function getObjectTypeName(type: UcodeDataType): string | null {
   return null;
 }
 
+// --- ModuleType helpers ---
+
+/**
+ * Extract a ModuleType from a UcodeDataType.
+ * Handles both bare ModuleType and UnionType containing a ModuleType (e.g., io.handle | null).
+ * Returns null if no ModuleType is found.
+ */
+export function extractModuleType(dataType: UcodeDataType | undefined | null): ModuleType | null {
+  if (!dataType || typeof dataType !== 'object') return null;
+
+  // Direct ModuleType: { type: 'object', moduleName: string }
+  if ('moduleName' in dataType && (dataType as any).type === UcodeType.OBJECT) {
+    return dataType as ModuleType;
+  }
+
+  // UnionType containing a ModuleType (e.g., io.handle | null)
+  if (isUnionType(dataType)) {
+    for (const member of dataType.types) {
+      if (typeof member === 'object' && 'moduleName' in member) {
+        return member as unknown as ModuleType;
+      }
+    }
+  }
+
+  return null;
+}
+
 /** Convert a SingleType to the base UcodeType (for comparisons, type narrowing) */
 export const singleTypeToBase: (t: SingleType) => UcodeType = Match.type<SingleType>().pipe(
   Match.when(Match.string, (s) => s as UcodeType),
   Match.when({ type: 'objectKind' as const }, () => UcodeType.OBJECT),
   Match.when({ type: UcodeType.ARRAY }, () => UcodeType.ARRAY),
-  Match.orElse(() => UcodeType.UNKNOWN)
+  Match.orElse((t) => {
+    // ModuleType: { type: 'object', moduleName: string }
+    if (typeof t === 'object' && t !== null && 'moduleName' in t) {
+      return UcodeType.OBJECT;
+    }
+    return UcodeType.UNKNOWN;
+  })
 );
 
 // --- Union type utilities ---
@@ -160,7 +193,14 @@ export const singleTypeToString: (t: SingleType) => string = Match.type<SingleTy
   Match.when(Match.string, (s) => s),
   Match.when({ type: 'objectKind' as const }, (o) => o.name),
   Match.when({ type: UcodeType.ARRAY }, (a) => `array<${typeToString(a.elementType)}>`),
-  Match.orElse(() => 'unknown')
+  Match.orElse((t) => {
+    // ModuleType: { type: 'object', moduleName: string } — appears as union member
+    // when type checker creates e.g. io.handle | null
+    if (typeof t === 'object' && t !== null && 'moduleName' in t) {
+      return (t as any).moduleName as string;
+    }
+    return 'unknown';
+  })
 );
 
 export function typeToString(type: UcodeDataType): string {
@@ -178,7 +218,7 @@ export function typeToString(type: UcodeDataType): string {
 
   // Handle object types (ModuleType, DefaultImportType, etc.)
   if (typeof type === 'object') {
-    // ModuleType
+    // ModuleType — only bare ModuleType reaches here (unions caught above)
     if ('moduleName' in type) {
       const moduleType = type as ModuleType;
       // For actual fs objects, return the specific type (fs.file, fs.dir, fs.proc)

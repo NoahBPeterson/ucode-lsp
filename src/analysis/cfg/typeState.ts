@@ -15,6 +15,7 @@ import {
   isArrayType,
   getArrayElementType,
   typeToString,
+  extractModuleType,
 } from '../symbolTable';
 
 /**
@@ -192,8 +193,10 @@ export class TypeState {
     // If both are objects (ModuleType, DefaultImportType, etc.)
     if (typeof type1 === 'object' && typeof type2 === 'object') {
       // Check for ModuleType
-      if ('moduleName' in type1 && 'moduleName' in type2) {
-        return type1.moduleName === type2.moduleName;
+      const mod1 = extractModuleType(type1);
+      const mod2 = extractModuleType(type2);
+      if (mod1 && mod2) {
+        return mod1.moduleName === mod2.moduleName;
       }
 
       // Check for DefaultImportType

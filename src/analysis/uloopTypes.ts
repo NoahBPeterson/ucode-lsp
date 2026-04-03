@@ -9,7 +9,7 @@
 import type { FunctionSignature } from './moduleTypes';
 import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
-import { UcodeType, UcodeDataType } from './symbolTable';
+import { UcodeType, UcodeDataType, extractModuleType } from './symbolTable';
 
 // Backwards-compat type aliases
 export type UloopFunctionSignature = FunctionSignature;
@@ -464,9 +464,10 @@ export const uloopObjectRegistry = {
   },
   isVariableOfUloopType: (dataType: any): UloopObjectType | null => {
     if (typeof dataType === 'string') return null;
-    if ('moduleName' in dataType && typeof dataType.moduleName === 'string') {
-      if (dataType.moduleName in objectMethodMaps) {
-        return dataType.moduleName as UloopObjectType;
+    const moduleType = extractModuleType(dataType);
+    if (moduleType) {
+      if (moduleType.moduleName in objectMethodMaps) {
+        return moduleType.moduleName as UloopObjectType;
       }
     }
     return null;

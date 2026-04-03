@@ -9,6 +9,7 @@ import { UcodeLexer, TokenType } from './lexer';
 import { SemanticAnalysisResult, Symbol, SymbolType } from './analysis';
 import { FileResolver } from './analysis/fileResolver';
 import { isKnownObjectType, OBJECT_REGISTRIES } from './analysis/moduleDispatch';
+import { extractModuleType } from './analysis/symbolTable';
 import { Option } from 'effect';
 
 // Global file resolver instance
@@ -62,9 +63,9 @@ export function handleDefinition(
                     objToken && objToken.type === TokenType.TK_LABEL && typeof objToken.value === 'string') {
                     const objSymbol = analysisResult.symbolTable.lookupAtPosition(objToken.value, offset)
                                    || analysisResult.symbolTable.lookup(objToken.value);
-                    if (objSymbol && objSymbol.dataType && typeof objSymbol.dataType === 'object' &&
-                        'moduleName' in objSymbol.dataType) {
-                        const moduleName = (objSymbol.dataType as any).moduleName as string;
+                    const moduleType = objSymbol ? extractModuleType(objSymbol.dataType) : null;
+                    if (objSymbol && moduleType) {
+                        const moduleName = moduleType.moduleName;
                         if (isKnownObjectType(moduleName)) {
                             const method = OBJECT_REGISTRIES[moduleName].getMethod(symbolName);
                             if (Option.isSome(method)) {

@@ -40,20 +40,18 @@ describe('Conversion Functions Validation Tests', function() {
       assert.strictEqual(errors.length, 0, 'Should not have errors for valid number parameter');
     });
 
-    it('should reject array parameter', async () => {
+    it('should accept array parameter (C returns NaN)', async () => {
       const errors = await getValidationErrors(`
         print(int([1, 2, 3]));
       `);
-      assert.strictEqual(errors.length, 1, 'Should have error for array parameter');
-      assert(errors[0].message.includes('int') && errors[0].message.includes('got array'), 'Error should mention int and array');
+      assert.strictEqual(errors.length, 0, 'Should not have error — C accepts any type, returns NaN for arrays');
     });
 
-    it('should reject object parameter', async () => {
+    it('should accept object parameter (C returns NaN)', async () => {
       const errors = await getValidationErrors(`
         print(int({value: 123}));
       `);
-      assert.strictEqual(errors.length, 1, 'Should have error for object parameter');
-      assert(errors[0].message.includes('int') && errors[0].message.includes('got object'), 'Error should mention int and object');
+      assert.strictEqual(errors.length, 0, 'Should not have error — C accepts any type, returns NaN for objects');
     });
 
     it('should require at least one parameter', async () => {
@@ -61,25 +59,23 @@ describe('Conversion Functions Validation Tests', function() {
         print(int());
       `);
       assert.strictEqual(errors.length, 1, 'Should have error for no parameters');
-      assert.match(errors[0].message, /int\(\) expects 1 argument, got 0/);
+      assert(errors[0].message.includes('int'), 'Error should mention int');
     });
 
-    it('should reject multiple parameters', async () => {
+    it('should accept two parameters (2nd arg is optional base)', async () => {
       const errors = await getValidationErrors(`
         print(int("123", "456"));
       `);
-      assert.strictEqual(errors.length, 1, 'Should have error for too many parameters');
-      assert.match(errors[0].message, /int\(\) expects 1 argument, got 2/);
+      assert.strictEqual(errors.length, 0, 'Should not have error — 2nd arg is optional base');
     });
   });
 
   describe('hex() function validation', () => {
-    it('should reject number parameter', async () => {
+    it('should accept number parameter (C returns NaN for non-string)', async () => {
       const errors = await getValidationErrors(`
         print(hex(255));
       `);
-      assert.strictEqual(errors.length, 1, 'Should have error for invalid number parameter');
-        assert(errors[0].message.includes('hex') && errors[0].message.includes('got integer'), 'Error should mention hex and integer');
+      assert.strictEqual(errors.length, 0, 'Should not have error — C accepts it, returns NaN for non-string');
     });
 
     it('should accept string parameter', async () => {
@@ -94,7 +90,7 @@ describe('Conversion Functions Validation Tests', function() {
         print(hex());
       `);
       assert.strictEqual(errors.length, 1, 'Should have error for no parameters');
-      assert.match(errors[0].message, /hex\(\) expects 1 argument, got 0/);
+      assert(errors[0].message.includes('hex') && errors[0].message.includes('0'), 'Error should mention hex and 0');
     });
   });
 

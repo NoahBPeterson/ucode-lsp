@@ -9,6 +9,7 @@
 import type { FunctionSignature } from './moduleTypes';
 import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
+import { extractModuleType } from './symbolTable';
 
 // Backwards-compat type aliases
 export type Nl80211FunctionSignature = FunctionSignature;
@@ -406,8 +407,9 @@ export const nl80211ObjectRegistry = {
   },
   isVariableOfNl80211Type: (dataType: any): Nl80211ObjectType | null => {
     if (typeof dataType === 'string') return null;
-    if ('moduleName' in dataType && typeof dataType.moduleName === 'string') {
-      if (dataType.moduleName === Nl80211ObjectType.NL80211_LISTENER) {
+    const moduleType = extractModuleType(dataType);
+    if (moduleType) {
+      if (moduleType.moduleName === Nl80211ObjectType.NL80211_LISTENER) {
         return Nl80211ObjectType.NL80211_LISTENER;
       }
     }
