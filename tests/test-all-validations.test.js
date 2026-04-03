@@ -149,6 +149,7 @@ const testFiles = [
     'tests/test-flow-sensitive-hover.js',
     'tests/test-module-completeness.js',
     'tests/test-array-property-diagnostic.js',
+    'tests/test-this-property-assignment.js',
 ];
 
 // Mocha test files (run as a single combined mocha invocation with shared LSP server)

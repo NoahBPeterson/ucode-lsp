@@ -1651,24 +1651,50 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     this.assignmentLeftDepth--;
     this.visit(node.right);
     if (this.options.enableTypeChecking) {
-      // Track assignments to object properties (e.g., obj.foo = "bar")
+      // Track assignments to object properties (e.g., obj.foo = "bar", this.prop = val)
       if (node.left.type === 'MemberExpression') {
         const memberNode = node.left as MemberExpressionNode;
-        if (!memberNode.computed && memberNode.object.type === 'Identifier') {
-          const objectName = (memberNode.object as IdentifierNode).name;
+        if (!memberNode.computed) {
           const propertyName = this.getStaticPropertyName(memberNode.property);
 
           if (propertyName) {
-            const targetSymbol = this.symbolTable.lookup(objectName);
+            // obj.prop = val
+            if (memberNode.object.type === 'Identifier') {
+              const objectName = (memberNode.object as IdentifierNode).name;
+              const targetSymbol = this.symbolTable.lookup(objectName);
 
-            if (targetSymbol && (objectName === 'global' || (targetSymbol.type !== SymbolType.MODULE && targetSymbol.type !== SymbolType.IMPORTED))) {
-              const propertyType = this.inferAssignmentDataType(node.right);
+              if (targetSymbol && (objectName === 'global' || (targetSymbol.type !== SymbolType.MODULE && targetSymbol.type !== SymbolType.IMPORTED))) {
+                const propertyType = this.inferAssignmentDataType(node.right);
 
-              if (!targetSymbol.propertyTypes) {
-                targetSymbol.propertyTypes = new Map<string, UcodeDataType>();
+                if (!targetSymbol.propertyTypes) {
+                  targetSymbol.propertyTypes = new Map<string, UcodeDataType>();
+                }
+
+                targetSymbol.propertyTypes.set(propertyName, propertyType);
               }
+            }
 
-              targetSymbol.propertyTypes.set(propertyName, propertyType);
+            // this.prop = val — update the `this` symbol's propertyTypes
+            // AND the enclosing object literal's property stack so sibling methods see it
+            if (memberNode.object.type === 'ThisExpression') {
+              const thisSym = this.symbolTable.lookup('this');
+              if (thisSym) {
+                const propertyType = this.inferAssignmentDataType(node.right);
+
+                if (!thisSym.propertyTypes) {
+                  thisSym.propertyTypes = new Map<string, UcodeDataType>();
+                }
+                thisSym.propertyTypes.set(propertyName, propertyType);
+
+                // Also update the thisPropertyStack so sibling methods
+                // in the same object literal can see the property
+                if (this.thisPropertyStack.length > 0) {
+                  const topProps = this.thisPropertyStack[this.thisPropertyStack.length - 1];
+                  if (topProps) {
+                    topProps.set(propertyName, propertyType);
+                  }
+                }
+              }
             }
           }
         }
