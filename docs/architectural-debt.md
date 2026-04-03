@@ -1,50 +1,40 @@
 # Architectural Debt
 
-## Nullable Object Types in Method Resolution
+## Resolved (0.6.26-0.6.28)
 
-**Status:** Open
-**Introduced:** 0.6.23 (made visible by unifying module return type inference)
-**Affects:** hover, completions, method validation for module function return values
+### Nullable Object Types in Method Resolution — DONE
 
-### The Problem
+The dual type inference system has been eliminated:
+- `extractModuleType()` helper makes all downstream code UnionType-tolerant
+- Type checker via `MODULE_REGISTRIES` is the single source of truth
+- `inferXType` cascade removed (except `inferFsType` for bare builtins)
+- Module function return types are correctly nullable (e.g., `io.handle | null`)
+- Namespace module calls (`import * as io; io.open()`) resolved via type checker
+- Flow-sensitive hover shows correct type at each position via SSA
 
-Two systems infer return types for module function calls:
+## Remaining
 
-1. **Type checker** (unified, correct): looks up `MODULE_REGISTRIES[module].getFunction(name)`, parses the return type string. Correctly includes `| null` for functions that can fail at runtime (e.g., `io.open()` → `io.handle | null`).
+### Bare builtin `inferFsType` — minor
 
-2. **Semantic analyzer cascade** (legacy, per-module): `inferFsType()`, `inferIoType()`, `inferNl80211Type()`, `inferUloopType()`, `inferUciType()` — detects module function calls and creates `ModuleType` objects. Intentionally drops `| null` because downstream code can't handle nullable object types.
+`inferFsType` is kept for bare builtins like `open()` (without import) that return
+`fs.file`. These aren't in the type checker's `initializeBuiltins` table. Could be
+moved there, but low priority since it works.
 
-The `_fullType` guard in `visitVariableDeclarator` (line ~504) prevents the type checker's correct nullable type from overwriting the cascade's non-nullable type. This is necessary because:
+### `parseReturnTypeString` duplication
 
-- `hover.ts` checks `'moduleName' in symbol.dataType` — fails on `UnionType`
-- `completion.ts` checks `'moduleName' in symbol.dataType` — fails on `UnionType`
-- `definition.ts` checks `'moduleName' in symbol.dataType` — fails on `UnionType`
-- Method validation checks the same shape
+`semanticAnalyzer.ts` has `parseReturnTypeString` which duplicates `parseReturnType`
+in `typeChecker.ts`. Should be consolidated into one function. Both parse return type
+strings like `"string | null"` into `UcodeDataType`.
 
-### The Fix
+### `createXDataType` factory functions — unused by cascade
 
-1. Update all `'moduleName' in dataType` checks to also handle `UnionType` containing a `ModuleType`:
-   - Extract the `ModuleType` member from `X | null` unions
-   - Use it for method lookup, hover docs, and completions
-   - The `null` member should trigger "value might be null" warnings on method access
+The per-module factory functions (`createFsObjectDataType`, `createIoHandleDataType`,
+`createUloopObjectDataType`, `createNl80211ObjectDataType`, `createUciObjectDataType`)
+are still used by `inferFsType` (for bare builtins), `cfg/dataFlowAnalyzer.ts`, and
+some test code. Could be removed if those callsites migrate to `parseSingleType`.
 
-2. Remove the `_fullType` guard (the `alreadyModuleType` check in `visitVariableDeclarator`)
+### PBR cross-file factory chain
 
-3. Remove the semantic analyzer's `inferXType` cascade — the type checker's unified path via `MODULE_REGISTRIES` replaces it entirely
-
-4. Remove per-module `createXDataType()` factory functions — `parseSingleType` already creates compatible `ModuleType` objects
-
-### Related Bugs Fixed in 0.6.23
-
-- `inferNl80211Type` matched `listener` by bare name → `rtnl.listener()` got `nl80211.listener` type
-- `inferUloopType` matched `signal` by bare name → builtin `signal()` got `uloop.signal` type
-- Both fixed by adding `importedFrom` checks, but the cascade approach remains fragile
-
-### Files Involved
-
-- `src/analysis/semanticAnalyzer.ts` — cascade methods + `_fullType` guard
-- `src/analysis/typeChecker.ts` — unified `MODULE_REGISTRIES` path
-- `src/hover.ts` — `'moduleName' in dataType` checks
-- `src/completion.ts` — `'moduleName' in dataType` checks
-- `src/definition.ts` — `'moduleName' in dataType` checks
-- Per-module type files: `fsTypes.ts`, `ioTypes.ts`, `nl80211Types.ts`, `uloopTypes.ts`, `uciTypes.ts`
+The `propertyFunctionReturnTypes` mechanism works but `parseReturnTypeString` was
+creating incomplete `ModuleType` objects (fixed in 0.6.26). The full chain
+(factory → property function → cursor.get method hover) now works.

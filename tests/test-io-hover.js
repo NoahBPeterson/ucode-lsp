@@ -135,11 +135,18 @@ testCase('open() from fs import: type is fs.file | null (not io.handle)', () => 
 });
 
 testCase('Assignment inference: h = open() from io', () => {
-  const result = analyze(`import { open } from 'io';\nlet h;\nh = open('/tmp/test', 0);`);
+  const code = `import { open } from 'io';\nlet h;\nh = open('/tmp/test', 0);\nprint(h);\n`;
+  const result = analyze(code);
   const sym = result.symbolTable.lookup('h');
   if (!sym) { console.log('    Symbol not found'); return false; }
-  console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'io.handle | null';
+  // Check at a position after the assignment using SSA
+  const afterOffset = code.indexOf('print(h)') + 6;
+  let effectiveType = sym.dataType;
+  if (sym.currentType && sym.currentTypeEffectiveFrom !== undefined && afterOffset >= sym.currentTypeEffectiveFrom) {
+    effectiveType = sym.currentType;
+  }
+  console.log(`    type: ${typeToString(effectiveType)}`);
+  return typeToString(effectiveType) === 'io.handle | null';
 });
 
 // =========================================================================

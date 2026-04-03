@@ -3,7 +3,7 @@ import { test, expect, describe } from 'bun:test';
 import { socketTypeRegistry } from '../src/analysis/socketTypes';
 
 const expectedFunctions = [
-  'create', 'connect', 'listen', 'sockaddr', 'nameinfo', 'addrinfo', 'poll', 'error', 'strerror'
+  'create', 'connect', 'listen', 'sockaddr', 'nameinfo', 'addrinfo', 'poll', 'error', 'strerror', 'pair', 'open'
 ];
 
 describe('Socket Module Registry', () => {

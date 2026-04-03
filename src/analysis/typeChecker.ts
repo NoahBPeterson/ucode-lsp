@@ -1756,7 +1756,7 @@ export class TypeChecker {
     if (objectType === UcodeType.REGEX && !node.computed) {
       // Regex objects have no properties or methods at all
       const propertyName = (node.property as IdentifierNode).name;
-      
+
       // Invalid property/method access on regex
       this.errors.push({
         message: `Property '${propertyName}' does not exist on regex type. Regular expressions in ucode have no properties or methods. Use builtin functions instead (e.g., match(string, regex), replace(string, regex, replacement)).`,
@@ -1769,6 +1769,7 @@ export class TypeChecker {
 
     return UcodeType.UNKNOWN;
   }
+
 
 
   private checkAssignmentExpression(node: AssignmentExpressionNode): UcodeType {

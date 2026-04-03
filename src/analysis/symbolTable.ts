@@ -658,9 +658,9 @@ export class SymbolTable {
     // Check if symbol already exists in global scope
     const globalSymbol = globalScope.get(name);
     if (globalSymbol) {
-      // Update existing global symbol
-      globalSymbol.dataType = dataType;
-      //console.log(`[SYMBOL_FORCE] Updated existing global ${name} to type ${JSON.stringify(dataType)}`);
+      // Update existing global symbol via SSA — preserve original dataType
+      // so hover shows the declared type at positions before the assignment
+      globalSymbol.currentType = dataType;
       return;
     }
     

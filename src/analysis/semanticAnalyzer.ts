@@ -24,16 +24,11 @@ import { CFGQueryEngine } from './cfg/queryEngine';
 import { type ControlFlowGraph } from './cfg/types';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
 import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType } from './fsModuleTypes';
-import { Nl80211ObjectType, createNl80211ObjectDataType } from './nl80211Types';
-import { nl80211TypeRegistry } from './nl80211Types';
-import { rtnlTypeRegistry } from './rtnlTypes';
-import { UciObjectType, createUciObjectDataType } from './uciTypes';
-import { UloopObjectType, createUloopObjectDataType, uloopObjectRegistry } from './uloopTypes';
+import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
 import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
 import { JsDocCommentNode } from '../ast/nodes';
-import { IoObjectType, createIoHandleDataType } from './ioTypes';
 import { Either, Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, validateImport } from './moduleDispatch';
 
@@ -632,8 +627,6 @@ export class SemanticAnalyzer extends BaseVisitor {
         type: UcodeType.OBJECT,
         moduleName: 'nl80211-const'
       };
-    } else if (source === 'nl80211' && nl80211TypeRegistry.getFunctionNames().includes(importedName)) {
-      dataType = UcodeType.FUNCTION as UcodeDataType;
     }
     
     // Special case: importing 'const' from rtnl creates a constants object
@@ -1552,27 +1545,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return null;
   }
 
-  private inferImportedRtnlFunctionReturnType(node: AstNode): UcodeDataType | null {
-    // Check if this is a call expression to an imported rtnl function
-    if (node.type === 'CallExpression') {
-      const callExpr = node as any; // CallExpressionNode
-      if (callExpr.callee && callExpr.callee.type === 'Identifier') {
-        const functionName = callExpr.callee.name;
-        
-        // Look up the function in the symbol table to check if it's an imported rtnl function
-        const symbol = this.symbolTable.lookup(functionName);
-        if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'rtnl') {
-          // Get the function signature from the rtnl module registry
-          const rtnlFunction = rtnlTypeRegistry.getFunction(functionName);
-          if (rtnlFunction) {
-            return this.parseReturnTypeString(rtnlFunction.returnType);
-          }
-        }
-      }
-    }
-    
-    return null;
-  }
+  // inferImportedRtnlFunctionReturnType removed — handled by type checker's MODULE_REGISTRIES path
 
   private parseReturnTypeString(returnTypeStr: string): UcodeDataType {
     // Handle union types like "boolean | null"
@@ -1842,23 +1815,15 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           }
           
           if (symbol && symbol.type === SymbolType.VARIABLE) {
-            // SSA: If this is a literal type, preserve original but track current type
-            const isLiteralVariable = symbol.initialLiteralType !== undefined;
-            if (isLiteralVariable) {
-              // Update current type but preserve original literal type
-              symbol.currentType = dataType;
-              symbol.currentTypeEffectiveFrom = node.end;
-            } else {
-              // Regular variable, update normally
-              symbol.currentType = undefined;
-              symbol.currentTypeEffectiveFrom = undefined;
-              symbol.dataType = dataType;
-              this.symbolTable.updateSymbolType(variableName, dataType);
-              // Force global declaration for module object types
-              const mt = extractModuleType(dataType);
-              if (mt && isKnownObjectType(mt.moduleName)) {
-                this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
-              }
+            // SSA: track the new type with position so hover shows the correct
+            // type at each point in the file. Preserve the original declared type
+            // (e.g., unknown from `let cpus;`) for positions before this assignment.
+            symbol.currentType = dataType;
+            symbol.currentTypeEffectiveFrom = node.end;
+            // Force global declaration for module object types (cross-scope visibility)
+            const mt = extractModuleType(dataType);
+            if (mt && isKnownObjectType(mt.moduleName)) {
+              this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
             }
           } else if (!symbol) {
             this.symbolTable.declare(variableName, SymbolType.VARIABLE, dataType, node.left as IdentifierNode);
@@ -2350,191 +2315,6 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return null;
   }
 
-  private inferIoType(node: AstNode): IoObjectType | null {
-    if (node.type === 'CallExpression') {
-      const callNode = node as CallExpressionNode;
-      if (callNode.callee.type === 'Identifier') {
-        const funcName = (callNode.callee as IdentifierNode).name;
-
-        // Only infer io.handle if the function was imported from 'io'
-        const symbol = this.symbolTable.lookup(funcName);
-        if (!symbol || symbol.type !== SymbolType.IMPORTED || symbol.importedFrom !== 'io') {
-          return null;
-        }
-
-        const originalName = symbol.importSpecifier || funcName;
-        switch (originalName) {
-          case 'open':
-          case 'new':
-          case 'from':
-            return IoObjectType.IO_HANDLE;
-          default:
-            return null;
-        }
-      }
-      // Handle module member calls like io.open()
-      else if (callNode.callee.type === 'MemberExpression') {
-        const memberNode = callNode.callee as MemberExpressionNode;
-        if (memberNode.object.type === 'Identifier' &&
-            memberNode.property.type === 'Identifier') {
-          const objName = (memberNode.object as IdentifierNode).name;
-          const objSymbol = this.symbolTable.lookup(objName);
-          // Must be the io module (default import)
-          if (objSymbol && objSymbol.importedFrom === 'io') {
-            const methodName = (memberNode.property as IdentifierNode).name;
-            switch (methodName) {
-              case 'open':
-              case 'new':
-              case 'from':
-                return IoObjectType.IO_HANDLE;
-            }
-          }
-        }
-      }
-    }
-    return null;
-  }
-
-  private inferNl80211Type(node: AstNode): Nl80211ObjectType | null {
-    // Check if this is a call expression that returns an nl80211 object
-    if (node.type === 'CallExpression') {
-      const callNode = node as CallExpressionNode;
-      if (callNode.callee.type === 'Identifier') {
-        const funcName = (callNode.callee as IdentifierNode).name;
-
-        // Only match if imported from 'nl80211' (not rtnl.listener, etc.)
-        const symbol = this.symbolTable.lookup(funcName);
-        if (!symbol || symbol.type !== SymbolType.IMPORTED || symbol.importedFrom !== 'nl80211') {
-          return null;
-        }
-
-        // Map nl80211 functions to their return types
-        switch (funcName) {
-          case 'listener':
-            return Nl80211ObjectType.NL80211_LISTENER;
-          default:
-            return null;
-        }
-      }
-      // Handle module member calls like nl80211.listener()
-      else if (callNode.callee.type === 'MemberExpression') {
-        const memberNode = callNode.callee as MemberExpressionNode;
-        if (memberNode.object.type === 'Identifier' && 
-            (memberNode.object as IdentifierNode).name === 'nl80211' &&
-            memberNode.property.type === 'Identifier') {
-          const methodName = (memberNode.property as IdentifierNode).name;
-          
-          switch (methodName) {
-            case 'listener':
-              return Nl80211ObjectType.NL80211_LISTENER;
-          }
-        }
-      }
-    }
-    
-    return null;
-  }
-
-  private inferUciType(node: AstNode): UciObjectType | null {
-    // Check if this is a call expression that returns a uci object
-    if (node.type === 'CallExpression') {
-      const callNode = node as CallExpressionNode;
-      if (callNode.callee.type === 'Identifier') {
-        const funcName = (callNode.callee as IdentifierNode).name;
-        
-        // Map uci functions to their return types
-        switch (funcName) {
-          case 'cursor':
-            return UciObjectType.UCI_CURSOR;
-          default:
-            return null;
-        }
-      }
-      // Handle module member calls like uci.cursor()
-      else if (callNode.callee.type === 'MemberExpression') {
-        const memberNode = callNode.callee as MemberExpressionNode;
-        if (memberNode.object.type === 'Identifier' && 
-            (memberNode.object as IdentifierNode).name === 'uci' &&
-            memberNode.property.type === 'Identifier') {
-          const methodName = (memberNode.property as IdentifierNode).name;
-          
-          switch (methodName) {
-            case 'cursor':
-              return UciObjectType.UCI_CURSOR;
-          }
-        }
-      }
-    }
-    
-    return null;
-  }
-
-  private inferUloopType(node: AstNode): UloopObjectType | null {
-    // Check if this is a call expression that returns a uloop object
-    if (node.type === 'CallExpression') {
-      const callNode = node as CallExpressionNode;
-      
-      if (callNode.callee.type === 'Identifier') {
-        const funcName = (callNode.callee as IdentifierNode).name;
-
-        // Only match if imported from 'uloop' (not builtins like signal())
-        const symbol = this.symbolTable.lookup(funcName);
-        if (!symbol || symbol.type !== SymbolType.IMPORTED || symbol.importedFrom !== 'uloop') {
-          return null;
-        }
-
-        // Map uloop functions to their return types
-        switch (funcName) {
-          case 'timer':
-            return UloopObjectType.ULOOP_TIMER;
-          case 'handle':
-            return UloopObjectType.ULOOP_HANDLE;
-          case 'process':
-            return UloopObjectType.ULOOP_PROCESS;
-          case 'task':
-            return UloopObjectType.ULOOP_TASK;
-          case 'interval':
-            return UloopObjectType.ULOOP_INTERVAL;
-          case 'signal':
-            return UloopObjectType.ULOOP_SIGNAL;
-          default:
-            return null;
-        }
-      }
-      // Handle module member calls like uloop.timer()
-      else if (callNode.callee.type === 'MemberExpression') {
-        const memberNode = callNode.callee as MemberExpressionNode;
-        
-        if (memberNode.object.type === 'Identifier') {
-          const objectName = (memberNode.object as IdentifierNode).name;
-          
-          if (objectName === 'uloop' && memberNode.property.type === 'Identifier') {
-            const methodName = (memberNode.property as IdentifierNode).name;
-            
-            switch (methodName) {
-              case 'timer':
-                return UloopObjectType.ULOOP_TIMER;
-              case 'handle':
-                return UloopObjectType.ULOOP_HANDLE;
-              case 'process':
-                return UloopObjectType.ULOOP_PROCESS;
-              case 'task':
-                return UloopObjectType.ULOOP_TASK;
-              case 'interval':
-                return UloopObjectType.ULOOP_INTERVAL;
-              case 'signal':
-                return UloopObjectType.ULOOP_SIGNAL;
-              default:
-                return null;
-            }
-          }
-        }
-      }
-    }
-    
-    return null;
-  }
-
   private inferMethodReturnType(node: AstNode): UcodeDataType | null {
     // Check if this is a call expression on a member expression (method call)
     if (node.type !== 'CallExpression') return null;
@@ -2641,56 +2421,24 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       const sourceName = (expression as IdentifierNode).name;
       const sourceSymbol = this.symbolTable.lookup(sourceName);
       if (sourceSymbol) {
-        return sourceSymbol.dataType;
+        return sourceSymbol.currentType || sourceSymbol.dataType;
       }
     }
 
-    const fsType = this.inferFsType(expression);
-    if (fsType) {
-      return createFsObjectDataType(fsType);
-    }
+    // Use the type checker — it handles all module functions, builtins, and narrowing
+    // via _fullType. Prefer _fullType (preserves unions and rich types) over the
+    // basic UcodeType return.
+    const inferredType = this.typeChecker.checkNode(expression);
+    const fullType = (expression as any)._fullType as UcodeDataType | undefined;
+    if (fullType) return fullType;
 
-    const nl80211Type = this.inferNl80211Type(expression);
-    if (nl80211Type) {
-      return createNl80211ObjectDataType(nl80211Type);
-    }
-
-    const uloopType = this.inferUloopType(expression);
-    if (uloopType) {
-      return createUloopObjectDataType(uloopType);
-    }
-
-    const ioType = this.inferIoType(expression);
-    if (ioType) {
-      return createIoHandleDataType();
-    }
-
-    const uciType = this.inferUciType(expression);
-    if (uciType) {
-      return createUciObjectDataType(uciType);
-    }
-
-    const importedFsReturnType = this.inferImportedFsFunctionReturnType(expression);
-    if (importedFsReturnType) {
-      return importedFsReturnType;
-    }
-
-    const rtnlReturnType = this.inferImportedRtnlFunctionReturnType(expression);
-    if (rtnlReturnType) {
-      return rtnlReturnType;
-    }
-
+    // Fall back to method/function return type inference for non-module calls
     const methodReturnType = this.inferMethodReturnType(expression);
-    if (methodReturnType) {
-      return methodReturnType;
-    }
+    if (methodReturnType) return methodReturnType;
 
     const functionReturnType = this.inferFunctionCallReturnType(expression);
-    if (functionReturnType) {
-      return functionReturnType;
-    }
+    if (functionReturnType) return functionReturnType;
 
-    const inferredType = this.typeChecker.checkNode(expression);
     return inferredType as UcodeDataType;
   }
 

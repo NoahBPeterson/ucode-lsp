@@ -259,11 +259,17 @@ testCase('io.handle inferred via namespace import io.open()', () => {
 });
 
 testCase('io.handle inferred from assignment (not just declaration)', () => {
-  const code = `import { open } from 'io';\nlet h;\nh = open('/tmp/test', 0);`;
+  const code = `import { open } from 'io';\nlet h;\nh = open('/tmp/test', 0);\nprint(h);\n`;
   const result = analyzeCode(code);
   const sym = result.symbolTable.lookup('h');
   if (!sym) { console.log('    Symbol h not found'); return false; }
-  const ts = typeToString(sym.dataType);
+  // Check at a position after the assignment using SSA
+  const afterOffset = code.indexOf('print(h)') + 6;
+  let effectiveType = sym.dataType;
+  if (sym.currentType && sym.currentTypeEffectiveFrom !== undefined && afterOffset >= sym.currentTypeEffectiveFrom) {
+    effectiveType = sym.currentType;
+  }
+  const ts = typeToString(effectiveType);
   console.log(`    h type: ${ts}`);
   return ts === 'io.handle | null';
 });
