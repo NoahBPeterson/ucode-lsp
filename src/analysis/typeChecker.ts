@@ -915,6 +915,11 @@ export class TypeChecker {
     return this.parseSingleType(returnTypeStr);
   }
 
+  /** Public accessor for parseReturnType — used by semantic analyzer to avoid duplication */
+  parseReturnTypePublic(returnTypeStr: string): UcodeDataType {
+    return this.parseReturnType(returnTypeStr);
+  }
+
   /**
    * Narrow an fs module function's return type based on actual argument types.
    * Many fs functions return X | null where null means the C function got a wrong-type argument.

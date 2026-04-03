@@ -11,7 +11,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, createUnionType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
@@ -1536,7 +1536,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           // Get the function signature from the fs module registry
           const fsFunction = fsModuleTypeRegistry.getFunction(functionName);
           if (fsFunction) {
-            return this.parseReturnTypeString(fsFunction.returnType);
+            return this.typeChecker.parseReturnTypePublic(fsFunction.returnType);
           }
         }
       }
@@ -1547,81 +1547,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
   // inferImportedRtnlFunctionReturnType removed — handled by type checker's MODULE_REGISTRIES path
 
-  private parseReturnTypeString(returnTypeStr: string): UcodeDataType {
-    // Handle union types like "boolean | null"
-    if (returnTypeStr.includes(' | ')) {
-      const typeStrings = returnTypeStr.split(' | ').map(s => s.trim());
-      const types: UcodeType[] = [];
-      
-      for (const typeStr of typeStrings) {
-        switch (typeStr) {
-          case 'boolean':
-            types.push(UcodeType.BOOLEAN);
-            break;
-          case 'string':
-            types.push(UcodeType.STRING);
-            break;
-          case 'number':
-          case 'integer':
-            types.push(UcodeType.INTEGER);
-            break;
-          case 'double':
-            types.push(UcodeType.DOUBLE);
-            break;
-          case 'object':
-            types.push(UcodeType.OBJECT);
-            break;
-          case 'array':
-          case 'string[]':
-          case 'array[]':
-            types.push(UcodeType.ARRAY);
-            break;
-          case 'null':
-            types.push(UcodeType.NULL);
-            break;
-          case 'function':
-            types.push(UcodeType.FUNCTION);
-            break;
-          default:
-            if (isKnownObjectType(typeStr)) {
-              types.push({ type: UcodeType.OBJECT, moduleName: typeStr } as any);
-            } else {
-              types.push(UcodeType.UNKNOWN);
-            }
-            break;
-        }
-      }
-
-      return createUnionType(types);
-    }
-    
-    // Handle single types
-    switch (returnTypeStr) {
-      case 'boolean':
-        return UcodeType.BOOLEAN;
-      case 'string':
-        return UcodeType.STRING;
-      case 'number':
-      case 'integer':
-        return UcodeType.INTEGER;
-      case 'double':
-        return UcodeType.DOUBLE;
-      case 'object':
-        return UcodeType.OBJECT;
-      case 'array':
-        return UcodeType.ARRAY;
-      case 'null':
-        return UcodeType.NULL;
-      case 'function':
-        return UcodeType.FUNCTION;
-      default:
-        // Handle known object types like "uci.cursor", "fs.file", etc.
-        if (isKnownObjectType(returnTypeStr)) {
-          return { type: UcodeType.OBJECT, moduleName: returnTypeStr } as UcodeDataType;
-        }
-        return UcodeType.UNKNOWN;
-    }
-  }
+  // parseReturnTypeString removed — consolidated into typeChecker.parseReturnTypePublic()
 
   private isKnownModuleName(objectName: string): boolean {
     // List of known ucode modules that require import
@@ -2345,7 +2271,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // Check propertyFunctionReturnTypes — e.g., config.uci_ctx() -> uci.cursor
         if (symbol.propertyFunctionReturnTypes?.has(methodName)) {
           const returnTypeHint = symbol.propertyFunctionReturnTypes.get(methodName)!;
-          return this.parseReturnTypeString(returnTypeHint);
+          return this.typeChecker.parseReturnTypePublic(returnTypeHint);
         }
 
         // Check known object type methods (fs.file, uci.cursor, io.handle, etc.)
@@ -2355,7 +2281,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           if (isKnownObjectType(mn)) {
             const methodSig = OBJECT_REGISTRIES[mn].getMethod(methodName);
             if (Option.isSome(methodSig)) {
-              return this.parseReturnTypeString(methodSig.value.returnType);
+              return this.typeChecker.parseReturnTypePublic(methodSig.value.returnType);
             }
           }
         }
@@ -2370,7 +2296,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (objType && isKnownObjectType(objType)) {
         const methodSig = OBJECT_REGISTRIES[objType].getMethod(methodName);
         if (Option.isSome(methodSig)) {
-          return this.parseReturnTypeString(methodSig.value.returnType);
+          return this.typeChecker.parseReturnTypePublic(methodSig.value.returnType);
         }
       }
     }
