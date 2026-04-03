@@ -60,15 +60,15 @@ testCase('open() from io: handle type is io.handle', () => {
   const sym = result.symbolTable.lookup('handle');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'io.handle';
+  return typeToString(sym.dataType) === 'io.handle | null';
 });
 
-testCase('from() from io: handle type is io.handle', () => {
+testCase('from() from io: handle type is io.handle | null', () => {
   const result = analyze(`import { from } from 'io';\nlet h = from(null);`);
   const sym = result.symbolTable.lookup('h');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'io.handle';
+  return typeToString(sym.dataType) === 'io.handle | null';
 });
 
 testCase('io.open() namespace: handle type is io.handle', () => {
@@ -76,26 +76,26 @@ testCase('io.open() namespace: handle type is io.handle', () => {
   const sym = result.symbolTable.lookup('h');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'io.handle';
+  return typeToString(sym.dataType) === 'io.handle | null';
 });
 
-testCase('io.new() namespace: handle type is io.handle', () => {
+testCase('io.new() namespace: handle type is io.handle | null', () => {
   const result = analyze(`import * as io from 'io';\nlet h = io.new(1, false);`);
   const sym = result.symbolTable.lookup('h');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'io.handle';
+  return typeToString(sym.dataType) === 'io.handle | null';
 });
 
-testCase('io.from() namespace: handle type is io.handle', () => {
+testCase('io.from() namespace: handle type is io.handle | null', () => {
   const result = analyze(`import * as io from 'io';\nlet h = io.from(null);`);
   const sym = result.symbolTable.lookup('h');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'io.handle';
+  return typeToString(sym.dataType) === 'io.handle | null';
 });
 
-testCase('Second open() call: ptmx type is io.handle', () => {
+testCase('Second open() call: ptmx type is io.handle | null', () => {
   const code = `import { open, O_RDWR } from 'io';
 let handle = open('/tmp/a', 0);
 let ptmx = open('/dev/ptmx', O_RDWR);`;
@@ -103,10 +103,10 @@ let ptmx = open('/dev/ptmx', O_RDWR);`;
   const sym = result.symbolTable.lookup('ptmx');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'io.handle';
+  return typeToString(sym.dataType) === 'io.handle | null';
 });
 
-testCase('Third open() call: tty type is io.handle', () => {
+testCase('Third open() call: tty type is io.handle | null', () => {
   const code = `import { open, O_RDWR } from 'io';
 let handle = open('/tmp/a', 0);
 let ptmx = open('/dev/ptmx', O_RDWR);
@@ -115,7 +115,7 @@ let tty = open('/dev/tty', O_RDWR);`;
   const sym = result.symbolTable.lookup('tty');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'io.handle';
+  return typeToString(sym.dataType) === 'io.handle | null';
 });
 
 testCase('open() without io import: type is fs.file (not io.handle)', () => {
@@ -126,15 +126,12 @@ testCase('open() without io import: type is fs.file (not io.handle)', () => {
   return typeToString(sym.dataType) === 'fs.file';
 });
 
-testCase('open() from fs import: type is fs.file (not io.handle)', () => {
+testCase('open() from fs import: type is fs.file | null (not io.handle)', () => {
   const result = analyze(`import { open } from 'fs';\nlet f = open('/tmp/test', 'r');`);
   const sym = result.symbolTable.lookup('f');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  // inferFsType cascade sets fs.file (non-nullable) for method resolution.
-  // TODO: when nullable object types are supported in hover/completions,
-  // this should become fs.file | null (matching the C source).
-  return typeToString(sym.dataType) === 'fs.file';
+  return typeToString(sym.dataType) === 'fs.file | null';
 });
 
 testCase('Assignment inference: h = open() from io', () => {
@@ -142,7 +139,7 @@ testCase('Assignment inference: h = open() from io', () => {
   const sym = result.symbolTable.lookup('h');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'io.handle';
+  return typeToString(sym.dataType) === 'io.handle | null';
 });
 
 // =========================================================================
@@ -314,7 +311,7 @@ testCase('Error for nonexistent method on io.handle', () => {
 // 6. Type persistence — handle retains io.handle after many statements
 // =========================================================================
 
-testCase('handle retains io.handle type after many intervening statements', () => {
+testCase('handle retains io.handle | null type after many intervening statements', () => {
   const code = `import { open, O_CREAT, O_RDWR, O_TRUNC, SEEK_SET } from 'io';
 let handle = open('/tmp/test', O_CREAT | O_RDWR | O_TRUNC, 0o644);
 handle.write('Line 1\\n');
@@ -333,10 +330,10 @@ let closed = handle.close();`;
   const sym = result.symbolTable.lookup('handle');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'io.handle';
+  return typeToString(sym.dataType) === 'io.handle | null';
 });
 
-testCase('ptmx retains io.handle type after many method calls', () => {
+testCase('ptmx retains io.handle | null type after many method calls', () => {
   const code = `import { open, O_RDWR, O_NOCTTY, TCSANOW } from 'io';
 let ptmx = open('/dev/ptmx', O_RDWR | O_NOCTTY);
 ptmx.grantpt();
@@ -350,7 +347,7 @@ ptmx.close();`;
   const sym = result.symbolTable.lookup('ptmx');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'io.handle';
+  return typeToString(sym.dataType) === 'io.handle | null';
 });
 
 // =========================================================================

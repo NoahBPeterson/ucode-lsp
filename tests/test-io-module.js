@@ -223,7 +223,7 @@ testCase('io.handle inferred from open() imported from io (let declaration)', ()
   if (!sym) { console.log('    Symbol h not found'); return false; }
   const ts = typeToString(sym.dataType);
   console.log(`    h type: ${ts}`);
-  return ts === 'io.handle';
+  return ts === 'io.handle | null';
 });
 
 testCase('io.handle inferred from from() imported from io', () => {
@@ -234,7 +234,7 @@ testCase('io.handle inferred from from() imported from io', () => {
   if (!sym) { console.log('    Symbol h not found'); return false; }
   const ts = typeToString(sym.dataType);
   console.log(`    h type: ${ts}`);
-  return ts === 'io.handle';
+  return ts === 'io.handle | null';
 });
 
 testCase('io.handle NOT inferred from open() without io import', () => {
@@ -255,7 +255,7 @@ testCase('io.handle inferred via namespace import io.open()', () => {
   if (!sym) { console.log('    Symbol h not found'); return false; }
   const ts = typeToString(sym.dataType);
   console.log(`    h type: ${ts}`);
-  return ts === 'io.handle';
+  return ts === 'io.handle | null';
 });
 
 testCase('io.handle inferred from assignment (not just declaration)', () => {
@@ -265,7 +265,7 @@ testCase('io.handle inferred from assignment (not just declaration)', () => {
   if (!sym) { console.log('    Symbol h not found'); return false; }
   const ts = typeToString(sym.dataType);
   console.log(`    h type: ${ts}`);
-  return ts === 'io.handle';
+  return ts === 'io.handle | null';
 });
 
 testCase('pipe() does NOT return io.handle type (returns array)', () => {

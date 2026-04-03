@@ -1092,6 +1092,25 @@ export class TypeChecker {
           // For complex types (uci.cursor, etc.), fall through
         }
       }
+      // Namespace module calls: import * as io from 'io'; io.open()
+      if (memberCallee.object.type === 'Identifier' && memberCallee.property.type === 'Identifier') {
+        const objName = (memberCallee.object as IdentifierNode).name;
+        const methodName = (memberCallee.property as IdentifierNode).name;
+        const objSym = this.symbolTable.lookup(objName);
+        if (objSym && typeof objSym.dataType === 'object' && objSym.dataType !== null &&
+            'moduleName' in objSym.dataType && isKnownModule((objSym.dataType as any).moduleName)) {
+          const modName = (objSym.dataType as any).moduleName as string;
+          const registry = MODULE_REGISTRIES[modName as keyof typeof MODULE_REGISTRIES];
+          const funcOpt = registry.getFunction(methodName);
+          if (Option.isSome(funcOpt)) {
+            let returnTypeData = this.parseReturnType(funcOpt.value.returnType);
+            returnTypeData = this.narrowFsReturnType(returnTypeData, funcOpt.value, node);
+            (node as any)._fullType = returnTypeData;
+            return this.dataTypeToUcodeType(returnTypeData);
+          }
+        }
+      }
+
       // Member expression calls — check callee type to resolve return type
       const calleeType = this.checkNode(node.callee);
       // Propagate _fullType from callee (MemberExpression) to this CallExpression

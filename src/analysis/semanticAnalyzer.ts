@@ -500,19 +500,21 @@ export class SemanticAnalyzer extends BaseVisitor {
 
         // Upgrade symbol type from function call results that have rich _fullType
         // (e.g., split() → array<string>, reverse([1,2]) → array<integer>, pop(arr) → element type,
-        //  glob("/path") → array<string> (narrowed from array<string> | null))
-        // Skip if processInitializerTypeInference already set a module type (e.g., fs.file, io.handle)
-        // — those types enable method resolution/hover and should not be clobbered.
+        //  glob("/path") → array<string> (narrowed from array<string> | null),
+        //  io.open() → io.handle | null, cursor() → uci.cursor | null)
         if (node.init.type === 'CallExpression' || node.init.type === 'MemberExpression') {
           const sym = this.symbolTable.lookup(name);
           if (sym) {
-            const alreadyModuleType = extractModuleType(sym.dataType) !== null;
-            if (!alreadyModuleType) {
-              // Trigger type checker to process narrowedReturnType and set _fullType
-              this.typeChecker.checkNode(node.init);
-              const fullType = (node.init as any)._fullType;
-              if (fullType !== undefined && fullType !== null) {
-                sym.dataType = fullType;
+            // Trigger type checker to process narrowedReturnType and set _fullType
+            this.typeChecker.checkNode(node.init);
+            const fullType = (node.init as any)._fullType;
+            if (fullType !== undefined && fullType !== null) {
+              sym.dataType = fullType;
+              // For module object types (fs.file, io.handle, uci.cursor, etc.),
+              // force global declaration so method resolution works across scopes
+              const mt = extractModuleType(fullType);
+              if (mt && isKnownObjectType(mt.moduleName)) {
+                this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, fullType);
               }
             }
           }
@@ -1780,41 +1782,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const variableName = (node.left as IdentifierNode).name;
         let symbol = this.symbolTable.lookup(variableName);
         
-        // Only create symbols for undeclared variables with special types
-        if (!symbol) {
-          const fsType = this.inferFsType(node.right);
-          const nl80211Type = this.inferNl80211Type(node.right);
-          const uloopType = this.inferUloopType(node.right);
-          const ioType = this.inferIoType(node.right);
-          const rtnlFunctionReturnType = this.inferImportedRtnlFunctionReturnType(node.right);
-
-          let earlyDataType: UcodeDataType | null = null;
-
-          if (fsType) {
-            earlyDataType = createFsObjectDataType(fsType);
-          } else if (nl80211Type) {
-            earlyDataType = createNl80211ObjectDataType(nl80211Type);
-          } else if (uloopType) {
-            earlyDataType = createUloopObjectDataType(uloopType);
-          } else if (ioType) {
-            earlyDataType = createIoHandleDataType();
-          } else if (rtnlFunctionReturnType) {
-            earlyDataType = rtnlFunctionReturnType;
-          }
-
-          // Only create new symbols for undeclared variables with special types
-          if (earlyDataType) {
-            this.symbolTable.declare(variableName, SymbolType.VARIABLE, earlyDataType, node.left as IdentifierNode);
-
-            // For special object variables, also force declaration in global scope
-            if (fsType) {
-              this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, earlyDataType);
-            }
-            if (uloopType) {
-              this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, earlyDataType);
-            }
-            if (ioType) {
-              this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, earlyDataType);
+        // For undeclared variables assigned from module function calls,
+        // use the type checker's _fullType to infer the type
+        if (!symbol && (node.right.type === 'CallExpression' || node.right.type === 'MemberExpression')) {
+          this.typeChecker.checkNode(node.right);
+          const fullType = (node.right as any)._fullType as UcodeDataType | undefined;
+          if (fullType) {
+            this.symbolTable.declare(variableName, SymbolType.VARIABLE, fullType, node.left as IdentifierNode);
+            const mt = extractModuleType(fullType);
+            if (mt && isKnownObjectType(mt.moduleName)) {
+              this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, fullType);
             }
           }
         }
@@ -1841,27 +1818,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const variableName = (node.left as IdentifierNode).name;
         let symbol = this.symbolTable.lookup(variableName);
         
-        // Skip if we already handled this in the early inference phase
-        const fsType = this.inferFsType(node.right);
-        const nl80211Type = this.inferNl80211Type(node.right);
-        const uloopType = this.inferUloopType(node.right);
-        const ioType = this.inferIoType(node.right);
-        const rtnlFunctionReturnType = this.inferImportedRtnlFunctionReturnType(node.right);
-
         // Skip require() calls - they're handled specially in visitVariableDeclarator
         const isRequireCall = node.right.type === 'CallExpression' &&
                              (node.right as CallExpressionNode).callee.type === 'Identifier' &&
                              ((node.right as CallExpressionNode).callee as IdentifierNode).name === 'require';
 
-        // If an io type was inferred but the symbol already existed, update its type now
-        if (ioType && symbol) {
-          const dataType = createIoHandleDataType();
-          symbol.dataType = dataType;
-          this.symbolTable.updateSymbolType(variableName, dataType);
-          this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
-        }
-
-        if (!fsType && !nl80211Type && !uloopType && !ioType && !rtnlFunctionReturnType && !isRequireCall) {
+        if (!isRequireCall) {
           // Check for all types of function calls that return specific types
           const methodReturnType = this.inferMethodReturnType(node.right);
           const functionReturnType = this.inferFunctionCallReturnType(node.right);
@@ -1892,9 +1854,18 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               symbol.currentTypeEffectiveFrom = undefined;
               symbol.dataType = dataType;
               this.symbolTable.updateSymbolType(variableName, dataType);
+              // Force global declaration for module object types
+              const mt = extractModuleType(dataType);
+              if (mt && isKnownObjectType(mt.moduleName)) {
+                this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
+              }
             }
           } else if (!symbol) {
             this.symbolTable.declare(variableName, SymbolType.VARIABLE, dataType, node.left as IdentifierNode);
+            const mt = extractModuleType(dataType);
+            if (mt && isKnownObjectType(mt.moduleName)) {
+              this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
+            }
           } else if (symbol.type === SymbolType.PARAMETER) {
             // Parameters: preserve declared type (unknown), track reassigned type via SSA
             symbol.currentType = dataType;
@@ -2877,54 +2848,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         }
       }
 
-      // DEBUG
-      // Check if this is an fs function call and assign the appropriate fs type
+      // Module object types (fs.file, io.handle, uci.cursor, etc.) are now handled
+      // by the _fullType path in visitVariableDeclarator — no per-module cascade needed.
+      // Exception: bare builtin fs functions (open, popen, mkstemp) that are available
+      // without import still need inferFsType since they're not in the type checker's builtins.
       const fsType = this.inferFsType(node.init!);
       if (fsType) {
         const dataType = createFsObjectDataType(fsType);
-        symbol.dataType = dataType;
-        // For fs object variables, also force declaration in global scope to ensure completion access
-        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
-        this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
-        return;
-      }
-
-      // Check if this is an nl80211 function call and assign the appropriate nl80211 type
-      const nl80211Type = this.inferNl80211Type(node.init!);
-      if (nl80211Type) {
-        const dataType = createNl80211ObjectDataType(nl80211Type);
-        symbol.dataType = dataType;
-        // For nl80211 object variables, also force declaration in global scope to ensure completion access
-        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
-        this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
-        return;
-      }
-
-      // Check if this is a uloop function call and assign the appropriate uloop type
-      const uloopType = this.inferUloopType(node.init!);
-      if (uloopType) {
-        const dataType = createUloopObjectDataType(uloopType);
-        symbol.dataType = dataType;
-        // For uloop object variables, also force declaration in global scope to ensure completion access
-        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
-        this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
-        return;
-      }
-
-      // Check if this is an io function call and assign io.handle type
-      const ioType = this.inferIoType(node.init!);
-      if (ioType) {
-        const dataType = createIoHandleDataType();
-        symbol.dataType = dataType;
-        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
-        this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
-        return;
-      }
-
-      // Check if this is a uci function call and assign the appropriate uci type
-      const uciType = this.inferUciType(node.init!);
-      if (uciType) {
-        const dataType = createUciObjectDataType(uciType);
         symbol.dataType = dataType;
         this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
         this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
