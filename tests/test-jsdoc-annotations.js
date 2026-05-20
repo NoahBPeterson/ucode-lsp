@@ -265,6 +265,43 @@ describe('JSDoc Type Annotations', function() {
       const missingAnnotations = diagnostics.filter(d => d.message.includes('unknown type'));
       assert.strictEqual(missingAnnotations.length, 0, 'Should not warn for parameterless functions');
     });
+
+    it('should attach JSDoc to exported function declarations (no warning)', async () => {
+      const diagnostics = await getDiagnostics(`'use strict';
+        /** @param {string} method
+         *  @param {string} path
+         *  @param {string|null} body */
+        export function build_request(method, path, body) {
+          return method;
+        };
+      `, '/tmp/jsdoc-uc7003-export.uc');
+      const missingAnnotations = diagnostics.filter(d => d.message.includes('unknown type'));
+      assert.strictEqual(missingAnnotations.length, 0,
+        `Exported function JSDoc should be attached, got: ${diagnostics.map(d => d.message).join('; ')}`);
+    });
+
+    it('should still warn for exported function with no JSDoc (strict mode)', async () => {
+      const diagnostics = await getDiagnostics(`'use strict';
+        export function build_request(method, path, body) {
+          return method;
+        };
+      `, '/tmp/jsdoc-uc7003-export-nojsdoc.uc');
+      const missingAnnotations = diagnostics.filter(d => d.message.includes('unknown type'));
+      assert.ok(missingAnnotations.length >= 1,
+        `Exported function without JSDoc should still warn, got: ${diagnostics.map(d => d.message).join('; ')}`);
+    });
+
+    it('should attach JSDoc to export default function declarations (no warning)', async () => {
+      const diagnostics = await getDiagnostics(`'use strict';
+        /** @param {string} x */
+        export default function helper(x) {
+          return x;
+        };
+      `, '/tmp/jsdoc-uc7003-export-default.uc');
+      const missingAnnotations = diagnostics.filter(d => d.message.includes('unknown type'));
+      assert.strictEqual(missingAnnotations.length, 0,
+        `Export default function JSDoc should be attached, got: ${diagnostics.map(d => d.message).join('; ')}`);
+    });
   });
 
   // === Bare module name tests ===

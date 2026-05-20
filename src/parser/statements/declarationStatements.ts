@@ -15,9 +15,9 @@ import { ExpressionParser } from '../expressions/expressionParser';
 
 export abstract class DeclarationStatements extends ExpressionParser {
 
-  protected parseVariableDeclaration(): VariableDeclarationNode {
+  protected parseVariableDeclaration(jsdocAnchorPos?: number): VariableDeclarationNode {
     const start = this.previous()!.pos;
-    const leadingJsDoc = this.findLeadingJsDoc(start);
+    const leadingJsDoc = this.findLeadingJsDoc(jsdocAnchorPos ?? start);
     const kind = this.previous()!.type === TokenType.TK_CONST ? 'const' : 'let';
     const declarations: VariableDeclaratorNode[] = [];
 
@@ -79,9 +79,9 @@ export abstract class DeclarationStatements extends ExpressionParser {
     };
   }
 
-  protected parseFunctionDeclaration(isExported: boolean = false): FunctionDeclarationNode | FunctionExpressionNode | null {
+  protected parseFunctionDeclaration(isExported: boolean = false, jsdocAnchorPos?: number): FunctionDeclarationNode | FunctionExpressionNode | null {
     const start = this.previous()!.pos;
-    const leadingJsDoc = this.findLeadingJsDoc(start);
+    const leadingJsDoc = this.findLeadingJsDoc(jsdocAnchorPos ?? start);
 
     // For export default functions, the name is optional (anonymous functions allowed)
     let id: IdentifierNode | null = null;
@@ -329,7 +329,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
 
     // Check for export default
     if (this.match(TokenType.TK_DEFAULT)) {
-      const declaration = this.parseExportDefaultDeclaration();
+      const declaration = this.parseExportDefaultDeclaration(start);
       if (!declaration) return null;
 
       return {
@@ -355,9 +355,9 @@ export abstract class DeclarationStatements extends ExpressionParser {
       let declaration: AstNode | null = null;
       
       if (this.match(TokenType.TK_FUNC)) {
-        declaration = this.parseFunctionDeclaration(true); // Exported function
+        declaration = this.parseFunctionDeclaration(true, start); // Exported function
       } else if (this.match(TokenType.TK_LOCAL, TokenType.TK_CONST)) {
-        declaration = this.parseVariableDeclaration();
+        declaration = this.parseVariableDeclaration(start);
       }
 
       if (!declaration) return null;
@@ -376,10 +376,10 @@ export abstract class DeclarationStatements extends ExpressionParser {
     return null;
   }
 
-  private parseExportDefaultDeclaration(): AstNode | null {
+  private parseExportDefaultDeclaration(jsdocAnchorPos?: number): AstNode | null {
     // For export default, we can export a function or expression
     if (this.match(TokenType.TK_FUNC)) {
-      return this.parseFunctionDeclaration(true); // Exported function
+      return this.parseFunctionDeclaration(true, jsdocAnchorPos); // Exported function
     } else {
       // Parse as expression
       const expr = this.parseExpression();
