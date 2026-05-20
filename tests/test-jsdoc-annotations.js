@@ -302,6 +302,20 @@ describe('JSDoc Type Annotations', function() {
       assert.strictEqual(missingAnnotations.length, 0,
         `Export default function JSDoc should be attached, got: ${diagnostics.map(d => d.message).join('; ')}`);
     });
+
+    it('should attach JSDoc to an exported const function expression (no warning)', async () => {
+      // Variable-declaration export path: the anchor must reach
+      // parseVariableDeclaration so the function expression inherits the JSDoc.
+      const diagnostics = await getDiagnostics(`'use strict';
+        /** @param {string} buf */
+        export const parse_status = function(buf) {
+          return length(buf);
+        };
+      `, '/tmp/jsdoc-uc7003-export-const-fn.uc');
+      const missingAnnotations = diagnostics.filter(d => d.message.includes('unknown type'));
+      assert.strictEqual(missingAnnotations.length, 0,
+        `Exported const function JSDoc should be attached, got: ${diagnostics.map(d => d.message).join('; ')}`);
+    });
   });
 
   // === Bare module name tests ===
