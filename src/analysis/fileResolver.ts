@@ -22,18 +22,22 @@ export interface ModuleExport {
 
 export class FileResolver {
     private workspaceRoot: string;
-    // Caches keyed by file URI, tagged with the file's mtime so a changed file is
-    // re-parsed (avoids re-parsing unchanged files without serving stale results).
-    private fileCache = new Map<string, { mtimeMs: number; defs: FunctionDefinition[] }>();
-    private exportCache = new Map<string, { mtimeMs: number; exports: ModuleExport[] }>();
+    // Caches keyed by file URI, tagged with the file's content so a changed file
+    // is re-parsed. Content (not mtime) is the validator: mtime can collide on
+    // coarse-resolution filesystems or when a tool restores timestamps, which
+    // would serve a stale parse. Reading the file is cheap; the win is skipping
+    // the lex+parse when the content is unchanged.
+    private fileCache = new Map<string, { content: string; defs: FunctionDefinition[] }>();
+    private exportCache = new Map<string, { content: string; exports: ModuleExport[] }>();
 
-    /** Modification time of the file behind a URI, or 0 if unavailable. */
-    private fileMtimeMs(fileUri: string): number {
+    /** Read the file behind a URI, or null if unavailable. */
+    private readFileContent(fileUri: string): string | null {
         try {
             const fp = this.uriToFilePath(fileUri);
-            return fp ? fs.statSync(fp).mtimeMs : 0;
+            if (!fp || !fs.existsSync(fp)) return null;
+            return fs.readFileSync(fp, 'utf8');
         } catch {
-            return 0;
+            return null;
         }
     }
 
@@ -147,10 +151,11 @@ export class FileResolver {
      */
     findFunctionDefinition(fileUri: string, functionName: string): FunctionDefinition | null {
         try {
-            // Check cache first (re-parse if the file changed on disk)
-            const mtimeMs = this.fileMtimeMs(fileUri);
+            // Check cache first (re-parse only if the file's content changed)
+            const content = this.readFileContent(fileUri);
+            if (content === null) return null;
             const cached = this.fileCache.get(fileUri);
-            if (cached && cached.mtimeMs === mtimeMs) {
+            if (cached && cached.content === content) {
                 return cached.defs.find(def => def.name === functionName) || null;
             }
 
@@ -159,7 +164,7 @@ export class FileResolver {
             if (!definitions) return null;
 
             // Cache the results
-            this.fileCache.set(fileUri, { mtimeMs, defs: definitions });
+            this.fileCache.set(fileUri, { content, defs: definitions });
 
             // Find the requested function
             return definitions.find(def => def.name === functionName) || null;
@@ -219,10 +224,11 @@ export class FileResolver {
                 return this.getBuiltinModuleExports(moduleName);
             }
 
-            // Check cache first (re-parse if the file changed on disk)
-            const mtimeMs = this.fileMtimeMs(fileUri);
+            // Check cache first (re-parse only if the file's content changed)
+            const content = this.readFileContent(fileUri);
+            if (content === null) return null;
             const cached = this.exportCache.get(fileUri);
-            if (cached && cached.mtimeMs === mtimeMs) {
+            if (cached && cached.content === content) {
                 return cached.exports;
             }
 
@@ -231,7 +237,7 @@ export class FileResolver {
             if (!exports) return null;
 
             // Cache the results
-            this.exportCache.set(fileUri, { mtimeMs, exports });
+            this.exportCache.set(fileUri, { content, exports });
             return exports;
         } catch (error) {
             console.error('Error getting module exports:', error);

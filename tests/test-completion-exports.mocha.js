@@ -73,4 +73,33 @@ describe('Completion: user-module exports (e2e)', function () {
     assert.ok(labels.includes('realfn2'), `expected realfn2, got ${JSON.stringify(labels)}`);
     assert.ok(!labels.includes('fake'), `fake (in a string) should not be completed, got ${JSON.stringify(labels)}`);
   });
+
+  it('re-parses changed exports even when the mtime is unchanged (content-based cache)', async () => {
+    // Two versions of lib.uc with the SAME mtime (coarse-resolution filesystem,
+    // rapid edit, or a timestamp-restoring tool). The cache must key on content,
+    // not mtime, or it serves stale completions.
+    const lib = path.join(root, 'lib.uc');
+    const fixedTime = new Date('2020-01-01T00:00:00Z');
+    const code = "import * as mod from './lib.uc';\nmod.\n";
+    const fp = path.join(root, 'app.uc');
+    fs.writeFileSync(fp, code);
+    const idx = code.indexOf('mod.') + 4;
+    const line = (code.slice(0, idx).match(/\n/g) || []).length;
+    const character = idx - (code.slice(0, idx).lastIndexOf('\n') + 1);
+    const labelsOf = (r) => (Array.isArray(r) ? r : (r && r.items) || []).map((i) => i.label);
+    const completeOnly = async () => labelsOf(await getCompletions(code, fp, line, character));
+
+    // v1, mtime pinned to T
+    fs.writeFileSync(lib, 'export function aaa() {}\n');
+    fs.utimesSync(lib, fixedTime, fixedTime);
+    const v1 = await completeOnly();
+    assert.ok(v1.includes('aaa'), `v1 should include aaa, got ${JSON.stringify(v1)}`);
+
+    // v2 with the SAME mtime T but different content
+    fs.writeFileSync(lib, 'export function bbb() {}\n');
+    fs.utimesSync(lib, fixedTime, fixedTime);
+    const v2 = await completeOnly();
+    assert.ok(v2.includes('bbb'), `expected fresh bbb, got ${JSON.stringify(v2.filter((l) => /^[ab]/.test(l)))}`);
+    assert.ok(!v2.includes('aaa'), `aaa should be gone (stale), got ${JSON.stringify(v2.filter((l) => /^[ab]/.test(l)))}`);
+  });
 });
