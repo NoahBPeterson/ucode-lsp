@@ -3,6 +3,8 @@
 /linguist-proposal
 out/*
 dist/*
+/coverage/
+/.coverage-raw/
 .claude/
 *.vsix
 ucode_gotchas.md

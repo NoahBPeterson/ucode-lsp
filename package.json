@@ -80,6 +80,7 @@
     "compile": "webpack",
     "package": "webpack --mode production --devtool hidden-source-map",
     "watch": "webpack --watch",
+    "coverage:e2e": "node scripts/coverage/run-e2e-coverage.cjs",
     "postinstall": "node -e \"try{require('child_process').execSync('sh ./scripts/postinstall.sh',{stdio:'ignore'})}catch(e){}\""
   },
   "dependencies": {
@@ -94,6 +95,7 @@
     "@types/vscode": "^1.86.0",
     "@vscode/vsce": "^3.6.1",
     "mocha": "^11.7.1",
+    "monocart-coverage-reports": "^2.12.11",
     "ts-loader": "^9.5.2",
     "typescript": "^5.8.3",
     "webpack": "^5.100.1",
