@@ -7,93 +7,33 @@
  * - Both preserve the exact type of the returned operand
  */
 
-import { UcodeType, UcodeDataType, SingleType, createUnionType, getUnionTypes, extractModuleType } from './symbolTable';
+import { UcodeType, UcodeDataType, SingleType, createUnionType, getUnionTypes, singleTypeToBase } from './symbolTable';
 
 export class LogicalTypeInference {
-  
+
   /**
    * Determine if a type is definitely always falsy
    */
   private isDefinitelyFalsy(type: SingleType): boolean {
-    // These types can only have falsy values
-    return type === UcodeType.NULL;
+    // null is the only type that can only ever be falsy.
+    return singleTypeToBase(type) === UcodeType.NULL;
   }
-  
+
   /**
    * Determine if a type is definitely always truthy
    */
   private isDefinitelyTruthy(type: SingleType): boolean {
-    // These types are always truthy in ucode
-    return type === UcodeType.ARRAY ||
-           type === UcodeType.OBJECT ||
-           type === UcodeType.FUNCTION ||
-           type === UcodeType.REGEX;
+    // arrays, objects, functions and regexes are always truthy in ucode — even
+    // when empty (`[] || x` returns the array). Compare the *base* type so the
+    // refined forms (ArrayType `array<T>`, ObjectType, ModuleType) are caught too,
+    // not just the bare enum values.
+    const base = singleTypeToBase(type);
+    return base === UcodeType.ARRAY ||
+           base === UcodeType.OBJECT ||
+           base === UcodeType.FUNCTION ||
+           base === UcodeType.REGEX;
   }
   
-  
-  /**
-   * Infer the result type of a logical OR (||) operation
-   * 
-   * Logic:
-   * - If left is definitely truthy → returns left type
-   * - If left is definitely falsy → returns right type  
-   * - If left can be either → returns union of left and right types
-   */
-  inferLogicalOrType(leftType: UcodeType, rightType: UcodeType): UcodeDataType {
-    if (this.isDefinitelyTruthy(leftType)) {
-      // Left is always truthy, so always returns left operand
-      return leftType as UcodeDataType;
-    }
-
-    if (this.isDefinitelyFalsy(leftType)) {
-      // Left is always falsy, so always returns right operand
-      return rightType as UcodeDataType;
-    }
-
-    // If left is unknown but right is known, the result is at least the right type
-    // Common pattern: `expr || ''` guarantees a string fallback
-    if (leftType === UcodeType.UNKNOWN && rightType !== UcodeType.UNKNOWN) {
-      return rightType as UcodeDataType;
-    }
-
-    // Left can be either truthy or falsy
-    if (leftType === rightType) {
-      // Same types, so result is that type
-      return leftType as UcodeDataType;
-    }
-
-    // Different types, could return either based on left's truthiness
-    return createUnionType([leftType, rightType]);
-  }
-  
-  /**
-   * Infer the result type of a logical AND (&&) operation
-   * 
-   * Logic:
-   * - If left is definitely falsy → returns left type
-   * - If left is definitely truthy → returns right type
-   * - If left can be either → returns union of left and right types
-   */
-  inferLogicalAndType(leftType: UcodeType, rightType: UcodeType): UcodeDataType {
-    if (this.isDefinitelyFalsy(leftType)) {
-      // Left is always falsy, so always returns left operand
-      return leftType as UcodeDataType;
-    }
-    
-    if (this.isDefinitelyTruthy(leftType)) {
-      // Left is always truthy, so always returns right operand  
-      return rightType as UcodeDataType;
-    }
-    
-    // Left can be either truthy or falsy
-    if (leftType === rightType) {
-      // Same types, so result is that type
-      return leftType as UcodeDataType;
-    }
-    
-    // Different types, could return either based on left's truthiness
-    return createUnionType([leftType, rightType]);
-  }
   
   /**
    * Union-aware logical OR inference.
@@ -104,38 +44,24 @@ export class LogicalTypeInference {
    * Result: string | array
    */
   inferLogicalOrFullType(leftFullType: UcodeDataType, rightFullType: UcodeDataType): UcodeDataType {
-    // Short-circuit: if both sides are the same complex type (e.g., same module), preserve it
-    const leftModule = extractModuleType(leftFullType);
-    const rightModule = extractModuleType(rightFullType);
-    if (leftModule && rightModule && leftModule.moduleName === rightModule.moduleName) {
-      return leftFullType;
-    }
-
-    const leftTypes = getUnionTypes(leftFullType);
     const rightTypes = getUnionTypes(rightFullType);
-
     const resultTypes: SingleType[] = [];
 
-    for (const lt of leftTypes) {
+    for (const lt of getUnionTypes(leftFullType)) {
       if (this.isDefinitelyTruthy(lt)) {
-        // Always returns left operand — add left type
-        if (!resultTypes.includes(lt)) resultTypes.push(lt);
+        // Always truthy → || always returns the left operand.
+        resultTypes.push(lt);
       } else if (this.isDefinitelyFalsy(lt)) {
-        // Always returns right operand — add right types
-        for (const rt of rightTypes) {
-          if (!resultTypes.includes(rt)) resultTypes.push(rt);
-        }
+        // Always falsy → || always returns the right operand.
+        resultTypes.push(...rightTypes);
       } else {
-        // Could be truthy or falsy — add both left and right types
-        if (!resultTypes.includes(lt)) resultTypes.push(lt);
-        for (const rt of rightTypes) {
-          if (!resultTypes.includes(rt)) resultTypes.push(rt);
-        }
+        // Could be either → either operand may be returned.
+        resultTypes.push(lt, ...rightTypes);
       }
     }
 
-    if (resultTypes.length === 0) return UcodeType.UNKNOWN;
-    if (resultTypes.length === 1) return resultTypes[0] as UcodeDataType;
+    // createUnionType deduplicates, collapses to the bare type for a single
+    // member, and to UNKNOWN when empty — so no further special-casing here.
     return createUnionType(resultTypes);
   }
 
@@ -147,91 +73,25 @@ export class LogicalTypeInference {
    * Result: string | null | rightType
    */
   inferLogicalAndFullType(leftFullType: UcodeDataType, rightFullType: UcodeDataType): UcodeDataType {
-    const leftTypes = getUnionTypes(leftFullType);
     const rightTypes = getUnionTypes(rightFullType);
-
     const resultTypes: SingleType[] = [];
 
-    for (const lt of leftTypes) {
+    for (const lt of getUnionTypes(leftFullType)) {
       if (this.isDefinitelyFalsy(lt)) {
-        // Always returns left operand — add left type
-        if (!resultTypes.includes(lt)) resultTypes.push(lt);
+        // Always falsy → && always returns the left operand.
+        resultTypes.push(lt);
       } else if (this.isDefinitelyTruthy(lt)) {
-        // Always returns right operand — add right types
-        for (const rt of rightTypes) {
-          if (!resultTypes.includes(rt)) resultTypes.push(rt);
-        }
+        // Always truthy → && always returns the right operand.
+        resultTypes.push(...rightTypes);
       } else {
-        // Could be truthy or falsy — add both left and right types
-        if (!resultTypes.includes(lt)) resultTypes.push(lt);
-        for (const rt of rightTypes) {
-          if (!resultTypes.includes(rt)) resultTypes.push(rt);
-        }
+        // Could be either → either operand may be returned.
+        resultTypes.push(lt, ...rightTypes);
       }
     }
 
-    if (resultTypes.length === 0) return UcodeType.UNKNOWN;
-    if (resultTypes.length === 1) return resultTypes[0] as UcodeDataType;
+    // createUnionType deduplicates, collapses to the bare type for a single
+    // member, and to UNKNOWN when empty — so no further special-casing here.
     return createUnionType(resultTypes);
-  }
-
-  /**
-   * Get common patterns for logical operator results
-   */
-  getLogicalOperatorExamples(): Array<{
-    operation: string;
-    leftType: UcodeType;
-    rightType: UcodeType;
-    resultType: UcodeDataType;
-    explanation: string;
-  }> {
-    return [
-      // OR examples
-      {
-        operation: '||',
-        leftType: UcodeType.NULL,
-        rightType: UcodeType.INTEGER,
-        resultType: UcodeType.INTEGER,
-        explanation: 'null || 42 → always returns 42 (integer)'
-      },
-      {
-        operation: '||',
-        leftType: UcodeType.ARRAY,
-        rightType: UcodeType.STRING,
-        resultType: UcodeType.ARRAY,
-        explanation: '[] || "hello" → always returns [] (array)'
-      },
-      {
-        operation: '||',
-        leftType: UcodeType.INTEGER,
-        rightType: UcodeType.STRING,
-        resultType: createUnionType([UcodeType.INTEGER, UcodeType.STRING]),
-        explanation: '42 || "hello" → could return either based on integer value'
-      },
-      
-      // AND examples
-      {
-        operation: '&&',
-        leftType: UcodeType.NULL,
-        rightType: UcodeType.INTEGER,
-        resultType: UcodeType.NULL,
-        explanation: 'null && 42 → always returns null'
-      },
-      {
-        operation: '&&',
-        leftType: UcodeType.ARRAY,
-        rightType: UcodeType.STRING,
-        resultType: UcodeType.STRING,
-        explanation: '[] && "hello" → always returns "hello" (string)'
-      },
-      {
-        operation: '&&',
-        leftType: UcodeType.INTEGER,
-        rightType: UcodeType.STRING,
-        resultType: createUnionType([UcodeType.INTEGER, UcodeType.STRING]),
-        explanation: '42 && "hello" → could return either based on integer value'
-      }
-    ];
   }
 }
 
