@@ -136,6 +136,7 @@ const testFiles = [
     'tests/test-callback-element-types.js',
     'tests/test-jsdoc-inference-quickfix.mocha.js',
     'tests/test-member-expression-narrowing.js',
+    'tests/test-oneliner-guard.js',
     'tests/test-jsdoc-annotations.js',
     'tests/test-scoped-completions.js',
     'tests/test-hover-type-narrowing.js',
