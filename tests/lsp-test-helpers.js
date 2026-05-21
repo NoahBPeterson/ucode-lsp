@@ -23,6 +23,7 @@ function createLSPTestServer(options = {}) {
       getDiagnostics: global.__sharedLSPServer.getDiagnostics,
       getCompletions: global.__sharedLSPServer.getCompletions,
       getHover: global.__sharedLSPServer.getHover,
+      getDefinition: global.__sharedLSPServer.getDefinition,
       getCodeActions: global.__sharedLSPServer.getCodeActions,
     };
   }
@@ -364,6 +365,54 @@ function createLSPTestServer(options = {}) {
     });
   }
 
+  // Get go-to-definition for a document position (textDocument/definition)
+  function getDefinition(testContent, testFilePath, line, character) {
+    return new Promise((resolve, reject) => {
+      const currentRequestId = requestId++;
+      const reqKey = idKey(currentRequestId);
+
+      const didOpen = {
+        jsonrpc: '2.0',
+        method: 'textDocument/didOpen',
+        params: {
+          textDocument: {
+            uri: `file://${testFilePath}`,
+            languageId: 'ucode',
+            version: 1,
+            text: testContent
+          }
+        }
+      };
+
+      const definition = {
+        jsonrpc: '2.0',
+        id: currentRequestId,
+        method: 'textDocument/definition',
+        params: {
+          textDocument: { uri: `file://${testFilePath}` },
+          position: { line, character }
+        }
+      };
+
+      const timeout = setTimeout(() => {
+        if (pendingRequests.has(reqKey)) {
+          pendingRequests.delete(reqKey);
+          inflightStartedAt.delete(reqKey);
+          reject(new Error('Timeout waiting for definition response'));
+        }
+      }, 2000);
+
+      pendingRequests.set(reqKey, { resolve, reject, timeout });
+      inflightStartedAt.set(reqKey, Date.now());
+
+      serverProcess.stdin.write(createLSPMessage(didOpen));
+
+      setTimeout(() => {
+        serverProcess.stdin.write(createLSPMessage(definition));
+      }, 10);
+    });
+  }
+
   // Get code actions for a document position and diagnostics
   function getCodeActions(testFilePath, diagnostics, line, character) {
     return new Promise((resolve, reject) => {
@@ -407,6 +456,7 @@ function createLSPTestServer(options = {}) {
     getDiagnostics,
     getCompletions,
     getHover,
+    getDefinition,
     getCodeActions
   };
 }
