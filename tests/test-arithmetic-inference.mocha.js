@@ -124,13 +124,11 @@ describe('Arithmetic type inference (e2e, vs ucode oracle)', function () {
     });
   });
 
-  // Inference fallbacks for operands the runtime has no single answer for:
-  //   - unknown operand  → propagates as `unknown` (don't guess a type)
-  //   - bare union operand → collapses to `double` (a coarse approximation;
-  //     the precise result for e.g. `(int|string) + 1` would be `int|string`,
-  //     but checkBinaryExpression works on base UcodeType, losing union members)
-  // These are LSP behaviours, not ucode runtime values. `x` is an untyped
-  // parameter (unknown); `t` is a union from a mixed-type ternary.
+  // Unknown operands propagate as `unknown` (don't guess). Union operands are
+  // distributed over their members and collapsed — `(integer|string) + 1` is
+  // `integer | string` (int+1=int, string+1=string), matching the set of values
+  // the runtime can actually produce. `x` is an untyped parameter (unknown);
+  // `t` is a union from a mixed-type ternary.
   const fbCode =
     'function f(x, c) {\n' +
     '  let t = c ? 1 : "s";\n' +
@@ -140,15 +138,19 @@ describe('Arithmetic type inference (e2e, vs ucode oracle)', function () {
     '  let fu4 = x / null;\n' +
     '  let fn1 = t + 1;\n' +
     '  let fn2 = t - 1;\n' +
-    '  return [fu1, fu2, fu3, fu4, fn1, fn2];\n' +
+    '  let fn3 = t + "x";\n' +
+    '  let fn4 = t / null;\n' +
+    '  return [fu1, fu2, fu3, fu4, fn1, fn2, fn3, fn4];\n' +
     '}\n';
   const fbCases = [
-    ['fu1', 'unknown + int', 'unknown'],   // Rule 4 via addition's numeric path
-    ['fu2', 'unknown - int', 'unknown'],   // Rule 4
-    ['fu3', 'unknown + string', 'string'], // addition's string-concat rule
-    ['fu4', 'unknown / null', 'double'],   // divide-by-null, left operand ignored
-    ['fn1', 'union + int', 'double'],      // Rule 5 fallthrough
-    ['fn2', 'union - int', 'double'],      // Rule 5 fallthrough
+    ['fu1', 'unknown + int', 'unknown'],            // Rule 4 via addition's numeric path
+    ['fu2', 'unknown - int', 'unknown'],            // Rule 4
+    ['fu3', 'unknown + string', 'string'],          // addition's string-concat rule
+    ['fu4', 'unknown / null', 'double'],            // divide-by-null, left operand ignored
+    ['fn1', '(int|string) + int', 'integer | string'], // distributed: int+int=int, str+int=str
+    ['fn2', '(int|string) - int', 'integer | double'], // int-int=int, str-int=double(NaN)
+    ['fn3', '(int|string) + string', 'string'],     // both members concatenate
+    ['fn4', '(int|string) / null', 'double'],       // both members divide-by-null
   ];
 
   let fbFp;

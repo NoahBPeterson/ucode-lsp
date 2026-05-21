@@ -528,15 +528,31 @@ export class TypeChecker {
     // Type checking for binary operators
     switch (node.operator) {
       case '+':
-        // Use enhanced addition type inference
-        return arithmeticTypeInference.inferAdditionType(leftType, rightType);
-
       case '-':
       case '*':
       case '/':
-      case '%':
-        // Use enhanced arithmetic type inference (no errors - ucode is permissive)
-        return arithmeticTypeInference.inferArithmeticType(leftType, rightType, node.operator);
+      case '%': {
+        // Base-type fast path: when neither operand is a union, the result is a
+        // single concrete type — behaves exactly as the scalar inference, and we
+        // leave _fullType untouched (ucode is permissive; no errors here).
+        const leftFullType: UcodeDataType = (node.left as any)._fullType || leftType;
+        const rightFullType: UcodeDataType = (node.right as any)._fullType || rightType;
+        if (!isUnionType(leftFullType) && !isUnionType(rightFullType)) {
+          return node.operator === '+'
+            ? arithmeticTypeInference.inferAdditionType(leftType, rightType)
+            : arithmeticTypeInference.inferArithmeticType(leftType, rightType, node.operator);
+        }
+
+        // Union operand(s): distribute the operation over the union members so
+        // e.g. `(integer | string) + 1` yields `integer | string`, not `double`.
+        const result = node.operator === '+'
+          ? arithmeticTypeInference.inferAdditionFullType(leftFullType, rightFullType)
+          : arithmeticTypeInference.inferArithmeticFullType(leftFullType, rightFullType, node.operator);
+        (node as any)._fullType = result;
+        // A union can't be represented as a single UcodeType; preserve it in
+        // _fullType and report UNKNOWN as the base type (the &&/|| convention).
+        return isUnionType(result) ? UcodeType.UNKNOWN : (result as UcodeType);
+      }
 
       case '==':
       case '!=':
@@ -1917,6 +1933,13 @@ export class TypeChecker {
 
     const resultType = this.typeCompatibility.getTernaryResultType(consequentType, alternateType);
 
+    // Preserve the real union object on _fullType so consumers that read it
+    // (e.g. union-aware arithmetic, the variable-declarator inference) can
+    // distribute over its members instead of seeing only the display string.
+    // The base return stays getTypeDescription(resultType) for backward compat:
+    // the function-return / nullable-argument machinery reads the base type and
+    // relies on its "T | null" form to detect nullability.
+    (node as any)._fullType = resultType;
     return this.getTypeDescription(resultType) as UcodeType;
   }
 

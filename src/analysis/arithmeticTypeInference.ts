@@ -9,10 +9,56 @@
  * - Invalid operations produce NaN (double) or Infinity (double)
  */
 
-import { UcodeType } from './symbolTable';
+import {
+  UcodeType,
+  UcodeDataType,
+  SingleType,
+  createUnionType,
+  getUnionTypes,
+  singleTypeToBase,
+} from './symbolTable';
 
 export class ArithmeticTypeInference {
-  
+
+  /**
+   * Union-aware addition. Distributes `+` over every combination of the
+   * operands' union members and collapses the distinct results. For example
+   * `(integer | string) + integer` → `integer | string` (int+int=int,
+   * string+int=string), rather than the coarse `double` the base-type-only
+   * path produces by falling through to the unknown/union catch-all.
+   */
+  inferAdditionFullType(leftFullType: UcodeDataType, rightFullType: UcodeDataType): UcodeDataType {
+    return this.distribute(leftFullType, rightFullType, (l, r) => this.inferAdditionType(l, r));
+  }
+
+  /**
+   * Union-aware subtraction/multiplication/division/modulo, distributed the
+   * same way as inferAdditionFullType.
+   */
+  inferArithmeticFullType(leftFullType: UcodeDataType, rightFullType: UcodeDataType, operator: string): UcodeDataType {
+    return this.distribute(leftFullType, rightFullType, (l, r) => this.inferArithmeticType(l, r, operator));
+  }
+
+  /**
+   * Apply a base-type binary operation across the cartesian product of two
+   * operands' union members, returning the collapsed result (a single type
+   * when all combinations agree, otherwise a union).
+   */
+  private distribute(
+    leftFullType: UcodeDataType,
+    rightFullType: UcodeDataType,
+    op: (l: UcodeType, r: UcodeType) => UcodeType
+  ): UcodeDataType {
+    const results: SingleType[] = [];
+    for (const l of getUnionTypes(leftFullType)) {
+      for (const r of getUnionTypes(rightFullType)) {
+        results.push(op(singleTypeToBase(l), singleTypeToBase(r)));
+      }
+    }
+    // createUnionType deduplicates and collapses a single member to that type.
+    return createUnionType(results);
+  }
+
   /**
    * Infer the result type of addition (+) operation
    * Addition has special string concatenation behavior
@@ -63,14 +109,11 @@ export class ArithmeticTypeInference {
       return UcodeType.INTEGER;
     }
 
-    // Rule 4: If one operand is UNKNOWN, treat the result as UNKNOWN
-    // Don't assume it's a double - let it propagate as unknown
-    if (leftType === UcodeType.UNKNOWN || rightType === UcodeType.UNKNOWN) {
-      return UcodeType.UNKNOWN;
-    }
-
-    // Rule 5: Operations with mixed or invalid types often produce double (NaN)
-    return UcodeType.DOUBLE;
+    // Rule 4 (final): an UNKNOWN operand — or any combination not matched above
+    // — propagates as UNKNOWN rather than guessing. Unions never reach here:
+    // inferArithmeticFullType distributes them over their members first, mapping
+    // each to a base type, so there is no bare-union case left to coerce to double.
+    return UcodeType.UNKNOWN;
   }
   
   /**
