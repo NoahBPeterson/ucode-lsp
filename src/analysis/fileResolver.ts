@@ -157,6 +157,45 @@ export class FileResolver {
     }
 
     /**
+     * If `localName` is imported into `fileUri` (and thus possibly re-exported,
+     * e.g. `import { x } from './a'; export { x };`), return the resolved URI of
+     * the module it ultimately comes from plus its original exported name.
+     * Used to follow re-export chains for go-to-definition. Returns null if the
+     * name isn't imported there.
+     */
+    findReexportedSource(fileUri: string, localName: string): { uri: string; importedName: string } | null {
+        try {
+            const filePath = this.uriToFilePath(fileUri);
+            if (!filePath || !fs.existsSync(filePath)) return null;
+
+            const content = fs.readFileSync(filePath, 'utf8');
+            const lexer = new UcodeLexer(content, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, content);
+            const parseResult = parser.parse();
+            const body = (parseResult.ast as any)?.body;
+            if (!Array.isArray(body)) return null;
+
+            for (const stmt of body) {
+                if (!stmt || stmt.type !== 'ImportDeclaration') continue;
+                for (const spec of (stmt.specifiers || [])) {
+                    if (spec.type === 'ImportSpecifier' && spec.local?.name === localName) {
+                        let src = stmt.source?.value;
+                        if (typeof src !== 'string') return null;
+                        src = src.replace(/^['"]|['"]$/g, '');
+                        const resolved = this.resolveImportPath(src, fileUri);
+                        if (!resolved) return null;
+                        return { uri: resolved, importedName: spec.imported?.name || localName };
+                    }
+                }
+            }
+            return null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Get all exports from a module
      */
     getModuleExports(fileUri: string): ModuleExport[] | null {

@@ -146,3 +146,87 @@ describe('Go to Definition (e2e)', function () {
     assert.strictEqual(def.range.start.line, 0);
   });
 });
+
+// Go-to-definition across every import-resolution style ucode supports.
+// Builds a real module tree on disk and drives the server end-to-end. Covers:
+// relative (same-dir / parent / subdir), bare same-directory, dotted
+// directory-level, multi-level dotted, renamed + mixed-renamed + collision
+// imports, default imports, namespace-member access, and re-export chains
+// (1-level, 2-level, and rename-through-chain).
+describe('Go to Definition — import resolution (e2e)', function () {
+  this.timeout(20000);
+
+  let getDefinition;
+  let root;
+
+  // LSP position one char into the identifier located by `anchor`
+  // (anchor begins with the identifier, e.g. "util(" or "U.").
+  function clickAt(code, anchor) {
+    const i = code.indexOf(anchor);
+    if (i < 0) throw new Error(`anchor not found: ${anchor}`);
+    const pre = code.slice(0, i + 1);
+    return { line: (pre.match(/\n/g) || []).length, character: (i + 1) - (pre.lastIndexOf('\n') + 1) };
+  }
+
+  before(async function () {
+    const server = createLSPTestServer();
+    await server.initialize();
+    getDefinition = server.getDefinition;
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'ucode-defimp-'));
+    const W = (rel, txt) => {
+      const f = path.join(root, rel);
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, txt);
+    };
+    W('utils.uc', 'export function util(a) {\n  return a;\n};\nexport function helper(b) {\n  return b;\n};\n');
+    W('sibling.uc', 'export function sib() {\n  return 1;\n};\n');
+    W('sub/child.uc', 'export function child() {\n  return 2;\n};\n');
+    W('sub/deep/leaf.uc', 'export function leaf() {\n  return 3;\n};\n');
+    W('chain_a.uc', 'export function chained(x) {\n  return x;\n};\n');
+    W('chain_b.uc', "import { chained } from './chain_a.uc';\nexport { chained };\n");
+    W('chain_mid.uc', "import { chained } from './chain_b.uc';\nexport { chained };\n");
+    W('rename_a.uc', 'export function orig(x) {\n  return x;\n};\n');
+    W('rename_b.uc', "import { orig as renamed } from './rename_a.uc';\nexport { renamed };\n");
+    W('modA.uc', 'export function dup(a) {\n  return a;\n};\n');
+    W('modB.uc', 'export function dup(b) {\n  return b;\n};\n');
+    W('defaultmod.uc', 'export default function defFn(x) {\n  return x;\n};\n');
+  });
+
+  after(function () {
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
+  });
+
+  // [label, importing-file (relative to root), source code, click anchor, expected "basename Lline"]
+  const cases = [
+    ['relative same-directory', 'app.uc', "import { util } from './utils.uc';\nutil(1);\n", 'util(', 'utils.uc L0'],
+    ['relative, non-first export', 'app.uc', "import { helper } from './utils.uc';\nhelper(1);\n", 'helper(', 'utils.uc L3'],
+    ['bare same-directory name', 'app.uc', "import { sib } from 'sibling';\nsib();\n", 'sib(', 'sibling.uc L0'],
+    ['relative into subdirectory', 'app.uc', "import { child } from './sub/child.uc';\nchild();\n", 'child(', 'child.uc L0'],
+    ['dotted directory-level', 'app.uc', "import { child } from 'sub.child';\nchild();\n", 'child(', 'child.uc L0'],
+    ['multi-level dotted', 'app.uc', "import { leaf } from 'sub.deep.leaf';\nleaf();\n", 'leaf(', 'leaf.uc L0'],
+    ['relative to parent (../)', 'sub/app2.uc', "import { util } from '../utils.uc';\nutil(1);\n", 'util(', 'utils.uc L0'],
+    ['renamed import (as)', 'app.uc', "import { util as u } from './utils.uc';\nu(1);\n", 'u(', 'utils.uc L0'],
+    ['mixed renamed — alias', 'app.uc', "import { util as u, helper } from './utils.uc';\nu(1);\nhelper(2);\n", 'u(', 'utils.uc L0'],
+    ['mixed renamed — plain', 'app.uc', "import { util as u, helper } from './utils.uc';\nu(1);\nhelper(2);\n", 'helper(', 'utils.uc L3'],
+    ['collision, alias A->modA', 'app.uc', "import { dup as dA } from './modA.uc';\nimport { dup as dB } from './modB.uc';\ndA(1);\ndB(2);\n", 'dA(', 'modA.uc L0'],
+    ['collision, alias B->modB', 'app.uc', "import { dup as dA } from './modA.uc';\nimport { dup as dB } from './modB.uc';\ndA(1);\ndB(2);\n", 'dB(', 'modB.uc L0'],
+    ['re-export chain (1 level)', 'app.uc', "import { chained } from './chain_b.uc';\nchained(1);\n", 'chained(', 'chain_a.uc L0'],
+    ['re-export chain (2 levels)', 'app.uc', "import { chained } from './chain_mid.uc';\nchained(1);\n", 'chained(', 'chain_a.uc L0'],
+    ['re-export chain + rename', 'app.uc', "import { renamed } from './rename_b.uc';\nrenamed(1);\n", 'renamed(', 'rename_a.uc L0'],
+    ['default import', 'app.uc', "import defFn from './defaultmod.uc';\ndefFn(1);\n", 'defFn(', 'defaultmod.uc L0'],
+    ['namespace member (first)', 'app.uc', "import * as U from './utils.uc';\nU.util(1);\n", 'util(', 'utils.uc L0'],
+    ['namespace member (non-first)', 'app.uc', "import * as U from './utils.uc';\nU.helper(1);\n", 'helper(', 'utils.uc L3'],
+  ];
+
+  for (const [label, file, code, anchor, expected] of cases) {
+    it(`resolves: ${label}`, async () => {
+      const fp = path.join(root, file);
+      fs.writeFileSync(fp, code);
+      const p = clickAt(code, anchor);
+      const def = await getDefinition(code, fp, p.line, p.character);
+      assert.ok(def, `expected a definition for "${label}"`);
+      const got = `${path.basename(def.uri.replace('file://', ''))} L${def.range.start.line}`;
+      assert.strictEqual(got, expected, `"${label}": expected ${expected}, got ${got}`);
+    });
+  }
+});

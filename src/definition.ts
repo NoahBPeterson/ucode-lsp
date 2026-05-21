@@ -63,6 +63,25 @@ export function handleDefinition(
                     objToken && objToken.type === TokenType.TK_LABEL && typeof objToken.value === 'string') {
                     const objSymbol = analysisResult.symbolTable.lookupAtPosition(objToken.value, offset)
                                    || analysisResult.symbolTable.lookup(objToken.value);
+
+                    // Namespace import member: `import * as U from './m'; U.foo()` —
+                    // resolve `foo` as an export of U's source module.
+                    if (objSymbol && objSymbol.type === SymbolType.IMPORTED
+                        && objSymbol.importSpecifier === '*' && objSymbol.importedFrom) {
+                        let nsUri: string | null;
+                        if (objSymbol.importedFrom.startsWith('file://')) {
+                            nsUri = objSymbol.importedFrom;
+                        } else if (objSymbol.importedFrom.startsWith('builtin://')) {
+                            nsUri = null;
+                        } else {
+                            nsUri = fileResolver.resolveImportPath(objSymbol.importedFrom, document.uri);
+                        }
+                        if (nsUri) {
+                            const nsLoc = locateFunctionDefinition(nsUri, symbolName, fileResolver);
+                            if (nsLoc) return nsLoc;
+                        }
+                    }
+
                     const moduleType = objSymbol ? extractModuleType(objSymbol.dataType) : null;
                     if (objSymbol && moduleType) {
                         const moduleName = moduleType.moduleName;
@@ -143,66 +162,62 @@ function getImportedSymbolDefinition(symbol: Symbol, currentDocument: TextDocume
         return null;
     }
     
-    // Find the actual function definition in the target file
-    const functionName = symbol.importSpecifier === '*' || symbol.importSpecifier === 'default' 
-        ? symbol.name 
+    // Find the definition, following re-export chains
+    // (e.g. `import { x } from './a'; export { x };` in the target file).
+    const functionName = symbol.importSpecifier === '*' || symbol.importSpecifier === 'default'
+        ? symbol.name
         : symbol.importSpecifier;
-    
-    const functionDef = fileResolver.findFunctionDefinition(targetUri, functionName);
-    if (!functionDef) {
-        console.log(`Could not find function definition for: ${functionName} in ${targetUri}`);
-        // Fall back to top of file if we can't find the specific function
-        return {
-            uri: targetUri,
-            range: {
-                start: { line: 0, character: 0 },
-                end: { line: 0, character: 0 }
-            }
-        };
+
+    const loc = locateFunctionDefinition(targetUri, functionName, fileResolver);
+    if (loc) return loc;
+
+    // Couldn't find the function itself (e.g. a non-function export). Fall back
+    // to the top of the resolved module so navigation still lands in the right file.
+    console.log(`Could not find function definition for: ${functionName} in ${targetUri}`);
+    return {
+        uri: targetUri,
+        range: {
+            start: { line: 0, character: 0 },
+            end: { line: 0, character: 0 }
+        }
+    };
+}
+
+/**
+ * Resolve a function's declaration in `targetUri`, following re-export chains:
+ * if the name isn't declared in the target file but is imported there from
+ * another module, follow that import (depth-bounded) to the real declaration.
+ * Returns the LSP Definition, or null if the declaration can't be found.
+ */
+function locateFunctionDefinition(targetUri: string, functionName: string, fileResolver: FileResolver): Definition | null {
+    let curUri = targetUri;
+    let curName = functionName;
+    let functionDef = fileResolver.findFunctionDefinition(curUri, curName);
+
+    for (let depth = 0; !functionDef && depth < 8; depth++) {
+        const reexport = fileResolver.findReexportedSource(curUri, curName);
+        if (!reexport || reexport.uri.startsWith('builtin://')) break;
+        curUri = reexport.uri;
+        curName = reexport.importedName;
+        functionDef = fileResolver.findFunctionDefinition(curUri, curName);
     }
-    
-    // Convert the function definition position to LSP position
-    // We need to convert byte offset to line/character position
+
+    if (!functionDef) return null;
+
+    // Convert byte offsets in the (possibly chained-to) file to LSP positions.
     try {
-        // Try to get the target document to convert positions
-        const targetDocContent = fs.readFileSync(targetUri.replace('file://', ''), 'utf8');
-        const targetDoc = {
-            getText: () => targetDocContent,
-            positionAt: (offset: number) => {
-                // clamp offset to valid range (optional but nice to have)
-                const clamped = Math.max(0, Math.min(offset, targetDocContent.length));
-
-                const slice = targetDocContent.slice(0, clamped);
-                const lines = slice.split('\n');
-
-                const lastLine = lines.at(-1) ?? ''; // safe: string | undefined -> string
-                return {
-                    line: Math.max(0, lines.length - 1),
-                    character: lastLine.length,
-                };
-            }, 
+        const targetDocContent = fs.readFileSync(curUri.replace('file://', ''), 'utf8');
+        const positionAt = (offset: number) => {
+            const clamped = Math.max(0, Math.min(offset, targetDocContent.length));
+            const slice = targetDocContent.slice(0, clamped);
+            const lines = slice.split('\n');
+            const lastLine = lines.at(-1) ?? '';
+            return { line: Math.max(0, lines.length - 1), character: lastLine.length };
         };
-        
-        const startPos = targetDoc.positionAt(functionDef.start);
-        const endPos = targetDoc.positionAt(functionDef.end);
-        
-        return {
-            uri: targetUri,
-            range: {
-                start: startPos,
-                end: endPos
-            }
-        };
+        return { uri: curUri, range: { start: positionAt(functionDef.start), end: positionAt(functionDef.end) } };
     } catch (error) {
         console.error('Error converting position:', error);
-        // Fall back to top of file
-        return {
-            uri: targetUri,
-            range: {
-                start: { line: 0, character: 0 },
-                end: { line: 0, character: 0 }
-            }
-        };
+        return { uri: curUri, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } } };
     }
 }
 
