@@ -58,6 +58,15 @@ describe('Hover (comprehensive e2e)', function () {
     ['this.property', "let o = {\n  v: 5,\n  m: function() { return this.v; }\n};\n", 'v; }', ['integer']],
     ['object property access', "let o = { v: 5 };\nlet z = o.v;\n", 'v;', ['integer']],
     ['rest parameter', "function f(...args) {\n  return args;\n}\n", 'args;', ['array']],
+
+    // Object-literal property-key hovers + import-name hovers — AST-resolved
+    // (previously regex/line-scraping; these include the cases that broke before).
+    ['object arrow property', "let o = { fn: (a) => a };\n", 'fn:', ['function', 'Arrow function']],
+    ['object function-expression property', "let o = { m: function(a) { return a; } };\n", 'm:', ['function', 'Function expression']],
+    ['object literal property (number)', "let o = { v: 5 };\n", 'v:', ['number']],
+    ['object property across lines', "let o = {\n  fn: (a, b) =>\n    a + b\n};\n", 'fn:', ['Arrow function']],
+    ['import name (single line)', "import { open as o } from 'fs';\no('/x', 'r');\n", 'open as', ['open']],
+    ['import name (multi-line)', "import {\n  open as o\n} from 'fs';\n", 'open as', ['open']],
   ];
 
   for (const [label, code, anchor, expected] of cases) {

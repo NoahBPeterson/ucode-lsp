@@ -236,92 +236,6 @@ function resolveVariableTypeForHover(
 }
 
 
-function inferPropertyTypeFromValue(propertyValue: string): string | undefined {
-    // Remove whitespace and normalize
-    const value = propertyValue.trim();
-    
-    // Check for arrow function patterns
-    if (value.includes('=>')) {
-        const arrowIndex = value.indexOf('=>');
-        const beforeArrow = value.slice(0, arrowIndex).trim();
-        
-        // Extract parameter list
-        let params = '';
-        if (beforeArrow.startsWith('(') && beforeArrow.includes(')')) {
-            const parenMatch = beforeArrow.match(/^\((.*)\)/);
-            params = parenMatch ? parenMatch[1] || '' : '';
-        } else {
-            // Single parameter without parentheses
-            params = beforeArrow;
-        }
-        
-        const hasRestParam = params.includes('...');
-        
-        // Infer return type from function body
-        let returnType = 'unknown';
-        const afterArrow = value.slice(value.indexOf('=>') + 2).trim();
-        
-        if (afterArrow.startsWith('warn(')) {
-            returnType = 'null'; // warn() returns null
-        } else if (afterArrow.includes('return ')) {
-            // Try to infer from explicit return statements
-            const returnMatch = afterArrow.match(/return\s+([^;]+)/);
-            if (returnMatch && returnMatch[1]) {
-                const returnExpr = returnMatch[1].trim();
-                if (returnExpr === 'null' || returnExpr === 'undefined') {
-                    returnType = returnExpr;
-                } else if (returnExpr.match(/^\d+$/)) {
-                    returnType = 'number';
-                } else if (returnExpr.match(/^["'`]/)) {
-                    returnType = 'string';
-                } else if (returnExpr === 'true' || returnExpr === 'false') {
-                    returnType = 'boolean';
-                }
-            }
-        }
-        
-        let signature = `(${params}) => ${returnType}`;
-        let description = 'Arrow function';
-        
-        if (hasRestParam) {
-            description += ' with rest parameters';
-        }
-        
-        return `**(function)** **${signature}**\n\n${description}`;
-    }
-    
-    // Check for regular function expression
-    if (value.startsWith('function')) {
-        const funcMatch = value.match(/^function\s*\(([^)]*)\)/);
-        const params = funcMatch ? funcMatch[1] : '';
-        const hasRestParam = params && params.includes('...');
-        
-        let signature = `function(${params})`;
-        let description = 'Function expression';
-        
-        if (hasRestParam) {
-            description += ' with rest parameters';
-        }
-        
-        return `**(function)** **${signature}**\\n\\n${description}`;
-    }
-    
-    // For other values, provide generic type info
-    if (value.startsWith('[')) {
-        return `**(array)** Array literal`;
-    } else if (value.startsWith('{')) {
-        return `**(object)** Object literal`;
-    } else if (value.match(/^['"`]/)) {
-        return `**(string)** String literal`;
-    } else if (value.match(/^\d/)) {
-        return `**(number)** Number literal`;
-    } else if (value === 'true' || value === 'false') {
-        return `**(boolean)** Boolean literal`;
-    }
-    
-    return undefined;
-}
-
 /**
  * Detect known object type from a symbol's dataType.
  */
@@ -551,6 +465,87 @@ function getFormatSpecifierHover(token: Token, tokenIndex: number, tokens: Token
         }
     }
 
+    return undefined;
+}
+
+/** Find the object-literal Property whose KEY identifier spans `offset`. */
+function findPropertyKeyAtOffset(node: any, offset: number): any | null {
+    if (!node || typeof node !== 'object' || typeof node.type !== 'string') return null;
+    if (node.type === 'Property' && node.key && typeof node.key.start === 'number'
+        && node.key.start <= offset && offset <= node.key.end) {
+        return node;
+    }
+    for (const k of Object.keys(node)) {
+        if (k === 'type' || k === 'start' || k === 'end') continue;
+        const v = (node as any)[k];
+        if (Array.isArray(v)) {
+            for (const it of v) { const f = findPropertyKeyAtOffset(it, offset); if (f) return f; }
+        } else if (v && typeof v === 'object' && typeof v.type === 'string') {
+            const f = findPropertyKeyAtOffset(v, offset); if (f) return f;
+        }
+    }
+    return null;
+}
+
+/**
+ * Find an imported NAME identifier (the `imported` side of an ImportSpecifier)
+ * spanning `offset`, returning its module + original name. Works regardless of
+ * how the import statement is wrapped across lines.
+ */
+function findImportedNameAtOffset(node: any, offset: number): { moduleName: string; importedName: string } | null {
+    if (!node || typeof node !== 'object' || typeof node.type !== 'string') return null;
+    if (node.type === 'ImportDeclaration' && Array.isArray(node.specifiers) && node.source) {
+        for (const spec of node.specifiers) {
+            if (spec.type === 'ImportSpecifier' && spec.imported && typeof spec.imported.start === 'number'
+                && spec.imported.start <= offset && offset <= spec.imported.end) {
+                const raw = node.source.value;
+                if (typeof raw === 'string') {
+                    return { moduleName: raw.replace(/^['"]|['"]$/g, ''), importedName: spec.imported.name };
+                }
+            }
+        }
+    }
+    for (const k of Object.keys(node)) {
+        if (k === 'type' || k === 'start' || k === 'end') continue;
+        const v = (node as any)[k];
+        if (Array.isArray(v)) {
+            for (const it of v) { const f = findImportedNameAtOffset(it, offset); if (f) return f; }
+        } else if (v && typeof v === 'object' && typeof v.type === 'string') {
+            const f = findImportedNameAtOffset(v, offset); if (f) return f;
+        }
+    }
+    return null;
+}
+
+/** Describe an object-literal property's value (function/literal/array/object) for hover. */
+function formatPropertyValueHover(value: any): string | undefined {
+    if (!value || typeof value.type !== 'string') return undefined;
+    if (value.type === 'ArrowFunctionExpression' || value.type === 'FunctionExpression') {
+        const params = ((value.params as any[]) || []).map((p) => p.name);
+        if (value.restParam) params.push('...' + value.restParam.name);
+        const rest = value.restParam ? ' with rest parameters' : '';
+        if (value.type === 'ArrowFunctionExpression') {
+            let ret = 'unknown';
+            if (value.expression && value.body && value.body.type === 'Literal') {
+                const bv = value.body.value;
+                if (typeof bv === 'number') ret = 'number';
+                else if (typeof bv === 'string') ret = 'string';
+                else if (typeof bv === 'boolean') ret = 'boolean';
+                else if (bv === null) ret = 'null';
+            }
+            return `**(function)** **(${params.join(', ')}) => ${ret}**\n\nArrow function${rest}`;
+        }
+        return `**(function)** **function(${params.join(', ')})**\n\nFunction expression${rest}`;
+    }
+    if (value.type === 'Literal') {
+        const v = value.value;
+        if (typeof v === 'string') return '**(string)** String literal';
+        if (typeof v === 'number') return '**(number)** Number literal';
+        if (typeof v === 'boolean') return '**(boolean)** Boolean literal';
+        if (v === null) return '**(null)** Null literal';
+    }
+    if (value.type === 'ArrayExpression') return '**(array)** Array literal';
+    if (value.type === 'ObjectExpression') return '**(object)** Object literal';
     return undefined;
 }
 
@@ -853,81 +848,46 @@ export function handleHover(
                 }
             }
             
-            // Special case: check for object properties by examining the text context
-            // Look for patterns like "property_name: (args) => ..."
-            if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
+            // Object-literal property hover: `{ propName: <value> }`. Resolve the
+            // property from the AST and describe its value (function/literal/array/
+            // object). Defer to a same-named user function when one exists, so the
+            // builtin/function lookup below wins for those.
+            if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string' && analysisResult?.ast) {
                 const word = token.value;
-                
-                // Get the line containing this token
-                const lineStart = text.lastIndexOf('\n', token.pos) + 1;
-                const lineEnd = text.indexOf('\n', token.end);
-                const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
-                
-                // Check if this looks like an object property definition
-                // Pattern: "propertyName: (params) => ..." or "propertyName: (...params) => ..."
-                const propertyPattern = new RegExp(`\\b${word}\\s*:\\s*\\([^)]*\\)\\s*=>`);
-                if (propertyPattern.test(line)) {
-                    // Check if there's a builtin/global function with the same name
-                    // If so, prioritize the builtin function documentation over property type
-                    let hasBuiltinFunction = false;
-                    if (analysisResult) {
-                        const builtinSymbol = analysisResult.symbolTable.lookup(word);
-                        hasBuiltinFunction = (builtinSymbol && builtinSymbol.type === SymbolType.FUNCTION) ?? false;
-                    }
-                    
-                    if (!hasBuiltinFunction) {
-                        // No builtin function found, show property type hover
-                        const match = line.match(new RegExp(`\\b${word}\\s*:\\s*(\\([^)]*\\)\\s*=>.*?)(?:,|$|\\})`));
-                        if (match) {
-                            const functionDef = match[1].trim();
-                            const hoverText = inferPropertyTypeFromValue(functionDef);
-                            
-                            if (hoverText) {
-                                return {
-                                    contents: {
-                                        kind: MarkupKind.Markdown,
-                                        value: hoverText
-                                    },
-                                    range: {
-                                        start: document.positionAt(token.pos),
-                                        end: document.positionAt(token.end)
-                                    }
-                                };
-                            }
+                const sameNameSymbol = analysisResult.symbolTable.lookup(word);
+                const hasUserFunction = (sameNameSymbol && sameNameSymbol.type === SymbolType.FUNCTION) ?? false;
+                if (!hasUserFunction) {
+                    const prop = findPropertyKeyAtOffset(analysisResult.ast, offset);
+                    if (prop) {
+                        const hoverText = formatPropertyValueHover(prop.value);
+                        if (hoverText) {
+                            return {
+                                contents: { kind: MarkupKind.Markdown, value: hoverText },
+                                range: {
+                                    start: document.positionAt(token.pos),
+                                    end: document.positionAt(token.end)
+                                }
+                            };
                         }
                     }
-                    // If hasBuiltinFunction is true, we fall through to the builtin function lookup
                 }
             }
             
-            // 0. Check if we're inside an import specifier: import { WORD as ... } from 'module'
-            // Show the original module function's documentation, not a same-named variable
-            {
-                const lineStart = text.lastIndexOf('\n', offset) + 1;
-                const lineEnd = text.indexOf('\n', offset);
-                const line = text.substring(lineStart, lineEnd === -1 ? text.length : lineEnd);
-                const importMatch = line.match(/^\s*import\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/);
-                if (importMatch && importMatch[2]) {
-                    const moduleName = importMatch[2];
-                    // Check if the hovered word is an imported name (before 'as') in this import
-                    const specifiersPart = importMatch[1]!;
-                    const specifiers = specifiersPart.split(',').map((s: string) => s.trim());
-                    for (const spec of specifiers) {
-                        // Match "word as alias" or just "word"
-                        const parts = spec.split(/\s+as\s+/);
-                        const importedName = parts[0]?.trim();
-                        if (importedName === word && isKnownModule(moduleName)) {
-                            const doc = getImportedSymbolDocumentation(moduleName, importedName);
-                            if (Option.isSome(doc)) {
-                                return {
-                                    contents: { kind: MarkupKind.Markdown, value: doc.value },
-                                    range: {
-                                        start: document.positionAt(token.pos),
-                                        end: document.positionAt(token.end)
-                                    }
-                                };
+            // 0. Hovering an imported NAME inside `import { NAME as alias } from 'module'`:
+            // show the original module symbol's documentation. Resolved from the AST so
+            // multi-line imports work and we only match the imported (not alias) side.
+            if (analysisResult?.ast) {
+                const imp = findImportedNameAtOffset(analysisResult.ast, offset);
+                if (imp && isKnownModule(imp.moduleName)) {
+                    const doc = getImportedSymbolDocumentation(imp.moduleName, imp.importedName);
+                    if (Option.isSome(doc)) {
+                        return {
+                            contents: { kind: MarkupKind.Markdown, value: doc.value },
+                            range: {
+                                start: document.positionAt(token.pos),
+                                end: document.positionAt(token.end)
                             }
-                        }
+                        };
                     }
                 }
             }
