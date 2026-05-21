@@ -1124,46 +1124,41 @@ function inferDefaultExportPropertyType(valueNode: any): string {
 }
 
 function extractExportedSymbols(fileContent: string): { name: string; type: string }[] {
-    // Simple regex-based extraction of exported symbols
-    // This could be enhanced with proper AST parsing in the future
+    // AST-based extraction. (Was regex, which matched `export` inside comments and
+    // strings, and turned `export { x as y }` into the bogus label "x as y".)
     const exports: { name: string; type: string }[] = [];
-    
-    // Match: export const name = ...
-    const constExports = fileContent.match(/export\s+const\s+(\w+)\s*=/g);
-    if (constExports) {
-        for (const match of constExports) {
-            const name = match.match(/export\s+const\s+(\w+)/)?.[1];
-            if (name) {
-                exports.push({ name, type: 'constant' });
-            }
-        }
-    }
-    
-    // Match: export function name(...) 
-    const functionExports = fileContent.match(/export\s+function\s+(\w+)\s*\(/g);
-    if (functionExports) {
-        for (const match of functionExports) {
-            const name = match.match(/export\s+function\s+(\w+)/)?.[1];
-            if (name) {
-                exports.push({ name, type: 'function' });
-            }
-        }
-    }
-    
-    // Match: export { name1, name2 }
-    const namedExports = fileContent.match(/export\s*\{\s*([^}]+)\s*\}/g);
-    if (namedExports) {
-        for (const match of namedExports) {
-            const names = match.match(/export\s*\{\s*([^}]+)\s*\}/)?.[1];
-            if (names) {
-                const exportNames = names.split(',').map(n => n.trim()).filter(n => n);
-                for (const name of exportNames) {
-                    exports.push({ name, type: 'symbol' });
+    try {
+        const lexer = new UcodeLexer(fileContent, { rawMode: true });
+        const tokens = lexer.tokenize();
+        const parser = new UcodeParser(tokens, fileContent);
+        parser.setComments(lexer.comments);
+        const ast: any = parser.parse().ast;
+
+        for (const stmt of (ast?.body || [])) {
+            if (!stmt || stmt.type !== 'ExportNamedDeclaration') continue;
+
+            // `export function f()` / `export const c = ...` / `export let v = ...`
+            const decl = stmt.declaration;
+            if (decl) {
+                if (decl.type === 'FunctionDeclaration' && decl.id?.name) {
+                    exports.push({ name: decl.id.name, type: 'function' });
+                } else if (decl.type === 'VariableDeclaration') {
+                    const kind = decl.kind === 'const' ? 'constant' : 'symbol';
+                    for (const d of (decl.declarations || [])) {
+                        if (d.id?.name) exports.push({ name: d.id.name, type: kind });
+                    }
                 }
             }
+
+            // `export { local as exported }` — surface the EXPORTED name.
+            for (const spec of (stmt.specifiers || [])) {
+                const name = spec.exported?.name || spec.local?.name;
+                if (name) exports.push({ name, type: 'symbol' });
+            }
         }
+    } catch {
+        // Parse failure — return what we have rather than bad guesses.
     }
-    
     return exports;
 }
 
