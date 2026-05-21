@@ -449,13 +449,37 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 codeActions.push(...importActions);
             }
 
-            // Add JSDoc annotation quick fix for UC7003
-            if (diagnostic.code === 'UC7003' && ast && cacheEntry?.result) {
+            // Add JSDoc annotation quick fix.
+            //   - UC7003 fires this directly on the function declaration.
+            //   - incompatible-function-argument / nullable-argument also fire it when
+            //     the offending arg is a parameter identifier — annotating the
+            //     enclosing function is a zero-runtime alternative to the type-guard
+            //     fixes offered by generateTypeNarrowingQuickFixes above.
+            const isJsDocTrigger =
+                diagnostic.code === 'UC7003'
+                || ((diagnostic.code === 'incompatible-function-argument' || diagnostic.code === 'nullable-argument')
+                    && (diagnostic as any).data
+                    && typeof (diagnostic as any).data.variableName === 'string');
+            if (isJsDocTrigger && ast && cacheEntry?.result) {
                 const diagOffset = document.offsetAt(diagnostic.range.start);
                 const jsDocAction = generateJsDocQuickFix(ast, diagOffset, document, params.textDocument.uri, cacheEntry.result);
                 if (jsDocAction) {
-                    jsDocAction.diagnostics = [diagnostic];
-                    codeActions.push(jsDocAction);
+                    // For call-site triggers, only offer the fix when the flagged
+                    // variable actually IS a parameter of the enclosing function —
+                    // otherwise the JSDoc edit wouldn't help (the unknown arg came
+                    // from somewhere else like a local or property access).
+                    if (diagnostic.code === 'UC7003') {
+                        jsDocAction.diagnostics = [diagnostic];
+                        codeActions.push(jsDocAction);
+                    } else {
+                        const varName = (diagnostic as any).data.variableName;
+                        const funcNode = findFunctionAtOffset(ast, diagOffset);
+                        const isParam = funcNode?.params?.some((p: any) => p.name === varName);
+                        if (isParam) {
+                            jsDocAction.diagnostics = [diagnostic];
+                            codeActions.push(jsDocAction);
+                        }
+                    }
                 }
             }
 
@@ -858,7 +882,310 @@ function makeReplaceRangeAction(
     };
 }
 
-// Generate JSDoc annotation quick fix for functions with unknown-typed parameters
+// Builtin arg-type constraints, mirroring the validateArgumentType() calls in
+// src/analysis/checkers/builtinValidation.ts. Keyed on funcName → per-arg
+// allowed-type sets. An entry of null means "any type accepted here".
+// Keep this in sync when new builtins gain argument-type validation.
+const BUILTIN_ARG_CONSTRAINTS: Record<string, (string[] | null)[]> = {
+    // String operations
+    substr:   [['string'], ['integer'], ['integer']],
+    lc:       [['string']],
+    uc:       [['string']],
+    trim:     [['string'], ['string']],
+    ltrim:    [['string'], ['string']],
+    rtrim:    [['string'], ['string']],
+    ord:      [['string']],
+    chr:      [['integer']],
+    uchr:     [['integer']],
+    // Search / match
+    match:    [['string'], ['regex', 'string']],
+    replace:  [['string'], ['regex', 'string'], ['string', 'function']],
+    split:    [['string'], ['regex', 'string'], ['integer']],
+    join:     [['string'], ['array']],
+    index:    [['string', 'array'], null],
+    rindex:   [['string', 'array'], null],
+    length:   [['string', 'array', 'object']],
+    // Collections
+    keys:     [['object']],
+    values:   [['object']],
+    push:     [['array']],
+    pop:      [['array']],
+    shift:    [['array']],
+    unshift:  [['array']],
+    uniq:     [['array']],
+    slice:    [['array'], ['integer'], ['integer']],
+    splice:   [['array'], ['integer']],
+    sort:     [['array'], ['function']],
+    reverse:  [['array', 'string']],
+    filter:   [['array'], ['function']],
+    map:      [['array'], ['function']],
+    // Encodings
+    b64enc:   [['string']],
+    b64dec:   [['string']],
+    hexenc:   [['string']],
+    hexdec:   [['string']],
+    hex:      [['string']],
+    // Misc
+    exists:   [['object'], ['string']],
+    regexp:   [['string'], ['string']],
+    iptoarr:  [['string']],
+    arrtoip:  [['array']],
+    timelocal:[['object']],
+    timegm:   [['object']],
+    loadstring:[['string']],
+    loadfile: [['string']],
+    wildcard: [['string'], ['string']],
+    proto:    [['object']],
+    sprintf:  [['string']],
+    printf:   [['string']],
+    render:   [['string']],
+    getenv:   [['string']],
+    sleep:    [['integer']],
+    localtime:[['integer']],
+    gmtime:   [['integer']],
+};
+
+type ParamInference = Map<string, string>;
+type AllInferences = Map<any, ParamInference>;
+
+/** DFS-collect every unannotated function declaration/expression from the AST. */
+function collectUnannotatedFunctions(ast: any): any[] {
+    const out: any[] = [];
+    const walk = (n: any): void => {
+        if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+        if ((n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression')
+            && n.params && n.params.length > 0 && !n.leadingJsDoc) {
+            out.push(n);
+        }
+        for (const k of Object.keys(n)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = n[k];
+            if (Array.isArray(v)) { for (const it of v) walk(it); }
+            else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+        }
+    };
+    walk(ast);
+    return out;
+}
+
+/** Parse a type string like "array | string" into its atomic members. */
+function splitTypeUnion(t: string): string[] {
+    return t.split(' | ').map(s => s.trim()).filter(s => s.length > 0);
+}
+
+/**
+ * Walk a function body to collect type constraints on each parameter. Sources:
+ *
+ *   1. Diagnostics that fired on param usages (`incompatible-function-argument`,
+ *      `nullable-argument`). These carry the validator's precise `expectedTypes`.
+ *   2. Direct builtin arg positions — `push(arr, ...)` doesn't fire a diagnostic
+ *      when `arr` is UNKNOWN-param-typed if strict-mode is off OR the validator
+ *      doesn't emit for UNKNOWN; walking the AST and consulting
+ *      BUILTIN_ARG_CONSTRAINTS catches the constraint anyway.
+ *   3. (Cross-function propagation) Calls to user functions whose own params
+ *      we've already inferred in a previous pass — if `inner(s: string)` was
+ *      inferred, then `outer(x) { inner(x); }` inherits `x: string`. Requires
+ *      callerInferences + funcsByName from the fixpoint driver.
+ *
+ * Per param, we intersect all collected constraint sets. Empty intersection or
+ * no constraints → "unknown".
+ */
+function inferParamTypesFromUsage(
+    funcNode: any,
+    allDiagnostics: any[],
+    callerInferences?: AllInferences,
+    funcsByName?: Map<string, any>,
+): ParamInference {
+    const paramNames = new Set<string>(funcNode.params.map((p: any) => p.name));
+    const bodyStart = funcNode.body?.start ?? funcNode.start;
+    const bodyEnd = funcNode.body?.end ?? funcNode.end;
+
+    const constraintsPerParam = new Map<string, Set<string>[]>();
+    const addConstraint = (paramName: string, allowed: string[]) => {
+        if (allowed.length === 0) return;
+        let list = constraintsPerParam.get(paramName);
+        if (!list) { list = []; constraintsPerParam.set(paramName, list); }
+        list.push(new Set(allowed));
+    };
+
+    // Source 1: diagnostics within this function's body.
+    for (const d of allDiagnostics) {
+        if (d.code !== 'incompatible-function-argument' && d.code !== 'nullable-argument') continue;
+        const data = (d as any).data;
+        if (!data || typeof data.variableName !== 'string') continue;
+        if (!paramNames.has(data.variableName)) continue;
+        if (typeof data.argumentOffset === 'number'
+            && (data.argumentOffset < bodyStart || data.argumentOffset > bodyEnd)) continue;
+        const expected: string[] = Array.isArray(data.expectedTypes)
+            ? data.expectedTypes
+            : (typeof data.expectedType === 'string'
+                ? splitTypeUnion(data.expectedType)
+                : []);
+        addConstraint(data.variableName, expected);
+    }
+
+    // Sources 2, 3, 4: walk the body.
+    //
+    // We deliberately omit two seductive-looking rules that are NOT provable
+    // under ucode's runtime semantics:
+    //
+    //   - String concatenation (`"prefix" + x` → string). ucode auto-stringifies
+    //     EVERY type during `+` ("a"+42 = "a42", "a"+[1,2] = "a[ 1, 2 ]"), so
+    //     this proves nothing about x.
+    //
+    //   - Arithmetic (`x * 2`, `x - 1`, etc. → numeric). ucode coerces any type
+    //     to number; non-numerics yield the string "NaN" without erroring.
+    //     `[1,2] * 2` returns "NaN", `null * 2` returns 0.
+    //
+    // Both expressed user *intent*, not type proof. Removed.
+    const walk = (node: any): void => {
+        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+
+        if (node.type === 'CallExpression' && node.callee?.type === 'Identifier') {
+            const fname = node.callee.name as string;
+
+            // Source 2: direct builtin arg positions. Sound because the validator
+            // already fires diagnostics on type mismatches, and at runtime each
+            // builtin returns null when given the wrong argument type — so for
+            // the user's code to mean anything, the param must be the
+            // constrained type.
+            const builtinConstraints = BUILTIN_ARG_CONSTRAINTS[fname];
+            if (builtinConstraints && Array.isArray(node.arguments)) {
+                for (let i = 0; i < node.arguments.length && i < builtinConstraints.length; i++) {
+                    const arg = node.arguments[i];
+                    const allowed = builtinConstraints[i];
+                    if (!arg || !allowed) continue;
+                    if (arg.type === 'Identifier' && paramNames.has(arg.name)) {
+                        addConstraint(arg.name, allowed);
+                    }
+                }
+            }
+
+            // Source 3: user function with a previously-inferred param at that position.
+            if (callerInferences && funcsByName && Array.isArray(node.arguments)) {
+                const calleeFn = funcsByName.get(fname);
+                if (calleeFn) {
+                    const calleeInferences = callerInferences.get(calleeFn);
+                    if (calleeInferences) {
+                        for (let i = 0; i < node.arguments.length; i++) {
+                            const arg = node.arguments[i];
+                            if (!arg || arg.type !== 'Identifier' || !paramNames.has(arg.name)) continue;
+                            const calleeParamName = calleeFn.params[i]?.name;
+                            if (!calleeParamName) continue;
+                            const calleeType = calleeInferences.get(calleeParamName);
+                            if (!calleeType || calleeType === 'unknown') continue;
+                            addConstraint(arg.name, splitTypeUnion(calleeType));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Source 4: member access proves `array | object`. ucode runtime errors
+        // on `.prop` and `[k]` for string/integer/boolean/null with
+        // "left-hand side expression is not an array or object". Both forms
+        // (dot and bracket) succeed only on arrays and objects; on arrays
+        // dot-access returns null, on objects it returns the property — but
+        // crucially neither errors. So the proof is identical for both forms.
+        if (node.type === 'MemberExpression'
+            && node.object?.type === 'Identifier'
+            && paramNames.has(node.object.name)) {
+            addConstraint(node.object.name, ['array', 'object']);
+        }
+
+        for (const key of Object.keys(node)) {
+            if (key === 'leadingJsDoc' || key === '_fullType' || key === '_specCache') continue;
+            const v = node[key];
+            if (Array.isArray(v)) { for (const it of v) walk(it); }
+            else if (v && typeof v === 'object' && typeof v.type === 'string') { walk(v); }
+        }
+    };
+    walk(funcNode.body);
+
+    const result: ParamInference = new Map();
+    for (const paramName of paramNames) {
+        const lists = constraintsPerParam.get(paramName);
+        if (!lists || lists.length === 0) {
+            result.set(paramName, 'unknown');
+            continue;
+        }
+        let intersection = new Set(lists[0]);
+        for (let i = 1; i < lists.length; i++) {
+            const next = lists[i]!;
+            intersection = new Set([...intersection].filter(t => next.has(t)));
+        }
+        if (intersection.size === 0) result.set(paramName, 'unknown');
+        else if (intersection.size === 1) result.set(paramName, [...intersection][0]!);
+        else result.set(paramName, [...intersection].sort().join(' | '));
+    }
+    return result;
+}
+
+/**
+ * Fixpoint over `inferParamTypesFromUsage` across every unannotated function in
+ * the AST. Each iteration's per-function inferences feed the next iteration's
+ * Source 3 (cross-function propagation), so a type inferred at a leaf function
+ * propagates back up the call graph. Converges because intersection is monotonic
+ * (types only get narrower) and types are finite.
+ *
+ * Returns a map from each unannotated function AST node to its inferred param
+ * types. Callers (the quick-fix handler, the preview tool) look up per-function
+ * results from this single computation.
+ *
+ * Cached on the AST via a WeakMap so repeat calls within the same request don't
+ * re-run.
+ */
+const inferenceCache = new WeakMap<object, { diagVersion: unknown, result: AllInferences }>();
+
+function inferAllParamTypesFromUsage(ast: any, allDiagnostics: any[]): AllInferences {
+    // Cache keyed on the AST; invalidate if the diagnostic set changed.
+    const cached = inferenceCache.get(ast);
+    if (cached && cached.diagVersion === allDiagnostics) return cached.result;
+
+    const funcs = collectUnannotatedFunctions(ast);
+    const result: AllInferences = new Map();
+
+    // funcsByName: only function DECLARATIONS get called by name. Arrow/function
+    // expressions are passed around, not called via their (usually absent) ID.
+    const funcsByName = new Map<string, any>();
+    for (const fn of funcs) {
+        if (fn.type === 'FunctionDeclaration' && fn.id?.name) {
+            funcsByName.set(fn.id.name, fn);
+        }
+    }
+
+    // Initialize every function's inference to all-unknown.
+    for (const fn of funcs) {
+        const init: ParamInference = new Map();
+        for (const p of fn.params) init.set(p.name, 'unknown');
+        result.set(fn, init);
+    }
+
+    // Iterate to fixpoint. Bound the pass count as a safety net; in practice
+    // 2–4 iterations settle the typical call graph.
+    const MAX_ITERATIONS = 10;
+    for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+        let changed = false;
+        for (const fn of funcs) {
+            const next = inferParamTypesFromUsage(fn, allDiagnostics, result, funcsByName);
+            const cur = result.get(fn)!;
+            for (const [paramName, newType] of next) {
+                if (cur.get(paramName) !== newType) {
+                    cur.set(paramName, newType);
+                    changed = true;
+                }
+            }
+        }
+        if (!changed) break;
+    }
+
+    inferenceCache.set(ast, { diagVersion: allDiagnostics, result });
+    return result;
+}
+
+// Generate JSDoc annotation quick fix for functions with unknown-typed parameters.
+// Uses diagnostic-driven inference to emit concrete types where possible instead
+// of every param stubbed as `{unknown}`.
 function generateJsDocQuickFix(
     ast: any, cursorOffset: number, document: TextDocument, uri: string,
     analysisResult: SemanticAnalysisResult
@@ -880,6 +1207,13 @@ function generateJsDocQuickFix(
     }
     if (unknownParams.length === 0) return null;
 
+    const allInferences = inferAllParamTypesFromUsage(ast, analysisResult.diagnostics || []);
+    const inferred = allInferences.get(funcNode)
+        // Fallback: if the function wasn't collected (e.g., different AST handle),
+        // do a single-shot inference without cross-function propagation.
+        ?? inferParamTypesFromUsage(funcNode, analysisResult.diagnostics || []);
+    const inferredCount = [...inferred.values()].filter(t => t !== 'unknown').length;
+
     // Build JSDoc comment text
     const funcStartPos = document.positionAt(funcNode.start);
     const funcLine = funcStartPos.line;
@@ -890,13 +1224,19 @@ function generateJsDocQuickFix(
 
     const jsDocLines = [`${indentText}/**`];
     for (const paramName of funcNode.params.map((p: any) => p.name)) {
-        jsDocLines.push(`${indentText} * @param {unknown} ${paramName}`);
+        const t = inferred.get(paramName) || 'unknown';
+        jsDocLines.push(`${indentText} * @param {${t}} ${paramName}`);
     }
     jsDocLines.push(`${indentText} */`);
     const finalJsDoc = jsDocLines.join('\n') + '\n';
 
+    const totalParams = unknownParams.length;
+    const title = inferredCount > 0
+        ? `Add JSDoc (${inferredCount}/${totalParams} type${totalParams > 1 ? 's' : ''} inferred)`
+        : `Add JSDoc type annotations for ${totalParams} parameter${totalParams > 1 ? 's' : ''}`;
+
     return {
-        title: `Add JSDoc type annotations for ${unknownParams.length} parameter${unknownParams.length > 1 ? 's' : ''}`,
+        title,
         kind: CodeActionKind.QuickFix,
         edit: {
             changes: {
