@@ -120,4 +120,29 @@ describe('Go to Definition (e2e)', function () {
     assert.ok(def, 'expected a cross-file definition');
     assert.ok(def.uri.endsWith('/lib.uc'), `expected definition in lib.uc, got ${def.uri}`);
   });
+
+  it('returns null for an import from an unresolvable module', async () => {
+    const code = `import { ghost } from './does-not-exist.uc';\nlet x = ghost(1);\n`;
+    const p = posOf(code, 'ghost', 2);
+    const def = await getDefinition(code, '/tmp/def-noresolve.uc', p.line, p.character);
+    assert.strictEqual(def, null);
+  });
+
+  it('returns null for an imported symbol missing from the target file', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'partial.uc'), 'export function other() { return 1; };\n');
+    const mainPath = path.join(tmpDir, 'main-missing.uc');
+    const code = `import { missing } from './partial.uc';\nlet y = missing(2);\n`;
+    fs.writeFileSync(mainPath, code);
+    const p = posOf(code, 'missing', 2);
+    const def = await getDefinition(code, mainPath, p.line, p.character);
+    assert.strictEqual(def, null);
+  });
+
+  it('keeps serving definitions after an import-failure path (no stream corruption)', async () => {
+    const code = `function ok(z) {\n  return z;\n}\nok(1);\n`;
+    const p = posOf(code, 'ok', 2);
+    const def = await getDefinition(code, '/tmp/def-after-fail.uc', p.line, p.character);
+    assert.ok(def, 'server should still respond correctly after failure paths');
+    assert.strictEqual(def.range.start.line, 0);
+  });
 });
