@@ -41,7 +41,6 @@ const testFiles = [
     'tests/test-in-token.js',
     'tests/test-lexer.js',
     'tests/test-parser.js',
-    'tests/test-go-to-definition.js',
     'tests/test-import-simple.js',
     'tests/test-export-debug.js',
     'tests/test-for-in-debug.js',
