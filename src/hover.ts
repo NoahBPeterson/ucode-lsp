@@ -12,8 +12,16 @@ import { regexTypeRegistry } from './analysis/regexTypes';
 import { Option } from 'effect';
 import { MODULE_REGISTRIES, isKnownModule, isKnownObjectType, getModuleMemberDocumentation, getImportedSymbolDocumentation, getObjectMethodDocumentation, resolveReturnObjectType, type KnownObjectType } from './analysis/moduleDispatch';
 import { parseFormatSpecifiers } from './analysis/checkers/builtinValidation';
+import { FileResolver } from './analysis/fileResolver';
 
 const BUILTIN_METHOD_NOTE = '\n\n---\n*Built-in C method — no source definition available*';
+
+// Lazily-created resolver for cross-file hovers (e.g. namespace-import members).
+let hoverFileResolver: FileResolver | null = null;
+function getHoverFileResolver(): FileResolver {
+    if (!hoverFileResolver) hoverFileResolver = new FileResolver();
+    return hoverFileResolver;
+}
 
 function appendBuiltinNote(doc: string): string {
     return doc + BUILTIN_METHOD_NOTE;
@@ -343,7 +351,8 @@ function detectObjectTypeFromDataType(dataType: UcodeDataType): KnownObjectType 
  */
 function getUnifiedMemberHover(
     memberInfo: { objectName: string; propertyName: string },
-    analysisResult: SemanticAnalysisResult
+    analysisResult: SemanticAnalysisResult,
+    documentUri?: string
 ): string | null {
     const { objectName, propertyName } = memberInfo;
 
@@ -389,6 +398,25 @@ function getUnifiedMemberHover(
     if (moduleName && isKnownModule(moduleName)) {
         const doc = getModuleMemberDocumentation(moduleName, propertyName);
         if (Option.isSome(doc)) return doc.value;
+    }
+
+    // 3. User-module namespace import: `import * as U from './lib.uc'; U.fn()`.
+    //    Resolve the member as an exported function of that module.
+    if (documentUri && symbol.type === SymbolType.IMPORTED && symbol.importSpecifier === '*'
+        && symbol.importedFrom && !symbol.importedFrom.startsWith('builtin://')) {
+        const uri = symbol.importedFrom.startsWith('file://')
+            ? symbol.importedFrom
+            : getHoverFileResolver().resolveImportPath(symbol.importedFrom, documentUri);
+        if (uri && !uri.startsWith('builtin://')) {
+            const fnDef = getHoverFileResolver().findFunctionDefinition(uri, propertyName);
+            if (fnDef) {
+                const params = (((fnDef.node as any)?.params) || []).map((p: any) => p.name).join(', ');
+                const moduleLabel = symbol.importedFrom.startsWith('file://')
+                    ? (symbol.importedFrom.split('/').pop() || symbol.importedFrom)
+                    : symbol.importedFrom;
+                return `**(function)** **${propertyName}(${params})**\n\nExported from \`${moduleLabel}\``;
+            }
+        }
     }
 
     return null;
@@ -810,7 +838,7 @@ export function handleHover(
                 // When cursor is on the object side, fall through to the variable type display
 
                 // Unified member hover: check object types and module namespaces
-                const memberHoverDoc = getUnifiedMemberHover(memberExpressionInfo, analysisResult);
+                const memberHoverDoc = getUnifiedMemberHover(memberExpressionInfo, analysisResult, document.uri);
                 if (memberHoverDoc) {
                     return {
                         contents: {

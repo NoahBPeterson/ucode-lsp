@@ -135,6 +135,7 @@ const testFiles = [
     'tests/test-callback-element-types.js',
     'tests/test-jsdoc-inference-quickfix.mocha.js',
     'tests/test-definition.mocha.js',
+    'tests/test-hover-comprehensive.mocha.js',
     'tests/test-member-expression-narrowing.js',
     'tests/test-oneliner-guard.js',
     'tests/test-jsdoc-annotations.js',
@@ -217,6 +218,7 @@ const mochaFileSet = new Set([
     'test-scoped-completions.js',
     'test-jsdoc-inference-quickfix.mocha.js',
     'test-definition.mocha.js',
+    'test-hover-comprehensive.mocha.js',
 ]);
 
 function getBaseName(filePath) {
