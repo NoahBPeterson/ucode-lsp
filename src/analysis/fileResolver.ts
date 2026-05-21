@@ -22,8 +22,20 @@ export interface ModuleExport {
 
 export class FileResolver {
     private workspaceRoot: string;
-    private fileCache = new Map<string, FunctionDefinition[]>();
-    private exportCache = new Map<string, ModuleExport[]>();
+    // Caches keyed by file URI, tagged with the file's mtime so a changed file is
+    // re-parsed (avoids re-parsing unchanged files without serving stale results).
+    private fileCache = new Map<string, { mtimeMs: number; defs: FunctionDefinition[] }>();
+    private exportCache = new Map<string, { mtimeMs: number; exports: ModuleExport[] }>();
+
+    /** Modification time of the file behind a URI, or 0 if unavailable. */
+    private fileMtimeMs(fileUri: string): number {
+        try {
+            const fp = this.uriToFilePath(fileUri);
+            return fp ? fs.statSync(fp).mtimeMs : 0;
+        } catch {
+            return 0;
+        }
+    }
 
     constructor(workspaceRoot?: string) {
         this.workspaceRoot = workspaceRoot || process.cwd();
@@ -135,10 +147,11 @@ export class FileResolver {
      */
     findFunctionDefinition(fileUri: string, functionName: string): FunctionDefinition | null {
         try {
-            // Check cache first
+            // Check cache first (re-parse if the file changed on disk)
+            const mtimeMs = this.fileMtimeMs(fileUri);
             const cached = this.fileCache.get(fileUri);
-            if (cached) {
-                return cached.find(def => def.name === functionName) || null;
+            if (cached && cached.mtimeMs === mtimeMs) {
+                return cached.defs.find(def => def.name === functionName) || null;
             }
 
             // Load and parse file
@@ -146,7 +159,7 @@ export class FileResolver {
             if (!definitions) return null;
 
             // Cache the results
-            this.fileCache.set(fileUri, definitions);
+            this.fileCache.set(fileUri, { mtimeMs, defs: definitions });
 
             // Find the requested function
             return definitions.find(def => def.name === functionName) || null;
@@ -206,10 +219,11 @@ export class FileResolver {
                 return this.getBuiltinModuleExports(moduleName);
             }
 
-            // Check cache first
+            // Check cache first (re-parse if the file changed on disk)
+            const mtimeMs = this.fileMtimeMs(fileUri);
             const cached = this.exportCache.get(fileUri);
-            if (cached) {
-                return cached;
+            if (cached && cached.mtimeMs === mtimeMs) {
+                return cached.exports;
             }
 
             // Load and parse exports
@@ -217,7 +231,7 @@ export class FileResolver {
             if (!exports) return null;
 
             // Cache the results
-            this.exportCache.set(fileUri, exports);
+            this.exportCache.set(fileUri, { mtimeMs, exports });
             return exports;
         } catch (error) {
             console.error('Error getting module exports:', error);
@@ -1354,6 +1368,7 @@ export class FileResolver {
      */
     clearCache(): void {
         this.fileCache.clear();
+        this.exportCache.clear();
     }
 
     /**
@@ -1361,5 +1376,6 @@ export class FileResolver {
      */
     clearFileCache(fileUri: string): void {
         this.fileCache.delete(fileUri);
+        this.exportCache.delete(fileUri);
     }
 }
