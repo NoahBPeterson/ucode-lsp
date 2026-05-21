@@ -31,8 +31,16 @@ export class ArithmeticTypeInference {
    * Infer the result type of arithmetic operations (-, *, /, %)
    * These operations always attempt numeric conversion
    */
-  inferArithmeticType(leftType: UcodeType, rightType: UcodeType, _operator: string): UcodeType {
-    // All non-addition arithmetic operations follow numeric promotion rules
+  inferArithmeticType(leftType: UcodeType, rightType: UcodeType, operator: string): UcodeType {
+    // Division/modulo by null: a null divisor coerces to 0, so the operation is
+    // always division-by-zero — ucode yields Infinity/NaN, both typed `double`
+    // (verified against the runtime). This holds for every left operand, so it
+    // must be checked before the integer-promotion rules in inferNumericResultType.
+    if ((operator === '/' || operator === '%') && rightType === UcodeType.NULL) {
+      return UcodeType.DOUBLE;
+    }
+
+    // All other non-addition arithmetic operations follow numeric promotion rules
     return this.inferNumericResultType(leftType, rightType);
   }
   
@@ -100,117 +108,6 @@ export class ArithmeticTypeInference {
     ]);
     
     return validIntegerTypes.has(leftType) && validIntegerTypes.has(rightType);
-  }
-  
-  /**
-   * Check if arithmetic operation is valid (won't throw error)
-   */
-  isValidArithmeticOperation(_leftType: UcodeType, _rightType: UcodeType, _operator: string): boolean {
-    // ucode is very permissive - most operations don't throw errors, they just produce NaN
-    // Only completely invalid operations (like regex arithmetic) might cause issues
-    
-    // For now, assume all operations are "valid" (they execute, even if producing NaN)
-    return true;
-  }
-  
-  /**
-   * Get detailed explanation of arithmetic behavior
-   */
-  getArithmeticExplanation(leftType: UcodeType, rightType: UcodeType, operator: string): string {
-    if (operator === '+') {
-      if (leftType === UcodeType.STRING || rightType === UcodeType.STRING) {
-        return `String concatenation: converts both operands to strings`;
-      }
-    }
-    
-    // Check for type promotions
-    if (leftType === UcodeType.DOUBLE || rightType === UcodeType.DOUBLE) {
-      return `Numeric promotion: result promoted to double`;
-    }
-    
-    // Check for coercions
-    const coercions = [];
-    if (leftType === UcodeType.BOOLEAN) coercions.push('boolean → 0/1');
-    if (rightType === UcodeType.BOOLEAN) coercions.push('boolean → 0/1');
-    if (leftType === UcodeType.NULL) coercions.push('null → 0');
-    if (rightType === UcodeType.NULL) coercions.push('null → 0');
-    
-    if (coercions.length > 0) {
-      return `Type coercion: ${coercions.join(', ')}`;
-    }
-    
-    // Check for potential NaN results
-    if (this.canProduceFloatingPointSpecial(leftType, rightType)) {
-      return `May produce NaN due to invalid numeric conversion`;
-    }
-    
-    return `Standard arithmetic operation`;
-  }
-  
-  /**
-   * Get examples of arithmetic type inference
-   */
-  getArithmeticExamples(): Array<{
-    leftType: UcodeType;
-    rightType: UcodeType;
-    operator: string;
-    resultType: UcodeType;
-    example: string;
-    explanation: string;
-  }> {
-    return [
-      // Addition examples
-      {
-        leftType: UcodeType.STRING,
-        rightType: UcodeType.INTEGER,
-        operator: '+',
-        resultType: UcodeType.STRING,
-        example: '"hello" + 42 → "hello42"',
-        explanation: 'String concatenation'
-      },
-      {
-        leftType: UcodeType.INTEGER,
-        rightType: UcodeType.DOUBLE,
-        operator: '+',
-        resultType: UcodeType.DOUBLE,
-        example: '42 + 3.14 → 45.14',
-        explanation: 'Numeric promotion to double'
-      },
-      {
-        leftType: UcodeType.NULL,
-        rightType: UcodeType.INTEGER,
-        operator: '+',
-        resultType: UcodeType.INTEGER,
-        example: 'null + 42 → 42',
-        explanation: 'null coerces to 0'
-      },
-      
-      // Arithmetic examples
-      {
-        leftType: UcodeType.STRING,
-        rightType: UcodeType.INTEGER,
-        operator: '-',
-        resultType: UcodeType.DOUBLE,
-        example: '"abc" - 5 → NaN',
-        explanation: 'Invalid string conversion produces NaN'
-      },
-      {
-        leftType: UcodeType.BOOLEAN,
-        rightType: UcodeType.INTEGER,
-        operator: '*',
-        resultType: UcodeType.INTEGER,
-        example: 'true * 5 → 5',
-        explanation: 'Boolean coerces to 1'
-      },
-      {
-        leftType: UcodeType.ARRAY,
-        rightType: UcodeType.INTEGER,
-        operator: '/',
-        resultType: UcodeType.DOUBLE,
-        example: '[1,2,3] / 2 → NaN',
-        explanation: 'Array cannot convert to number'
-      }
-    ];
   }
 }
 

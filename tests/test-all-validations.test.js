@@ -139,6 +139,7 @@ const testFiles = [
     'tests/test-completion-exports.mocha.js',
     'tests/test-completion-contexts.mocha.js',
     'tests/test-open-buffer-resolution.mocha.js',
+    'tests/test-arithmetic-inference.mocha.js',
     'tests/test-member-expression-narrowing.js',
     'tests/test-oneliner-guard.js',
     'tests/test-jsdoc-annotations.js',
@@ -225,6 +226,7 @@ const mochaFileSet = new Set([
     'test-completion-exports.mocha.js',
     'test-completion-contexts.mocha.js',
     'test-open-buffer-resolution.mocha.js',
+    'test-arithmetic-inference.mocha.js',
 ]);
 
 function getBaseName(filePath) {
