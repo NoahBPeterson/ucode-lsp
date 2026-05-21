@@ -938,39 +938,9 @@ export function handleHover(
                     }
                 }
                 
-                // If still no symbol found, check if this might be a rest parameter in the current context
-                if (!symbol) {
-                    // Look for rest parameter usage by checking the text context
-                    const lineStart = text.lastIndexOf('\n', offset) + 1;
-                    const currentLineStart = Math.max(0, lineStart);
-                    const beforeCurrentLine = text.slice(0, currentLineStart);
-                    
-                    // Look for recent arrow function definitions with rest parameters
-                    // Pattern matches: (...word) or (anything, ...word) followed by =>
-                    const restParamPattern = new RegExp(`\\([^)]*\\.\\.\\.${word}[^)]*\\)\\s*=>`, 'g');
-                    const matches = [...beforeCurrentLine.matchAll(restParamPattern)];
-                    
-                    // If we find a rest parameter definition for this word recently, treat it as a rest parameter
-                    if (matches.length > 0) {
-                        const lastMatch = matches[matches.length - 1];
-                        const matchPosition = lastMatch.index || 0;
-                        
-                        // Only consider it if the rest parameter definition is within ~200 characters (same function context)
-                        if (offset - matchPosition < 200) {
-                            return {
-                                contents: {
-                                    kind: MarkupKind.Markdown,
-                                    value: `**(rest parameter)** **${word}**: \`array\`\n\nRest parameter - collects remaining arguments into an array`
-                                },
-                                range: {
-                                    start: document.positionAt(token.pos),
-                                    end: document.positionAt(token.end)
-                                }
-                            };
-                        }
-                    }
-                }
-                
+                // (Arrow/function rest parameters are registered in the symbol
+                // table with isRestParam and rendered by the symbol path below.)
+
                 if (symbol) {
                     const isAssignmentContext = tokenIndex >= 0 ? isLikelyAssignmentTarget(tokens, tokenIndex) : false;
                     const effectiveType = resolveVariableTypeForHover(symbol, offset, isAssignmentContext, analysisResult);
@@ -1230,18 +1200,20 @@ function detectMemberExpression(offset: number, tokens: any[]): { objectName: st
 }
 
 function getWordRangeAtPosition(text: string, offset: number): { start: number; end: number } | undefined {
-    const wordRegex = /[a-zA-Z_$][a-zA-Z0-9_$]*/g;
-    let match;
-    
-    while ((match = wordRegex.exec(text)) !== null) {
-        if (match.index <= offset && offset < match.index + match[0].length) {
-            return {
-                start: match.index,
-                end: match.index + match[0].length
-            };
-        }
-    }
-    
-    return undefined;
+    // Identifier-character scan around the offset (no regex). Used only by the
+    // error-fallback path, when lexing/analysis threw and there are no tokens.
+    const isIdentChar = (c: string) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+        || (c >= '0' && c <= '9') || c === '_' || c === '$';
+    if (offset < 0 || offset > text.length) return undefined;
+
+    let start = offset;
+    while (start > 0 && isIdentChar(text[start - 1]!)) start--;
+    let end = offset;
+    while (end < text.length && isIdentChar(text[end]!)) end++;
+
+    if (start === end) return undefined;               // not on a word
+    const first = text[start]!;
+    if (first >= '0' && first <= '9') return undefined; // identifiers don't start with a digit
+    return { start, end };
 }
 

@@ -67,6 +67,11 @@ describe('Hover (comprehensive e2e)', function () {
     ['object property across lines', "let o = {\n  fn: (a, b) =>\n    a + b\n};\n", 'fn:', ['Arrow function']],
     ['import name (single line)', "import { open as o } from 'fs';\no('/x', 'r');\n", 'open as', ['open']],
     ['import name (multi-line)', "import {\n  open as o\n} from 'fs';\n", 'open as', ['open']],
+
+    // Arrow-function rest params resolve via the symbol table (isRestParam),
+    // not the old text scan.
+    ['arrow rest parameter', "let f = (...rest) => rest[0];\n", 'rest[0]', ['rest parameter', 'array']],
+    ['arrow rest param (block body)', "let g = (a, ...more) => {\n  return more[0];\n};\n", 'more[0]', ['rest parameter', 'array']],
   ];
 
   for (const [label, code, anchor, expected] of cases) {
