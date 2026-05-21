@@ -4,7 +4,6 @@ import {
     Range
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import * as fs from 'fs';
 import { UcodeLexer, TokenType } from './lexer';
 import { SemanticAnalysisResult, Symbol, SymbolType } from './analysis';
 import { FileResolver } from './analysis/fileResolver';
@@ -205,8 +204,11 @@ function locateFunctionDefinition(targetUri: string, functionName: string, fileR
     if (!functionDef) return null;
 
     // Convert byte offsets in the (possibly chained-to) file to LSP positions.
+    // Use the same buffer-or-disk content FileResolver parsed, so an unsaved
+    // imported file maps offsets to the right lines.
     try {
-        const targetDocContent = fs.readFileSync(curUri.replace('file://', ''), 'utf8');
+        const targetDocContent = fileResolver.getFileContent(curUri);
+        if (targetDocContent === null) return null;
         const positionAt = (offset: number) => {
             const clamped = Math.max(0, Math.min(offset, targetDocContent.length));
             const slice = targetDocContent.slice(0, clamped);

@@ -3,6 +3,7 @@ import { UcodeParser } from '../parser';
 import { FunctionDeclarationNode, AstNode, ExportDefaultDeclarationNode, ExportNamedDeclarationNode, IdentifierNode } from '../ast/nodes';
 import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
 import { UcodeType, UcodeDataType } from './symbolTable';
+import { getOpenDocumentContent } from './openDocuments';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -30,8 +31,20 @@ export class FileResolver {
     private fileCache = new Map<string, { content: string; defs: FunctionDefinition[] }>();
     private exportCache = new Map<string, { content: string; exports: ModuleExport[] }>();
 
-    /** Read the file behind a URI, or null if unavailable. */
+    /** Public buffer-or-disk read (prefers the open editor buffer) for callers
+     *  that need the same content FileResolver parses — e.g. offset→position
+     *  conversion in go-to-definition. */
+    getFileContent(fileUri: string): string | null {
+        return this.readFileContent(fileUri);
+    }
+
+    /**
+     * Content of the file behind a URI, or null if unavailable. Prefers the live
+     * editor buffer (so unsaved cross-file edits are seen) and falls back to disk.
+     */
     private readFileContent(fileUri: string): string | null {
+        const open = getOpenDocumentContent(fileUri);
+        if (open !== undefined) return open;
         try {
             const fp = this.uriToFilePath(fileUri);
             if (!fp || !fs.existsSync(fp)) return null;
@@ -186,7 +199,7 @@ export class FileResolver {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
 
-            const content = fs.readFileSync(filePath, 'utf8');
+            const content = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf8');
             const lexer = new UcodeLexer(content, { rawMode: true });
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, content);
@@ -276,7 +289,7 @@ export class FileResolver {
                 return null;
             }
 
-            const content = fs.readFileSync(filePath, 'utf8');
+            const content = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf8');
             
             // Parse the file
             const lexer = new UcodeLexer(content, { rawMode: true });
@@ -351,7 +364,7 @@ export class FileResolver {
             }
 
             // Read and parse the file
-            const source = fs.readFileSync(filePath, 'utf-8');
+            const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
             const lexer = new UcodeLexer(source, { rawMode: true });
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, source);
@@ -469,7 +482,7 @@ export class FileResolver {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
 
-            const source = fs.readFileSync(filePath, 'utf-8');
+            const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
             const lexer = new UcodeLexer(source, { rawMode: true });
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, source);
@@ -607,7 +620,7 @@ export class FileResolver {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
 
-            const source = fs.readFileSync(filePath, 'utf-8');
+            const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
             const lexer = new UcodeLexer(source, { rawMode: true });
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, source);
@@ -730,7 +743,7 @@ export class FileResolver {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
 
-            const source = fs.readFileSync(filePath, 'utf-8');
+            const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
             const lexer = new UcodeLexer(source, { rawMode: true });
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, source);

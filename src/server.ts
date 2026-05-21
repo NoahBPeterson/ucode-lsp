@@ -30,6 +30,7 @@ import { SemanticAnalyzer, SemanticAnalysisResult } from './analysis';
 import { UcodeParser } from './parser';
 import { UcodeLexer } from './lexer';
 import { FileResolver } from './analysis/fileResolver';
+import { setOpenDocumentContent, clearOpenDocumentContent } from './analysis/openDocuments';
 
 const connection = createConnection(ProposedFeatures.all);
 
@@ -253,11 +254,15 @@ connection.onInitialized(async () => {
     scanAndAnalyzeWorkspace();
 });
 
-documents.onDidClose((_e: TextDocumentChangeEvent<TextDocument>) => {
-    // Document closed - could clean up any document-specific data here
+documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
+    // Drop the open-buffer override so cross-file resolution falls back to disk.
+    clearOpenDocumentContent(e.document.uri);
 });
 
 documents.onDidChangeContent(async (change: TextDocumentChangeEvent<TextDocument>) => {
+    // Keep the open-buffer registry current immediately (not debounced) so other
+    // files resolving imports of this one see the latest, unsaved content.
+    setOpenDocumentContent(change.document.uri, change.document.getText());
     // Debounce analysis — avoid re-running full semantic analysis on every keystroke
     const uri = change.document.uri;
     const existingTimer = analysisTimers.get(uri);
@@ -271,6 +276,7 @@ documents.onDidChangeContent(async (change: TextDocumentChangeEvent<TextDocument
 });
 
 documents.onDidOpen(async (change: TextDocumentChangeEvent<TextDocument>) => {
+    setOpenDocumentContent(change.document.uri, change.document.getText());
     await validateAndAnalyzeDocument(change.document);
 });
 
