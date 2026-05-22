@@ -146,18 +146,10 @@ export class SemanticAnalyzer extends BaseVisitor {
           );
           const dfResult = dataFlowAnalyzer.analyze();
 
-          // Create query engine for LSP features to use
-          this.cfgQueryEngine = new CFGQueryEngine(
-            this.cfg,
-            cfgBuilder.getNodeToBlockMap()
-          );
+          // Create query engine for reachability (unreachable-code) queries
+          this.cfgQueryEngine = new CFGQueryEngine(this.cfg);
 
-          // Pass CFG query engine to TypeChecker for flow-sensitive type checking
-          if (this.typeChecker) {
-            this.typeChecker.setCFGQueryEngine(this.cfgQueryEngine);
-          }
-
-          // Filter out false "Undefined function" errors for variables with unknown type from CFG
+          // Filter out false "Undefined function" errors for variables with unknown type
           this.filterUndefinedFunctionErrorsWithCFG();
 
           // Detect unreachable code
@@ -172,9 +164,6 @@ export class SemanticAnalyzer extends BaseVisitor {
           console.error('CFG analysis error:', cfgError);
           this.cfg = null;
           this.cfgQueryEngine = null;
-          if (this.typeChecker) {
-            this.typeChecker.setCFGQueryEngine(null);
-          }
         }
       }
 
@@ -3174,7 +3163,7 @@ private addDiagnostic(
       try {
         const builder = new CFGBuilder(funcNode.id?.name || 'anonymous', terminators);
         const cfg = builder.build(funcNode.body);
-        const engine = new CFGQueryEngine(cfg, builder.getNodeToBlockMap());
+        const engine = new CFGQueryEngine(cfg);
         this.emitUnreachableDiagnostics(engine, cfg);
         this.narrowFunctionReturnType(funcNode, engine, cfg);
       } catch (_) {
@@ -3317,15 +3306,6 @@ private addDiagnostic(
         return false; // Filter out - we don't know if it's callable
       }
 
-      // Also check CFG for type information
-      const cfgType = this.cfgQueryEngine!.getTypeAtPosition(funcName, error.start);
-
-      // If CFG says the type is unknown (not undefined/missing), suppress the error
-      // Unknown means we don't know if it's callable or not, so don't report error
-      if (cfgType === 'unknown') {
-        return false; // Filter out this error
-      }
-
       return true; // Keep the error
     });
 
@@ -3354,16 +3334,8 @@ private addDiagnostic(
     const varName: string = diagnosticData.variableName;
     const argumentOffset: number = diagnosticData.argumentOffset;
 
-    // Query CFG for the variable's type at this position
-    const cfgType = this.cfgQueryEngine.getTypeAtPosition(varName, argumentOffset);
-
-    // Check if CFG type satisfies any of the expected types
     const expectedTypes = diagnosticData.expectedTypes as UcodeType[];
     const typeNarrowing = this.typeChecker.getTypeNarrowing();
-
-    if (cfgType && typeNarrowing.isSubtypeOfUnion(cfgType, expectedTypes)) {
-      return true; // Filter this diagnostic
-    }
 
     // Use type checker's comprehensive AST-based guard detection
     // This handles null checks, truthy guards, builtin call guards, etc.

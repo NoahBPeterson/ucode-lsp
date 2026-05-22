@@ -271,25 +271,7 @@ function getUnifiedMemberHover(
     const { objectName, propertyName } = memberInfo;
 
     // Look up the object in the symbol table
-    let symbol = analysisResult.symbolTable.lookup(objectName);
-
-    // Try CFG-based lookup if symbol table fails
-    if (!symbol && analysisResult.cfgQueryEngine) {
-        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, 0);
-        if (cfgType) {
-            symbol = {
-                name: objectName,
-                type: SymbolType.VARIABLE,
-                dataType: cfgType,
-                scope: 0,
-                declared: true,
-                used: true,
-                node: {} as any,
-                declaredAt: 0,
-                usedAt: [0]
-            } as UcodeSymbol;
-        }
-    }
+    const symbol = analysisResult.symbolTable.lookup(objectName);
 
     if (!symbol) return null;
 
@@ -601,23 +583,6 @@ export function handleHover(
                 if (!symbol) {
                     symbol = analysisResult.symbolTable.lookup(objectName);
                 }
-                if (analysisResult.cfgQueryEngine && !symbol) {
-                    const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, offset);
-                    if (cfgType) {
-                        // Create a temporary symbol with CFG-inferred type
-                        symbol = {
-                            name: objectName,
-                            type: SymbolType.VARIABLE,
-                            dataType: cfgType,
-                            scope: 0,
-                            declared: true,
-                            used: true,
-                            node: {} as any,
-                            declaredAt: offset,
-                            usedAt: [offset]
-                        } as UcodeSymbol;
-                    }
-                }
                 if (symbol && symbol.propertyTypes && symbol.propertyTypes.has(memberName)) {
                     const propertyType = symbol.propertyTypes.get(memberName)!;
                     const typeString = typeToString(propertyType);
@@ -788,26 +753,6 @@ export function handleHover(
                     symbol = analysisResult.symbolTable.lookup(word);
                 }
 
-                // Try CFG-based type lookup for flow-sensitive function types
-                if (!symbol && analysisResult.cfgQueryEngine) {
-                    const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(word, offset);
-                    if (cfgType) {
-                        // If CFG found a type, create a symbol with it
-                        // For function calls, the CFG type may be the function itself or its return type
-                        symbol = {
-                            name: word,
-                            type: SymbolType.VARIABLE,
-                            dataType: cfgType,
-                            scope: 0,
-                            declared: true,
-                            used: true,
-                            node: {} as any,
-                            declaredAt: offset,
-                            usedAt: [offset]
-                        } as UcodeSymbol;
-                    }
-                }
-
                 if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
                     // Show return type for function calls
                     if (symbol.returnType) {
@@ -896,46 +841,10 @@ export function handleHover(
             if (analysisResult) {
                 // Try position-aware lookup first for correct scoping (local vars shadow globals)
                 let symbol = analysisResult.symbolTable.lookupAtPosition(word, offset);
-                const hadPositionMatch = !!symbol;
 
                 // Fall back to regular lookup if position-aware lookup fails
                 if (!symbol) {
                     symbol = analysisResult.symbolTable.lookup(word);
-                }
-
-                // Try CFG-based flow-sensitive type lookup
-                if (!symbol && analysisResult.cfgQueryEngine) {
-                    const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(word, offset);
-                    if (cfgType) {
-                        // Create a temporary symbol with CFG-inferred type
-                        symbol = {
-                            name: word,
-                            type: SymbolType.VARIABLE,
-                            dataType: cfgType,
-                            scope: 0,
-                            declared: true,
-                            used: true,
-                            node: {} as any,
-                            declaredAt: offset,
-                            usedAt: [offset]
-                        } as UcodeSymbol;
-                    }
-                }
-
-                // If we have a symbol from non-positional lookup, check if CFG has more precise type.
-                // Skip CFG override when we already have a position-aware match (it's scope-correct).
-                if (symbol && !hadPositionMatch && analysisResult.cfgQueryEngine) {
-                    const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(word, offset);
-                    if (cfgType !== undefined && cfgType !== symbol.dataType) {
-                        // CFG provides flow-sensitive type — use it even if UNKNOWN.
-                        // CFG returning UNKNOWN means the variable genuinely has no known type
-                        // at this position (e.g., `let cpus;` before a later `cpus = map(...)`).
-                        // Only skip when CFG has no data at all (returns undefined).
-                        symbol = {
-                            ...symbol,
-                            dataType: cfgType
-                        };
-                    }
                 }
                 
                 // (Arrow/function rest parameters are registered in the symbol

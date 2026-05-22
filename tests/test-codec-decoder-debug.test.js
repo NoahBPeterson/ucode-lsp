@@ -43,21 +43,6 @@ decode_tlv({buf: {pos: () => ({})}}, 1, 0, 100);
     console.log('CFG built:', !!analysisResult.cfg);
     console.log('CFG query engine:', !!analysisResult.cfgQueryEngine);
 
-    if (analysisResult.cfgQueryEngine) {
-        // Find the position of "decode" in the function call
-        const decodeCallPos = code.indexOf('decode(msg.buf');
-        console.log('Position of decode call:', decodeCallPos);
-
-        // Query CFG for type at that position
-        const typeAtCall = analysisResult.cfgQueryEngine.getTypeAtPosition('decode', decodeCallPos);
-        console.log('Type of "decode" at call site from CFG:', typeAtCall);
-
-        // Also check at declaration
-        const decodeDeclPos = code.indexOf('const decode =');
-        const typeAtDecl = analysisResult.cfgQueryEngine.getTypeAtPosition('decode', decodeDeclPos);
-        console.log('Type of "decode" at declaration from CFG:', typeAtDecl);
-    }
-
     console.log('\n=== SYMBOL TABLE ===');
     const decodeSymbol = analysisResult.symbolTable.lookup('decode');
     console.log('Symbol table has "decode" (global lookup):', !!decodeSymbol);

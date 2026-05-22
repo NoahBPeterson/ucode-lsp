@@ -74,36 +74,13 @@ function getModuleExportCompletions(moduleUri: string, objectName: string): Comp
 }
 
 /**
- * Helper to lookup a symbol with CFG fallback
- * First tries symbol table, then falls back to CFG-based type inference
+ * Helper to look up a symbol for an object name (e.g. for member completion).
  */
-function lookupSymbolWithCFG(
+function lookupSymbol(
     objectName: string,
-    analysisResult: SemanticAnalysisResult,
-    offset: number = 0
+    analysisResult: SemanticAnalysisResult
 ): UcodeSymbol | undefined {
-    // Try symbol table first
-    let symbol = analysisResult.symbolTable.lookup(objectName);
-
-    // Try CFG-based lookup if symbol table fails
-    if (!symbol && analysisResult.cfgQueryEngine) {
-        const cfgType = analysisResult.cfgQueryEngine.getTypeAtPosition(objectName, offset);
-        if (cfgType) {
-            symbol = {
-                name: objectName,
-                type: SymbolType.VARIABLE,
-                dataType: cfgType,
-                scope: 0,
-                declared: true,
-                used: true,
-                node: {} as any,
-                declaredAt: offset,
-                usedAt: [offset]
-            } as UcodeSymbol;
-        }
-    }
-
-    return symbol || undefined;
+    return analysisResult.symbolTable.lookup(objectName) || undefined;
 }
 
 export function handleCompletion(
@@ -394,7 +371,7 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
 function getUnifiedModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
     if (!analysisResult || !analysisResult.symbolTable) return [];
 
-    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult);
     if (!symbol) return [];
 
     // Determine the module name from multiple possible symbol shapes:
@@ -465,7 +442,7 @@ function getUnifiedModuleCompletions(objectName: string, analysisResult?: Semant
 function getUnifiedObjectTypeCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
     if (!analysisResult || !analysisResult.symbolTable) return [];
 
-    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult);
     if (!symbol || !symbol.dataType) return [];
 
     // Detect the object type from the symbol's dataType
@@ -621,7 +598,7 @@ function getFallbackNamespaceCompletions(objectName: string, analysisResult?: Se
         return [];
     }
 
-    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult);
 
     // Only provide fallback completions if we have a symbol with valid import information
     if (!symbol || !symbol.importedFrom || symbol.type !== SymbolType.IMPORTED) {
@@ -642,7 +619,7 @@ function getDefaultImportCompletions(objectName: string, analysisResult?: Semant
         return [];
     }
 
-    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -695,7 +672,7 @@ function getNamespaceImportCompletions(objectName: string, analysisResult?: Sema
         return [];
     }
 
-    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -724,7 +701,7 @@ function getPropertyChainCompletions(objectName: string, propertyChain: string[]
         return [];
     }
 
-    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -788,7 +765,7 @@ function getVariableCompletions(objectName: string, analysisResult?: SemanticAna
         return [];
     }
 
-    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult);
     if (!symbol) {
         return [];
     }
@@ -1005,7 +982,7 @@ function getNl80211ConstObjectCompletions(objectName: string, analysisResult?: S
         return [];
     }
 
-    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult);
     if (!symbol) {
         console.log(`[NL80211_CONST_COMPLETION] Symbol not found: ${objectName}`);
         return [];
@@ -1054,7 +1031,7 @@ function getRtnlConstObjectCompletions(objectName: string, analysisResult?: Sema
         console.log(`[RTNL_CONST_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
         return [];
     }
-    const symbol = lookupSymbolWithCFG(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult);
     if (!symbol) {
         console.log(`[RTNL_CONST_COMPLETION] Symbol not found: ${objectName}`);
         return [];

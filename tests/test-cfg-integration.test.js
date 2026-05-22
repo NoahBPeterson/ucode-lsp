@@ -149,26 +149,6 @@ describe('CFG Integration - Type States', () => {
 });
 
 describe('CFG Integration - Query Engine', () => {
-  test('should query CFG info', () => {
-    const code = 'let x = 5;';
-    const { queryEngine } = analyzeWithCFG(code);
-
-    const info = queryEngine.getCFGInfo();
-    expect(info.blockCount).toBeGreaterThan(0);
-    expect(info.entryBlockId).toBeDefined();
-    expect(info.exitBlockId).toBeDefined();
-  });
-
-  test('should detect reachable blocks', () => {
-    const code = 'let x = 5; if (true) { x = 10; }';
-    const { cfg, queryEngine } = analyzeWithCFG(code);
-
-    // All blocks should be reachable
-    for (const block of cfg.blocks) {
-      expect(queryEngine.isBlockReachable(block)).toBe(true);
-    }
-  });
-
   test('should get unreachable blocks', () => {
     const code = 'let x = 5; return x;';
     const { queryEngine } = analyzeWithCFG(code);

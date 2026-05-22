@@ -54,7 +54,6 @@ import { Option } from 'effect';
 import { isKnownObjectType, isKnownModule, MODULE_REGISTRIES, OBJECT_REGISTRIES, type KnownObjectType } from './moduleDispatch';
 import { TypeNarrowingEngine } from './typeNarrowing';
 import { FlowSensitiveTypeTracker } from './flowSensitiveTyping';
-import { CFGQueryEngine } from './cfg/queryEngine';
 
 // Builtins that return null when their key argument is null/wrong-type
 const NULL_PROPAGATING_BUILTINS: Record<string, number> = {
@@ -105,7 +104,6 @@ export interface TypeWarning {
 
 export class TypeChecker {
   private symbolTable: SymbolTable;
-  private cfgQueryEngine: CFGQueryEngine | null = null;
   private builtinFunctions: Map<string, FunctionSignature>;
   private errors: TypeError[] = [];
   private warnings: TypeWarning[] = [];
@@ -122,8 +120,7 @@ export class TypeChecker {
   private transitiveTypeAliases: string[] = [];
   private diagnosticTypeAliases: Map<string, string[]> = new Map();
 
-  constructor(symbolTable: SymbolTable, cfgQueryEngine?: CFGQueryEngine) {
-    this.cfgQueryEngine = cfgQueryEngine || null;
+  constructor(symbolTable: SymbolTable) {
     this.symbolTable = symbolTable;
     this.builtinFunctions = new Map();
     this.builtinValidator = new BuiltinValidator();
@@ -140,13 +137,6 @@ export class TypeChecker {
     this.flowSensitiveTracker.setActiveGuardCallback(this.getActiveGuardType.bind(this));
 
     this.initializeBuiltins();
-  }
-
-  /**
-   * Set the CFG query engine for flow-sensitive type lookups
-   */
-  public setCFGQueryEngine(cfgQueryEngine: CFGQueryEngine | null): void {
-    this.cfgQueryEngine = cfgQueryEngine;
   }
 
   public setTruthinessDepth(depth: number): void {
@@ -819,22 +809,6 @@ export class TypeChecker {
   }
 
   private getFullTypeFromNode(node: AstNode): UcodeDataType | null {
-    // For Identifiers, check CFG for flow-sensitive narrowed types
-    if (node.type === 'Identifier' && this.cfgQueryEngine) {
-      const varName = (node as IdentifierNode).name;
-      const cfgType = this.cfgQueryEngine.getTypeAtPosition(varName, node.start);
-
-      if (cfgType) {
-        // Check if active guard narrows further
-        const guardType = this.getActiveGuardType(varName, node.start);
-        if (guardType) {
-          return guardType;
-        }
-        // CFG has a narrowed type for this variable at this position
-        return cfgType;
-      }
-    }
-
     // Extract full type information stored during identifier checking
     return (node as any)._fullType || null;
   }
@@ -1052,26 +1026,7 @@ export class TypeChecker {
 
       // First check if it's a user-defined function, imported function, or variable containing a function
       // Use lookupAtPosition to properly handle local variables in nested scopes
-      let symbol = this.symbolTable.lookupAtPosition(funcName, node.start);
-
-      // Try CFG-based lookup if symbol table fails
-      if (!symbol && this.cfgQueryEngine) {
-        const cfgType = this.cfgQueryEngine.getTypeAtPosition(funcName, node.start);
-        if (cfgType) {
-          // Create a temporary symbol with CFG-inferred type
-          symbol = {
-            name: funcName,
-            type: SymbolType.VARIABLE,
-            dataType: cfgType,
-            scope: 0,
-            declared: true,
-            used: true,
-            node: {} as any,
-            declaredAt: node.start,
-            usedAt: [node.start]
-          } as UcodeSymbol;
-        }
-      }
+      const symbol = this.symbolTable.lookupAtPosition(funcName, node.start);
 
       if (symbol) {
         // Check for functions and imported functions
