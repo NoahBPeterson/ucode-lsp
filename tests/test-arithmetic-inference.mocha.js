@@ -171,4 +171,46 @@ describe('Arithmetic type inference (e2e, vs ucode oracle)', function () {
       );
     });
   });
+
+  // Unions must reach arithmetic from EVERY source, not just direct ternaries:
+  // a function return (via a variable AND as a direct call operand) and an array
+  // element. Exact match (extract the backtick type) so a stray `unknown` — the
+  // pre-fix behaviour for these sources — can't pass.
+  const srcCode =
+    'function ff(c) { return c ? 1 : "s"; }\n' + // returns integer | string
+    'let arr = [1, 2];\n' +
+    'let sv = ff(true) + 1;\n' +   // call return → var-free operand
+    'let svv = ff(true);\n' +
+    'let sv2 = svv - 1;\n' +       // call return → through a variable
+    'let sc = ff(1) + ff(0);\n' +  // union on BOTH operands (two calls)
+    'let se = arr[0] - 1;\n';      // array element (integer | null)
+  const srcCases = [
+    ['sv', 'f() + int', 'integer | string'],       // int+1=int, str+1=str
+    ['sv2', 'v - int (v = f())', 'integer | double'], // int-1=int, str-1=double
+    ['sc', 'f() + f()', 'integer | string'],       // union × union, distributed
+    ['se', 'arr[0] - int', 'integer'],             // (int|null)-1 → int both ways
+  ];
+
+  const srcType = (h) => {
+    const t = hoverText(h);
+    if (!t) return null;
+    const m = t.match(/`([^`]+)`/);
+    return m ? m[1].trim() : t.trim();
+  };
+
+  let srcFp;
+  before(function () {
+    srcFp = path.join(root, 'arith-sources.uc');
+    fs.writeFileSync(srcFp, srcCode);
+  });
+
+  srcCases.forEach(([name, expr, expected]) => {
+    it(`${expr} → ${expected} (union source)`, async () => {
+      const p = clickAt(srcCode, `${name} =`);
+      const h = await getHover(srcCode, srcFp, p.line, p.character);
+      const actual = srcType(h);
+      assert.ok(actual, `expected a hover for \`${expr}\`, got null`);
+      assert.strictEqual(actual, expected, `\`${expr}\` should infer exactly "${expected}"`);
+    });
+  });
 });

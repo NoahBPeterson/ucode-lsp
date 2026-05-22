@@ -62,7 +62,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private switchScopes: number[] = []; // Track switch statement scope levels
   private commonjsImports: Map<string, { importedFrom: string; importSpecifier: string }> = new Map();
   private currentFunctionNode: FunctionDeclarationNode | null = null;
-  private functionReturnTypes = new Map<FunctionDeclarationNode, { node: ReturnStatementNode, type: UcodeType }[]>();
+  private functionReturnTypes = new Map<FunctionDeclarationNode, { node: ReturnStatementNode, type: UcodeDataType }[]>();
   private functionReturnPropertyTypes = new Map<FunctionDeclarationNode, Map<string, UcodeDataType>[]>();
   private processingFunctionCallCallee = false; // Track when processing function call callee
   private cfg: ControlFlowGraph | null = null;
@@ -1899,9 +1899,17 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
     if (this.options.enableControlFlowAnalysis) {
       if (this.currentFunctionNode) {
-        // Determine the type of the returned value.
-        const returnType = node.argument ? this.typeChecker.checkNode(node.argument) : UcodeType.NULL;
-        
+        // Determine the type of the returned value. Prefer the full type so a
+        // union returned by the function (e.g. `return c ? 1 : "s"`) reaches
+        // callers as a real UnionType and not a display string — otherwise
+        // downstream consumers (union-aware arithmetic) can't destructure it.
+        // checkNode populates _fullType as a side effect.
+        let returnType: UcodeDataType = UcodeType.NULL;
+        if (node.argument) {
+          const baseType = this.typeChecker.checkNode(node.argument);
+          returnType = ((node.argument as any)._fullType as UcodeDataType) ?? baseType;
+        }
+
         // Store it for later inference.
         this.functionReturnTypes.get(this.currentFunctionNode)?.push({ node, type: returnType });
 

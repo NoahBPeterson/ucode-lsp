@@ -249,14 +249,14 @@ export class TypeCompatibilityChecker {
     return createUnionType([consequentType, alternateType]);
   }
 
-  getCommonType(types: UcodeType[]): UcodeDataType {
+  getCommonType(types: UcodeDataType[]): UcodeDataType {
     if (types.length === 0) {
       return UcodeType.NULL; // No return statement means the function returns null.
     }
 
     // Filter out undefined types
     const validTypes = types.filter(t => t !== undefined);
-    
+
     if (validTypes.length === 0) {
       return UcodeType.NULL;
     }
@@ -267,14 +267,16 @@ export class TypeCompatibilityChecker {
 
     // For dynamic languages like ucode, we want to preserve type information
     // rather than defaulting to UNKNOWN for mixed types
-    
+
     // Check if all types are numeric - if so, promote to the widest numeric type
-    const allNumeric = validTypes.every(t => this.isNumericType(t));
+    const allNumeric = validTypes.every(t => this.isNumericType(t as UcodeType));
     if (allNumeric) {
       return validTypes.some(t => t === UcodeType.DOUBLE) ? UcodeType.DOUBLE : UcodeType.INTEGER;
     }
 
-    // For truly mixed types, create a union type
-    return createUnionType(validTypes);
+    // For truly mixed types, create a union — flattening any union inputs into
+    // their members so a branch that itself returns a union (e.g. `int | null`)
+    // doesn't produce a nested union.
+    return createUnionType(validTypes.flatMap(t => getUnionTypes(t)));
   }
 }

@@ -1044,6 +1044,10 @@ export class TypeChecker {
           
           // For user-defined functions and other imported functions, return their return type
           if (symbol.returnType) {
+            // Preserve the full return type (real unions) on the call node, so a
+            // call used directly as an operand (e.g. `f() + g()`) carries the
+            // union for union-aware consumers — not just when assigned to a var.
+            (node as any)._fullType = symbol.returnType;
             return this.dataTypeToUcodeType(symbol.returnType);
           } else {
             // Fallback for functions without explicit return type
@@ -2320,7 +2324,7 @@ export class TypeChecker {
     return false;
   }
 
-  getCommonReturnType(types: UcodeType[]): UcodeDataType {
+  getCommonReturnType(types: UcodeDataType[]): UcodeDataType {
     return this.typeCompatibility.getCommonType(types);
   }
 
