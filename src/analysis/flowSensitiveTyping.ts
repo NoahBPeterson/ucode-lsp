@@ -3,7 +3,7 @@
  * Handles type narrowing within conditional blocks and control flow
  */
 
-import { UcodeType, UcodeDataType, SymbolTable, getUnionTypes } from './symbolTable';
+import { UcodeType, UcodeDataType, SymbolTable, getUnionTypes, singleTypeToBase } from './symbolTable';
 import { TypeNarrowingEngine } from './typeNarrowing';
 import { AstNode, IdentifierNode, BinaryExpressionNode, IfStatementNode, CallExpressionNode } from '../ast/nodes';
 
@@ -509,15 +509,18 @@ export class FlowSensitiveTypeTracker {
         const originalTypes = getUnionTypes(originalType);
 
         // For OR guards: a type satisfies if it satisfies ANY guard
-        // Check each guard to see if ALL types satisfy it (making it useless for narrowing)
+        // Check each guard to see if ALL types satisfy it (making it useless for narrowing).
+        // Compare the member's BASE type: a union member may be a refined form
+        // (e.g. ArrayType `array<integer>`) while guard.testedType is the bare enum.
         const satisfyingTypes = originalTypes.filter(type => {
+          const base = singleTypeToBase(type);
           return allGuards.some(guard => {
             if (guard.isNegative) {
               // Negative guard: type satisfies if it's NOT the guarded type
-              return type !== guard.testedType;
+              return base !== guard.testedType;
             } else {
               // Positive guard: type satisfies if it IS the guarded type
-              return type === guard.testedType;
+              return base === guard.testedType;
             }
           });
         });
@@ -527,7 +530,7 @@ export class FlowSensitiveTypeTracker {
         const hasTautology = allGuards.some(guard => {
           if (guard.isNegative) {
             // Negative guard is a tautology if the tested type is NOT in the original union
-            return !originalTypes.includes(guard.testedType);
+            return !originalTypes.some(t => singleTypeToBase(t) === guard.testedType);
           }
           return false;
         });
@@ -537,14 +540,11 @@ export class FlowSensitiveTypeTracker {
           return null;
         }
 
-        // Filter effective guards for expression building
-        const effectiveGuards = allGuards.filter(guard => {
-          if (guard.isNegative) {
-            return originalTypes.includes(guard.testedType);
-          } else {
-            return originalTypes.includes(guard.testedType);
-          }
-        });
+        // Filter effective guards for expression building. Match on the base
+        // type so a guard for "array" still applies to an `array<integer>` member.
+        const effectiveGuards = allGuards.filter(guard =>
+          originalTypes.some(t => singleTypeToBase(t) === guard.testedType)
+        );
 
         if (effectiveGuards.length === 0) {
           return null;

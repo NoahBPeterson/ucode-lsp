@@ -3069,8 +3069,11 @@ export class TypeChecker {
             }
           }
 
-          // For OR guards: a type satisfies the condition if it satisfies ANY guard
+          // For OR guards: a type satisfies the condition if it satisfies ANY guard.
+          // Compare the member's BASE type — a union member may be a refined form
+          // (e.g. ArrayType `array<integer>`) while narrowToType is the bare enum.
           const satisfyingTypes = originalTypes.filter(type => {
+            const base = singleTypeToBase(type);
             return allGuards.some(guard => {
               if (!guard.narrowToType) {
                 return false;
@@ -3078,10 +3081,10 @@ export class TypeChecker {
 
               if (guard.isNegative) {
                 // Negative guard: type satisfies if it's NOT the guarded type
-                return type !== guard.narrowToType;
+                return base !== guard.narrowToType;
               } else {
                 // Positive guard: type satisfies if it IS the guarded type
-                return type === guard.narrowToType;
+                return base === guard.narrowToType;
               }
             });
           });
@@ -3093,7 +3096,7 @@ export class TypeChecker {
             }
             if (guard.isNegative) {
               // Negative guard is a tautology if the tested type is NOT in the original union
-              return !originalTypes.includes(guard.narrowToType);
+              return !originalTypes.some(t => singleTypeToBase(t) === guard.narrowToType);
             }
             return false;
           });
@@ -3108,7 +3111,7 @@ export class TypeChecker {
             if (!guard.narrowToType) {
               return false;
             }
-            return originalTypes.includes(guard.narrowToType);
+            return originalTypes.some(t => singleTypeToBase(t) === guard.narrowToType);
           });
 
           if (effectiveGuards.length === 0) {
