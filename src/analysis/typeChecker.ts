@@ -538,19 +538,20 @@ export class TypeChecker {
         // regex operand). Result type is unaffected — this is just a warning.
         this.checkNaNArithmetic(node, node.operator, leftType, rightType);
 
-        // Base-type fast path: when neither operand is a union, the result is a
-        // single concrete type — behaves exactly as the scalar inference, and we
-        // leave _fullType untouched (ucode is permissive; no errors here).
-        const leftFullType: UcodeDataType = (node.left as any)._fullType || leftType;
-        const rightFullType: UcodeDataType = (node.right as any)._fullType || rightType;
-        if (!isUnionType(leftFullType) && !isUnionType(rightFullType)) {
-          return node.operator === '+'
-            ? arithmeticTypeInference.inferAdditionType(leftType, rightType)
-            : arithmeticTypeInference.inferArithmeticType(leftType, rightType, node.operator);
+        let leftFullType: UcodeDataType = (node.left as any)._fullType || leftType;
+        let rightFullType: UcodeDataType = (node.right as any)._fullType || rightType;
+
+        // Every operator except `+` coerces a string operand to a number: a
+        // string literal classifies to int/double by its contents, an unknown
+        // string to `integer | double`. (`+` with a string is concatenation.)
+        if (node.operator !== '+') {
+          leftFullType = this.coerceStringForArithmetic(node.left, leftFullType);
+          rightFullType = this.coerceStringForArithmetic(node.right, rightFullType);
         }
 
-        // Union operand(s): distribute the operation over the union members so
-        // e.g. `(integer | string) + 1` yields `integer | string`, not `double`.
+        // Distribute over union members so e.g. `(integer | string) + 1` yields
+        // `integer | string`. The full-type path also handles the plain
+        // single-type case (it collapses to one member).
         const result = node.operator === '+'
           ? arithmeticTypeInference.inferAdditionFullType(leftFullType, rightFullType)
           : arithmeticTypeInference.inferArithmeticFullType(leftFullType, rightFullType, node.operator);
@@ -645,6 +646,16 @@ export class TypeChecker {
     // yield NaN (e.g. -[1], ++{}). ucode doesn't throw, so warn rather than error.
     if (node.operator === '+' || node.operator === '-' || node.operator === '++' || node.operator === '--') {
       this.checkNaNArithmetic(node, node.operator, argType, null);
+      // A string coerces to a number; negation/increment preserve int vs double,
+      // so the result type IS the coercion type (e.g. -"42" → integer).
+      if (argType === UcodeType.STRING) {
+        const coerced = this.coerceStringForArithmetic(node.argument, argType);
+        if (isUnionType(coerced)) {
+          (node as any)._fullType = coerced;
+          return UcodeType.UNKNOWN;
+        }
+        return coerced as UcodeType;
+      }
     }
 
     return this.typeCompatibility.getUnaryResultType(argType, node.operator);
@@ -654,6 +665,35 @@ export class TypeChecker {
   private producesNaNInArithmetic(type: UcodeType): boolean {
     return type === UcodeType.ARRAY || type === UcodeType.OBJECT ||
            type === UcodeType.FUNCTION || type === UcodeType.REGEX;
+  }
+
+  /**
+   * In an arithmetic (non-`+`) context a string operand coerces to a number.
+   * A string LITERAL classifies by its contents (ucode rules: an integer
+   * literal in any base, or empty, → integer; a float/scientific/non-numeric
+   * value → double). A non-literal string has an unknown value, so it could be
+   * either: `integer | double`. Non-string types pass through unchanged.
+   */
+  private coerceStringForArithmetic(node: AstNode, fullType: UcodeDataType): UcodeDataType {
+    if (fullType !== UcodeType.STRING) return fullType;
+    if (node.type === 'Literal' && typeof (node as LiteralNode).value === 'string') {
+      return this.numericStringIsInteger((node as LiteralNode).value as string)
+        ? UcodeType.INTEGER
+        : UcodeType.DOUBLE;
+    }
+    return createUnionType([UcodeType.INTEGER, UcodeType.DOUBLE]);
+  }
+
+  /**
+   * Does a string coerce to an integer (vs a double) under ucode's number cast?
+   * True for an empty string (→ 0) or an integer literal — decimal, hex (0x),
+   * binary (0b) or octal (0o), with optional sign and surrounding whitespace.
+   * Everything else (float, scientific notation, or non-numeric → NaN) is double.
+   */
+  private numericStringIsInteger(value: string): boolean {
+    const t = value.trim();
+    if (t === '') return true;
+    return /^[+-]?(0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|[0-9]+)$/.test(t);
   }
 
   /**

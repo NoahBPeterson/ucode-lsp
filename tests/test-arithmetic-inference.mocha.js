@@ -220,4 +220,45 @@ describe('Arithmetic type inference (e2e, vs ucode oracle)', function () {
       assert.strictEqual(actual, expected, `\`${expr}\` should infer exactly "${expected}"`);
     });
   });
+
+  // A string coerces to a number in non-`+` arithmetic. A string LITERAL is
+  // classified by its contents (ucode's number cast); a string VARIABLE has an
+  // unknown value, so it's `integer | double`. Exact match. Verified against
+  // /usr/local/bin/ucode (e.g. type(-"42")=int, type(-"42.5")=double).
+  const strCode =
+    'let sv = "unknown";\n' +
+    'let c1 = -"42";\n' +       // integer literal string → integer
+    'let c2 = -"42.5";\n' +     // float literal string → double
+    'let c3 = -"0x1f";\n' +     // hex literal string → integer
+    'let c4 = -"abc";\n' +      // non-numeric → NaN → double
+    'let c5 = "42" - 1;\n' +    // binary, integer string → integer
+    'let c6 = "42.5" * 2;\n' +  // binary, float string → double
+    'let c7 = sv - 1;\n' +      // unknown string variable → integer | double
+    'let c8 = "42" + 1;\n';     // `+` is concatenation, not coercion → string
+  const strCases = [
+    ['c1', '-"42"', 'integer'],
+    ['c2', '-"42.5"', 'double'],
+    ['c3', '-"0x1f"', 'integer'],
+    ['c4', '-"abc"', 'double'],
+    ['c5', '"42" - 1', 'integer'],
+    ['c6', '"42.5" * 2', 'double'],
+    ['c7', 'strVar - 1', 'integer | double'],
+    ['c8', '"42" + 1', 'string'],
+  ];
+
+  let strFp;
+  before(function () {
+    strFp = path.join(root, 'arith-strings.uc');
+    fs.writeFileSync(strFp, strCode);
+  });
+
+  strCases.forEach(([name, expr, expected]) => {
+    it(`${expr} → ${expected} (string coercion)`, async () => {
+      const p = clickAt(strCode, `${name} =`);
+      const h = await getHover(strCode, strFp, p.line, p.character);
+      const actual = srcType(h);
+      assert.ok(actual, `expected a hover for \`${expr}\`, got null`);
+      assert.strictEqual(actual, expected, `\`${expr}\` should infer exactly "${expected}"`);
+    });
+  });
 });
