@@ -145,6 +145,31 @@ describe('Go to Definition (e2e)', function () {
     assert.ok(def, 'server should still respond correctly after failure paths');
     assert.strictEqual(def.range.start.line, 0);
   });
+
+  it('returns null for a symbol imported from a builtin module (no navigable source)', async () => {
+    // Regression: `fs` resolves to builtin://fs only AFTER resolveImportPath, so
+    // the early builtin:// guard was bypassed and the top-of-module fallback
+    // handed back a bogus `builtin://fs` L0 location instead of null.
+    const code = `import { open } from 'fs';\nlet fd = open('/etc/hostname', 'r');\n`;
+    const p = posOf(code, 'open', 2); // the call site
+    const def = await getDefinition(code, '/tmp/def-builtin-import.uc', p.line, p.character);
+    assert.strictEqual(def, null, 'builtin-module imports have no source file to navigate to');
+  });
+
+  it('resolves an imported variable to its source module (lands in the right file)', async () => {
+    // Known limitation: imported non-function exports (let/const) resolve to the
+    // TOP of the source module (L0), not the precise declaration line, because
+    // findFunctionDefinition only locates function declarations. Assert the file
+    // is correct; the precise-line fix belongs to the fileResolver pass.
+    fs.writeFileSync(path.join(tmpDir, 'consts.uc'), 'export function pad() {};\nexport let LIMIT = 42;\n');
+    const mainPath = path.join(tmpDir, 'main-const.uc');
+    const code = `import { LIMIT } from './consts.uc';\nlet x = LIMIT + 1;\n`;
+    fs.writeFileSync(mainPath, code);
+    const p = posOf(code, 'LIMIT', 2);
+    const def = await getDefinition(code, mainPath, p.line, p.character);
+    assert.ok(def, 'expected a cross-file definition');
+    assert.ok(def.uri.endsWith('/consts.uc'), `expected definition in consts.uc, got ${def.uri}`);
+  });
 });
 
 // Go-to-definition across every import-resolution style ucode supports.

@@ -156,8 +156,12 @@ function getImportedSymbolDefinition(symbol: Symbol, currentDocument: TextDocume
     } else {
         targetUri = fileResolver.resolveImportPath(symbol.importedFrom, currentDocument.uri);
     }
-    if (!targetUri) {
-        console.log(`Could not resolve import path: ${symbol.importedFrom}`);
+    // A builtin C module (either declared as builtin:// or resolved to one from a
+    // bare name like 'fs') has no navigable source file. Without this, the
+    // top-of-module fallback below would hand back a bogus `builtin://fs` L0
+    // location for `import { open } from 'fs'`.
+    if (!targetUri || targetUri.startsWith('builtin://')) {
+        if (!targetUri) console.log(`Could not resolve import path: ${symbol.importedFrom}`);
         return null;
     }
     
