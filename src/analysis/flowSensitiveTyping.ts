@@ -420,10 +420,12 @@ export class FlowSensitiveTypeTracker {
 
         const originalTypes = getUnionTypes(originalType);
 
-        // Filter out guards that don't actually narrow anything
-        const effectiveGuards = allGuards.filter(guard => {
-          return originalTypes.includes(guard.testedType);
-        });
+        // Filter out guards that don't actually narrow anything. Match on the
+        // base type so a guard for "array" still applies to an `array<integer>`
+        // member (union members may be refined ArrayType/ObjectType objects).
+        const effectiveGuards = allGuards.filter(guard =>
+          originalTypes.some(t => singleTypeToBase(t) === guard.testedType)
+        );
 
         // If no effective guards, no narrowing occurs
         if (effectiveGuards.length === 0) {
@@ -432,13 +434,14 @@ export class FlowSensitiveTypeTracker {
 
         // For AND guards: a type satisfies if it satisfies ALL guards
         const satisfyingTypes = originalTypes.filter(type => {
+          const base = singleTypeToBase(type);
           return effectiveGuards.every(guard => {
             if (guard.isNegative) {
               // Negative guard: type satisfies if it's NOT the guarded type
-              return type !== guard.testedType;
+              return base !== guard.testedType;
             } else {
               // Positive guard: type satisfies if it IS the guarded type
-              return type === guard.testedType;
+              return base === guard.testedType;
             }
           });
         });

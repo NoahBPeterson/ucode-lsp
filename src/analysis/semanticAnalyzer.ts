@@ -11,7 +11,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
@@ -3473,9 +3473,12 @@ private addDiagnostic(
             // Re-check: parse the expected type string and verify the final type is compatible
             const expectedTypes = (diagnosticData.expectedType as string).split(' | ');
             const finalTypes = getUnionTypes(sym.dataType);
-            const allCompatible = finalTypes.every(ft =>
-              ft === UcodeType.NULL || expectedTypes.includes(ft as string)
-            );
+            // Compare each member's BASE type: a member may be a refined form
+            // (ArrayType `array<integer>`) while expectedType is the bare name.
+            const allCompatible = finalTypes.every(ft => {
+              const base = singleTypeToBase(ft);
+              return base === UcodeType.NULL || expectedTypes.includes(base);
+            });
             if (allCompatible) {
               return false;
             }

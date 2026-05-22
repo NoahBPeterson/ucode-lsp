@@ -146,9 +146,11 @@ export class TypeNarrowingEngine {
     }
 
     const actualTypes = getUnionTypes(actualType);
-    const allowed = new Set<SingleType>(expectedTypes);
+    // Compare base types so a refined member (ArrayType `array<integer>`) still
+    // counts as a subtype of the bare expected type ("array").
+    const allowedBases = new Set(expectedTypes.map(singleTypeToBase));
 
-    return actualTypes.every(actual => allowed.has(actual));
+    return actualTypes.every(actual => allowedBases.has(singleTypeToBase(actual)));
   }
 
   /**
