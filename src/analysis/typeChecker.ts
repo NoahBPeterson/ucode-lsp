@@ -44,6 +44,7 @@ interface TypeGuardInfo {
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, extractModuleType, Symbol as UcodeSymbol } from './symbolTable';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
+import { UcodeErrorCode } from './errorConstants';
 import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { allBuiltinFunctions } from '../builtins';
@@ -535,7 +536,7 @@ export class TypeChecker {
       case '**': {
         // Lint operations that provably evaluate to NaN (array/object/function/
         // regex operand). Result type is unaffected — this is just a warning.
-        this.warnIfNaNArithmetic(node, node.operator, leftType, rightType);
+        this.checkNaNArithmetic(node, node.operator, leftType, rightType);
 
         // Base-type fast path: when neither operand is a union, the result is a
         // single concrete type — behaves exactly as the scalar inference, and we
@@ -643,7 +644,7 @@ export class TypeChecker {
     // Numeric unary operators on a value that can't convert to a number always
     // yield NaN (e.g. -[1], ++{}). ucode doesn't throw, so warn rather than error.
     if (node.operator === '+' || node.operator === '-' || node.operator === '++' || node.operator === '--') {
-      this.warnIfNaNArithmetic(node, node.operator, argType, null);
+      this.checkNaNArithmetic(node, node.operator, argType, null);
     }
 
     return this.typeCompatibility.getUnaryResultType(argType, node.operator);
@@ -656,14 +657,17 @@ export class TypeChecker {
   }
 
   /**
-   * Warn when an arithmetic operation provably evaluates to NaN: a non-numeric,
+   * Flag an arithmetic operation that provably evaluates to NaN: a non-numeric,
    * non-coercible operand (array/object/function/regex). The result type is still
    * `double` (NaN is a double value, not a separate type) — this is a lint, not a
    * type change. Strings are excluded (value-dependent: `"42"` works, `"abc"` is
    * NaN), as is `+` with a string operand (that's concatenation). For unary
    * operators, pass rightType = null.
+   *
+   * Severity follows strict mode: a warning normally, an error under
+   * `'use strict';` (the same escalation builtinValidation uses).
    */
-  private warnIfNaNArithmetic(node: AstNode, operator: string, leftType: UcodeType, rightType: UcodeType | null): void {
+  private checkNaNArithmetic(node: AstNode, operator: string, leftType: UcodeType, rightType: UcodeType | null): void {
     if (operator === '+' && (leftType === UcodeType.STRING || rightType === UcodeType.STRING)) {
       return; // string concatenation, not arithmetic
     }
@@ -673,12 +677,17 @@ export class TypeChecker {
       offenders.push(rightType);
     }
     if (offenders.length === 0) return;
-    this.warnings.push({
+    const base = {
       message: `This operation always produces NaN: ${offenders.join(' and ')} cannot be converted to a number`,
       start: node.start,
       end: node.end,
-      severity: 'warning'
-    });
+      code: UcodeErrorCode.NAN_ARITHMETIC,
+    };
+    if (this.strictMode) {
+      this.errors.push({ ...base, severity: 'error' });
+    } else {
+      this.warnings.push({ ...base, severity: 'warning' });
+    }
   }
 
   private checkInOperator(node: BinaryExpressionNode, _leftType: UcodeType, rightType: UcodeType): UcodeType {

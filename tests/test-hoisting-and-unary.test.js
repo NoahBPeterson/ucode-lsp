@@ -490,4 +490,28 @@ describe('NaN-producing arithmetic lint', () => {
         const result = analyze(`let x = -"42";`);
         expect(nanWarnings(result).length).toBe(0);
     });
+
+    // Severity follows strict mode. DiagnosticSeverity: 1 = Error, 2 = Warning.
+    test('non-strict: NaN op is a Warning with code UC2008', () => {
+        const result = analyze(`let a = [1]; let x = a - 1;`);
+        const nan = nanWarnings(result);
+        expect(nan.length).toBeGreaterThan(0);
+        expect(nan[0].severity).toBe(2); // Warning
+        expect(nan[0].code).toBe('UC2008');
+    });
+
+    test("'use strict': NaN op is an Error (still UC2008, same message)", () => {
+        const result = analyze(`'use strict';\nlet a = [1]; let x = a - 1;`);
+        const nan = nanWarnings(result);
+        expect(nan.length).toBeGreaterThan(0);
+        expect(nan[0].severity).toBe(1); // Error
+        expect(nan[0].code).toBe('UC2008');
+    });
+
+    test("'use strict': unary -[1] is an Error", () => {
+        const result = analyze(`'use strict';\nlet x = -[1];`);
+        const nan = nanWarnings(result);
+        expect(nan.length).toBeGreaterThan(0);
+        expect(nan[0].severity).toBe(1); // Error
+    });
 });
