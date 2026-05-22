@@ -9,9 +9,12 @@ import * as fs from 'fs';
 
 export interface FunctionDefinition {
     name: string;
-    node: FunctionDeclarationNode;
+    node: AstNode;
     start: number;
     end: number;
+    /** Whether the located declaration is a function or a top-level variable.
+     *  Go-to-definition wants either; hover signatures want only functions. */
+    kind: 'function' | 'variable';
 }
 
 export interface ModuleExport {
@@ -302,9 +305,12 @@ export class FileResolver {
                 return null;
             }
 
-            // Find all function declarations
+            // Find all function declarations, then top-level variable
+            // declarations (so go-to-definition can locate imported non-function
+            // exports like `export let X` / `export const f = () => ...`).
             const functions: FunctionDefinition[] = [];
             this.findFunctions(parseResult.ast, functions);
+            this.findTopLevelVariables(parseResult.ast, functions);
 
             return functions;
         } catch (error) {
@@ -323,7 +329,8 @@ export class FileResolver {
                 name: funcNode.id.name,
                 node: funcNode,
                 start: funcNode.start,
-                end: funcNode.end
+                end: funcNode.end,
+                kind: 'function'
             });
         }
 
@@ -331,6 +338,31 @@ export class FileResolver {
         this.visitChildren(node, (child) => {
             this.findFunctions(child, functions);
         });
+    }
+
+    /**
+     * Capture TOP-LEVEL variable declarations (`let`/`const`, optionally wrapped
+     * in `export`) so go-to-definition can resolve imported non-function exports
+     * to their declaration. Only top-level — never descend into function bodies,
+     * which would match same-named locals. A function of the same name (already
+     * collected) wins.
+     */
+    private findTopLevelVariables(ast: AstNode, defs: FunctionDefinition[]): void {
+        const body = (ast as any).body;
+        if (!Array.isArray(body)) return;
+        for (const stmt of body) {
+            const varDecl =
+                stmt?.type === 'VariableDeclaration' ? stmt :
+                (stmt?.type === 'ExportNamedDeclaration' && stmt.declaration?.type === 'VariableDeclaration')
+                    ? stmt.declaration : null;
+            if (!varDecl) continue;
+            for (const d of varDecl.declarations || []) {
+                const id = d?.id;
+                if (id?.type !== 'Identifier' || !id.name) continue;
+                if (defs.some(def => def.name === id.name)) continue; // function shadows
+                defs.push({ name: id.name, node: d, start: id.start, end: id.end, kind: 'variable' });
+            }
+        }
     }
 
     /**
@@ -375,11 +407,16 @@ export class FileResolver {
                 return null;
             }
 
-            // Build a set of top-level function names to detect `export default <identifier>`
+            // Build a set of top-level function names to detect `export default <identifier>`.
+            // Include `export function foo` (an ExportNamedDeclaration wrapping a
+            // FunctionDeclaration), so `export default foo` is flagged as a function.
             const topLevelFunctionNames = new Set<string>();
             for (const stmt of (result.ast as any).body || []) {
-                if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
-                    topLevelFunctionNames.add(stmt.id.name);
+                const fnDecl = stmt.type === 'FunctionDeclaration' ? stmt
+                    : (stmt.type === 'ExportNamedDeclaration' && stmt.declaration?.type === 'FunctionDeclaration') ? stmt.declaration
+                    : null;
+                if (fnDecl?.id?.name) {
+                    topLevelFunctionNames.add(fnDecl.id.name);
                 }
             }
 

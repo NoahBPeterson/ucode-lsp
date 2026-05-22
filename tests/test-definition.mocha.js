@@ -156,11 +156,9 @@ describe('Go to Definition (e2e)', function () {
     assert.strictEqual(def, null, 'builtin-module imports have no source file to navigate to');
   });
 
-  it('resolves an imported variable to its source module (lands in the right file)', async () => {
-    // Known limitation: imported non-function exports (let/const) resolve to the
-    // TOP of the source module (L0), not the precise declaration line, because
-    // findFunctionDefinition only locates function declarations. Assert the file
-    // is correct; the precise-line fix belongs to the fileResolver pass.
+  it('resolves an imported variable to its precise declaration line', async () => {
+    // Imported non-function exports (let/const) resolve to the variable's own
+    // declaration, not the module top — findTopLevelVariables captures them.
     fs.writeFileSync(path.join(tmpDir, 'consts.uc'), 'export function pad() {};\nexport let LIMIT = 42;\n');
     const mainPath = path.join(tmpDir, 'main-const.uc');
     const code = `import { LIMIT } from './consts.uc';\nlet x = LIMIT + 1;\n`;
@@ -169,6 +167,18 @@ describe('Go to Definition (e2e)', function () {
     const def = await getDefinition(code, mainPath, p.line, p.character);
     assert.ok(def, 'expected a cross-file definition');
     assert.ok(def.uri.endsWith('/consts.uc'), `expected definition in consts.uc, got ${def.uri}`);
+    assert.strictEqual(def.range.start.line, 1, 'should point to the `export let LIMIT` line, not module top');
+  });
+
+  it('resolves an imported const-arrow-function to its precise declaration line', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'arrows.uc'), 'export function first() {};\nexport function second() {};\nexport let make = (x) => x * 2;\n');
+    const mainPath = path.join(tmpDir, 'main-arrow.uc');
+    const code = `import { make } from './arrows.uc';\nlet y = make(3);\n`;
+    fs.writeFileSync(mainPath, code);
+    const p = posOf(code, 'make', 2);
+    const def = await getDefinition(code, mainPath, p.line, p.character);
+    assert.ok(def, 'expected a cross-file definition');
+    assert.strictEqual(def.range.start.line, 2, 'should point to the `export let make` line');
   });
 });
 

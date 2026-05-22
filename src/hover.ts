@@ -305,7 +305,7 @@ function getUnifiedMemberHover(
             : getHoverFileResolver().resolveImportPath(symbol.importedFrom, documentUri);
         if (uri && !uri.startsWith('builtin://')) {
             const fnDef = getHoverFileResolver().findFunctionDefinition(uri, propertyName);
-            if (fnDef) {
+            if (fnDef && fnDef.kind === 'function') {
                 const params = (((fnDef.node as any)?.params) || []).map((p: any) => p.name).join(', ');
                 const moduleLabel = symbol.importedFrom.startsWith('file://')
                     ? (symbol.importedFrom.split('/').pop() || symbol.importedFrom)
