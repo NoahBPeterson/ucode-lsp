@@ -26,7 +26,6 @@ import {
   CallExpressionNode,
 } from '../../ast/nodes';
 import { ControlFlowGraph, BasicBlock, Edge } from './types';
-import { TypeState } from './typeState';
 
 /**
  * Context for tracking loop and switch statements during CFG construction.
@@ -124,8 +123,6 @@ export class CFGBuilder {
       statements: [],
       predecessors: [],
       successors: [],
-      typeStateIn: new TypeState(),
-      typeStateOut: new TypeState(),
       ...(label && { label }),
     };
     this.cfg.blocks.push(block);

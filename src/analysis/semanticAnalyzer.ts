@@ -19,7 +19,6 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
 import { FileResolver } from './fileResolver';
 import { CFGBuilder } from './cfg/cfgBuilder';
-import { DataFlowAnalyzer } from './cfg/dataFlowAnalyzer';
 import { CFGQueryEngine } from './cfg/queryEngine';
 import { type ControlFlowGraph } from './cfg/types';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
@@ -131,20 +130,12 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Visit the AST to perform semantic analysis
       this.visit(ast);
 
-      // CFG-based data flow analysis (if enabled)
+      // CFG-based reachability analysis (if enabled)
       if (this.options.enableControlFlowAnalysis && this.currentASTRoot) {
         try {
           // Build the Control Flow Graph
           const cfgBuilder = new CFGBuilder('top-level');
           this.cfg = cfgBuilder.build(this.currentASTRoot);
-
-          // Run data flow analysis on the CFG
-          const dataFlowAnalyzer = new DataFlowAnalyzer(
-            this.cfg,
-            this.symbolTable,
-            this.textDocument.getText()
-          );
-          const dfResult = dataFlowAnalyzer.analyze();
 
           // Create query engine for reachability (unreachable-code) queries
           this.cfgQueryEngine = new CFGQueryEngine(this.cfg);
@@ -154,11 +145,6 @@ export class SemanticAnalyzer extends BaseVisitor {
 
           // Detect unreachable code
           this.detectUnreachableCode();
-
-          // Log CFG analysis result for debugging
-          if (!dfResult.converged) {
-            console.warn(`CFG analysis did not converge after ${dfResult.iterations} iterations`);
-          }
         } catch (cfgError) {
           // CFG analysis is best-effort; don't fail the whole analysis if it errors
           console.error('CFG analysis error:', cfgError);

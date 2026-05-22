@@ -99,55 +99,6 @@ describe('CFG Integration - Basic', () => {
   });
 });
 
-describe('CFG Integration - Type States', () => {
-  test('should populate type states in CFG blocks', () => {
-    const code = 'let x = 5; let y = "hello";';
-    const { cfg } = analyzeWithCFG(code);
-
-    expect(cfg).toBeDefined();
-
-    // Entry block should have type states populated
-    const entryState = cfg.entry.typeStateOut;
-    expect(entryState).toBeDefined();
-    expect(entryState.size()).toBeGreaterThan(0);
-  });
-
-  test('should infer types in type states', () => {
-    const code = 'let x = 5;';
-    const { cfg } = analyzeWithCFG(code);
-
-    const entryState = cfg.entry.typeStateOut;
-    const xType = entryState.get('x');
-
-    expect(xType).toBe('integer');
-  });
-
-  test('should handle type narrowing in branches', () => {
-    const code = 'let x; if (type(x) === "string") { print(x); }';
-    const { cfg } = analyzeWithCFG(code);
-
-    const thenBlock = cfg.blocks.find((b) => b.label === 'if.then');
-    expect(thenBlock).toBeDefined();
-
-    // In the then block, x should be narrowed to string
-    const xType = thenBlock.typeStateIn.get('x');
-    expect(xType).toBe('string');
-  });
-
-  test('should merge types from different branches', () => {
-    const code = 'let x; if (true) { x = 5; } else { x = "hello"; }';
-    const { cfg } = analyzeWithCFG(code);
-
-    const mergeBlock = cfg.blocks.find((b) => b.label === 'if.merge');
-    expect(mergeBlock).toBeDefined();
-
-    // After if/else, x should be union of integer and string
-    const xType = mergeBlock.typeStateIn.get('x');
-    expect(xType).toBeDefined();
-    expect(xType.type).toBe('union');
-  });
-});
-
 describe('CFG Integration - Query Engine', () => {
   test('should get unreachable blocks', () => {
     const code = 'let x = 5; return x;';

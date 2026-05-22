@@ -84,14 +84,6 @@ function visualizeBlockText(block: BasicBlock): string {
     lines.push(`  Successors: none (terminal block)`);
   }
 
-  // Type states (if populated)
-  if (block.typeStateIn.size() > 0) {
-    lines.push(`  Type State In: ${block.typeStateIn.toString()}`);
-  }
-  if (block.typeStateOut.size() > 0) {
-    lines.push(`  Type State Out: ${block.typeStateOut.toString()}`);
-  }
-
   return lines.join('\n');
 }
 

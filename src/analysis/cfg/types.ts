@@ -6,7 +6,6 @@
  */
 
 import { AstNode } from '../../ast/nodes';
-import { TypeState } from './typeState';
 
 /**
  * A BasicBlock represents a maximal sequence of statements that execute sequentially
@@ -24,18 +23,6 @@ export interface BasicBlock {
 
   /** Edges to blocks that this block can jump to */
   successors: Edge[];
-
-  /**
-   * The type information for variables at the ENTRY of this block.
-   * This is computed by merging the typeStateOut from all predecessors.
-   */
-  typeStateIn: TypeState;
-
-  /**
-   * The type information for variables at the EXIT of this block.
-   * This is computed by applying the transfer function to typeStateIn.
-   */
-  typeStateOut: TypeState;
 
   /**
    * Optional label for debugging and visualization.
@@ -67,16 +54,6 @@ export interface Edge {
    * - true: The condition must be false to take this edge (e.g., 'else' branch)
    */
   isNegative?: boolean;
-
-  /**
-   * The narrowed type state for this edge.
-   * This is computed by applying type guards based on the condition.
-   *
-   * For example, if the condition is `typeof x === 'string'`:
-   * - The positive edge would narrow x to 'string'
-   * - The negative edge would exclude 'string' from x's type
-   */
-  narrowedState?: TypeState;
 }
 
 /**
