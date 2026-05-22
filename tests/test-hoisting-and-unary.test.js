@@ -112,40 +112,43 @@ describe('Unary string coercion', () => {
         expect(errors.length).toBe(0);
     });
 
-    test('++ on a string variable should produce an error', () => {
+    // ucode coerces strings to numbers for ++/-- ("42"++ → 43, "abc"++ → NaN);
+    // it never throws, so there is no "Cannot apply" error (and string is
+    // value-dependent, so it's not flagged by the NaN lint either).
+    test('++ on a string variable does not error (numeric coercion)', () => {
         const code = `
 let z = "42";
 z++;
 `;
         const result = analyze(code);
         const errors = result.diagnostics.filter(d =>
-            d.message.includes('Cannot apply ++ to string')
+            d.message.includes('Cannot apply')
         );
-        expect(errors.length).toBeGreaterThan(0);
+        expect(errors.length).toBe(0);
     });
 
-    test('-- on a string variable should produce an error', () => {
+    test('-- on a string variable does not error (numeric coercion)', () => {
         const code = `
 let z = "42";
 z--;
 `;
         const result = analyze(code);
         const errors = result.diagnostics.filter(d =>
-            d.message.includes('Cannot apply -- to string')
+            d.message.includes('Cannot apply')
         );
-        expect(errors.length).toBeGreaterThan(0);
+        expect(errors.length).toBe(0);
     });
 
-    test('prefix ++ on a string variable should produce an error', () => {
+    test('prefix ++ on a string variable does not error (numeric coercion)', () => {
         const code = `
 let z = "42";
 ++z;
 `;
         const result = analyze(code);
         const errors = result.diagnostics.filter(d =>
-            d.message.includes('Cannot apply ++ to string')
+            d.message.includes('Cannot apply')
         );
-        expect(errors.length).toBeGreaterThan(0);
+        expect(errors.length).toBe(0);
     });
 
     test('++ on a numeric variable should not produce an error', () => {
@@ -431,5 +434,60 @@ function unused_func() {
         const warning = unusedWarnings[0];
         const startOffset = warning.range.start.line * 1000 + warning.range.start.character;
         expect(startOffset).toBeGreaterThan(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// NaN-producing arithmetic lint.
+// An array/object/function/regex operand can never become a finite number, so
+// the operation always yields NaN. ucode doesn't throw — we warn (the result
+// type stays `double`). Verified against /usr/local/bin/ucode. Strings are
+// value-dependent ("42" works) so they are NOT flagged; `+` with a string is
+// concatenation; null coerces to 0.
+// ---------------------------------------------------------------------------
+describe('NaN-producing arithmetic lint', () => {
+    const nanWarnings = (result) =>
+        result.diagnostics.filter(d => d.message.includes('produces NaN'));
+
+    test('unary minus on an array literal warns (and does not error)', () => {
+        const result = analyze(`let x = -[1, 2];`);
+        expect(nanWarnings(result).length).toBeGreaterThan(0);
+        expect(result.diagnostics.filter(d => d.message.includes('Cannot apply')).length).toBe(0);
+    });
+
+    test('binary arithmetic with an array operand warns', () => {
+        const result = analyze(`let a = [1]; let x = a * 2;`);
+        expect(nanWarnings(result).length).toBeGreaterThan(0);
+    });
+
+    test('object operand in subtraction warns', () => {
+        const result = analyze(`let o = { k: 1 }; let x = o - 1;`);
+        expect(nanWarnings(result).length).toBeGreaterThan(0);
+    });
+
+    test('array + string is concatenation, not NaN — no warning', () => {
+        const result = analyze(`let a = [1]; let x = a + "s";`);
+        expect(nanWarnings(result).length).toBe(0);
+    });
+
+    test('unary ~ on an array does not warn (yields an integer)', () => {
+        const result = analyze(`let x = ~[1];`);
+        expect(nanWarnings(result).length).toBe(0);
+        expect(result.diagnostics.filter(d => d.message.includes('Cannot apply')).length).toBe(0);
+    });
+
+    test('unary minus on null does not warn (coerces to 0)', () => {
+        const result = analyze(`let x = -null;`);
+        expect(nanWarnings(result).length).toBe(0);
+    });
+
+    test('plain numeric arithmetic does not warn', () => {
+        const result = analyze(`let x = 5 - 3; let y = 2 * 4;`);
+        expect(nanWarnings(result).length).toBe(0);
+    });
+
+    test('unary minus on a string does not warn (value-dependent)', () => {
+        const result = analyze(`let x = -"42";`);
+        expect(nanWarnings(result).length).toBe(0);
     });
 });

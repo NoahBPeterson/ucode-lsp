@@ -56,43 +56,9 @@ function testTypeResult(testName, testFunc, expectedChecker) {
 
 const checker = new TypeCompatibilityChecker();
 
-// Test 1: Enhanced isTypeCompatible with union types - source union to target simple
-testTypeCompatibility('isTypeCompatible: union to simple type (compatible)', () => {
-    const unionType = createUnionType([UcodeType.STRING, UcodeType.INTEGER]);
-    return checker.isTypeCompatible(unionType, UcodeType.STRING);
-}, true);
-
-// Test 2: Enhanced isTypeCompatible with union types - source union to target simple (incompatible)
-testTypeCompatibility('isTypeCompatible: union to simple type (incompatible)', () => {
-    const unionType = createUnionType([UcodeType.STRING, UcodeType.INTEGER]);
-    return checker.isTypeCompatible(unionType, UcodeType.BOOLEAN);
-}, false);
-
-// Test 3: Enhanced isTypeCompatible with union types - source simple to target union
-testTypeCompatibility('isTypeCompatible: simple to union type (compatible)', () => {
-    const unionType = createUnionType([UcodeType.STRING, UcodeType.INTEGER]);
-    return checker.isTypeCompatible(UcodeType.STRING, unionType);
-}, true);
-
-// Test 4: Enhanced isTypeCompatible with union types - source simple to target union (incompatible)
-testTypeCompatibility('isTypeCompatible: simple to union type (incompatible)', () => {
-    const unionType = createUnionType([UcodeType.STRING, UcodeType.INTEGER]);
-    return checker.isTypeCompatible(UcodeType.BOOLEAN, unionType);
-}, false);
-
-// Test 5: Enhanced isTypeCompatible with union types - union to union (compatible)
-testTypeCompatibility('isTypeCompatible: union to union (compatible)', () => {
-    const unionType1 = createUnionType([UcodeType.STRING, UcodeType.INTEGER]);
-    const unionType2 = createUnionType([UcodeType.STRING, UcodeType.INTEGER, UcodeType.BOOLEAN]);
-    return checker.isTypeCompatible(unionType1, unionType2);
-}, true);
-
-// Test 6: Enhanced isTypeCompatible with union types - union to union (incompatible)
-testTypeCompatibility('isTypeCompatible: union to union (incompatible)', () => {
-    const unionType1 = createUnionType([UcodeType.STRING, UcodeType.BOOLEAN]);
-    const unionType2 = createUnionType([UcodeType.INTEGER, UcodeType.DOUBLE]);
-    return checker.isTypeCompatible(unionType1, unionType2);
-}, false);
+// NOTE: isTypeCompatible/canAssign were removed — ucode is dynamically typed, so
+// assignment has no type-compatibility constraint and the method had no callers.
+// Remaining tests cover the live getTernaryResultType / getCommonType methods.
 
 // Test 7: Enhanced getTernaryResultType with same types
 testTypeResult('getTernaryResultType: same types', () => {
@@ -107,24 +73,6 @@ testTypeResult('getTernaryResultType: different types creates union', () => {
            getUnionTypes(result).includes(UcodeType.STRING) && 
            getUnionTypes(result).includes(UcodeType.INTEGER);
 });
-
-// Test 9: Type compatibility with UNKNOWN and union types
-testTypeCompatibility('isTypeCompatible: UNKNOWN with union type', () => {
-    const unionType = createUnionType([UcodeType.STRING, UcodeType.INTEGER]);
-    return checker.isTypeCompatible(UcodeType.UNKNOWN, unionType);
-}, true);
-
-// Test 10: Type compatibility with union types and UNKNOWN
-testTypeCompatibility('isTypeCompatible: union type with UNKNOWN', () => {
-    const unionType = createUnionType([UcodeType.STRING, UcodeType.INTEGER]);
-    return checker.isTypeCompatible(unionType, UcodeType.UNKNOWN);
-}, true);
-
-// Test 11: Type compatibility with integer to double conversion in union
-testTypeCompatibility('isTypeCompatible: integer to double in union', () => {
-    const unionType = createUnionType([UcodeType.DOUBLE, UcodeType.STRING]);
-    return checker.isTypeCompatible(UcodeType.INTEGER, unionType);
-}, true);
 
 // Test 12: getCommonType with multiple same types
 testTypeResult('getCommonType: multiple same types', () => {

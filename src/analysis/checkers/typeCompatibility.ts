@@ -2,44 +2,9 @@
  * Type compatibility checker for ucode
  */
 
-import { UcodeType, UcodeDataType, createUnionType, isUnionType, getUnionTypes } from '../symbolTable';
+import { UcodeType, UcodeDataType, createUnionType, getUnionTypes } from '../symbolTable';
 
 export class TypeCompatibilityChecker {
-  
-  // Union type utility methods
-  private isUnionTypeCompatibleWith(unionType: UcodeDataType, targetType: UcodeType): boolean {
-    if (!isUnionType(unionType)) {
-      return this.isTypeCompatible(unionType as UcodeType, targetType);
-    }
-    
-    // Union type is compatible with target if ANY member type is compatible
-    const unionTypes = getUnionTypes(unionType);
-    return unionTypes.some(memberType => this.isTypeCompatible(memberType, targetType));
-  }
-
-  private isTypeCompatibleWithUnion(sourceType: UcodeType, unionType: UcodeDataType): boolean {
-    if (!isUnionType(unionType)) {
-      return this.isTypeCompatible(sourceType, unionType as UcodeType);
-    }
-    
-    // Source type is compatible with union if it's compatible with ANY member type
-    const unionTypes = getUnionTypes(unionType);
-    return unionTypes.some(memberType => this.isTypeCompatible(sourceType, memberType));
-  }
-
-  private areUnionTypesCompatible(sourceUnion: UcodeDataType, targetUnion: UcodeDataType): boolean {
-    if (!isUnionType(sourceUnion) || !isUnionType(targetUnion)) {
-      return false;
-    }
-    
-    // All source types must be assignable to at least one target type
-    const sourceTypes = getUnionTypes(sourceUnion);
-    const targetTypes = getUnionTypes(targetUnion);
-    
-    return sourceTypes.every(sourceType =>
-      targetTypes.some(targetType => this.isTypeCompatible(sourceType, targetType))
-    );
-  }
   
   isNumericType(type: UcodeType): boolean {
     return type === UcodeType.INTEGER || type === UcodeType.DOUBLE;
@@ -50,122 +15,7 @@ export class TypeCompatibilityChecker {
     return type === UcodeType.INTEGER || type === UcodeType.DOUBLE || type === UcodeType.BOOLEAN;
   }
 
-  isIntegerType(type: UcodeType): boolean {
-    return type === UcodeType.INTEGER;
-  }
-
-  getNumericResultType(left: UcodeType, right: UcodeType): UcodeType {
-    if (left === UcodeType.DOUBLE || right === UcodeType.DOUBLE) {
-      return UcodeType.DOUBLE;
-    }
-    return UcodeType.INTEGER;
-  }
-
-  // Enhanced type compatibility with union type support
-  isTypeCompatible(actual: UcodeType | UcodeDataType, expected: UcodeType | UcodeDataType): boolean {
-    // Handle union types
-    if (isUnionType(actual) && isUnionType(expected)) {
-      return this.areUnionTypesCompatible(actual, expected);
-    }
-    
-    if (isUnionType(actual)) {
-      return this.isUnionTypeCompatibleWith(actual, expected as UcodeType);
-    }
-    
-    if (isUnionType(expected)) {
-      return this.isTypeCompatibleWithUnion(actual as UcodeType, expected);
-    }
-    
-    // Convert to simple types for compatibility check
-    const actualType = actual as UcodeType;
-    const expectedType = expected as UcodeType;
-    
-    if (actualType === expectedType) return true;
-    if (expectedType === UcodeType.UNKNOWN) return true;
-    if (actualType === UcodeType.UNKNOWN) return true;
-    
-    // Allow integer to double conversion
-    if (actualType === UcodeType.INTEGER && expectedType === UcodeType.DOUBLE) return true;
-    
-    return false;
-  }
-
-  // Legacy method for simple UcodeType compatibility
-  isSimpleTypeCompatible(actual: UcodeType, expected: UcodeType): boolean {
-    if (actual === expected) return true;
-    if (expected === UcodeType.UNKNOWN) return true;
-    if (actual === UcodeType.UNKNOWN) return true;
-    
-    // Allow integer to double conversion
-    if (actual === UcodeType.INTEGER && expected === UcodeType.DOUBLE) return true;
-    
-    return false;
-  }
-
-  canAssign(leftType: UcodeType, rightType: UcodeType): boolean {
-    return this.isTypeCompatible(rightType, leftType);
-  }
-
-  canAddTypes(leftType: UcodeType, rightType: UcodeType): boolean {
-    // Addition: numbers (including boolean coercion) or string concatenation
-    if (this.isArithmeticType(leftType) && this.isArithmeticType(rightType)) {
-      return true;
-    }
-    if (leftType === UcodeType.STRING || rightType === UcodeType.STRING) {
-      return true;
-    }
-    // Allow addition with unknown types (could be numeric or string concatenation)
-    if (leftType === UcodeType.UNKNOWN || rightType === UcodeType.UNKNOWN) {
-      return true;
-    }
-    return false;
-  }
-
-  canPerformArithmetic(leftType: UcodeType, rightType: UcodeType): boolean {
-    // Allow arithmetic if both types are arithmetic-compatible (includes boolean coercion) OR if either type is unknown (dynamic typing)
-    const leftOk = this.isArithmeticType(leftType) || leftType === UcodeType.UNKNOWN;
-    const rightOk = this.isArithmeticType(rightType) || rightType === UcodeType.UNKNOWN;
-    return leftOk && rightOk;
-  }
-
-  canPerformBitwiseOp(_leftType: UcodeType, _rightType: UcodeType): boolean {
-    // ucode allows bitwise operations on any types with implicit conversion
-    // Examples: true ^ false → 1, "lol" ^ 5 → 5
-    return true;
-  }
-
-  canUseInOperator(_leftType: UcodeType, rightType: UcodeType): boolean {
-    return rightType === UcodeType.OBJECT || rightType === UcodeType.ARRAY || rightType === UcodeType.UNKNOWN;
-  }
-
-  getArithmeticResultType(leftType: UcodeType, rightType: UcodeType, operator: string): UcodeType {
-    if (operator === '+') {
-      if (leftType === UcodeType.STRING || rightType === UcodeType.STRING) {
-        return UcodeType.STRING;
-      }
-    }
-    
-    // Handle arithmetic operations with boolean coercion
-    if (this.isArithmeticType(leftType) && this.isArithmeticType(rightType)) {
-      // Boolean values are coerced to integers (true = 1, false = 0)
-      // If either operand is a double, result is double
-      // If either operand is boolean, it's treated as integer
-      // So boolean + integer = integer, boolean + double = double
-      if (leftType === UcodeType.DOUBLE || rightType === UcodeType.DOUBLE) {
-        return UcodeType.DOUBLE;
-      }
-      // All other combinations (integer + integer, boolean + integer, boolean + boolean) = integer
-      return UcodeType.INTEGER;
-    }
-    
-    return UcodeType.UNKNOWN;
-  }
-
   getComparisonResultType(): UcodeType {
-    return UcodeType.BOOLEAN;
-  }
-
-  getLogicalResultType(): UcodeType {
     return UcodeType.BOOLEAN;
   }
 
@@ -177,56 +27,37 @@ export class TypeCompatibilityChecker {
     switch (operator) {
       case '+':
       case '-':
-        // If operand is unknown, assume it might be numeric and allow the operation
+      case '++':
+      case '--':
+        // Numeric conversion (verified against the runtime — none of these throw,
+        // and ++/-- coerce identically to unary +/-):
+        //   unknown → unknown; int/double keep their kind; bool → int (0/1);
+        //   null → int (coerces to 0); string → numeric (int for "42", double for
+        //   "abc" — approximated as double); array/object/etc → NaN → double.
         if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
-        // Allow unary arithmetic on numeric types and booleans (booleans coerce to integers)
         if (this.isArithmeticType(operandType)) {
-          // Boolean operand becomes integer, others stay the same
           return operandType === UcodeType.BOOLEAN ? UcodeType.INTEGER : operandType;
         }
-        // Unary +/- on strings performs numeric conversion (e.g., +"42" → 42, +"abc" → NaN)
-        if (operandType === UcodeType.STRING) return UcodeType.DOUBLE;
-        return UcodeType.UNKNOWN;
+        if (operandType === UcodeType.NULL) return UcodeType.INTEGER;
+        // string / array / object / function / regex all convert to a number
+        // (NaN for the non-string ones); the result is always a numeric type.
+        return UcodeType.DOUBLE;
       case '!':
         // Logical NOT can be applied to any type (truthy/falsy evaluation)
         return UcodeType.BOOLEAN;
       case '~':
-        // If operand is unknown, assume it might be integer and allow the operation
+        // Bitwise complement forces an integer conversion for EVERY operand type
+        // (~null, ~"x", ~[1], ~{} all yield an integer at runtime), so the result
+        // is always integer. Only a genuinely unknown operand stays unknown.
         if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
-        // Allow bitwise complement on integers, doubles, and booleans (all coerce to integers)
-        // In ucode, ~ on a double truncates to integer first, then applies bitwise NOT
-        if (operandType === UcodeType.INTEGER || operandType === UcodeType.BOOLEAN || operandType === UcodeType.DOUBLE) {
-          return UcodeType.INTEGER;
-        }
-        return UcodeType.UNKNOWN;
-      case '++':
-      case '--':
-        // If operand is unknown, assume it might be numeric and allow the operation
-        if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
-        // Allow increment/decrement on numeric types and booleans (booleans coerce to integers)
-        if (this.isArithmeticType(operandType)) {
-          // Boolean operand becomes integer, others stay the same
-          return operandType === UcodeType.BOOLEAN ? UcodeType.INTEGER : operandType;
-        }
-        return UcodeType.UNKNOWN;
+        return UcodeType.INTEGER;
       default:
         return UcodeType.UNKNOWN;
     }
   }
 
-  isValidAssignmentTarget(nodeType: string): boolean {
-    return nodeType === 'Identifier' || nodeType === 'MemberExpression';
-  }
-
   isValidCallTarget(type: UcodeType): boolean {
     return type === UcodeType.FUNCTION || type === UcodeType.UNKNOWN;
-  }
-
-  getArrayElementType(arrayType: UcodeType): UcodeType {
-    if (arrayType === UcodeType.ARRAY) {
-      return UcodeType.UNKNOWN; // Array elements can be any type
-    }
-    return UcodeType.UNKNOWN;
   }
 
   getObjectPropertyType(objectType: UcodeType): UcodeType {
@@ -234,10 +65,6 @@ export class TypeCompatibilityChecker {
       return UcodeType.UNKNOWN; // Object properties can be any type
     }
     return UcodeType.UNKNOWN;
-  }
-
-  isIterableType(type: UcodeType): boolean {
-    return type === UcodeType.ARRAY || type === UcodeType.OBJECT || type === UcodeType.STRING;
   }
 
   getTernaryResultType(consequentType: UcodeType, alternateType: UcodeType): UcodeDataType {

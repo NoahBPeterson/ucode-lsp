@@ -533,6 +533,10 @@ export class TypeChecker {
       case '/':
       case '%':
       case '**': {
+        // Lint operations that provably evaluate to NaN (array/object/function/
+        // regex operand). Result type is unaffected — this is just a warning.
+        this.warnIfNaNArithmetic(node, node.operator, leftType, rightType);
+
         // Base-type fast path: when neither operand is a union, the result is a
         // single concrete type — behaves exactly as the scalar inference, and we
         // leave _fullType untouched (ucode is permissive; no errors here).
@@ -635,49 +639,46 @@ export class TypeChecker {
     if (node.operator === '!') this.truthinessDepth++;
     const argType = this.checkNode(node.argument);
     if (node.operator === '!') this.truthinessDepth--;
-    const resultType = this.typeCompatibility.getUnaryResultType(argType, node.operator);
-    
-    // Only throw error if we get UNKNOWN result from a known non-compatible type
-    // Don't throw error if operand is UNKNOWN (parameters, variables) - allow dynamic typing
-    if (resultType === UcodeType.UNKNOWN && argType !== UcodeType.UNKNOWN) {
-      // Only error on definitely invalid operations (e.g., applying ~ to string)
-      const isDefinitelyInvalid = this.isDefinitelyInvalidUnaryOperation(argType, node.operator);
-      if (isDefinitelyInvalid) {
-        this.errors.push({
-          message: `Cannot apply ${node.operator} to ${argType}`,
-          start: node.start,
-          end: node.end,
-          severity: 'error'
-        });
-      }
+
+    // Numeric unary operators on a value that can't convert to a number always
+    // yield NaN (e.g. -[1], ++{}). ucode doesn't throw, so warn rather than error.
+    if (node.operator === '+' || node.operator === '-' || node.operator === '++' || node.operator === '--') {
+      this.warnIfNaNArithmetic(node, node.operator, argType, null);
     }
-    
-    return resultType;
+
+    return this.typeCompatibility.getUnaryResultType(argType, node.operator);
   }
 
-  private isDefinitelyInvalidUnaryOperation(operandType: UcodeType, operator: string): boolean {
-    switch (operator) {
-      case '+':
-      case '-':
-        // Unary +/- perform numeric conversion on strings (e.g., +"42" → 42)
-        // This is valid in ucode, same as JavaScript behavior
-        return operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT;
-      case '++':
-      case '--':
-        // These require numeric types or booleans (which coerce to integers)
-        return operandType === UcodeType.STRING ||
-               operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT;
-      case '~':
-        // Bitwise complement requires numeric types or booleans (which coerce to integers)
-        // Doubles are truncated to integer by ucode before applying ~
-        return operandType === UcodeType.STRING ||
-               operandType === UcodeType.ARRAY || operandType === UcodeType.OBJECT;
-      case '!':
-        // Logical NOT can be applied to any type (truthy/falsy)
-        return false;
-      default:
-        return false;
+  /** array/object/function/regex can never convert to a finite number → NaN in arithmetic. */
+  private producesNaNInArithmetic(type: UcodeType): boolean {
+    return type === UcodeType.ARRAY || type === UcodeType.OBJECT ||
+           type === UcodeType.FUNCTION || type === UcodeType.REGEX;
+  }
+
+  /**
+   * Warn when an arithmetic operation provably evaluates to NaN: a non-numeric,
+   * non-coercible operand (array/object/function/regex). The result type is still
+   * `double` (NaN is a double value, not a separate type) — this is a lint, not a
+   * type change. Strings are excluded (value-dependent: `"42"` works, `"abc"` is
+   * NaN), as is `+` with a string operand (that's concatenation). For unary
+   * operators, pass rightType = null.
+   */
+  private warnIfNaNArithmetic(node: AstNode, operator: string, leftType: UcodeType, rightType: UcodeType | null): void {
+    if (operator === '+' && (leftType === UcodeType.STRING || rightType === UcodeType.STRING)) {
+      return; // string concatenation, not arithmetic
     }
+    const offenders: UcodeType[] = [];
+    if (this.producesNaNInArithmetic(leftType)) offenders.push(leftType);
+    if (rightType !== null && this.producesNaNInArithmetic(rightType) && !offenders.includes(rightType)) {
+      offenders.push(rightType);
+    }
+    if (offenders.length === 0) return;
+    this.warnings.push({
+      message: `This operation always produces NaN: ${offenders.join(' and ')} cannot be converted to a number`,
+      start: node.start,
+      end: node.end,
+      severity: 'warning'
+    });
   }
 
   private checkInOperator(node: BinaryExpressionNode, _leftType: UcodeType, rightType: UcodeType): UcodeType {
@@ -1814,7 +1815,9 @@ export class TypeChecker {
 
 
   private checkAssignmentExpression(node: AssignmentExpressionNode): UcodeType {
-    const leftType = this.checkNode(node.left);
+    // Check the target for its side effects (populates _fullType, guards, etc.);
+    // its type isn't used — ucode assignment has no type-compatibility constraint.
+    this.checkNode(node.left);
     const rightType = this.checkNode(node.right);
 
     // Track array element types
@@ -1847,21 +1850,9 @@ export class TypeChecker {
       }
     }
 
-    // Type compatibility check - but NOT for simple identifier assignments
-    // Variables can change type, so we only check property/array element assignments
-    if (node.operator === '=' &&
-        node.left.type !== 'Identifier' && // Allow variables to change type
-        leftType !== UcodeType.UNKNOWN &&
-        rightType !== UcodeType.UNKNOWN) {
-      if (!this.typeCompatibility.canAssign(leftType, rightType)) {
-        this.warnings.push({
-          message: `Type mismatch: assigning ${rightType} to ${leftType}`,
-          start: node.start,
-          end: node.end,
-          severity: 'warning'
-        });
-      }
-    }
+    // ucode is dynamically typed — assignment never has a type-compatibility
+    // constraint (a property or element may be reassigned to any type), so there
+    // is no assignment type check here.
 
     return rightType;
   }
