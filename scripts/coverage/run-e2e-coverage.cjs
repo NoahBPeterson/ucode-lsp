@@ -10,7 +10,7 @@
  * Pipeline:
  *   1. Build the server bundle WITH full source maps (`--devtool source-map`),
  *      so the bundle's coverage can be remapped to the original TypeScript.
- *   2. Run the whole suite under NODE_V8_COVERAGE, with cov-preload.cjs injected
+ *   2. Run ALL tests (the whole tests/ dir) under NODE_V8_COVERAGE, with cov-preload.cjs injected
  *      via NODE_OPTIONS so the SIGTERM-killed server flushes its coverage.
  *      Every spawned `node` server (from mocha- and bun-run suites) writes a
  *      coverage file; the bun/mocha runner processes write their own (ignored).
@@ -28,7 +28,13 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const RAW = path.join(ROOT, '.coverage-raw');
 const OUT = path.join(ROOT, 'coverage');
 const PRELOAD = path.join(__dirname, 'cov-preload.cjs');
-const SUITE = './tests/test-all-validations.test.js';
+// Run the WHOLE tests/ directory, not just the curated runner. `bun test tests/`
+// executes both test systems: the curated test-all-validations.test.js (which
+// runs its ~2150 internally and asserts them) AND the ~400 bun-native *.test.js
+// standalones. Pointing at only the curated file used to miss the standalones —
+// so a broken standalone (e.g. the 0.6.43 OR-guard regression) failed neither
+// coverage:e2e nor the standard check, and their exercised paths weren't counted.
+const TESTS_DIR = './tests/';
 
 function run(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { cwd: ROOT, stdio: 'inherit', env: { ...process.env, ...(opts.env || {}) } });
@@ -44,15 +50,15 @@ function run(cmd, args, opts = {}) {
     process.exit(1);
   }
 
-  // 2. Run the full suite under V8 coverage. Don't fail-fast on test failures —
+  // 2. Run ALL tests under V8 coverage. Don't fail-fast on test failures —
   //    coverage of a partially-failing run is still useful.
   fs.rmSync(RAW, { recursive: true, force: true });
   fs.mkdirSync(RAW, { recursive: true });
-  console.log('\n[coverage] running suite under NODE_V8_COVERAGE...');
-  const testStatus = run('bun', ['test', SUITE], {
+  console.log('\n[coverage] running all tests under NODE_V8_COVERAGE...');
+  const testStatus = run('bun', ['test', TESTS_DIR], {
     env: { NODE_V8_COVERAGE: RAW, NODE_OPTIONS: `--require ${PRELOAD}` },
   });
-  if (testStatus !== 0) console.warn(`\n[coverage] note: suite exited ${testStatus} (continuing with collected coverage)`);
+  if (testStatus !== 0) console.warn(`\n[coverage] note: tests exited ${testStatus} (continuing with collected coverage)`);
 
   // 3. Remap the server bundle's coverage back to src/ and report.
   console.log('\n[coverage] generating report...');
