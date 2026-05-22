@@ -72,6 +72,10 @@ describe('Hover (comprehensive e2e)', function () {
     // not the old text scan.
     ['arrow rest parameter', "let f = (...rest) => rest[0];\n", 'rest[0]', ['rest parameter', 'array']],
     ['arrow rest param (block body)', "let g = (a, ...more) => {\n  return more[0];\n};\n", 'more[0]', ['rest parameter', 'array']],
+
+    // Regex literal hover — exercises regexTypes.extractPattern + getRegexDocumentation.
+    ['regex literal with flags', "let re = /ab+c/i;\nprint(re);\n", '/ab+c', ['Regular Expression', 'ab+c', 'with flags']],
+    ['regex literal no flags', "let re = /xyz/;\nprint(re);\n", '/xyz', ['Regular Expression', 'xyz']],
   ];
 
   for (const [label, code, anchor, expected] of cases) {

@@ -3,21 +3,7 @@
  * Based on ucode regex literal support
  */
 
-export interface RegexSignature {
-  pattern: string;
-  flags?: string;
-  description: string;
-}
-
 export class RegexTypeRegistry {
-  /**
-   * Check if a value represents a regex literal
-   */
-  isRegexLiteral(value: any): boolean {
-    return typeof value === 'object' && value !== null && 
-           value.type === 'regexp' && typeof value.pattern === 'string';
-  }
-
   /**
    * Get documentation for a regex pattern
    */
@@ -46,36 +32,17 @@ Regular expressions are independent objects used for pattern matching and text p
   }
 
   /**
-   * Get basic regex type information
+   * Extract the pattern and flags from a regex literal's lexer token value,
+   * which is the raw source string (e.g. `/ab+c/i`). Greedy up to the LAST
+   * slash so patterns containing escaped slashes still split correctly.
+   * Returns an empty pattern for anything that isn't a `/.../flags` string.
    */
-  getBasicRegexInfo(): string {
-    return `**regex** - Regular expression pattern for text matching`;
-  }
-
-  /**
-   * Validate regex pattern syntax (basic validation)
-   */
-  validatePattern(pattern: string): { valid: boolean; error?: string } {
-    try {
-      new RegExp(pattern);
-      return { valid: true };
-    } catch (error) {
-      return { 
-        valid: false, 
-        error: error instanceof Error ? error.message : 'Invalid regex pattern'
-      };
-    }
-  }
-
-  /**
-   * Extract pattern from regex literal node
-   */
-  extractPattern(regexNode: any): { pattern: string; flags?: string } {
-    if (regexNode && typeof regexNode.pattern === 'string') {
-      return {
-        pattern: regexNode.pattern,
-        flags: regexNode.flags || undefined
-      };
+  extractPattern(regexValue: string): { pattern: string; flags?: string } {
+    const m = typeof regexValue === 'string' ? regexValue.match(/^\/(.*)\/([a-z]*)$/s) : null;
+    if (m) {
+      const pattern = m[1] as string;
+      const flags = m[2] as string;
+      return flags ? { pattern, flags } : { pattern };
     }
     return { pattern: '' };
   }
