@@ -154,14 +154,6 @@ export class TypeNarrowingEngine {
   }
 
   /**
-   * Get the portion of a union type that is NOT assignable to an expected type
-   */
-  getUnassignablePortion(actualType: UcodeDataType, expectedType: UcodeType): UcodeDataType {
-    const incompatibleTypes = this.getIncompatibleTypes(actualType, expectedType);
-    return createUnionType(incompatibleTypes);
-  }
-
-  /**
    * Check if a single type is compatible with an expected type
    */
   private isTypeCompatible(actualType: SingleType, expectedType: UcodeType): boolean {
@@ -175,9 +167,11 @@ export class TypeNarrowingEngine {
     // Allow integer to double conversion
     if (actualBase === UcodeType.INTEGER && expectedType === UcodeType.DOUBLE) return true;
 
-    // For 'in' operator: both array and object are compatible
-    if (expectedType === UcodeType.OBJECT && actualBase === UcodeType.ARRAY) return true;
-    if (expectedType === UcodeType.ARRAY && actualBase === UcodeType.OBJECT) return true;
+    // NOTE: array and object are NOT interchangeable here. The `in` operator
+    // (the only context where either is acceptable) checks both types explicitly
+    // via `isSubtype(x, OBJECT) || isSubtype(x, ARRAY)`, so it doesn't need this
+    // to be lenient. Treating them as compatible would suppress real type errors
+    // like `keys([1,2,3])` / `push({}, 1)` (the runtime returns null for those).
 
     return false;
   }
@@ -236,44 +230,4 @@ export class TypeNarrowingEngine {
     return types.length > 1; // Only suggest null check if there are other types too
   }
 
-  /**
-   * Check if type requires type guard before use with specific expected type
-   */
-  requiresTypeGuard(actualType: UcodeDataType, expectedType: UcodeType): boolean {
-    return !this.isSubtype(actualType, expectedType) && 
-           this.getIncompatibleTypes(actualType, expectedType).length > 0;
-  }
-
-  /**
-   * Generate type guard condition for narrowing to expected type
-   */
-  generateTypeGuardCondition(variableName: string, expectedType: UcodeType): string {
-    switch (expectedType) {
-      case UcodeType.ARRAY:
-        return `type(${variableName}) == 'array'`;
-      case UcodeType.OBJECT:
-        return `type(${variableName}) == 'object'`;
-      case UcodeType.STRING:
-        return `type(${variableName}) == 'string'`;
-      case UcodeType.INTEGER:
-        return `type(${variableName}) == 'int'`;
-      case UcodeType.DOUBLE:
-        return `type(${variableName}) == 'double'`;
-      case UcodeType.BOOLEAN:
-        return `type(${variableName}) == 'bool'`;
-      case UcodeType.NULL:
-        return `${variableName} == null`;
-      case UcodeType.FUNCTION:
-        return `type(${variableName}) == 'function'`;
-      default:
-        return `type(${variableName}) == '${expectedType}'`;
-    }
-  }
-
-  /**
-   * Generate null guard condition
-   */
-  generateNullGuardCondition(variableName: string): string {
-    return `${variableName} != null`;
-  }
 }
