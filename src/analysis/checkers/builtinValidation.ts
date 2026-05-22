@@ -103,22 +103,6 @@ function isNumericConvertibleType(type: UcodeType): boolean {
   return allowedTypes.includes(type);
 }
 
-export function isStringCastableType(_type: UcodeType): boolean {
-  // Based on ucv_to_stringbuf_formatted - all types can be cast to string
-  // NULL -> "null"
-  // BOOLEAN -> "true"/"false"  
-  // INTEGER -> number representation
-  // DOUBLE -> number representation (including NaN, Infinity)
-  // STRING -> unchanged
-  // ARRAY -> JSON-like representation "[...]"
-  // OBJECT -> JSON-like representation "{...}"
-  // REGEX -> "/pattern/flags"
-  // FUNCTION -> "function name(...) { ... }"
-  // RESOURCE -> "<resource type pointer>"
-  // UNKNOWN -> assumed castable
-  return true; // All ucode types are castable to string
-}
-
 export class BuiltinValidator {
   private errors: TypeError[] = [];
   private warnings: TypeWarning[] = [];

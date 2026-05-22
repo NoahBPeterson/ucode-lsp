@@ -66,10 +66,6 @@ export function isObjectType(type: UcodeDataType): type is ObjectType {
   return typeof type === 'object' && type !== null && (type as any).type === 'objectKind';
 }
 
-export function createObjectType(name: string): ObjectType {
-  return { type: 'objectKind', name };
-}
-
 export function getObjectTypeName(type: UcodeDataType): string | null {
   if (isObjectType(type)) return type.name;
   return null;
@@ -181,11 +177,6 @@ export function createArrayType(elementType: UcodeDataType): ArrayType {
 export function getArrayElementType(type: UcodeDataType): UcodeDataType {
   if (isArrayType(type)) return type.elementType;
   return UcodeType.UNKNOWN;
-}
-
-/** Returns true for both plain UcodeType.ARRAY and ArrayType (with element info) */
-export function isArrayLike(type: UcodeDataType): boolean {
-  return type === UcodeType.ARRAY || isArrayType(type);
 }
 
 /** Convert a SingleType to its display string */

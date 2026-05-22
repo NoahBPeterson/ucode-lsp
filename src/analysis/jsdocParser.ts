@@ -197,13 +197,6 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
 }
 
 /**
- * Resolve a type expression, returning UNKNOWN for unrecognized types
- */
-export function resolveTypeExpressionOrUnknown(typeExpr: string): UcodeDataType {
-  return resolveTypeExpression(typeExpr) ?? (UcodeType.UNKNOWN as UcodeDataType);
-}
-
-/**
  * Represents a parsed @typedef with its properties.
  */
 export interface ParsedTypedef {

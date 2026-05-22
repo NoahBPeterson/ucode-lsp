@@ -233,14 +233,6 @@ export function isKeyword(text: string): boolean {
     return text in Keywords;
 }
 
-export function isOperator(text: string): boolean {
-    return text in Operators;
-}
-
-export function getTokenTypeName(type: TokenType): string {
-    return TokenType[type] || 'UNKNOWN';
-}
-
 export function isIdentifierStart(char: string): boolean {
     return /[a-zA-Z_$]/.test(char);
 }
@@ -255,10 +247,6 @@ export function isDigit(char: string): boolean {
 
 export function isHexDigit(char: string): boolean {
     return /[0-9a-fA-F]/.test(char);
-}
-
-export function isOctalDigit(char: string): boolean {
-    return /[0-7]/.test(char);
 }
 
 export function isBinaryDigit(char: string): boolean {

@@ -157,13 +157,6 @@ export function discoverAvailableModules(): DiscoveredModule[] {
 }
 
 /**
- * Gets just the module names for completion
- */
-export function getAvailableModuleNames(): string[] {
-    return discoverAvailableModules().map(module => module.name);
-}
-
-/**
  * Discovers the members (functions, resources) of a specific module
  */
 function discoverModuleMembers(moduleName: string): ModuleMember[] {
@@ -261,13 +254,4 @@ function getStaticModuleMembers(moduleName: string): ModuleMember[] {
     }
 
     return members;
-}
-
-/**
- * Clears the module cache (useful for testing or manual refresh)
- */
-export function clearModuleCache(): void {
-    cachedModules = null;
-    cachedUcodeAvailable = null;
-    cachedModuleMembers.clear();
 }

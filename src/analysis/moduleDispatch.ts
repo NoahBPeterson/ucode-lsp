@@ -20,7 +20,7 @@ export {
   type LookupError,
 } from './moduleTypes';
 
-import type { KnownModule, KnownObjectType, FunctionSignature, ModuleRegistry, ObjectTypeRegistry } from './moduleTypes';
+import type { KnownModule, KnownObjectType, ModuleRegistry, ObjectTypeRegistry } from './moduleTypes';
 import { KNOWN_MODULES } from './moduleTypes';
 import { createModuleRegistry, createObjectTypeRegistry } from './registryFactory';
 
@@ -83,9 +83,6 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'exception': createObjectTypeRegistry(exceptionObjectType),
 };
 
-// Derived from OBJECT_REGISTRIES — no separate list to maintain
-export const KNOWN_OBJECT_TYPES: readonly KnownObjectType[] = Object.keys(OBJECT_REGISTRIES) as KnownObjectType[];
-
 // ---- Utility functions ----
 
 export function isKnownModule(name: string): name is KnownModule {
@@ -94,20 +91,6 @@ export function isKnownModule(name: string): name is KnownModule {
 
 export function isKnownObjectType(name: string): name is KnownObjectType {
   return name in OBJECT_REGISTRIES;
-}
-
-export function getModuleRegistry(name: string): Option.Option<ModuleRegistry> {
-  if (isKnownModule(name)) {
-    return Option.some(MODULE_REGISTRIES[name]);
-  }
-  return Option.none();
-}
-
-export function getObjectTypeRegistry(name: string): Option.Option<ObjectTypeRegistry> {
-  if (isKnownObjectType(name)) {
-    return Option.some(OBJECT_REGISTRIES[name]);
-  }
-  return Option.none();
 }
 
 /**
@@ -190,22 +173,8 @@ export function validateImport(m: KnownModule, name: string): Either.Either<true
 }
 
 /**
- * Resolve a method on a known object type.
- */
-export function resolveObjectMethod(t: KnownObjectType, method: string): Option.Option<FunctionSignature> {
-  return OBJECT_REGISTRIES[t].getMethod(method);
-}
-
-/**
  * Get method documentation on a known object type.
  */
 export function getObjectMethodDocumentation(t: KnownObjectType, method: string): Option.Option<string> {
   return OBJECT_REGISTRIES[t].getMethodDocumentation(method);
-}
-
-/**
- * Get all method names for a known object type.
- */
-export function getObjectMethodNames(t: KnownObjectType): string[] {
-  return OBJECT_REGISTRIES[t].getMethodNames();
 }

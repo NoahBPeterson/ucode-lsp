@@ -456,16 +456,6 @@ export type AstNodeType = ProgramNode | Expression | Statement |
   CatchClauseNode | SwitchCaseNode;
 
 // Helper type guards
-export function isExpression(node: AstNode): node is Expression {
-  return [
-    'Literal', 'Identifier', 'BinaryExpression', 'UnaryExpression',
-    'AssignmentExpression', 'CallExpression', 'SpreadElement', 'MemberExpression',
-    'ArrayExpression', 'ObjectExpression', 'ConditionalExpression',
-    'LogicalExpression', 'ThisExpression', 'TemplateLiteral',
-    'FunctionExpression', 'ArrowFunctionExpression', 'DeleteExpression'
-  ].includes(node.type);
-}
-
 export function isStatement(node: AstNode): node is Statement {
   return [
     'BlockStatement', 'ExpressionStatement', 'VariableDeclaration',
