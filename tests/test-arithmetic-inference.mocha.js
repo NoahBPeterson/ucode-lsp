@@ -99,6 +99,13 @@ describe('Arithmetic type inference (e2e, vs ucode oracle)', function () {
     ['i % n', 'double'],    // ★ fix: int % null
     ['n % i', 'integer'],   // null % int → 0 % 1 → 0
     ['s % i', 'double'],
+
+    // Exponentiation: numeric promotion like -/*, NOT the divide-by-null rule
+    // (typeChecker previously had no `**` case → inferred unknown).
+    ['i ** i', 'integer'],  // 2 ** 3 → int (common case)
+    ['i ** d', 'double'],   // double exponent → double
+    ['i ** n', 'integer'],  // 2 ** null → 2 ** 0 → 1 (int) — null is NOT div-by-zero here
+    ['s ** i', 'double'],   // non-numeric base → NaN → double
   ];
 
   // One document holds every case (result vars r0..rN); each `it` hovers one.

@@ -531,7 +531,8 @@ export class TypeChecker {
       case '-':
       case '*':
       case '/':
-      case '%': {
+      case '%':
+      case '**': {
         // Base-type fast path: when neither operand is a union, the result is a
         // single concrete type — behaves exactly as the scalar inference, and we
         // leave _fullType untouched (ucode is permissive; no errors here).

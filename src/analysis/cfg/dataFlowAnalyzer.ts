@@ -37,6 +37,7 @@ import {
 import { createIoHandleDataType } from '../ioTypes';
 import { createFsObjectDataType, FsObjectType } from '../fsTypes';
 import { LogicalTypeInference } from '../logicalTypeInference';
+import { arithmeticTypeInference } from '../arithmeticTypeInference';
 import { isKnownModule } from '../moduleDispatch';
 import { Match } from 'effect';
 
@@ -426,22 +427,15 @@ export class DataFlowAnalyzer {
       return logicalTypeInference.inferLogicalAndFullType(leftType, rightType);
     }
 
-    // Arithmetic operators
-    if (['+', '-', '*', '/', '%', '**'].includes(node.operator)) {
-      // If either operand is double, result is double
-      const types = [...getUnionTypes(leftType), ...getUnionTypes(rightType)];
-      if (types.includes(UcodeType.DOUBLE)) {
-        return UcodeType.DOUBLE;
-      }
-      return UcodeType.INTEGER;
-    }
-
-    // String concatenation
+    // Arithmetic operators — delegate to the shared, runtime-verified inference
+    // (string concatenation for +, NaN→double for non-numeric operands, the
+    // divide/modulo-by-null rule, and union distribution). inferExpressionType
+    // already yields full UcodeDataType operands, so unions flow through.
     if (node.operator === '+') {
-      const types = [...getUnionTypes(leftType), ...getUnionTypes(rightType)];
-      if (types.includes(UcodeType.STRING)) {
-        return UcodeType.STRING;
-      }
+      return arithmeticTypeInference.inferAdditionFullType(leftType, rightType);
+    }
+    if (['-', '*', '/', '%', '**'].includes(node.operator)) {
+      return arithmeticTypeInference.inferArithmeticFullType(leftType, rightType, node.operator);
     }
 
     return UcodeType.UNKNOWN;
