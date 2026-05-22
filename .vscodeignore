@@ -24,6 +24,12 @@ payload_processor_ucode/**
 ucode_gotchas.md
 .claude/**
 bun.lock
+.coverage-raw/**
+coverage/**
+.github/**
+.npmignore
+ucode-upstream.json
+scripts/coverage/**
 !dist/*.js
 !icons/**
 !README.md
