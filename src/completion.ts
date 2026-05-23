@@ -205,7 +205,16 @@ export function handleCompletion(
                 connection.console.log(`Returning ${defaultImportCompletions.length} default import completions for ${objectName}`);
                 return defaultImportCompletions;
             }
-            
+
+            // Named value import used as an object (import { CONF } from './m'; CONF.):
+            // complete the imported VALUE's own object properties, not the module's
+            // exports (which is only right for `import * as ns`).
+            const importedValueCompletions = getImportedValuePropertyCompletions(objectName, analysisResult, document.uri, offset);
+            if (importedValueCompletions.length > 0) {
+                connection.console.log(`Returning ${importedValueCompletions.length} imported-value property completions for ${objectName}`);
+                return importedValueCompletions;
+            }
+
             // Check if this is a namespace import with completions available (only if no property chain)
             if (!propertyChain || propertyChain.length === 0) {
                 const namespaceImportCompletions = getNamespaceImportCompletions(objectName, analysisResult, document.uri);
@@ -600,6 +609,35 @@ function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, conne
     return completions;
 }
 
+// Named value import used as an object — `import { CONF } from './m'; CONF.foo`.
+// Resolves the imported value's OWN object shape (getNamedExportTypeInfo) and
+// completes its properties. Distinct from a namespace import (`import * as ns`),
+// whose members are the module's exports.
+function getImportedValuePropertyCompletions(
+    objectName: string,
+    analysisResult?: SemanticAnalysisResult,
+    documentUri?: string,
+    offset?: number
+): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) return [];
+    const symbol = lookupSymbol(objectName, analysisResult, offset);
+    if (!symbol || symbol.type !== SymbolType.IMPORTED || !symbol.importedFrom) return [];
+    // Namespace (`*`) and default imports are handled by their own paths.
+    if (!symbol.importSpecifier || symbol.importSpecifier === '*' || symbol.importSpecifier === 'default') return [];
+
+    const uri = resolveModuleUri(symbol.importedFrom, documentUri);
+    if (!uri) return [];
+
+    const info = getCompletionFileResolver().getNamedExportTypeInfo(uri, symbol.importSpecifier);
+    if (!info || !info.propertyTypes || info.propertyTypes.size === 0) return [];
+
+    const items: CompletionItem[] = [];
+    for (const [name, ptype] of info.propertyTypes) {
+        items.push({ label: name, kind: CompletionItemKind.Property, detail: typeToString(ptype), insertText: name });
+    }
+    return items;
+}
+
 function getFallbackNamespaceCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, documentUri?: string): CompletionItem[] {
     if (!analysisResult || !analysisResult.symbolTable) {
         return [];
@@ -607,8 +645,10 @@ function getFallbackNamespaceCompletions(objectName: string, analysisResult?: Se
 
     const symbol = lookupSymbol(objectName, analysisResult);
 
-    // Only provide fallback completions if we have a symbol with valid import information
-    if (!symbol || !symbol.importedFrom || symbol.type !== SymbolType.IMPORTED) {
+    // Only for NAMESPACE imports (import * as ns) — ns.<member> = the module's
+    // exports. Named value imports (import { x }) complete their own properties
+    // via getImportedValuePropertyCompletions, not the module's exports.
+    if (!symbol || !symbol.importedFrom || symbol.type !== SymbolType.IMPORTED || symbol.importSpecifier !== '*') {
         return [];
     }
 
