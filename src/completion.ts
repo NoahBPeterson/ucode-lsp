@@ -13,7 +13,7 @@ import { UcodeLexer, TokenType, Token } from './lexer';
 import { UcodeParser } from './parser';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
-import { extractModuleType } from './analysis/symbolTable';
+import { extractModuleType, typeToString } from './analysis/symbolTable';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { rtnlTypeRegistry } from './analysis/rtnlTypes';
 import { Option } from 'effect';
@@ -75,11 +75,18 @@ function getModuleExportCompletions(moduleUri: string, objectName: string): Comp
 
 /**
  * Helper to look up a symbol for an object name (e.g. for member completion).
+ * When an offset is given, prefer the scope-aware lookup so scoped objects
+ * (catch params, function-local lets) resolve to the right declaration.
  */
 function lookupSymbol(
     objectName: string,
-    analysisResult: SemanticAnalysisResult
+    analysisResult: SemanticAnalysisResult,
+    offset?: number
 ): UcodeSymbol | undefined {
+    if (offset !== undefined) {
+        const scoped = analysisResult.symbolTable.lookupAtPosition(objectName, offset);
+        if (scoped) return scoped;
+    }
     return analysisResult.symbolTable.lookup(objectName) || undefined;
 }
 
@@ -218,7 +225,7 @@ export function handleCompletion(
             
             // Check if this is a property chain completion (e.g., obj.prop.subprop.)
             if (propertyChain && propertyChain.length > 0) {
-                const propertyChainCompletions = getPropertyChainCompletions(objectName, propertyChain, analysisResult);
+                const propertyChainCompletions = getPropertyChainCompletions(objectName, propertyChain, analysisResult, offset);
                 if (propertyChainCompletions.length > 0) {
                     connection.console.log(`Returning ${propertyChainCompletions.length} property chain completions for ${objectName}.${propertyChain.join('.')}`);
                     return propertyChainCompletions;
@@ -226,7 +233,7 @@ export function handleCompletion(
             }
             
             // Check if this is a variable with generic object properties
-            const variableCompletions = getVariableCompletions(objectName, analysisResult, document.uri);
+            const variableCompletions = getVariableCompletions(objectName, analysisResult, document.uri, offset);
             if (variableCompletions.length > 0) {
                 connection.console.log(`Returning ${variableCompletions.length} variable completions for ${objectName}`);
                 return variableCompletions;
@@ -694,14 +701,14 @@ function getNamespaceImportCompletions(objectName: string, analysisResult?: Sema
     return [];
 }
 
-function getPropertyChainCompletions(objectName: string, propertyChain: string[], analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+function getPropertyChainCompletions(objectName: string, propertyChain: string[], analysisResult?: SemanticAnalysisResult, offset?: number): CompletionItem[] {
     const fs = require('fs');
-    
+
     if (!analysisResult || !analysisResult.symbolTable) {
         return [];
     }
 
-    const symbol = lookupSymbol(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult, offset);
     if (!symbol) {
         return [];
     }
@@ -752,20 +759,38 @@ function getPropertyChainCompletions(objectName: string, propertyChain: string[]
         }
     }
     
+    // Generic nested object properties: `obj.prop.` completes prop's sub-keys
+    // from the symbol's nestedPropertyTypes (one level deep — the only depth the
+    // analyzer records). e.g. `let o = { inner: { z: 1 } }; o.inner.` → `z`.
+    if (propertyChain.length === 1 && symbol.nestedPropertyTypes) {
+        const nested = symbol.nestedPropertyTypes.get(propertyChain[0]!);
+        if (nested && nested.size > 0) {
+            const items: CompletionItem[] = [];
+            for (const [name, ptype] of nested) {
+                items.push({
+                    label: name,
+                    kind: CompletionItemKind.Property,
+                    detail: typeToString(ptype),
+                    insertText: name
+                });
+            }
+            return items;
+        }
+    }
+
     // TODO: Add more property chain patterns here
     // - module.exports.* patterns
-    // - nested object property chains
     // - method chaining completions
-    
+
     return [];
 }
 
-function getVariableCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, documentUri?: string): CompletionItem[] {
+function getVariableCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, documentUri?: string, offset?: number): CompletionItem[] {
     if (!analysisResult || !analysisResult.symbolTable) {
         return [];
     }
 
-    const symbol = lookupSymbol(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult, offset);
     if (!symbol) {
         return [];
     }
@@ -777,8 +802,23 @@ function getVariableCompletions(objectName: string, analysisResult?: SemanticAna
         return getModuleExportCompletions(uri, objectName);
     }
 
-    // Only provide completions for variables with known specific types
-    // For generic variables, return empty array - do not add arbitrary properties
+    // Variables with a KNOWN object shape — object literals, catch params (the
+    // exception object's message/stacktrace/type), JSDoc-typed objects, and
+    // factory/default-export return objects — carry inferred propertyTypes. These
+    // aren't "arbitrary"; complete them as the object's properties.
+    if (symbol.propertyTypes && symbol.propertyTypes.size > 0) {
+        const items: CompletionItem[] = [];
+        for (const [name, ptype] of symbol.propertyTypes) {
+            items.push({
+                label: name,
+                kind: CompletionItemKind.Property,
+                detail: typeToString(ptype),
+                insertText: name
+            });
+        }
+        return items;
+    }
+
     return [];
 }
 
