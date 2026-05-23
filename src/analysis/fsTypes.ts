@@ -280,10 +280,6 @@ export const fsTypeRegistry = {
 };
 
 // Helper functions for type checking
-export function isFsObjectType(typeName: string): typeName is FsObjectType {
-  return Object.values(FsObjectType).includes(typeName as FsObjectType);
-}
-
 export function createFsObjectDataType(fsType: FsObjectType): UcodeDataType {
   return {
     type: UcodeType.OBJECT,

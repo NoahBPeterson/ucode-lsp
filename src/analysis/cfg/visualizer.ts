@@ -166,40 +166,6 @@ export function visualizeCFGDot(cfg: ControlFlowGraph): string {
 }
 
 /**
- * Generates a JSON representation of a CFG.
- *
- * This is useful for programmatic inspection and testing.
- */
-export function visualizeCFGJSON(cfg: ControlFlowGraph): string {
-  const blocks = cfg.blocks.map((block) => ({
-    id: block.id,
-    label: block.label,
-    statementCount: block.statements.length,
-    statements: block.statements.map((s) => ({
-      type: s.type,
-      start: s.start,
-      end: s.end,
-    })),
-    predecessors: block.predecessors.map((p) => p.id),
-    successors: block.successors.map((edge) => ({
-      target: edge.target.id,
-      hasCondition: !!edge.condition,
-      isNegative: edge.isNegative,
-    })),
-  }));
-
-  const json = {
-    name: cfg.name,
-    entryId: cfg.entry.id,
-    exitId: cfg.exit.id,
-    blockCount: cfg.blocks.length,
-    blocks,
-  };
-
-  return JSON.stringify(json, null, 2);
-}
-
-/**
  * Prints a summary of the CFG to the console.
  *
  * This is useful for quick debugging.

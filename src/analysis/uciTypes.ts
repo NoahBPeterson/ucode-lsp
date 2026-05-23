@@ -6,7 +6,7 @@
 import type { FunctionSignature } from './moduleTypes';
 import type { ModuleDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
-import { UcodeDataType, ModuleType, UcodeType, extractModuleType } from './symbolTable';
+import { UcodeDataType, extractModuleType } from './symbolTable';
 
 // Backwards-compat type alias
 export type UciFunctionSignature = FunctionSignature;
@@ -214,13 +214,6 @@ export { cursorMethods as uciCursorMethods };
 
 export enum UciObjectType {
   UCI_CURSOR = 'uci.cursor',
-}
-
-export function createUciObjectDataType(type: UciObjectType): ModuleType {
-  return {
-    type: UcodeType.OBJECT,
-    moduleName: type,
-  };
 }
 
 export const uciModule: ModuleDefinition = {

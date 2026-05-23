@@ -340,17 +340,6 @@ export enum Nl80211ObjectType {
   NL80211_LISTENER = 'nl80211.listener'
 }
 
-export function createNl80211ObjectDataType(nl80211Type: Nl80211ObjectType): any {
-  return {
-    type: 'object',
-    moduleName: nl80211Type
-  };
-}
-
-export function isNl80211ObjectType(typeName: string): typeName is Nl80211ObjectType {
-  return Object.values(Nl80211ObjectType).includes(typeName as Nl80211ObjectType);
-}
-
 // Backwards compatibility
 export const nl80211TypeRegistry = {
   getFunctionNames: () => Array.from(functions.keys()),

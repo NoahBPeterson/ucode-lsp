@@ -9,7 +9,7 @@
 import type { FunctionSignature } from './moduleTypes';
 import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
-import { UcodeType, UcodeDataType, extractModuleType } from './symbolTable';
+import { extractModuleType } from './symbolTable';
 
 // Backwards-compat type aliases
 export type UloopFunctionSignature = FunctionSignature;
@@ -397,17 +397,6 @@ export const uloopTaskObjectType: ObjectTypeDefinition = { typeName: 'uloop.task
 export const uloopIntervalObjectType: ObjectTypeDefinition = { typeName: 'uloop.interval', methods: intervalMethods };
 export const uloopSignalObjectType: ObjectTypeDefinition = { typeName: 'uloop.signal', methods: signalMethods };
 export const uloopPipeObjectType: ObjectTypeDefinition = { typeName: 'uloop.pipe', methods: pipeMethods };
-
-export function isUloopObjectType(typeName: string): typeName is UloopObjectType {
-  return Object.values(UloopObjectType).includes(typeName as UloopObjectType);
-}
-
-export function createUloopObjectDataType(uloopType: UloopObjectType): UcodeDataType {
-  return {
-    type: UcodeType.OBJECT,
-    moduleName: uloopType
-  };
-}
 
 // Map of all uloop object type methods for backwards-compat
 const objectMethodMaps: Record<string, Map<string, FunctionSignature>> = {

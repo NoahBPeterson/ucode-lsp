@@ -65,36 +65,3 @@ export const fsModuleFunctions = new Map<string, string>([
 
   ['stderr', 'Standard error file handle.\n\n**Type:** `fs.file` - Pre-opened file handle for stderr (fd 2)\n\n**Example:**\n```ucode\nfs.stderr.write("Error message\\n");\n```']
 ]);
-
-// Helper function to get fs method documentation
-export function getFsMethodDoc(methodName: string): string | undefined {
-  return fsModuleFunctions.get(methodName);
-}
-
-// Get all fs method names
-export function getAllFsMethodNames(): string[] {
-  return Array.from(fsModuleFunctions.keys());
-}
-
-// Get a summary of available fs methods for hover display
-export function getFsModuleSummary(): string {
-  const methods = Array.from(fsModuleFunctions.keys());
-  const fileOps = ['open', 'readfile', 'writefile', 'access', 'realpath'];
-  const dirOps = ['opendir', 'mkdir', 'rmdir', 'lsdir', 'getcwd', 'chdir'];
-  const metaOps = ['stat', 'lstat', 'chmod', 'chown', 'rename'];
-  const linkOps = ['symlink', 'readlink', 'unlink'];
-  const utilOps = ['dirname', 'basename', 'glob', 'mkstemp', 'pipe'];
-  const handles = ['stdin', 'stdout', 'stderr'];
-  
-  let summary = 'Filesystem module providing file and directory operations.\n\n';
-  summary += '**File Operations:** `' + fileOps.join('`, `') + '`\n\n';
-  summary += '**Directory Operations:** `' + dirOps.join('`, `') + '`\n\n';
-  summary += '**Metadata Operations:** `' + metaOps.join('`, `') + '`\n\n';
-  summary += '**Link Operations:** `' + linkOps.join('`, `') + '`\n\n';
-  summary += '**Utility Operations:** `' + utilOps.join('`, `') + '`\n\n';
-  summary += '**Pre-defined Handles:** `' + handles.join('`, `') + '`\n\n';
-  summary += '**Error Handling:** All methods return `null` on error. Call `fs.error()` for details.\n\n';
-  summary += `**Available Methods** (${methods.length}): Type \`fs.\` to see autocomplete suggestions.`;
-  
-  return summary;
-}
