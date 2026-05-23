@@ -322,24 +322,6 @@ export const statvfsProperties: Map<string, StatvfsPropertySignature> = new Map(
   ["type", { name: "type", type: "integer", description: "Filesystem magic number from statfs (Linux only)" }],
 ]);
 
-export class StatvfsTypeRegistry {
-  getPropertyNames(): string[] {
-    return Array.from(statvfsProperties.keys());
-  }
-
-  getProperty(name: string): StatvfsPropertySignature | undefined {
-    return statvfsProperties.get(name);
-  }
-
-  getPropertyDocumentation(name: string): string {
-    const prop = statvfsProperties.get(name);
-    if (!prop) return '';
-    return `**(fs.statvfs property) ${prop.name}**: \`${prop.type}\`\n\n${prop.description}`;
-  }
-}
-
-export const statvfsTypeRegistry = new StatvfsTypeRegistry();
-
 // FS module constants (mount flags from statvfs)
 export const fsConstants: Map<string, number> = new Map([
   ["ST_RDONLY", 1],

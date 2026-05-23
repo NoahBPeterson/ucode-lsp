@@ -6,7 +6,6 @@
 import type { FunctionSignature } from './moduleTypes';
 import type { ModuleDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
-import { UcodeDataType, extractModuleType } from './symbolTable';
 
 // Backwards-compat type alias
 export type UciFunctionSignature = FunctionSignature;
@@ -212,10 +211,6 @@ const cursorMethods = new Map<string, FunctionSignature>([
 // Backwards-compat export
 export { cursorMethods as uciCursorMethods };
 
-export enum UciObjectType {
-  UCI_CURSOR = 'uci.cursor',
-}
-
 export const uciModule: ModuleDefinition = {
   name: 'uci',
   functions,
@@ -292,29 +287,6 @@ export const uciCursorObjectType: ObjectTypeDefinition = {
     return doc;
   },
 };
-
-// Backwards compatibility
-class UciCursorObjectRegistry {
-  isVariableOfUciType(dataType: UcodeDataType): UciObjectType | null {
-    const moduleType = extractModuleType(dataType);
-    if (moduleType) {
-      const moduleName = moduleType.moduleName;
-      if (moduleName === UciObjectType.UCI_CURSOR) {
-        return UciObjectType.UCI_CURSOR;
-      }
-    }
-    return null;
-  }
-
-  getUciMethod(type: UciObjectType, methodName: string): FunctionSignature | undefined {
-    if (type === UciObjectType.UCI_CURSOR) {
-      return cursorMethods.get(methodName);
-    }
-    return undefined;
-  }
-}
-
-export const uciCursorObjectRegistry = new UciCursorObjectRegistry();
 
 export const uciTypeRegistry = {
   getFunctionNames: () => Array.from(functions.keys()),

@@ -9,7 +9,6 @@
 import type { FunctionSignature } from './moduleTypes';
 import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
-import { extractModuleType } from './symbolTable';
 
 // Backwards-compat type aliases
 export type Nl80211FunctionSignature = FunctionSignature;
@@ -336,10 +335,6 @@ export const nl80211ListenerObjectType: ObjectTypeDefinition = {
   methods: listenerMethods,
 };
 
-export enum Nl80211ObjectType {
-  NL80211_LISTENER = 'nl80211.listener'
-}
-
 // Backwards compatibility
 export const nl80211TypeRegistry = {
   getFunctionNames: () => Array.from(functions.keys()),
@@ -368,40 +363,3 @@ export const nl80211TypeRegistry = {
   isValidNl80211Import: (name: string) => functions.has(name) || nl80211Constants.has(name) || name === 'const',
 };
 
-export const nl80211ObjectRegistry = {
-  getNl80211Type: (typeName: string) => {
-    if (typeName === Nl80211ObjectType.NL80211_LISTENER) {
-      return { type: Nl80211ObjectType.NL80211_LISTENER, methods: listenerMethods };
-    }
-    return undefined;
-  },
-  isNl80211Type: (typeName: string) => typeName === Nl80211ObjectType.NL80211_LISTENER,
-  getNl80211Method: (typeName: string, methodName: string) => {
-    if (typeName === Nl80211ObjectType.NL80211_LISTENER) {
-      return listenerMethods.get(methodName);
-    }
-    return undefined;
-  },
-  getNl80211MethodNames: (typeName: string) => {
-    if (typeName === Nl80211ObjectType.NL80211_LISTENER) {
-      return Array.from(listenerMethods.keys());
-    }
-    return [];
-  },
-  getMethodsForType: (typeName: string) => {
-    if (typeName === Nl80211ObjectType.NL80211_LISTENER) {
-      return Array.from(listenerMethods.keys());
-    }
-    return [];
-  },
-  isVariableOfNl80211Type: (dataType: any): Nl80211ObjectType | null => {
-    if (typeof dataType === 'string') return null;
-    const moduleType = extractModuleType(dataType);
-    if (moduleType) {
-      if (moduleType.moduleName === Nl80211ObjectType.NL80211_LISTENER) {
-        return Nl80211ObjectType.NL80211_LISTENER;
-      }
-    }
-    return null;
-  },
-};
