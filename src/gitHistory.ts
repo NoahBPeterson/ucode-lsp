@@ -26,28 +26,28 @@ export interface GitSummary {
 }
 
 /**
- * Collect TOP-LEVEL function declarations only — `function foo() {}` and
- * `export [default] function foo() {}` that are direct statements of the
- * program. Deliberately EXCLUDES lambdas (arrow functions), function
- * expressions (`let f = function () {}`), and nested functions: CodeLens
- * annotates only top-level functions.
+ * Collect every function DECLARATION — `function foo() {}` — at any nesting
+ * depth (top-level, exported, or nested inside another function/block). These
+ * are functions that are merely *defined*, not assigned to anything.
+ *
+ * Deliberately EXCLUDES values: arrow functions and function expressions
+ * (`let f = function () {}`, `{ call: function () {} }`) get no CodeLens, since
+ * they're bound to a variable/property rather than declared. Skips recursing
+ * into `leadingJsDoc` to avoid walking comment sub-trees.
  */
-export function collectTopLevelFunctions(ast: any): any[] {
-    const body = ast?.body;
-    if (!Array.isArray(body)) return [];
+export function collectFunctionDeclarations(ast: any): any[] {
     const out: any[] = [];
-    for (const stmt of body) {
-        if (!stmt || typeof stmt !== 'object') continue;
-        if (stmt.type === 'FunctionDeclaration') {
-            out.push(stmt);
-        } else if (
-            (stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportDefaultDeclaration')
-            && stmt.declaration && stmt.declaration.type === 'FunctionDeclaration'
-        ) {
-            // export function foo() {} — annotate the wrapped declaration.
-            out.push(stmt.declaration);
+    const walk = (n: any): void => {
+        if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+        if (n.type === 'FunctionDeclaration') out.push(n);
+        for (const k of Object.keys(n)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = n[k];
+            if (Array.isArray(v)) { for (const it of v) walk(it); }
+            else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
         }
-    }
+    };
+    walk(ast);
     return out;
 }
 

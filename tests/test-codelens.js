@@ -12,12 +12,12 @@ describe('Function-history CodeLens', function() {
 
   let lspServer, getCodeLens, resolveCodeLens, initResult;
 
-  // Only TOP-LEVEL function declarations get a lens: alpha@1 and (exported)
-  // beta@6. The nested fn, arrow, and function expression must be ignored.
+  // Function DECLARATIONS get a lens at any depth: alpha@1, nested@2, and
+  // (exported) beta@6. The arrow and function expression are values → no lens.
   const fixture = [
     "'use strict';",                       // 0
     'function alpha() {',                  // 1  → lens
-    '    function nested() { return 0; }', // 2  (nested — no lens)
+    '    function nested() { return 0; }', // 2  → lens (nested decl)
     '    return nested();',                // 3
     '}',                                   // 4
     '',                                    // 5
@@ -50,12 +50,12 @@ describe('Function-history CodeLens', function() {
     assert.strictEqual(initResult.capabilities.codeLensProvider.resolveProvider, true);
   });
 
-  it('returns a lens only for top-level functions (no arrows/expressions/nested)', async function() {
+  it('returns a lens for each function declaration (incl. nested), but not arrows/expressions', async function() {
     const lenses = await getCodeLens(fixture, file);
     assert.ok(Array.isArray(lenses), 'expected an array of lenses');
-    assert.strictEqual(lenses.length, 2, `expected 2 lenses (alpha, beta), got ${lenses.length}`);
+    assert.strictEqual(lenses.length, 3, `expected 3 lenses (alpha, nested, beta), got ${lenses.length}`);
     const lines = lenses.map(l => l.range.start.line).sort((a, b) => a - b);
-    assert.deepStrictEqual(lines, [1, 6], `lens anchor lines: ${JSON.stringify(lines)}`);
+    assert.deepStrictEqual(lines, [1, 2, 6], `lens anchor lines: ${JSON.stringify(lines)}`);
     // onCodeLens must not pre-resolve the command (lazy).
     assert.ok(lenses.every(l => !l.command), 'lenses should be unresolved (no command) initially');
   });

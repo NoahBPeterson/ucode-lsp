@@ -30,6 +30,7 @@ coverage/**
 .npmignore
 ucode-upstream.json
 scripts/coverage/**
+coverage-reports/**
 !dist/*.js
 !icons/**
 !README.md

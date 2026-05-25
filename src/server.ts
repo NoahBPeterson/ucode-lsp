@@ -25,7 +25,7 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
-import { collectTopLevelFunctions, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
+import { collectFunctionDeclarations, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
 // import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
@@ -560,7 +560,7 @@ connection.onCodeLens(async (params: CodeLensParams): Promise<CodeLens[]> => {
     if (!document || !ast) return [];
 
     const lenses: CodeLens[] = [];
-    for (const fn of collectTopLevelFunctions(ast)) {
+    for (const fn of collectFunctionDeclarations(ast)) {
         // Anchor the lens above the function's JSDoc when present, else the function.
         const anchorOffset = fn.leadingJsDoc ? fn.leadingJsDoc.start : fn.start;
         const anchorLine = document.positionAt(anchorOffset).line;
@@ -1284,13 +1284,17 @@ function generateJsDocQuickFix(
         ?? inferParamTypesFromUsage(funcNode, analysisResult.diagnostics || []);
     const inferredCount = [...inferred.values()].filter(t => t !== 'unknown').length;
 
-    // Build JSDoc comment text
+    // Build JSDoc comment text. Indent with the line's LEADING WHITESPACE only —
+    // not the text up to the function's column. For a function-expression value
+    // (e.g. `call: function () {}`) the function starts mid-line, so the old
+    // "up to start column" approach prefixed every JSDoc line with `call: `.
     const funcStartPos = document.positionAt(funcNode.start);
     const funcLine = funcStartPos.line;
-    const indentText = document.getText({
+    const lineText = document.getText({
         start: { line: funcLine, character: 0 },
-        end: { line: funcLine, character: funcStartPos.character }
+        end: { line: funcLine + 1, character: 0 }
     });
+    const indentText = (lineText.match(/^[ \t]*/) || [''])[0];
 
     const jsDocLines = [`${indentText}/**`];
     for (const paramName of funcNode.params.map((p: any) => p.name)) {

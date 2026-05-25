@@ -433,4 +433,33 @@ function outer() {
         assert.ok(/^    \/\*\*/m.test(text), `expected indented JSDoc, got: ${JSON.stringify(text)}`);
         assert.ok(/@param \{string\} s/.test(text), `inner param 's' should be string: ${text}`);
     });
+
+    // ── 10. Function-expression value (object property) indents correctly ───
+    // Regression: a function assigned to an object property (`call: function …`)
+    // starts mid-line, so the old "text up to the function column" indent
+    // prefixed every JSDoc line with `call: ` (`call:  * @param …`).
+    it('JSDoc on a function-expression property uses leading whitespace, not `call:`', async function() {
+        const code = `'use strict';
+const Network = {
+    restart: {
+        call: function(ctx, argv) {
+            let name = shift(argv);
+            return name;
+        }
+    }
+};
+`;
+        const diags = await getDiagnostics(code, file);
+        const argDiag = diags.find(d => d.code === 'incompatible-function-argument');
+        assert.ok(argDiag, `expected incompatible-function-argument, got: ${diags.map(d => d.code).join(', ')}`);
+        const actions = await getCodeActions(file, [argDiag], argDiag.range.start.line, argDiag.range.start.character);
+        const jsdoc = actions.find(a => /JSDoc/.test(a.title));
+        assert.ok(jsdoc, `expected a JSDoc quick fix, got: ${actions.map(a => a.title).join(', ')}`);
+        const text = insertedText(jsdoc);
+        // The bug: every line prefixed with `call: `. Must not happen.
+        assert.ok(!/call:/.test(text), `JSDoc must not contain the property label, got: ${JSON.stringify(text)}`);
+        // Proper block: 8-space indent, clean ` * ` prefixes.
+        assert.ok(/^        \/\*\*/m.test(text), `expected 8-space-indented JSDoc, got: ${JSON.stringify(text)}`);
+        assert.ok(/^\s+\* @param \{array\} argv/m.test(text), `argv should infer array with clean prefix: ${JSON.stringify(text)}`);
+    });
 });

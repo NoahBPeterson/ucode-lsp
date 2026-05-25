@@ -1,7 +1,7 @@
 // Unit tests for the pure helpers behind the function-history CodeLens
 // (src/gitHistory.ts). These are deterministic — no git, no spawned server.
 import { test, expect, describe } from 'bun:test';
-import { collectTopLevelFunctions, parseGitLogLOutput, formatSummaryTitle } from '../src/gitHistory';
+import { collectFunctionDeclarations, parseGitLogLOutput, formatSummaryTitle } from '../src/gitHistory';
 import { UcodeLexer } from '../src/lexer/ucodeLexer';
 import { UcodeParser } from '../src/parser/ucodeParser';
 
@@ -66,24 +66,25 @@ describe('formatSummaryTitle', () => {
   });
 });
 
-describe('collectTopLevelFunctions', () => {
-  test('includes top-level declarations (bare + exported), excludes lambdas/expressions/nested', () => {
+describe('collectFunctionDeclarations', () => {
+  test('includes declarations at any depth (top-level, exported, nested); excludes lambdas/expressions', () => {
     const src = `'use strict';
 /** doc */
 function alpha(a) {
-    function nested() { return 2; }    // nested decl — excluded
+    function nested() { return 2; }    // nested DECL — included
     let lam = (x) => x + 1;            // arrow — excluded
     return nested() + lam(a);
 }
-export function beta(b) { return b; }  // top-level exported decl — included
-let gamma = () => 42;                  // top-level arrow — excluded
-let delta = function named() { return 3; }; // top-level fn expression — excluded
+export function beta(b) { return b; }  // exported decl — included
+let gamma = () => 42;                  // arrow — excluded
+let delta = function named() { return 3; }; // fn expression — excluded
+const obj = { call: function (c) { return c; } }; // fn expression value — excluded
 `;
     const ast = parse(src);
-    const fns = collectTopLevelFunctions(ast);
+    const fns = collectFunctionDeclarations(ast);
     const names = fns.map(f => f.id?.name ?? '<anon>').sort();
 
-    expect(names).toEqual(['alpha', 'beta']);
+    expect(names).toEqual(['alpha', 'beta', 'nested']);
     expect(fns.every(f => f.type === 'FunctionDeclaration')).toBe(true);
 
     const alpha = fns.find(f => f.id?.name === 'alpha');
@@ -97,8 +98,8 @@ let delta = function named() { return 3; }; // top-level fn expression — exclu
     }
   });
 
-  test('returns [] when there are no top-level function declarations', () => {
-    const ast = parse(`'use strict';\nlet x = () => 1;\nprint(x());\n`);
-    expect(collectTopLevelFunctions(ast).length).toBe(0);
+  test('returns [] when there are only lambdas/expressions (no declarations)', () => {
+    const ast = parse(`'use strict';\nlet x = () => 1;\nlet y = function () { return 2; };\nprint(x());\n`);
+    expect(collectFunctionDeclarations(ast).length).toBe(0);
   });
 });
