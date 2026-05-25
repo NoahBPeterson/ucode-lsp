@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.6.66",
+  "version": "0.6.67",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
@@ -58,6 +58,11 @@
       {
         "command": "ucode.showFunctionHistory",
         "title": "Show Function Git History",
+        "category": "ucode"
+      },
+      {
+        "command": "ucode.showFunctionReferences",
+        "title": "Show Function References",
         "category": "ucode"
       }
     ],

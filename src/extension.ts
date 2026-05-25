@@ -52,6 +52,24 @@ async function showFunctionHistory(uri: string, startLine: number, endLine: numb
     }
 }
 
+// Backs the "N references" CodeLens click. The server resolves the lens with a
+// command pointing here, carrying the function's declaration position and the
+// reference locations as plain JSON; we convert to vscode types and open the
+// built-in peek-references view.
+function showFunctionReferences(
+    uri: string,
+    position: { line: number; character: number },
+    locations: { uri: string; range: { start: { line: number; character: number }; end: { line: number; character: number } } }[]
+): void {
+    const docUri = vscode.Uri.parse(uri);
+    const pos = new vscode.Position(position.line, position.character);
+    const locs = (locations || []).map(l => new vscode.Location(
+        vscode.Uri.parse(l.uri),
+        new vscode.Range(l.range.start.line, l.range.start.character, l.range.end.line, l.range.end.character)
+    ));
+    vscode.commands.executeCommand('editor.action.showReferences', docUri, pos, locs);
+}
+
 export function activate(context: vscode.ExtensionContext) {
     console.log('ucode extension is being activated');
     
@@ -87,9 +105,10 @@ export function activate(context: vscode.ExtensionContext) {
         clientOptions
     );
 
-    // Function-history CodeLens click target (the lens itself comes from the server).
+    // CodeLens click targets (the lenses themselves come from the server).
     context.subscriptions.push(
-        vscode.commands.registerCommand('ucode.showFunctionHistory', showFunctionHistory)
+        vscode.commands.registerCommand('ucode.showFunctionHistory', showFunctionHistory),
+        vscode.commands.registerCommand('ucode.showFunctionReferences', showFunctionReferences)
     );
 
     // Start the client. This will also launch the server

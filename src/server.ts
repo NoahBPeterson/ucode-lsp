@@ -26,6 +26,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
 import { collectFunctionDeclarations, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
+import { findFunctionReferences, formatReferencesTitle } from './references';
 // import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
@@ -568,17 +569,46 @@ connection.onCodeLens(async (params: CodeLensParams): Promise<CodeLens[]> => {
         // node.end is EXCLUSIVE, so step back one char to land on the last line.
         const startLine = anchorLine + 1; // git -L is 1-based
         const endLine = document.positionAt(Math.max(fn.start, fn.end - 1)).line + 1;
-        lenses.push(CodeLens.create(
-            { start: { line: anchorLine, character: 0 }, end: { line: anchorLine, character: 0 } },
-            { uri: params.textDocument.uri, startLine, endLine, name: fn.id?.name ?? '<anonymous>' }
-        ));
+        const range = { start: { line: anchorLine, character: 0 }, end: { line: anchorLine, character: 0 } };
+        const name = fn.id?.name ?? '<anonymous>';
+        const uri = params.textDocument.uri;
+        // Two lenses per function (rendered side by side): git history + references.
+        lenses.push(CodeLens.create(range, { kind: 'git', uri, startLine, endLine, name }));
+        lenses.push(CodeLens.create(range, { kind: 'refs', uri, fnStart: fn.start, name }));
     }
     return lenses;
 });
 
 connection.onCodeLensResolve((lens: CodeLens): CodeLens => {
-    const data = lens.data as { uri: string; startLine: number; endLine: number; name: string } | undefined;
+    const data = lens.data as any;
     if (!data) return lens;
+
+    // References lens: count in-file references to the function and wire a peek.
+    if (data.kind === 'refs') {
+        const cacheEntry = analysisCache.get(data.uri);
+        const ast = cacheEntry?.result?.ast;
+        const document = documents.get(data.uri);
+        const fn = ast ? collectFunctionDeclarations(ast).find((f: any) => f.start === data.fnStart) : undefined;
+        if (!ast || !document || !fn || !fn.id) {
+            lens.command = Command.create('no references', '');
+            return lens;
+        }
+        const refs = findFunctionReferences(ast, fn.id.name, fn.id);
+        const title = formatReferencesTitle(refs.length);
+        if (refs.length === 0) {
+            lens.command = Command.create(title, ''); // non-clickable label
+            return lens;
+        }
+        const declPosition = document.positionAt(fn.id.start);
+        const locations = refs.map(r => ({
+            uri: data.uri,
+            range: { start: document.positionAt(r.start), end: document.positionAt(r.end) }
+        }));
+        lens.command = Command.create(title, 'ucode.showFunctionReferences', data.uri, declPosition, locations);
+        return lens;
+    }
+
+    // Git history lens (default).
     const filePath = uriToFilePath(data.uri);
     const summary = getFunctionGitSummary(filePath, data.startLine, data.endLine);
     if (!summary) {
