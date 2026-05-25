@@ -1087,16 +1087,23 @@ function inferParamTypesFromUsage(
             }
         }
 
-        // Source 4: member access proves `array | object`. ucode runtime errors
-        // on `.prop` and `[k]` for string/integer/boolean/null with
-        // "left-hand side expression is not an array or object". Both forms
-        // (dot and bracket) succeed only on arrays and objects; on arrays
-        // dot-access returns null, on objects it returns the property — but
-        // crucially neither errors. So the proof is identical for both forms.
+        // Source 4: member access. Indexing string/int/bool/null errors at
+        // runtime, so any member access proves the param is array-or-object. We
+        // narrow further by the KEY, applying the same "returns-null-on-wrong-
+        // type → must be the meaningful type" logic used for builtins above:
+        //   - A NAMED key — `x.prop` (dot) or `x["nonNumeric"]` — is meaningful
+        //     only on an object: ucode arrays have no named properties, so
+        //     `arr.prop` / `arr["prop"]` are always null. → `object`.
+        //   - A NUMERIC key — `x[0]`, `x[i]`, or even `x["0"]` (ucode coerces a
+        //     numeric-looking string to an array index, and a numeric index to
+        //     an object's string key) — is genuinely ambiguous. → `array | object`.
         if (node.type === 'MemberExpression'
             && node.object?.type === 'Identifier'
             && paramNames.has(node.object.name)) {
-            addConstraint(node.object.name, ['array', 'object']);
+            const prop = node.property;
+            const namedKey = !node.computed // dot access — always a non-numeric identifier
+                || (prop?.type === 'Literal' && typeof prop.value === 'string' && !/^-?\d+$/.test(prop.value));
+            addConstraint(node.object.name, namedKey ? ['object'] : ['array', 'object']);
         }
 
         for (const key of Object.keys(node)) {

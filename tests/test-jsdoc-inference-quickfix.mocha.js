@@ -303,11 +303,14 @@ function scale(n) {
             `arithmetic doesn't prove a type — should be unknown, got: ${text}`);
     });
 
-    // ── Member access — runtime-error-based proof ─────────────────────────
-    // ucode errors at runtime on `.prop` and `[k]` for string/integer/boolean/null
-    // ("left-hand side expression is not an array or object"). Both forms succeed
-    // only on arrays and objects → both prove `array | object`.
-    it("dot-access `obj.prop` infers obj as `array | object` (provable)", async function() {
+    // ── Member access — key-shape-aware proof ─────────────────────────────
+    // Indexing string/integer/boolean/null errors at runtime, so member access
+    // proves array-or-object. We narrow by the KEY: a NAMED key (`x.prop` or a
+    // non-numeric `x["prop"]`) is meaningful only on an object (ucode arrays have
+    // no named properties — `arr.prop` is always null) → `object`. A NUMERIC or
+    // dynamic key (`x[0]`, `x[i]`, even `x["0"]` which ucode coerces to an array
+    // index) is genuinely ambiguous → `array | object`.
+    it("dot-access `obj.prop` infers obj as `object` (arrays have no named props)", async function() {
         const code = `'use strict';
 function use(cfg) {
     return cfg.enabled;
@@ -320,7 +323,35 @@ function use(cfg) {
         const jsdoc = actions.find(a => /JSDoc/.test(a.title));
         assert.ok(jsdoc);
         const text = insertedText(jsdoc);
-        assert.ok(/@param \{array \| object\} cfg/.test(text), `got: ${text}`);
+        assert.ok(/@param \{object\} cfg/.test(text), `got: ${text}`);
+    });
+
+    it("non-numeric string key `x[\"prop\"]` infers `object`", async function() {
+        const code = `'use strict';
+function use(cfg) {
+    return cfg["enabled"];
+}
+`;
+        const diags = await getDiagnostics(code, file);
+        const uc7003 = diags.find(d => d.code === 'UC7003');
+        const actions = await getCodeActions(file, [uc7003], uc7003.range.start.line, uc7003.range.start.character);
+        const jsdoc = actions.find(a => /JSDoc/.test(a.title));
+        const text = insertedText(jsdoc);
+        assert.ok(/@param \{object\} cfg/.test(text), `got: ${text}`);
+    });
+
+    it("numeric string key `x[\"0\"]` stays `array | object` (ucode coerces to an index)", async function() {
+        const code = `'use strict';
+function use(coll) {
+    return coll["0"];
+}
+`;
+        const diags = await getDiagnostics(code, file);
+        const uc7003 = diags.find(d => d.code === 'UC7003');
+        const actions = await getCodeActions(file, [uc7003], uc7003.range.start.line, uc7003.range.start.character);
+        const jsdoc = actions.find(a => /JSDoc/.test(a.title));
+        const text = insertedText(jsdoc);
+        assert.ok(/@param \{array \| object\} coll/.test(text), `got: ${text}`);
     });
 
     it("computed access `arr[k]` infers `array | object` (provable)", async function() {
@@ -359,9 +390,9 @@ function f(s) {
             `s[0] errors on strings, so s must be array|object: ${text}`);
     });
 
-    // Factory pattern still gets all params typed, just to `array | object`
-    // instead of the old (wrong) `object`.
-    it("factory params with member access infer `array | object`", async function() {
+    // Factory pattern: params accessed via dot (named members like .readfile,
+    // .cfg, .trim) are object-only — arrays have no named properties.
+    it("factory params with named member access infer `object`", async function() {
         const code = `'use strict';
 function make(fs, config, util) {
     let r = fs.readfile('/tmp/x');
@@ -376,9 +407,9 @@ function make(fs, config, util) {
         const jsdoc = actions.find(a => /JSDoc/.test(a.title));
         assert.ok(jsdoc);
         const text = insertedText(jsdoc);
-        assert.ok(/@param \{array \| object\} fs/.test(text), `fs: ${text}`);
-        assert.ok(/@param \{array \| object\} config/.test(text), `config: ${text}`);
-        assert.ok(/@param \{array \| object\} util/.test(text), `util: ${text}`);
+        assert.ok(/@param \{object\} fs/.test(text), `fs: ${text}`);
+        assert.ok(/@param \{object\} config/.test(text), `config: ${text}`);
+        assert.ok(/@param \{object\} util/.test(text), `util: ${text}`);
     });
 
     // ── 9. Preserves indentation ───────────────────────────────────────────
