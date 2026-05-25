@@ -180,6 +180,38 @@ describe('Go to Definition (e2e)', function () {
     assert.ok(def, 'expected a cross-file definition');
     assert.strictEqual(def.range.start.line, 2, 'should point to the `export let make` line');
   });
+
+  it('returns null for a namespace member on a builtin module', async () => {
+    // `import * as fs from 'fs'; fs.open()` — namespace-member resolution runs the
+    // bare-name resolveImportPath branch; a builtin has no source file → null.
+    const code = `import * as fs from 'fs';\nlet fd = fs.open('/etc/hostname', 'r');\n`;
+    const p = posOf(code, 'open', 1); // the `open` member of fs
+    const def = await getDefinition(code, '/tmp/def-ns-builtin.uc', p.line, p.character);
+    assert.strictEqual(def, null, 'a builtin namespace member has no navigable source');
+  });
+
+  it('returns null for a require()-d builtin module symbol', async () => {
+    // `let mymod = require('fs')` makes `mymod` a MODULE-typed symbol — there is
+    // no source declaration to navigate to (getSymbolDefinition returns null).
+    const code = `let mymod = require('fs');\nmymod.open('/x', 'r');\n`;
+    const p = posOf(code, 'mymod', 2); // the usage on line 1
+    const def = await getDefinition(code, '/tmp/def-require-mod.uc', p.line, p.character);
+    assert.strictEqual(def, null, 'a require()-d module symbol has no source definition');
+  });
+
+  it('falls back to module top for an unlocatable (non-function) default export', async () => {
+    // `export default <expr>` has no named declaration to point at, so
+    // getImportedSymbolDefinition falls back to the top of the resolved module.
+    fs.writeFileSync(path.join(tmpDir, 'defexpr.uc'), 'export default 42;\n');
+    const mainPath = path.join(tmpDir, 'main-defexpr.uc');
+    const code = `import answer from './defexpr.uc';\nlet x = answer + 1;\n`;
+    fs.writeFileSync(mainPath, code);
+    const p = posOf(code, 'answer', 2); // the usage
+    const def = await getDefinition(code, mainPath, p.line, p.character);
+    assert.ok(def, 'expected a fallback definition');
+    assert.ok(def.uri.endsWith('/defexpr.uc'), `expected def in defexpr.uc, got ${def.uri}`);
+    assert.strictEqual(def.range.start.line, 0, 'should fall back to module top (line 0)');
+  });
 });
 
 // Go-to-definition across every import-resolution style ucode supports.
