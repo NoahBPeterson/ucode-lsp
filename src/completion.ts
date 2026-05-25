@@ -1,5 +1,6 @@
 import {
     TextDocumentPositionParams,
+    CompletionParams,
     CompletionItem,
     CompletionItemKind,
     MarkupKind,
@@ -91,7 +92,7 @@ function lookupSymbol(
 }
 
 export function handleCompletion(
-    textDocumentPositionParams: TextDocumentPositionParams,
+    textDocumentPositionParams: TextDocumentPositionParams | CompletionParams,
     documents: any,
     connection: any,
     analysisResult?: SemanticAnalysisResult
@@ -118,6 +119,21 @@ export function handleCompletion(
         const jsDocCompletion = detectJsDocCompletionContext(text, offset, lexer.comments);
         if (jsDocCompletion) {
             return createJsDocCompletions(jsDocCompletion);
+        }
+
+        // `{` is registered as a completion trigger character SOLELY for JSDoc
+        // type annotations (`@param {string}`). When the user opens a code block
+        // — `function f(x) {` then Enter — the same trigger fires here, outside
+        // any JSDoc, and the general-completion fallback below would surface a
+        // stray global (e.g. ARGV). VS Code then auto-selects it, so Enter
+        // accepts the completion instead of inserting a newline. Since the only
+        // legitimate `{`-triggered completion is JSDoc (handled above), suppress
+        // everything else when `{` was the trigger. `triggerCharacter` is only
+        // populated for an actual keypress trigger, so manual invocation
+        // (Ctrl+Space) after a `{` is unaffected.
+        const triggerCharacter = (textDocumentPositionParams as CompletionParams).context?.triggerCharacter;
+        if (triggerCharacter === '{') {
+            return [];
         }
 
         // Check if we're in a destructured import context (e.g., import { open, l| } from 'fs')

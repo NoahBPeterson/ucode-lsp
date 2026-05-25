@@ -268,8 +268,10 @@ function createLSPTestServer(options = {}) {
     });
   }
 
-  // Get completions for a document position
-  function getCompletions(testContent, testFilePath, line, character) {
+  // Get completions for a document position. `context` defaults to a manual
+  // invocation (triggerKind 1); pass e.g. { triggerKind: 2, triggerCharacter: '{' }
+  // to simulate a trigger-character keypress.
+  function getCompletions(testContent, testFilePath, line, character, context) {
     return new Promise((resolve, reject) => {
       const currentRequestId = requestId++;
       const reqKey = idKey(currentRequestId);
@@ -294,7 +296,7 @@ function createLSPTestServer(options = {}) {
         params: {
           textDocument: { uri: `file://${testFilePath}` },
           position: { line, character },
-          context: { triggerKind: 1 }
+          context: context || { triggerKind: 1 }
         }
       };
 

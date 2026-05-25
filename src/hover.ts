@@ -664,6 +664,23 @@ export function handleHover(
                             };
                         }
                     }
+                    // Base resolves to `unknown` (e.g. `let ctx = unknown_call(); ctx.get`).
+                    // We can't resolve the member's type, but returning nothing leaves
+                    // the user with no feedback at all on `.prop`. Surface a minimal
+                    // hover so the member still shows *something* and explains why
+                    // richer info is missing.
+                    if (typeToString(symbol.dataType) === 'unknown') {
+                        return {
+                            contents: {
+                                kind: MarkupKind.Markdown,
+                                value: `**${memberName}**: \`unknown\`\n\nProperty on \`${objectName}\` — base type is \`unknown\`, so member types can't be resolved.`
+                            },
+                            range: {
+                                start: document.positionAt(memberContext.memberTokenPos),
+                                end: document.positionAt(memberContext.memberTokenEnd)
+                            }
+                        };
+                    }
                     // For other non-imported objects, don't show builtin hover
                     return undefined;
                 }
