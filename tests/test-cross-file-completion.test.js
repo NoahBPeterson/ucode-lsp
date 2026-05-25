@@ -19,6 +19,9 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(dir, 'lib.uc'),
     'export let CONF = { host: "h", port: 80 };\n' +
     'export function create() { return 1; }\n' +
+    'export function make() { return { x: 1, y: "s" }; }\n' +
+    'function buildLocal() { return { aa: 1, bb: 2 }; }\n' +
+    'export { buildLocal };\n' +
     'export default function build() { return { alpha: 1, beta: 2 }; }\n');
 });
 afterAll(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {} });
@@ -49,5 +52,27 @@ describe('Cross-file member completion (e2e)', () => {
   test('default-export factory return object completes (already worked)', async () => {
     const labels = labelsOf(await run("import build from './lib.uc';\nlet o = build();\no.\n", 2, 2));
     expect(labels).toEqual(['alpha', 'beta']);
+  });
+
+  test('named-export factory return object completes', async () => {
+    const labels = labelsOf(await run("import { make } from './lib.uc';\nlet o = make();\no.\n", 2, 2));
+    expect(labels).toEqual(['x', 'y']);
+  });
+
+  test('aliased named-export factory return object completes', async () => {
+    const labels = labelsOf(await run("import { make as mk } from './lib.uc';\nlet o = mk();\no.\n", 2, 2));
+    expect(labels).toEqual(['x', 'y']);
+  });
+
+  test('named factory via export { } specifier completes', async () => {
+    const labels = labelsOf(await run("import { buildLocal } from './lib.uc';\nlet o = buildLocal();\no.\n", 2, 2));
+    expect(labels).toEqual(['aa', 'bb']);
+  });
+
+  test('named non-object factory does not fabricate properties', async () => {
+    // create() returns a number — o. should NOT offer object properties
+    const labels = labelsOf(await run("import { create } from './lib.uc';\nlet o = create();\no.\n", 2, 2));
+    expect(labels).not.toContain('x');
+    expect(labels).not.toContain('alpha');
   });
 });

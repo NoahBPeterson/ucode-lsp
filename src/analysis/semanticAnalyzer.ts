@@ -695,6 +695,21 @@ export class SemanticAnalyzer extends BaseVisitor {
             }
           }
         }
+
+        // Populate returnType/returnPropertyTypes for named function imports whose
+        // factory returns an object literal (e.g. import { create }; let o = create();
+        // → o gets create()'s return shape). Returns null for non-object factories,
+        // so non-object-returning named functions are unaffected.
+        if (specifier.type === 'ImportSpecifier' && effectiveUri && effectiveUri.startsWith('file://')) {
+          const returnInfo = this.fileResolver.getNamedExportFunctionReturnInfo(effectiveUri, importedName);
+          if (returnInfo) {
+            symbol.returnType = returnInfo.returnType;
+            symbol.returnPropertyTypes = returnInfo.returnPropertyTypes;
+            if (returnInfo.propertyFunctionReturnTypes) {
+              symbol.propertyFunctionReturnTypes = returnInfo.propertyFunctionReturnTypes;
+            }
+          }
+        }
       }
     }
   }

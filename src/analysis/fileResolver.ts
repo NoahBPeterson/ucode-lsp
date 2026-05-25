@@ -828,64 +828,167 @@ export class FileResolver {
             }
             if (!funcNode) return null;
 
-            const funcBody = (funcNode as FunctionDeclarationNode).body;
-            if (!funcBody) return null;
+            return this.computeFunctionReturnInfo(funcNode, topLevelFuncs);
+        } catch {
+            return null;
+        }
+    }
 
-            // Collect local function names/nodes and variable initializers within the function body
-            const localFuncNodes = new Map<string, AstNode>();
-            const localFuncNames = new Set<string>();
-            const localVarInits = new Map<string, AstNode>();
-            const bodyStmts = (funcBody as any).body || [];
-            for (const stmt of bodyStmts) {
+    /**
+     * Get return type and property types for a NAMED export that is a function
+     * (factory). Mirrors getDefaultExportFunctionReturnInfo for named exports:
+     *   export function create() { return {...}; }
+     *   export const create = function () { return {...}; };
+     *   function create() { ... }  export { create };
+     * Returns null unless the function provably returns an object literal in all
+     * branches (so non-object-returning named functions are unaffected).
+     */
+    getNamedExportFunctionReturnInfo(fileUri: string, exportName: string): { returnType: UcodeDataType; returnPropertyTypes: Map<string, UcodeDataType>; propertyFunctionReturnTypes?: Map<string, string> } | null {
+        try {
+            const filePath = this.uriToFilePath(fileUri);
+            if (!filePath || !fs.existsSync(filePath)) return null;
+
+            const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
+            const lexer = new UcodeLexer(source, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, source);
+            parser.setComments(lexer.comments);
+            const result = parser.parse();
+            if (!result.ast) return null;
+
+            const body = (result.ast as any).body || [];
+
+            // Build maps of top-level declarations (for `export { name }` resolution)
+            const topLevelFuncs = new Map<string, AstNode>();
+            const topLevelVarInits = new Map<string, AstNode>();
+            for (const stmt of body) {
                 if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
-                    localFuncNames.add(stmt.id.name);
-                    localFuncNodes.set(stmt.id.name, stmt);
+                    topLevelFuncs.set(stmt.id.name, stmt);
                 }
                 if (stmt.type === 'VariableDeclaration') {
                     for (const decl of stmt.declarations || []) {
                         if (decl.id?.name && decl.init) {
-                            localVarInits.set(decl.id.name, decl.init);
+                            topLevelVarInits.set(decl.id.name, decl.init);
                         }
                     }
                 }
             }
 
-            // Find return statements at the top level of the function body (not nested functions)
-            const returnPropMaps: Map<string, UcodeDataType>[] = [];
-            this.collectReturnObjectProperties(bodyStmts, localFuncNames, localVarInits, topLevelFuncs, returnPropMaps);
+            // Resolve the named export to a function node
+            let funcNode: AstNode | null = null;
+            for (const stmt of body) {
+                if (stmt.type !== 'ExportNamedDeclaration') continue;
+                const exportNode = stmt as ExportNamedDeclarationNode;
 
-            if (returnPropMaps.length === 0) return null;
-
-            // Intersection merge: keep properties present in ALL return branches
-            const merged = new Map<string, UcodeDataType>(returnPropMaps[0]);
-            for (let i = 1; i < returnPropMaps.length; i++) {
-                const entry = returnPropMaps[i]!;
-                for (const key of [...merged.keys()]) {
-                    if (!entry.has(key)) {
-                        merged.delete(key);
+                if (exportNode.declaration) {
+                    if (exportNode.declaration.type === 'FunctionDeclaration') {
+                        const funcDecl = exportNode.declaration as FunctionDeclarationNode;
+                        if (funcDecl.id?.name === exportName) { funcNode = funcDecl; break; }
+                    } else if (exportNode.declaration.type === 'VariableDeclaration') {
+                        const varDecl = exportNode.declaration as any;
+                        for (const declarator of varDecl.declarations || []) {
+                            if (declarator.id?.name !== exportName) continue;
+                            const init = declarator.init;
+                            if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) {
+                                funcNode = init;
+                            }
+                            break;
+                        }
+                        if (funcNode) break;
                     }
+                } else if (exportNode.specifiers) {
+                    let matched = false;
+                    for (const specifier of exportNode.specifiers) {
+                        if (specifier.exported.name !== exportName) continue;
+                        matched = true;
+                        const localName = specifier.local.name;
+                        if (topLevelFuncs.has(localName)) {
+                            funcNode = topLevelFuncs.get(localName)!;
+                        } else {
+                            const init = topLevelVarInits.get(localName);
+                            if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) {
+                                funcNode = init;
+                            }
+                        }
+                        break;
+                    }
+                    if (matched) break;
                 }
             }
 
-            if (merged.size === 0) return null;
-
-            // Analyze return types of function-typed properties
-            const propertyFunctionReturnTypes = this.analyzePropertyFunctionReturnTypes(
-                merged, localFuncNodes, localVarInits, topLevelFuncs,
-                (funcNode as FunctionDeclarationNode).params || []
-            );
-
-            const returnInfo: { returnType: UcodeDataType; returnPropertyTypes: Map<string, UcodeDataType>; propertyFunctionReturnTypes?: Map<string, string> } = {
-                returnType: UcodeType.OBJECT as UcodeDataType,
-                returnPropertyTypes: merged
-            };
-            if (propertyFunctionReturnTypes.size > 0) {
-                returnInfo.propertyFunctionReturnTypes = propertyFunctionReturnTypes;
-            }
-            return returnInfo;
+            if (!funcNode) return null;
+            return this.computeFunctionReturnInfo(funcNode, topLevelFuncs);
         } catch {
             return null;
         }
+    }
+
+    /**
+     * Given a resolved function node and the file's top-level functions, derive the
+     * object-shape return info (property types + nested function return types) from
+     * the function's return statements. Shared by default- and named-export
+     * factory-return inference. Returns null unless an object literal is returned in
+     * all branches.
+     */
+    private computeFunctionReturnInfo(
+        funcNode: AstNode,
+        topLevelFuncs: Map<string, AstNode>
+    ): { returnType: UcodeDataType; returnPropertyTypes: Map<string, UcodeDataType>; propertyFunctionReturnTypes?: Map<string, string> } | null {
+        const funcBody = (funcNode as FunctionDeclarationNode).body;
+        if (!funcBody) return null;
+
+        // Collect local function names/nodes and variable initializers within the function body
+        const localFuncNodes = new Map<string, AstNode>();
+        const localFuncNames = new Set<string>();
+        const localVarInits = new Map<string, AstNode>();
+        const bodyStmts = (funcBody as any).body || [];
+        for (const stmt of bodyStmts) {
+            if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
+                localFuncNames.add(stmt.id.name);
+                localFuncNodes.set(stmt.id.name, stmt);
+            }
+            if (stmt.type === 'VariableDeclaration') {
+                for (const decl of stmt.declarations || []) {
+                    if (decl.id?.name && decl.init) {
+                        localVarInits.set(decl.id.name, decl.init);
+                    }
+                }
+            }
+        }
+
+        // Find return statements at the top level of the function body (not nested functions)
+        const returnPropMaps: Map<string, UcodeDataType>[] = [];
+        this.collectReturnObjectProperties(bodyStmts, localFuncNames, localVarInits, topLevelFuncs, returnPropMaps);
+
+        if (returnPropMaps.length === 0) return null;
+
+        // Intersection merge: keep properties present in ALL return branches
+        const merged = new Map<string, UcodeDataType>(returnPropMaps[0]);
+        for (let i = 1; i < returnPropMaps.length; i++) {
+            const entry = returnPropMaps[i]!;
+            for (const key of [...merged.keys()]) {
+                if (!entry.has(key)) {
+                    merged.delete(key);
+                }
+            }
+        }
+
+        if (merged.size === 0) return null;
+
+        // Analyze return types of function-typed properties
+        const propertyFunctionReturnTypes = this.analyzePropertyFunctionReturnTypes(
+            merged, localFuncNodes, localVarInits, topLevelFuncs,
+            (funcNode as FunctionDeclarationNode).params || []
+        );
+
+        const returnInfo: { returnType: UcodeDataType; returnPropertyTypes: Map<string, UcodeDataType>; propertyFunctionReturnTypes?: Map<string, string> } = {
+            returnType: UcodeType.OBJECT as UcodeDataType,
+            returnPropertyTypes: merged
+        };
+        if (propertyFunctionReturnTypes.size > 0) {
+            returnInfo.propertyFunctionReturnTypes = propertyFunctionReturnTypes;
+        }
+        return returnInfo;
     }
 
     /**
