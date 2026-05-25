@@ -84,6 +84,27 @@ describe('Module member function bound to a variable', function() {
     assert.ok(!nullableArg, `match() should not warn on a string arg, got: ${JSON.stringify(diags.map(d => d.code))}`);
   });
 
+  it('`trim(fs_mod.readfile(p) || "")` inline in strict mode does not warn nullable-argument', async function() {
+    // Regression: a member-call `|| ''` used directly as a builtin arg wasn't
+    // null-narrowed (the description-based OR inference didn't strip null), so
+    // strict mode wrongly flagged trim()'s arg as nullable.
+    const content = [
+      "'use strict';",
+      '/**',
+      ' * @param {module:fs} fs_mod',
+      ' * @param {object} pkg',
+      ' */',
+      'function f(fs_mod, pkg) {',
+      "    return trim(fs_mod.readfile(pkg.path) || '');",
+      '}',
+      ''
+    ].join('\n');
+    const file = path.join(__dirname, '..', 'test-modmember-orinline.uc');
+    const diags = await getDiagnostics(content, file);
+    const nullable = diags.find(d => d.code === 'nullable-argument');
+    assert.ok(!nullable, `\`|| ''\` should make trim's arg non-null, got: ${JSON.stringify(diags.map(d => d.code))}`);
+  });
+
   it('the bound function is callable without a "not a function" error', async function() {
     const content = [
       '/**',

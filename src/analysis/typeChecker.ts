@@ -886,8 +886,14 @@ export class TypeChecker {
     if (node.type === 'BinaryExpression') {
       const binNode = node as BinaryExpressionNode;
       if (binNode.operator === '||' || binNode.operator === '&&') {
-        const leftType = this.getNodeTypeDescription(binNode.left);
-        const rightType = this.getNodeTypeDescription(binNode.right);
+        // getNodeTypeDescription returns a *string* description (possibly a union
+        // like "string | null"); inferLogical*FullType needs STRUCTURED types to
+        // narrow (e.g. `||` drops null from the left). Parse the descriptions back
+        // to structured types first — otherwise `readfile() || ''` stays
+        // "string | null" instead of narrowing to "string". Guards applied by the
+        // recursive description calls are preserved through the round-trip.
+        const leftType = this.parseReturnType(this.getNodeTypeDescription(binNode.left));
+        const rightType = this.parseReturnType(this.getNodeTypeDescription(binNode.right));
         if (binNode.operator === '||') {
           const result = logicalTypeInference.inferLogicalOrFullType(leftType, rightType);
           return (isUnionType(result) ? this.getTypeDescription(result) : result) as UcodeType;
