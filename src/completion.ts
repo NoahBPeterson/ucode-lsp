@@ -277,6 +277,15 @@ export function handleCompletion(
             return [];
         }
         
+        // Don't offer completions while the user is NAMING a function
+        // (`function lo|`). The name is brand new; any suggestion (e.g.
+        // `localtime` fuzzy-matching `lo`) can be committed by typing `(` —
+        // VS Code accepts the highlighted item on a commit character — which
+        // silently renames the function to a builtin.
+        if (isFunctionNameContext(offset, tokens)) {
+            return [];
+        }
+
         // Only show general completions when NOT in a member expression context
         return createGeneralCompletions(analysisResult, connection, offset);
 
@@ -284,6 +293,26 @@ export function handleCompletion(
         connection.console.log('Completion error: ' + error);
         return createGeneralCompletions(analysisResult, connection);
     }
+}
+
+// True when the cursor sits in the NAME position of a function declaration or
+// expression — right after the `function` keyword (`function |` or
+// `function lo|`). Completions there are never wanted: the user is inventing a
+// new identifier, not referencing an existing one.
+function isFunctionNameContext(offset: number, tokens: any[]): boolean {
+    // Nearest meaningful token that begins before the cursor, and the one before it.
+    let cur: any = null, prev: any = null;
+    for (const t of tokens) {
+        if (t.type === TokenType.TK_EOF) continue;
+        if (t.pos < offset) { prev = cur; cur = t; }
+        else break;
+    }
+    if (!cur) return false;
+    // `function |` — cursor right after the keyword, no name typed yet.
+    if (cur.type === TokenType.TK_FUNC) return true;
+    // `function lo|` — typing the name; the keyword is the previous token.
+    if (cur.type === TokenType.TK_LABEL && prev && prev.type === TokenType.TK_FUNC) return true;
+    return false;
 }
 
 function detectMemberCompletionContext(offset: number, tokens: any[]): { objectName: string; propertyChain?: string[]; resolvedObjectType?: KnownObjectType; callFunctionName?: string } | undefined {
