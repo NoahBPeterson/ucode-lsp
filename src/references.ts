@@ -41,8 +41,14 @@ export function findFunctionReferences(ast: any, funcName: string, declId: any):
                 && Array.isArray(parent.params) && parent.params.includes(node);
             // Another function/declaration's own name of the same spelling.
             const isOtherDeclId = parent && FUNCTIONISH.has(parent.type) && parent.id === node;
+            // An import binding or export specifier — `import name from …`,
+            // `export default name`, `export { name }`. These are not usages: an
+            // import may even be unused, and an export just re-publishes the
+            // binding. Only real usages should count as references.
+            const isImportExport = parent
+                && (parent.type.startsWith('Import') || parent.type.startsWith('Export'));
 
-            if (!isMemberProp && !isObjectKey && !isParam && !isOtherDeclId) {
+            if (!isMemberProp && !isObjectKey && !isParam && !isOtherDeclId && !isImportExport) {
                 refs.push({ start: node.start, end: node.end });
             }
         }
@@ -63,4 +69,36 @@ export function findFunctionReferences(ast: any, funcName: string, declId: any):
 export function formatReferencesTitle(count: number): string {
     if (count === 0) return 'no references';
     return count === 1 ? '1 reference' : `${count} references`;
+}
+
+/** The bindings a single import declaration introduces. */
+export interface ImportBinding {
+    source: string;                                   // module specifier text
+    defaultLocal?: string;                            // import X from '…'
+    namespaceLocal?: string;                          // import * as X from '…'
+    named: { imported: string; local: string }[];     // import { a as b } from '…'
+}
+
+/** Top-level import declarations of a file, flattened to their bindings. */
+export function getImportBindings(ast: any): ImportBinding[] {
+    const out: ImportBinding[] = [];
+    const body = ast?.body;
+    if (!Array.isArray(body)) return out;
+    for (const stmt of body) {
+        if (!stmt || stmt.type !== 'ImportDeclaration') continue;
+        const source = stmt.source && typeof stmt.source.value === 'string' ? stmt.source.value : null;
+        if (!source) continue;
+        const binding: ImportBinding = { source, named: [] };
+        for (const spec of (stmt.specifiers || [])) {
+            if (spec.type === 'ImportDefaultSpecifier' && spec.local?.name) {
+                binding.defaultLocal = spec.local.name;
+            } else if (spec.type === 'ImportNamespaceSpecifier' && spec.local?.name) {
+                binding.namespaceLocal = spec.local.name;
+            } else if (spec.type === 'ImportSpecifier' && spec.local?.name) {
+                binding.named.push({ imported: spec.imported?.name ?? spec.local.name, local: spec.local.name });
+            }
+        }
+        out.push(binding);
+    }
+    return out;
 }

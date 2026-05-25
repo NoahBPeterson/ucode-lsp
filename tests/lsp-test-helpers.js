@@ -15,8 +15,10 @@ const path = require('path');
  * @param {Object} options.capabilities - Client capabilities to send during initialization
  */
 function createLSPTestServer(options = {}) {
-  // If a shared server exists (via mocha root hook), return a no-op wrapper
-  if (global.__sharedLSPServer) {
+  // If a shared server exists (via mocha root hook), return a no-op wrapper.
+  // A custom workspaceRoot needs its own server (the shared one is rooted at the
+  // repo), so bypass the wrapper in that case.
+  if (global.__sharedLSPServer && !options.workspaceRoot) {
     return {
       initialize: () => Promise.resolve(),
       shutdown: () => {},
@@ -192,6 +194,7 @@ function createLSPTestServer(options = {}) {
         }
       };
 
+      const wsRoot = options.workspaceRoot || process.cwd();
       const initialize = {
         jsonrpc: '2.0',
         id: requestId++,
@@ -199,9 +202,9 @@ function createLSPTestServer(options = {}) {
         params: {
           processId: process.pid,
           clientInfo: { name: 'test-client', version: '1.0.0' },
-          rootUri: `file://${process.cwd()}`,
+          rootUri: `file://${wsRoot}`,
           workspaceFolders: [{
-            uri: `file://${process.cwd()}`,
+            uri: `file://${wsRoot}`,
             name: 'ucode-lsp'
           }],
           capabilities: { ...defaultCapabilities, ...options.capabilities }

@@ -26,7 +26,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
 import { collectFunctionDeclarations, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
-import { findFunctionReferences, formatReferencesTitle } from './references';
+import { findFunctionReferences, formatReferencesTitle, getImportBindings, type ImportBinding } from './references';
 // import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
@@ -544,6 +544,96 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
     return dedupedActions;
 });
 
+// ── Cross-file reference search (for the "N references" CodeLens) ───────────
+// Parses each workspace .uc file once (cached by mtime) and, per target export,
+// walks files that import it for real usages of the imported binding. Import
+// statements themselves are excluded by findFunctionReferences.
+interface RefLocation {
+    uri: string;
+    range: { start: { line: number; character: number }; end: { line: number; character: number } };
+}
+
+let crossRefResolver: FileResolver | null = null;
+function getCrossRefResolver(): FileResolver {
+    if (!crossRefResolver) crossRefResolver = new FileResolver(workspaceFolders[0] || process.cwd());
+    return crossRefResolver;
+}
+
+interface WorkspaceFileEntry { mtimeMs: number; ast: any; doc: TextDocument; bindings: ImportBinding[] }
+const workspaceFileCache = new Map<string, WorkspaceFileEntry | null>();
+let wsFileListCache: { files: string[]; at: number } | null = null;
+const WS_FILE_TTL_MS = 10000;
+
+function listWorkspaceUcodeFiles(): string[] {
+    const now = Date.now();
+    if (wsFileListCache && now - wsFileListCache.at < WS_FILE_TTL_MS) return wsFileListCache.files;
+    const files: string[] = [];
+    const walk = (dir: string): void => {
+        let entries: fs.Dirent[];
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+        for (const e of entries) {
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) { if (!shouldSkipDirectory(e.name)) walk(full); }
+            else if (e.isFile() && e.name.endsWith('.uc')) files.push(full);
+        }
+    };
+    for (const folder of workspaceFolders) walk(folder);
+    wsFileListCache = { files, at: now };
+    return files;
+}
+
+function getWorkspaceFile(filePath: string): WorkspaceFileEntry | null {
+    let mtimeMs = 0;
+    try { mtimeMs = fs.statSync(filePath).mtimeMs; } catch { return null; }
+    const cached = workspaceFileCache.get(filePath);
+    if (cached && cached.mtimeMs === mtimeMs) return cached;
+    let entry: WorkspaceFileEntry | null = null;
+    try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        const lexer = new UcodeLexer(content, { rawMode: true });
+        const tokens = lexer.tokenize();
+        const parser = new UcodeParser(tokens, content);
+        parser.setComments(lexer.comments);
+        const ast = parser.parse().ast;
+        const doc = TextDocument.create(filePathToUri(filePath), 'ucode', 1, content);
+        entry = { mtimeMs, ast, doc, bindings: getImportBindings(ast) };
+    } catch { entry = null; }
+    workspaceFileCache.set(filePath, entry);
+    return entry;
+}
+
+// Find usages of `fnName` (exported from `targetUri`) in OTHER workspace files.
+function findCrossFileReferences(targetUri: string, fnName: string): RefLocation[] {
+    const out: RefLocation[] = [];
+    if (workspaceFolders.length === 0) return out;
+    const resolver = getCrossRefResolver();
+    const exports = resolver.getModuleExports(targetUri);
+    if (!exports) return out;
+    const isDefault = exports.some(e => e.name === 'default' && e.exportedName === fnName);
+    const isNamed = exports.some(e => e.name === fnName);
+    if (!isDefault && !isNamed) return out; // not exported → no cross-file references
+
+    const targetPath = path.resolve(uriToFilePath(targetUri));
+    for (const filePath of listWorkspaceUcodeFiles()) {
+        if (path.resolve(filePath) === targetPath) continue; // in-file handled separately
+        const entry = getWorkspaceFile(filePath);
+        if (!entry || entry.bindings.length === 0) continue;
+        const fileUri = filePathToUri(filePath);
+        for (const b of entry.bindings) {
+            const resolved = resolver.resolveImportPath(b.source, fileUri);
+            if (!resolved || path.resolve(uriToFilePath(resolved)) !== targetPath) continue;
+            let localName: string | undefined;
+            if (isDefault && b.defaultLocal) localName = b.defaultLocal;
+            else if (isNamed) localName = b.named.find(n => n.imported === fnName)?.local;
+            if (!localName) continue;
+            for (const r of findFunctionReferences(entry.ast, localName, null)) {
+                out.push({ uri: fileUri, range: { start: entry.doc.positionAt(r.start), end: entry.doc.positionAt(r.end) } });
+            }
+        }
+    }
+    return out;
+}
+
 // CodeLens: a per-function git-history annotation. onCodeLens enumerates the
 // functions and returns lenses WITHOUT running git (fast); the git call happens
 // lazily in onCodeLensResolve, only for lenses the editor actually displays.
@@ -593,17 +683,22 @@ connection.onCodeLensResolve((lens: CodeLens): CodeLens => {
             lens.command = Command.create('no references', '');
             return lens;
         }
-        const refs = findFunctionReferences(ast, fn.id.name, fn.id);
-        const title = formatReferencesTitle(refs.length);
-        if (refs.length === 0) {
+        const inFileRefs = findFunctionReferences(ast, fn.id.name, fn.id);
+        const crossFileRefs = findCrossFileReferences(data.uri, fn.id.name);
+        const total = inFileRefs.length + crossFileRefs.length;
+        const title = formatReferencesTitle(total);
+        if (total === 0) {
             lens.command = Command.create(title, ''); // non-clickable label
             return lens;
         }
         const declPosition = document.positionAt(fn.id.start);
-        const locations = refs.map(r => ({
-            uri: data.uri,
-            range: { start: document.positionAt(r.start), end: document.positionAt(r.end) }
-        }));
+        const locations = [
+            ...inFileRefs.map(r => ({
+                uri: data.uri,
+                range: { start: document.positionAt(r.start), end: document.positionAt(r.end) }
+            })),
+            ...crossFileRefs
+        ];
         lens.command = Command.create(title, 'ucode.showFunctionReferences', data.uri, declPosition, locations);
         return lens;
     }

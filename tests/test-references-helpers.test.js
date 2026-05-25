@@ -1,6 +1,6 @@
 // Unit tests for the in-file reference finder behind the "N references" CodeLens.
 import { test, expect, describe } from 'bun:test';
-import { findFunctionReferences, formatReferencesTitle } from '../src/references';
+import { findFunctionReferences, formatReferencesTitle, getImportBindings } from '../src/references';
 import { collectFunctionDeclarations } from '../src/gitHistory';
 import { UcodeLexer } from '../src/lexer/ucodeLexer';
 import { UcodeParser } from '../src/parser/ucodeParser';
@@ -54,5 +54,37 @@ load();
     const spans = refsFor(src, 'f');
     expect(spans.length).toBe(1);
     expect(spans[0].end).toBeGreaterThan(spans[0].start);
+  });
+
+  test('excludes `export default name` and import bindings (only usages count)', () => {
+    const src = `function gizmo() { return 1; }
+gizmo();
+export default gizmo;
+`;
+    // gizmo() is a reference; `export default gizmo` is not.
+    expect(refsFor(src, 'gizmo').length).toBe(1);
+  });
+});
+
+describe('getImportBindings', () => {
+  test('extracts default, named (with alias), and namespace imports', () => {
+    const src = `import make from 'mod';
+import { help, raw as renamed } from 'mod';
+import * as ns from 'other';
+make();
+`;
+    const ast = parse(src);
+    const bindings = getImportBindings(ast);
+    const fromMod = bindings.find(b => b.source === 'mod' && b.defaultLocal);
+    expect(fromMod.defaultLocal).toBe('make');
+    const named = bindings.find(b => b.source === 'mod' && b.named.length > 0);
+    expect(named.named).toContainEqual({ imported: 'help', local: 'help' });
+    expect(named.named).toContainEqual({ imported: 'raw', local: 'renamed' });
+    const nsB = bindings.find(b => b.source === 'other');
+    expect(nsB.namespaceLocal).toBe('ns');
+  });
+
+  test('returns [] for a file with no imports', () => {
+    expect(getImportBindings(parse(`let x = 1;\n`)).length).toBe(0);
   });
 });
