@@ -2114,23 +2114,22 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             const iteratorName = declarator.id.name;
             const iteratorNode = declarator.id;
 
-            // Infer the iterator variable type from what's being iterated
-            const rightType = this.typeChecker.checkNode(node.right);
+            // Infer the iterator variable type from what's being iterated.
+            // `array<T>` → T (works even when the declared type is a union the
+            // loop narrows, e.g. `string | array<T> | null` → `array<T>`).
+            const rightFullType = this.getIterableFullType(node.right);
             let iterType: UcodeDataType;
-            if (rightType === UcodeType.ARRAY) {
-              // Check for ArrayType element info from the symbol or _fullType
-              const rightFullType = this.getIterableFullType(node.right);
-              if (rightFullType && isArrayType(rightFullType)) {
-                iterType = getArrayElementType(rightFullType);
-              } else {
-                iterType = UcodeType.UNKNOWN as UcodeDataType;
-              }
-            } else if (rightType === UcodeType.OBJECT) {
-              iterType = UcodeType.STRING as UcodeDataType; // object keys are strings
-            } else if (rightType === UcodeType.STRING) {
-              iterType = UcodeType.STRING as UcodeDataType; // iterating string chars
+            if (rightFullType && isArrayType(rightFullType)) {
+              iterType = getArrayElementType(rightFullType);
             } else {
-              iterType = UcodeType.UNKNOWN as UcodeDataType;
+              const rightType = this.typeChecker.checkNode(node.right);
+              if (rightType === UcodeType.OBJECT) {
+                iterType = UcodeType.STRING as UcodeDataType; // object keys are strings
+              } else if (rightType === UcodeType.STRING) {
+                iterType = UcodeType.STRING as UcodeDataType; // iterating string chars
+              } else {
+                iterType = UcodeType.UNKNOWN as UcodeDataType; // bare array / unknown → no element info
+              }
             }
 
             this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, iterType, iteratorNode);
@@ -2199,6 +2198,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   /** Get the full UcodeDataType for an iterable expression (identifier lookup or _fullType). */
   private getIterableFullType(node: any): UcodeDataType | null {
     if (node.type === 'Identifier') {
+      // Prefer the narrowed type at this position (e.g. after `type(x) == 'array'`
+      // the union `string | array<T> | null` narrows to `array<T>`), so for-in can
+      // recover the element type. Fall back to the declared type.
+      const narrowed = this.typeChecker.getNarrowedTypeAtPosition(node.name, node.start);
+      if (narrowed) return narrowed;
       const sym = this.symbolTable.lookup(node.name);
       if (sym) return sym.dataType;
     }

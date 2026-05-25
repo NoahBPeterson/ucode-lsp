@@ -935,7 +935,7 @@ export class TypeChecker {
       case 'number': case 'integer': return UcodeType.INTEGER;
       case 'double': return UcodeType.DOUBLE;
       case 'object': return UcodeType.OBJECT;
-      case 'array': case 'string[]': return UcodeType.ARRAY;
+      case 'array': return UcodeType.ARRAY;
       case 'null': return UcodeType.NULL;
       case 'function': return UcodeType.FUNCTION;
       default:
@@ -943,6 +943,11 @@ export class TypeChecker {
         if (typeStr.startsWith('array<') && typeStr.endsWith('>')) {
           const innerType = typeStr.slice(6, -1);
           return createArrayType(this.parseSingleType(innerType) as UcodeDataType);
+        }
+        // Postfix array syntax like "string[]" → array<string> (keeps the element
+        // type instead of collapsing to a bare array).
+        if (typeStr.endsWith('[]')) {
+          return createArrayType(this.parseSingleType(typeStr.slice(0, -2)) as UcodeDataType);
         }
         // Known object types like "fs.file", "uci.cursor", "io.handle"
         // Create ModuleType (not ObjectType) so downstream code that checks
