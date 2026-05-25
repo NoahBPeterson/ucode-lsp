@@ -75,4 +75,21 @@ describe('Cross-file member completion (e2e)', () => {
     expect(labels).not.toContain('x');
     expect(labels).not.toContain('alpha');
   });
+
+  // Direct call chains (no intermediate variable): make().
+  test('direct call chain on a named factory: make(). completes return object', async () => {
+    const labels = labelsOf(await run("import { make } from './lib.uc';\nmake().\n", 1, 7));
+    expect(labels).toEqual(['x', 'y']);
+  });
+
+  test('direct call chain on a default factory: build(). completes return object', async () => {
+    const labels = labelsOf(await run("import build from './lib.uc';\nbuild().\n", 1, 8));
+    expect(labels).toEqual(['alpha', 'beta']);
+  });
+
+  test('direct call chain on a non-object factory yields nothing', async () => {
+    const labels = labelsOf(await run("import { create } from './lib.uc';\ncreate().\n", 1, 9));
+    expect(labels).not.toContain('x');
+    expect(labels).not.toContain('alpha');
+  });
 });

@@ -146,7 +146,7 @@ export function handleCompletion(
         if (memberContext) {
             // We're definitely in a member expression context (obj.something)
             // Never show builtin functions or keywords for member expressions
-            const { objectName, propertyChain, resolvedObjectType } = memberContext;
+            const { objectName, propertyChain, resolvedObjectType, callFunctionName } = memberContext;
             connection.console.log(`Member expression detected for: ${objectName}${propertyChain ? `, chain: ${propertyChain.join('.')}` : ''}${resolvedObjectType ? `, resolvedObjectType: ${resolvedObjectType}` : ''}`);
             connection.console.log(`[DEBUG] objectName: "${objectName}", propertyChain: ${JSON.stringify(propertyChain)}`);
 
@@ -170,6 +170,14 @@ export function handleCompletion(
                 }
                 connection.console.log(`Returning ${completions.length} call-chain completions for ${resolvedObjectType}`);
                 return completions;
+            }
+
+            // Call chain on a user factory function (make().): complete the function's
+            // inferred return-object properties. Covers local and imported factories.
+            if (callFunctionName) {
+                const fnReturnCompletions = getUserFunctionReturnCompletions(callFunctionName, analysisResult, offset);
+                connection.console.log(`Returning ${fnReturnCompletions.length} call-chain return completions for ${callFunctionName}()`);
+                return fnReturnCompletions;
             }
 
             // Unified object type completions (fs.file/dir/proc, io.handle, uloop.*, uci.cursor, nl80211.listener, exception)
@@ -262,7 +270,7 @@ export function handleCompletion(
     }
 }
 
-function detectMemberCompletionContext(offset: number, tokens: any[]): { objectName: string; propertyChain?: string[]; resolvedObjectType?: KnownObjectType } | undefined {
+function detectMemberCompletionContext(offset: number, tokens: any[]): { objectName: string; propertyChain?: string[]; resolvedObjectType?: KnownObjectType; callFunctionName?: string } | undefined {
     // Look for pattern: LABEL DOT [LABEL DOT]* (cursor position)
     // Also handles call chains: LABEL(...) DOT, LABEL DOT LABEL(...) DOT
 
@@ -292,6 +300,7 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
     const propertyChain: string[] = [];
     let currentTokenIndex = dotTokenIndex - 1;
     let resolvedObjectType: KnownObjectType | undefined;
+    let callChainFunctionName: string | undefined;
 
     // Build the chain by walking backwards through LABEL DOT patterns
     while (currentTokenIndex >= 0) {
@@ -347,6 +356,11 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
                     resolvedObjectType = objType;
                     break;
                 }
+                // Not a known object-returning builtin — remember the bare function
+                // name so the handler can try a user factory's inferred return shape.
+                if (!moduleName) {
+                    callChainFunctionName = funcName;
+                }
             }
             // Could not resolve — stop
             break;
@@ -359,6 +373,12 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
     // If we resolved an object type from a call chain, return it directly
     if (resolvedObjectType) {
         return { objectName: '__call_chain__', resolvedObjectType };
+    }
+
+    // A bare user-function call chain (make().) — let the handler resolve the
+    // function's inferred return-object shape from its symbol.
+    if (callChainFunctionName) {
+        return { objectName: '__call_chain__', callFunctionName: callChainFunctionName };
     }
 
     if (propertyChain.length === 0) {
@@ -633,6 +653,25 @@ function getImportedValuePropertyCompletions(
 
     const items: CompletionItem[] = [];
     for (const [name, ptype] of info.propertyTypes) {
+        items.push({ label: name, kind: CompletionItemKind.Property, detail: typeToString(ptype), insertText: name });
+    }
+    return items;
+}
+
+/**
+ * Completions for a direct factory call chain (`make().`): the function's inferred
+ * return-object property shape, taken from its symbol's returnPropertyTypes. Works
+ * for local function declarations and imported named/default factories (both get
+ * returnPropertyTypes populated by the analyzer). Returns [] for functions that
+ * don't provably return an object literal.
+ */
+function getUserFunctionReturnCompletions(funcName: string, analysisResult?: SemanticAnalysisResult, offset?: number): CompletionItem[] {
+    if (!analysisResult || !analysisResult.symbolTable) return [];
+    const symbol = lookupSymbol(funcName, analysisResult, offset);
+    if (!symbol || !symbol.returnPropertyTypes || symbol.returnPropertyTypes.size === 0) return [];
+
+    const items: CompletionItem[] = [];
+    for (const [name, ptype] of symbol.returnPropertyTypes) {
         items.push({ label: name, kind: CompletionItemKind.Property, detail: typeToString(ptype), insertText: name });
     }
     return items;

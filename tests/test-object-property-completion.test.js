@@ -45,6 +45,12 @@ describe('Object-variable property completion (e2e)', () => {
     expect(labels).toContain('message');
   });
 
+  test('direct call chain on a local factory: mk(). → its return properties', async () => {
+    const code = 'function mk() { return { p: 1, q: "s" }; }\nmk().\n';
+    const labels = labelsOf(await getCompletions(code, '/tmp/opc-callchain.uc', 1, 5));
+    expect(labels.sort()).toEqual(['p', 'q']);
+  });
+
   test('completion items are typed properties (kind=Property, type in detail)', async () => {
     const code = 'let o = { count: 5, name: "n" };\no.\n';
     const c = await getCompletions(code, '/tmp/opc-detail.uc', 1, 2);
