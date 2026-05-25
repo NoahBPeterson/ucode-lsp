@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.6.61",
+  "version": "0.6.62",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
@@ -20,6 +20,9 @@
     "Programming Languages"
   ],
   "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:ucode"
+  ],
   "contributes": {
     "languages": [
       {
@@ -49,6 +52,13 @@
         "id": "ucode-icons",
         "label": "ucode File Icons",
         "path": "./icons/ucode-icon-theme.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "ucode.showFunctionHistory",
+        "title": "Show Function Git History",
+        "category": "ucode"
       }
     ],
     "configuration": {

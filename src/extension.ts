@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as cp from 'child_process';
+import * as path from 'path';
 import {
     LanguageClient,
     LanguageClientOptions,
@@ -7,6 +9,48 @@ import {
 } from 'vscode-languageclient/node';
 
 let client: LanguageClient;
+
+// Field separator the server's CodeLens uses (ASCII Unit Separator).
+const FS_CHAR = '\x1f';
+
+// Backs the function-history CodeLens click. The server resolves the lens with a
+// command pointing here, carrying the function's git line range. We list the
+// commits in a quick-pick and show the chosen one as a read-only diff.
+async function showFunctionHistory(uri: string, startLine: number, endLine: number, name: string): Promise<void> {
+    const filePath = vscode.Uri.parse(uri).fsPath;
+    const cwd = path.dirname(filePath);
+    let out: string;
+    try {
+        out = cp.execFileSync('git', [
+            'log', '-L', `${startLine},${endLine}:${path.basename(filePath)}`,
+            '-s', `--format=%H${FS_CHAR}%an${FS_CHAR}%ad${FS_CHAR}%s`, '--date=short',
+        ], { cwd, encoding: 'utf8', timeout: 5000, maxBuffer: 1 << 20 });
+    } catch {
+        vscode.window.showWarningMessage(`No git history available for ${name}.`);
+        return;
+    }
+    const items = out.split('\n').filter(Boolean).map((line) => {
+        const parts = line.split(FS_CHAR);
+        const hash = parts[0] ?? '';
+        const author = parts[1] ?? '';
+        const date = parts[2] ?? '';
+        const subject = parts.slice(3).join(FS_CHAR) || '(no subject)';
+        return { label: subject, description: `${author} · ${date}`, detail: hash, hash };
+    });
+    if (items.length === 0) {
+        vscode.window.showInformationMessage(`No git history for ${name}.`);
+        return;
+    }
+    const pick = await vscode.window.showQuickPick(items, { title: `History: ${name}`, matchOnDescription: true });
+    if (!pick || !pick.hash) return;
+    try {
+        const diff = cp.execFileSync('git', ['show', pick.hash], { cwd, encoding: 'utf8', maxBuffer: 1 << 24 });
+        const doc = await vscode.workspace.openTextDocument({ content: diff, language: 'diff' });
+        await vscode.window.showTextDocument(doc, { preview: true });
+    } catch {
+        vscode.window.showWarningMessage(`Could not show commit ${pick.hash}.`);
+    }
+}
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('ucode extension is being activated');
@@ -41,6 +85,11 @@ export function activate(context: vscode.ExtensionContext) {
         'ucode Language Server',
         serverOptions,
         clientOptions
+    );
+
+    // Function-history CodeLens click target (the lens itself comes from the server).
+    context.subscriptions.push(
+        vscode.commands.registerCommand('ucode.showFunctionHistory', showFunctionHistory)
     );
 
     // Start the client. This will also launch the server

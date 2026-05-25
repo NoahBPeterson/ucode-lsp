@@ -25,6 +25,8 @@ function createLSPTestServer(options = {}) {
       getHover: global.__sharedLSPServer.getHover,
       getDefinition: global.__sharedLSPServer.getDefinition,
       getCodeActions: global.__sharedLSPServer.getCodeActions,
+      getCodeLens: global.__sharedLSPServer.getCodeLens,
+      resolveCodeLens: global.__sharedLSPServer.resolveCodeLens,
     };
   }
 
@@ -211,9 +213,9 @@ function createLSPTestServer(options = {}) {
       // Wait for initialization response
       const initKey = idKey(initialize.id);
       pendingRequests.set(initKey, {
-        resolve: () => {
+        resolve: (initResult) => {
           serverProcess.stdin.write(createLSPMessage(initialized));
-          resolve();
+          resolve(initResult);
         },
         reject: (err) => reject(err instanceof Error ? err : new Error(String(err))),
         timeout: setTimeout(() => { 
@@ -452,6 +454,65 @@ function createLSPTestServer(options = {}) {
     });
   }
 
+  // Request CodeLenses for a document (opens it first). Resolves with CodeLens[].
+  function getCodeLens(testContent, testFilePath) {
+    return new Promise((resolve, reject) => {
+      const currentRequestId = requestId++;
+      const reqKey = idKey(currentRequestId);
+
+      const didOpen = {
+        jsonrpc: '2.0',
+        method: 'textDocument/didOpen',
+        params: {
+          textDocument: { uri: `file://${testFilePath}`, languageId: 'ucode', version: 1, text: testContent }
+        }
+      };
+      const codeLens = {
+        jsonrpc: '2.0',
+        id: currentRequestId,
+        method: 'textDocument/codeLens',
+        params: { textDocument: { uri: `file://${testFilePath}` } }
+      };
+
+      const timeout = setTimeout(() => {
+        if (pendingRequests.has(reqKey)) {
+          pendingRequests.delete(reqKey);
+          inflightStartedAt.delete(reqKey);
+          reject(new Error('Timeout waiting for codeLens response'));
+        }
+      }, 2000);
+
+      pendingRequests.set(reqKey, { resolve, reject, timeout });
+      inflightStartedAt.set(reqKey, Date.now());
+
+      serverProcess.stdin.write(createLSPMessage(didOpen));
+      setTimeout(() => serverProcess.stdin.write(createLSPMessage(codeLens)), 10);
+    });
+  }
+
+  // Resolve a single CodeLens (codeLens/resolve). Resolves with the resolved lens.
+  function resolveCodeLens(lens) {
+    return new Promise((resolve, reject) => {
+      const currentRequestId = requestId++;
+      const reqKey = idKey(currentRequestId);
+
+      const req = { jsonrpc: '2.0', id: currentRequestId, method: 'codeLens/resolve', params: lens };
+
+      const timeout = setTimeout(() => {
+        if (pendingRequests.has(reqKey)) {
+          pendingRequests.delete(reqKey);
+          inflightStartedAt.delete(reqKey);
+          reject(new Error('Timeout waiting for codeLens/resolve response'));
+        }
+      }, 2000);
+
+      pendingRequests.set(reqKey, { resolve, reject, timeout });
+      inflightStartedAt.set(reqKey, Date.now());
+
+      serverProcess.stdin.write(createLSPMessage(req));
+    });
+  }
+
   return {
     initialize,
     shutdown,
@@ -459,7 +520,9 @@ function createLSPTestServer(options = {}) {
     getCompletions,
     getHover,
     getDefinition,
-    getCodeActions
+    getCodeActions,
+    getCodeLens,
+    resolveCodeLens
   };
 }
 

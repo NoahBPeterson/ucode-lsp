@@ -17,11 +17,15 @@ import {
     CodeAction,
     CodeActionKind,
     TextEdit,
+    CodeLens,
+    CodeLensParams,
+    Command,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
+import { collectTopLevelFunctions, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
 // import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
@@ -190,6 +194,9 @@ connection.onInitialize((params: InitializeParams) => {
             definitionProvider: true,
             codeActionProvider: {
                 codeActionKinds: [CodeActionKind.QuickFix]
+            },
+            codeLensProvider: {
+                resolveProvider: true
             }
         }
     };
@@ -534,6 +541,56 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
     }
 
     return dedupedActions;
+});
+
+// CodeLens: a per-function git-history annotation. onCodeLens enumerates the
+// functions and returns lenses WITHOUT running git (fast); the git call happens
+// lazily in onCodeLensResolve, only for lenses the editor actually displays.
+connection.onCodeLens(async (params: CodeLensParams): Promise<CodeLens[]> => {
+    let cacheEntry = analysisCache.get(params.textDocument.uri);
+    if (!cacheEntry?.result?.ast) {
+        const doc = documents.get(params.textDocument.uri);
+        if (doc) {
+            await validateAndAnalyzeDocument(doc);
+            cacheEntry = analysisCache.get(params.textDocument.uri);
+        }
+    }
+    const document = documents.get(params.textDocument.uri);
+    const ast = cacheEntry?.result?.ast;
+    if (!document || !ast) return [];
+
+    const lenses: CodeLens[] = [];
+    for (const fn of collectTopLevelFunctions(ast)) {
+        // Anchor the lens above the function's JSDoc when present, else the function.
+        const anchorOffset = fn.leadingJsDoc ? fn.leadingJsDoc.start : fn.start;
+        const anchorLine = document.positionAt(anchorOffset).line;
+        // node.end is EXCLUSIVE, so step back one char to land on the last line.
+        const startLine = document.positionAt(fn.start).line + 1; // git -L is 1-based
+        const endLine = document.positionAt(Math.max(fn.start, fn.end - 1)).line + 1;
+        lenses.push(CodeLens.create(
+            { start: { line: anchorLine, character: 0 }, end: { line: anchorLine, character: 0 } },
+            { uri: params.textDocument.uri, startLine, endLine, name: fn.id?.name ?? '<anonymous>' }
+        ));
+    }
+    return lenses;
+});
+
+connection.onCodeLensResolve((lens: CodeLens): CodeLens => {
+    const data = lens.data as { uri: string; startLine: number; endLine: number; name: string } | undefined;
+    if (!data) return lens;
+    const filePath = uriToFilePath(data.uri);
+    const summary = getFunctionGitSummary(filePath, data.startLine, data.endLine);
+    if (!summary) {
+        // Muted, non-clickable text (empty command id renders as plain label).
+        lens.command = Command.create('No git history', '');
+        return lens;
+    }
+    lens.command = Command.create(
+        formatSummaryTitle(summary),
+        'ucode.showFunctionHistory',
+        data.uri, data.startLine, data.endLine, data.name
+    );
+    return lens;
 });
 
 connection.onDefinition((params) => {
