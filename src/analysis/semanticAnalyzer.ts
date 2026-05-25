@@ -490,6 +490,30 @@ export class SemanticAnalyzer extends BaseVisitor {
           }
         }
 
+        // Module member function bound to a variable: `let readfile = fs_mod.readfile`
+        // where fs_mod is a module type (e.g. from `@param {module:fs}`). Stamp the
+        // variable like a named import so hover/completion resolve the function's
+        // signature. Kept as a VARIABLE (not IMPORTED) so go-to-definition still
+        // lands on the local `let` and completion doesn't treat it as a namespace.
+        if (node.init.type === 'MemberExpression') {
+          const mem = node.init as MemberExpressionNode;
+          if (mem.object.type === 'Identifier' && !mem.computed && mem.property.type === 'Identifier') {
+            const objSym = this.symbolTable.lookup((mem.object as IdentifierNode).name);
+            const modName = objSym ? extractModuleType(objSym.dataType)?.moduleName : undefined;
+            if (modName && isKnownModule(modName)) {
+              const memberName = (mem.property as IdentifierNode).name;
+              if (MODULE_REGISTRIES[modName].getFunctionNames().includes(memberName)) {
+                const sym = this.symbolTable.lookup(name);
+                if (sym) {
+                  sym.dataType = UcodeType.FUNCTION;
+                  sym.importedFrom = modName;
+                  sym.importSpecifier = memberName;
+                }
+              }
+            }
+          }
+        }
+
         // When initializer is an identifier, check if it has a narrowed type at this position
         // (e.g., after equality guard: if (readfile != rf) return; let d = readfile;)
         if (node.init.type === 'Identifier') {

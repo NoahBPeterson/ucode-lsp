@@ -901,6 +901,17 @@ export function handleHover(
                                         }
                                     }
                                 }
+                                // A module function bound to a variable
+                                // (`let readfile = fs_mod.readfile`): show the module
+                                // function's signature, like a named import.
+                                if (symbol.importedFrom && isKnownModule(symbol.importedFrom)) {
+                                    const originalName = symbol.importSpecifier || symbol.name;
+                                    const doc = getImportedSymbolDocumentation(symbol.importedFrom, originalName);
+                                    if (Option.isSome(doc)) {
+                                        hoverText = doc.value;
+                                        break;
+                                    }
+                                }
                                 hoverText = `(${symbol.type}) **${symbol.name}**: \`${effectiveTypeStr}\``;
                             }
                             if (symbol.jsdocDescription) {

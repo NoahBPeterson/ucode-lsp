@@ -1655,6 +1655,18 @@ export class TypeChecker {
         return UcodeType.UNKNOWN;
       }
 
+      // Module member access: `fs_mod.readfile` where fs_mod is `module:fs`.
+      // A member that names a module function types as FUNCTION (so e.g.
+      // `let readfile = fs_mod.readfile;` infers `function`, not `unknown`).
+      const moduleInfo = extractModuleType(symbol.dataType);
+      const modName = moduleInfo?.moduleName;
+      if (modName && isKnownModule(modName) && !node.computed) {
+        const memberName = this.getStaticPropertyName(node.property);
+        if (memberName && MODULE_REGISTRIES[modName].getFunctionNames().includes(memberName)) {
+          return UcodeType.FUNCTION;
+        }
+      }
+
       // Check if this is an rtnl constants object with a specific property
       if (extractModuleType(symbol.dataType)?.moduleName === 'rtnl-const' && !node.computed) {
         const propertyName = this.getStaticPropertyName(node.property);
