@@ -59,6 +59,31 @@ describe('Module member function bound to a variable', function() {
     assert.ok(/readfile\(path/.test(text), `expected fs.readfile signature, got: ${JSON.stringify(text)}`);
   });
 
+  it('calling the bound function resolves its return type (readfile → string | null)', async function() {
+    const content = [
+      '/**',
+      ' * @param {module:fs} fs_mod',
+      ' * @param {object} pkg',
+      ' */',
+      'function make(fs_mod, pkg) {',
+      '    let readfile = fs_mod.readfile;',
+      "    let text = readfile(pkg.path) || '';",  // string | null, then || '' → string
+      '    let m = match(text, /x/);',
+      '    return m;',
+      '}',
+      ''
+    ].join('\n');
+    const file = path.join(__dirname, '..', 'test-modmember-callret.uc');
+    // Line 6 = "    let text = ..."; hover `text` (~char 9).
+    const textHover = hoverText(await getHover(content, file, 6, 9));
+    assert.ok(/\bstring\b/.test(textHover) && !/unknown/.test(textHover),
+      `readfile(...) || '' should be string, got: ${JSON.stringify(textHover)}`);
+    // Because text is string, match()'s first arg is fine — no nullable-argument.
+    const diags = await getDiagnostics(content, file);
+    const nullableArg = diags.find(d => d.code === 'nullable-argument' || d.code === 'incompatible-function-argument');
+    assert.ok(!nullableArg, `match() should not warn on a string arg, got: ${JSON.stringify(diags.map(d => d.code))}`);
+  });
+
   it('the bound function is callable without a "not a function" error', async function() {
     const content = [
       '/**',

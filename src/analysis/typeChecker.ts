@@ -1062,6 +1062,22 @@ export class TypeChecker {
         }
         // Check for variables that might contain functions (e.g., arrow functions)
         else if (symbol.type === SymbolType.VARIABLE) {
+          // A module function bound to a variable (`let readfile = fs_mod.readfile`)
+          // carries importedFrom/importSpecifier — resolve the call's return type
+          // from the module registry, same as a direct named import. Use the
+          // SPECIFIER (the module's function name), which may differ from the
+          // local variable name when aliased.
+          if (symbol.importedFrom && isKnownModule(symbol.importedFrom)) {
+            const registry = MODULE_REGISTRIES[symbol.importedFrom];
+            const moduleFunctionOpt = registry.getFunction(symbol.importSpecifier || funcName);
+            if (Option.isSome(moduleFunctionOpt)) {
+              const moduleFunction = moduleFunctionOpt.value;
+              let returnTypeData = this.parseReturnType(moduleFunction.returnType);
+              returnTypeData = this.narrowFsReturnType(returnTypeData, moduleFunction, node);
+              (node as any)._fullType = returnTypeData;
+              return this.dataTypeToUcodeType(returnTypeData);
+            }
+          }
           // Check if the variable's data type is function or if it could be callable
           if (typeof symbol.dataType === 'string') {
             if (symbol.dataType === UcodeType.FUNCTION) {

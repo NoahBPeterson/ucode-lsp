@@ -46,4 +46,25 @@ describe('Member hover on an unknown-typed base', function() {
     assert.ok(/unknown/.test(text), `hover should mention the unknown type, got: ${text}`);
     assert.ok(/ctx/.test(text), `hover should reference the base variable, got: ${text}`);
   });
+
+  it('`pkg.rt_tables_file` on a generic `object` param yields a hover', async function() {
+    const content = [
+      '/**',
+      ' * @param {object} pkg',
+      ' */',
+      'function f(pkg) {',
+      '    return pkg.rt_tables_file;',
+      '}',
+      ''
+    ].join('\n');
+    const file = path.join(__dirname, '..', 'test-object-base-hover.uc');
+
+    // Line 4 = "    return pkg.rt_tables_file;"; member starts at char 15.
+    const hover = await getHover(content, file, 4, 18);
+
+    assert.ok(hover && hover.contents, 'expected a hover for a member of an object param');
+    const text = hoverText(hover);
+    assert.ok(/rt_tables_file/.test(text), `hover should name the member, got: ${text}`);
+    assert.ok(/object/.test(text), `hover should mention the object base, got: ${text}`);
+  });
 });
