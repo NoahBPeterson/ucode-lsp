@@ -561,11 +561,12 @@ connection.onCodeLens(async (params: CodeLensParams): Promise<CodeLens[]> => {
 
     const lenses: CodeLens[] = [];
     for (const fn of collectFunctionDeclarations(ast)) {
-        // Anchor the lens above the function's JSDoc when present, else the function.
-        const anchorOffset = fn.leadingJsDoc ? fn.leadingJsDoc.start : fn.start;
-        const anchorLine = document.positionAt(anchorOffset).line;
+        // Anchor the lens directly on the function declaration line — never above a
+        // leading comment/JSDoc block, which would float the lens far from the
+        // function it describes.
+        const anchorLine = document.positionAt(fn.start).line;
         // node.end is EXCLUSIVE, so step back one char to land on the last line.
-        const startLine = document.positionAt(fn.start).line + 1; // git -L is 1-based
+        const startLine = anchorLine + 1; // git -L is 1-based
         const endLine = document.positionAt(Math.max(fn.start, fn.end - 1)).line + 1;
         lenses.push(CodeLens.create(
             { start: { line: anchorLine, character: 0 }, end: { line: anchorLine, character: 0 } },

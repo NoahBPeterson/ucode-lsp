@@ -67,4 +67,27 @@ describe('Function-history CodeLens', function() {
     assert.ok(typeof resolved.command.title === 'string' && resolved.command.title.length > 0,
       `expected a non-empty title, got: ${JSON.stringify(resolved.command)}`);
   });
+
+  it('anchors on the function line, not above a leading comment/JSDoc', async function() {
+    const commented = [
+      '/**',                  // 0
+      ' * @param {object} a', // 1
+      ' */',                  // 2
+      'function withDoc(a) {',// 3  → lens here, NOT line 0
+      '    return a;',        // 4
+      '}',                    // 5
+      '',                     // 6
+      '/*',                   // 7
+      ' long',                // 8
+      ' block',               // 9
+      ' */',                  // 10
+      'function withBlock() {',// 11 → lens here, NOT line 7
+      '    return 1;',        // 12
+      '}',                    // 13
+      ''
+    ].join('\n');
+    const lenses = await getCodeLens(commented, path.join(__dirname, '..', 'test-codelens-comments.uc'));
+    const lines = lenses.map(l => l.range.start.line).sort((a, b) => a - b);
+    assert.deepStrictEqual(lines, [3, 11], `lens should sit on the function lines, got: ${JSON.stringify(lines)}`);
+  });
 });
