@@ -22,8 +22,19 @@ const FUNCTIONISH = new Set([
 /**
  * Collect in-file references to `funcName`. `declId` is the function's own id
  * node, excluded from the results. Returns spans in source order.
+ *
+ * `isReference`, when given, is a scope-aware predicate: a name-matched candidate
+ * is kept only if it resolves to the target binding (e.g. via the symbol table's
+ * `lookupAtPosition`). Without it, this falls back to name matching — correct
+ * for cross-file consumers where the imported binding is effectively unique, but
+ * blind to shadowing within a single file.
  */
-export function findFunctionReferences(ast: any, funcName: string, declId: any): SourceSpan[] {
+export function findFunctionReferences(
+    ast: any,
+    funcName: string,
+    declId: any,
+    isReference?: (node: any) => boolean,
+): SourceSpan[] {
     const refs: SourceSpan[] = [];
 
     const visit = (node: any, parent: any): void => {
@@ -48,7 +59,8 @@ export function findFunctionReferences(ast: any, funcName: string, declId: any):
             const isImportExport = parent
                 && (parent.type.startsWith('Import') || parent.type.startsWith('Export'));
 
-            if (!isMemberProp && !isObjectKey && !isParam && !isOtherDeclId && !isImportExport) {
+            if (!isMemberProp && !isObjectKey && !isParam && !isOtherDeclId && !isImportExport
+                && (!isReference || isReference(node))) {
                 refs.push({ start: node.start, end: node.end });
             }
         }
@@ -62,6 +74,31 @@ export function findFunctionReferences(ast: any, funcName: string, declId: any):
     };
 
     visit(ast, null);
+    return refs;
+}
+
+/**
+ * Collect `ns.member` accesses where `ns` is a namespace-import binding — these
+ * are references to the module's `member` export via the namespace
+ * (`import * as ns from 'mod'; ns.fn()`). Returns the property identifier's span.
+ */
+export function findNamespaceMemberReferences(ast: any, namespaceLocal: string, memberName: string): SourceSpan[] {
+    const refs: SourceSpan[] = [];
+    const visit = (node: any): void => {
+        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        if (node.type === 'MemberExpression' && !node.computed
+            && node.object?.type === 'Identifier' && node.object.name === namespaceLocal
+            && node.property?.type === 'Identifier' && node.property.name === memberName) {
+            refs.push({ start: node.property.start, end: node.property.end });
+        }
+        for (const k of Object.keys(node)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = node[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it); }
+            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v);
+        }
+    };
+    visit(ast);
     return refs;
 }
 

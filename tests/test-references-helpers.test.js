@@ -1,6 +1,6 @@
 // Unit tests for the in-file reference finder behind the "N references" CodeLens.
 import { test, expect, describe } from 'bun:test';
-import { findFunctionReferences, formatReferencesTitle, getImportBindings } from '../src/references';
+import { findFunctionReferences, findNamespaceMemberReferences, formatReferencesTitle, getImportBindings } from '../src/references';
 import { collectFunctionDeclarations } from '../src/gitHistory';
 import { UcodeLexer } from '../src/lexer/ucodeLexer';
 import { UcodeParser } from '../src/parser/ucodeParser';
@@ -86,5 +86,20 @@ make();
 
   test('returns [] for a file with no imports', () => {
     expect(getImportBindings(parse(`let x = 1;\n`)).length).toBe(0);
+  });
+});
+
+describe('findNamespaceMemberReferences', () => {
+  test('finds ns.member accesses, ignores other members and computed access', () => {
+    const src = `import * as m from 'mod';
+m.thing();
+let x = m.thing;
+m.other();
+let y = m['thing'];
+`;
+    const ast = parse(src);
+    // m.thing() and m.thing (2), but not m.other, not m['thing'] (computed).
+    expect(findNamespaceMemberReferences(ast, 'm', 'thing').length).toBe(2);
+    expect(findNamespaceMemberReferences(ast, 'm', 'other').length).toBe(1);
   });
 });

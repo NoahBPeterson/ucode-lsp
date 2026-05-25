@@ -26,7 +26,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
 import { collectFunctionDeclarations, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
-import { findFunctionReferences, formatReferencesTitle, getImportBindings, type ImportBinding } from './references';
+import { findFunctionReferences, findNamespaceMemberReferences, formatReferencesTitle, getImportBindings, type ImportBinding } from './references';
 // import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
@@ -622,6 +622,14 @@ function findCrossFileReferences(targetUri: string, fnName: string): RefLocation
         for (const b of entry.bindings) {
             const resolved = resolver.resolveImportPath(b.source, fileUri);
             if (!resolved || path.resolve(uriToFilePath(resolved)) !== targetPath) continue;
+            // Namespace import (`import * as ns`): count `ns.fn` member accesses
+            // of the named export.
+            if (isNamed && b.namespaceLocal) {
+                for (const r of findNamespaceMemberReferences(entry.ast, b.namespaceLocal, fnName)) {
+                    out.push({ uri: fileUri, range: { start: entry.doc.positionAt(r.start), end: entry.doc.positionAt(r.end) } });
+                }
+            }
+            // Default or named import bound to a local name: count plain usages.
             let localName: string | undefined;
             if (isDefault && b.defaultLocal) localName = b.defaultLocal;
             else if (isNamed) localName = b.named.find(n => n.imported === fnName)?.local;
@@ -683,7 +691,22 @@ connection.onCodeLensResolve((lens: CodeLens): CodeLens => {
             lens.command = Command.create('no references', '');
             return lens;
         }
-        const inFileRefs = findFunctionReferences(ast, fn.id.name, fn.id);
+        // Scope-aware in-file resolution: keep a name-matched candidate only if
+        // it resolves to THIS function's binding (not a shadowing param/local),
+        // using the symbol table's position-aware lookup + declaration offset.
+        const symbolTable = cacheEntry?.result?.symbolTable;
+        let isReference: ((node: any) => boolean) | undefined;
+        if (symbolTable && typeof symbolTable.lookupAtPosition === 'function') {
+            const targetSym = symbolTable.lookupAtPosition(fn.id.name, fn.id.start) ?? symbolTable.lookup(fn.id.name);
+            const targetDeclaredAt = targetSym?.declaredAt;
+            if (targetDeclaredAt !== undefined) {
+                isReference = (node: any): boolean => {
+                    const s = symbolTable.lookupAtPosition(fn.id.name, node.start) ?? symbolTable.lookup(fn.id.name);
+                    return !!s && s.declaredAt === targetDeclaredAt;
+                };
+            }
+        }
+        const inFileRefs = findFunctionReferences(ast, fn.id.name, fn.id, isReference);
         const crossFileRefs = findCrossFileReferences(data.uri, fn.id.name);
         const total = inFileRefs.length + crossFileRefs.length;
         const title = formatReferencesTitle(total);

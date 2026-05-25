@@ -55,3 +55,36 @@ describe('Cross-file references CodeLens', function() {
     assert.ok(locations[0].uri.endsWith('consumer.uc'));
   });
 });
+
+describe('Cross-file references via namespace import', function() {
+  this.timeout(20000);
+
+  const wsRoot = path.resolve(__dirname, 'fixtures', 'xref-ns');
+  const modPath = path.join(wsRoot, 'mod.uc');
+  const modContent = fs.readFileSync(modPath, 'utf8');
+  let lspServer, getCodeLens, resolveCodeLens;
+
+  before(async function() {
+    lspServer = createLSPTestServer({ workspaceRoot: wsRoot });
+    await lspServer.initialize();
+    getCodeLens = lspServer.getCodeLens;
+    resolveCodeLens = lspServer.resolveCodeLens;
+  });
+
+  after(function() {
+    if (lspServer) lspServer.shutdown();
+  });
+
+  it('counts `ns.thing()` accesses through `import * as ns`', async function() {
+    const declLine = modContent.split('\n').findIndex(l => /function thing\b/.test(l));
+    const lenses = await getCodeLens(modContent, modPath);
+    const lens = lenses.find(l => l.data && l.data.kind === 'refs' && l.range.start.line === declLine);
+    assert.ok(lens, 'expected a refs lens on thing');
+    const resolved = await resolveCodeLens(lens);
+    assert.strictEqual(resolved.command.title, '2 references',
+      `expected 2 namespace references, got: ${JSON.stringify(resolved.command.title)}`);
+    const locations = resolved.command.arguments[2];
+    assert.ok(locations.every(l => l.uri.endsWith('consumer.uc')),
+      `references should be in consumer.uc, got: ${JSON.stringify(locations.map(l => l.uri))}`);
+  });
+});

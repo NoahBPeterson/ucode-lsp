@@ -101,6 +101,22 @@ describe('Function CodeLenses (git history + references)', function() {
     assert.strictEqual(mainResolved.command.command, '', 'no-references lens should be non-clickable');
   });
 
+  it('references are scope-aware: a shadowing param is not counted', async function() {
+    const code = [
+      'function foo() { return 1; }',       // 0  → declared here
+      'function bar(foo) { return foo(); }', // 1  foo() is the PARAM (shadow) — not a ref
+      'foo();',                              // 2  real reference
+      ''
+    ].join('\n');
+    const f = path.join(__dirname, '..', 'test-codelens-shadow.uc');
+    const lenses = await getCodeLens(code, f);
+    const fooLens = byKind(lenses, 'refs').find(l => l.range.start.line === 0);
+    const resolved = await resolveCodeLens(fooLens);
+    assert.strictEqual(resolved.command.title, '1 reference',
+      `shadowing param must not be counted, got: ${JSON.stringify(resolved.command.title)}`);
+    assert.strictEqual(resolved.command.arguments[2].length, 1);
+  });
+
   it('anchors lenses on the function line, not above a leading comment/JSDoc', async function() {
     const commented = [
       '/**',                  // 0
