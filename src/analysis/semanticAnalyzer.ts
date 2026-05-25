@@ -1277,6 +1277,9 @@ export class SemanticAnalyzer extends BaseVisitor {
               ['type', UcodeType.STRING],
               ['stacktrace', UcodeType.ARRAY]
             ]);
+            // Mark as an exception object so hover can surface the rich
+            // property docs (e.g. the stacktrace frame structure).
+            symbol.isExceptionParam = true;
           }
         }
       }

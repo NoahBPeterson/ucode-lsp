@@ -7,7 +7,7 @@ import { UcodeLexer, TokenType, isKeyword, Token } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
 import { typeToString, UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType } from './analysis/symbolTable';
-import { exceptionTypeRegistry } from './analysis/exceptionTypes';
+import { exceptionTypeRegistry, exceptionObjectType } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { Option } from 'effect';
 import { MODULE_REGISTRIES, isKnownModule, isKnownObjectType, getModuleMemberDocumentation, getImportedSymbolDocumentation, getObjectMethodDocumentation, resolveReturnObjectType, type KnownObjectType } from './analysis/moduleDispatch';
@@ -589,8 +589,16 @@ export function handleHover(
                     const scopeLabel = objectName === 'global'
                         ? `Global property on \`${objectName}\``
                         : `Property on \`${objectName}\``;
-                    const hoverMarkdown = `**${memberName}**: \`${typeString}\`\n\n${scopeLabel}`;
+                    let hoverMarkdown = `**${memberName}**: \`${typeString}\`\n\n${scopeLabel}`;
 
+                    // For catch-clause exception objects, surface the rich property
+                    // doc (e.g. the stacktrace frame structure) instead of the generic one.
+                    if (symbol.isExceptionParam) {
+                        const prop = exceptionObjectType.properties?.get(memberName);
+                        if (prop && exceptionObjectType.formatPropertyDoc) {
+                            hoverMarkdown = exceptionObjectType.formatPropertyDoc(memberName, prop);
+                        }
+                    }
 
                     return {
                         contents: { kind: MarkupKind.Markdown, value: hoverMarkdown },

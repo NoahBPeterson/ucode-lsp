@@ -40,12 +40,44 @@ describe('Exception property hover/completion (e2e)', () => {
     expect(text(h).toLowerCase()).toContain('error message');
   });
 
-});
+  // Member hover on a catch param routes to the rich formatPropertyDoc (the
+  // isExceptionParam flag is set on the catch-param symbol).
+  test('catch param `e.stacktrace` → rich stack-frame doc', async () => {
+    const code = 'try {\n  risky();\n} catch (e) {\n  print(e.stacktrace);\n}\n';
+    const p = posOf(code, 'stacktrace', 1); // member access (no bare occurrence here)
+    const h = await getHover(code, fp('mem-st'), p.line, p.character);
+    const doc = text(h);
+    expect(doc).toContain('exception property');
+    expect(doc).toContain('Stack Frame Structure');
+    expect(doc).toContain('filename');
+    expect(doc).toContain('context');
+  });
 
-// NOTE: exceptionTypes.formatPropertyDoc (incl. the rich `stacktrace` stack-frame
-// doc) and the exceptionObjectType registry are unreachable through the server:
-// catch params are typed as a plain OBJECT (createExceptionObjectDataType returns
-// UcodeType.OBJECT), never the 'exception' KnownObjectType, so neither member
-// hover nor `e.` completion routes to OBJECT_REGISTRIES['exception']. Covering
-// that would require typing catch params as the exception object type — a
-// behavior change out of scope here.
+  test('catch param `e.message` → exception property doc (rich path)', async () => {
+    const code = 'try {\n  risky();\n} catch (e) {\n  print(e.message);\n}\n';
+    const p = posOf(code, 'message');
+    const h = await getHover(code, fp('mem-msg'), p.line, p.character);
+    const doc = text(h);
+    expect(doc).toContain('exception property');
+    expect(doc.toLowerCase()).toContain('error message');
+    // message is not stacktrace → no stack-frame block
+    expect(doc).not.toContain('Stack Frame Structure');
+  });
+
+  test('differently-named catch param `err.stacktrace` → rich doc', async () => {
+    const code = 'try {\n  risky();\n} catch (err) {\n  print(err.stacktrace);\n}\n';
+    const p = posOf(code, 'stacktrace');
+    const h = await getHover(code, fp('mem-err'), p.line, p.character);
+    expect(text(h)).toContain('Stack Frame Structure');
+  });
+
+  // A plain object that merely has a property named like an exception field
+  // must NOT get the rich exception doc (only catch params are flagged).
+  test('non-exception object property is not mistaken for an exception', async () => {
+    const code = 'let o = { message: "hi" };\nprint(o.message);\n';
+    const p = posOf(code, 'message', 2); // the member access, not the literal key
+    const h = await getHover(code, fp('plain'), p.line, p.character);
+    expect(text(h)).not.toContain('Error message describing');
+  });
+
+});

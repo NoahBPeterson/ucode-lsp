@@ -288,6 +288,7 @@ export interface Symbol {
     scopeEnd?: number; // End offset of the scope this symbol was declared in (set when scope exits)
     jsdocDescription?: string; // Description from @param JSDoc tag
     isRestParam?: boolean; // True if this parameter was declared with ...spread syntax
+    isExceptionParam?: boolean; // True if this is a catch-clause parameter (exception object)
 }
 
 export class SymbolTable {
