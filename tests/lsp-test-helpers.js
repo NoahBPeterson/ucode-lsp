@@ -37,6 +37,8 @@ function createLSPTestServer(options = {}) {
   let wireBuffer = Buffer.alloc(0);
   const pendingRequests = new Map(); // key -> { resolve, reject?, timeout }
   const inflightStartedAt = new Map(); // key -> t0 (ms)
+  const lastDiagnosticsByUri = new Map(); // uri -> last published diagnostics (for cross-file tests)
+  const diagnosticsWaiters = []; // {uri, predicate, resolve, timeout}
 
   // Normalize any JSON-RPC id to a stable Map key
   function idKey(id) {
@@ -98,11 +100,22 @@ function createLSPTestServer(options = {}) {
       // Notifications --------------------------------------------------------
       if (message.method === 'textDocument/publishDiagnostics') {
         const uri = message.params.uri;
+        const diagnostics = message.params.diagnostics;
+        lastDiagnosticsByUri.set(uri, diagnostics);
         if (pendingRequests.has(uri)) {
           const { resolve, timeout } = pendingRequests.get(uri);
           clearTimeout(timeout);
           pendingRequests.delete(uri);
-          resolve(message.params.diagnostics);
+          resolve(diagnostics);
+        }
+        // Satisfy any waitForDiagnostics() callers whose predicate matches
+        for (let wi = diagnosticsWaiters.length - 1; wi >= 0; wi--) {
+          const w = diagnosticsWaiters[wi];
+          if (w.uri === uri && w.predicate(diagnostics)) {
+            clearTimeout(w.timeout);
+            diagnosticsWaiters.splice(wi, 1);
+            w.resolve(diagnostics);
+          }
         }
         continue; // done with this message
       }
@@ -516,6 +529,36 @@ function createLSPTestServer(options = {}) {
     });
   }
 
+  // Cross-file tests: send a raw didOpen / didChange for an aux file (so a
+  // change to file B can trigger the server's cross-file invalidation of file
+  // A) and wait for an UNSOLICITED publishDiagnostics on the importer URI.
+  // Pass a predicate so the caller can wait for the specific state they expect
+  // (`ds.length === 0`, a specific code, …) rather than racing on the first
+  // diagnostic that happens to arrive.
+  function openOrChangeDocument(uri, text, version) {
+    const isOpen = lastDiagnosticsByUri.has(uri);
+    const method = isOpen ? 'textDocument/didChange' : 'textDocument/didOpen';
+    const params = isOpen
+      ? { textDocument: { uri, version: version ?? 2 }, contentChanges: [{ text }] }
+      : { textDocument: { uri, languageId: 'ucode', version: version ?? 1, text } };
+    serverProcess.stdin.write(createLSPMessage({ jsonrpc: '2.0', method, params }));
+  }
+
+  function waitForDiagnostics(uri, predicate, timeoutMs = 3000) {
+    return new Promise((resolve, reject) => {
+      const existing = lastDiagnosticsByUri.get(uri);
+      if (existing !== undefined && predicate(existing)) {
+        return resolve(existing);
+      }
+      const timeout = setTimeout(() => {
+        const idx = diagnosticsWaiters.findIndex(w => w.resolve === resolve);
+        if (idx >= 0) diagnosticsWaiters.splice(idx, 1);
+        reject(new Error(`Timeout waiting for diagnostics on ${uri} (last: ${JSON.stringify(lastDiagnosticsByUri.get(uri))})`));
+      }, timeoutMs);
+      diagnosticsWaiters.push({ uri, predicate, resolve, timeout });
+    });
+  }
+
   return {
     initialize,
     shutdown,
@@ -525,7 +568,9 @@ function createLSPTestServer(options = {}) {
     getDefinition,
     getCodeActions,
     getCodeLens,
-    resolveCodeLens
+    resolveCodeLens,
+    openOrChangeDocument,
+    waitForDiagnostics
   };
 }
 

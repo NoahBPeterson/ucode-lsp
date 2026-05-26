@@ -41,8 +41,13 @@ const connection = createConnection(ProposedFeatures.all);
 
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
-// Analysis cache for storing semantic analysis results with timestamps and tokens
-const analysisCache = new Map<string, {result: SemanticAnalysisResult, tokens: any[], timestamp: number}>();
+// Analysis cache for storing semantic analysis results with timestamps and tokens.
+// `imports` is the set of file:// URIs this entry depends on; combined with
+// `reverseDeps`, it lets us invalidate dependents when one of their imports
+// changes (otherwise A.uc keeps using a stale view of B.uc's exports after
+// B.uc is edited or its on-disk content changes).
+const analysisCache = new Map<string, {result: SemanticAnalysisResult, tokens: any[], timestamp: number, imports: Set<string>}>();
+const reverseDeps = new Map<string, Set<string>>(); // importedUri → set of importer URIs
 
 // Debounce timers for document analysis - prevents re-analysis on every keystroke
 const analysisTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -280,6 +285,7 @@ documents.onDidChangeContent(async (change: TextDocumentChangeEvent<TextDocument
     analysisTimers.set(uri, setTimeout(async () => {
         analysisTimers.delete(uri);
         await validateAndAnalyzeDocument(change.document);
+        await invalidateDependents(change.document.uri);
     }, ANALYSIS_DEBOUNCE_MS));
 });
 
@@ -349,15 +355,81 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
             workspaceRoot: workspaceFolders.length > 0 ? workspaceFolders[0] : process.cwd(),
         });
         const analysisResult = analyzer.analyze(parseResult.ast);
-        analysisCache.set(textDocument.uri, {result: analysisResult, tokens, timestamp: Date.now()});
-        
+        const newImports = analysisResult.resolvedImports ?? new Set<string>();
+        updateImportDeps(textDocument.uri, newImports);
+        analysisCache.set(textDocument.uri, {result: analysisResult, tokens, timestamp: Date.now(), imports: newImports});
+
         // Semantic analysis diagnostics are already filtered by the SemanticAnalyzer itself
         diagnostics.push(...analysisResult.diagnostics);
     } else {
+        purgeImportDeps(textDocument.uri);
         analysisCache.delete(textDocument.uri);
     }
-    
+
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
+}
+
+/** Diff the file's previous and new import sets, updating reverseDeps so
+ *  "who depends on this URI?" stays accurate without scanning. */
+function updateImportDeps(importerUri: string, newImports: Set<string>): void {
+    const prev = analysisCache.get(importerUri)?.imports ?? new Set<string>();
+    for (const oldDep of prev) {
+        if (!newImports.has(oldDep)) {
+            const set = reverseDeps.get(oldDep);
+            if (set) {
+                set.delete(importerUri);
+                if (set.size === 0) reverseDeps.delete(oldDep);
+            }
+        }
+    }
+    for (const newDep of newImports) {
+        if (!prev.has(newDep)) {
+            let set = reverseDeps.get(newDep);
+            if (!set) { set = new Set(); reverseDeps.set(newDep, set); }
+            set.add(importerUri);
+        }
+    }
+}
+
+/** Drop this file's entries from reverseDeps (file was deleted / un-parseable). */
+function purgeImportDeps(importerUri: string): void {
+    const prev = analysisCache.get(importerUri)?.imports;
+    if (!prev) return;
+    for (const dep of prev) {
+        const set = reverseDeps.get(dep);
+        if (set) {
+            set.delete(importerUri);
+            if (set.size === 0) reverseDeps.delete(dep);
+        }
+    }
+}
+
+/** Re-analyze every open document that imports `changedUri`. Walks transitively
+ *  so a chain A → B → C invalidates A when C changes. Cycles are bounded by
+ *  the visited set. We only re-analyze documents that are currently open in
+ *  the editor — closed-file caches are dropped instead so they get a fresh
+ *  parse next time they're opened. */
+async function invalidateDependents(changedUri: string): Promise<void> {
+    const visited = new Set<string>([changedUri]);
+    const queue = [changedUri];
+    while (queue.length > 0) {
+        const cur = queue.shift()!;
+        const importers = reverseDeps.get(cur);
+        if (!importers) continue;
+        for (const dep of importers) {
+            if (visited.has(dep)) continue;
+            visited.add(dep);
+            queue.push(dep);
+            const openDoc = documents.get(dep);
+            if (openDoc) {
+                await validateAndAnalyzeDocument(openDoc);
+            } else {
+                // Closed file: drop the cache so the next open re-parses.
+                purgeImportDeps(dep);
+                analysisCache.delete(dep);
+            }
+        }
+    }
 }
 
 connection.onDidChangeWatchedFiles(async (params: DidChangeWatchedFilesParams) => {
@@ -375,13 +447,17 @@ connection.onDidChangeWatchedFiles(async (params: DidChangeWatchedFilesParams) =
                     const content = await fs.promises.readFile(filePath, 'utf8');
                     const textDocument = TextDocument.create(change.uri, 'ucode', 1, content);
                     await validateAndAnalyzeDocument(textDocument);
+                    await invalidateDependents(change.uri);
                 } catch (error) {
+                    purgeImportDeps(change.uri);
                     analysisCache.delete(change.uri);
                 }
                 break;
 
             case FileChangeType.Deleted:
+                purgeImportDeps(change.uri);
                 analysisCache.delete(change.uri);
+                await invalidateDependents(change.uri);
                 break;
         }
     }

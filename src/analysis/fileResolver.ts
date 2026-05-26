@@ -2,7 +2,7 @@ import { UcodeLexer } from '../lexer';
 import { UcodeParser } from '../parser';
 import { FunctionDeclarationNode, AstNode, ExportDefaultDeclarationNode, ExportNamedDeclarationNode, IdentifierNode } from '../ast/nodes';
 import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
-import { UcodeType, UcodeDataType } from './symbolTable';
+import { UcodeType, UcodeDataType, SingleType, createUnionType, isUnionType, isObjectType, isArrayType } from './symbolTable';
 import { getOpenDocumentContent } from './openDocuments';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -908,7 +908,17 @@ export class FileResolver {
             }
             if (!funcNode) return null;
 
-            return this.computeFunctionReturnInfo(funcNode, topLevelFuncs);
+            const factoryInfo = this.computeFunctionReturnInfo(funcNode, topLevelFuncs);
+            if (factoryInfo) return factoryInfo;
+
+            // Fallback to simple return-type inference (string, null, union, …)
+            // for default exports that aren't object factories. Same rationale as
+            // the named-export fallback below.
+            const simpleType = this.inferFunctionReturnType(funcNode);
+            if (simpleType !== null) {
+                return { returnType: simpleType, returnPropertyTypes: new Map() };
+            }
+            return null;
         } catch {
             return null;
         }
@@ -997,7 +1007,23 @@ export class FileResolver {
             }
 
             if (!funcNode) return null;
-            return this.computeFunctionReturnInfo(funcNode, topLevelFuncs);
+
+            // First try the object-factory path — it produces richer info
+            // (property types + nested function return types).
+            const factoryInfo = this.computeFunctionReturnInfo(funcNode, topLevelFuncs);
+            if (factoryInfo) return factoryInfo;
+
+            // Otherwise infer a simple return type (string, null, integer, array, …)
+            // so non-object-returning named exports still propagate their return type
+            // to imported call sites. Without this, every `let x = foo()` where foo()
+            // returns string|null would type x as `unknown` and downstream diagnostics
+            // (e.g. nullable-argument on `index(x, …)`) would degrade to a generic
+            // "is unknown" warning.
+            const simpleType = this.inferFunctionReturnType(funcNode);
+            if (simpleType !== null) {
+                return { returnType: simpleType, returnPropertyTypes: new Map() };
+            }
+            return null;
         } catch {
             return null;
         }
@@ -1547,7 +1573,11 @@ export class FileResolver {
 
     /**
      * Infer the return type of a function from its return statements.
-     * Only handles simple cases (literal returns, string concat, etc.)
+     * Builds a UnionType when return statements yield distinct types, so a
+     * function that returns `string` on the happy path and `null` from a catch
+     * is reported as `string | null` (the imported call expression's narrowed
+     * type then drives diagnostics like nullable-argument). A function with no
+     * return statements is treated as always returning `null` (ucode semantics).
      */
     private inferFunctionReturnType(funcNode: AstNode): UcodeDataType | null {
         const body = (funcNode as any).body;
@@ -1559,17 +1589,38 @@ export class FileResolver {
         this.collectReturnTypes(stmts, returnTypes);
         if (returnTypes.length === 0) return null;
 
-        // If all return the same type, use that
-        const unique = [...new Set(returnTypes.map(t => typeof t === 'string' ? t : 'complex'))];
-        if (unique.length === 1) return returnTypes[0]!;
-        return null; // mixed return types — can't infer simply
+        // Convert each collected return type to its base SingleType so the union
+        // dedups properly (and unknowns become a clean "we can't say").
+        const members: SingleType[] = [];
+        let hasUnknown = false;
+        for (const t of returnTypes) {
+            if (t === UcodeType.UNKNOWN) { hasUnknown = true; continue; }
+            if (typeof t === 'string') {
+                members.push(t as UcodeType);
+            } else if (isUnionType(t)) {
+                for (const m of t.types) members.push(m);
+            } else if (isObjectType(t) || isArrayType(t)) {
+                members.push(t as SingleType);
+            } else {
+                hasUnknown = true; // ModuleType/DefaultImportType — out of scope here
+            }
+        }
+        if (members.length === 0) return null;
+        // If any branch was unknown, fold it in — otherwise the union would
+        // overclaim coverage. e.g. one branch `return mystery()` shouldn't
+        // turn the function into `string`-only.
+        if (hasUnknown) members.push(UcodeType.UNKNOWN);
+        return createUnionType(members);
     }
 
     /**
      * Collect return value types from statements, skipping nested functions.
+     * Bare `return;` is counted as a `null` return (ucode's runtime behaviour).
+     * Traverses through if/while/for/switch/try-catch/finally branches.
      */
     private collectReturnTypes(stmts: AstNode[], result: UcodeDataType[]): void {
         for (const stmt of stmts) {
+            if (!stmt || typeof stmt !== 'object') continue;
             if (stmt.type === 'FunctionDeclaration' || stmt.type === 'FunctionExpression' || stmt.type === 'ArrowFunctionExpression') {
                 continue; // Skip nested function bodies
             }
@@ -1577,44 +1628,65 @@ export class FileResolver {
                 const arg = (stmt as any).argument;
                 if (arg) {
                     result.push(this.inferNodeType(arg));
+                } else {
+                    // `return;` (no argument) → null in ucode
+                    result.push(UcodeType.NULL as UcodeDataType);
                 }
+                continue;
             }
-            // Recurse into control flow
-            if ((stmt as any).body) {
-                const inner = (stmt as any).body;
-                if (Array.isArray(inner)) {
-                    this.collectReturnTypes(inner, result);
-                } else if (inner.body && Array.isArray(inner.body)) {
-                    this.collectReturnTypes(inner.body, result);
+            // BlockStatement (and similar) hold their children in .body
+            if (stmt.type === 'BlockStatement' && Array.isArray((stmt as any).body)) {
+                this.collectReturnTypes((stmt as any).body, result);
+                continue;
+            }
+            // Try/catch/finally — handler is a CatchClause with its own .body
+            if (stmt.type === 'TryStatement') {
+                const tryStmt = stmt as any;
+                if (tryStmt.block) this.collectReturnTypes([tryStmt.block], result);
+                if (tryStmt.handler?.body) this.collectReturnTypes([tryStmt.handler.body], result);
+                if (tryStmt.finalizer) this.collectReturnTypes([tryStmt.finalizer], result);
+                continue;
+            }
+            // SwitchStatement — walk each case's consequent
+            if (stmt.type === 'SwitchStatement') {
+                const cases = (stmt as any).cases || [];
+                for (const c of cases) {
+                    if (Array.isArray(c?.consequent)) {
+                        this.collectReturnTypes(c.consequent, result);
+                    }
                 }
+                continue;
             }
-            if ((stmt as any).consequent) {
-                const c = (stmt as any).consequent;
-                if (Array.isArray(c)) this.collectReturnTypes(c, result);
-                else if (c.body && Array.isArray(c.body)) this.collectReturnTypes(c.body, result);
-            }
-            if ((stmt as any).alternate) {
-                const a = (stmt as any).alternate;
-                if (Array.isArray(a)) this.collectReturnTypes(a, result);
-                else if (a.body && Array.isArray(a.body)) this.collectReturnTypes(a.body, result);
-                else if (a.type === 'IfStatement') this.collectReturnTypes([a], result);
+            // Generic recursion into common child slots
+            for (const key of ['body', 'consequent', 'alternate', 'block', 'handler', 'finalizer']) {
+                const child = (stmt as any)[key];
+                if (child == null) continue;
+                if (Array.isArray(child)) {
+                    this.collectReturnTypes(child, result);
+                } else if (typeof child === 'object' && child.type) {
+                    this.collectReturnTypes([child], result);
+                }
             }
         }
     }
 
     /**
-     * Clear the file cache (useful when files change)
+     * Clear the file cache (useful when files change). Every content-tagged
+     * cache must be listed here — leaving one out would let stale data survive
+     * an intentional flush.
      */
     clearCache(): void {
         this.fileCache.clear();
         this.exportCache.clear();
+        this.namespaceTypesCache.clear();
     }
 
     /**
-     * Clear cache for a specific file
+     * Clear cache for a specific file. See clearCache() — same applies.
      */
     clearFileCache(fileUri: string): void {
         this.fileCache.delete(fileUri);
         this.exportCache.delete(fileUri);
+        this.namespaceTypesCache.delete(fileUri);
     }
 }

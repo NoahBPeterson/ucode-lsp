@@ -48,6 +48,10 @@ export interface SemanticAnalysisResult {
   ast?: ProgramNode;
   cfg?: ControlFlowGraph;
   cfgQueryEngine?: CFGQueryEngine;
+  /** Set of file:// URIs this file imports (excludes builtin:// modules).
+   *  Used by the server to invalidate this file's cache when a dependency
+   *  changes — see analysisCache reverse-deps tracking in server.ts. */
+  resolvedImports?: Set<string>;
 }
 
 export class SemanticAnalyzer extends BaseVisitor {
@@ -60,6 +64,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private loopScopes: number[] = []; // Track loop scope levels
   private switchScopes: number[] = []; // Track switch statement scope levels
   private commonjsImports: Map<string, { importedFrom: string; importSpecifier: string }> = new Map();
+  private resolvedImports: Set<string> = new Set();
   private currentFunctionNode: FunctionDeclarationNode | null = null;
   private functionReturnTypes = new Map<FunctionDeclarationNode, { node: ReturnStatementNode, type: UcodeDataType }[]>();
   private functionReturnPropertyTypes = new Map<FunctionDeclarationNode, Map<string, UcodeDataType>[]>();
@@ -110,6 +115,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.disabledLines.clear();
     this.disabledRanges = [];
     this.linesWithSuppressedDiagnostics.clear();
+    this.resolvedImports = new Set();
 
     // Store the AST root for later reference
     if (ast.type === 'Program') {
@@ -191,6 +197,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (this.cfgQueryEngine) {
       result.cfgQueryEngine = this.cfgQueryEngine;
     }
+
+    result.resolvedImports = new Set(this.resolvedImports);
 
     return result;
   }
@@ -359,6 +367,7 @@ export class SemanticAnalyzer extends BaseVisitor {
                     importedFrom: this.normalizeImportedFrom(moduleName, resolvedUri),
                     importSpecifier: 'default'
                   });
+                  if (resolvedUri.startsWith('file://')) this.resolvedImports.add(resolvedUri);
                 }
               } else if (this.isDotNotationModule(moduleName)) {
                 // Convert dot notation to file path: 'u1905.u1905d.src.u1905.log' -> './u1905/u1905d/src/u1905/log.uc'
@@ -376,6 +385,7 @@ export class SemanticAnalyzer extends BaseVisitor {
                     importedFrom: this.normalizeImportedFrom(filePath, resolvedUri),
                     importSpecifier: 'default'
                   });
+                  if (resolvedUri.startsWith('file://')) this.resolvedImports.add(resolvedUri);
                 }
               }
             }
@@ -741,6 +751,13 @@ export class SemanticAnalyzer extends BaseVisitor {
         symbol.importedFrom = this.normalizeImportedFrom(source, effectiveUri);
         symbol.importSpecifier = importedName;
 
+        // Track file:// imports for the server's cross-file cache invalidation.
+        // builtin:// modules don't have on-disk content to change, so they're
+        // skipped — only user modules need dependent re-analysis.
+        if (effectiveUri && effectiveUri.startsWith('file://')) {
+          this.resolvedImports.add(effectiveUri);
+        }
+
         // Namespace imports (`import * as ns from './file.uc'`): the LSP already
         // knows the file's exports for completion — propagate them as
         // propertyTypes on the symbol so `ns.X` member access resolves through
@@ -787,10 +804,12 @@ export class SemanticAnalyzer extends BaseVisitor {
           }
         }
 
-        // Populate returnType/returnPropertyTypes for named function imports whose
-        // factory returns an object literal (e.g. import { create }; let o = create();
-        // → o gets create()'s return shape). Returns null for non-object factories,
-        // so non-object-returning named functions are unaffected.
+        // Populate returnType/returnPropertyTypes for named function imports.
+        // Factory functions returning object literals get the rich shape info;
+        // other functions (returning string, integer, union, etc.) get a simple
+        // returnType so call sites can narrow correctly. When we get any info
+        // back, the imported symbol is by construction a function — upgrade
+        // its dataType so hover shows "function" instead of "unknown".
         if (specifier.type === 'ImportSpecifier' && effectiveUri && effectiveUri.startsWith('file://')) {
           const returnInfo = this.fileResolver.getNamedExportFunctionReturnInfo(effectiveUri, importedName);
           if (returnInfo) {
@@ -798,6 +817,9 @@ export class SemanticAnalyzer extends BaseVisitor {
             symbol.returnPropertyTypes = returnInfo.returnPropertyTypes;
             if (returnInfo.propertyFunctionReturnTypes) {
               symbol.propertyFunctionReturnTypes = returnInfo.propertyFunctionReturnTypes;
+            }
+            if (symbol.dataType === UcodeType.UNKNOWN) {
+              symbol.dataType = UcodeType.FUNCTION as UcodeDataType;
             }
           }
         }
