@@ -17,6 +17,7 @@ const EXPECTED_FUNCTIONS = {
     digest: [
         'md5', 'sha1', 'sha256', 'md5_file', 'sha1_file', 'sha256_file',
         'md2', 'md4', 'sha384', 'sha512', 'md2_file', 'md4_file', 'sha384_file', 'sha512_file',
+        'fnv1a64', 'fnv1a64_file', // upstream eff52f0
     ],
     fs: [
         'error', 'open', 'opendir', 'popen', 'readlink', 'stat', 'lstat', 'mkdir', 'rmdir',
@@ -26,7 +27,7 @@ const EXPECTED_FUNCTIONS = {
     ],
     io: ['error', 'new', 'open', 'from', 'pipe'],
     log: ['openlog', 'syslog', 'closelog', 'ulog_open', 'ulog', 'ulog_close', 'ulog_threshold', 'INFO', 'NOTE', 'WARN', 'ERR'],
-    math: ['abs', 'atan2', 'cos', 'exp', 'log', 'sin', 'sqrt', 'pow', 'rand', 'srand', 'isnan'],
+    math: ['abs', 'atan2', 'cos', 'exp', 'log', 'sin', 'sqrt', 'pow', 'rand', 'srand', 'isnan', 'deg2rad', 'rad2deg'], // upstream 81066c5
     nl80211: ['error', 'request', 'waitfor', 'listener'],
     resolv: ['query', 'error'],
     rtnl: ['request', 'listener', 'error'],

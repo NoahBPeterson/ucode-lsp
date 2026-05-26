@@ -98,6 +98,22 @@ const functions = new Map<string, FunctionSignature>([
     ],
     returnType: "boolean",
     description: "Tests whether x is a NaN (not a number) double value. Returns true if the value is NaN, otherwise false."
+  }],
+  ["deg2rad", {
+    name: "deg2rad",
+    parameters: [
+      { name: "degrees", type: "number", optional: false }
+    ],
+    returnType: "double",
+    description: "Converts the given value from degrees to radians. e.g. deg2rad(180) returns 3.1415926535898. Returns NaN if the argument cannot be converted to a number."
+  }],
+  ["rad2deg", {
+    name: "rad2deg",
+    parameters: [
+      { name: "radians", type: "number", optional: false }
+    ],
+    returnType: "double",
+    description: "Converts the given value from radians to degrees. e.g. rad2deg(3.1415926535898) returns 180.0. Returns NaN if the argument cannot be converted to a number."
   }]
 ]);
 

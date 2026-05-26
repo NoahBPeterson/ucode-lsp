@@ -120,6 +120,22 @@ const functions = new Map<string, FunctionSignature>([
     ],
     returnType: "string | null",
     description: "Calculates the SHA512 hash of a given file and returns that hash. Returns `null` if an error occurred."
+  }],
+  ["fnv1a64", {
+    name: "fnv1a64",
+    parameters: [
+      { name: "str", type: "string", optional: false }
+    ],
+    returnType: "string | null",
+    description: "Calculates the 64-bit FNV-1a hash of string and returns it as a hex string. e.g. fnv1a64(\"This is a test\") returns \"25f0b040ca8b4ce0\". Returns `null` if a non-string argument is given."
+  }],
+  ["fnv1a64_file", {
+    name: "fnv1a64_file",
+    parameters: [
+      { name: "path", type: "string", optional: false }
+    ],
+    returnType: "string | null",
+    description: "Calculates the 64-bit FNV-1a hash of a given file and returns it as a hex string. Returns `null` if an error occurred."
   }]
 ]);
 

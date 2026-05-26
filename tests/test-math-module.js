@@ -21,7 +21,8 @@ function testResult(testName, condition, details = '') {
 
 // Expected math functions from math.c analysis
 const expectedFunctions = [
-  'abs', 'atan2', 'cos', 'exp', 'log', 'sin', 'sqrt', 'pow', 'rand', 'srand', 'isnan'
+  'abs', 'atan2', 'cos', 'exp', 'log', 'sin', 'sqrt', 'pow', 'rand', 'srand', 'isnan',
+  'deg2rad', 'rad2deg' // upstream 81066c5
 ];
 
 // Test 1: All expected functions are present

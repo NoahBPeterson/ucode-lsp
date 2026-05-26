@@ -46,7 +46,7 @@ testResult('All valid math functions validation', allValidMathFunctions,
 
 // Test 5: Available exports list
 const availableExports = mathTypeRegistry.getValidMathImports();
-const exportsMatchExpected = availableExports.length === 11 && availableExports.includes('abs') && availableExports.includes('sin');
+const exportsMatchExpected = availableExports.length === 13 && availableExports.includes('abs') && availableExports.includes('sin');
 testResult('Available exports list', exportsMatchExpected,
   `Available exports: ${availableExports.length}, Contains abs and sin: ${exportsMatchExpected}`);
 
@@ -57,7 +57,7 @@ testResult('Case sensitivity validation', allCaseSensitiveFailed,
   `Case sensitive functions should fail: ${allCaseSensitiveFailed}`);
 
 // Test 7: Function name completeness
-const expectedFunctionNames = ['abs', 'atan2', 'cos', 'exp', 'log', 'sin', 'sqrt', 'pow', 'rand', 'srand', 'isnan'];
+const expectedFunctionNames = ['abs', 'atan2', 'cos', 'exp', 'log', 'sin', 'sqrt', 'pow', 'rand', 'srand', 'isnan', 'deg2rad', 'rad2deg'];
 const actualFunctionNames = mathTypeRegistry.getFunctionNames();
 const completenessCheck = expectedFunctionNames.every(name => actualFunctionNames.includes(name));
 testResult('Function name completeness', completenessCheck,
