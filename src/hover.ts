@@ -888,6 +888,14 @@ export function handleHover(
                             // Check if this parameter is a rest parameter (declared with ...spread)
                             if (symbol.type === SymbolType.PARAMETER && symbol.isRestParam) {
                                 hoverText = `**(rest parameter)** **${symbol.name}**: \`array\`\n\nRest parameter - collects remaining arguments into an array`;
+                            } else if (symbol.type === SymbolType.PARAMETER && symbol.isExceptionParam) {
+                                // Rich catch-parameter hover. The bare `e` was a generic
+                                // `(parameter) e: object`, hiding that members already
+                                // have rich exception docs (`e.message`, `e.stacktrace`, …).
+                                const propNames = [...(exceptionObjectType.properties?.keys() ?? [])]
+                                    .map(n => `\`${n}\``).join(', ');
+                                hoverText = `**(catch parameter)** **${symbol.name}**: \`exception\`\n\nA value caught by \`catch (${symbol.name})\`. ` +
+                                    (propNames ? `Available properties: ${propNames}.` : '');
                             } else {
                                 // Check if type was narrowed via variable equality (e.g., if (x != y) return;)
                                 // If so, show the other variable's full type info

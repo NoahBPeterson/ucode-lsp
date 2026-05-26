@@ -80,4 +80,26 @@ describe('Exception property hover/completion (e2e)', () => {
     expect(text(h)).not.toContain('Error message describing');
   });
 
+  // The bare catch parameter itself (not a member access) should hover richly,
+  // not as the generic "(parameter) e: object" — surfacing that it's a catch
+  // parameter typed as `exception` with the well-known property set.
+  test('bare catch param → rich (catch parameter) exception hover', async () => {
+    const code = 'try {\n  risky();\n} catch (err) {\n  print(err + "\\n");\n}\n';
+    const p = posOf(code, 'err + ');
+    const h = await getHover(code, fp('bare-err'), p.line, p.character);
+    const doc = text(h);
+    expect(doc).toContain('catch parameter');
+    expect(doc).toContain('exception');
+    expect(doc).toContain('message');
+    expect(doc).toContain('stacktrace');
+  });
+
+  // A regular (non-catch) parameter must NOT pick up the exception hover.
+  test('regular parameter still shows the plain parameter hover', async () => {
+    const code = 'function f(err) { return err; }\nf("x");\n';
+    const p = posOf(code, 'err', 2); // the `return err` use (skip the declaration)
+    const h = await getHover(code, fp('plain-param'), p.line, p.character);
+    expect(text(h)).not.toContain('catch parameter');
+  });
+
 });
