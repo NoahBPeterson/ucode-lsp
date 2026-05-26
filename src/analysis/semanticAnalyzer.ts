@@ -741,6 +741,19 @@ export class SemanticAnalyzer extends BaseVisitor {
         symbol.importedFrom = this.normalizeImportedFrom(source, effectiveUri);
         symbol.importSpecifier = importedName;
 
+        // Namespace imports (`import * as ns from './file.uc'`): the LSP already
+        // knows the file's exports for completion — propagate them as
+        // propertyTypes on the symbol so `ns.X` member access resolves through
+        // the existing propertyTypes branch instead of falling through to
+        // `unknown`. Skips builtin modules (they have their own dispatch).
+        if (specifier.type === 'ImportNamespaceSpecifier'
+            && effectiveUri && effectiveUri.startsWith('file://')) {
+          const nsTypes = this.fileResolver.getNamespaceExportPropertyTypes(effectiveUri);
+          if (nsTypes && nsTypes.size > 0) {
+            symbol.propertyTypes = nsTypes;
+          }
+        }
+
         // Populate propertyTypes for object default imports (not function)
         if (specifier.type === 'ImportDefaultSpecifier' && !defaultIsFunction && effectiveUri && effectiveUri.startsWith('file://')) {
           const exportInfo = this.fileResolver.getDefaultExportPropertyTypes(effectiveUri);

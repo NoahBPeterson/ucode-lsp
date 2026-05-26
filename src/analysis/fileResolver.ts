@@ -511,6 +511,86 @@ export class FileResolver {
     }
 
     /**
+     * For `import * as ns from './file.uc'`: produce a Map of each top-level
+     * export's NAME → inferred type, so the namespace symbol's `propertyTypes`
+     * resolves member access (`ns.SOME_EXPORT`) instead of falling through to
+     * `unknown`. Returns null if the file can't be read or parsed. Includes a
+     * `default` entry when the file has a default export.
+     *
+     * Inference is SHALLOW (literal kinds → primitive type; functions → FUNCTION;
+     * arrays/objects → ARRAY/OBJECT; anything else → UNKNOWN). Specifier-only
+     * exports (`export { foo }`) are skipped — they'd require resolving each
+     * local's type and are a follow-up.
+     */
+    private namespaceTypesCache = new Map<string, { content: string; types: Map<string, UcodeDataType> }>();
+
+    getNamespaceExportPropertyTypes(fileUri: string): Map<string, UcodeDataType> | null {
+        try {
+            const filePath = this.uriToFilePath(fileUri);
+            if (!filePath || !fs.existsSync(filePath)) return null;
+            const content = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
+            const cached = this.namespaceTypesCache.get(fileUri);
+            if (cached && cached.content === content) return cached.types;
+
+            const lexer = new UcodeLexer(content, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, content);
+            parser.setComments(lexer.comments);
+            const ast = parser.parse().ast as any;
+            const types = new Map<string, UcodeDataType>();
+
+            if (ast?.body) {
+                for (const stmt of ast.body) {
+                    if (!stmt) continue;
+                    if (stmt.type === 'ExportNamedDeclaration') {
+                        const decl = (stmt as any).declaration;
+                        if (decl?.type === 'FunctionDeclaration' && decl.id?.name) {
+                            types.set(decl.id.name, UcodeType.FUNCTION as UcodeDataType);
+                        } else if (decl?.type === 'VariableDeclaration') {
+                            for (const d of (decl.declarations || [])) {
+                                if (d?.id?.name) types.set(d.id.name, this.inferShallowType(d.init));
+                            }
+                        }
+                    } else if (stmt.type === 'ExportDefaultDeclaration') {
+                        types.set('default', this.inferShallowType((stmt as any).declaration));
+                    }
+                }
+            }
+
+            this.namespaceTypesCache.set(fileUri, { content, types });
+            return types;
+        } catch (error) {
+            console.error('Error loading namespace export property types:', error);
+            return null;
+        }
+    }
+
+    private inferShallowType(node: any): UcodeDataType {
+        if (!node) return UcodeType.UNKNOWN as UcodeDataType;
+        switch (node.type) {
+            case 'FunctionDeclaration':
+            case 'FunctionExpression':
+            case 'ArrowFunctionExpression':
+                return UcodeType.FUNCTION as UcodeDataType;
+            case 'ArrayExpression':
+                return UcodeType.ARRAY as UcodeDataType;
+            case 'ObjectExpression':
+                return UcodeType.OBJECT as UcodeDataType;
+            case 'Literal': {
+                const lit: any = node;
+                if (lit.literalType === 'string' || typeof lit.value === 'string') return UcodeType.STRING as UcodeDataType;
+                if (lit.literalType === 'double' || (typeof lit.value === 'number' && !Number.isInteger(lit.value))) return UcodeType.DOUBLE as UcodeDataType;
+                if (lit.literalType === 'integer' || typeof lit.value === 'number') return UcodeType.INTEGER as UcodeDataType;
+                if (lit.literalType === 'boolean' || typeof lit.value === 'boolean') return UcodeType.BOOLEAN as UcodeDataType;
+                if (lit.literalType === 'null' || lit.value === null) return UcodeType.NULL as UcodeDataType;
+                return UcodeType.UNKNOWN as UcodeDataType;
+            }
+            default:
+                return UcodeType.UNKNOWN as UcodeDataType;
+        }
+    }
+
+    /**
      * Get property types for a default export that is an object.
      * Resolves identifiers to their declarations (ObjectExpression, etc.).
      */
