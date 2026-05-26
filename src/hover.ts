@@ -889,13 +889,47 @@ export function handleHover(
                             if (symbol.type === SymbolType.PARAMETER && symbol.isRestParam) {
                                 hoverText = `**(rest parameter)** **${symbol.name}**: \`array\`\n\nRest parameter - collects remaining arguments into an array`;
                             } else if (symbol.type === SymbolType.PARAMETER && symbol.isExceptionParam) {
-                                // Rich catch-parameter hover. The bare `e` was a generic
-                                // `(parameter) e: object`, hiding that members already
-                                // have rich exception docs (`e.message`, `e.stacktrace`, …).
-                                const propNames = [...(exceptionObjectType.properties?.keys() ?? [])]
-                                    .map(n => `\`${n}\``).join(', ');
-                                hoverText = `**(catch parameter)** **${symbol.name}**: \`exception\`\n\nA value caught by \`catch (${symbol.name})\`. ` +
-                                    (propNames ? `Available properties: ${propNames}.` : '');
+                                // Rich catch-parameter hover: a usage example up top so the
+                                // reader sees the idiomatic handler immediately, then a
+                                // note on the string-coercion quirk, then the property and
+                                // stack-frame schemas. The structure here mirrors what
+                                // ucode actually exposes (verified against the runtime —
+                                // `keys(e)` → ["type","message","stacktrace"];
+                                // `keys(e.stacktrace[0])` → ["filename","line","byte","context"]).
+                                const n = symbol.name;
+                                hoverText = [
+                                    `**(catch parameter)** **${n}**: \`exception\``,
+                                    '',
+                                    '**Typical usage**',
+                                    '',
+                                    '```ucode',
+                                    'try { … }',
+                                    `catch (${n}) {`,
+                                    `    print("[" + ${n}.type + "] " + ${n}.message + "\\n");`,
+                                    `    for (let frame in ${n}.stacktrace)`,
+                                    '        printf("  at %s:%d\\n", frame.filename, frame.line);',
+                                    '}',
+                                    '```',
+                                    '',
+                                    `In string contexts, \`${n}\` coerces to \`${n}.message\` (e.g. \`"error: " + ${n}\` → \`"error: <message>"\`).`,
+                                    '',
+                                    '**Properties**',
+                                    '',
+                                    '| name | type | description |',
+                                    '|---|---|---|',
+                                    `| \`${n}.type\` | \`string\` | Kind of error — \`"Error"\`, \`"Type error"\`, \`"Reference error"\`, \`"Syntax error"\`, … |`,
+                                    `| \`${n}.message\` | \`string\` | Human-readable error message. |`,
+                                    `| \`${n}.stacktrace\` | \`array\` | Stack frames, newest first. |`,
+                                    '',
+                                    `**Stack frame** (\`${n}.stacktrace[i]\`)`,
+                                    '',
+                                    '| name | type | example |',
+                                    '|---|---|---|',
+                                    '| `filename` | `string` | `/path/to/script.uc` |',
+                                    '| `line` | `integer` | `42` |',
+                                    '| `byte` | `integer` | byte offset on the line |',
+                                    '| `context` | `string` | snippet with a `Near here ---^` marker |',
+                                ].join('\n');
                             } else {
                                 // Check if type was narrowed via variable equality (e.g., if (x != y) return;)
                                 // If so, show the other variable's full type info

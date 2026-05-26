@@ -82,16 +82,33 @@ describe('Exception property hover/completion (e2e)', () => {
 
   // The bare catch parameter itself (not a member access) should hover richly,
   // not as the generic "(parameter) e: object" — surfacing that it's a catch
-  // parameter typed as `exception` with the well-known property set.
+  // parameter typed as `exception`, with a usage example up top, the
+  // string-coercion note, and the property + stack-frame schemas.
   test('bare catch param → rich (catch parameter) exception hover', async () => {
     const code = 'try {\n  risky();\n} catch (err) {\n  print(err + "\\n");\n}\n';
     const p = posOf(code, 'err + ');
     const h = await getHover(code, fp('bare-err'), p.line, p.character);
     const doc = text(h);
+    // Header
     expect(doc).toContain('catch parameter');
     expect(doc).toContain('exception');
-    expect(doc).toContain('message');
-    expect(doc).toContain('stacktrace');
+    // Typical usage code block is FIRST (above the prose / tables)
+    const usageIdx = doc.indexOf('Typical usage');
+    const propsIdx = doc.indexOf('Properties');
+    expect(usageIdx).toBeGreaterThan(-1);
+    expect(propsIdx).toBeGreaterThan(usageIdx); // usage precedes properties
+    expect(doc).toContain('for (let frame in err.stacktrace)');
+    // Coercion note (between usage and properties)
+    expect(doc).toContain('coerces to `err.message`');
+    // Property table includes the three known fields with descriptions
+    expect(doc).toContain('err.type');
+    expect(doc).toContain('err.message');
+    expect(doc).toContain('err.stacktrace');
+    expect(doc).toContain('Kind of error');
+    // Stack-frame schema
+    expect(doc).toContain('Stack frame');
+    expect(doc).toContain('filename');
+    expect(doc).toContain('context');
   });
 
   // A regular (non-catch) parameter must NOT pick up the exception hover.
