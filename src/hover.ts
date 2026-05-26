@@ -283,7 +283,17 @@ function getUnifiedMemberHover(
             const inner = baseSym.nestedPropertyTypes?.get(aName);
             const innerType = inner?.get(bName);
             if (innerType !== undefined) {
-                return `**${bName}**: \`${innerType}\`\n\nProperty on \`${chain.slice(0, -1).join('.')}\``;
+                // If the base is a namespace import and the inner value is a
+                // literal, show it. Otherwise just the type — the alternative
+                // re-parses the source for every hover, which we want to avoid
+                // unless the literal is actually available.
+                let literal: string | null = null;
+                if (baseSym.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*'
+                    && baseSym.importedFrom && baseSym.importedFrom.startsWith('file://')) {
+                    literal = getHoverFileResolver().findExportedObjectPropertyLiteral(baseSym.importedFrom, aName, bName);
+                }
+                const typeStr = literal !== null ? `${innerType} = ${literal}` : `${innerType}`;
+                return `**${bName}**: \`${typeStr}\`\n\nProperty on \`${chain.slice(0, -1).join('.')}\``;
             }
         }
     }

@@ -797,10 +797,14 @@ export class SemanticAnalyzer extends BaseVisitor {
           }
         }
 
-        // Populate returnType and returnPropertyTypes for function default imports
+        // Populate returnType and returnPropertyTypes for function default imports.
+        // Skip the returnType assignment when we couldn't infer anything useful —
+        // letting the typeChecker's own fallback take over rather than locking in
+        // UNKNOWN — but the dataType upgrade to FUNCTION has already happened
+        // upstream (defaultIsFunction).
         if (specifier.type === 'ImportDefaultSpecifier' && defaultIsFunction && effectiveUri && effectiveUri.startsWith('file://')) {
           const returnInfo = this.fileResolver.getDefaultExportFunctionReturnInfo(effectiveUri);
-          if (returnInfo) {
+          if (returnInfo && returnInfo.returnType !== UcodeType.UNKNOWN) {
             symbol.returnType = returnInfo.returnType;
             symbol.returnPropertyTypes = returnInfo.returnPropertyTypes;
             if (returnInfo.propertyFunctionReturnTypes) {
@@ -812,16 +816,20 @@ export class SemanticAnalyzer extends BaseVisitor {
         // Populate returnType/returnPropertyTypes for named function imports.
         // Factory functions returning object literals get the rich shape info;
         // other functions (returning string, integer, union, etc.) get a simple
-        // returnType so call sites can narrow correctly. When we get any info
+        // returnType so call sites can narrow correctly. Whenever we get info
         // back, the imported symbol is by construction a function — upgrade
-        // its dataType so hover shows "function" instead of "unknown".
+        // its dataType so hover shows "function" instead of "unknown" even
+        // when the body's return type couldn't be inferred (a non-null result
+        // with returnType === UNKNOWN signals "is a function, unknown return").
         if (specifier.type === 'ImportSpecifier' && effectiveUri && effectiveUri.startsWith('file://')) {
           const returnInfo = this.fileResolver.getNamedExportFunctionReturnInfo(effectiveUri, importedName);
           if (returnInfo) {
-            symbol.returnType = returnInfo.returnType;
-            symbol.returnPropertyTypes = returnInfo.returnPropertyTypes;
-            if (returnInfo.propertyFunctionReturnTypes) {
-              symbol.propertyFunctionReturnTypes = returnInfo.propertyFunctionReturnTypes;
+            if (returnInfo.returnType !== UcodeType.UNKNOWN) {
+              symbol.returnType = returnInfo.returnType;
+              symbol.returnPropertyTypes = returnInfo.returnPropertyTypes;
+              if (returnInfo.propertyFunctionReturnTypes) {
+                symbol.propertyFunctionReturnTypes = returnInfo.propertyFunctionReturnTypes;
+              }
             }
             if (symbol.dataType === UcodeType.UNKNOWN) {
               symbol.dataType = UcodeType.FUNCTION as UcodeDataType;

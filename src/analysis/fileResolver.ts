@@ -163,6 +163,66 @@ export class FileResolver {
     }
 
     /**
+     * For an object-literal export like `export const NAME = { KEY: literal, ... }`,
+     * return KEY's literal value as a display string (e.g. `64`, `"hello"`, `true`).
+     * Used by hover to show `KEY: integer = 64` for namespace constants. Returns
+     * null when the value isn't a simple literal we can render.
+     */
+    findExportedObjectPropertyLiteral(fileUri: string, exportName: string, propertyName: string): string | null {
+        try {
+            const content = this.readFileContent(fileUri);
+            if (content === null) return null;
+            const lexer = new UcodeLexer(content, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, content);
+            parser.setComments(lexer.comments);
+            const ast = parser.parse().ast as any;
+            if (!ast?.body) return null;
+
+            const findInObject = (objNode: any): string | null => {
+                for (const prop of (objNode?.properties || [])) {
+                    const key = prop?.key?.name ?? prop?.key?.value;
+                    if (key !== propertyName) continue;
+                    const v = prop?.value;
+                    if (!v) return null;
+                    if (v.type === 'Literal') {
+                        if (typeof v.value === 'string') return JSON.stringify(v.value);
+                        if (typeof v.value === 'number' || typeof v.value === 'boolean') return String(v.value);
+                        if (v.value === null) return 'null';
+                        return null;
+                    }
+                    // Negative-number literals are parsed as UnaryExpression in ucode
+                    if (v.type === 'UnaryExpression' && v.operator === '-' && v.argument?.type === 'Literal' && typeof v.argument.value === 'number') {
+                        return String(-v.argument.value);
+                    }
+                    return null;
+                }
+                return null;
+            };
+
+            for (const stmt of ast.body) {
+                if (!stmt) continue;
+                if (stmt.type === 'ExportNamedDeclaration') {
+                    const decl = (stmt as any).declaration;
+                    if (decl?.type === 'VariableDeclaration') {
+                        for (const d of (decl.declarations || [])) {
+                            if (d?.id?.name === exportName && d.init?.type === 'ObjectExpression') {
+                                return findInObject(d.init);
+                            }
+                        }
+                    }
+                } else if (stmt.type === 'ExportDefaultDeclaration' && exportName === 'default') {
+                    const decl = (stmt as any).declaration;
+                    if (decl?.type === 'ObjectExpression') return findInObject(decl);
+                }
+            }
+            return null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * For an object-literal export like `export const NAME = { KEY: ..., ... }`,
      * locate the source offset of `KEY`'s identifier. Used by go-to-definition
      * for chained namespace access (`ns.NAME.KEY`). Returns null when NAME isn't
@@ -1010,7 +1070,12 @@ export class FileResolver {
             if (simpleType !== null) {
                 return { returnType: simpleType, returnPropertyTypes: new Map() };
             }
-            return null;
+
+            // Resolved to a function but couldn't infer the return — still signal
+            // "this is a function" via a non-null result so the caller can upgrade
+            // the symbol's dataType. See the matching comment in
+            // getNamedExportFunctionReturnInfo for the rationale.
+            return { returnType: UcodeType.UNKNOWN as UcodeDataType, returnPropertyTypes: new Map() };
         } catch {
             return null;
         }
@@ -1107,15 +1172,19 @@ export class FileResolver {
 
             // Otherwise infer a simple return type (string, null, integer, array, …)
             // so non-object-returning named exports still propagate their return type
-            // to imported call sites. Without this, every `let x = foo()` where foo()
-            // returns string|null would type x as `unknown` and downstream diagnostics
-            // (e.g. nullable-argument on `index(x, …)`) would degrade to a generic
-            // "is unknown" warning.
+            // to imported call sites.
             const simpleType = this.inferFunctionReturnType(funcNode);
             if (simpleType !== null) {
                 return { returnType: simpleType, returnPropertyTypes: new Map() };
             }
-            return null;
+
+            // Resolved to a function node but we couldn't infer its return type
+            // (e.g. body returns a member call, or builds a string incrementally).
+            // Still report it IS a function so the caller can upgrade the symbol's
+            // dataType from UNKNOWN to FUNCTION — otherwise hover shows `unknown`
+            // for an imported name we already know is callable, which is worse than
+            // showing `function` with an unknown return.
+            return { returnType: UcodeType.UNKNOWN as UcodeDataType, returnPropertyTypes: new Map() };
         } catch {
             return null;
         }
@@ -1677,8 +1746,23 @@ export class FileResolver {
         const stmts = body.body || body;
         if (!Array.isArray(stmts)) return null;
 
+        // Collect top-level `let/const` initializers so `return identifier;`
+        // can be resolved through them (a common pattern: build a string in a
+        // local then return it). Skips reassignments — we only look at the
+        // declarator's init expression. False positives are bounded: if a var
+        // is overwritten with a different type later, our inferred type may be
+        // wrong but it's still better than UNKNOWN.
+        const localVarInits = new Map<string, AstNode>();
+        for (const s of stmts) {
+            if (s.type === 'VariableDeclaration') {
+                for (const d of ((s as any).declarations || [])) {
+                    if (d?.id?.name && d.init) localVarInits.set(d.id.name, d.init);
+                }
+            }
+        }
+
         const returnTypes: UcodeDataType[] = [];
-        this.collectReturnTypes(stmts, returnTypes);
+        this.collectReturnTypes(stmts, returnTypes, localVarInits);
         if (returnTypes.length === 0) return null;
 
         // Convert each collected return type to its base SingleType so the union
@@ -1709,8 +1793,10 @@ export class FileResolver {
      * Collect return value types from statements, skipping nested functions.
      * Bare `return;` is counted as a `null` return (ucode's runtime behaviour).
      * Traverses through if/while/for/switch/try-catch/finally branches.
+     * `localVarInits` is consulted when a return's argument is an Identifier,
+     * so `let x = "foo"; return x;` returns STRING instead of UNKNOWN.
      */
-    private collectReturnTypes(stmts: AstNode[], result: UcodeDataType[]): void {
+    private collectReturnTypes(stmts: AstNode[], result: UcodeDataType[], localVarInits?: Map<string, AstNode>): void {
         for (const stmt of stmts) {
             if (!stmt || typeof stmt !== 'object') continue;
             if (stmt.type === 'FunctionDeclaration' || stmt.type === 'FunctionExpression' || stmt.type === 'ArrowFunctionExpression') {
@@ -1719,7 +1805,7 @@ export class FileResolver {
             if (stmt.type === 'ReturnStatement') {
                 const arg = (stmt as any).argument;
                 if (arg) {
-                    result.push(this.inferNodeType(arg));
+                    result.push(this.inferReturnArgType(arg, localVarInits));
                 } else {
                     // `return;` (no argument) → null in ucode
                     result.push(UcodeType.NULL as UcodeDataType);
@@ -1728,15 +1814,15 @@ export class FileResolver {
             }
             // BlockStatement (and similar) hold their children in .body
             if (stmt.type === 'BlockStatement' && Array.isArray((stmt as any).body)) {
-                this.collectReturnTypes((stmt as any).body, result);
+                this.collectReturnTypes((stmt as any).body, result, localVarInits);
                 continue;
             }
             // Try/catch/finally — handler is a CatchClause with its own .body
             if (stmt.type === 'TryStatement') {
                 const tryStmt = stmt as any;
-                if (tryStmt.block) this.collectReturnTypes([tryStmt.block], result);
-                if (tryStmt.handler?.body) this.collectReturnTypes([tryStmt.handler.body], result);
-                if (tryStmt.finalizer) this.collectReturnTypes([tryStmt.finalizer], result);
+                if (tryStmt.block) this.collectReturnTypes([tryStmt.block], result, localVarInits);
+                if (tryStmt.handler?.body) this.collectReturnTypes([tryStmt.handler.body], result, localVarInits);
+                if (tryStmt.finalizer) this.collectReturnTypes([tryStmt.finalizer], result, localVarInits);
                 continue;
             }
             // SwitchStatement — walk each case's consequent
@@ -1744,7 +1830,7 @@ export class FileResolver {
                 const cases = (stmt as any).cases || [];
                 for (const c of cases) {
                     if (Array.isArray(c?.consequent)) {
-                        this.collectReturnTypes(c.consequent, result);
+                        this.collectReturnTypes(c.consequent, result, localVarInits);
                     }
                 }
                 continue;
@@ -1754,12 +1840,25 @@ export class FileResolver {
                 const child = (stmt as any)[key];
                 if (child == null) continue;
                 if (Array.isArray(child)) {
-                    this.collectReturnTypes(child, result);
+                    this.collectReturnTypes(child, result, localVarInits);
                 } else if (typeof child === 'object' && child.type) {
-                    this.collectReturnTypes([child], result);
+                    this.collectReturnTypes([child], result, localVarInits);
                 }
             }
         }
+    }
+
+    /**
+     * Type a return statement's argument. For identifiers, resolve through the
+     * function's local var initializers so `return x` where `let x = "foo"`
+     * gets typed as STRING.
+     */
+    private inferReturnArgType(node: AstNode, localVarInits?: Map<string, AstNode>): UcodeDataType {
+        if (node.type === 'Identifier' && localVarInits) {
+            const init = localVarInits.get((node as IdentifierNode).name);
+            if (init) return this.inferNodeType(init);
+        }
+        return this.inferNodeType(node);
     }
 
     /**

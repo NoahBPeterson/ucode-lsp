@@ -42,7 +42,7 @@ describe('Chained namespace member access (ns.A.B)', function() {
     assert.ok(/integer/.test(h), `nestedval should be integer (from HOSTINFO: 64), got: ${h}`);
   });
 
-  it('cursor on the deepest member shows the property type and the chain path', async function() {
+  it('cursor on the deepest member shows the property type, literal value, and chain path', async function() {
     const code = [
       "import * as alfred from './alfred-like.uc';",
       "let v = alfred.ALFRED_TYPES.HOSTINFO;",
@@ -54,6 +54,9 @@ describe('Chained namespace member access (ns.A.B)', function() {
     const val = h?.contents?.value || '';
     assert.ok(/HOSTINFO/.test(val) && /integer/.test(val),
       `expected HOSTINFO + integer in hover, got: ${val}`);
+    // Literal value (64 in alfred-like.uc) — answer to "WHAT IS THE VALUE"
+    assert.ok(/=\s*64/.test(val),
+      `expected literal value "= 64" in hover, got: ${val}`);
     assert.ok(/alfred\.ALFRED_TYPES/.test(val),
       `expected chain path "alfred.ALFRED_TYPES" in hover, got: ${val}`);
   });
