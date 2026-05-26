@@ -762,12 +762,17 @@ export class SemanticAnalyzer extends BaseVisitor {
         // knows the file's exports for completion — propagate them as
         // propertyTypes on the symbol so `ns.X` member access resolves through
         // the existing propertyTypes branch instead of falling through to
-        // `unknown`. Skips builtin modules (they have their own dispatch).
+        // `unknown`. Also propagate one-level nestedPropertyTypes so chained
+        // access like `ns.ALFRED_TYPES.HOSTINFO` can resolve. Skips builtin
+        // modules (they have their own dispatch).
         if (specifier.type === 'ImportNamespaceSpecifier'
             && effectiveUri && effectiveUri.startsWith('file://')) {
-          const nsTypes = this.fileResolver.getNamespaceExportPropertyTypes(effectiveUri);
-          if (nsTypes && nsTypes.size > 0) {
-            symbol.propertyTypes = nsTypes;
+          const nsInfo = this.fileResolver.getNamespaceExportInfo(effectiveUri);
+          if (nsInfo && nsInfo.types.size > 0) {
+            symbol.propertyTypes = nsInfo.types;
+            if (nsInfo.nested.size > 0) {
+              symbol.nestedPropertyTypes = nsInfo.nested;
+            }
           }
         }
 

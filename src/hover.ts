@@ -264,11 +264,29 @@ function detectObjectTypeFromDataType(dataType: UcodeDataType): KnownObjectType 
  * and module namespace hover (fs.opendir, io.open, uloop.init, etc.)
  */
 function getUnifiedMemberHover(
-    memberInfo: { objectName: string; propertyName: string },
+    memberInfo: { objectName: string; propertyName: string; chain?: string[] },
     analysisResult: SemanticAnalysisResult,
     documentUri?: string
 ): string | null {
-    const { objectName, propertyName } = memberInfo;
+    const { objectName, propertyName, chain } = memberInfo;
+
+    // Chained access (ns.A.B): walk the chain from the BASE symbol via
+    // propertyTypes/nestedPropertyTypes. The 1-level resolver below sees
+    // `objectName='A'` which isn't a top-level symbol, so without this we'd
+    // fail to find A and return null. Only one extra hop is supported (matches
+    // the nestedPropertyTypes shape — `Map<name, Map<inner, type>>`).
+    if (chain && chain.length >= 3) {
+        const baseSym = analysisResult.symbolTable.lookup(chain[0]!);
+        if (baseSym) {
+            const aName = chain[chain.length - 2]!;
+            const bName = chain[chain.length - 1]!;
+            const inner = baseSym.nestedPropertyTypes?.get(aName);
+            const innerType = inner?.get(bName);
+            if (innerType !== undefined) {
+                return `**${bName}**: \`${innerType}\`\n\nProperty on \`${chain.slice(0, -1).join('.')}\``;
+            }
+        }
+    }
 
     // Look up the object in the symbol table
     const symbol = analysisResult.symbolTable.lookup(objectName);
@@ -1142,7 +1160,7 @@ function detectFunctionCall(offset: number, tokens: any[]): boolean {
     return false;
 }
 
-function detectMemberExpression(offset: number, tokens: any[]): { objectName: string; propertyName: string; cursorOnObject: boolean } | undefined {
+function detectMemberExpression(offset: number, tokens: any[]): { objectName: string; propertyName: string; cursorOnObject: boolean; chain?: string[] } | undefined {
     // Find the token at the current position
     const currentTokenIndex = tokens.findIndex(t => t.pos <= offset && offset < t.end);
     if (currentTokenIndex === -1) return undefined;
@@ -1176,11 +1194,29 @@ function detectMemberExpression(offset: number, tokens: any[]): { objectName: st
         if (prevToken.type === TokenType.TK_DOT &&
             beforePrevToken.type === TokenType.TK_LABEL &&
             currentToken.type === TokenType.TK_LABEL) {
-            return {
+            // Walk further back through additional LABEL.DOT pairs so chained
+            // access like `ns.A.B` surfaces the full chain. Without this, the
+            // resolver would see `objectName='A'` and fail to find A as a
+            // top-level symbol when A is actually a property of `ns`.
+            const chain: string[] = [beforePrevToken.value as string, currentToken.value as string];
+            let i = currentTokenIndex - 3;
+            while (i >= 1) {
+                const dot = tokens[i];
+                const label = tokens[i - 1];
+                if (dot?.type === TokenType.TK_DOT && label?.type === TokenType.TK_LABEL) {
+                    chain.unshift(label.value as string);
+                    i -= 2;
+                } else {
+                    break;
+                }
+            }
+            const result: { objectName: string; propertyName: string; cursorOnObject: boolean; chain?: string[] } = {
                 objectName: beforePrevToken.value as string,
                 propertyName: currentToken.value as string,
                 cursorOnObject: false
             };
+            if (chain.length > 2) result.chain = chain;
+            return result;
         }
     }
 

@@ -1609,6 +1609,30 @@ export class TypeChecker {
   }
 
   private checkMemberExpression(node: MemberExpressionNode): UcodeType {
+    // Chained member access (base.A.B): when `node.object` is itself a
+    // MemberExpression `base.A` and `base.nestedPropertyTypes['A']` knows the
+    // type of B, return it. Without this hop, `let x = ns.ALFRED_TYPES.HOSTINFO`
+    // types x as `unknown` even though we *know* the inner literal types from
+    // the imported file. Only the immediate `base.A.B` pattern is covered —
+    // matches the depth our nestedPropertyTypes map holds.
+    if (!node.computed && node.object.type === 'MemberExpression') {
+      const inner = node.object as MemberExpressionNode;
+      if (!inner.computed && inner.object.type === 'Identifier') {
+        const baseName = (inner.object as IdentifierNode).name;
+        const baseSym = this.symbolTable.lookup(baseName);
+        const aName = this.getStaticPropertyName(inner.property);
+        const bName = this.getStaticPropertyName(node.property);
+        if (baseSym?.nestedPropertyTypes && aName && bName) {
+          const innerMap = baseSym.nestedPropertyTypes.get(aName);
+          const innerType = innerMap?.get(bName);
+          if (innerType !== undefined) {
+            (node as any)._fullType = innerType;
+            return this.dataTypeToUcodeType(innerType);
+          }
+        }
+      }
+    }
+
     // Handle `this.property` — look up `this` in symbol table (declared by semantic analyzer)
     if (node.object.type === 'ThisExpression') {
       const thisSym = this.symbolTable.lookup('this');

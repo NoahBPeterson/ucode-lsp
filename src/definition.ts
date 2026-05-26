@@ -81,6 +81,45 @@ export function handleDefinition(
                         }
                     }
 
+                    // Chained namespace access: ns.A.B (cursor on B). objToken is
+                    // `A`, which isn't a symbol — but its preceding LABEL+DOT
+                    // points at `ns`, the namespace import. Land inside that
+                    // file at A's `B:` key (best-effort; falls through to the
+                    // generic resolver below on miss).
+                    if (!objSymbol && tokenIndex >= 4) {
+                        const dot2 = tokens[tokenIndex - 3];
+                        const baseToken = tokens[tokenIndex - 4];
+                        if (dot2?.type === TokenType.TK_DOT
+                            && baseToken?.type === TokenType.TK_LABEL
+                            && typeof baseToken.value === 'string') {
+                            const baseSym = analysisResult.symbolTable.lookupAtPosition(baseToken.value, offset)
+                                         || analysisResult.symbolTable.lookup(baseToken.value);
+                            if (baseSym?.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*' && baseSym.importedFrom) {
+                                let nsUri: string | null;
+                                if (baseSym.importedFrom.startsWith('file://')) {
+                                    nsUri = baseSym.importedFrom;
+                                } else if (baseSym.importedFrom.startsWith('builtin://')) {
+                                    nsUri = null;
+                                } else {
+                                    nsUri = fileResolver.resolveImportPath(baseSym.importedFrom, document.uri);
+                                }
+                                if (nsUri) {
+                                    const loc = fileResolver.findExportedObjectPropertyLocation(nsUri, objToken.value as string, symbolName);
+                                    if (loc) {
+                                        const target: TextDocument | undefined = documents.get(nsUri);
+                                        const targetContent = target ? target.getText() : fileResolver.getFileContent(nsUri);
+                                        if (targetContent !== null && targetContent !== undefined) {
+                                            const tmpDoc = TextDocument.create(nsUri, 'ucode', 1, targetContent);
+                                            const start = tmpDoc.positionAt(loc.start);
+                                            const end = tmpDoc.positionAt(loc.end);
+                                            return { uri: nsUri, range: { start, end } };
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     const moduleType = objSymbol ? extractModuleType(objSymbol.dataType) : null;
                     if (objSymbol && moduleType) {
                         const moduleName = moduleType.moduleName;

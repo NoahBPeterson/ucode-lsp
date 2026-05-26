@@ -163,6 +163,55 @@ export class FileResolver {
     }
 
     /**
+     * For an object-literal export like `export const NAME = { KEY: ..., ... }`,
+     * locate the source offset of `KEY`'s identifier. Used by go-to-definition
+     * for chained namespace access (`ns.NAME.KEY`). Returns null when NAME isn't
+     * an object literal or doesn't contain KEY.
+     */
+    findExportedObjectPropertyLocation(fileUri: string, exportName: string, propertyName: string): { start: number; end: number } | null {
+        try {
+            const content = this.readFileContent(fileUri);
+            if (content === null) return null;
+            const lexer = new UcodeLexer(content, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, content);
+            parser.setComments(lexer.comments);
+            const ast = parser.parse().ast as any;
+            if (!ast?.body) return null;
+
+            const findInObject = (objNode: any): { start: number; end: number } | null => {
+                for (const prop of (objNode?.properties || [])) {
+                    const key = prop?.key?.name ?? prop?.key?.value;
+                    if (key === propertyName && prop.key) {
+                        return { start: prop.key.start, end: prop.key.end };
+                    }
+                }
+                return null;
+            };
+
+            for (const stmt of ast.body) {
+                if (!stmt) continue;
+                if (stmt.type === 'ExportNamedDeclaration') {
+                    const decl = (stmt as any).declaration;
+                    if (decl?.type === 'VariableDeclaration') {
+                        for (const d of (decl.declarations || [])) {
+                            if (d?.id?.name === exportName && d.init?.type === 'ObjectExpression') {
+                                return findInObject(d.init);
+                            }
+                        }
+                    }
+                } else if (stmt.type === 'ExportDefaultDeclaration' && exportName === 'default') {
+                    const decl = (stmt as any).declaration;
+                    if (decl?.type === 'ObjectExpression') return findInObject(decl);
+                }
+            }
+            return null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * Find a function definition in a file
      */
     findFunctionDefinition(fileUri: string, functionName: string): FunctionDefinition | null {
@@ -522,15 +571,33 @@ export class FileResolver {
      * exports (`export { foo }`) are skipped — they'd require resolving each
      * local's type and are a follow-up.
      */
-    private namespaceTypesCache = new Map<string, { content: string; types: Map<string, UcodeDataType> }>();
+    private namespaceTypesCache = new Map<string, {
+        content: string;
+        types: Map<string, UcodeDataType>;
+        nested: Map<string, Map<string, UcodeDataType>>;
+    }>();
 
     getNamespaceExportPropertyTypes(fileUri: string): Map<string, UcodeDataType> | null {
+        return this.getNamespaceExportInfo(fileUri)?.types ?? null;
+    }
+
+    /**
+     * Get both shallow and one-level-nested property types for a namespace-imported
+     * file. Used when hovering `ns.A.B`: `nestedPropertyTypes['A']` lets us resolve
+     * B without losing the link to the imported file. Without this, an export like
+     * `export const ALFRED_TYPES = { HOSTINFO: 64, ... }` would stop at "ALFRED_TYPES
+     * is object" and `.HOSTINFO` would have no hover or go-to-definition.
+     */
+    getNamespaceExportInfo(fileUri: string): {
+        types: Map<string, UcodeDataType>;
+        nested: Map<string, Map<string, UcodeDataType>>;
+    } | null {
         try {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
             const content = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
             const cached = this.namespaceTypesCache.get(fileUri);
-            if (cached && cached.content === content) return cached.types;
+            if (cached && cached.content === content) return { types: cached.types, nested: cached.nested };
 
             const lexer = new UcodeLexer(content, { rawMode: true });
             const tokens = lexer.tokenize();
@@ -538,6 +605,18 @@ export class FileResolver {
             parser.setComments(lexer.comments);
             const ast = parser.parse().ast as any;
             const types = new Map<string, UcodeDataType>();
+            const nested = new Map<string, Map<string, UcodeDataType>>();
+
+            const recordExport = (name: string, init: any) => {
+                types.set(name, this.inferShallowType(init));
+                // For object-literal exports, walk one level deeper so chained
+                // access like `ns.NAME.PROP` can resolve. Deeper than one level
+                // is out of scope — keep this cheap.
+                if (init?.type === 'ObjectExpression') {
+                    const inner = this.inferObjectLiteralPropertyTypesShallow(init);
+                    if (inner.size > 0) nested.set(name, inner);
+                }
+            };
 
             if (ast?.body) {
                 for (const stmt of ast.body) {
@@ -548,21 +627,34 @@ export class FileResolver {
                             types.set(decl.id.name, UcodeType.FUNCTION as UcodeDataType);
                         } else if (decl?.type === 'VariableDeclaration') {
                             for (const d of (decl.declarations || [])) {
-                                if (d?.id?.name) types.set(d.id.name, this.inferShallowType(d.init));
+                                if (d?.id?.name) recordExport(d.id.name, d.init);
                             }
                         }
                     } else if (stmt.type === 'ExportDefaultDeclaration') {
-                        types.set('default', this.inferShallowType((stmt as any).declaration));
+                        recordExport('default', (stmt as any).declaration);
                     }
                 }
             }
 
-            this.namespaceTypesCache.set(fileUri, { content, types });
-            return types;
+            this.namespaceTypesCache.set(fileUri, { content, types, nested });
+            return { types, nested };
         } catch (error) {
             console.error('Error loading namespace export property types:', error);
             return null;
         }
+    }
+
+    /** Type-only walk of an ObjectExpression's direct properties — one level. */
+    private inferObjectLiteralPropertyTypesShallow(objNode: any): Map<string, UcodeDataType> {
+        const m = new Map<string, UcodeDataType>();
+        for (const prop of (objNode?.properties || [])) {
+            const key = prop?.key?.name ?? prop?.key?.value;
+            if (typeof key !== 'string' && typeof key !== 'number') continue;
+            const keyStr = String(key);
+            const val = prop?.value;
+            if (val) m.set(keyStr, this.inferShallowType(val));
+        }
+        return m;
     }
 
     private inferShallowType(node: any): UcodeDataType {
