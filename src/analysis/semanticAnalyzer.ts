@@ -200,6 +200,60 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.hoistFunctionDeclarations(node);
     // Global scope analysis
     super.visitProgram(node);
+    // Flag forward declarations that are never completed by a real definition
+    if (this.options.enableScopeAnalysis) {
+      this.checkForwardDeclarations(node);
+    }
+  }
+
+  /**
+   * A forward declaration (`function f;`) makes `f` callable, which suppresses
+   * the "undefined function" diagnostic. So a forward declaration that is never
+   * completed by a real definition AND not exported is a silent bug (calling it
+   * crashes at runtime). Flag those. Exported or later-defined names are fine.
+   * Whole-file name matching, biased against false positives: if a real
+   * definition of the name exists anywhere, we never warn.
+   */
+  private checkForwardDeclarations(node: ProgramNode): void {
+    const forwardDecls: FunctionDeclarationNode[] = [];
+    const definedNames = new Set<string>();
+    const exportedNames = new Set<string>();
+
+    const collect = (n: any): void => {
+      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+      if (n.type === 'FunctionDeclaration' && n.id?.name) {
+        if (n.forwardDeclaration) forwardDecls.push(n);
+        else definedNames.add(n.id.name);
+      } else if (n.type === 'ExportNamedDeclaration') {
+        const decl = n.declaration;
+        if (decl?.type === 'FunctionDeclaration' && decl.id?.name) {
+          (decl.forwardDeclaration ? exportedNames : definedNames).add(decl.id.name);
+        }
+        for (const spec of (n.specifiers || [])) {
+          const nm = spec.local?.name ?? spec.exported?.name;
+          if (nm) exportedNames.add(nm);
+        }
+      } else if (n.type === 'ExportDefaultDeclaration' && n.declaration?.type === 'Identifier') {
+        exportedNames.add(n.declaration.name);
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) collect(it); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') collect(v);
+      }
+    };
+    collect(node);
+
+    for (const fwd of forwardDecls) {
+      const name = fwd.id.name;
+      if (!definedNames.has(name) && !exportedNames.has(name)) {
+        this.addDiagnostic(
+          `Function '${name}' is forward-declared but never defined. Add a definition (function ${name}(...) { ... }) or remove the forward declaration.`,
+          fwd.start, fwd.end, DiagnosticSeverity.Warning, 'forward-declaration-never-defined'
+        );
+      }
+    }
   }
 
   /**

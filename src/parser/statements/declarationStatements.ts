@@ -96,6 +96,24 @@ export abstract class DeclarationStatements extends ExpressionParser {
     }
     // For export default, id can be null (anonymous function)
 
+    // Forward declaration: `function name;` — a name with no parameter list or
+    // body. Enables use-before-definition and mutual recursion (upstream d9e24e4).
+    if (id && this.check(TokenType.TK_SCOL)) {
+      const semi = this.advance()!;
+      const fwd: FunctionDeclarationNode = {
+        type: 'FunctionDeclaration',
+        start,
+        end: semi.end,
+        id,
+        params: [],
+        // Synthetic empty body so downstream consumers (which assume a body) are safe.
+        body: { type: 'BlockStatement', start: semi.pos, end: semi.end, body: [] },
+        forwardDeclaration: true,
+      };
+      if (leadingJsDoc) fwd.leadingJsDoc = leadingJsDoc;
+      return fwd;
+    }
+
     this.consume(TokenType.TK_LPAREN, id ? "Expected '(' after function name" : "Expected '(' after 'function'");
 
     const params: IdentifierNode[] = [];
@@ -125,19 +143,13 @@ export abstract class DeclarationStatements extends ExpressionParser {
     const openingBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' to start function body");
     const body = this.parseBlockStatement(openingBrace, "function body");
 
-    // Check for semicolon after function declaration
+    // A trailing semicolon after a function declaration is optional — ucode
+    // accepts `export function f() {}` without one (upstream 552ca3c), same as a
+    // regular function declaration.
     const hadSemicolon = this.check(TokenType.TK_SCOL);
     if (hadSemicolon) {
       this.advance();
-    } else if (isExported) {
-      // Only exported functions MUST end with semicolon
-      this.errorAt("Exported functions must end with a semicolon ';'", 
-                   body.end, 
-                   body.end);
-      // Reset panic mode for missing semicolon
-      this.panicMode = false;
     }
-    // Regular (non-exported) functions don't require semicolons
 
     if (id) {
       // Named function - use FunctionDeclarationNode

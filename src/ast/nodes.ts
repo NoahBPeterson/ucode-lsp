@@ -261,6 +261,11 @@ export interface FunctionDeclarationNode extends AstNode {
   restParam?: IdentifierNode; // for ...args parameters
   body: BlockStatementNode;
   leadingJsDoc?: JsDocCommentNode;
+  // Forward declaration `function name;` — declares the name (for mutual
+  // recursion / use-before-definition) with no parameter list or body. The
+  // `body` is a synthetic empty block. A forward declaration that is never
+  // completed by a real definition is an unimplemented stub.
+  forwardDeclaration?: boolean;
 }
 
 // Function expressions: function(params) { body }

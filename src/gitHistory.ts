@@ -39,7 +39,9 @@ export function collectFunctionDeclarations(ast: any): any[] {
     const out: any[] = [];
     const walk = (n: any): void => {
         if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
-        if (n.type === 'FunctionDeclaration') out.push(n);
+        // Skip forward declarations (`function f;`) — they have no body; the real
+        // definition (if any) gets the lens, so `f` isn't annotated twice.
+        if (n.type === 'FunctionDeclaration' && !n.forwardDeclaration) out.push(n);
         for (const k of Object.keys(n)) {
             if (k === 'leadingJsDoc') continue;
             const v = n[k];
