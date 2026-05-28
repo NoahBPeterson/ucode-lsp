@@ -1991,7 +1991,21 @@ export class TypeChecker {
       return this.typeCompatibility.getObjectPropertyType(objectType);
     }
 
-    if (objectType === UcodeType.STRING && !node.computed) {
+    // String has no properties — error even when the receiver's base type is
+    // UNKNOWN but its _fullType is STRING or a union containing STRING (e.g.
+    // `parts[0]` where parts is array<string> yields STRING|NULL as _fullType
+    // but the base UcodeType collapses to UNKNOWN). Catches the common
+    // JavaScript-port mistake `someStr.toUpperCase()`.
+    let receiverHasString = objectType === UcodeType.STRING;
+    if (!receiverHasString && !node.computed) {
+      const objFull = (node.object as any)._fullType as UcodeDataType | undefined;
+      if (objFull === UcodeType.STRING) {
+        receiverHasString = true;
+      } else if (objFull && isUnionType(objFull)) {
+        receiverHasString = getUnionTypes(objFull).some(m => singleTypeToBase(m) === UcodeType.STRING);
+      }
+    }
+    if (receiverHasString && !node.computed) {
       // String has no properties.
       const propertyName = (node.property as IdentifierNode).name;
       this.errors.push({
@@ -2000,7 +2014,7 @@ export class TypeChecker {
         end: node.property.end,
         severity: 'error'
       });
-      
+
       return UcodeType.UNKNOWN;
     }
 

@@ -191,7 +191,11 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
       endPos = this.previous()!.end;
     } else {
       if (!this.check(TokenType.TK_LABEL)) {
-        this.error("Expected property name after '.' or '?.'");
+        // Point the diagnostic at the DOT operator itself, not the next token.
+        // `peek()` (used by error()) returns whatever comes after the whitespace
+        // — e.g. `line.\n /* comment */ \n if (...)` would put the squiggle on
+        // `if` two lines down. Operator-anchored squiggles are easier to read.
+        this.errorAt("Expected property name after '.' or '?.'", operatorToken.pos, operatorToken.end);
         return null;
       }
       property = this.parseIdentifierName() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
