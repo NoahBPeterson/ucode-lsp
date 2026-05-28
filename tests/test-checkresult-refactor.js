@@ -118,6 +118,31 @@ describe('CheckResult refactor — rich type flows through checkNode', function(
       'mac_list[0] should be string|null');
   });
 
+  // A null-guarded union local used as a builtin arg must NOT warn "unknown".
+  // Regression: checkNode's central cache wrote UNKNOWN unconditionally, so an
+  // out-of-scope re-check of `_val3` (symbol lookup fails → UNKNOWN) clobbered
+  // the good `string|null` cached earlier. trim() then read UNKNOWN while hover
+  // (which reads the symbol, not the cache) correctly showed `string`. Fixed by
+  // not letting an UNKNOWN result overwrite a known cache entry.
+  it('null-guarded union local passed to trim() does NOT warn unknown', async function() {
+    const code = [
+      "'use strict';",
+      "function f(key) {",
+      "    let parts = split('a=b', '=', 2);",
+      "    let v = parts[1];",          // string | null
+      "    if (v == null) return null;",  // early-exit narrows v → string
+      "    return trim(v);",            // must NOT warn 'unknown'/'may be null'
+      "}",
+      "f('x');",
+      ''
+    ].join('\n');
+    const diags = await lspServer.getDiagnostics(code, file);
+    const trimWarn = diags.find(d =>
+      /trim/.test(d.message) && (/unknown/.test(d.message) || /may be null/.test(d.message)));
+    assert.ok(!trimWarn,
+      `trim(v) on a null-guarded string|null must not warn, got: ${JSON.stringify(diags.map(d => d.message))}`);
+  });
+
   it('the original bug: `array<string>|null`-element . toUpperCase() errors', async function() {
     const code = [
       "'use strict';",

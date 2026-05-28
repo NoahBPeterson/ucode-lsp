@@ -429,7 +429,16 @@ export class TypeChecker {
     // Single source of truth: cache the rich result for post-analysis reads
     // (hover, completion, semanticAnalyzer) via getTypeOf. Replaces the old
     // per-method `(node as any)._fullType = …` writes.
-    this.nodeTypes.set(node, result);
+    //
+    // Guard: never let an UNKNOWN result CLOBBER an existing known entry. The
+    // same node can be re-checked at a point where its scope has exited
+    // (symbol lookup fails → checkIdentifier returns UNKNOWN); the old
+    // `_fullType` writes lived inside `if (symbol)`, so that spurious UNKNOWN
+    // never overwrote a good type. An UNKNOWN still writes when nothing is
+    // cached yet; a later known result still upgrades an UNKNOWN.
+    if (result !== UcodeType.UNKNOWN || !this.nodeTypes.has(node)) {
+      this.nodeTypes.set(node, result);
+    }
     return result;
   }
 
@@ -541,9 +550,19 @@ export class TypeChecker {
         // Use the narrowed type from guard context
         dataType = guardType;
       } else {
-        // Check for flow-sensitive type narrowing
+        // Check for flow-sensitive type narrowing. Only PREFER it when it's
+        // actually informative: the flow tracker may record a narrowing to
+        // UNKNOWN (e.g. it couldn't resolve `parts[1]` to string|null the way
+        // the symbol table does). `UcodeType.UNKNOWN` is the truthy string
+        // 'unknown', so a bare `flow || symbol` would let that useless UNKNOWN
+        // clobber the symbol's real type — leaving e.g. trim(_val3) seeing
+        // `unknown` while hover (which reads the symbol) correctly shows
+        // `string`. Fall back to the symbol's effective type unless flow has
+        // something more specific.
         const flowSensitiveType = this.flowSensitiveTracker.getEffectiveType(node.name, node.start);
-        dataType = flowSensitiveType || this.getEffectiveSymbolDataType(symbol, node.start);
+        dataType = (flowSensitiveType && flowSensitiveType !== UcodeType.UNKNOWN)
+          ? flowSensitiveType
+          : this.getEffectiveSymbolDataType(symbol, node.start);
       }
       
       // Return the rich type directly — unions, arrays, object shapes flow
