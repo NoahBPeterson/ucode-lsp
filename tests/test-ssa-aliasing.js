@@ -75,6 +75,28 @@ describe('SSA currentType propagation through variable aliasing', function() {
       `preview inside null-guard must not type as null, got: ${h}`);
   });
 
+  it('`type(x) == "string" && length(x) > 0` narrows x to string in the if-body (compound AND)', async function() {
+    // 0.6.85: collectGuards now decomposes `&&` chains when extractTypeGuard
+    // returns null on the compound test. Previously the `type(x) == "string"`
+    // guard was ignored because it was on the LEFT of an &&, and only the
+    // top-level expression was checked. Aliasing `let p = x;` inside the body
+    // now correctly inherits `string`.
+    const code = [
+      "'use strict';",
+      "import * as fs from 'fs';",
+      "function get_data() { return fs.popen('cmd').read('all'); }",
+      "let data = null;",
+      "data = get_data();",
+      "if (type(data) == 'string' && length(data) > 0) {",
+      "    let preview_var = data;",
+      "}",
+      ''
+    ].join('\n');
+    const h = await hoverVar(code, 'preview_var');
+    assert.ok(/string/.test(h),
+      `expected string (from type(x) == "string" guard via && decomposition), got: ${h}`);
+  });
+
   it('OBJECT reassignment: `let m; m = {…}; let m2 = m;` — m2 inherits the object', async function() {
     // Touches the same code path but with a real type to confirm it isn't
     // overcorrecting (i.e., now we propagate currentType when active, so

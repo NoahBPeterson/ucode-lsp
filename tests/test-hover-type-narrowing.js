@@ -282,9 +282,11 @@ function test15(x) {
     const anchor = code.indexOf('split(x');
     const offset = code.indexOf('x', anchor + 6);
     const narrowed = result.typeChecker.getNarrowedTypeAtPosition('x', offset);
-    // extractTypeGuard on the full && expression doesn't decompose AND chains for if-body
-    // Only the null-propagation guard on length(x) might apply, but it's nested in &&
-    check('Test 15: AND with length check in if-body', narrowed ? typeToString(narrowed) : 'null', 'null');
+    // 0.6.85: collectGuards now decomposes && chains in the if-test via
+    // findGuardInCondition (when extractTypeGuard returns null for compound
+    // AND). `type(x) == "string"` on the left side narrows x to string in
+    // the if-body. Was 'null' (no narrowing) before — known limitation, fixed.
+    check('Test 15: AND with length check in if-body', narrowed ? typeToString(narrowed) : 'null', 'string');
 }
 
 {

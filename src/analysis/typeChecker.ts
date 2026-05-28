@@ -2747,7 +2747,17 @@ export class TypeChecker {
       if (ifNode.consequent &&
           position >= ifNode.consequent.start &&
           position <= ifNode.consequent.end) {
-        const guardInfo = this.extractTypeGuard(ifNode.test, variableName);
+        // For compound `&&` tests like `type(x) == "string" && length(x) > 0`,
+        // extractTypeGuard handles single conditions and top-level OR chains
+        // but returns null on bare AND. findGuardInCondition walks `&&` chains
+        // and returns the first guard for the variable — so the test's
+        // narrowing intent (`type(x) == "string"` → narrow x to string) is
+        // honoured in the if-body.
+        let guardInfo = this.extractTypeGuard(ifNode.test, variableName);
+        if (!guardInfo && ifNode.test.type === 'BinaryExpression'
+            && (ifNode.test as BinaryExpressionNode).operator === '&&') {
+          guardInfo = this.findGuardInCondition(ifNode.test, variableName);
+        }
         if (guardInfo) {
           guards.push(guardInfo);
         }
