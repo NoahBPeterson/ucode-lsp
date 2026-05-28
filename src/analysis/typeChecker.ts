@@ -2586,7 +2586,16 @@ export class TypeChecker {
       return null;
     }
 
-    const baseType = symbol.dataType;
+    // Effective base type at this position: prefer SSA-tracked currentType
+    // when it's active. Without this, `let data = null; data = call(); …; let
+    // p = data;` would read `data.dataType=NULL` and downstream consumers
+    // would type p as `null` even though data's effective type post-assignment
+    // is whatever the call returned (typically UNKNOWN).
+    let baseType: UcodeDataType = symbol.dataType;
+    if (symbol.currentType !== undefined && symbol.currentTypeEffectiveFrom !== undefined
+        && position >= symbol.currentTypeEffectiveFrom) {
+      baseType = symbol.currentType;
+    }
 
     // Check if this position is inside a type guard
     if (guards.length > 0) {
@@ -2600,7 +2609,14 @@ export class TypeChecker {
       return narrowedType;
     }
 
-    return null; // No narrowing applies
+    // No guards — return the effective base type so callers reflect SSA state.
+    // Returning null would make `let p = data` (no guard) fall through to the
+    // original dataType, which is the bug this branch is fixing.
+    if (symbol.currentType !== undefined && symbol.currentTypeEffectiveFrom !== undefined
+        && position >= symbol.currentTypeEffectiveFrom) {
+      return baseType;
+    }
+    return null; // No narrowing applies and no SSA override
   }
 
   /**

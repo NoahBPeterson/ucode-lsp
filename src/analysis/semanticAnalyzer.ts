@@ -2800,8 +2800,17 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         }
 
         if (sourceSymbol) {
-          symbol.dataType = sourceSymbol.dataType;
-          this.symbolTable.updateSymbolType(name, sourceSymbol.dataType);
+          // Honour SSA currentType when it's active at the init's position —
+          // `let data = null; data = call(); let p = data;` should give p the
+          // post-assignment type (whatever call() returned, typically UNKNOWN),
+          // NOT the original `null` from data's declaration site.
+          let effSourceType: UcodeDataType = sourceSymbol.dataType;
+          if (sourceSymbol.currentType !== undefined && sourceSymbol.currentTypeEffectiveFrom !== undefined
+              && node.init.start >= sourceSymbol.currentTypeEffectiveFrom) {
+            effSourceType = sourceSymbol.currentType;
+          }
+          symbol.dataType = effSourceType;
+          this.symbolTable.updateSymbolType(name, effSourceType);
 
           if (sourceSymbol.propertyTypes) {
             symbol.propertyTypes = sourceSymbol.propertyTypes;
