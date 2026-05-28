@@ -1867,7 +1867,18 @@ export class TypeChecker {
     if (node.object.type === 'Identifier' && node.computed) {
       const objSym = this.symbolTable.lookupAtPosition((node.object as IdentifierNode).name, node.start)
                   ?? this.symbolTable.lookup((node.object as IdentifierNode).name);
-      const objIsObject = objSym && (objSym.dataType === UcodeType.OBJECT || (typeof objSym.dataType === 'object' && (objSym.dataType as any).type === UcodeType.OBJECT));
+      // Effective type at the access position. For `let x = {...}` the
+      // declarator stamps dataType=OBJECT directly. For `let x; x = {...}`
+      // the assignment-handler instead writes currentType (SSA) and leaves
+      // dataType=UNKNOWN — so we'd miss the access without consulting both.
+      let effType: UcodeDataType | undefined = objSym?.dataType;
+      if (objSym?.currentType !== undefined && objSym.currentTypeEffectiveFrom !== undefined
+          && node.start >= objSym.currentTypeEffectiveFrom) {
+        effType = objSym.currentType;
+      }
+      const objIsObject = effType !== undefined
+        && (effType === UcodeType.OBJECT
+            || (typeof effType === 'object' && (effType as any).type === UcodeType.OBJECT));
       if (objSym && objIsObject && objSym.propertyTypes) {
         // 1. Static key resolution: `obj[LIT]`, `obj[const_ident]`, `obj[ns.A.B]`
         const keyStr = this.resolvePropertyKeyToString(node.property);

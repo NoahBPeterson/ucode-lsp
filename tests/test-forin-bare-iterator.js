@@ -106,6 +106,42 @@ describe('for-in: bare iterator typing + completion visibility', function() {
     assert.strictEqual(offered, true, 'iterator should complete inside the body');
   });
 
+  // The user's actual pattern: `let x;` then `x = {...}` later (e.g. inside a
+  // try block). visitAssignmentExpression updates currentType via SSA but
+  // leaves the symbol's dataType as UNKNOWN (the first branch returns before
+  // updateSymbolType). The access-time effType check now consults both, so
+  // `m[k]` resolves through propertyTypes regardless of how m was assigned.
+  it('decl-then-assign (no try) — for-in still resolves m[k] via keys-of', async function() {
+    const code = [
+      "'use strict';",
+      "function gen_a() { return 'a'; }",
+      "let m;",
+      "m = { a: gen_a };",
+      "for (k in keys(m)) {",
+      "    let result = m[k];",
+      "}",
+      ''
+    ].join('\n');
+    const h = await hoverVar(code, 'result');
+    assert.ok(/function/.test(h), `decl-then-assign should still work, got: ${h}`);
+  });
+
+  it('decl-then-assign INSIDE a try block — same coverage', async function() {
+    // Real-world shape: `let data_generators; try { data_generators = {...}; } catch (e) {}`.
+    const code = [
+      "'use strict';",
+      "function gen_a() { return 'a'; }",
+      "let m;",
+      "try { m = { a: gen_a }; } catch (e) {}",
+      "for (k in keys(m)) {",
+      "    let result = m[k];",
+      "}",
+      ''
+    ].join('\n');
+    const h = await hoverVar(code, 'result');
+    assert.ok(/function/.test(h), `decl-then-assign in try should still work, got: ${h}`);
+  });
+
   it('hover on the iterator inside the head still works (not a completion-only filter)', async function() {
     const code = [
       "'use strict';",
