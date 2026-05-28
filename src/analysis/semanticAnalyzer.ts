@@ -11,7 +11,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
@@ -2284,14 +2284,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // (e.g. `keys()` → array<string>). Otherwise getIterableFullType reads
         // an unset cache, falls through to the base ARRAY type, and the
         // iterator var ends up `unknown` instead of the element type.
-        const rightType = this.typeChecker.checkNode(node.right);
+        const rightBase = dataTypeToBase(this.typeChecker.checkNode(node.right));
         const rightFullType = this.getIterableFullType(node.right);
         let iterType: UcodeDataType;
         if (rightFullType && isArrayType(rightFullType)) {
           iterType = getArrayElementType(rightFullType);
-        } else if (rightType === UcodeType.OBJECT) {
+        } else if (rightBase === UcodeType.OBJECT) {
           iterType = UcodeType.STRING as UcodeDataType;
-        } else if (rightType === UcodeType.STRING) {
+        } else if (rightBase === UcodeType.STRING) {
           iterType = UcodeType.STRING as UcodeDataType;
         } else {
           iterType = UcodeType.UNKNOWN as UcodeDataType;
@@ -2341,14 +2341,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // getIterableFullType reads it (matters for CallExpression iterables
             // like `keys(obj)` whose return type isn't known until the call is
             // type-checked).
-            const rightType = this.typeChecker.checkNode(node.right);
+            const rightBase = dataTypeToBase(this.typeChecker.checkNode(node.right));
             const rightFullType = this.getIterableFullType(node.right);
             let iterType: UcodeDataType;
             if (rightFullType && isArrayType(rightFullType)) {
               iterType = getArrayElementType(rightFullType);
-            } else if (rightType === UcodeType.OBJECT) {
+            } else if (rightBase === UcodeType.OBJECT) {
               iterType = UcodeType.STRING as UcodeDataType; // object keys are strings
-            } else if (rightType === UcodeType.STRING) {
+            } else if (rightBase === UcodeType.STRING) {
               iterType = UcodeType.STRING as UcodeDataType; // iterating string chars
             } else {
               iterType = UcodeType.UNKNOWN as UcodeDataType; // bare array / unknown → no element info
@@ -2397,13 +2397,15 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             const indexNode = indexDeclarator.id;
             
             // Index variable type depends on what's being iterated over
-            // For objects: key is string, for arrays: index is integer, for unknown: unknown
-            const rightType = this.typeChecker.checkNode(node.right);
+            // For objects: key is string, for arrays: index is integer, for unknown: unknown.
+            // checkNode returns a rich type (e.g. ArrayType object for array<T>);
+            // collapse to base so `=== ARRAY` matches an array<T> result too.
+            const rightBase = dataTypeToBase(this.typeChecker.checkNode(node.right));
             let keyType: UcodeDataType;
-            
-            if (rightType === UcodeType.OBJECT) {
+
+            if (rightBase === UcodeType.OBJECT) {
               keyType = UcodeType.STRING as UcodeDataType;  // Object keys are strings
-            } else if (rightType === UcodeType.ARRAY) {
+            } else if (rightBase === UcodeType.ARRAY) {
               keyType = UcodeType.INTEGER as UcodeDataType; // Array indices are integers
             } else {
               keyType = UcodeType.UNKNOWN as UcodeDataType; // Unknown type being iterated

@@ -41,7 +41,7 @@ interface TypeGuardInfo {
   // (e.g., length(x) <= 0) doesn't imply x is null — x could just be empty.
   isNullPropagation?: boolean;
 }
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, extractModuleType, Symbol as UcodeSymbol } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, Symbol as UcodeSymbol } from './symbolTable';
 import type { CheckResult } from './checkResult';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
@@ -614,19 +614,24 @@ export class TypeChecker {
       case '>=':
         return this.typeCompatibility.getComparisonResultType();
 
-      case '??':
-        // Nullish coalescing: returns left if non-null, otherwise right
+      case '??': {
+        // Nullish coalescing `a ?? b`: the result is `b` exactly when `a` is
+        // null, else `a`. So the result type is (a with null removed) ∪ b.
+        // leftType/rightType are rich now, so we handle nullable unions
+        // properly instead of returning the whole left union verbatim.
         if (leftType === UcodeType.NULL) {
-          return rightType;
+          return rightType; // always null → always falls back to b
         }
-        // Definitely non-null types: right is never reached
-        if (leftType === UcodeType.ARRAY || leftType === UcodeType.OBJECT ||
-            leftType === UcodeType.FUNCTION || leftType === UcodeType.REGEX) {
-          return leftType;
+        const leftNonNull = this.typeNarrowing.removeNullFromType(leftType);
+        if (leftNonNull.excludedTypes.length === 0) {
+          return leftType; // a can't be null → b unreachable
         }
-        // Could be null at runtime in a union context, return left (best approximation)
-        // since checkBinaryExpression works with UcodeType not UcodeDataType
-        return leftType;
+        // a is nullable → (a without null) ∪ b
+        return createUnionType([
+          ...getUnionTypes(leftNonNull.narrowedType),
+          ...getUnionTypes(rightType),
+        ]);
+      }
 
       case '&&':
       case '||': {
@@ -1443,36 +1448,9 @@ export class TypeChecker {
   }
 
   private dataTypeToUcodeType(dataType: UcodeDataType): UcodeType {
-    // Handle string type (UcodeType)
-    if (typeof dataType === 'string') {
-      return dataType as UcodeType;
-    }
-
-    // Handle ArrayType (with element info) — still an array
-    if (isArrayType(dataType)) {
-      return UcodeType.ARRAY;
-    }
-
-    // Handle ObjectType (known object types like fs.file) — still an object
-    if (isObjectType(dataType)) {
-      return UcodeType.OBJECT;
-    }
-
-    // Handle complex types (UnionType, ModuleType)
-    const complexType = dataType as any;
-    if (complexType.type === UcodeType.UNION) {
-      // For union types, return UNKNOWN for now to maintain compatibility
-      // This could be enhanced later to return a more specific type
-      return UcodeType.UNKNOWN;
-    }
-    if (extractModuleType(dataType)) {
-      return UcodeType.OBJECT;
-    }
-    if (complexType.type) {
-      return complexType.type;
-    }
-    
-    return UcodeType.UNKNOWN;
+    // Single source of truth in symbolTable (see dataTypeToBase). Kept as a
+    // thin private alias so existing call sites read naturally.
+    return dataTypeToBase(dataType);
   }
 
   private validateSpecialBuiltins(node: CallExpressionNode, signature: FunctionSignature): boolean {

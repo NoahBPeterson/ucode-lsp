@@ -179,6 +179,26 @@ export function getArrayElementType(type: UcodeDataType): UcodeDataType {
   return UcodeType.UNKNOWN;
 }
 
+/**
+ * Collapse any UcodeDataType (including the rich CheckResult shapes) down to a
+ * single base UcodeType enum. This is the explicit, blessed way to consume a
+ * rich type when you only care about its base kind — `result === UcodeType.X`
+ * is WRONG on a rich result (an ArrayType object is never === 'array'), so use
+ * `dataTypeToBase(result) === UcodeType.X` instead.
+ *
+ * Unions collapse to UNKNOWN (no single base); arrays → ARRAY; object shapes
+ * and module types → OBJECT; bare enums pass through.
+ */
+export function dataTypeToBase(type: UcodeDataType): UcodeType {
+  if (typeof type === 'string') return type as UcodeType;
+  if (isArrayType(type)) return UcodeType.ARRAY;
+  if (isObjectType(type)) return UcodeType.OBJECT;
+  if (isUnionType(type)) return UcodeType.UNKNOWN;
+  if (extractModuleType(type)) return UcodeType.OBJECT;
+  const t = (type as any).type;
+  return typeof t === 'string' ? (t as UcodeType) : UcodeType.UNKNOWN;
+}
+
 /** Convert a SingleType to its display string */
 export const singleTypeToString: (t: SingleType) => string = Match.type<SingleType>().pipe(
   Match.when(Match.string, (s) => s),
