@@ -116,6 +116,13 @@ export class TypeChecker {
   private assignmentTargetDepth = 0;
   private truthinessDepth = 0;
   private currentAST: ProgramNode | null = null;
+  /** Per-node computed type cache. Replaces the old `(node as any)._fullType`
+   *  side channel: `checkNode` populates this for every node it visits, so the
+   *  rich type (unions, arrays, object shapes) is recoverable AFTER analysis
+   *  via getTypeOf(node). Overwrite-on-revisit semantics match the old
+   *  `_fullType` exactly (last checkNode call wins). WeakMap → no leak across
+   *  ASTs (nodes are per-parse). */
+  private nodeTypes = new WeakMap<AstNode, CheckResult>();
   private constantAssignmentProperties = new Map<string, Set<string>>();
   private strictMode = false;
   private transitiveTypeAliases: string[] = [];
@@ -418,8 +425,22 @@ export class TypeChecker {
 
   checkNode(node: AstNode): CheckResult {
     if (!node) return UcodeType.UNKNOWN;
+    const result = this.dispatchCheck(node);
+    // Single source of truth: cache the rich result for post-analysis reads
+    // (hover, completion, semanticAnalyzer) via getTypeOf. Replaces the old
+    // per-method `(node as any)._fullType = …` writes.
+    this.nodeTypes.set(node, result);
+    return result;
+  }
 
+  /** The rich type previously computed for `node` by checkNode, or undefined
+   *  if it was never checked. This is the typed replacement for reading
+   *  `(node as any)._fullType`. */
+  getTypeOf(node: AstNode): CheckResult | undefined {
+    return this.nodeTypes.get(node);
+  }
 
+  private dispatchCheck(node: AstNode): CheckResult {
     switch (node.type) {
       case 'Literal':
         return this.checkLiteral(node as LiteralNode);
@@ -525,25 +546,10 @@ export class TypeChecker {
         dataType = flowSensitiveType || this.getEffectiveSymbolDataType(symbol, node.start);
       }
       
-      // Store the full type information in the node for later use by type narrowing
-      const existingFullType = (node as any)._fullType as UcodeDataType | undefined;
-      if (!existingFullType || this.shouldUpdateFullType(existingFullType, dataType)) {
-        (node as any)._fullType = dataType;
-      }
-      
-      // Convert UcodeDataType to UcodeType for backwards compatibility
-      if (typeof dataType === 'string') {
-        return dataType as UcodeType;
-      } else if (isUnionType(dataType)) {
-        // For union types, return UNKNOWN to indicate it's a complex type
-        // The actual union type is preserved in _fullType for narrowing purposes
-        return UcodeType.UNKNOWN;
-      } else if (isArrayType(dataType)) {
-        return UcodeType.ARRAY;
-      } else {
-        // For other complex types like ModuleType, return OBJECT
-        return UcodeType.OBJECT;
-      }
+      // Return the rich type directly — unions, arrays, object shapes flow
+      // through the return value (and the central checkNode cache), no longer
+      // collapsed to a flat enum with the real type hidden in _fullType.
+      return dataType;
     } else {
       // Check if it's a builtin function
       const isBuiltin = allBuiltinFunctions.has(node.name);
@@ -559,41 +565,6 @@ export class TypeChecker {
     }
 
     return symbol.dataType;
-  }
-
-  private shouldUpdateFullType(existingType: UcodeDataType, candidateType: UcodeDataType): boolean {
-    // If either type is a module/object reference, prefer the latest information
-    if (this.isModuleLikeType(candidateType) || this.isModuleLikeType(existingType)) {
-      return true;
-    }
-
-    const existingTypes = getUnionTypes(existingType);
-    const candidateTypes = getUnionTypes(candidateType);
-
-    const candidateSubsetOfExisting = candidateTypes.every(type => existingTypes.includes(type));
-    const existingSubsetOfCandidate = existingTypes.every(type => candidateTypes.includes(type));
-
-    if (candidateSubsetOfExisting && !existingSubsetOfCandidate) {
-      // Candidate removes options -> narrower
-      return true;
-    }
-
-    if (candidateSubsetOfExisting && existingSubsetOfCandidate) {
-      // Types identical -> allow refresh
-      return true;
-    }
-
-    if (!candidateSubsetOfExisting && existingSubsetOfCandidate) {
-      // Candidate introduces new possibilities -> keep existing narrow type
-      return false;
-    }
-
-    // Fallback: accept update when sets are incomparable
-    return true;
-  }
-
-  private isModuleLikeType(type: UcodeDataType): boolean {
-    return extractModuleType(type) !== null;
   }
 
   private checkBinaryExpression(node: BinaryExpressionNode): CheckResult {
@@ -612,8 +583,9 @@ export class TypeChecker {
         // regex operand). Result type is unaffected — this is just a warning.
         this.checkNaNArithmetic(node, node.operator, this.dataTypeToUcodeType(leftType), this.dataTypeToUcodeType(rightType));
 
-        let leftFullType: UcodeDataType = (node.left as any)._fullType || leftType;
-        let rightFullType: UcodeDataType = (node.right as any)._fullType || rightType;
+        // leftType/rightType are already the rich types (checkNode returns them).
+        let leftFullType: UcodeDataType = leftType;
+        let rightFullType: UcodeDataType = rightType;
 
         // Every operator except `+` coerces a string operand to a number: a
         // string literal classifies to int/double by its contents, an unknown
@@ -625,14 +597,11 @@ export class TypeChecker {
 
         // Distribute over union members so e.g. `(integer | string) + 1` yields
         // `integer | string`. The full-type path also handles the plain
-        // single-type case (it collapses to one member).
-        const result = node.operator === '+'
+        // single-type case (it collapses to one member). Return the rich result
+        // directly — unions flow through unchanged.
+        return node.operator === '+'
           ? arithmeticTypeInference.inferAdditionFullType(leftFullType, rightFullType)
           : arithmeticTypeInference.inferArithmeticFullType(leftFullType, rightFullType, node.operator);
-        (node as any)._fullType = result;
-        // A union can't be represented as a single UcodeType; preserve it in
-        // _fullType and report UNKNOWN as the base type (the &&/|| convention).
-        return isUnionType(result) ? UcodeType.UNKNOWN : (result as UcodeType);
       }
 
       case '==':
@@ -661,47 +630,38 @@ export class TypeChecker {
 
       case '&&':
       case '||': {
-        // Use union-aware inference when _fullType is available on left operand
-        const leftFullType: UcodeDataType = (node.left as any)._fullType || leftType;
-        const rightFullType: UcodeDataType = (node.right as any)._fullType || rightType;
-        let logicalResultType: UcodeDataType;
-
-        if (node.operator === '||') {
-          logicalResultType = logicalTypeInference.inferLogicalOrFullType(leftFullType, rightFullType);
-        } else {
-          logicalResultType = logicalTypeInference.inferLogicalAndFullType(leftFullType, rightFullType);
-        }
-
-        // Store the full result type on this node for consumers
-        (node as any)._fullType = logicalResultType;
-
-        // Convert union type back to UcodeType for backward compatibility
-        if (isUnionType(logicalResultType)) {
-          return UcodeType.UNKNOWN;
-        }
-
-        return logicalResultType as UcodeType;
+        // leftType/rightType are already rich (checkNode returns them).
+        const leftFullType: UcodeDataType = leftType;
+        const rightFullType: UcodeDataType = rightType;
+        // Return the rich union directly — `string | null` etc. flows through.
+        return node.operator === '||'
+          ? logicalTypeInference.inferLogicalOrFullType(leftFullType, rightFullType)
+          : logicalTypeInference.inferLogicalAndFullType(leftFullType, rightFullType);
       }
 
       case '&':
       case '|':
       case '^':
       case '<<':
-      case '>>':
-        // Add warning for unexpected types (but still allow the operation)
-        const isLeftExpected = leftType === UcodeType.BOOLEAN || leftType === UcodeType.INTEGER || leftType === UcodeType.UNKNOWN;
-        const isRightExpected = rightType === UcodeType.BOOLEAN || rightType === UcodeType.INTEGER || rightType === UcodeType.UNKNOWN;
-        
+      case '>>': {
+        // Add warning for unexpected types (but still allow the operation).
+        // Collapse to base enum for the singleton checks + readable message.
+        const leftBase = this.dataTypeToUcodeType(leftType);
+        const rightBase = this.dataTypeToUcodeType(rightType);
+        const isLeftExpected = leftBase === UcodeType.BOOLEAN || leftBase === UcodeType.INTEGER || leftBase === UcodeType.UNKNOWN;
+        const isRightExpected = rightBase === UcodeType.BOOLEAN || rightBase === UcodeType.INTEGER || rightBase === UcodeType.UNKNOWN;
+
         if (!isLeftExpected || !isRightExpected) {
           this.warnings.push({
-            message: `Bitwise operation on unexpected types: ${leftType} ${node.operator} ${rightType}. Consider using boolean or integer types for clarity.`,
+            message: `Bitwise operation on unexpected types: ${leftBase} ${node.operator} ${rightBase}. Consider using boolean or integer types for clarity.`,
             start: node.start,
             end: node.end,
             severity: 'warning'
           });
         }
-        
+
         return this.typeCompatibility.getBitwiseResultType();
+      }
 
       case 'in':
         return this.checkInOperator(node, this.dataTypeToUcodeType(leftType), this.dataTypeToUcodeType(rightType));
@@ -723,12 +683,8 @@ export class TypeChecker {
       // A string coerces to a number; negation/increment preserve int vs double,
       // so the result type IS the coercion type (e.g. -"42" → integer).
       if (argType === UcodeType.STRING) {
-        const coerced = this.coerceStringForArithmetic(node.argument, argType);
-        if (isUnionType(coerced)) {
-          (node as any)._fullType = coerced;
-          return UcodeType.UNKNOWN;
-        }
-        return coerced as UcodeType;
+        // Return the rich coercion result directly (may be `integer | double`).
+        return this.coerceStringForArithmetic(node.argument, argType);
       }
     }
 
@@ -893,8 +849,9 @@ export class TypeChecker {
   }
 
   private getFullTypeFromNode(node: AstNode): UcodeDataType | null {
-    // Extract full type information stored during identifier checking
-    return (node as any)._fullType || null;
+    // Rich type computed by checkNode for this node (typed cache, replaces the
+    // old `(node as any)._fullType` side channel).
+    return this.nodeTypes.get(node) ?? null;
   }
 
   private getTypeDescription(type: UcodeDataType): string {
@@ -1138,18 +1095,16 @@ export class TypeChecker {
               // Many module functions return X | null where null means "wrong arg type".
               returnTypeData = this.narrowFsReturnType(returnTypeData, moduleFunction, node);
 
-              (node as any)._fullType = returnTypeData;
-              return this.dataTypeToUcodeType(returnTypeData);
+              return returnTypeData;
             }
           }
-          
+
           // For user-defined functions and other imported functions, return their return type
           if (symbol.returnType) {
-            // Preserve the full return type (real unions) on the call node, so a
-            // call used directly as an operand (e.g. `f() + g()`) carries the
-            // union for union-aware consumers — not just when assigned to a var.
-            (node as any)._fullType = symbol.returnType;
-            return this.dataTypeToUcodeType(symbol.returnType);
+            // Return the full return type (real unions) directly, so a call used
+            // as an operand (e.g. `f() + g()`) carries the union for union-aware
+            // consumers — not just when assigned to a var.
+            return symbol.returnType;
           } else {
             // Fallback for functions without explicit return type
             return UcodeType.UNKNOWN;
@@ -1169,8 +1124,7 @@ export class TypeChecker {
               const moduleFunction = moduleFunctionOpt.value;
               let returnTypeData = this.parseReturnType(moduleFunction.returnType);
               returnTypeData = this.narrowFsReturnType(returnTypeData, moduleFunction, node);
-              (node as any)._fullType = returnTypeData;
-              return this.dataTypeToUcodeType(returnTypeData);
+              return returnTypeData;
             }
           }
           // Check if the variable's data type is function or if it could be callable
@@ -1247,34 +1201,21 @@ export class TypeChecker {
           if (Option.isSome(funcOpt)) {
             let returnTypeData = this.parseReturnType(funcOpt.value.returnType);
             returnTypeData = this.narrowFsReturnType(returnTypeData, funcOpt.value, node);
-            (node as any)._fullType = returnTypeData;
-            return this.dataTypeToUcodeType(returnTypeData);
+            return returnTypeData;
           }
         }
       }
 
-      // Member expression calls — check callee type to resolve return type
+      // Member expression calls — resolve the call's return type from the callee.
       const calleeType = this.checkNode(node.callee);
-      // Propagate _fullType from callee (MemberExpression) to this CallExpression.
-      // GUARD: only when the callee's _fullType is anything OTHER than the bare
-      // FUNCTION sentinel. `_fullType = FUNCTION` means "the callee is a
-      // function" — NOT "calling it returns a function." Propagating it would
-      // make `data = obj[k]()` type as `function`. The well-defined upstream
-      // setters (factory propertyFunctionReturnTypes, module-method return
-      // types) all return early above, so the only thing reaching here with a
-      // bare-FUNCTION _fullType is generic "callee is callable" info. Drop it.
-      const calleeFullType = (node.callee as any)._fullType;
-      if (calleeFullType && calleeFullType !== UcodeType.FUNCTION) {
-        (node as any)._fullType = calleeFullType;
-        // If the callee has a union _fullType, return UNKNOWN (union can't be a single UcodeType)
-        if (isUnionType(calleeFullType)) {
-          return UcodeType.UNKNOWN;
-        }
-      }
-      // If the callee is a function, calling it returns unknown (not "function").
-      // Only return calleeType if it represents an actual resolved return type
-      // (e.g., from known module methods that return specific types).
-      if (calleeType !== UcodeType.UNKNOWN && calleeType !== UcodeType.FUNCTION) {
+      // A callee that IS a function (bare FUNCTION) → calling it yields unknown:
+      // we don't model the function's own return type. (This is the 0.6.83 fix:
+      // never let "the callee is a function" leak out as "the call returns a
+      // function".) UNKNOWN callee → also fall through to call-target validation
+      // below. Anything else is already the resolved RETURN type from an earlier
+      // path (module method, etc.) — return it directly; unions flow through and
+      // collapse to UNKNOWN only at the base-type boundary.
+      if (calleeType !== UcodeType.FUNCTION && calleeType !== UcodeType.UNKNOWN) {
         return calleeType;
       }
     }
@@ -1296,8 +1237,8 @@ export class TypeChecker {
     return UcodeType.UNKNOWN;
   }
 
-  private validateBuiltinCall(node: CallExpressionNode, signature: FunctionSignature): UcodeType {
-    // Ensure all arguments are checked first to populate _fullType
+  private validateBuiltinCall(node: CallExpressionNode, signature: FunctionSignature): CheckResult {
+    // Ensure all arguments are checked first to populate their cached types
     for (const arg of node.arguments) {
       if (arg) {
         this.checkNode(arg);
@@ -1310,20 +1251,16 @@ export class TypeChecker {
       const narrowed = this.builtinValidator.narrowedReturnType;
       this.builtinValidator.narrowedReturnType = null;
       if (narrowed !== null) {
-        // Store the narrowed type on the call node for semantic analyzer propagation
-        (node as any)._fullType = narrowed;
-        return this.dataTypeToUcodeType(narrowed);
+        // Return the narrowed rich type directly.
+        return narrowed;
       }
       // Apply nullMeansWrongType narrowing even for special builtins
       let returnType = signature.returnType;
       if (signature.nullMeansWrongType && isUnionType(returnType)) {
         returnType = this.narrowBuiltinReturnType(returnType, signature, node);
-        (node as any)._fullType = returnType;
-      } else if (isUnionType(returnType)) {
-        // Propagate union return types (e.g., string | null) so semantic analyzer can use them
-        (node as any)._fullType = returnType;
       }
-      return this.dataTypeToUcodeType(returnType);
+      // Return the rich return type (unions flow through).
+      return returnType;
     }
 
     const argCount = node.arguments.length;
@@ -1422,12 +1359,9 @@ export class TypeChecker {
     let returnType = signature.returnType;
     if (signature.nullMeansWrongType && isUnionType(returnType)) {
       returnType = this.narrowBuiltinReturnType(returnType, signature, node);
-      (node as any)._fullType = returnType;
-    } else if (isUnionType(returnType)) {
-      // Propagate union return types so semantic analyzer can use them
-      (node as any)._fullType = returnType;
     }
-    return this.dataTypeToUcodeType(returnType);
+    // Return the rich return type directly (unions flow through).
+    return returnType;
   }
 
   /**
@@ -1506,33 +1440,6 @@ export class TypeChecker {
       if (isKnownObjectType(moduleType.moduleName)) return moduleType.moduleName;
     }
     return null;
-  }
-
-  private returnTypeStringToUcodeType(returnType: string | UcodeType): UcodeType {
-    if (Object.values(UcodeType).includes(returnType as UcodeType)) {
-      return returnType as UcodeType;
-    }
-    // For union types, use parseReturnType and store _fullType on the caller's node.
-    // This method only handles simple (non-union) type strings.
-    switch (returnType) {
-      case 'integer':
-      case 'number':
-        return UcodeType.INTEGER;
-      case 'string':
-        return UcodeType.STRING;
-      case 'boolean':
-        return UcodeType.BOOLEAN;
-      case 'null':
-        return UcodeType.NULL;
-      case 'array':
-      case 'string[]':
-        return UcodeType.ARRAY;
-      case 'object':
-      case 'io.handle':
-        return UcodeType.OBJECT;
-      default:
-        return UcodeType.UNKNOWN;
-    }
   }
 
   private dataTypeToUcodeType(dataType: UcodeDataType): UcodeType {
@@ -1717,8 +1624,7 @@ export class TypeChecker {
           const innerMap = baseSym.nestedPropertyTypes.get(aName);
           const innerType = innerMap?.get(bName);
           if (innerType !== undefined) {
-            (node as any)._fullType = innerType;
-            return this.dataTypeToUcodeType(innerType);
+            return innerType;
           }
         }
       }
@@ -1769,8 +1675,8 @@ export class TypeChecker {
         }
 
         if (propertyName && symbol.propertyTypes && symbol.propertyTypes.has(propertyName)) {
-          const propertyType = symbol.propertyTypes.get(propertyName)!;
-          return this.dataTypeToUcodeType(propertyType);
+          // Return the rich property type directly.
+          return symbol.propertyTypes.get(propertyName)!;
         }
       }
 
@@ -1780,13 +1686,8 @@ export class TypeChecker {
         const methodName = (node.property as IdentifierNode).name;
         const method = OBJECT_REGISTRIES[detectedObjectType].getMethod(methodName);
         if (Option.isSome(method)) {
-          // Parse the full return type (preserves unions) and store on node
-          const fullReturnType = this.parseReturnType(method.value.returnType);
-          (node as any)._fullType = fullReturnType;
-          if (isUnionType(fullReturnType)) {
-            return UcodeType.UNKNOWN;
-          }
-          return this.returnTypeStringToUcodeType(method.value.returnType);
+          // Return the full method return type (preserves unions) directly.
+          return this.parseReturnType(method.value.returnType);
         }
         this.errors.push({
           message: `Method '${methodName}' does not exist on ${detectedObjectType}`,
@@ -1893,8 +1794,7 @@ export class TypeChecker {
         if (keyStr !== null) {
           const t = objSym.propertyTypes.get(keyStr);
           if (t !== undefined) {
-            (node as any)._fullType = t;
-            return this.dataTypeToUcodeType(t);
+            return t;
           }
           // Literal that's NOT a known property: we have exhaustive propertyTypes
           // for object literals we own. Stay UNKNOWN (don't claim null — we can't
@@ -1907,8 +1807,7 @@ export class TypeChecker {
           if (keySym?.keysOfSymbol && keySym.keysOfSymbol === (node.object as IdentifierNode).name) {
             const valueUnion = this.computePropertyValueUnion(objSym.propertyTypes);
             if (valueUnion !== null) {
-              (node as any)._fullType = valueUnion;
-              return this.dataTypeToUcodeType(valueUnion);
+              return valueUnion;
             }
           }
         }
@@ -1928,17 +1827,16 @@ export class TypeChecker {
         if (node.property.type === 'Literal') {
           const indexKey = String((node.property as LiteralNode).value);
           if (symbol.propertyTypes && symbol.propertyTypes.has(indexKey)) {
-            const elementType = symbol.propertyTypes.get(indexKey)!;
-            return this.dataTypeToUcodeType(elementType);
+            // Return the rich per-index element type directly.
+            return symbol.propertyTypes.get(indexKey)!;
           }
         }
         // Fall back to ArrayType element type (element | null since index may be out of bounds)
         if (isArrayType(symbol.dataType as UcodeDataType)) {
           const elemType = getArrayElementType(symbol.dataType as UcodeDataType);
           const elemBase = this.dataTypeToUcodeType(elemType);
-          const nullableType = createUnionType([elemBase, UcodeType.NULL]);
-          (node as any)._fullType = nullableType;
-          return UcodeType.UNKNOWN; // union → UNKNOWN for simple type system
+          // Return the rich `element | null` union directly.
+          return createUnionType([elemBase, UcodeType.NULL]);
         }
       }
     }
@@ -1946,22 +1844,26 @@ export class TypeChecker {
     const objectType = this.checkNode(node.object);
 
     // For computed access on any array-typed expression (e.g., sort(arr)[0], split(s, d)[1])
-    // check _fullType for ArrayType element info
-    if (objectType === UcodeType.ARRAY && node.computed) {
-      const objFullType = (node.object as any)._fullType as UcodeDataType | undefined;
+    // recover ArrayType element info from the object's cached rich type.
+    if (this.dataTypeToUcodeType(objectType) === UcodeType.ARRAY && node.computed) {
+      const objFullType = this.getTypeOf(node.object);
       if (objFullType && isArrayType(objFullType)) {
         const elemType = getArrayElementType(objFullType);
         const elemBase = this.dataTypeToUcodeType(elemType);
-        const nullableType = createUnionType([elemBase, UcodeType.NULL]);
-        (node as any)._fullType = nullableType;
-        return UcodeType.UNKNOWN; // union → UNKNOWN for simple type system
+        // Return the rich `element | null` union directly.
+        return createUnionType([elemBase, UcodeType.NULL]);
       }
     }
+
+    // Collapse the rich object type to its base enum for the singleton
+    // comparisons below (ARRAY/OBJECT/STRING/REGEX). The rich `objectType`
+    // itself is used where union members matter (string-in-union check).
+    const objectBase = this.dataTypeToUcodeType(objectType);
 
     // Check for array type — arrays in ucode have no properties or methods.
     // Also check union types containing array (e.g., array | null from sort/filter).
     if (!node.computed) {
-      let isArrayAccess = (objectType as any) === UcodeType.ARRAY;
+      let isArrayAccess = objectBase === UcodeType.ARRAY;
       if (!isArrayAccess && node.object.type === 'Identifier') {
         const sym = this.symbolTable.lookup((node.object as IdentifierNode).name);
         if (sym) {
@@ -1988,22 +1890,21 @@ export class TypeChecker {
       }
     }
     
-    if (objectType === UcodeType.OBJECT) {
-      return this.typeCompatibility.getObjectPropertyType(objectType);
+    if (objectBase === UcodeType.OBJECT) {
+      return this.typeCompatibility.getObjectPropertyType(objectBase);
     }
 
-    // String has no properties — error even when the receiver's base type is
-    // UNKNOWN but its _fullType is STRING or a union containing STRING (e.g.
-    // `parts[0]` where parts is array<string> yields STRING|NULL as _fullType
-    // but the base UcodeType collapses to UNKNOWN). Catches the common
-    // JavaScript-port mistake `someStr.toUpperCase()`.
-    let receiverHasString = objectType === UcodeType.STRING;
+    // String has no properties — error even when the receiver's base type
+    // collapses to UNKNOWN but the rich type is STRING or a union containing
+    // STRING (e.g. `parts[0]` where parts is array<string> yields STRING|NULL,
+    // whose base collapses to UNKNOWN). Catches the common JavaScript-port
+    // mistake `someStr.toUpperCase()`. objectType IS the rich type now.
+    let receiverHasString = objectBase === UcodeType.STRING;
     if (!receiverHasString && !node.computed) {
-      const objFull = (node.object as any)._fullType as UcodeDataType | undefined;
-      if (objFull === UcodeType.STRING) {
+      if (objectType === UcodeType.STRING) {
         receiverHasString = true;
-      } else if (objFull && isUnionType(objFull)) {
-        receiverHasString = getUnionTypes(objFull).some(m => singleTypeToBase(m) === UcodeType.STRING);
+      } else if (isUnionType(objectType)) {
+        receiverHasString = getUnionTypes(objectType).some(m => singleTypeToBase(m) === UcodeType.STRING);
       }
     }
     if (receiverHasString && !node.computed) {
@@ -2019,7 +1920,7 @@ export class TypeChecker {
       return UcodeType.UNKNOWN;
     }
 
-    if (objectType === UcodeType.REGEX && !node.computed) {
+    if (objectBase === UcodeType.REGEX && !node.computed) {
       // Regex objects have no properties or methods at all
       const propertyName = (node.property as IdentifierNode).name;
 
@@ -2087,18 +1988,17 @@ export class TypeChecker {
     const elementDataTypes: UcodeDataType[] = [];
     for (const element of node.elements) {
       if (element) {
+        // elType is the rich type now (checkNode returns it).
         const elType = this.checkNode(element);
-        const fullType = (element as any)._fullType as UcodeDataType | undefined;
-        if (fullType && (isUnionType(fullType) || isArrayType(fullType))) {
-          // Use rich type (union or ArrayType) — deduplicate by checking existing entries
+        if (isUnionType(elType) || isArrayType(elType)) {
+          // Rich type (union or ArrayType) — deduplicate by checking existing entries
           const isDup = elementDataTypes.some(t =>
-            (typeof t === 'string' && typeof fullType === 'string' && t === fullType) ||
-            (typeof t !== 'string' && typeof fullType !== 'string' && JSON.stringify(t) === JSON.stringify(fullType))
+            (typeof t !== 'string' && JSON.stringify(t) === JSON.stringify(elType))
           );
-          if (!isDup) elementDataTypes.push(fullType);
+          if (!isDup) elementDataTypes.push(elType);
         } else if (elType !== UcodeType.UNKNOWN) {
-          if (!elementDataTypes.includes(elType as UcodeDataType)) {
-            elementDataTypes.push(elType as UcodeDataType);
+          if (!elementDataTypes.includes(elType)) {
+            elementDataTypes.push(elType);
           }
         }
       }
@@ -2123,7 +2023,8 @@ export class TypeChecker {
           );
         }
       }
-      (node as any)._fullType = createArrayType(elementType);
+      // Return the rich array<T> directly; base consumers collapse to ARRAY.
+      return createArrayType(elementType);
     }
 
     return UcodeType.ARRAY;
@@ -2146,16 +2047,10 @@ export class TypeChecker {
     const consequentType = this.checkNode(node.consequent);
     const alternateType = this.checkNode(node.alternate);
 
-    const resultType = this.typeCompatibility.getTernaryResultType(this.dataTypeToUcodeType(consequentType), this.dataTypeToUcodeType(alternateType));
-
-    // Preserve the real union object on _fullType so consumers that read it
-    // (e.g. union-aware arithmetic, the variable-declarator inference) can
-    // distribute over its members instead of seeing only the display string.
-    // The base return stays getTypeDescription(resultType) for backward compat:
-    // the function-return / nullable-argument machinery reads the base type and
-    // relies on its "T | null" form to detect nullability.
-    (node as any)._fullType = resultType;
-    return this.getTypeDescription(resultType) as UcodeType;
+    // Return the rich result type directly — consumers (union-aware arithmetic,
+    // variable-declarator inference, nullable-argument machinery) read the real
+    // union and distribute over its members. Base consumers collapse to UNKNOWN.
+    return this.typeCompatibility.getTernaryResultType(this.dataTypeToUcodeType(consequentType), this.dataTypeToUcodeType(alternateType));
   }
 
   private checkArrowFunctionExpression(_node: ArrowFunctionExpressionNode): CheckResult {

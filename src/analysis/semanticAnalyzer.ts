@@ -523,9 +523,8 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (node.init.type === 'ArrayExpression') {
           const sym = this.symbolTable.lookup(name);
           if (sym) {
-            // Trigger type checker to infer element types and set _fullType
-            this.typeChecker.checkNode(node.init);
-            const fullType = (node.init as any)._fullType;
+            // checkNode returns the rich type (e.g. array<string>) directly.
+            const fullType = this.typeChecker.checkNode(node.init);
             if (fullType && isArrayType(fullType)) {
               sym.dataType = fullType;
               sym.initialLiteralType = fullType;
@@ -533,17 +532,18 @@ export class SemanticAnalyzer extends BaseVisitor {
           }
         }
 
-        // Upgrade symbol type from function call results that have rich _fullType
+        // Upgrade symbol type from function call results that have a rich type
         // (e.g., split() → array<string>, reverse([1,2]) → array<integer>, pop(arr) → element type,
         //  glob("/path") → array<string> (narrowed from array<string> | null),
         //  io.open() → io.handle | null, cursor() → uci.cursor | null)
         if (node.init.type === 'CallExpression' || node.init.type === 'MemberExpression') {
           const sym = this.symbolTable.lookup(name);
           if (sym) {
-            // Trigger type checker to process narrowedReturnType and set _fullType
-            this.typeChecker.checkNode(node.init);
-            const fullType = (node.init as any)._fullType;
-            if (fullType !== undefined && fullType !== null) {
+            // checkNode returns the call/member result's rich type directly.
+            // Only upgrade when we actually resolved something (non-UNKNOWN) so
+            // we never clobber an existing dataType with UNKNOWN.
+            const fullType = this.typeChecker.checkNode(node.init);
+            if (fullType !== undefined && fullType !== null && fullType !== UcodeType.UNKNOWN) {
               sym.dataType = fullType;
               // For module object types (fs.file, io.handle, uci.cursor, etc.),
               // force global declaration so method resolution works across scopes
@@ -1906,11 +1906,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         let symbol = this.symbolTable.lookup(variableName);
         
         // For undeclared variables assigned from module function calls,
-        // use the type checker's _fullType to infer the type
+        // use the type checker's resolved type to infer the type
         if (!symbol && (node.right.type === 'CallExpression' || node.right.type === 'MemberExpression')) {
-          this.typeChecker.checkNode(node.right);
-          const fullType = (node.right as any)._fullType as UcodeDataType | undefined;
-          if (fullType) {
+          const fullType = this.typeChecker.checkNode(node.right);
+          if (fullType && fullType !== UcodeType.UNKNOWN) {
             this.symbolTable.declare(variableName, SymbolType.VARIABLE, fullType, node.left as IdentifierNode);
             const mt = extractModuleType(fullType);
             if (mt && isKnownObjectType(mt.moduleName)) {
@@ -1957,11 +1956,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           } else if (functionReturnType) {
             dataType = functionReturnType;
           } else {
-            // Use the inferred type from the right-hand side
-            const rightType = this.typeChecker.checkNode(node.right);
-            // Prefer _fullType (preserves unions) over simple UcodeType return
-            const fullType = (node.right as any)._fullType as UcodeDataType | undefined;
-            dataType = fullType || rightType as UcodeDataType;
+            // checkNode returns the rich type directly (preserves unions).
+            dataType = this.typeChecker.checkNode(node.right);
           }
           
           if (symbol && symbol.type === SymbolType.VARIABLE) {
@@ -2097,15 +2093,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
     if (this.options.enableControlFlowAnalysis) {
       if (this.currentFunctionNode) {
-        // Determine the type of the returned value. Prefer the full type so a
-        // union returned by the function (e.g. `return c ? 1 : "s"`) reaches
-        // callers as a real UnionType and not a display string — otherwise
-        // downstream consumers (union-aware arithmetic) can't destructure it.
-        // checkNode populates _fullType as a side effect.
+        // Determine the type of the returned value. checkNode returns the rich
+        // type directly, so a union returned by the function (e.g.
+        // `return c ? 1 : "s"`) reaches callers as a real UnionType, not a
+        // display string — downstream consumers (union-aware arithmetic) can
+        // destructure it.
         let returnType: UcodeDataType = UcodeType.NULL;
         if (node.argument) {
-          const baseType = this.typeChecker.checkNode(node.argument);
-          returnType = ((node.argument as any)._fullType as UcodeDataType) ?? baseType;
+          returnType = this.typeChecker.checkNode(node.argument);
         }
 
         // Store it for later inference.
@@ -2285,11 +2280,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const iteratorName = node.left.name;
         const iteratorNode = node.left;
 
-        // Run type-checking on the iterable FIRST so the call node gets its
-        // _fullType stamped (e.g. `keys()` → array<string>). Otherwise
-        // getIterableFullType reads an unset _fullType, falls through to the
-        // base ARRAY type, and the iterator var ends up `unknown` instead of
-        // the element type.
+        // Run type-checking on the iterable FIRST so its rich type is cached
+        // (e.g. `keys()` → array<string>). Otherwise getIterableFullType reads
+        // an unset cache, falls through to the base ARRAY type, and the
+        // iterator var ends up `unknown` instead of the element type.
         const rightType = this.typeChecker.checkNode(node.right);
         const rightFullType = this.getIterableFullType(node.right);
         let iterType: UcodeDataType;
@@ -2343,10 +2337,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // Infer the iterator variable type from what's being iterated.
             // `array<T>` → T (works even when the declared type is a union the
             // loop narrows, e.g. `string | array<T> | null` → `array<T>`).
-            // Run checkNode FIRST so the iterable's _fullType is stamped
-            // before getIterableFullType reads it (matters for CallExpression
-            // iterables like `keys(obj)` whose return type isn't known until
-            // the call is type-checked).
+            // Run checkNode FIRST so the iterable's rich type is cached before
+            // getIterableFullType reads it (matters for CallExpression iterables
+            // like `keys(obj)` whose return type isn't known until the call is
+            // type-checked).
             const rightType = this.typeChecker.checkNode(node.right);
             const rightFullType = this.getIterableFullType(node.right);
             let iterType: UcodeDataType;
@@ -2453,7 +2447,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  /** Get the full UcodeDataType for an iterable expression (identifier lookup or _fullType). */
+  /** Get the full UcodeDataType for an iterable expression (identifier lookup or
+   *  the type checker's cached rich type for the node). */
   private getIterableFullType(node: any): UcodeDataType | null {
     if (node.type === 'Identifier') {
       // Prefer the narrowed type at this position (e.g. after `type(x) == 'array'`
@@ -2464,7 +2459,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       const sym = this.symbolTable.lookup(node.name);
       if (sym) return sym.dataType;
     }
-    return (node as any)._fullType || null;
+    // Non-identifier iterables (e.g. `keys(obj)`): the caller checkNode'd the
+    // node first, so its rich type is in the type checker's cache.
+    return this.typeChecker.getTypeOf(node) ?? null;
   }
 
   visitSwitchStatement(node: SwitchStatementNode): void {
@@ -2644,9 +2641,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    * Used to extract array element types for callback parameter inference.
    */
   private resolveNodeFullType(node: AstNode): UcodeDataType | null {
-    // Check _fullType set by the type checker (e.g., split() → ArrayType)
-    if ((node as any)._fullType) {
-      return (node as any)._fullType;
+    // Rich type cached by the type checker (e.g. split() → ArrayType). Skip a
+    // bare UNKNOWN so we still fall through to the symbol's declared type.
+    const cached = this.typeChecker.getTypeOf(node);
+    if (cached !== undefined && cached !== UcodeType.UNKNOWN) {
+      return cached;
     }
     if (node.type === 'Identifier') {
       const sym = this.symbolTable.lookup((node as IdentifierNode).name);
@@ -2664,12 +2663,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
     }
 
-    // Use the type checker — it handles all module functions, builtins, and narrowing
-    // via _fullType. Prefer _fullType (preserves unions and rich types) over the
-    // basic UcodeType return.
+    // Use the type checker — it handles all module functions, builtins, and
+    // narrowing, and now returns the rich type (unions, arrays, object shapes)
+    // directly. Use it when it resolved something concrete.
     const inferredType = this.typeChecker.checkNode(expression);
-    const fullType = (expression as any)._fullType as UcodeDataType | undefined;
-    if (fullType) return fullType;
+    if (inferredType !== UcodeType.UNKNOWN) return inferredType;
 
     // Fall back to method/function return type inference for non-module calls
     const methodReturnType = this.inferMethodReturnType(expression);
@@ -2845,7 +2843,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
 
       // Module object types (fs.file, io.handle, uci.cursor, etc.) are now handled
-      // by the _fullType path in visitVariableDeclarator — no per-module cascade needed.
+      // by the rich-type path in visitVariableDeclarator — no per-module cascade needed.
       // Exception: bare builtin fs functions (open, popen, mkstemp) that are available
       // without import still need inferFsType since they're not in the type checker's builtins.
       const fsType = this.inferFsType(node.init!);
@@ -2900,11 +2898,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // Suppress validation warnings — this call is for type inference only;
         // validation was already done during the visit pass.
         this.typeChecker.setTruthinessDepth(1);
+        // checkNode returns the rich type directly (preserves unions).
         const initType = this.typeChecker.checkNode(node.init);
         this.typeChecker.setTruthinessDepth(0);
-        // Prefer _fullType (preserves unions) over simple UcodeType return
-        const fullType = (node.init as any)._fullType as UcodeDataType | undefined;
-        symbol.dataType = fullType || initType as UcodeDataType;
+        symbol.dataType = initType;
         this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
         // Debug logging for arrow function variables
         if (node.init.type === 'ArrowFunctionExpression') {
