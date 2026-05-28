@@ -142,6 +142,46 @@ describe('for-in: bare iterator typing + completion visibility', function() {
     assert.ok(/function/.test(h), `decl-then-assign in try should still work, got: ${h}`);
   });
 
+  it('iterator var over `keys(obj)` types as `string` (the array element type)', async function() {
+    // Regression: visitForInStatement used to call getIterableFullType BEFORE
+    // checkNode, so the call's _fullType (array<string>) wasn't stamped yet
+    // and the iterator fell through to UNKNOWN.
+    const code = [
+      "'use strict';",
+      "function gen_a() { return 'a'; }",
+      "const m = { a: gen_a };",
+      "for (kvar in keys(m)) {",
+      "    let iter_alias = kvar;",
+      "}",
+      ''
+    ].join('\n');
+    const h = await hoverVar(code, 'iter_alias');
+    assert.ok(/string/.test(h), `iterator over keys(m) should be string, got: ${h}`);
+  });
+
+  it('calling `obj[k]()` returns unknown — NOT `function` (regression)', async function() {
+    // Regression: my 0.6.80 value-union propagation set `_fullType=FUNCTION`
+    // on the MemberExpression callee, and checkCallExpression then propagated
+    // that bare FUNCTION to the call's `_fullType`. visitVariableDeclarator
+    // would then type the call-result variable as `function`. The fix gates
+    // propagation against the bare FUNCTION sentinel.
+    const code = [
+      "'use strict';",
+      "function gen_a() { return 'a'; }",
+      "const m = { a: gen_a };",
+      "for (kvar in m) {",
+      "    let call_result = m[kvar]();",
+      "}",
+      ''
+    ].join('\n');
+    const h = await hoverVar(code, 'call_result');
+    assert.ok(/unknown/.test(h),
+      `calling obj[k]() should be unknown (we don't track per-value return types), got: ${h}`);
+    // ESPECIALLY not "function" — the regression sentinel.
+    assert.ok(!/function/.test(h),
+      `call result must NOT type as function (sentinel for the 0.6.80 propagation regression), got: ${h}`);
+  });
+
   it('hover on the iterator inside the head still works (not a completion-only filter)', async function() {
     const code = [
       "'use strict';",

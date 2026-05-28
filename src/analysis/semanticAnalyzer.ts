@@ -2285,19 +2285,22 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const iteratorName = node.left.name;
         const iteratorNode = node.left;
 
+        // Run type-checking on the iterable FIRST so the call node gets its
+        // _fullType stamped (e.g. `keys()` → array<string>). Otherwise
+        // getIterableFullType reads an unset _fullType, falls through to the
+        // base ARRAY type, and the iterator var ends up `unknown` instead of
+        // the element type.
+        const rightType = this.typeChecker.checkNode(node.right);
         const rightFullType = this.getIterableFullType(node.right);
         let iterType: UcodeDataType;
         if (rightFullType && isArrayType(rightFullType)) {
           iterType = getArrayElementType(rightFullType);
+        } else if (rightType === UcodeType.OBJECT) {
+          iterType = UcodeType.STRING as UcodeDataType;
+        } else if (rightType === UcodeType.STRING) {
+          iterType = UcodeType.STRING as UcodeDataType;
         } else {
-          const rightType = this.typeChecker.checkNode(node.right);
-          if (rightType === UcodeType.OBJECT) {
-            iterType = UcodeType.STRING as UcodeDataType;
-          } else if (rightType === UcodeType.STRING) {
-            iterType = UcodeType.STRING as UcodeDataType;
-          } else {
-            iterType = UcodeType.UNKNOWN as UcodeDataType;
-          }
+          iterType = UcodeType.UNKNOWN as UcodeDataType;
         }
 
         this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, iterType, iteratorNode);
@@ -2340,19 +2343,21 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // Infer the iterator variable type from what's being iterated.
             // `array<T>` → T (works even when the declared type is a union the
             // loop narrows, e.g. `string | array<T> | null` → `array<T>`).
+            // Run checkNode FIRST so the iterable's _fullType is stamped
+            // before getIterableFullType reads it (matters for CallExpression
+            // iterables like `keys(obj)` whose return type isn't known until
+            // the call is type-checked).
+            const rightType = this.typeChecker.checkNode(node.right);
             const rightFullType = this.getIterableFullType(node.right);
             let iterType: UcodeDataType;
             if (rightFullType && isArrayType(rightFullType)) {
               iterType = getArrayElementType(rightFullType);
+            } else if (rightType === UcodeType.OBJECT) {
+              iterType = UcodeType.STRING as UcodeDataType; // object keys are strings
+            } else if (rightType === UcodeType.STRING) {
+              iterType = UcodeType.STRING as UcodeDataType; // iterating string chars
             } else {
-              const rightType = this.typeChecker.checkNode(node.right);
-              if (rightType === UcodeType.OBJECT) {
-                iterType = UcodeType.STRING as UcodeDataType; // object keys are strings
-              } else if (rightType === UcodeType.STRING) {
-                iterType = UcodeType.STRING as UcodeDataType; // iterating string chars
-              } else {
-                iterType = UcodeType.UNKNOWN as UcodeDataType; // bare array / unknown → no element info
-              }
+              iterType = UcodeType.UNKNOWN as UcodeDataType; // bare array / unknown → no element info
             }
 
             this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, iterType, iteratorNode);

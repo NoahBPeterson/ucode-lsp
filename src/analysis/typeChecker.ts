@@ -1254,9 +1254,16 @@ export class TypeChecker {
 
       // Member expression calls — check callee type to resolve return type
       const calleeType = this.checkNode(node.callee);
-      // Propagate _fullType from callee (MemberExpression) to this CallExpression
+      // Propagate _fullType from callee (MemberExpression) to this CallExpression.
+      // GUARD: only when the callee's _fullType is anything OTHER than the bare
+      // FUNCTION sentinel. `_fullType = FUNCTION` means "the callee is a
+      // function" — NOT "calling it returns a function." Propagating it would
+      // make `data = obj[k]()` type as `function`. The well-defined upstream
+      // setters (factory propertyFunctionReturnTypes, module-method return
+      // types) all return early above, so the only thing reaching here with a
+      // bare-FUNCTION _fullType is generic "callee is callable" info. Drop it.
       const calleeFullType = (node.callee as any)._fullType;
-      if (calleeFullType) {
+      if (calleeFullType && calleeFullType !== UcodeType.FUNCTION) {
         (node as any)._fullType = calleeFullType;
         // If the callee has a union _fullType, return UNKNOWN (union can't be a single UcodeType)
         if (isUnionType(calleeFullType)) {
