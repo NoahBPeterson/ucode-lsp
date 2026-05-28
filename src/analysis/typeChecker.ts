@@ -42,6 +42,7 @@ interface TypeGuardInfo {
   isNullPropagation?: boolean;
 }
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, extractModuleType, Symbol as UcodeSymbol } from './symbolTable';
+import type { CheckResult } from './checkResult';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
 import { UcodeErrorCode } from './errorConstants';
@@ -415,7 +416,7 @@ export class TypeChecker {
     }
   }
 
-  checkNode(node: AstNode): UcodeType {
+  checkNode(node: AstNode): CheckResult {
     if (!node) return UcodeType.UNKNOWN;
 
 
@@ -486,7 +487,7 @@ export class TypeChecker {
     };
   }
 
-  private checkLiteral(node: LiteralNode): UcodeType {
+  private checkLiteral(node: LiteralNode): CheckResult {
     switch (node.literalType) {
       case 'number':
         return typeof node.value === 'number' && node.value % 1 === 0 ? 
@@ -506,7 +507,7 @@ export class TypeChecker {
     }
   }
 
-  private checkIdentifier(node: IdentifierNode): UcodeType {
+  private checkIdentifier(node: IdentifierNode): CheckResult {
     const symbol = this.symbolTable.lookup(node.name);
     if (symbol) {
       this.symbolTable.markUsed(node.name, node.start);
@@ -595,7 +596,7 @@ export class TypeChecker {
     return extractModuleType(type) !== null;
   }
 
-  private checkBinaryExpression(node: BinaryExpressionNode): UcodeType {
+  private checkBinaryExpression(node: BinaryExpressionNode): CheckResult {
     const leftType = this.checkNode(node.left);
     const rightType = this.checkNode(node.right);
 
@@ -609,7 +610,7 @@ export class TypeChecker {
       case '**': {
         // Lint operations that provably evaluate to NaN (array/object/function/
         // regex operand). Result type is unaffected — this is just a warning.
-        this.checkNaNArithmetic(node, node.operator, leftType, rightType);
+        this.checkNaNArithmetic(node, node.operator, this.dataTypeToUcodeType(leftType), this.dataTypeToUcodeType(rightType));
 
         let leftFullType: UcodeDataType = (node.left as any)._fullType || leftType;
         let rightFullType: UcodeDataType = (node.right as any)._fullType || rightType;
@@ -703,14 +704,14 @@ export class TypeChecker {
         return this.typeCompatibility.getBitwiseResultType();
 
       case 'in':
-        return this.checkInOperator(node, leftType, rightType);
+        return this.checkInOperator(node, this.dataTypeToUcodeType(leftType), this.dataTypeToUcodeType(rightType));
 
       default:
         return UcodeType.UNKNOWN;
     }
   }
 
-  private checkUnaryExpression(node: UnaryExpressionNode): UcodeType {
+  private checkUnaryExpression(node: UnaryExpressionNode): CheckResult {
     if (node.operator === '!') this.truthinessDepth++;
     const argType = this.checkNode(node.argument);
     if (node.operator === '!') this.truthinessDepth--;
@@ -718,7 +719,7 @@ export class TypeChecker {
     // Numeric unary operators on a value that can't convert to a number always
     // yield NaN (e.g. -[1], ++{}). ucode doesn't throw, so warn rather than error.
     if (node.operator === '+' || node.operator === '-' || node.operator === '++' || node.operator === '--') {
-      this.checkNaNArithmetic(node, node.operator, argType, null);
+      this.checkNaNArithmetic(node, node.operator, this.dataTypeToUcodeType(argType), null);
       // A string coerces to a number; negation/increment preserve int vs double,
       // so the result type IS the coercion type (e.g. -"42" → integer).
       if (argType === UcodeType.STRING) {
@@ -731,7 +732,7 @@ export class TypeChecker {
       }
     }
 
-    return this.typeCompatibility.getUnaryResultType(argType, node.operator);
+    return this.typeCompatibility.getUnaryResultType(this.dataTypeToUcodeType(argType), node.operator);
   }
 
   /** array/object/function/regex can never convert to a finite number → NaN in arithmetic. */
@@ -803,7 +804,7 @@ export class TypeChecker {
     }
   }
 
-  private checkInOperator(node: BinaryExpressionNode, _leftType: UcodeType, rightType: UcodeType): UcodeType {
+  private checkInOperator(node: BinaryExpressionNode, _leftType: UcodeType, rightType: UcodeType): CheckResult {
     // Get the full type data for the right operand
     let rightTypeData = this.getFullTypeFromNode(node.right) || this.getTypeAsDataType(rightType);
 
@@ -1008,7 +1009,7 @@ export class TypeChecker {
     }
 
     // Fallback to simple type check
-    return this.checkNode(node);
+    return this.dataTypeToUcodeType(this.checkNode(node));
   }
 
   private parseSingleType(typeStr: string): SingleType {
@@ -1114,7 +1115,7 @@ export class TypeChecker {
     return returnType;
   }
 
-  private checkCallExpression(node: CallExpressionNode): UcodeType {
+  private checkCallExpression(node: CallExpressionNode): CheckResult {
     if (node.callee.type === 'Identifier') {
       const funcName = (node.callee as IdentifierNode).name;
 
@@ -1280,7 +1281,7 @@ export class TypeChecker {
 
     // For other callees (but not Identifiers, which we already handled above)
     if ((node.callee.type as string) !== 'Identifier') {
-      const calleeType = this.checkNode(node.callee);
+      const calleeType = this.dataTypeToUcodeType(this.checkNode(node.callee));
       if (!this.typeCompatibility.isValidCallTarget(calleeType)) {
         this.errors.push({
           message: `Cannot call ${calleeType} as function`,
@@ -1352,7 +1353,7 @@ export class TypeChecker {
       const arg = node.arguments[i];
       if (!arg || !expectedType) continue;
       
-      const actualType = this.checkNode(arg) || UcodeType.UNKNOWN;
+      const actualType = this.dataTypeToUcodeType(this.checkNode(arg)) || UcodeType.UNKNOWN;
       let actualTypeData = this.getFullTypeFromNode(arg) || this.getTypeAsDataType(actualType);
 
       // Apply AST-based guard narrowing for identifier arguments
@@ -1698,7 +1699,7 @@ export class TypeChecker {
     }
   }
 
-  private checkMemberExpression(node: MemberExpressionNode): UcodeType {
+  private checkMemberExpression(node: MemberExpressionNode): CheckResult {
     // Chained member access (base.A.B): when `node.object` is itself a
     // MemberExpression `base.A` and `base.nestedPropertyTypes['A']` knows the
     // type of B, return it. Without this hop, `let x = ns.ALFRED_TYPES.HOSTINFO`
@@ -2037,7 +2038,7 @@ export class TypeChecker {
 
 
 
-  private checkAssignmentExpression(node: AssignmentExpressionNode): UcodeType {
+  private checkAssignmentExpression(node: AssignmentExpressionNode): CheckResult {
     // Check the target for its side effects (populates _fullType, guards, etc.);
     // its type isn't used — ucode assignment has no type-compatibility constraint.
     this.checkNode(node.left);
@@ -2065,9 +2066,9 @@ export class TypeChecker {
               symbol.propertyTypes = new Map<string, UcodeDataType>();
             }
 
-            // Store the type of this array element
-            const rightDataType = this.ucodeTypeToDataType(rightType);
-            symbol.propertyTypes.set(indexKey, rightDataType);
+            // Store the type of this array element. PhaseA: rightType is now
+            // UcodeDataType (the rich type we want anyway), so no conversion.
+            symbol.propertyTypes.set(indexKey, rightType);
           }
         }
       }
@@ -2080,12 +2081,7 @@ export class TypeChecker {
     return rightType;
   }
 
-  private ucodeTypeToDataType(type: UcodeType): UcodeDataType {
-    // Simple conversion - for more complex types we'd need to handle unions
-    return type as UcodeDataType;
-  }
-
-  private checkArrayExpression(node: ArrayExpressionNode): UcodeType {
+  private checkArrayExpression(node: ArrayExpressionNode): CheckResult {
     // Check all elements and collect their types for Array<T> inference
     // Use UcodeDataType to preserve rich types (ArrayType for nested arrays, etc.)
     const elementDataTypes: UcodeDataType[] = [];
@@ -2133,7 +2129,7 @@ export class TypeChecker {
     return UcodeType.ARRAY;
   }
 
-  private checkObjectExpression(node: ObjectExpressionNode): UcodeType {
+  private checkObjectExpression(node: ObjectExpressionNode): CheckResult {
     // Check all properties
     for (const property of node.properties) {
       if (property.type === 'SpreadElement') continue;
@@ -2143,14 +2139,14 @@ export class TypeChecker {
     return UcodeType.OBJECT;
   }
 
-  private checkConditionalExpression(node: ConditionalExpressionNode): UcodeType {
+  private checkConditionalExpression(node: ConditionalExpressionNode): CheckResult {
     this.truthinessDepth++;
     this.checkNode(node.test);
     this.truthinessDepth--;
     const consequentType = this.checkNode(node.consequent);
     const alternateType = this.checkNode(node.alternate);
 
-    const resultType = this.typeCompatibility.getTernaryResultType(consequentType, alternateType);
+    const resultType = this.typeCompatibility.getTernaryResultType(this.dataTypeToUcodeType(consequentType), this.dataTypeToUcodeType(alternateType));
 
     // Preserve the real union object on _fullType so consumers that read it
     // (e.g. union-aware arithmetic, the variable-declarator inference) can
@@ -2162,19 +2158,19 @@ export class TypeChecker {
     return this.getTypeDescription(resultType) as UcodeType;
   }
 
-  private checkArrowFunctionExpression(_node: ArrowFunctionExpressionNode): UcodeType {
+  private checkArrowFunctionExpression(_node: ArrowFunctionExpressionNode): CheckResult {
     // Arrow functions are callable, so they have function type
     // For now, we don't analyze parameter types or return type inference
     // This is sufficient to prevent "Undefined function" errors for arrow functions
     return UcodeType.FUNCTION;
   }
 
-  private checkFunctionExpression(_node: FunctionExpressionNode): UcodeType {
+  private checkFunctionExpression(_node: FunctionExpressionNode): CheckResult {
     // Function expressions are also callable
     return UcodeType.FUNCTION;
   }
 
-  private checkIfStatement(node: IfStatementNode): UcodeType {
+  private checkIfStatement(node: IfStatementNode): CheckResult {
     // Type check the condition (in truthiness context)
     this.truthinessDepth++;
     this.checkNode(node.test);
@@ -2238,11 +2234,11 @@ export class TypeChecker {
     return UcodeType.UNKNOWN; // If statements don't return values
   }
 
-  private checkExpressionStatement(node: ExpressionStatementNode): UcodeType {
+  private checkExpressionStatement(node: ExpressionStatementNode): CheckResult {
     return this.checkNode(node.expression);
   }
 
-  private checkVariableDeclaration(node: VariableDeclarationNode): UcodeType {
+  private checkVariableDeclaration(node: VariableDeclarationNode): CheckResult {
     for (const declarator of node.declarations) {
       if (declarator.init) {
         this.checkNode(declarator.init);
@@ -2251,7 +2247,7 @@ export class TypeChecker {
     return UcodeType.UNKNOWN;
   }
 
-  private checkBlockStatement(node: BlockStatementNode): UcodeType {
+  private checkBlockStatement(node: BlockStatementNode): CheckResult {
     const savedDiagAliases = this.diagnosticTypeAliases;
     this.diagnosticTypeAliases = new Map(savedDiagAliases);
     for (let i = 0; i < node.body.length; i++) {
@@ -2342,14 +2338,14 @@ export class TypeChecker {
     return false;
   }
 
-  private checkReturnStatement(node: any): UcodeType {
+  private checkReturnStatement(node: any): CheckResult {
     if (node.argument) {
       return this.checkNode(node.argument);
     }
     return UcodeType.UNKNOWN;
   }
 
-  private checkSwitchStatement(node: SwitchStatementNode): UcodeType {
+  private checkSwitchStatement(node: SwitchStatementNode): CheckResult {
     this.checkNode(node.discriminant);
 
     const switchInfo = this.getTypeSwitchVariable(node.discriminant);
@@ -2456,7 +2452,7 @@ export class TypeChecker {
     }
   }
 
-  private checkTryStatement(node: any): UcodeType {
+  private checkTryStatement(node: any): CheckResult {
     // Check the try block
     if (node.block) {
       this.checkNode(node.block);
@@ -2475,7 +2471,7 @@ export class TypeChecker {
     return UcodeType.UNKNOWN;
   }
 
-  private checkCatchClause(node: any): UcodeType {
+  private checkCatchClause(node: any): CheckResult {
     // Enter catch scope
     this.symbolTable.enterScope();
 
