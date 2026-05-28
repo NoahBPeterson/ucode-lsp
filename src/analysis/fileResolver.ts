@@ -164,11 +164,14 @@ export class FileResolver {
 
     /**
      * For an object-literal export like `export const NAME = { KEY: literal, ... }`,
-     * return KEY's literal value as a display string (e.g. `64`, `"hello"`, `true`).
-     * Used by hover to show `KEY: integer = 64` for namespace constants. Returns
-     * null when the value isn't a simple literal we can render.
+     * return KEY's literal value. Two flavours:
+     *  - `display=true` quotes strings as JSON (`"hello"`) — used by hover.
+     *  - `display=false` returns the raw string (`hello`) — used as a property
+     *    key when the value drives an object access (ucode coerces keys to
+     *    strings, and `obj["hello"]` would store key `hello` not `"hello"`).
+     * Returns null when the value isn't a simple literal we can render.
      */
-    findExportedObjectPropertyLiteral(fileUri: string, exportName: string, propertyName: string): string | null {
+    findExportedObjectPropertyLiteral(fileUri: string, exportName: string, propertyName: string, display: boolean = true): string | null {
         try {
             const content = this.readFileContent(fileUri);
             if (content === null) return null;
@@ -179,23 +182,26 @@ export class FileResolver {
             const ast = parser.parse().ast as any;
             if (!ast?.body) return null;
 
+            const renderLiteral = (v: any): string | null => {
+                if (!v) return null;
+                if (v.type === 'Literal') {
+                    if (typeof v.value === 'string') return display ? JSON.stringify(v.value) : v.value;
+                    if (typeof v.value === 'number' || typeof v.value === 'boolean') return String(v.value);
+                    if (v.value === null) return 'null';
+                    return null;
+                }
+                // Negative-number literals are parsed as UnaryExpression in ucode
+                if (v.type === 'UnaryExpression' && v.operator === '-' && v.argument?.type === 'Literal' && typeof v.argument.value === 'number') {
+                    return String(-v.argument.value);
+                }
+                return null;
+            };
+
             const findInObject = (objNode: any): string | null => {
                 for (const prop of (objNode?.properties || [])) {
                     const key = prop?.key?.name ?? prop?.key?.value;
                     if (key !== propertyName) continue;
-                    const v = prop?.value;
-                    if (!v) return null;
-                    if (v.type === 'Literal') {
-                        if (typeof v.value === 'string') return JSON.stringify(v.value);
-                        if (typeof v.value === 'number' || typeof v.value === 'boolean') return String(v.value);
-                        if (v.value === null) return 'null';
-                        return null;
-                    }
-                    // Negative-number literals are parsed as UnaryExpression in ucode
-                    if (v.type === 'UnaryExpression' && v.operator === '-' && v.argument?.type === 'Literal' && typeof v.argument.value === 'number') {
-                        return String(-v.argument.value);
-                    }
-                    return null;
+                    return renderLiteral(prop?.value);
                 }
                 return null;
             };

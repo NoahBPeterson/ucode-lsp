@@ -119,6 +119,13 @@ export class TypeChecker {
   private strictMode = false;
   private transitiveTypeAliases: string[] = [];
   private diagnosticTypeAliases: Map<string, string[]> = new Map();
+  /** Optional FileResolver used to read literal values from imported files when
+   *  constant-folding `ns.A.B` member chains into property-key strings. */
+  private fileResolver: { findExportedObjectPropertyLiteral(uri: string, exp: string, prop: string, display?: boolean): string | null } | null = null;
+
+  setFileResolver(fr: { findExportedObjectPropertyLiteral(uri: string, exp: string, prop: string, display?: boolean): string | null }): void {
+    this.fileResolver = fr;
+  }
 
   constructor(symbolTable: SymbolTable) {
     this.symbolTable = symbolTable;
@@ -303,6 +310,82 @@ export class TypeChecker {
       }
     }
     return null;
+  }
+
+  /**
+   * Constant-fold an expression to its property-key form (the string ucode
+   * would coerce it to at runtime: 64 → "64", "foo" → "foo"). Used to resolve
+   * the KEY in `obj[expr]` so we can hit `propertyTypes` deterministically.
+   * Returns null when the expression isn't statically resolvable (function
+   * calls, arithmetic, identifier without a literal init — all the cases the
+   * sanity tests exercise to confirm we degrade to `unknown` rather than
+   * lying).
+   */
+  private resolvePropertyKeyToString(node: AstNode): string | null {
+    if (node.type === 'Literal') {
+      const lit = node as LiteralNode;
+      if (lit.value === undefined || lit.value === null) return null;
+      return String(lit.value);
+    }
+    if (node.type === 'UnaryExpression') {
+      const u = node as any;
+      if (u.operator === '-' && u.argument?.type === 'Literal' && typeof u.argument.value === 'number') {
+        return String(-u.argument.value);
+      }
+      return null;
+    }
+    if (node.type === 'Identifier') {
+      const sym = this.symbolTable.lookupAtPosition((node as IdentifierNode).name, node.start)
+                ?? this.symbolTable.lookup((node as IdentifierNode).name);
+      if (sym?.initNode) return this.resolvePropertyKeyToString(sym.initNode);
+      return null;
+    }
+    if (node.type === 'MemberExpression') {
+      const mem = node as MemberExpressionNode;
+      if (mem.computed) return null;
+      // Chained namespace constant: `ns.A.B` where `ns` is `import * as ns from 'file.uc'`.
+      // Asks the namespace's source file for the raw literal of inner key B.
+      if (this.fileResolver && mem.object.type === 'MemberExpression') {
+        const inner = mem.object as MemberExpressionNode;
+        if (!inner.computed && inner.object.type === 'Identifier') {
+          const baseName = (inner.object as IdentifierNode).name;
+          const baseSym = this.symbolTable.lookupAtPosition(baseName, node.start) ?? this.symbolTable.lookup(baseName);
+          const aName = this.getStaticPropertyName(inner.property);
+          const bName = this.getStaticPropertyName(mem.property);
+          if (baseSym?.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*'
+              && baseSym.importedFrom && baseSym.importedFrom.startsWith('file://')
+              && aName && bName) {
+            return this.fileResolver.findExportedObjectPropertyLiteral(baseSym.importedFrom, aName, bName, false);
+          }
+        }
+      }
+      return null;
+    }
+    return null;
+  }
+
+  /**
+   * Build a union over an object's known property values. Used when we can
+   * prove the access key is one of the object's keys (via keys-of provenance)
+   * but can't pin it to a specific one. Returns null on an empty map.
+   * Singletons return the single type (no needless union wrapping).
+   */
+  private computePropertyValueUnion(propertyTypes: Map<string, UcodeDataType>): UcodeDataType | null {
+    if (propertyTypes.size === 0) return null;
+    const members: SingleType[] = [];
+    for (const t of propertyTypes.values()) {
+      if (typeof t === 'string') {
+        members.push(t as UcodeType);
+      } else if (isUnionType(t)) {
+        for (const m of t.types) members.push(m);
+      } else if (isObjectType(t) || isArrayType(t)) {
+        members.push(t as SingleType);
+      } else {
+        // ModuleType etc. — collapse to OBJECT to keep the union renderable
+        members.push(UcodeType.OBJECT);
+      }
+    }
+    return createUnionType(members);
   }
 
   private recordConstantAssignment(objectName: string, propertyName: string): void {
@@ -1777,10 +1860,51 @@ export class TypeChecker {
       }
     }
 
+    // Computed property access on an OBJECT-typed identifier — try to type
+    // it through static key resolution (literal, const ref, namespace nested
+    // constant) OR through keys-of provenance (the key carries a tag that
+    // proves it's one of the object's known keys).
+    if (node.object.type === 'Identifier' && node.computed) {
+      const objSym = this.symbolTable.lookupAtPosition((node.object as IdentifierNode).name, node.start)
+                  ?? this.symbolTable.lookup((node.object as IdentifierNode).name);
+      const objIsObject = objSym && (objSym.dataType === UcodeType.OBJECT || (typeof objSym.dataType === 'object' && (objSym.dataType as any).type === UcodeType.OBJECT));
+      if (objSym && objIsObject && objSym.propertyTypes) {
+        // 1. Static key resolution: `obj[LIT]`, `obj[const_ident]`, `obj[ns.A.B]`
+        const keyStr = this.resolvePropertyKeyToString(node.property);
+        if (keyStr !== null) {
+          const t = objSym.propertyTypes.get(keyStr);
+          if (t !== undefined) {
+            (node as any)._fullType = t;
+            return this.dataTypeToUcodeType(t);
+          }
+          // Literal that's NOT a known property: we have exhaustive propertyTypes
+          // for object literals we own. Stay UNKNOWN (don't claim null — we can't
+          // prove the key is missing if the object was mutated since declaration).
+        }
+        // 2. Keys-of provenance: `obj[k]` where k.keysOfSymbol === obj's name.
+        const keyName = (node.property.type === 'Identifier') ? (node.property as IdentifierNode).name : null;
+        if (keyName) {
+          const keySym = this.symbolTable.lookupAtPosition(keyName, node.start) ?? this.symbolTable.lookup(keyName);
+          if (keySym?.keysOfSymbol && keySym.keysOfSymbol === (node.object as IdentifierNode).name) {
+            const valueUnion = this.computePropertyValueUnion(objSym.propertyTypes);
+            if (valueUnion !== null) {
+              (node as any)._fullType = valueUnion;
+              return this.dataTypeToUcodeType(valueUnion);
+            }
+          }
+        }
+      }
+    }
+
     // For computed property access on arrays (e.g., uuid[0]), check if we have type info
     if (node.object.type === 'Identifier' && node.computed) {
       const symbol = this.symbolTable.lookup((node.object as IdentifierNode).name);
       if (symbol && (symbol.dataType === UcodeType.ARRAY || isArrayType(symbol.dataType as UcodeDataType))) {
+        // Propagate keys-of provenance: indexing a tagged array yields one of
+        // the tagged object's keys. `let ks = keys(obj); ks[i]` → keysOfSymbol=obj.
+        if (symbol.keysOfSymbol) {
+          (node as any)._keysOfSymbol = symbol.keysOfSymbol;
+        }
         // Check for per-index property types first
         if (node.property.type === 'Literal') {
           const indexKey = String((node.property as LiteralNode).value);

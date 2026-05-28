@@ -289,6 +289,13 @@ export interface Symbol {
     jsdocDescription?: string; // Description from @param JSDoc tag
     isRestParam?: boolean; // True if this parameter was declared with ...spread syntax
     isExceptionParam?: boolean; // True if this is a catch-clause parameter (exception object)
+    /** When set, this variable's value is provably a key of the named object —
+     *  i.e. it came from `keys(NAME)`, from iterating NAME via for-in, or was
+     *  derived from such a value by an operation that preserves key existence
+     *  (currently: passthrough only — `int(x)` etc. are NOT considered
+     *  preserving). Used by checkMemberExpression to type `NAME[this]` as the
+     *  union of NAME's property values rather than `unknown`. */
+    keysOfSymbol?: string;
 }
 
 export class SymbolTable {

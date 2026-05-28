@@ -1767,6 +1767,16 @@ export class BuiltinValidator {
       this.narrowedReturnType = createArrayType(UcodeType.STRING);
     }
     this.validateArgumentType(node.arguments[0], 'keys', 1, [UcodeType.OBJECT]);
+    // Tag the call result with keys-of provenance. When the argument is a
+    // direct Identifier referring to a known object, downstream code can use
+    // this to type `arr[i]` and `for (let k of arr) { obj[k] }` against that
+    // object's propertyTypes — see semanticAnalyzer/typeChecker keysOfSymbol
+    // handling. Strict on the arg shape: anything but a bare Identifier is
+    // skipped (no chasing aliases here — we'd lose soundness on mutation).
+    const arg = node.arguments?.[0];
+    if (arg?.type === 'Identifier') {
+      (node as any)._keysOfSymbol = (arg as any).name;
+    }
     return true;
   }
 

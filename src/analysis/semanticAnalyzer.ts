@@ -92,6 +92,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.symbolTable = new SymbolTable();
     this.typeChecker = new TypeChecker(this.symbolTable);
     this.fileResolver = new FileResolver(options.workspaceRoot);
+    this.typeChecker.setFileResolver(this.fileResolver);
     this.options = {
       enableScopeAnalysis: true,
       enableTypeChecking: true,
@@ -551,6 +552,23 @@ export class SemanticAnalyzer extends BaseVisitor {
                 this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, fullType);
               }
             }
+            // keys-of provenance: propagate from the init expression. Covers
+            //   let ks = keys(obj);            // init is a tagged CallExpression
+            //   let k  = ks[i];                // init is a tagged MemberExpression
+            // Set at declaration site only; we don't track reassignments, so
+            // `let k = keys(o); k = "x"; o[k]` keeps the tag (accepted leak).
+            const initKeysOf = (node.init as any)._keysOfSymbol as string | undefined;
+            if (initKeysOf) sym.keysOfSymbol = initKeysOf;
+          }
+        }
+
+        // Plain alias: `let alias = ks;` where ks already has keysOfSymbol →
+        // copy the tag. Without this, the chain breaks at any rebinding.
+        if (node.init.type === 'Identifier') {
+          const sym = this.symbolTable.lookup(name);
+          if (sym) {
+            const srcSym = this.symbolTable.lookup((node.init as IdentifierNode).name);
+            if (srcSym?.keysOfSymbol) sym.keysOfSymbol = srcSym.keysOfSymbol;
           }
         }
 
@@ -1598,6 +1616,67 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     return null;
   }
+
+  /**
+   * Resolve an ObjectExpression Property's key to its runtime string value.
+   * For non-computed keys (`{foo: …}`) the syntactic identifier name IS the
+   * key. For computed keys (`{[expr]: …}`) we need the *value* of `expr` —
+   * the syntactic name `KEY_64` is not the key, `64` is. Returns null when
+   * the key isn't statically resolvable (function calls, arithmetic, etc.).
+   */
+  private resolveObjectLiteralKey(prop: PropertyNode): string | null {
+    if (!prop.computed) return this.getStaticPropertyName(prop.key);
+    return this.resolveExpressionToLiteralKey(prop.key);
+  }
+
+  /**
+   * Try to constant-fold an expression to its string property-key form.
+   * Handles: literals, identifiers bound to a literal init, and member-access
+   * chains rooted at a namespace import (e.g. `constants.ALFRED_TYPES.HOSTINFO`
+   * → look up the inner key's literal value in the imported file). Coerces
+   * to ucode's stringified key form: integer 64 → "64", string "hi" → "hi".
+   */
+  private resolveExpressionToLiteralKey(node: AstNode): string | null {
+    if (node.type === 'Literal') {
+      const lit = node as LiteralNode;
+      if (lit.value === undefined || lit.value === null) return null;
+      return String(lit.value);
+    }
+    // Negative literal — parsed as UnaryExpression in ucode
+    if (node.type === 'UnaryExpression') {
+      const u = node as any;
+      if (u.operator === '-' && u.argument?.type === 'Literal' && typeof u.argument.value === 'number') {
+        return String(-u.argument.value);
+      }
+      return null;
+    }
+    if (node.type === 'Identifier') {
+      const sym = this.symbolTable.lookup((node as IdentifierNode).name);
+      if (sym?.initNode) return this.resolveExpressionToLiteralKey(sym.initNode);
+      return null;
+    }
+    if (node.type === 'MemberExpression') {
+      const mem = node as MemberExpressionNode;
+      if (mem.computed) return null;
+      // Chained namespace access: base.A.B where base is `import * as base from 'file.uc'`
+      if (mem.object.type === 'MemberExpression') {
+        const inner = mem.object as MemberExpressionNode;
+        if (!inner.computed && inner.object.type === 'Identifier') {
+          const baseName = (inner.object as IdentifierNode).name;
+          const baseSym = this.symbolTable.lookup(baseName);
+          const aName = this.getStaticPropertyName(inner.property);
+          const bName = this.getStaticPropertyName(mem.property);
+          if (baseSym?.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*'
+              && baseSym.importedFrom && baseSym.importedFrom.startsWith('file://')
+              && aName && bName) {
+            return this.fileResolver.findExportedObjectPropertyLiteral(baseSym.importedFrom, aName, bName, /*display=*/false);
+          }
+        }
+      }
+      return null;
+    }
+    return null;
+  }
   
   private getModuleNameFromSymbol(symbol: SymbolEntry): string | null {
     if (symbol.type !== SymbolType.MODULE && symbol.type !== SymbolType.IMPORTED) {
@@ -2236,6 +2315,29 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
             this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, iterType, iteratorNode);
             this.symbolTable.markUsed(iteratorName, iteratorNode.start);
+
+            // Keys-of provenance for the iterator variable. Three sources:
+            //   1) `for (let k in obj)` where obj is a known OBJECT symbol → k is one of obj's keys.
+            //   2) `for (let k in keys(obj))` (CallExpression tagged by validateKeysFunction).
+            //   3) `for (let k in tagged_arr)` where tagged_arr has keysOfSymbol set
+            //      from a prior `let tagged_arr = keys(obj);`.
+            const iterSym = this.symbolTable.lookup(iteratorName);
+            if (iterSym) {
+              let keysOf: string | undefined;
+              if (node.right.type === 'Identifier') {
+                const rightName = (node.right as IdentifierNode).name;
+                const rightSym = this.symbolTable.lookup(rightName);
+                if (rightSym?.keysOfSymbol) {
+                  keysOf = rightSym.keysOfSymbol;
+                } else if (rightSym && (rightSym.dataType === UcodeType.OBJECT || (typeof rightSym.dataType === 'object' && (rightSym.dataType as any).type === UcodeType.OBJECT))) {
+                  keysOf = rightName;
+                }
+              } else if (node.right.type === 'CallExpression') {
+                const k = (node.right as any)._keysOfSymbol as string | undefined;
+                if (k) keysOf = k;
+              }
+              if (keysOf) iterSym.keysOfSymbol = keysOf;
+            }
           }
         } else if (declarations.length === 2) {
           // Two variables: first gets the index (number), second gets the value
@@ -2530,7 +2632,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     for (const prop of node.properties) {
       // Skip spread elements — they don't have key/value
       if (prop.type === 'SpreadElement') continue;
-      const key = this.getStaticPropertyName(prop.key);
+      const key = this.resolveObjectLiteralKey(prop);
       if (!key) continue;
       const val = prop.value;
       let valType: UcodeDataType;
