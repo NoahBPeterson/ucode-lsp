@@ -2278,12 +2278,54 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // Two variables: for (let i, item in array) - i gets the index, item gets the value
       
       if (node.left && node.left.type === 'Identifier') {
-        // Simple case: for (var_name in ...)
+        // Bare-iterator case: `for (var_name in ...)` (no `let`). Same
+        // type-inference + keys-of provenance treatment as the `let` case
+        // below — otherwise `data_generator` here would hover as `unknown`
+        // and `obj[data_generator]` wouldn't narrow through propertyTypes.
         const iteratorName = node.left.name;
         const iteratorNode = node.left;
-        
-        this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType, iteratorNode);
+
+        const rightFullType = this.getIterableFullType(node.right);
+        let iterType: UcodeDataType;
+        if (rightFullType && isArrayType(rightFullType)) {
+          iterType = getArrayElementType(rightFullType);
+        } else {
+          const rightType = this.typeChecker.checkNode(node.right);
+          if (rightType === UcodeType.OBJECT) {
+            iterType = UcodeType.STRING as UcodeDataType;
+          } else if (rightType === UcodeType.STRING) {
+            iterType = UcodeType.STRING as UcodeDataType;
+          } else {
+            iterType = UcodeType.UNKNOWN as UcodeDataType;
+          }
+        }
+
+        this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, iterType, iteratorNode);
         this.symbolTable.markUsed(iteratorName, iteratorNode.start);
+
+        // Iterator vars only become useful from the body onwards; hide them
+        // from completion while the user is still typing the iterable.
+        const iterSym = this.symbolTable.lookup(iteratorName);
+        if (iterSym && node.body?.start !== undefined) {
+          iterSym.visibleFrom = node.body.start;
+        }
+        // Keys-of provenance — same three sources as the `let` branch.
+        if (iterSym) {
+          let keysOf: string | undefined;
+          if (node.right.type === 'Identifier') {
+            const rightName = (node.right as IdentifierNode).name;
+            const rightSym = this.symbolTable.lookup(rightName);
+            if (rightSym?.keysOfSymbol) {
+              keysOf = rightSym.keysOfSymbol;
+            } else if (rightSym && (rightSym.dataType === UcodeType.OBJECT || (typeof rightSym.dataType === 'object' && (rightSym.dataType as any).type === UcodeType.OBJECT))) {
+              keysOf = rightName;
+            }
+          } else if (node.right.type === 'CallExpression') {
+            const k = (node.right as any)._keysOfSymbol as string | undefined;
+            if (k) keysOf = k;
+          }
+          if (keysOf) iterSym.keysOfSymbol = keysOf;
+        }
       } else if (node.left && node.left.type === 'VariableDeclaration' && node.left.declarations.length > 0) {
         // Declaration case: for (let var_name in ...) or for (let i, item in ...)
         const declarations = node.left.declarations;
@@ -2315,6 +2357,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
             this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, iterType, iteratorNode);
             this.symbolTable.markUsed(iteratorName, iteratorNode.start);
+
+            // Hide from completion until the body starts — see the bare-iterator
+            // branch above for rationale.
+            const iterSymInit = this.symbolTable.lookup(iteratorName);
+            if (iterSymInit && node.body?.start !== undefined) {
+              iterSymInit.visibleFrom = node.body.start;
+            }
 
             // Keys-of provenance for the iterator variable. Three sources:
             //   1) `for (let k in obj)` where obj is a known OBJECT symbol → k is one of obj's keys.

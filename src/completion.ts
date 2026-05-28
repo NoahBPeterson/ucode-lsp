@@ -613,6 +613,12 @@ function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, conne
             if (allBuiltinFunctions.has(varName)) {
                 continue;
             }
+            // Hide for-in iterator vars while the cursor is still in the head
+            // (e.g. typing the iterable). semanticAnalyzer sets visibleFrom on
+            // such symbols to the body's start offset.
+            if (symbol.visibleFrom !== undefined && offset !== undefined && offset < symbol.visibleFrom) {
+                continue;
+            }
             
             // Skip module constants objects to prevent constants from leaking globally
             // But we DO want to show the variables themselves (wlconst, rtconst) in completions  

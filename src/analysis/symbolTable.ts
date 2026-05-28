@@ -296,6 +296,13 @@ export interface Symbol {
      *  preserving). Used by checkMemberExpression to type `NAME[this]` as the
      *  union of NAME's property values rather than `unknown`. */
     keysOfSymbol?: string;
+    /** Source offset before which this symbol should be invisible to
+     *  identifier completion. Used for for-in iterator variables: declared
+     *  parser-side at `for (k in …)` but conceptually only meaningful from
+     *  the body onwards, so we don't offer `k` as a completion while the
+     *  user is still typing the iterable expression. Hover/definition are
+     *  unaffected — they still see the symbol normally. */
+    visibleFrom?: number;
 }
 
 export class SymbolTable {
