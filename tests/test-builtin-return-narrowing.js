@@ -259,7 +259,8 @@ function check(label, actual, expected) {
 }
 {
     const r = analyze(`let x; let a = split(x, ",");`);
-    check('split(unknown, string) -> array | null', getType(r, 'a'), 'array | null');
+    // split's elements are always strings even when arg1 is unknown → preserve <string>.
+    check('split(unknown, string) -> array<string> | null', getType(r, 'a'), 'array<string> | null');
 }
 
 // ============================================================================

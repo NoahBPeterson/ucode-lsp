@@ -91,4 +91,45 @@ describe('CheckResult refactor — rich type flows through checkNode', function(
     const h = await hoverVar(code, 'first');
     assert.ok(/string/.test(h), `array<string> element access should include string, got: ${h}`);
   });
+
+  // THE ORIGINAL BUG that prompted the whole refactor. A chain of
+  // split → element-access → split → element-access lost the element type at
+  // every step (split returned bare `array|null`; computed access on a
+  // union-containing-array returned unknown), so `mac_list[0].toUpperCase()`
+  // didn't error. Now each link preserves `<string>` and the `.toUpperCase()`
+  // string-member error fires.
+  it('split-chain element type is preserved end-to-end (string<-element of array<string>|null)', async function() {
+    const code = [
+      "'use strict';",
+      "let content = 'a,b,c';",
+      "let lines = split(content, '\\n');",
+      "let line = lines[0];",            // string | null
+      "let parts = split(line, ',');",   // array<string> | null  (was: array | null)
+      "let macfield = parts[7];",        // string | null         (was: unknown)
+      "let mac_list = split(macfield, ';');", // array<string> | null
+      "let first_mac = mac_list[0];",    // string | null         (was: unknown)
+      ''
+    ].join('\n');
+    assert.ok(/array<string>/.test(await hoverVar(code, 'parts')),
+      'split(string|null) should keep <string> element type');
+    assert.ok(/string/.test(await hoverVar(code, 'macfield')),
+      'parts[7] should be string|null (computed access on array<string>|null)');
+    assert.ok(/string/.test(await hoverVar(code, 'first_mac')),
+      'mac_list[0] should be string|null');
+  });
+
+  it('the original bug: `array<string>|null`-element . toUpperCase() errors', async function() {
+    const code = [
+      "'use strict';",
+      "let content = 'a,b,c';",
+      "let parts = split(content, ',');",
+      "let mac_list = split(parts[0], ';');",
+      "let x = mac_list[0].toUpperCase();",  // string has no methods → error
+      ''
+    ].join('\n');
+    const diags = await lspServer.getDiagnostics(code, file);
+    const stringErr = diags.find(d => /toUpperCase.*does not exist on string type/.test(d.message));
+    assert.ok(stringErr,
+      `expected "toUpperCase does not exist on string type", got: ${JSON.stringify(diags.map(d => d.message))}`);
+  });
 });

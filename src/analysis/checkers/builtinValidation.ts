@@ -499,8 +499,11 @@ export class BuiltinValidator {
     if (textIsString && sepIsValid) {
       this.narrowedReturnType = createArrayType(UcodeType.STRING);
     } else {
-      // Could return null — use array | null (without element type info for uncertain case)
-      this.narrowedReturnType = createUnionType([UcodeType.ARRAY, UcodeType.NULL]) as UcodeType;
+      // Could return null (wrong arg types) — but IF it returns an array, the
+      // elements are always strings. So `array<string> | null`, not bare
+      // `array | null`: keeping the element type lets `result[i]` resolve to
+      // `string | null` downstream instead of collapsing to unknown.
+      this.narrowedReturnType = createUnionType([createArrayType(UcodeType.STRING), UcodeType.NULL]) as UcodeType;
     }
 
     if (textArg) {

@@ -74,13 +74,14 @@ function check(label, actual, expected) {
     check('split(string_var, string)', getType(result, code, 'parts'), 'array<string>');
 }
 
-// 3. split() with unknown parameter → array | null (could return null if not string)
+// 3. split() with unknown parameter → array<string> | null (could return null
+// if not string; but IF it returns an array, the elements are always strings).
 {
     const code = `function foo(x) {\n  let parts = split(x, ",");\n  print(parts);\n  return parts;\n}\nprint(foo("test"));\n`;
     const result = analyze(code);
     const sym = result.symbolTable.lookupAtPosition('parts', code.indexOf('let parts') + 4);
     const type = sym ? typeToString(sym.dataType) : null;
-    check('split(unknown_param) return type', type, 'array | null');
+    check('split(unknown_param) return type', type, 'array<string> | null');
     // Should warn that argument 1 is unknown
     const unknownArgWarnings = result.diagnostics.filter(d =>
         (d.code === 'incompatible-function-argument' || d.code === 'nullable-argument') && d.message.includes('split')

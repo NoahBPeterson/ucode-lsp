@@ -1821,6 +1821,21 @@ export class TypeChecker {
 
     const objectType = this.checkNode(node.object);
 
+    // Computed access on a UNION that contains an array (e.g. `array<string> | null`
+    // from split() on a nullable arg, or `parts[i]` where parts is array|null):
+    // indexing yields the array member's element type, plus null (index may
+    // miss, or the receiver itself may be null). Union analogue of the
+    // array-typed branch below — without this, `(array<string>|null)[i]`
+    // collapses to unknown and the element's string-ness is lost downstream.
+    if (node.computed && isUnionType(objectType)) {
+      const arrMember = getUnionTypes(objectType).find(m => isArrayType(m) || singleTypeToBase(m) === UcodeType.ARRAY);
+      if (arrMember) {
+        const elemType = isArrayType(arrMember) ? getArrayElementType(arrMember) : UcodeType.UNKNOWN;
+        const elemBase = this.dataTypeToUcodeType(elemType);
+        return createUnionType([elemBase, UcodeType.NULL]);
+      }
+    }
+
     // For computed access on any array-typed expression (e.g., sort(arr)[0], split(s, d)[1])
     // recover ArrayType element info from the object's cached rich type.
     if (this.dataTypeToUcodeType(objectType) === UcodeType.ARRAY && node.computed) {
