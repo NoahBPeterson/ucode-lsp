@@ -549,7 +549,7 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // Add type narrowing specific quick fixes
             if (diagnostic.code) {
                 const typeNarrowingActions = generateTypeNarrowingQuickFixes(
-                    diagnostic, document, params.textDocument.uri, lineText, ast
+                    diagnostic, document, params.textDocument.uri, lineText, ast, cacheEntry?.result?.symbolTable
                 );
                 codeActions.push(...typeNarrowingActions);
             }
@@ -1683,7 +1683,7 @@ function generateImportTypeQuickFix(
 
 // Generate quick fixes for type narrowing diagnostics
 function generateTypeNarrowingQuickFixes(
-    diagnostic: any, document: TextDocument, uri: string, lineText: string, ast?: any
+    diagnostic: any, document: TextDocument, uri: string, lineText: string, ast?: any, symbolTable?: any
 ): CodeAction[] {
     const actions: CodeAction[] = [];
 
@@ -2040,8 +2040,9 @@ function generateTypeNarrowingQuickFixes(
         }
 
         // Prefer a readable singular name for plural array accesses (`parts[0]`
-        // → `part`); generic `_val` otherwise.
-        const vn = suggestExtractName(document, exprText);
+        // → `part`); generic `_val` otherwise. Pass the symbol table + position
+        // so collision detection is scope-aware (ignores comments/strings).
+        const vn = suggestExtractName(document, exprText, symbolTable, document.offsetAt(diagnostic.range.start));
         const kw = ctx.inLoop ? 'continue' : 'return';
 
         // Build guard condition (filter out "null" — type(x) never returns "null")
@@ -2417,23 +2418,36 @@ function uniqueValName(document: TextDocument, _line: number): string {
  *  element access on a plural identifier — `parts[0]`, `obj.lines[i]` — use the
  *  singular (`part`, `line`) for readability; otherwise fall back to the generic
  *  `_val` scheme. Always returns a name not already declared in the document. */
-function suggestExtractName(document: TextDocument, exprText: string): string {
+function suggestExtractName(document: TextDocument, exprText: string, symbolTable?: any, offset?: number): string {
     // Trailing element access on an identifier (optionally after a `.` chain).
     const m = /(?:^|\.)([A-Za-z_$][\w$]*)\s*\[[^\]]*\]\s*$/.exec((exprText || '').trim());
     if (m && m[1] && m[1].length > 1 && /s$/.test(m[1])) {
         const singular = m[1].slice(0, -1); // literal trailing-'s' removal: parts→part, lines→line
-        // Use the singular ONLY if that exact name isn't already present as an
-        // identifier anywhere — params, the index variable, other locals. e.g.
-        // `targets[target]` must NOT extract to `target` (collides with the
-        // index/param). `\bsingular\b` won't false-match inside the plural
-        // (`\bpart\b` doesn't hit `parts`). If taken, fall back to `_val`.
-        const esc = singular.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        if (singular && !UCODE_RESERVED.has(singular)
-            && !new RegExp(`\\b${esc}\\b`).test(document.getText())) {
-            return singular; // unique by construction — not present anywhere in the doc
+        if (singular && !UCODE_RESERVED.has(singular) && !nameInUse(singular, document, symbolTable, offset)) {
+            return singular;
         }
     }
     return uniqueName(document, '_val');
+}
+
+/** Is `name` already a binding visible at `offset`? Prefer the symbol table
+ *  (scope-aware: catches params, locals, loop/index vars; ignores comments,
+ *  strings, and out-of-scope declarations — so `parts[0]` → `part` succeeds
+ *  even when "part" appears in a comment, while `targets[target]` → `target`
+ *  is correctly rejected because the index/param is in scope). Falls back to a
+ *  conservative document-wide word scan only when no symbol table is available. */
+function nameInUse(name: string, document: TextDocument, symbolTable?: any, offset?: number): boolean {
+    // Precise, scope-aware: catches params, in-scope locals, and the index/loop
+    // var (e.g. the `target` in `targets[target]`). Ignores comments/strings.
+    if (symbolTable && typeof symbolTable.lookupAtPosition === 'function' && offset !== undefined) {
+        try { if (symbolTable.lookupAtPosition(name, offset)) return true; } catch { /* fall through */ }
+    }
+    // Also reject if the name is explicitly DECLARED anywhere (let/const/var) —
+    // catches a same-name declaration whose position the scope check would miss
+    // (e.g. declared later in the scope). Declarations only, so a mere mention
+    // in a comment or string does NOT count (that was the over-conservative bug).
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b(?:let|const|var)\\s+${esc}\\b`).test(document.getText());
 }
 
 /** Check if a variable declared on `line` is referenced on any subsequent line */

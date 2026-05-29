@@ -654,6 +654,47 @@ for (let line in lines)
         assert(!/\blet line =/.test(text), `Must not collide with loop var 'line', got: ${text}`);
       });
 
+      it('a mere mention of the singular in a COMMENT does not block it', async function() {
+        // Regression: the collision check used a document-wide word scan, so
+        // "part" in a comment wrongly forced the _val fallback. Now scope-aware.
+        const code = `
+// take the first part of each line
+let parts = split('a,b,c', ',');
+const iface = trim(parts[0]);
+`;
+        const { actions } = await getActionsForCode(code, 'nullable-argument');
+        const extract = findAction(actions, 'Extract');
+        assert(extract, `Should offer extract action`);
+        const text = getEditText(extract);
+        assert(/\blet part\b/.test(text), `Comment mention must not block 'part', got: ${text}`);
+      });
+
+      it('a mention of the singular in a STRING does not block it', async function() {
+        const code = `
+let msg = 'no part found';
+let parts = split('a,b,c', ',');
+const iface = trim(parts[0]);
+`;
+        const { actions } = await getActionsForCode(code, 'nullable-argument');
+        const extract = findAction(actions, 'Extract');
+        assert(extract, `Should offer extract action`);
+        const text = getEditText(extract);
+        assert(/\blet part\b/.test(text), `String mention must not block 'part', got: ${text}`);
+      });
+
+      it('a real `let part` declaration DOES block it (falls back to _val)', async function() {
+        const code = `
+let part = 99;
+let parts = split('a,b,c', ',');
+const iface = trim(parts[0]);
+`;
+        const { actions } = await getActionsForCode(code, 'nullable-argument');
+        const extract = findAction(actions, 'Extract');
+        assert(extract, `Should offer extract action`);
+        const text = getEditText(extract);
+        assert(text.includes('let _val'), `Real declaration must force _val, got: ${text}`);
+      });
+
       it('uses `_val` for a non-plural array name (`data[0]`)', async function() {
         const code = `
 let data = split('a,b', ',');
