@@ -195,7 +195,10 @@ export class TypeChecker {
       { name: 'include', parameters: [UcodeType.STRING], returnType: UcodeType.UNKNOWN },
       { name: 'json', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
       { name: 'match', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]) },
-      { name: 'replace', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true },
+      // replace() returns null ONLY when the subject (arg 0) is null — the search
+      // arg accepts string OR regex (so a regex must not trip the null-narrowing),
+      // and the subject is otherwise coerced to string. So narrow on arg 0 only.
+      { name: 'replace', parameters: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0] },
       { name: 'system', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.INTEGER, minParams: 1, maxParams: 2 },
       { name: 'time', parameters: [], returnType: UcodeType.INTEGER },
       { name: 'sleep', parameters: [UcodeType.INTEGER], returnType: UcodeType.BOOLEAN },

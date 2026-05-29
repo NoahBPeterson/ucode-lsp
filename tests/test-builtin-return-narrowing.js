@@ -263,6 +263,23 @@ function check(label, actual, expected) {
     check('split(unknown, string) -> array<string> | null', getType(r, 'a'), 'array<string> | null');
 }
 
+// --- replace(subject, search, repl): returns null ONLY when subject is null. ---
+// The search arg accepts string OR regex; a regex must NOT trip the null-narrowing
+// (narrowingArgs: [0] checks only the subject). Was wrongly returning `null`.
+{
+    const r = analyze(`let s = "x"; let a = replace(s, /[0-9]/g, "");`);
+    check('replace(string, REGEX, string) -> string', getType(r, 'a'), 'string');
+}
+{
+    const r = analyze(`let s = "x"; let a = replace(s, "0", "");`);
+    check('replace(string, string, string) -> string', getType(r, 'a'), 'string');
+}
+{
+    const r = analyze(`let x; let a = replace(x, /[0-9]/g, "");`);
+    // unknown subject → could be null → keep the union (don't force null, don't force string)
+    check('replace(unknown, regex, string) -> string | null', getType(r, 'a'), 'string | null');
+}
+
 // ============================================================================
 // Workstream B: Argument-count narrowing
 // Return type depends on number of arguments passed.
