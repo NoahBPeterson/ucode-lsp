@@ -2039,7 +2039,9 @@ function generateTypeNarrowingQuickFixes(
             }
         }
 
-        const vn = uniqueValName(document, line);
+        // Prefer a readable singular name for plural array accesses (`parts[0]`
+        // → `part`); generic `_val` otherwise.
+        const vn = suggestExtractName(document, exprText);
         const kw = ctx.inLoop ? 'continue' : 'return';
 
         // Build guard condition (filter out "null" — type(x) never returns "null")
@@ -2384,18 +2386,54 @@ function findCallExpressionAtOffset(node: any, offset: number): any | null {
     return node.type === 'CallExpression' ? node : null;
 }
 
-/** Find a unique variable name like _val, _val2, _val3... that isn't already used nearby */
-function uniqueValName(document: TextDocument, _line: number): string {
-    // Scan the entire document to avoid collisions with any existing _val declarations.
-    // Uses regex with word boundary to avoid matching _val2 when checking _val.
+// ucode reserved words — never emit one as a generated variable name (e.g. a
+// `returns[i]` access must not produce `let return = ...`).
+const UCODE_RESERVED = new Set([
+    'let', 'const', 'function', 'if', 'else', 'for', 'while', 'return', 'break',
+    'continue', 'try', 'catch', 'switch', 'case', 'default', 'import', 'export',
+    'in', 'delete', 'this', 'true', 'false', 'null'
+]);
+
+/** Find a unique name based on `base` (base, base2, base3, …) not already
+ *  declared anywhere in the document. Word-boundary match so `base` doesn't
+ *  spuriously match `base2`. */
+function uniqueName(document: TextDocument, base: string): string {
     const fullText = document.getText();
-    let name = '_val';
+    let name = base;
     let suffix = 2;
     while (new RegExp(`(?:let|const|var)\\s+${name}\\b`).test(fullText)) {
-        name = `_val${suffix}`;
+        name = `${base}${suffix}`;
         suffix++;
     }
     return name;
+}
+
+/** Find a unique variable name like _val, _val2, _val3… that isn't already used nearby */
+function uniqueValName(document: TextDocument, _line: number): string {
+    return uniqueName(document, '_val');
+}
+
+/** Suggest a readable name for a variable extracted from `exprText`. For an
+ *  element access on a plural identifier — `parts[0]`, `obj.lines[i]` — use the
+ *  singular (`part`, `line`) for readability; otherwise fall back to the generic
+ *  `_val` scheme. Always returns a name not already declared in the document. */
+function suggestExtractName(document: TextDocument, exprText: string): string {
+    // Trailing element access on an identifier (optionally after a `.` chain).
+    const m = /(?:^|\.)([A-Za-z_$][\w$]*)\s*\[[^\]]*\]\s*$/.exec((exprText || '').trim());
+    if (m && m[1] && m[1].length > 1 && /s$/.test(m[1])) {
+        const singular = m[1].slice(0, -1); // literal trailing-'s' removal: parts→part, lines→line
+        // Use the singular ONLY if that exact name isn't already present as an
+        // identifier anywhere — params, the index variable, other locals. e.g.
+        // `targets[target]` must NOT extract to `target` (collides with the
+        // index/param). `\bsingular\b` won't false-match inside the plural
+        // (`\bpart\b` doesn't hit `parts`). If taken, fall back to `_val`.
+        const esc = singular.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        if (singular && !UCODE_RESERVED.has(singular)
+            && !new RegExp(`\\b${esc}\\b`).test(document.getText())) {
+            return singular; // unique by construction — not present anywhere in the doc
+        }
+    }
+    return uniqueName(document, '_val');
 }
 
 /** Check if a variable declared on `line` is referenced on any subsequent line */

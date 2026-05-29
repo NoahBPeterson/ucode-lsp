@@ -619,6 +619,52 @@ print(process({}, "a", ["x"]));
       assert(text.includes('continue;'), `Should use continue in loop, got: ${text}`);
       assert(text.includes('push(_val, line)'), `Should replace expression in body, got: ${text}`);
       assert(text.trimEnd().endsWith('}'), `Should close the block, got: ${text}`);
+      // The plural-singular naming (targets→target) must NOT kick in here: `target`
+      // is already the index/param, so it would collide. Falls back to _val.
+      assert(!text.includes('let target ='), `Must not collide with the index var, got: ${text}`);
+    });
+
+    describe('extracted variable naming (plural array → singular)', function() {
+      // split() gives array<string>, so `arr[i]` is string|null → nullable-argument
+      // and the extract-and-guard action is offered.
+      it('extracts `parts[0]` to `part` (singular of the plural array)', async function() {
+        const code = `
+let parts = split('a,b,c', ',');
+const iface = trim(parts[0]);
+`;
+        const { actions } = await getActionsForCode(code, 'nullable-argument');
+        const extract = findAction(actions, 'Extract');
+        assert(extract, `Should offer extract action, got: ${actions.map(a => a.title).join(', ')}`);
+        const text = getEditText(extract);
+        assert(/\blet part\b/.test(text), `Should name the extracted var 'part', got: ${text}`);
+        assert(text.includes('trim(part)'), `Should use 'part' in the call, got: ${text}`);
+      });
+
+      it('falls back to `_val` when the singular name is already taken', async function() {
+        // `lines[i]` would suggest `line`, but `line` is already the loop variable.
+        const code = `
+let lines = split('a\\nb', '\\n');
+for (let line in lines)
+    print(trim(lines[line]));
+`;
+        const { actions } = await getActionsForCode(code, 'nullable-argument');
+        const extract = findAction(actions, 'Extract');
+        assert(extract, `Should offer extract action`);
+        const text = getEditText(extract);
+        assert(!/\blet line =/.test(text), `Must not collide with loop var 'line', got: ${text}`);
+      });
+
+      it('uses `_val` for a non-plural array name (`data[0]`)', async function() {
+        const code = `
+let data = split('a,b', ',');
+const iface = trim(data[0]);
+`;
+        const { actions } = await getActionsForCode(code, 'nullable-argument');
+        const extract = findAction(actions, 'Extract');
+        assert(extract, `Should offer extract action`);
+        const text = getEditText(extract);
+        assert(text.includes('let _val'), `Non-plural array should use _val, got: ${text}`);
+      });
     });
 
     it('should expand else-if branch into block with extract + guard inside', async function() {
