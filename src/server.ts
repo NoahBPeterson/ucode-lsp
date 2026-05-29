@@ -53,6 +53,16 @@ const reverseDeps = new Map<string, Set<string>>(); // importedUri → set of im
 const analysisTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const ANALYSIS_DEBOUNCE_MS = 50;
 
+// (uri → version) that onDidOpen just analyzed synchronously. vscode-languageserver
+// fires onDidChangeContent on open too (the initial content counts as a change),
+// so without this an open would analyze TWICE: immediately (onDidOpen) AND again
+// 50ms later (the debounced onDidChangeContent) — redundant work plus a delayed
+// duplicate publish. The marker lets onDidChangeContent recognise and skip that
+// open-induced change. Genuine edits (where onDidOpen does NOT fire) never match
+// the marker and debounce normally; if a re-open ever fails to fire onDidOpen,
+// the marker simply won't match and we fall back to debounced analysis (safe).
+const openAnalyzedVersion = new Map<string, number>();
+
 // Workspace folders for directory scanning
 let workspaceFolders: string[] = [];
 let hasConfigurationCapability = false;
@@ -270,14 +280,24 @@ connection.onInitialized(async () => {
 documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
     // Drop the open-buffer override so cross-file resolution falls back to disk.
     clearOpenDocumentContent(e.document.uri);
+    openAnalyzedVersion.delete(e.document.uri);
 });
 
 documents.onDidChangeContent(async (change: TextDocumentChangeEvent<TextDocument>) => {
     // Keep the open-buffer registry current immediately (not debounced) so other
     // files resolving imports of this one see the latest, unsaved content.
-    setOpenDocumentContent(change.document.uri, change.document.getText());
-    // Debounce analysis — avoid re-running full semantic analysis on every keystroke
     const uri = change.document.uri;
+    setOpenDocumentContent(uri, change.document.getText());
+
+    // Skip the change-event that is really just the initial open: onDidOpen
+    // already analyzed this exact (uri, version) synchronously. Consume the
+    // marker so a genuine later edit (new version) still debounces.
+    if (openAnalyzedVersion.get(uri) === change.document.version) {
+        openAnalyzedVersion.delete(uri);
+        return;
+    }
+
+    // Debounce analysis — avoid re-running full semantic analysis on every keystroke
     const existingTimer = analysisTimers.get(uri);
     if (existingTimer) {
         clearTimeout(existingTimer);
@@ -291,6 +311,9 @@ documents.onDidChangeContent(async (change: TextDocumentChangeEvent<TextDocument
 
 documents.onDidOpen(async (change: TextDocumentChangeEvent<TextDocument>) => {
     setOpenDocumentContent(change.document.uri, change.document.getText());
+    // Mark this (uri, version) as analyzed so the open-induced onDidChangeContent
+    // that fires right after this skips its redundant debounced re-analysis.
+    openAnalyzedVersion.set(change.document.uri, change.document.version);
     await validateAndAnalyzeDocument(change.document);
 });
 
