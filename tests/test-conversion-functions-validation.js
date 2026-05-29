@@ -19,9 +19,18 @@ describe('Conversion Functions Validation Tests', function() {
     }
   });
 
-  // Helper function to get diagnostics with improved naming
-  async function getValidationErrors(code, filename = '/tmp/conversion-test.uc') {
-    const diagnostics = await getDiagnostics(code, filename);
+  // Unique URI per call. The mocha LSP server is shared across all test files,
+  // and a single didOpen produces TWO publishDiagnostics for its URI (an
+  // immediate one from onDidOpen plus a 50ms-debounced one from
+  // onDidChangeContent). getDiagnostics resolves on the next publish for the
+  // URI with no version correlation, so when consecutive tests REUSE one URI a
+  // delayed publish from the previous test can resolve the next test's waiter
+  // (observed as a flaky `int()`-arg-count assertion). A distinct URI per call
+  // isolates each waiter so only that test's own publishes can resolve it.
+  let _uriSeq = 0;
+  async function getValidationErrors(code, filename) {
+    const uri = filename || `/tmp/conversion-test-${_uriSeq++}.uc`;
+    const diagnostics = await getDiagnostics(code, uri);
     return diagnostics.filter(d => d.severity === 1); // Only return errors
   }
 
