@@ -147,6 +147,37 @@ const BUILTIN_RETURN_RANGE: Record<string, ReturnRange> = {
   atan2:  { fn: 'atan2',  min: -Math.PI, max: Math.PI,   canBeNull: false, canBeNaN: true, module: 'math', desc: 'a value in [-π, π] (or NaN)' },
 };
 
+/**
+ * Numeric return ranges for METHODS on known handle objects (fs.file, io.handle,
+ * uloop.timer, …), keyed by `"<objectType>.<method>"`. Distinct from the bare/
+ * module registry above because the bound depends on BOTH the receiver's handle
+ * type AND the method name — `close()` on an fs.file returns a boolean, but on an
+ * fs.proc it's an exit code. Gated at the call site on `detectObjectType` proving
+ * the receiver is that handle type, so a user object's same-named method (`.tell`,
+ * `.write`, …) is never mis-flagged. All bounds verified against the C source and
+ * /usr/local/bin/ucode. `count` = "bytes/offset/fd: a non-negative int, or null on
+ * error" (null coerces to 0 for ordering — see nullCompare).
+ */
+const COUNT_OR_NULL = { min: 0, max: Infinity, canBeNull: true, canBeNaN: false } as const;
+const METHOD_RETURN_RANGE: Record<string, ReturnRange> = {
+  'fs.file.write':   { fn: 'fs.file.write',   ...COUNT_OR_NULL, desc: 'the number of bytes written (or null on error)' },
+  'fs.file.tell':    { fn: 'fs.file.tell',    ...COUNT_OR_NULL, desc: 'a non-negative file offset (or null on error)' },
+  'fs.file.fileno':  { fn: 'fs.file.fileno',  ...COUNT_OR_NULL, desc: 'a non-negative file descriptor (or null on error)' },
+  'fs.proc.write':   { fn: 'fs.proc.write',   ...COUNT_OR_NULL, desc: 'the number of bytes written (or null on error)' },
+  'fs.proc.fileno':  { fn: 'fs.proc.fileno',  ...COUNT_OR_NULL, desc: 'a non-negative file descriptor (or null on error)' },
+  // proc.close() returns the exit code (0–255) OR a NEGATIVE signal number when
+  // the child is signal-killed (verified: `popen('kill -TERM $$').close()` → -15),
+  // so it's bounded ABOVE by 255 but NOT below — `close() < 0` is a legit signal
+  // check and is NOT flagged. Mirrors the global system() entry.
+  'fs.proc.close':   { fn: 'fs.proc.close',   min: -Infinity, max: 255, canBeNull: true, canBeNaN: false, desc: 'an exit code 0–255, or a negative signal number (or null)' },
+  'io.handle.write':  { fn: 'io.handle.write',  ...COUNT_OR_NULL, desc: 'the number of bytes written (or null on error)' },
+  'io.handle.tell':   { fn: 'io.handle.tell',   ...COUNT_OR_NULL, desc: 'a non-negative file offset (or null on error)' },
+  'io.handle.fileno': { fn: 'io.handle.fileno', ...COUNT_OR_NULL, desc: 'a non-negative file descriptor (or null on error)' },
+  // timer/interval remaining() → -1 (not armed) or a non-negative ms count, never null.
+  'uloop.timer.remaining':    { fn: 'uloop.timer.remaining',    min: -1, max: Infinity, canBeNull: false, canBeNaN: false, desc: '-1 (not armed) or a non-negative millisecond count', hint: 'Did you mean -1?' },
+  'uloop.interval.remaining': { fn: 'uloop.interval.remaining', min: -1, max: Infinity, canBeNull: false, canBeNaN: false, desc: '-1 (not armed) or a non-negative millisecond count', hint: 'Did you mean -1?' },
+};
+
 export class TypeChecker {
   private symbolTable: SymbolTable;
   private builtinFunctions: Map<string, FunctionSignature>;
@@ -802,13 +833,41 @@ export class TypeChecker {
       }
       return range;
     }
-    // namespace member call: `math.cos(x)`
-    if (callee?.type === 'MemberExpression' && !callee.computed
-        && callee.object?.type === 'Identifier' && callee.property?.type === 'Identifier') {
-      const range = BUILTIN_RETURN_RANGE[callee.property.name];
-      if (!range || !range.module) return null;
-      const objSym = this.symbolTable.lookup(callee.object.name);
-      return (objSym && objSym.importedFrom === range.module) ? range : null;
+    if (callee?.type === 'MemberExpression' && !callee.computed && callee.property?.type === 'Identifier') {
+      const methodName = callee.property.name;
+      // (a) namespace member call: `math.cos(x)` — object is the module import.
+      if (callee.object?.type === 'Identifier') {
+        const range = BUILTIN_RETURN_RANGE[methodName];
+        if (range && range.module) {
+          const objSym = this.symbolTable.lookup(callee.object.name);
+          if (objSym && objSym.importedFrom === range.module) return range;
+        }
+      }
+      // (b) handle-method call: `f.tell()` where the receiver is provably a known
+      //     handle type (fs.file, io.handle, uloop.timer, …). Keyed on the receiver
+      //     type so a user object's same-named method isn't mis-flagged.
+      const recvType = this.receiverObjectType(callee.object);
+      if (recvType) {
+        const mrange = METHOD_RETURN_RANGE[`${recvType}.${methodName}`];
+        if (mrange) return mrange;
+      }
+    }
+    return null;
+  }
+
+  /** The KnownObjectType of a method-call receiver, if it provably has one — via
+   *  the per-node type cache (handles `this.fp`, `arr[0]`, …) or, for a bare
+   *  identifier, its symbol's declared type (`let f = fs.open(...)`). */
+  private receiverObjectType(objNode: AstNode): KnownObjectType | null {
+    if (!objNode) return null;
+    const cached = this.getTypeOf(objNode);
+    if (cached) {
+      const d = this.detectObjectType(cached);
+      if (d) return d;
+    }
+    if (objNode.type === 'Identifier') {
+      const sym = this.symbolTable.lookup((objNode as IdentifierNode).name);
+      if (sym) return this.detectObjectType(sym.dataType);
     }
     return null;
   }
