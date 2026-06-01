@@ -119,4 +119,16 @@ describe('Impossible index()/rindex() comparison (UC2009)', function () {
     assert.strictEqual((await uc2009(`let r = system("x") < 0;`)).length, 0);
     assert.strictEqual((await uc2009(`let r = system("x") == 0;`)).length, 0);
   });
+
+  // ── trace() returns the previous trace level, a uint8_t [0, 255] ────────────
+  it('flags out-of-range trace() comparisons ([0, 255])', async () => {
+    assert.match((await uc2009(`let r = trace(0) < 0;`))[0].message, /always false/);
+    assert.match((await uc2009(`let r = trace(0) > 255;`))[0].message, /always false/);
+    assert.match((await uc2009(`let r = trace(0) >= 0;`))[0].message, /always true/);
+  });
+
+  it('does NOT flag legit trace() comparisons (`== 0`, `== 2`)', async () => {
+    assert.strictEqual((await uc2009(`let r = trace(0) == 0;`)).length, 0);
+    assert.strictEqual((await uc2009(`let r = trace(0) == 2;`)).length, 0);
+  });
 });

@@ -131,6 +131,8 @@ const BUILTIN_RETURN_RANGE: Record<string, ReturnRange> = {
   rindex: { fn: 'rindex', min: -1, max: Infinity, canBeNull: true,  canBeNaN: false, desc: '-1 (not found) or a non-negative index', hint: 'Did you mean -1?' },
   length: { fn: 'length', min: 0,  max: Infinity, canBeNull: true,  canBeNaN: false, desc: 'a non-negative integer (or null on a non-collection)' },
   ord:    { fn: 'ord',    min: 0,  max: 255,      canBeNull: true,  canBeNaN: false, desc: 'a byte value 0–255 (or null on bad args/offset)' },
+  // trace(level) returns the PREVIOUS trace level — a uint8_t, so 0–255, never null.
+  trace:  { fn: 'trace',  min: 0,  max: 255,      canBeNull: false, canBeNaN: false, desc: 'the previous trace level, a value 0–255' },
   // system() returns the exit code (0–255) OR a NEGATIVE signal number (-WTERMSIG)
   // when the command is signal-killed — so it's bounded ABOVE by 255 but NOT below
   // (min: -Infinity). `system() < 0` is a legitimate signal check and is NOT flagged.
