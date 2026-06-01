@@ -181,6 +181,40 @@ const METHOD_RETURN_RANGE: Record<string, ReturnRange> = {
   'uloop.interval.remaining': { fn: 'uloop.interval.remaining', min: -1, max: Infinity, canBeNull: true, canBeNaN: false, desc: '-1 (not armed) or a non-negative millisecond count (or null)', hint: 'Did you mean -1?' },
 };
 
+/**
+ * The COMPLETE closed set of strings ucode's `type()` can return — derived from
+ * the C source (`uc_type` in lib.c + `ucv_typename` in types.c), NOT from a
+ * runtime sample (the sample missed "resource"). `type(null)` returns null (no
+ * string). Comparing `type(x)` to any string OUTSIDE this set is a constant
+ * (dead) test — the classic JS-ism `type(x) == "number"` that silently never
+ * matches. Note the ucode-specific gotchas: it's "int" not "integer", "bool"
+ * not "boolean", "regexp" not "regex".
+ */
+const TYPE_RESULT_STRINGS = new Set<string>([
+  'int', 'double', 'bool', 'string', 'array', 'object',
+  'function', 'regexp', 'resource', 'upvalue', 'program', 'source', 'unknown',
+]);
+
+/** Common wrong `type()` strings → the correct ucode type name(s), for the
+ *  diagnostic hint and the quick-fix. */
+const TYPE_STRING_FIX: Record<string, string[]> = {
+  number: ['int', 'double'], integer: ['int'], boolean: ['bool'], regex: ['regexp'],
+  func: ['function'], fn: ['function'], callable: ['function'], closure: ['function'], cfunction: ['function'],
+  float: ['double'], real: ['double'], str: ['string'], obj: ['object'], arr: ['array'],
+};
+
+/** Base types whose values can NEVER be `==` a scalar (number/string/bool)
+ *  literal under ucode coercion — verified against the runtime: `[]`, `{}`, a
+ *  function, a regexp, a resource handle (base OBJECT) and null are all `!=`
+ *  every scalar. (Scalars themselves coerce: `true==1`, `1=="1"`, `0==""`.) */
+const REF_EQ_BASES = new Set<UcodeType>([
+  UcodeType.ARRAY, UcodeType.OBJECT, UcodeType.FUNCTION, UcodeType.REGEX, UcodeType.NULL,
+]);
+const REF_BASE_DISPLAY: Partial<Record<UcodeType, string>> = {
+  [UcodeType.ARRAY]: 'array', [UcodeType.OBJECT]: 'object', [UcodeType.FUNCTION]: 'function',
+  [UcodeType.REGEX]: 'regexp', [UcodeType.NULL]: 'null',
+};
+
 export class TypeChecker {
   private symbolTable: SymbolTable;
   private builtinFunctions: Map<string, FunctionSignature>;
@@ -713,6 +747,8 @@ export class TypeChecker {
       case '<=':
       case '>=':
         this.checkConstantComparison(node);
+        this.checkTypeStringComparison(node);
+        this.checkIncompatibleEquality(node);
         return this.typeCompatibility.getComparisonResultType();
 
       case '??': {
@@ -945,6 +981,106 @@ export class TypeChecker {
 
     const base = {
       message: `${range.fn}() returns ${range.desc}, so this comparison is always ${always}.${range.hint ? ' ' + range.hint : ''}`,
+      start: node.start,
+      end: node.end,
+      code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
+    };
+    if (this.strictMode) this.errors.push({ ...base, severity: 'error' });
+    else this.warnings.push({ ...base, severity: 'warning' });
+  }
+
+  private isTypeCall(n: AstNode): boolean {
+    return n?.type === 'CallExpression'
+      && (n as any).callee?.type === 'Identifier'
+      && (n as any).callee.name === 'type';
+  }
+
+  /** The node, if it's a string literal. */
+  private stringLiteralNode(n: AstNode): LiteralNode | null {
+    return (n?.type === 'Literal' && typeof (n as LiteralNode).value === 'string')
+      ? (n as LiteralNode) : null;
+  }
+
+  /**
+   * Lint `type(x) <eq> "<string>"` where the string is NOT one type() can ever
+   * return — a constant (dead) test. The set of valid results is closed (see
+   * TYPE_RESULT_STRINGS), so e.g. `type(x) == "number"` / `"integer"` /
+   * `"boolean"` is always false (and `!=` always true). Carries a quick-fix when
+   * the wrong string maps to a known ucode type name.
+   */
+  private checkTypeStringComparison(node: BinaryExpressionNode): void {
+    const op = node.operator;
+    if (op !== '==' && op !== '!=' && op !== '===' && op !== '!==') return;
+    let litNode: LiteralNode | null = null;
+    if (this.isTypeCall(node.left)) litNode = this.stringLiteralNode(node.right);
+    else if (this.isTypeCall(node.right)) litNode = this.stringLiteralNode(node.left);
+    if (!litNode) return;
+    const lit = litNode.value as string;
+    if (TYPE_RESULT_STRINGS.has(lit)) return; // a legitimate type() result
+
+    const always = (op === '==' || op === '===') ? 'false' : 'true';
+    const fixes = TYPE_STRING_FIX[lit];
+    let hint: string;
+    if (fixes) hint = ` ucode's type() uses ${fixes.map(f => `"${f}"`).join(' / ')}.`;
+    else if (lit === 'null' || lit === 'undefined' || lit === 'nil' || lit === 'none')
+      hint = ` ucode has no "${lit}" type — type(null) returns null; test \`x == null\` instead.`;
+    else hint = ` Valid type() results: ${[...TYPE_RESULT_STRINGS].map(s => `"${s}"`).join(', ')}.`;
+
+    const base = {
+      message: `type() never returns "${lit}", so this comparison is always ${always}.${hint}`,
+      start: node.start,
+      end: node.end,
+      code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
+      ...(fixes ? { data: { typeStringFix: fixes, litStart: litNode.start, litEnd: litNode.end } } : {}),
+    };
+    if (this.strictMode) this.errors.push({ ...base, severity: 'error' });
+    else this.warnings.push({ ...base, severity: 'warning' });
+  }
+
+  /** A numeric / string / boolean literal (NOT null, NOT regexp) — a scalar that
+   *  could only `==` another scalar under ucode coercion. */
+  private isScalarLiteral(n: AstNode): boolean {
+    if (n?.type !== 'Literal') return false;
+    const v = (n as LiteralNode).value;
+    return typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean';
+  }
+
+  /** Base types of a data type, flattening unions. */
+  private baseMembers(dt: UcodeDataType): UcodeType[] {
+    return (isUnionType(dt) ? getUnionTypes(dt) : [dt]).map(m => dataTypeToBase(m));
+  }
+
+  /**
+   * Lint an equality (`== != === !==`) between a scalar literal and a value whose
+   * type is a non-coercible reference type (array / object / function / regexp /
+   * resource-handle / null). Such a value can NEVER equal a scalar in ucode
+   * (verified: `[]==0`, `{}=="x"`, a handle `==0`, `null==0` are all false), so
+   * the test is constant — e.g. `split(s,x) == "foo"` (array vs string) is always
+   * false. Only fires when EVERY member of the value's type is a reference base
+   * AND none is unknown, so dynamic/unknown values are never mis-flagged.
+   */
+  private checkIncompatibleEquality(node: BinaryExpressionNode): void {
+    const op = node.operator;
+    if (op !== '==' && op !== '!=' && op !== '===' && op !== '!==') return;
+    let litNode: AstNode, other: AstNode;
+    if (this.isScalarLiteral(node.left)) { litNode = node.left; other = node.right; }
+    else if (this.isScalarLiteral(node.right)) { litNode = node.right; other = node.left; }
+    else return;
+    // Don't double-report a `type(x) == "..."` case handled above.
+    if (this.isTypeCall(other)) return;
+
+    const otherType = this.getTypeOf(other);
+    if (otherType === undefined) return;
+    const members = this.baseMembers(otherType);
+    if (members.length === 0) return;
+    if (members.some(m => m === UcodeType.UNKNOWN)) return;      // not confident → bail
+    if (!members.every(m => REF_EQ_BASES.has(m))) return;        // a scalar member could match
+
+    const always = (op === '==' || op === '===') ? 'false' : 'true';
+    const typeList = [...new Set(members.map(m => REF_BASE_DISPLAY[m] ?? String(m)))].join(' | ');
+    const litRepr = JSON.stringify((litNode as LiteralNode).value);
+    const base = {
+      message: `a value of type ${typeList} can never be == ${litRepr} in ucode, so this comparison is always ${always}.`,
       start: node.start,
       end: node.end,
       code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,

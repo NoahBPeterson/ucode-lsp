@@ -564,6 +564,27 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 codeActions.push(...importActions);
             }
 
+            // Quick-fix for the UC2009 type()-string mismatch: replace the wrong
+            // type string (e.g. "number", "integer", "boolean") with the correct
+            // ucode type name(s) ("int"/"double", "int", "bool").
+            if (diagnostic.code === 'UC2009' && (diagnostic as any).data?.typeStringFix) {
+                const fixData = (diagnostic as any).data;
+                const range = {
+                    start: document.positionAt(fixData.litStart),
+                    end: document.positionAt(fixData.litEnd),
+                };
+                const suggestions: string[] = fixData.typeStringFix;
+                for (const suggestion of suggestions) {
+                    codeActions.push({
+                        title: `Change to "${suggestion}"`,
+                        kind: CodeActionKind.QuickFix,
+                        diagnostics: [diagnostic],
+                        isPreferred: suggestions.length === 1,
+                        edit: { changes: { [params.textDocument.uri]: [TextEdit.replace(range, `"${suggestion}"`)] } },
+                    });
+                }
+            }
+
             // Add JSDoc annotation quick fix.
             //   - UC7003 fires this directly on the function declaration.
             //   - incompatible-function-argument / nullable-argument also fire it when
