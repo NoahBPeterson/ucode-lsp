@@ -173,9 +173,12 @@ const METHOD_RETURN_RANGE: Record<string, ReturnRange> = {
   'io.handle.write':  { fn: 'io.handle.write',  ...COUNT_OR_NULL, desc: 'the number of bytes written (or null on error)' },
   'io.handle.tell':   { fn: 'io.handle.tell',   ...COUNT_OR_NULL, desc: 'a non-negative file offset (or null on error)' },
   'io.handle.fileno': { fn: 'io.handle.fileno', ...COUNT_OR_NULL, desc: 'a non-negative file descriptor (or null on error)' },
-  // timer/interval remaining() → -1 (not armed) or a non-negative ms count, never null.
-  'uloop.timer.remaining':    { fn: 'uloop.timer.remaining',    min: -1, max: Infinity, canBeNull: false, canBeNaN: false, desc: '-1 (not armed) or a non-negative millisecond count', hint: 'Did you mean -1?' },
-  'uloop.interval.remaining': { fn: 'uloop.interval.remaining', min: -1, max: Infinity, canBeNull: false, canBeNaN: false, desc: '-1 (not armed) or a non-negative millisecond count', hint: 'Did you mean -1?' },
+  // timer/interval remaining() → -1 (not armed) or a non-negative ms count. Can
+  // also return null via `if (!timer) err_return(EINVAL)` (invalid `this`); for
+  // the [-1,∞) range null (→0 for ordering) agrees with every interval verdict,
+  // so canBeNull is behavior-neutral here — but it's the honest value.
+  'uloop.timer.remaining':    { fn: 'uloop.timer.remaining',    min: -1, max: Infinity, canBeNull: true, canBeNaN: false, desc: '-1 (not armed) or a non-negative millisecond count (or null)', hint: 'Did you mean -1?' },
+  'uloop.interval.remaining': { fn: 'uloop.interval.remaining', min: -1, max: Infinity, canBeNull: true, canBeNaN: false, desc: '-1 (not armed) or a non-negative millisecond count (or null)', hint: 'Did you mean -1?' },
 };
 
 export class TypeChecker {
