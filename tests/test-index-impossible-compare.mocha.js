@@ -98,4 +98,25 @@ describe('Impossible index()/rindex() comparison (UC2009)', function () {
     assert.strictEqual((await uc2009(`import { log } from 'math';\nlet r = log(2) < 0;`)).length, 0);
     assert.strictEqual((await uc2009(`import { pow } from 'math';\nlet r = pow(2,3) < 0;`)).length, 0);
   });
+
+  // ── ord() [0,255] and system() (≤255, but negative on signal) ──────────────
+  it('flags out-of-range ord() comparisons ([0, 255])', async () => {
+    assert.match((await uc2009(`let r = ord("A") < 0;`))[0].message, /always false/);
+    assert.match((await uc2009(`let r = ord("A") > 255;`))[0].message, /always false/);
+    assert.match((await uc2009(`let r = ord("A") == 300;`))[0].message, /always false/);
+  });
+
+  it('does NOT flag legit ord() comparisons (`== 65`, `>= 0` boundary aside)', async () => {
+    assert.strictEqual((await uc2009(`let r = ord("A") == 65;`)).length, 0);
+  });
+
+  it('flags `system() > 255` / `== 256` (exit codes cap at 255)', async () => {
+    assert.match((await uc2009(`let r = system("x") > 255;`))[0].message, /always false/);
+    assert.match((await uc2009(`let r = system("x") == 256;`))[0].message, /always false/);
+  });
+
+  it('does NOT flag `system() < 0` — signal kills return a negative signal number', async () => {
+    assert.strictEqual((await uc2009(`let r = system("x") < 0;`)).length, 0);
+    assert.strictEqual((await uc2009(`let r = system("x") == 0;`)).length, 0);
+  });
 });
