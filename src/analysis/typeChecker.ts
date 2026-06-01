@@ -1769,6 +1769,19 @@ export class TypeChecker {
       }
     }
 
+    // Dictionary value-type FIRST: `O[expr]` where O is a string-keyed map whose
+    // VALUE shape was inferred (valuePropertyTypes). Any key yields a value of
+    // that shape → return OBJECT (the nested shape rides on the `let v = O[k]`
+    // binding copy in the analyzer). Checked before the per-key keys-of union so
+    // a map with an incidental static property still reads as its value shape.
+    if (node.object.type === 'Identifier' && node.computed) {
+      const dictSym = this.symbolTable.lookupAtPosition((node.object as IdentifierNode).name, node.start)
+                   ?? this.symbolTable.lookup((node.object as IdentifierNode).name);
+      if (dictSym?.valuePropertyTypes && dictSym.valuePropertyTypes.size > 0) {
+        return UcodeType.OBJECT as UcodeDataType;
+      }
+    }
+
     // Computed property access on an OBJECT-typed identifier — try to type
     // it through static key resolution (literal, const ref, namespace nested
     // constant) OR through keys-of provenance (the key carries a tag that

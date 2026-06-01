@@ -462,4 +462,124 @@ const Network = {
         assert.ok(/^        \/\*\*/m.test(text), `expected 8-space-indented JSDoc, got: ${JSON.stringify(text)}`);
         assert.ok(/^\s+\* @param \{array\} argv/m.test(text), `argv should infer array with clean prefix: ${JSON.stringify(text)}`);
     });
+
+    // ── Switch discriminant inference ──────────────────────────────────────
+    it('switch(target) on string-literal cases infers target as string', async function() {
+        const code = `'use strict';
+function dispatch(target) {
+    switch (target) {
+    case 'main':
+        return 1;
+    case 'netifd':
+        return 2;
+    }
+    return 0;
+}
+`;
+        const diags = await getDiagnostics(code, file);
+        const uc7003 = diags.find(d => d.code === 'UC7003');
+        assert.ok(uc7003, 'expected UC7003 on dispatch');
+        const actions = await getCodeActions(file, [uc7003], uc7003.range.start.line, uc7003.range.start.character);
+        const jsdoc = actions.find(a => /JSDoc/.test(a.title));
+        assert.ok(jsdoc, `expected JSDoc fix, got: ${actions.map(a => a.title).join(', ')}`);
+        const text = insertedText(jsdoc);
+        assert.ok(/@param \{string\} target/.test(text), `expected {string} target, got: ${text}`);
+        // The title should now report it as inferred (1/1), not a bare stub.
+        assert.ok(/1\/1 type inferred/.test(jsdoc.title), `expected '1/1 type inferred' title, got: ${jsdoc.title}`);
+    });
+
+    it('switch with integer-literal cases infers integer', async function() {
+        const code = `'use strict';
+function pick(n) {
+    switch (n) {
+    case 0: return 'a';
+    case 1: return 'b';
+    }
+    return 'z';
+}
+`;
+        const diags = await getDiagnostics(code, file);
+        const uc7003 = diags.find(d => d.code === 'UC7003');
+        assert.ok(uc7003);
+        const actions = await getCodeActions(file, [uc7003], uc7003.range.start.line, uc7003.range.start.character);
+        const text = insertedText(actions.find(a => /JSDoc/.test(a.title)));
+        assert.ok(/@param \{integer\} n/.test(text), `expected {integer} n, got: ${text}`);
+    });
+
+    it('switch with a non-literal case label does not constrain (stays unknown)', async function() {
+        const code = `'use strict';
+const K = 'main';
+function dispatch(target) {
+    switch (target) {
+    case K:
+        return 1;
+    case 'netifd':
+        return 2;
+    }
+    return 0;
+}
+`;
+        const diags = await getDiagnostics(code, file);
+        const uc7003 = diags.find(d => d.code === 'UC7003');
+        assert.ok(uc7003);
+        const actions = await getCodeActions(file, [uc7003], uc7003.range.start.line, uc7003.range.start.character);
+        const text = insertedText(actions.find(a => /JSDoc/.test(a.title)));
+        assert.ok(/@param \{unknown\} target/.test(text), `non-literal case → unknown, got: ${text}`);
+    });
+
+    // ── fs-module function arg inference (aliased to a local) ──────────────
+    it('aliased fs.popen(cmd, ...) infers cmd as string', async function() {
+        const code = `'use strict';
+function mk(fs_mod) {
+    let popen = fs_mod.popen;
+    function exec(cmd) {
+        let p = popen(cmd, 'r');
+        return p;
+    }
+    return exec;
+}
+`;
+        const diags = await getDiagnostics(code, file);
+        const uc7003 = diags.filter(d => d.code === 'UC7003').find(d => /exec/.test(d.message));
+        assert.ok(uc7003, `expected UC7003 on exec, got: ${diags.filter(d=>d.code==='UC7003').map(d=>d.message).join(' | ')}`);
+        const actions = await getCodeActions(file, [uc7003], uc7003.range.start.line, uc7003.range.start.character);
+        const text = insertedText(actions.find(a => /JSDoc/.test(a.title)));
+        assert.ok(/@param \{string\} cmd/.test(text), `expected {string} cmd from popen, got: ${text}`);
+    });
+
+    it('aliased fs.readfile(path) infers path as string', async function() {
+        const code = `'use strict';
+function mk(fs_mod) {
+    let readfile = fs_mod.readfile;
+    function load(p) {
+        return readfile(p);
+    }
+    return load;
+}
+`;
+        const diags = await getDiagnostics(code, file);
+        const uc7003 = diags.filter(d => d.code === 'UC7003').find(d => /load/.test(d.message));
+        assert.ok(uc7003);
+        const actions = await getCodeActions(file, [uc7003], uc7003.range.start.line, uc7003.range.start.character);
+        const text = insertedText(actions.find(a => /JSDoc/.test(a.title)));
+        assert.ok(/@param \{string\} p/.test(text), `expected {string} p from readfile, got: ${text}`);
+    });
+
+    it('non-fs module function (digest.md5) also infers string — generic, not hardcoded', async function() {
+        const code = `'use strict';
+function mk(dgst) {
+    let md5 = dgst.md5;
+    function hash(x) {
+        return md5(x);
+    }
+    return hash;
+}
+`;
+        const diags = await getDiagnostics(code, file);
+        const uc7003 = diags.filter(d => d.code === 'UC7003').find(d => /hash/.test(d.message));
+        assert.ok(uc7003);
+        const actions = await getCodeActions(file, [uc7003], uc7003.range.start.line, uc7003.range.start.character);
+        const text = insertedText(actions.find(a => /JSDoc/.test(a.title)));
+        assert.ok(/@param \{string\} x/.test(text), `expected {string} x from digest.md5, got: ${text}`);
+    });
 });

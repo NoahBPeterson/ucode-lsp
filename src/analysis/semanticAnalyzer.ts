@@ -11,7 +11,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
@@ -85,6 +85,11 @@ export class SemanticAnalyzer extends BaseVisitor {
   private callbackElementType: UcodeDataType | null = null; // Element type to pass to callback parameters (filter/map/sort)
   private typedefRegistry: Map<string, ParsedTypedef> = new Map(); // File-level @typedef definitions
   private strictMode = false; // Whether 'use strict'; is present
+  // Name to attribute to the next function-expression we visit, set by the
+  // enclosing assignment/declaration (e.g. `nft_file.init = function(){}`), so a
+  // method-style function expression can get the same UC7003 "add @param" hint as
+  // a named declaration. Anonymous callbacks (map/filter) leave this null → no hint.
+  private pendingFunctionExprName: string | null = null;
 
   constructor(textDocument: TextDocument, options: SemanticAnalysisOptions = {}) {
     super();
@@ -618,12 +623,37 @@ export class SemanticAnalyzer extends BaseVisitor {
           }
         }
 
+        // Dictionary value-shape binding: `let v = O[expr]` where O is a map with
+        // an inferred value shape → v gets that shape (so `v.foo` resolves). Runs
+        // after the rich-type upgrade above so it isn't clobbered.
+        if (node.init.type === 'MemberExpression') {
+          const mem = node.init as MemberExpressionNode;
+          if (mem.computed && mem.object.type === 'Identifier') {
+            const objSym = this.symbolTable.lookupAtPosition((mem.object as IdentifierNode).name, mem.object.start)
+                        ?? this.symbolTable.lookup((mem.object as IdentifierNode).name);
+            const sym = this.symbolTable.lookup(name);
+            if (objSym?.valuePropertyTypes && objSym.valuePropertyTypes.size > 0 && sym) {
+              sym.dataType = UcodeType.OBJECT as UcodeDataType;
+              sym.propertyTypes = objSym.valuePropertyTypes;
+            }
+          }
+        }
+
         // Case 1: Populate propertyTypes from object literal at declaration
         if (node.init.type === 'ObjectExpression') {
           const sym = this.symbolTable.lookup(name);
           if (sym) {
             const propTypes = this.inferObjectLiteralPropertyTypes(node.init as ObjectExpressionNode);
             if (propTypes) sym.propertyTypes = propTypes;
+            // Dictionary value-shape inference for an EMPTY object literal used as
+            // a string-keyed map (`let m = {}; … m[k] = {…}`). Populates
+            // sym.valuePropertyTypes so `m[k]` / `let v = m[k]` resolve to the
+            // value shape. Gated on empty (a non-empty literal is a struct, not a
+            // map) to bound the cost.
+            else {
+              const scopeRoot = this.currentFunctionNode ?? this.currentASTRoot;
+              if (scopeRoot) this.inferMapValueShape(sym, scopeRoot as AstNode);
+            }
           }
         }
       }
@@ -852,6 +882,17 @@ export class SemanticAnalyzer extends BaseVisitor {
             if (symbol.dataType === UcodeType.UNKNOWN) {
               symbol.dataType = UcodeType.FUNCTION as UcodeDataType;
             }
+          } else if (symbol.dataType === UcodeType.UNKNOWN) {
+            // Not a function — resolve a named-exported VARIABLE's type so e.g.
+            // `let AllHostInfo = {}; export { AllHostInfo }` is `object` at the
+            // import site, not `unknown`. Carry object property shape too.
+            const typeInfo = this.fileResolver.getNamedExportTypeInfo(effectiveUri, importedName);
+            if (typeInfo && typeInfo.type !== UcodeType.UNKNOWN) {
+              symbol.dataType = typeInfo.type;
+              if (typeInfo.propertyTypes) symbol.propertyTypes = typeInfo.propertyTypes;
+              if (typeInfo.nestedPropertyTypes) symbol.nestedPropertyTypes = typeInfo.nestedPropertyTypes;
+              if (typeInfo.propertyFunctionReturnTypes) symbol.propertyFunctionReturnTypes = typeInfo.propertyFunctionReturnTypes;
+            }
           }
         }
       }
@@ -981,6 +1022,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       propertyTypes?: Map<string, UcodeDataType> | undefined;
       nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>> | undefined;
       propertyFunctionReturnTypes?: Map<string, string> | undefined;
+      propertyDefinitionLocations?: Map<string, { uri: string; start: number; end: number }> | undefined;
+      closedPropertyShape?: boolean | undefined;
     }
     const jsdocParams = new Map<string, JsDocParamInfo>();
     for (const tag of paramTags) {
@@ -1010,6 +1053,8 @@ export class SemanticAnalyzer extends BaseVisitor {
             type: UcodeType.OBJECT as UcodeDataType,
             description: tag.description,
             propertyTypes: propTypes.size > 0 ? propTypes : undefined,
+            // A @typedef's @property list is the declared, complete shape.
+            closedPropertyShape: propTypes.size > 0 ? true : undefined,
           });
           continue;
         }
@@ -1048,11 +1093,59 @@ export class SemanticAnalyzer extends BaseVisitor {
           if (jsdocInfo.propertyTypes) sym.propertyTypes = jsdocInfo.propertyTypes;
           if (jsdocInfo.nestedPropertyTypes) sym.nestedPropertyTypes = jsdocInfo.nestedPropertyTypes;
           if (jsdocInfo.propertyFunctionReturnTypes) sym.propertyFunctionReturnTypes = jsdocInfo.propertyFunctionReturnTypes;
+          if (jsdocInfo.propertyDefinitionLocations) sym.propertyDefinitionLocations = jsdocInfo.propertyDefinitionLocations;
+          if (jsdocInfo.closedPropertyShape) sym.closedPropertyShape = true;
         }
       } else {
         this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
       }
     }
+  }
+
+  /**
+   * Strict-mode UC7003 hint: a function whose parameters lack types (no @param)
+   * should be annotated. Shared by function declarations and named function
+   * expressions (e.g. `nft_file.init = function(target, reg)`). Call AFTER
+   * applyJsDocToParams so parameter symbols reflect any JSDoc that was applied.
+   */
+  private emitMissingParamAnnotations(
+    name: string,
+    params: IdentifierNode[],
+    rangeStart: number,
+    rangeEnd: number
+  ): void {
+    if (!this.strictMode) return;
+    const unknownParams = params.filter(p => {
+      const sym = this.symbolTable.lookup(p.name);
+      return !sym || sym.dataType === UcodeType.UNKNOWN;
+    });
+    if (unknownParams.length === 0) return;
+    const names = unknownParams.map(p => p.name).join(', ');
+    this.addDiagnosticErrorCode(
+      UcodeErrorCode.JSDOC_MISSING_ANNOTATIONS,
+      `Function '${name}' has ${unknownParams.length} parameter${unknownParams.length > 1 ? 's' : ''} with unknown type${unknownParams.length > 1 ? 's' : ''}: ${names}. Add /** @param */ annotations.`,
+      rangeStart,
+      rangeEnd,
+      DiagnosticSeverity.Information
+    );
+  }
+
+  /** Derive a display name for a function expression from its assignment target:
+   *  `nft_file.init = fn` → "nft_file.init", `let f = fn` (Identifier) → "f". */
+  private assignmentTargetName(target: AstNode): string | null {
+    if (target.type === 'Identifier') return (target as IdentifierNode).name;
+    if (target.type === 'MemberExpression') {
+      const m = target as MemberExpressionNode;
+      if (!m.computed) {
+        const prop = this.getStaticPropertyName(m.property);
+        if (prop) {
+          if (m.object.type === 'Identifier') return `${(m.object as IdentifierNode).name}.${prop}`;
+          if (m.object.type === 'ThisExpression') return `this.${prop}`;
+          return prop;
+        }
+      }
+    }
+    return null;
   }
 
   /**
@@ -1062,7 +1155,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private resolveImportTypeExpression(
     modulePath: string,
     propertyName?: string | undefined
-  ): { type: UcodeDataType; propertyTypes?: Map<string, UcodeDataType> | undefined; nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>> | undefined; propertyFunctionReturnTypes?: Map<string, string> | undefined } | null {
+  ): { type: UcodeDataType; propertyTypes?: Map<string, UcodeDataType> | undefined; nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>> | undefined; propertyFunctionReturnTypes?: Map<string, string> | undefined; propertyDefinitionLocations?: Map<string, { uri: string; start: number; end: number }> | undefined; closedPropertyShape?: boolean | undefined } | null {
     // Check if it's a known builtin module
     if (isKnownModule(modulePath)) {
       if (propertyName) {
@@ -1106,11 +1199,21 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (!propType) return null;
         return { type: propType };
       }
-      // import('config') → the factory function return type with all properties
+      // import('config') → the factory function return type with all properties.
+      // Stamp the factory file URI onto each member's (file-local) source offsets
+      // so go-to-definition / hover can jump to the method's definition.
+      let propertyDefinitionLocations: Map<string, { uri: string; start: number; end: number }> | undefined;
+      if (returnInfo.propertyDefinitionLocations) {
+        propertyDefinitionLocations = new Map();
+        for (const [prop, loc] of returnInfo.propertyDefinitionLocations) {
+          propertyDefinitionLocations.set(prop, { uri: resolvedUri, start: loc.start, end: loc.end });
+        }
+      }
       return {
         type: returnInfo.returnType ?? UcodeType.OBJECT as UcodeDataType,
         propertyTypes: returnInfo.returnPropertyTypes,
-        propertyFunctionReturnTypes: returnInfo.propertyFunctionReturnTypes
+        propertyFunctionReturnTypes: returnInfo.propertyFunctionReturnTypes,
+        propertyDefinitionLocations
       };
     }
 
@@ -1132,11 +1235,14 @@ export class SemanticAnalyzer extends BaseVisitor {
       return result;
     }
 
-    // import('pkg') → the default export itself with all properties
+    // import('pkg') → the default export itself with all properties. When the
+    // default export is an inline object literal, its property set is complete
+    // (closed) → a member not in it is provably absent (enables UC7004).
     return {
       type: { type: UcodeType.OBJECT, isDefaultImport: true },
       propertyTypes: exportInfo.propertyTypes,
-      nestedPropertyTypes: exportInfo.nestedPropertyTypes
+      nestedPropertyTypes: exportInfo.nestedPropertyTypes,
+      closedPropertyShape: exportInfo.closedShape === true
     };
   }
 
@@ -1179,21 +1285,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.applyJsDocToParams(node.leadingJsDoc, node.params);
 
       // Emit diagnostic for unknown-typed params (strict mode only)
-      if (this.strictMode && !node.leadingJsDoc && node.params.length > 0) {
-        const unknownParams = node.params.filter(p => {
-          const sym = this.symbolTable.lookup(p.name);
-          return !sym || sym.dataType === UcodeType.UNKNOWN;
-        });
-        if (unknownParams.length > 0) {
-          const names = unknownParams.map(p => p.name).join(', ');
-          this.addDiagnosticErrorCode(
-            UcodeErrorCode.JSDOC_MISSING_ANNOTATIONS,
-            `Function '${name}' has ${unknownParams.length} parameter${unknownParams.length > 1 ? 's' : ''} with unknown type${unknownParams.length > 1 ? 's' : ''}: ${names}. Add /** @param */ annotations.`,
-            node.id.start,
-            node.id.end,
-            DiagnosticSeverity.Information
-          );
-        }
+      if (!node.leadingJsDoc && node.params.length > 0) {
+        this.emitMissingParamAnnotations(name, node.params, node.id.start, node.id.end);
       }
 
       // Declare rest parameter if present (as array type)
@@ -1255,6 +1348,10 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   visitFunctionExpression(node: FunctionExpressionNode): void {
+    // Consume the pending name immediately so nested anonymous functions in the
+    // body don't inherit it.
+    const exprName = node.id?.name ?? this.pendingFunctionExprName;
+    this.pendingFunctionExprName = null;
     if (this.options.enableScopeAnalysis) {
       // For function expressions, we don't declare them in the outer scope
       // since they're anonymous (even if they have a name, it's only available inside the function)
@@ -1276,6 +1373,13 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Declare parameters in the function scope (with JSDoc type annotations if present)
       this.applyJsDocToParams(node.leadingJsDoc, node.params);
+
+      // UC7003 for method-style function expressions (those with a derivable
+      // name from their assignment target). Anonymous callbacks have no name and
+      // are skipped, so `map(x => …)` etc. don't get noisy hints.
+      if (exprName && !node.leadingJsDoc && node.params.length > 0) {
+        this.emitMissingParamAnnotations(exprName, node.params, node.params[0]!.start, node.params[node.params.length - 1]!.end);
+      }
 
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
@@ -1308,6 +1412,10 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   visitArrowFunctionExpression(node: ArrowFunctionExpressionNode): void {
+    // Consume any pending assignment-target name now so nested callbacks in the
+    // body don't inherit it.
+    const exprName = this.pendingFunctionExprName;
+    this.pendingFunctionExprName = null;
     if (this.options.enableScopeAnalysis) {
       // Arrow functions are always anonymous and don't get declared in outer scope
 
@@ -1331,6 +1439,12 @@ export class SemanticAnalyzer extends BaseVisitor {
           const paramType = (i === 0 && this.callbackElementType) ? this.callbackElementType : UcodeType.UNKNOWN as UcodeDataType;
           this.symbolTable.declare(param.name, SymbolType.PARAMETER, paramType, param);
         }
+      }
+
+      // UC7003 only for arrows with a derivable name (assigned to a member/var),
+      // never for bare callbacks.
+      if (exprName && !node.leadingJsDoc && node.params.length > 0) {
+        this.emitMissingParamAnnotations(exprName, node.params, node.params[0]!.start, node.params[node.params.length - 1]!.end);
       }
 
       // Declare rest parameter if present (as array type)
@@ -1523,8 +1637,40 @@ export class SemanticAnalyzer extends BaseVisitor {
     
     // Validate builtin module method calls
     this.validateModuleMember(node);
+
+    // Unknown-member diagnostic (UC7004): accessing a property that a fully
+    // resolved, CLOSED object shape provably doesn't have — e.g. a param typed
+    // `@param {import('./pkg.uc')}` (the {pkg,sym,get_text} wrapper) accessed as
+    // `pkg.rt_tables_file`. Only direct `ident.member` reads on a closed shape;
+    // assignment targets define new members, so they're excluded.
+    this.checkClosedShapeMember(node);
   }
-  
+
+  private checkClosedShapeMember(node: MemberExpressionNode): void {
+    if (!this.options.enableScopeAnalysis) return;
+    if (node.computed || node.property.type !== 'Identifier' || node.object.type !== 'Identifier') return;
+    if (this.assignmentLeftDepth > 0) return; // defining the member, not reading it
+
+    const objectName = (node.object as IdentifierNode).name;
+    const symbol = this.symbolTable.lookupAtPosition(objectName, node.object.start)
+                || this.symbolTable.lookup(objectName);
+    if (!symbol || !symbol.closedPropertyShape || !symbol.propertyTypes) return;
+
+    const member = (node.property as IdentifierNode).name;
+    if (symbol.propertyTypes.has(member)) return;
+    if (symbol.nestedPropertyTypes?.has(member)) return;
+
+    const available = [...symbol.propertyTypes.keys()];
+    const avail = available.length > 0 ? ` Available: ${available.join(', ')}.` : '';
+    this.addDiagnosticErrorCode(
+      UcodeErrorCode.JSDOC_UNKNOWN_MEMBER,
+      `Property '${member}' does not exist on '${objectName}'.${avail}`,
+      node.property.start,
+      node.property.end,
+      DiagnosticSeverity.Warning
+    );
+  }
+
   private validateModuleMember(node: MemberExpressionNode): void {
     // console.log('DEBUG: validateModuleMember called for:', (node.object as any).name + '.' + (node.property as any).name);
     // Only check non-computed member expressions (obj.method)
@@ -1847,7 +1993,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     this.assignmentLeftDepth++;
     this.visit(node.left);
     this.assignmentLeftDepth--;
+    // Attribute a method-style function expression to its assignment target so it
+    // gets the UC7003 hint (`nft_file.init = function(target){…}` → name "init").
+    const rt = node.right.type;
+    if ((rt === 'FunctionExpression' || rt === 'ArrowFunctionExpression') && node.operator === '=') {
+      this.pendingFunctionExprName = this.assignmentTargetName(node.left);
+    }
     this.visit(node.right);
+    this.pendingFunctionExprName = null;
     if (this.options.enableTypeChecking) {
       // Track assignments to object properties (e.g., obj.foo = "bar", this.prop = val)
       if (node.left.type === 'MemberExpression') {
@@ -2713,6 +2866,135 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       propTypes.set(key, valType);
     }
     return propTypes.size > 0 ? propTypes : null;
+  }
+
+  /**
+   * Dictionary value-shape inference. When a local object `symbol` (declared
+   * `let m = {}`) is used as a string-keyed map — written via computed
+   * assignments `m[k] = {…}` either directly OR through a one-hop setter
+   * `function f(key, data) { m[key] = data; }` called with object literals —
+   * infer the common shape of its VALUES and stash it on `symbol.valuePropertyTypes`.
+   * The read path (`m[k]`) and the `let v = m[k]` binding then resolve to that
+   * shape instead of `unknown`.
+   *
+   * Soundness: intersection across all writes (only always-present properties
+   * survive); any non-object/non-param write, or a setter with no object-literal
+   * call args, bails (no value shape claimed).
+   */
+  private inferMapValueShape(symbol: SymbolEntry, scopeRoot: AstNode): void {
+    const mapName = symbol.name;
+    const shapes: Map<string, UcodeDataType>[] = [];
+    const setterHops: { fnName: string; paramIndex: number }[] = [];
+    let bailed = false;
+
+    const isFn = (n: any) => n && (n.type === 'FunctionDeclaration'
+      || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression');
+
+    // Does function `fnNode` REDECLARE `nm` (a param, rest-param, or a local
+    // let/const in its own body)? Such a function shadows the outer map, so its
+    // `nm[…] = …` writes belong to a DIFFERENT symbol — we must not let them
+    // pollute the outer map's value shape. Scans the body but stops at deeper
+    // nested functions.
+    const declaresLocally = (fnNode: any, nm: string): boolean => {
+      const params = fnNode.params || [];
+      if (params.some((p: any) => p?.name === nm)) return true;
+      if (fnNode.restParam?.name === nm) return true;
+      let found = false;
+      const scan = (n: any): void => {
+        if (found || !n || typeof n !== 'object' || typeof n.type !== 'string') return;
+        if (isFn(n) && n !== fnNode) return; // don't descend into deeper functions
+        if (n.type === 'VariableDeclaration') {
+          for (const d of n.declarations || []) if (d?.id?.name === nm) { found = true; return; }
+        }
+        for (const k of Object.keys(n)) {
+          if (k === 'leadingJsDoc') continue;
+          const v = n[k];
+          if (Array.isArray(v)) { for (const it of v) scan(it); }
+          else if (v && typeof v === 'object' && typeof v.type === 'string') scan(v);
+        }
+      };
+      scan(fnNode.body);
+      return found;
+    };
+
+    // Collect computed writes to `mapName`, tracking the nearest enclosing
+    // function so `m[k] = param` can be resolved to (function, param index).
+    const walk = (node: any, fn: any): void => {
+      if (bailed || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
+      // Scope safety: a nested function that redeclares `mapName` is a different
+      // binding — skip it entirely so its writes don't pollute this map's shape.
+      if (isFn(node) && node !== scopeRoot && declaresLocally(node, mapName)) return;
+      const curFn = isFn(node) ? node : fn;
+      if (node.type === 'AssignmentExpression' && node.operator === '='
+          && node.left?.type === 'MemberExpression' && node.left.computed
+          && node.left.object?.type === 'Identifier' && node.left.object.name === mapName) {
+        const rhs = node.right;
+        if (rhs?.type === 'ObjectExpression') {
+          const shape = this.inferObjectLiteralPropertyTypes(rhs as ObjectExpressionNode);
+          if (shape) shapes.push(shape); // empty literal → ignore (no shape contribution)
+        } else if (rhs?.type === 'Identifier' && curFn && Array.isArray(curFn.params) && curFn.id?.name) {
+          const idx = curFn.params.findIndex((p: any) => p?.name === (rhs as IdentifierNode).name);
+          if (idx >= 0) setterHops.push({ fnName: curFn.id.name, paramIndex: idx });
+          else bailed = true; // assigned an identifier of unknown shape
+        } else {
+          bailed = true; // non-object write → heterogeneous/opaque map
+        }
+      }
+      for (const k of Object.keys(node)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = node[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it, curFn); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, curFn);
+      }
+    };
+    walk(scopeRoot, null);
+    if (bailed) return;
+
+    // Stage 2: resolve each setter hop to the object-literal arguments at its
+    // call sites within the same scope.
+    for (const hop of setterHops) {
+      let found = false;
+      const callWalk = (node: any): void => {
+        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        if (node.type === 'CallExpression' && node.callee?.type === 'Identifier'
+            && node.callee.name === hop.fnName) {
+          const arg = node.arguments?.[hop.paramIndex];
+          if (arg?.type === 'ObjectExpression') {
+            const shape = this.inferObjectLiteralPropertyTypes(arg as ObjectExpressionNode);
+            if (shape) { shapes.push(shape); found = true; }
+          }
+        }
+        for (const k of Object.keys(node)) {
+          if (k === 'leadingJsDoc') continue;
+          const v = node[k];
+          if (Array.isArray(v)) { for (const it of v) callWalk(it); }
+          else if (v && typeof v === 'object' && typeof v.type === 'string') callWalk(v);
+        }
+      };
+      callWalk(scopeRoot);
+      if (!found) return; // setter feeds the map but no literal call args → unshaped
+    }
+
+    if (shapes.length === 0) return;
+
+    // Intersection of keys across all writes (only always-present properties
+    // survive — sound). Per surviving key: drop unknown contributions; if the
+    // remaining concrete types AGREE on a base, keep the (possibly rich) first;
+    // if they DIFFER, union the distinct bases (honest `integer | string` rather
+    // than silently picking one). All-unknown → unknown.
+    const merged = new Map<string, UcodeDataType>();
+    for (const key of shapes[0]!.keys()) {
+      if (!shapes.every(s => s.has(key))) continue;
+      const concrete: UcodeDataType[] = [];
+      for (const s of shapes) {
+        const t = s.get(key);
+        if (t !== undefined && dataTypeToBase(t) !== UcodeType.UNKNOWN) concrete.push(t);
+      }
+      if (concrete.length === 0) { merged.set(key, UcodeType.UNKNOWN as UcodeDataType); continue; }
+      const bases = [...new Set(concrete.map(t => dataTypeToBase(t)))];
+      merged.set(key, bases.length === 1 ? concrete[0]! : (createUnionType(bases) as UcodeDataType));
+    }
+    if (merged.size > 0) symbol.valuePropertyTypes = merged;
   }
 
   private inferFunctionCallReturnType(node: AstNode): UcodeDataType | null {

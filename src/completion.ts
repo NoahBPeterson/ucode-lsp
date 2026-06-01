@@ -118,7 +118,7 @@ export function handleCompletion(
         // Check if cursor is inside a JSDoc comment
         const jsDocCompletion = detectJsDocCompletionContext(text, offset, lexer.comments);
         if (jsDocCompletion) {
-            return createJsDocCompletions(jsDocCompletion);
+            return createJsDocCompletions(jsDocCompletion, document.uri, connection);
         }
 
         // `{` is registered as a completion trigger character SOLELY for JSDoc
@@ -1566,7 +1566,10 @@ function createFileSystemCompletions(currentPath: string, documentUri: string, c
 // ---- JSDoc completion support ----
 
 interface JsDocCompletionContext {
-    kind: 'tag' | 'type';
+    kind: 'tag' | 'type' | 'import-path';
+    /** For kind === 'import-path': the partial path already typed inside the
+     *  `import('…` quotes (e.g. `./sy`), used to drive file completion. */
+    partialPath?: string;
 }
 
 function detectJsDocCompletionContext(text: string, offset: number, comments: Token[]): JsDocCompletionContext | null {
@@ -1583,6 +1586,14 @@ function detectJsDocCompletionContext(text: string, offset: number, comments: To
             const afterAtMatch = textBeforeCursor.match(/@(\w*)$/);
             if (afterAtMatch) {
                 return { kind: 'tag' };
+            }
+
+            // Inside the quotes of an `import('…')` type reference — complete file
+            // paths. Must be checked before the generic type patterns below, which
+            // would otherwise swallow it as a plain type position.
+            const importPathMatch = textBeforeCursor.match(/\{[^}]*\bimport\(\s*['"]([^'"]*)$/);
+            if (importPathMatch) {
+                return { kind: 'import-path', partialPath: importPathMatch[1] ?? '' };
             }
 
             // Check if we're in a type position:
@@ -1606,7 +1617,28 @@ function detectJsDocCompletionContext(text: string, offset: number, comments: To
     return null;
 }
 
-function createJsDocCompletions(context: JsDocCompletionContext): CompletionItem[] {
+function createJsDocCompletions(context: JsDocCompletionContext, documentUri: string, connection: any): CompletionItem[] {
+    // Cursor is inside `import('…')` — complete sibling files/directories so the
+    // user picks a real module path instead of typing it blind.
+    if (context.kind === 'import-path') {
+        const partial = context.partialPath ?? '';
+        const completions = createFileSystemCompletions(partial, documentUri, connection);
+        // A bare path (`output.uc`) resolves as a module-search name, not relative
+        // to this file, so the type fails to resolve (UC7001). When the user hasn't
+        // typed a relative prefix yet, insert one so the path actually resolves.
+        // filterText stays the bare name so it still matches what the user types
+        // (a `./`-prefixed label would otherwise be filtered out by a typed `o`).
+        if (!partial.startsWith('.') && !partial.startsWith('/')) {
+            for (const c of completions) {
+                const bare = (c.insertText ?? c.label);
+                c.filterText = bare;
+                c.insertText = './' + bare;
+                c.label = './' + c.label;
+            }
+        }
+        return completions;
+    }
+
     if (context.kind === 'tag') {
         return [
             { label: 'param', kind: CompletionItemKind.Keyword, detail: '@param {type} name - description', insertText: 'param ', sortText: '0param' },
@@ -1651,16 +1683,89 @@ function createJsDocCompletions(context: JsDocCompletionContext): CompletionItem
         });
     }
 
-    // import() type syntax
+    // Concrete cross-file type references: one per sibling `.uc` module. Picking
+    // `import('./sys.uc')` resolves to that module's type (a factory's return
+    // shape, an exported object, or a named export's type) with no hand-written
+    // typedef. This is the discoverable, non-guessing way to reach the import()
+    // syntax — the canonical form a user would otherwise have to know by heart.
+    items.push(...createSiblingImportTypeCompletions(documentUri));
+
+    // Generic import() type snippet (fallback when the target isn't a sibling, or
+    // when the user wants a specific exported property: `import('mod').Name`).
     items.push({
         label: "import('module').type",
         kind: CompletionItemKind.Snippet,
         detail: 'Cross-file type reference',
         insertText: "import('$1').$2",
         insertTextFormat: InsertTextFormat.Snippet,
-        sortText: '4import',
+        sortText: '5import',
     });
 
+    return items;
+}
+
+/** Offer `import('./<file>.uc')` for each sibling `.uc` module of the document,
+ *  so the import() type syntax is discoverable from the `@param {` completion
+ *  list. Bare form (no `.property`) — correct for factory default-exports and
+ *  whole-module object exports alike. */
+function createSiblingImportTypeCompletions(documentUri: string): CompletionItem[] {
+    const items: CompletionItem[] = [];
+    try {
+        const documentPath = new URL(documentUri).pathname;
+        const documentDir = path.dirname(documentPath);
+        const currentFile = path.basename(documentPath);
+        if (!fs.existsSync(documentDir) || !fs.statSync(documentDir).isDirectory()) return items;
+        const resolver = getCompletionFileResolver();
+        for (const entry of fs.readdirSync(documentDir)) {
+            if (!entry.endsWith('.uc') || entry === currentFile) continue;
+            const ref = `import('./${entry}')`;
+            // Bare form: the whole module's exported type (a factory's return shape
+            // or a whole-module object).
+            items.push({
+                label: ref,
+                kind: CompletionItemKind.Module,
+                detail: `Type from ${entry}`,
+                insertText: ref,
+                sortText: `4import:${entry}:`,
+                documentation: {
+                    kind: MarkupKind.Markdown,
+                    value: `Cross-file type reference to \`${entry}\`.\n\nResolves to the module's exported type — a factory's return shape, an exported object, or a named export.`
+                }
+            });
+
+            // Property forms: `import('./pkg.uc').pkg`. A module whose default
+            // export is an OBJECT (`export default { pkg, sym, … }`) is usually
+            // consumed one property at a time (`let pkg = mod.pkg`), so the bare
+            // form gives the wrong shape — offer each property/named export so the
+            // right one is discoverable.
+            const siblingUri = 'file://' + path.join(documentDir, entry);
+            const propNames = new Set<string>();
+            const defInfo = resolver.getDefaultExportPropertyTypes(siblingUri);
+            if (defInfo?.propertyTypes) {
+                for (const p of defInfo.propertyTypes.keys()) propNames.add(p);
+            }
+            const exports = resolver.getModuleExports(siblingUri);
+            for (const e of exports || []) {
+                if (e.type === 'named') propNames.add(e.name);
+            }
+            for (const prop of propNames) {
+                const propRef = `import('./${entry}').${prop}`;
+                items.push({
+                    label: propRef,
+                    kind: CompletionItemKind.Module,
+                    detail: `Type of ${prop} from ${entry}`,
+                    insertText: propRef,
+                    sortText: `4import:${entry}:${prop}`,
+                    documentation: {
+                        kind: MarkupKind.Markdown,
+                        value: `Cross-file type reference to the \`${prop}\` export of \`${entry}\`.`
+                    }
+                });
+            }
+        }
+    } catch {
+        // Best-effort discoverability aid; ignore FS errors.
+    }
     return items;
 }
 

@@ -59,6 +59,19 @@ export abstract class BasicStatements extends ControlFlowStatements {
       }
     }
     
+    // Propagate a leading JSDoc block to a function expression assigned via `=`
+    // (e.g. `/** @param {object} reg */ obj.init = function(reg) {…}`). The
+    // comment precedes the statement, not the function node, so without this it
+    // never reaches the function's params (types stay unknown, UC7003 still
+    // fires). Mirrors the variable-declaration propagation in the analyzer.
+    if (expression.type === 'AssignmentExpression') {
+      const rhs = (expression as any).right;
+      if (rhs && (rhs.type === 'FunctionExpression' || rhs.type === 'ArrowFunctionExpression') && !rhs.leadingJsDoc) {
+        const leadingJsDoc = this.findLeadingJsDoc(start);
+        if (leadingJsDoc) rhs.leadingJsDoc = leadingJsDoc;
+      }
+    }
+
     return {
       type: 'ExpressionStatement',
       start,

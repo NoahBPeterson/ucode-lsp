@@ -81,6 +81,21 @@ export function handleDefinition(
                         }
                     }
 
+                    // Factory-returned member: a param typed `@param {import('./sys.uc')} sh`
+                    // carries each member's cross-file source location. `sh.exec` jumps to
+                    // `exec`'s definition in sys.uc.
+                    const memberLoc = objSymbol?.propertyDefinitionLocations?.get(symbolName);
+                    if (memberLoc) {
+                        const target: TextDocument | undefined = documents.get(memberLoc.uri);
+                        const targetContent = target ? target.getText() : fileResolver.getFileContent(memberLoc.uri);
+                        if (targetContent !== null && targetContent !== undefined) {
+                            const tmpDoc = TextDocument.create(memberLoc.uri, 'ucode', 1, targetContent);
+                            const start = tmpDoc.positionAt(memberLoc.start);
+                            const end = tmpDoc.positionAt(memberLoc.end);
+                            return { uri: memberLoc.uri, range: { start, end } };
+                        }
+                    }
+
                     // Chained namespace access: ns.A.B (cursor on B). objToken is
                     // `A`, which isn't a symbol — but its preceding LABEL+DOT
                     // points at `ns`, the namespace import. Land inside that

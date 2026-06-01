@@ -102,6 +102,77 @@ export function findNamespaceMemberReferences(ast: any, namespaceLocal: string, 
     return refs;
 }
 
+/**
+ * Collect `<recv>.method` member accesses where `<recv>` is a local bound to a
+ * call of `factoryLocal` — i.e. usages of a factory-returned method:
+ *   import create_sys from './sys.uc';
+ *   let sh = create_sys(...);   // sh is a receiver
+ *   sh.try_cmd(...);            // ← a reference to try_cmd
+ * Tracks receivers bound directly from the factory (`let r = factoryLocal(...)`
+ * or `r = factoryLocal(...)`) AND through plain identifier aliases of those
+ * receivers (`let s2 = r; s2.method()`), resolved to a fixpoint so alias chains
+ * (`s3 = s2 = r`) are followed. Passing a receiver INTO another function (true
+ * interprocedural flow) is still out of scope. Returns the property
+ * identifier's span.
+ */
+export function findFactoryMethodReferences(ast: any, factoryLocal: string, methodName: string): SourceSpan[] {
+    const receivers = new Set<string>();
+    // Identifier-to-identifier assignments (`lhs = rhsIdentifier`), used to
+    // propagate receiver-ness through aliases after the direct receivers are known.
+    const aliasEdges: Array<{ lhs: string; rhs: string }> = [];
+    const collect = (node: any): void => {
+        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        const isFactoryCall = (n: any) =>
+            n?.type === 'CallExpression' && n.callee?.type === 'Identifier' && n.callee.name === factoryLocal;
+        if (node.type === 'VariableDeclaration') {
+            for (const d of node.declarations || []) {
+                if (d?.id?.type !== 'Identifier') continue;
+                if (isFactoryCall(d.init)) receivers.add(d.id.name);
+                else if (d.init?.type === 'Identifier') aliasEdges.push({ lhs: d.id.name, rhs: d.init.name });
+            }
+        }
+        if (node.type === 'AssignmentExpression' && node.operator === '=' && node.left?.type === 'Identifier') {
+            if (isFactoryCall(node.right)) receivers.add(node.left.name);
+            else if (node.right?.type === 'Identifier') aliasEdges.push({ lhs: node.left.name, rhs: node.right.name });
+        }
+        for (const k of Object.keys(node)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = node[k];
+            if (Array.isArray(v)) { for (const it of v) collect(it); }
+            else if (v && typeof v === 'object' && typeof v.type === 'string') collect(v);
+        }
+    };
+    collect(ast);
+    if (receivers.size === 0) return [];
+
+    // Propagate receiver-ness across alias edges to a fixpoint (`s2 = r`, `s3 = s2`).
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (const { lhs, rhs } of aliasEdges) {
+            if (receivers.has(rhs) && !receivers.has(lhs)) { receivers.add(lhs); changed = true; }
+        }
+    }
+
+    const refs: SourceSpan[] = [];
+    const visit = (node: any): void => {
+        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        if (node.type === 'MemberExpression' && !node.computed
+            && node.object?.type === 'Identifier' && receivers.has(node.object.name)
+            && node.property?.type === 'Identifier' && node.property.name === methodName) {
+            refs.push({ start: node.property.start, end: node.property.end });
+        }
+        for (const k of Object.keys(node)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = node[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it); }
+            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v);
+        }
+    };
+    visit(ast);
+    return refs;
+}
+
 /** "N references" / "1 reference" / "no references". */
 export function formatReferencesTitle(count: number): string {
     if (count === 0) return 'no references';

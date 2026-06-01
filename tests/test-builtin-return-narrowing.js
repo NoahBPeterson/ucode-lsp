@@ -515,5 +515,28 @@ function check(label, actual, expected) {
     check('rand(number) -> double', getType(r, 'a'), 'double');
 }
 
+// --- match(): null is ALWAYS possible (no-match returns null even on valid args),
+//     and the `g` flag changes the element shape. Verified against the runtime. ---
+{
+    // no g: array<string> | null (one match; full match + capture groups)
+    const r = analyze(`let m = match("x", /(\\d)/);`);
+    check('match(str, /re/) -> array<string> | null', getType(r, 'm'), 'array<string> | null');
+}
+{
+    // g: array<array<string>> | null (all matches; each element is a match array)
+    const r = analyze(`let m = match("x", /(\\d)/g);`);
+    check('match(str, /re/g) -> array<array<string>> | null', getType(r, 'm'), 'array<array<string>> | null');
+}
+{
+    // unknown subject, valid regex -> still array<string> | null (null on no-match)
+    const r = analyze(`let x; let m = match(x, /(\\d)/);`);
+    check('match(unknown, /re/) -> array<string> | null', getType(r, 'm'), 'array<string> | null');
+}
+{
+    // regex arg is definitely the wrong type -> always null
+    const r = analyze(`let m = match("x", 42);`);
+    check('match(str, 42) -> null', getType(r, 'm'), 'null');
+}
+
 console.log(`\n${passed}/${passed + failed} tests passed`);
 if (failed > 0) process.exit(1);

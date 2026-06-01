@@ -24,6 +24,16 @@ export interface ModuleExport {
     exportedName?: string; // Original identifier name for default exports (e.g., 'create_validators')
 }
 
+/** Return-shape info for a factory function (one that returns an object literal).
+ *  `propertyDefinitionLocations` carries each member's source offsets, which are
+ *  file-LOCAL — the consumer stamps the factory file URI. */
+export interface FactoryReturnInfo {
+    returnType: UcodeDataType;
+    returnPropertyTypes: Map<string, UcodeDataType>;
+    propertyFunctionReturnTypes?: Map<string, string>;
+    propertyDefinitionLocations?: Map<string, { start: number; end: number }>;
+}
+
 export class FileResolver {
     private workspaceRoot: string;
     // Caches keyed by file URI, tagged with the file's content so a changed file
@@ -33,6 +43,30 @@ export class FileResolver {
     // the lex+parse when the content is unchanged.
     private fileCache = new Map<string, { content: string; defs: FunctionDefinition[] }>();
     private exportCache = new Map<string, { content: string; exports: ModuleExport[] }>();
+    // Parsed-AST cache, content-keyed. The export/return-info resolvers below used
+    // to re-lex+re-parse the file on EVERY call; cross-file reference search calls
+    // several of them per function, so a CodeLens pass re-parsed the same file
+    // O(functions × exports) times and stalled the single-threaded server. Caching
+    // the parse collapses that to one parse per (file, content).
+    private astCache = new Map<string, { content: string; ast: any }>();
+
+    /** Lex+parse `source` for `fileUri`, reusing a cached AST when the content is
+     *  unchanged. Returns the Program AST or null on parse failure. */
+    private getCachedAst(fileUri: string, source: string): any | null {
+        const cached = this.astCache.get(fileUri);
+        if (cached && cached.content === source) return cached.ast;
+        try {
+            const lexer = new UcodeLexer(source, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, source);
+            parser.setComments(lexer.comments);
+            const ast = parser.parse().ast ?? null;
+            this.astCache.set(fileUri, { content: source, ast });
+            return ast;
+        } catch {
+            return null;
+        }
+    }
 
     /** Public buffer-or-disk read (prefers the open editor buffer) for callers
      *  that need the same content FileResolver parses — e.g. offset→position
@@ -752,17 +786,13 @@ export class FileResolver {
      * Get property types for a default export that is an object.
      * Resolves identifiers to their declarations (ObjectExpression, etc.).
      */
-    getDefaultExportPropertyTypes(fileUri: string): { propertyTypes: Map<string, UcodeDataType>; nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>; functionReturnTypes?: Map<string, UcodeDataType> } | null {
+    getDefaultExportPropertyTypes(fileUri: string): { propertyTypes: Map<string, UcodeDataType>; nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>; functionReturnTypes?: Map<string, UcodeDataType>; closedShape?: boolean } | null {
         try {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
 
             const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
-            const lexer = new UcodeLexer(source, { rawMode: true });
-            const tokens = lexer.tokenize();
-            const parser = new UcodeParser(tokens, source);
-            parser.setComments(lexer.comments);
-            const result = parser.parse();
+            const result = { ast: this.getCachedAst(fileUri, source) };
             if (!result.ast) return null;
 
             const body = (result.ast as any).body || [];
@@ -795,7 +825,12 @@ export class FileResolver {
             }
             if (!defaultDecl) return null;
 
-            // Resolve identifier to its initializer
+            // Resolve identifier to its initializer. An INLINE object literal
+            // (`export default { … }`) has no name to reference, so it can't be
+            // mutated after the literal — its property set is provably complete
+            // ("closed"). A `export default someVar` could be augmented later
+            // (`someVar.x = …`), so it is NOT closed.
+            const isInlineLiteral = defaultDecl.type === 'ObjectExpression';
             let objNode = defaultDecl;
             if (objNode.type === 'Identifier' && varInits.has((objNode as any).name)) {
                 objNode = varInits.get((objNode as any).name)!;
@@ -841,7 +876,7 @@ export class FileResolver {
                 } else if (val.type === 'ObjectExpression') {
                     propertyTypes.set(key, UcodeType.OBJECT as UcodeDataType);
                     // Extract nested property types for object-valued properties
-                    const nested = this.extractObjectPropertyTypes(val, funcNames, varInits, new Map());
+                    const nested = this.extractObjectPropertyTypes(val, funcNodes, varInits, new Map());
                     if (nested.size > 0) {
                         nestedPropertyTypes.set(key, nested);
                     }
@@ -854,7 +889,7 @@ export class FileResolver {
                         propertyTypes.set(key, this.inferNodeType(init));
                         // If the resolved initializer is an object, extract nested types
                         if (init.type === 'ObjectExpression') {
-                            const nested = this.extractObjectPropertyTypes(init, funcNames, varInits, new Map());
+                            const nested = this.extractObjectPropertyTypes(init, funcNodes, varInits, new Map());
                             if (nested.size > 0) {
                                 nestedPropertyTypes.set(key, nested);
                             }
@@ -868,12 +903,15 @@ export class FileResolver {
             }
 
             if (propertyTypes.size === 0) return null;
-            const exportResult: { propertyTypes: Map<string, UcodeDataType>; nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>; functionReturnTypes?: Map<string, UcodeDataType> } = { propertyTypes };
+            const exportResult: { propertyTypes: Map<string, UcodeDataType>; nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>; functionReturnTypes?: Map<string, UcodeDataType>; closedShape?: boolean } = { propertyTypes };
             if (nestedPropertyTypes.size > 0) {
                 exportResult.nestedPropertyTypes = nestedPropertyTypes;
             }
             if (functionReturnTypes.size > 0) {
                 exportResult.functionReturnTypes = functionReturnTypes;
+            }
+            if (isInlineLiteral) {
+                exportResult.closedShape = true;
             }
             return exportResult;
         } catch {
@@ -896,11 +934,7 @@ export class FileResolver {
             if (!filePath || !fs.existsSync(filePath)) return null;
 
             const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
-            const lexer = new UcodeLexer(source, { rawMode: true });
-            const tokens = lexer.tokenize();
-            const parser = new UcodeParser(tokens, source);
-            parser.setComments(lexer.comments);
-            const result = parser.parse();
+            const result = { ast: this.getCachedAst(fileUri, source) };
             if (!result.ast) return null;
 
             const body = (result.ast as any).body || [];
@@ -908,9 +942,11 @@ export class FileResolver {
             // Build maps of top-level variable initializers and function names
             const varInits = new Map<string, AstNode>();
             const funcNames = new Set<string>();
+            const funcNodes = new Map<string, AstNode>();
             for (const stmt of body) {
                 if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
                     funcNames.add(stmt.id.name);
+                    funcNodes.set(stmt.id.name, stmt);
                 }
                 if (stmt.type === 'VariableDeclaration') {
                     for (const decl of stmt.declarations || []) {
@@ -954,7 +990,7 @@ export class FileResolver {
                                         propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
                                     } else if (val.type === 'ObjectExpression') {
                                         propertyTypes.set(key, UcodeType.OBJECT as UcodeDataType);
-                                        const nested = this.extractObjectPropertyTypes(val, funcNames, varInits, new Map());
+                                        const nested = this.extractObjectPropertyTypes(val, funcNodes, varInits, new Map());
                                         if (nested.size > 0) nestedPropertyTypes.set(key, nested);
                                     } else {
                                         propertyTypes.set(key, this.inferNodeType(val));
@@ -990,7 +1026,7 @@ export class FileResolver {
                         if (init) {
                             const nodeType = this.inferNodeType(init);
                             if (init.type === 'ObjectExpression') {
-                                const propertyTypes = this.extractObjectPropertyTypes(init, funcNames, varInits, new Map());
+                                const propertyTypes = this.extractObjectPropertyTypes(init, funcNodes, varInits, new Map());
                                 const res: { type: UcodeDataType; propertyTypes?: Map<string, UcodeDataType> } = { type: nodeType };
                                 if (propertyTypes.size > 0) res.propertyTypes = propertyTypes;
                                 return res;
@@ -1013,17 +1049,13 @@ export class FileResolver {
      * Get return type and property types for a default export that is a function.
      * Analyzes the function's return statements for object literals.
      */
-    getDefaultExportFunctionReturnInfo(fileUri: string): { returnType: UcodeDataType; returnPropertyTypes: Map<string, UcodeDataType>; propertyFunctionReturnTypes?: Map<string, string> } | null {
+    getDefaultExportFunctionReturnInfo(fileUri: string): FactoryReturnInfo | null {
         try {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
 
             const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
-            const lexer = new UcodeLexer(source, { rawMode: true });
-            const tokens = lexer.tokenize();
-            const parser = new UcodeParser(tokens, source);
-            parser.setComments(lexer.comments);
-            const result = parser.parse();
+            const result = { ast: this.getCachedAst(fileUri, source) };
             if (!result.ast) return null;
 
             const body = (result.ast as any).body || [];
@@ -1096,17 +1128,13 @@ export class FileResolver {
      * Returns null unless the function provably returns an object literal in all
      * branches (so non-object-returning named functions are unaffected).
      */
-    getNamedExportFunctionReturnInfo(fileUri: string, exportName: string): { returnType: UcodeDataType; returnPropertyTypes: Map<string, UcodeDataType>; propertyFunctionReturnTypes?: Map<string, string> } | null {
+    getNamedExportFunctionReturnInfo(fileUri: string, exportName: string): FactoryReturnInfo | null {
         try {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
 
             const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
-            const lexer = new UcodeLexer(source, { rawMode: true });
-            const tokens = lexer.tokenize();
-            const parser = new UcodeParser(tokens, source);
-            parser.setComments(lexer.comments);
-            const result = parser.parse();
+            const result = { ast: this.getCachedAst(fileUri, source) };
             if (!result.ast) return null;
 
             const body = (result.ast as any).body || [];
@@ -1206,18 +1234,16 @@ export class FileResolver {
     private computeFunctionReturnInfo(
         funcNode: AstNode,
         topLevelFuncs: Map<string, AstNode>
-    ): { returnType: UcodeDataType; returnPropertyTypes: Map<string, UcodeDataType>; propertyFunctionReturnTypes?: Map<string, string> } | null {
+    ): FactoryReturnInfo | null {
         const funcBody = (funcNode as FunctionDeclarationNode).body;
         if (!funcBody) return null;
 
-        // Collect local function names/nodes and variable initializers within the function body
+        // Collect local function nodes and variable initializers within the function body
         const localFuncNodes = new Map<string, AstNode>();
-        const localFuncNames = new Set<string>();
         const localVarInits = new Map<string, AstNode>();
         const bodyStmts = (funcBody as any).body || [];
         for (const stmt of bodyStmts) {
             if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
-                localFuncNames.add(stmt.id.name);
                 localFuncNodes.set(stmt.id.name, stmt);
             }
             if (stmt.type === 'VariableDeclaration') {
@@ -1229,9 +1255,11 @@ export class FileResolver {
             }
         }
 
-        // Find return statements at the top level of the function body (not nested functions)
+        // Find return statements at the top level of the function body (not nested functions).
+        // returnPropMaps[i] / returnLocMaps[i] correspond to the same i-th return branch.
         const returnPropMaps: Map<string, UcodeDataType>[] = [];
-        this.collectReturnObjectProperties(bodyStmts, localFuncNames, localVarInits, topLevelFuncs, returnPropMaps);
+        const returnLocMaps: Map<string, { start: number; end: number }>[] = [];
+        this.collectReturnObjectProperties(bodyStmts, localFuncNodes, localVarInits, topLevelFuncs, returnPropMaps, returnLocMaps);
 
         if (returnPropMaps.length === 0) return null;
 
@@ -1248,18 +1276,32 @@ export class FileResolver {
 
         if (merged.size === 0) return null;
 
+        // Definition locations taken from the first return branch (offsets are
+        // file-local; the caller stamps the file URI).
+        const propertyDefinitionLocations = new Map<string, { start: number; end: number }>();
+        const firstLocs = returnLocMaps[0];
+        if (firstLocs) {
+            for (const key of merged.keys()) {
+                const loc = firstLocs.get(key);
+                if (loc) propertyDefinitionLocations.set(key, loc);
+            }
+        }
+
         // Analyze return types of function-typed properties
         const propertyFunctionReturnTypes = this.analyzePropertyFunctionReturnTypes(
             merged, localFuncNodes, localVarInits, topLevelFuncs,
             (funcNode as FunctionDeclarationNode).params || []
         );
 
-        const returnInfo: { returnType: UcodeDataType; returnPropertyTypes: Map<string, UcodeDataType>; propertyFunctionReturnTypes?: Map<string, string> } = {
+        const returnInfo: FactoryReturnInfo = {
             returnType: UcodeType.OBJECT as UcodeDataType,
             returnPropertyTypes: merged
         };
         if (propertyFunctionReturnTypes.size > 0) {
             returnInfo.propertyFunctionReturnTypes = propertyFunctionReturnTypes;
+        }
+        if (propertyDefinitionLocations.size > 0) {
+            returnInfo.propertyDefinitionLocations = propertyDefinitionLocations;
         }
         return returnInfo;
     }
@@ -1270,17 +1312,22 @@ export class FileResolver {
      */
     private collectReturnObjectProperties(
         stmts: AstNode[],
-        localFuncNames: Set<string>,
+        localFuncNodes: Map<string, AstNode>,
         localVarInits: Map<string, AstNode>,
         topLevelFuncs: Map<string, AstNode>,
-        result: Map<string, UcodeDataType>[]
+        result: Map<string, UcodeDataType>[],
+        resultLocs: Map<string, { start: number; end: number }>[]
     ): void {
         for (const stmt of stmts) {
             if (stmt.type === 'ReturnStatement') {
                 const arg = (stmt as any).argument;
                 if (arg?.type === 'ObjectExpression') {
-                    const propTypes = this.extractObjectPropertyTypes(arg, localFuncNames, localVarInits, topLevelFuncs);
-                    if (propTypes.size > 0) result.push(propTypes);
+                    const locs = new Map<string, { start: number; end: number }>();
+                    const propTypes = this.extractObjectPropertyTypes(arg, localFuncNodes, localVarInits, topLevelFuncs, locs);
+                    if (propTypes.size > 0) {
+                        result.push(propTypes);
+                        resultLocs.push(locs);
+                    }
                 }
             } else if (stmt.type === 'FunctionDeclaration' || stmt.type === 'FunctionExpression' || stmt.type === 'ArrowFunctionExpression') {
                 // Skip nested function bodies
@@ -1289,14 +1336,14 @@ export class FileResolver {
                 const ifStmt = stmt as any;
                 if (ifStmt.consequent) {
                     const block = ifStmt.consequent.type === 'BlockStatement' ? ifStmt.consequent.body : [ifStmt.consequent];
-                    this.collectReturnObjectProperties(block, localFuncNames, localVarInits, topLevelFuncs, result);
+                    this.collectReturnObjectProperties(block, localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs);
                 }
                 if (ifStmt.alternate) {
                     const block = ifStmt.alternate.type === 'BlockStatement' ? ifStmt.alternate.body : [ifStmt.alternate];
-                    this.collectReturnObjectProperties(block, localFuncNames, localVarInits, topLevelFuncs, result);
+                    this.collectReturnObjectProperties(block, localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs);
                 }
             } else if (stmt.type === 'BlockStatement') {
-                this.collectReturnObjectProperties((stmt as any).body || [], localFuncNames, localVarInits, topLevelFuncs, result);
+                this.collectReturnObjectProperties((stmt as any).body || [], localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs);
             }
         }
     }
@@ -1307,11 +1354,17 @@ export class FileResolver {
      */
     private extractObjectPropertyTypes(
         objNode: AstNode,
-        localFuncNames: Set<string>,
+        localFuncNodes: Map<string, AstNode>,
         localVarInits: Map<string, AstNode>,
-        topLevelFuncs: Map<string, AstNode>
+        topLevelFuncs: Map<string, AstNode>,
+        outLocs?: Map<string, { start: number; end: number }>
     ): Map<string, UcodeDataType> {
         const propertyTypes = new Map<string, UcodeDataType>();
+        const setLoc = (key: string, node: any) => {
+            if (outLocs && node && typeof node.start === 'number' && typeof node.end === 'number') {
+                outLocs.set(key, { start: node.start, end: node.end });
+            }
+        };
         for (const prop of (objNode as any).properties || []) {
             const key = prop.key?.name || prop.key?.value;
             if (!key) continue;
@@ -1321,13 +1374,20 @@ export class FileResolver {
 
             if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
                 propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                // Inline method: jump to the function expression itself.
+                setLoc(key, val);
             } else if (val.type === 'Identifier') {
                 const name = val.name;
-                if (localFuncNames.has(name) || topLevelFuncs.has(name)) {
+                // Prefer the referenced declaration's location so go-to-def lands on
+                // `function exec()` rather than the `exec` reference in the return object.
+                const declNode = localFuncNodes.get(name) || topLevelFuncs.get(name);
+                if (declNode) {
                     propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                    setLoc(key, declNode);
                 } else if (localVarInits.has(name)) {
                     const init = localVarInits.get(name)!;
                     propertyTypes.set(key, this.inferNodeType(init));
+                    setLoc(key, init);
                 } else {
                     propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
                 }
@@ -1341,10 +1401,13 @@ export class FileResolver {
                 } else {
                     propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
                 }
+                setLoc(key, val);
             } else if (val.type === 'ObjectExpression') {
                 propertyTypes.set(key, UcodeType.OBJECT as UcodeDataType);
+                setLoc(key, val);
             } else if (val.type === 'ArrayExpression') {
                 propertyTypes.set(key, UcodeType.ARRAY as UcodeDataType);
+                setLoc(key, val);
             } else {
                 propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
             }

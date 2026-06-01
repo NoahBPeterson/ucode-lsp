@@ -617,7 +617,14 @@ export function handleHover(
                     const scopeLabel = objectName === 'global'
                         ? `Global property on \`${objectName}\``
                         : `Property on \`${objectName}\``;
-                    let hoverMarkdown = `**${memberName}**: \`${typeString}\`\n\n${scopeLabel}`;
+
+                    // Factory-returned methods carry an inferred return-type hint
+                    // (e.g. `exec` → "string"); render them as a method instead of a
+                    // bare `function` so the call result type is visible on hover.
+                    const returnHint = symbol.propertyFunctionReturnTypes?.get(memberName);
+                    let hoverMarkdown = returnHint
+                        ? `**(function)** \`${memberName}(…)\` → \`${returnHint}\`\n\n${scopeLabel}`
+                        : `**${memberName}**: \`${typeString}\`\n\n${scopeLabel}`;
 
                     // For catch-clause exception objects, surface the rich property
                     // doc (e.g. the stacktrace frame structure) instead of the generic one.
@@ -625,6 +632,14 @@ export function handleHover(
                         const prop = exceptionObjectType.properties?.get(memberName);
                         if (prop && exceptionObjectType.formatPropertyDoc) {
                             hoverMarkdown = exceptionObjectType.formatPropertyDoc(memberName, prop);
+                        }
+                    } else {
+                        // When we know where the member is defined (factory-returned
+                        // members from `@param {import('./x.uc')}`), link to its file.
+                        const defLoc = symbol.propertyDefinitionLocations?.get(memberName);
+                        if (defLoc) {
+                            const fileName = defLoc.uri.split('/').pop() || defLoc.uri;
+                            hoverMarkdown += `\n\nDefined in \`${fileName}\``;
                         }
                     }
 

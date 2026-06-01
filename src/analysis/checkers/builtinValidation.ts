@@ -451,21 +451,54 @@ export class BuiltinValidator {
     return true;
   }
 
+  /** True when `node` is a regex literal carrying the global (`g`) flag. The
+   *  literal's value is the full `/pattern/flags` text (flags are letters only,
+   *  so the closing delimiter is the last `/`). Returns false for dynamic
+   *  regexes (`regexp(...)`) or variables — their flags aren't statically known. */
+  private regexLiteralHasGlobalFlag(node: AstNode | undefined): boolean {
+    if (!node || node.type !== 'Literal') return false;
+    const lit = node as any;
+    if (lit.literalType !== 'regexp') return false;
+    const v = String(lit.value);
+    const lastSlash = v.lastIndexOf('/');
+    if (lastSlash < 0) return false;
+    return v.slice(lastSlash + 1).includes('g');
+  }
+
   validateMatchFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'match', 2)) return true;
-    // C: returns NULL if pattern not regex or subject missing
-    this.narrowForArgType(node.arguments[1], [UcodeType.REGEX], UcodeType.ARRAY);
-    // Upgrade to array<string> if valid
-    if (this.narrowedReturnType === UcodeType.ARRAY) {
-      this.narrowedReturnType = createArrayType(UcodeType.STRING);
+
+    // Return type. CRITICAL: `null` is ALWAYS possible, even with perfectly valid
+    // arguments — match() returns null on NO MATCH (verified against the runtime:
+    // `match("zzz", /x/)` → null). This is unlike split()/replace(), where null
+    // only signals a wrong arg TYPE (so it can be narrowed away once the args are
+    // known-good). For match() it never can be.
+    //
+    // Element shape depends on the `g` flag of a LITERAL regex:
+    //   no g → array<string>          (one match: full match at [0], groups after)
+    //   g    → array<array<string>>   (all matches: each element is a match array)
+    // A dynamic regexp() falls back to the no-g shape (flag unknown).
+    const regexArg = node.arguments[1];
+    const regexType = regexArg ? this.getNodeType(regexArg) : UcodeType.UNKNOWN;
+    const regexCouldBeValid = regexType === UcodeType.REGEX
+      || regexType === UcodeType.UNKNOWN
+      || (typeof regexType === 'string' && regexType.includes(' | ')
+          && regexType.split(' | ').some(t => t.trim() === UcodeType.REGEX || t.trim() === UcodeType.UNKNOWN));
+    if (regexCouldBeValid) {
+      const elementType = this.regexLiteralHasGlobalFlag(regexArg)
+        ? createArrayType(UcodeType.STRING)   // g: array of match-arrays
+        : UcodeType.STRING;                   // no g: array of strings
+      this.narrowedReturnType = createUnionType([createArrayType(elementType), UcodeType.NULL]) as UcodeType;
+    } else {
+      // regex arg is definitely the wrong type → match() always returns null.
+      this.narrowedReturnType = UcodeType.NULL;
     }
+
     this.validateArgumentType(node.arguments[0], 'match', 1, [UcodeType.STRING]); // Include UcodeType.OBJECT when it includes tostring()
 
     // Custom check for argument 2: suggest regex conversion if a string literal is passed
-    const regexArg = node.arguments[1];
     if (regexArg) {
-      const regexArgType = this.getNodeType(regexArg);
-      if (regexArgType !== UcodeType.REGEX && regexArgType !== UcodeType.UNKNOWN) {
+      if (regexType !== UcodeType.REGEX && regexType !== UcodeType.UNKNOWN) {
         if (regexArg.type === 'Literal') {
           const literal = regexArg as any;
           if (literal.literalType === 'string') {

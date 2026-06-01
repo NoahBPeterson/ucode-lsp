@@ -26,7 +26,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
 import { collectFunctionDeclarations, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
-import { findFunctionReferences, findNamespaceMemberReferences, formatReferencesTitle, getImportBindings, type ImportBinding } from './references';
+import { findFunctionReferences, findNamespaceMemberReferences, findFactoryMethodReferences, formatReferencesTitle, getImportBindings, type ImportBinding } from './references';
 // import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
@@ -35,6 +35,8 @@ import { SemanticAnalyzer, SemanticAnalysisResult } from './analysis';
 import { UcodeParser } from './parser';
 import { UcodeLexer } from './lexer';
 import { FileResolver } from './analysis/fileResolver';
+import { MODULE_REGISTRIES } from './analysis/moduleDispatch';
+import { Option } from 'effect';
 import { setOpenDocumentContent, clearOpenDocumentContent } from './analysis/openDocuments';
 
 const connection = createConnection(ProposedFeatures.all);
@@ -710,7 +712,23 @@ function findCrossFileReferences(targetUri: string, fnName: string): RefLocation
     if (!exports) return out;
     const isDefault = exports.some(e => e.name === 'default' && e.exportedName === fnName);
     const isNamed = exports.some(e => e.name === fnName);
-    if (!isDefault && !isNamed) return out; // not exported → no cross-file references
+    // fnName may instead be a METHOD of the object some exported FACTORY returns —
+    // reached cross-file as `recv.fnName` where `recv = <factory>(…)`. The factory
+    // can be the default export (`export default create_sys`) OR a named export
+    // (`export function create_widget() { return { do_thing }; }`).
+    const factories: Array<{ kind: 'default' | 'named'; exportName: string }> = [];
+    if (!isDefault) {
+        const defInfo = resolver.getDefaultExportFunctionReturnInfo(targetUri);
+        if (defInfo?.returnPropertyTypes?.has(fnName)) factories.push({ kind: 'default', exportName: 'default' });
+    }
+    for (const e of exports) {
+        if (e.type === 'named' && e.isFunction && e.name !== fnName) {
+            const ni = resolver.getNamedExportFunctionReturnInfo(targetUri, e.name);
+            if (ni?.returnPropertyTypes?.has(fnName)) factories.push({ kind: 'named', exportName: e.name });
+        }
+    }
+    const isFactoryMethod = factories.length > 0;
+    if (!isDefault && !isNamed && !isFactoryMethod) return out; // not reachable cross-file
 
     const targetPath = path.resolve(uriToFilePath(targetUri));
     for (const filePath of listWorkspaceUcodeFiles()) {
@@ -728,6 +746,18 @@ function findCrossFileReferences(targetUri: string, fnName: string): RefLocation
                     out.push({ uri: fileUri, range: { start: entry.doc.positionAt(r.start), end: entry.doc.positionAt(r.end) } });
                 }
             }
+            // Factory-returned method: find `recv.fnName` where `recv` comes from
+            // calling the imported factory (default import, or a named import of
+            // the specific factory export).
+            for (const fd of factories) {
+                const factoryLocal = fd.kind === 'default'
+                    ? b.defaultLocal
+                    : b.named.find(n => n.imported === fd.exportName)?.local;
+                if (!factoryLocal) continue;
+                for (const r of findFactoryMethodReferences(entry.ast, factoryLocal, fnName)) {
+                    out.push({ uri: fileUri, range: { start: entry.doc.positionAt(r.start), end: entry.doc.positionAt(r.end) } });
+                }
+            }
             // Default or named import bound to a local name: count plain usages.
             let localName: string | undefined;
             if (isDefault && b.defaultLocal) localName = b.defaultLocal;
@@ -738,7 +768,15 @@ function findCrossFileReferences(targetUri: string, fnName: string): RefLocation
             }
         }
     }
-    return out;
+    // Dedup: a location could be reached by more than one path (e.g. a method
+    // name returned by two factories, or factory-method + plain-usage overlap).
+    const seen = new Set<string>();
+    return out.filter(loc => {
+        const key = `${loc.uri}:${loc.range.start.line}:${loc.range.start.character}:${loc.range.end.line}:${loc.range.end.character}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
 }
 
 // CodeLens: a per-function git-history annotation. onCodeLens enumerates the
@@ -1256,6 +1294,46 @@ const BUILTIN_ARG_CONSTRAINTS: Record<string, (string[] | null)[]> = {
     gmtime:   [['integer']],
 };
 
+// Builtin-MODULE functions (fs, uci, ubus, math, nl80211, rtnl, …) are frequently
+// aliased to locals (`let popen = fs_mod.popen; … popen(cmd, 'r')`), so a param
+// flowing into one should infer the same way a global builtin does. Derived
+// generically from MODULE_REGISTRIES (the single source of truth for every
+// builtin module) so nothing is hardcoded and it can't drift: each parameter
+// typed as a concrete primitive becomes a constraint; non-primitive params
+// (object handles like fs.proc, `number`, unions) contribute none.
+//
+// Because the inference matches a call by its bare callee name, a name defined by
+// MULTIPLE modules with DIFFERENT signatures is ambiguous — we drop it rather than
+// guess. Global builtins (BUILTIN_ARG_CONSTRAINTS) always take precedence at lookup.
+const MODULE_ARG_CONSTRAINTS: Record<string, (string[] | null)[]> = (() => {
+    const PRIM: Record<string, string> = {
+        string: 'string', integer: 'integer', int: 'integer', double: 'double',
+        float: 'double', boolean: 'boolean', bool: 'boolean', array: 'array', object: 'object',
+    };
+    const toConstraints = (params: ReadonlyArray<{ type: string }>): (string[] | null)[] =>
+        params.map(p => (PRIM[p.type] ? [PRIM[p.type]!] : null));
+    const sameShape = (a: (string[] | null)[], b: (string[] | null)[]) =>
+        JSON.stringify(a) === JSON.stringify(b);
+
+    const out: Record<string, (string[] | null)[]> = {};
+    const ambiguous = new Set<string>();
+    for (const reg of Object.values(MODULE_REGISTRIES)) {
+        for (const name of reg.getFunctionNames()) {
+            if (ambiguous.has(name)) continue;
+            const sig = reg.getFunction(name);
+            if (!Option.isSome(sig)) continue;
+            const c = toConstraints(sig.value.parameters || []);
+            if (!c.some(x => x)) continue; // no concrete constraint anywhere
+            if (name in out) {
+                if (!sameShape(out[name]!, c)) { delete out[name]; ambiguous.add(name); }
+            } else {
+                out[name] = c;
+            }
+        }
+    }
+    return out;
+})();
+
 type ParamInference = Map<string, string>;
 type AllInferences = Map<any, ParamInference>;
 
@@ -1301,6 +1379,23 @@ function splitTypeUnion(t: string): string[] {
  * Per param, we intersect all collected constraint sets. Empty intersection or
  * no constraints → "unknown".
  */
+/** The ucode type name of a literal AST node used as a value (e.g. a switch case
+ *  label), or null if it isn't a plain literal we can classify. Accepts a unary
+ *  +/- on a numeric literal (`case -1:`). `null` literals return null — they
+ *  don't constrain a type. */
+function literalTypeName(node: any): string | null {
+    let n = node;
+    if (n?.type === 'UnaryExpression' && (n.operator === '-' || n.operator === '+') && n.argument?.type === 'Literal') {
+        n = n.argument;
+    }
+    if (n?.type !== 'Literal') return null;
+    const v = n.value;
+    if (typeof v === 'string') return 'string';
+    if (typeof v === 'number') return Number.isInteger(v) ? 'integer' : 'double';
+    if (typeof v === 'boolean') return 'boolean';
+    return null;
+}
+
 function inferParamTypesFromUsage(
     funcNode: any,
     allDiagnostics: any[],
@@ -1360,7 +1455,7 @@ function inferParamTypesFromUsage(
             // builtin returns null when given the wrong argument type — so for
             // the user's code to mean anything, the param must be the
             // constrained type.
-            const builtinConstraints = BUILTIN_ARG_CONSTRAINTS[fname];
+            const builtinConstraints = BUILTIN_ARG_CONSTRAINTS[fname] ?? MODULE_ARG_CONSTRAINTS[fname];
             if (builtinConstraints && Array.isArray(node.arguments)) {
                 for (let i = 0; i < node.arguments.length && i < builtinConstraints.length; i++) {
                     const arg = node.arguments[i];
@@ -1409,6 +1504,33 @@ function inferParamTypesFromUsage(
             const namedKey = !node.computed // dot access — always a non-numeric identifier
                 || (prop?.type === 'Literal' && typeof prop.value === 'string' && !/^-?\d+$/.test(prop.value));
             addConstraint(node.object.name, namedKey ? ['object'] : ['array', 'object']);
+        }
+
+        // Source 5: switch discriminant matched against literal case labels —
+        // `switch (target) { case 'main': case 'netifd': }` → the labels' type(s).
+        // Unlike the runtime-provable rules above this is an INTENT heuristic
+        // (switch tolerates a non-matching discriminant of any type), but it is a
+        // strong, reviewable signal and this inference only ever produces an
+        // editable JSDoc suggestion — never a live diagnostic. Conservative: if
+        // ANY non-default label isn't a literal (e.g. `case SOME_CONST:`), the
+        // discriminant's type is unprovable, so we add nothing.
+        if (node.type === 'SwitchStatement'
+            && node.discriminant?.type === 'Identifier'
+            && paramNames.has(node.discriminant.name)
+            && Array.isArray(node.cases)) {
+            const labelTypes = new Set<string>();
+            let allLiteral = true;
+            let hasLabel = false;
+            for (const c of node.cases) {
+                if (!c || c.test == null) continue; // default clause
+                hasLabel = true;
+                const t = literalTypeName(c.test);
+                if (!t) { allLiteral = false; break; }
+                labelTypes.add(t);
+            }
+            if (hasLabel && allLiteral && labelTypes.size > 0) {
+                addConstraint(node.discriminant.name, [...labelTypes]);
+            }
         }
 
         for (const key of Object.keys(node)) {
