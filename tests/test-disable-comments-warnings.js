@@ -102,8 +102,10 @@ let errorVar3 = undefinedFunction3();`;
 
   describe('Unnecessary Disable Comment Warnings', function() {
     it('should warn about unnecessary disable comments', async function() {
-      // Use a line that truly has no diagnostics (no unused variables)
-      const testContent = `console.log("hello"); // ucode-lsp disable`;
+      // Use a line that truly has no diagnostics (no unused variables, and not a
+      // JS-ism like console.log — `console` is now flagged as undefined). `print`
+      // is a real ucode builtin, so this line is genuinely diagnostic-free.
+      const testContent = `print("hello"); // ucode-lsp disable`;
       const testFilePath = `/tmp/test-unnecessary-disable-${Date.now()}.uc`;
       
       const diagnostics = await getDiagnostics(testContent, testFilePath);
@@ -152,7 +154,7 @@ let errorVar3 = undefinedFunction3();`;
 
     it('should handle multiple disable comments correctly', async function() {
       const testContent = `let errorVar = undefinedFunction(); // ucode-lsp disable
-console.log("no issues"); // ucode-lsp disable
+print("no issues"); // ucode-lsp disable
 let anotherError = anotherUndefinedFunction(); // ucode-lsp disable`;
       const testFilePath = `/tmp/test-multiple-disable-${Date.now()}.uc`;
       

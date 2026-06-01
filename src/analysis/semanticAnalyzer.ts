@@ -69,6 +69,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private functionReturnTypes = new Map<FunctionDeclarationNode, { node: ReturnStatementNode, type: UcodeDataType }[]>();
   private functionReturnPropertyTypes = new Map<FunctionDeclarationNode, Map<string, UcodeDataType>[]>();
   private processingFunctionCallCallee = false; // Track when processing function call callee
+  private visitingMemberBase = false; // Track when visiting the receiver of `obj.x` (suppresses the generic Undefined-variable for a known-module base, which validateModuleMember reports more specifically)
   private cfg: ControlFlowGraph | null = null;
   private cfgQueryEngine: CFGQueryEngine | null = null;
   private readonly moduleFunctionProviders: Record<string, () => string[]> = Object.fromEntries(
@@ -1571,7 +1572,10 @@ export class SemanticAnalyzer extends BaseVisitor {
 
         // Don't report "Undefined variable" if this identifier is a function call callee
         // The TypeChecker will handle "Undefined function" diagnostic for function calls
-        if (!isBuiltin && !isGlobalProperty && !this.processingFunctionCallCallee) {
+        // A known-module base used unimported (`fs.open()`) is reported more
+        // specifically by validateModuleMember — skip the generic message there.
+        const isUnimportedModuleBase = this.visitingMemberBase && this.isKnownModuleName(node.name);
+        if (!isBuiltin && !isGlobalProperty && !this.processingFunctionCallCallee && !isUnimportedModuleBase) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.UNDEFINED_VARIABLE,
             `Undefined variable: ${node.name}`,
@@ -1590,9 +1594,20 @@ export class SemanticAnalyzer extends BaseVisitor {
   visitMemberExpression(node: MemberExpressionNode): void {
     // // console.log('DEBUG: visitMemberExpression called for:', (node.object as any).name + '.' + (node.property as any).name);
     if (this.options.enableScopeAnalysis) {
-      // Visit the object part (e.g., 'constants' in 'constants.DT_HOSTINFO_FINAL_PATH')
+      // Visit the object part (e.g., 'constants' in 'constants.DT_HOSTINFO_FINAL_PATH').
+      // The receiver is a VALUE position, never the called function itself — so a
+      // member-expression callee like `Object.keys(…)` must NOT inherit the
+      // call-callee exemption for its base. Clearing the flag here makes an
+      // undefined base (`Object`, `Math`, … — JS globals ucode lacks) get the
+      // normal Undefined-variable diagnostic, just like the non-called `bar.baz`.
+      const prevCallee = this.processingFunctionCallCallee;
+      const prevMemberBase = this.visitingMemberBase;
+      this.processingFunctionCallCallee = false;
+      this.visitingMemberBase = true;
       this.visit(node.object);
-      
+      this.processingFunctionCallCallee = prevCallee;
+      this.visitingMemberBase = prevMemberBase;
+
       // IMPORTANT: Ensure the object identifier is marked as used for member expressions
       // This fixes the issue where variables like file_content are marked as unused
       // even when used in member expressions like file_content.read()

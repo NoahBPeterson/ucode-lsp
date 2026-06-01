@@ -17,7 +17,7 @@ const a = function(val) {
 let result1 = (x = 1, y = 2);
 
 // Comma operator in function callbacks
-let processed = data.map((item) => (console.log("Processing:", item), item * 2));
+let processed = data.map((item) => (print("Processing:", item), item * 2));
 
 // Multiple comma operators
 let result2 = (a = 1, b = 2, c = 3);
@@ -44,10 +44,10 @@ let result4 = (a = (b = 5, b + 1), c = (a + 2, a * 2), a + c);
 
 function getValue(a){return a;}
 // Comma operator with function calls
-let result5 = (console.log("test"), getValue());
+let result5 = (print("test"), getValue());
 
 // Comma operator in arrow function body
-let arrowTest = (x) => (console.log(x), x * 2);
+let arrowTest = (x) => (print(x), x * 2);
 
 // Complex real-world example similar to user's case
 const processInput = function(val) {
@@ -85,8 +85,8 @@ function testLoops() {
 // Test comma operator in return statements
 function testReturns(flag) {
     if (flag) {
-        return (console.log("Returning true"), true);
+        return (print("Returning true"), true);
     } else {
-        return (console.log("Returning false"), false);
+        return (print("Returning false"), false);
     }
 }
