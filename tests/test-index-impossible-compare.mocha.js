@@ -1,0 +1,71 @@
+const assert = require('assert');
+const { createLSPTestServer } = require('./lsp-test-helpers');
+
+// index()/rindex() return -1 (not found) or a non-negative index — never below
+// -1. Comparing the result against a literal <= -2 is therefore a constant (dead)
+// test, almost always an off-by-one on the -1 sentinel. UC2009 flags it; the
+// legitimate `== -1` / `!= -1` / `>= 0` not-found idioms are NOT flagged.
+describe('Impossible index()/rindex() comparison (UC2009)', function () {
+  this.timeout(15000);
+  let lspServer, getDiagnostics;
+  const FP = '/tmp/idx-cmp.uc';
+  const uc2009 = async (code) =>
+    (await getDiagnostics(code, FP)).filter(d => d.code === 'UC2009');
+
+  before(async function () { lspServer = createLSPTestServer(); await lspServer.initialize(); getDiagnostics = lspServer.getDiagnostics; });
+  after(function () { if (lspServer) lspServer.shutdown(); });
+
+  it('flags `index(s,x) != -2` as always true', async () => {
+    const ds = await uc2009(`let s = "x"; let r = index(s, 'm') != -2;`);
+    assert.strictEqual(ds.length, 1);
+    assert.match(ds[0].message, /always true/);
+  });
+
+  it('flags `== -2` as always false, `< -2`/`<= -2` false, `> -2`/`>= -2` true', async () => {
+    assert.match((await uc2009(`let s="x"; let r = index(s,'m') == -2;`))[0].message, /always false/);
+    assert.match((await uc2009(`let s="x"; let r = index(s,'m') < -3;`))[0].message, /always false/);
+    assert.match((await uc2009(`let s="x"; let r = index(s,'m') > -3;`))[0].message, /always true/);
+    assert.match((await uc2009(`let s="x"; let r = index(s,'m') >= -3;`))[0].message, /always true/);
+  });
+
+  it('handles the literal on the LEFT (`-5 > index(...)`)', async () => {
+    assert.strictEqual((await uc2009(`let s="x"; let r = (-5 > index(s,'m'));`)).length, 1);
+  });
+
+  it('flags rindex() too', async () => {
+    assert.strictEqual((await uc2009(`let s="x"; let r = rindex(s,'m') != -2;`)).length, 1);
+  });
+
+  it('is an ERROR in strict mode, a warning otherwise', async () => {
+    assert.strictEqual((await uc2009(`'use strict';\nlet s="x"; let r = index(s,'m') != -2;`))[0].severity, 1);
+    assert.strictEqual((await uc2009(`let s="x"; let r = index(s,'m') != -2;`))[0].severity, 2);
+  });
+
+  // ── No false positives on legitimate idioms ─────────────────────────────
+  it('does NOT flag the not-found idioms (`== -1`, `!= -1`, `< 0`, `>= 0`)', async () => {
+    assert.strictEqual((await uc2009(`let s="x"; if (index(s,'m') == -1) print(1);`)).length, 0);
+    assert.strictEqual((await uc2009(`let s="x"; if (index(s,'m') != -1) print(1);`)).length, 0);
+    assert.strictEqual((await uc2009(`let s="x"; if (index(s,'m') < 0) print(1);`)).length, 0);
+    assert.strictEqual((await uc2009(`let s="x"; if (index(s,'m') >= 0) print(1);`)).length, 0);
+  });
+
+  it('does NOT flag comparisons of an UNRANGED function (int() can be negative)', async () => {
+    assert.strictEqual((await uc2009(`let s="x"; let r = int(s) != -2;`)).length, 0);
+  });
+
+  // ── Generalization: the same machinery covers length() (range [0, ∞)) ──────
+  it('flags length() against out-of-range literals (general, not index-specific)', async () => {
+    assert.match((await uc2009(`let a=[1]; let r = length(a) < 0;`))[0].message, /always false/);
+    assert.match((await uc2009(`let a=[1]; let r = length(a) == -1;`))[0].message, /always false/);
+    assert.match((await uc2009(`let a=[1]; let r = length(a) >= 0;`))[0].message, /always true/);
+  });
+
+  it('does NOT flag legitimate length() comparisons (`> 0`, `== 5`)', async () => {
+    assert.strictEqual((await uc2009(`let a=[1]; let r = length(a) > 0;`)).length, 0);
+    assert.strictEqual((await uc2009(`let a=[1]; let r = length(a) == 5;`)).length, 0);
+  });
+
+  it('flags `index() < -1` too (full range reasoning, not just `<= -2`)', async () => {
+    assert.match((await uc2009(`let s="x"; let r = index(s,'m') < -1;`))[0].message, /always false/);
+  });
+});

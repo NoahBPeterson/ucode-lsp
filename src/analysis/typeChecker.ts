@@ -103,6 +103,20 @@ export interface TypeWarning {
   data?: any;
 }
 
+/**
+ * Known numeric return ranges for builtins, used to flag constant (dead)
+ * comparisons against out-of-range literals — `index() != -2`, `length() < 0`,
+ * etc. `max: Infinity` = unbounded above. `canBeNull` marks builtins that return
+ * null on wrong-type args (null coerces to 0 for `< <= > >=` but is never `==` a
+ * number — see nullCompare). All entries verified against /usr/local/bin/ucode.
+ * Extend by adding a row — no per-function logic needed.
+ */
+const BUILTIN_RETURN_RANGE: Record<string, { fn: string; min: number; max: number; canBeNull: boolean; desc: string; hint?: string }> = {
+  index:  { fn: 'index',  min: -1, max: Infinity, canBeNull: true, desc: '-1 (not found) or a non-negative index', hint: 'Did you mean -1?' },
+  rindex: { fn: 'rindex', min: -1, max: Infinity, canBeNull: true, desc: '-1 (not found) or a non-negative index', hint: 'Did you mean -1?' },
+  length: { fn: 'length', min: 0,  max: Infinity, canBeNull: true, desc: 'a non-negative integer (or null on a non-collection)' },
+};
+
 export class TypeChecker {
   private symbolTable: SymbolTable;
   private builtinFunctions: Map<string, FunctionSignature>;
@@ -634,6 +648,7 @@ export class TypeChecker {
       case '>':
       case '<=':
       case '>=':
+        this.checkConstantComparison(node);
         return this.typeCompatibility.getComparisonResultType();
 
       case '??': {
@@ -722,6 +737,96 @@ export class TypeChecker {
   private producesNaNInArithmetic(type: UcodeType): boolean {
     return type === UcodeType.ARRAY || type === UcodeType.OBJECT ||
            type === UcodeType.FUNCTION || type === UcodeType.REGEX;
+  }
+
+  /** The numeric value of a literal, or a unary +/- on one (`-2`); else null. */
+  private numericLiteralValue(node: AstNode): number | null {
+    let n: any = node;
+    let sign = 1;
+    if (n?.type === 'UnaryExpression' && (n.operator === '-' || n.operator === '+')) {
+      if (n.operator === '-') sign = -1;
+      n = n.argument;
+    }
+    if (n?.type === 'Literal' && typeof n.value === 'number') return sign * n.value;
+    return null;
+  }
+
+  private flipComparison(op: string): string {
+    switch (op) { case '<': return '>'; case '>': return '<'; case '<=': return '>='; case '>=': return '<='; default: return op; }
+  }
+
+  /** Result of `null <op> n` under ucode semantics: null coerces to 0 for ordering,
+   *  but `null == n` / `null === n` is always false (verified against the runtime). */
+  private nullCompare(op: string, n: number): boolean {
+    switch (op) {
+      case '==': case '===': return false;
+      case '!=': case '!==': return true;
+      case '<': return 0 < n;
+      case '<=': return 0 <= n;
+      case '>': return 0 > n;
+      case '>=': return 0 >= n;
+      default: return false;
+    }
+  }
+
+  /**
+   * Is `result <op> n` constant for EVERY value `result` can take — an integer in
+   * [min, max] (max may be +Infinity), plus `null` when `canBeNull`? Returns
+   * 'true'/'false' when it's a constant (dead) comparison, else null. Infinity
+   * bounds compare natively. The null branch must agree, or we don't conclude.
+   */
+  private constComparison(min: number, max: number, canBeNull: boolean, op: string, n: number): 'true' | 'false' | null {
+    let intervalAllTrue: boolean, intervalAllFalse: boolean;
+    switch (op) {
+      case '==': case '===': intervalAllFalse = (n < min || n > max); intervalAllTrue = (min === max && n === min); break;
+      case '!=': case '!==': intervalAllTrue = (n < min || n > max); intervalAllFalse = (min === max && n === min); break;
+      case '<':  intervalAllTrue = (max < n);  intervalAllFalse = (min >= n); break;
+      case '<=': intervalAllTrue = (max <= n); intervalAllFalse = (min > n);  break;
+      case '>':  intervalAllTrue = (min > n);  intervalAllFalse = (max <= n); break;
+      case '>=': intervalAllTrue = (min >= n); intervalAllFalse = (max < n);  break;
+      default: return null;
+    }
+    let verdict: 'true' | 'false' | null = intervalAllTrue ? 'true' : (intervalAllFalse ? 'false' : null);
+    if (verdict === null) return null;
+    // The null case (if reachable) must reach the SAME verdict, else it's not constant.
+    if (canBeNull && (this.nullCompare(op, n) ? 'true' : 'false') !== verdict) return null;
+    return verdict;
+  }
+
+  /**
+   * Lint a comparison of a builtin's numeric result against a value outside its
+   * known return range — a constant (dead) test. Driven by BUILTIN_RETURN_RANGE
+   * so it generalizes across functions (index/rindex never < -1; length never < 0;
+   * …) instead of hard-coding one. The legitimate boundary idioms (`index()==-1`,
+   * `length()>0`) are NOT constant, so they're left alone.
+   */
+  private checkConstantComparison(node: BinaryExpressionNode): void {
+    const asRangedCall = (n: AstNode) =>
+      n?.type === 'CallExpression' && (n as any).callee?.type === 'Identifier'
+        ? BUILTIN_RETURN_RANGE[((n as any).callee as IdentifierNode).name] ?? null
+        : null;
+
+    let range = asRangedCall(node.left);
+    let litVal = range ? this.numericLiteralValue(node.right) : null;
+    let op: string = node.operator;
+    if (!range) {
+      range = asRangedCall(node.right);
+      litVal = range ? this.numericLiteralValue(node.left) : null;
+      op = this.flipComparison(node.operator); // reason as `result <op> lit`
+    }
+    if (!range || litVal === null) return;
+
+    const always = this.constComparison(range.min, range.max, range.canBeNull, op, litVal);
+    if (!always) return;
+
+    const base = {
+      message: `${range.fn}() returns ${range.desc}, so this comparison is always ${always}.${range.hint ? ' ' + range.hint : ''}`,
+      start: node.start,
+      end: node.end,
+      code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
+    };
+    if (this.strictMode) this.errors.push({ ...base, severity: 'error' });
+    else this.warnings.push({ ...base, severity: 'warning' });
   }
 
   /**
