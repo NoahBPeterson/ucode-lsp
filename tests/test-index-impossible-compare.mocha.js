@@ -68,4 +68,34 @@ describe('Impossible index()/rindex() comparison (UC2009)', function () {
   it('flags `index() < -1` too (full range reasoning, not just `<= -2`)', async () => {
     assert.match((await uc2009(`let s="x"; let r = index(s,'m') < -1;`))[0].message, /always false/);
   });
+
+  // ── math module functions (bounded/signed ranges, return NaN) ──────────────
+  it('flags out-of-range math comparisons (cos/sin/abs/sqrt/exp/atan2)', async () => {
+    assert.match((await uc2009(`import { cos } from 'math';\nlet r = cos(0) > 1;`))[0].message, /always false/);
+    assert.match((await uc2009(`import { sin } from 'math';\nlet r = sin(0) < -1;`))[0].message, /always false/);
+    assert.match((await uc2009(`import { abs } from 'math';\nlet r = abs(-5) < 0;`))[0].message, /always false/);
+    assert.match((await uc2009(`import { sqrt } from 'math';\nlet r = sqrt(4) < 0;`))[0].message, /always false/);
+    assert.match((await uc2009(`import { exp } from 'math';\nlet r = exp(2) < 0;`))[0].message, /always false/);
+    assert.match((await uc2009(`import { atan2 } from 'math';\nlet r = atan2(1,1) > 4;`))[0].message, /always false/);
+  });
+
+  it('works through a namespace import (`math.sin(x) < -1`)', async () => {
+    assert.strictEqual((await uc2009(`import * as math from 'math';\nlet r = math.sin(0) < -1;`)).length, 1);
+  });
+
+  it('NaN soundness: does NOT flag always-true math comparisons (cos<=1, abs>=0)', async () => {
+    // cos/abs can be NaN, and NaN <= 1 / NaN >= 0 are false — so these are NOT
+    // constant-true and must not be flagged.
+    assert.strictEqual((await uc2009(`import { cos } from 'math';\nlet r = cos(0) <= 1;`)).length, 0);
+    assert.strictEqual((await uc2009(`import { abs } from 'math';\nlet r = abs(-5) >= 0;`)).length, 0);
+  });
+
+  it('does NOT flag a USER function shadowing a math name (import not verified)', async () => {
+    assert.strictEqual((await uc2009(`function abs(x){ return x; }\nlet r = abs(-5) < 0;`)).length, 0);
+  });
+
+  it('does NOT flag unbounded math functions (log, pow)', async () => {
+    assert.strictEqual((await uc2009(`import { log } from 'math';\nlet r = log(2) < 0;`)).length, 0);
+    assert.strictEqual((await uc2009(`import { pow } from 'math';\nlet r = pow(2,3) < 0;`)).length, 0);
+  });
 });

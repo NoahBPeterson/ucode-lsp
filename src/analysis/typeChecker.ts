@@ -111,10 +111,33 @@ export interface TypeWarning {
  * number — see nullCompare). All entries verified against /usr/local/bin/ucode.
  * Extend by adding a row — no per-function logic needed.
  */
-const BUILTIN_RETURN_RANGE: Record<string, { fn: string; min: number; max: number; canBeNull: boolean; desc: string; hint?: string }> = {
-  index:  { fn: 'index',  min: -1, max: Infinity, canBeNull: true, desc: '-1 (not found) or a non-negative index', hint: 'Did you mean -1?' },
-  rindex: { fn: 'rindex', min: -1, max: Infinity, canBeNull: true, desc: '-1 (not found) or a non-negative index', hint: 'Did you mean -1?' },
-  length: { fn: 'length', min: 0,  max: Infinity, canBeNull: true, desc: 'a non-negative integer (or null on a non-collection)' },
+interface ReturnRange {
+  fn: string;
+  min: number;
+  max: number;
+  canBeNull: boolean;   // returns null on wrong-type args (null coerces to 0 for ordering, != is true)
+  canBeNaN: boolean;    // returns NaN on bad input (every compare false except !=)
+  desc: string;
+  hint?: string;
+  /** When set, this is a MODULE function (not a global): only apply when the call
+   *  provably resolves to an import of this module, so a user's own same-named
+   *  function (`abs`, `log`, …) isn't mis-flagged. */
+  module?: string;
+}
+
+const BUILTIN_RETURN_RANGE: Record<string, ReturnRange> = {
+  // Global builtins (always available, matched by bare name).
+  index:  { fn: 'index',  min: -1, max: Infinity, canBeNull: true,  canBeNaN: false, desc: '-1 (not found) or a non-negative index', hint: 'Did you mean -1?' },
+  rindex: { fn: 'rindex', min: -1, max: Infinity, canBeNull: true,  canBeNaN: false, desc: '-1 (not found) or a non-negative index', hint: 'Did you mean -1?' },
+  length: { fn: 'length', min: 0,  max: Infinity, canBeNull: true,  canBeNaN: false, desc: 'a non-negative integer (or null on a non-collection)' },
+  // math module functions (bounded/signed ranges; return NaN on bad input). Gated
+  // on a verified `math` import so a user's own same-named function isn't flagged.
+  abs:    { fn: 'abs',    min: 0,        max: Infinity,  canBeNull: false, canBeNaN: true, module: 'math', desc: 'a non-negative number (or NaN)' },
+  sqrt:   { fn: 'sqrt',   min: 0,        max: Infinity,  canBeNull: false, canBeNaN: true, module: 'math', desc: 'a non-negative number (or NaN)' },
+  exp:    { fn: 'exp',    min: 0,        max: Infinity,  canBeNull: false, canBeNaN: true, module: 'math', desc: 'a positive number (or NaN)' },
+  cos:    { fn: 'cos',    min: -1,       max: 1,         canBeNull: false, canBeNaN: true, module: 'math', desc: 'a value in [-1, 1] (or NaN)' },
+  sin:    { fn: 'sin',    min: -1,       max: 1,         canBeNull: false, canBeNaN: true, module: 'math', desc: 'a value in [-1, 1] (or NaN)' },
+  atan2:  { fn: 'atan2',  min: -Math.PI, max: Math.PI,   canBeNull: false, canBeNaN: true, module: 'math', desc: 'a value in [-π, π] (or NaN)' },
 };
 
 export class TypeChecker {
@@ -755,6 +778,34 @@ export class TypeChecker {
     switch (op) { case '<': return '>'; case '>': return '<'; case '<=': return '>='; case '>=': return '<='; default: return op; }
   }
 
+  /** If `node` is a call to a range-registered builtin, return its range — but
+   *  for MODULE functions (math.*), only when the call provably resolves to that
+   *  module import (named `import { cos } from 'math'; cos(x)` or namespace
+   *  `import * as math; math.cos(x)`), so a user's own same-named function isn't
+   *  mis-flagged. Global builtins (index/length/…) match by bare name. */
+  private resolveRangedCall(node: AstNode): typeof BUILTIN_RETURN_RANGE[string] | null {
+    if (node?.type !== 'CallExpression') return null;
+    const callee = (node as any).callee;
+    if (callee?.type === 'Identifier') {
+      const range = BUILTIN_RETURN_RANGE[callee.name];
+      if (!range) return null;
+      if (range.module) {
+        const sym = this.symbolTable.lookup(callee.name);
+        if (!sym || sym.importedFrom !== range.module) return null;
+      }
+      return range;
+    }
+    // namespace member call: `math.cos(x)`
+    if (callee?.type === 'MemberExpression' && !callee.computed
+        && callee.object?.type === 'Identifier' && callee.property?.type === 'Identifier') {
+      const range = BUILTIN_RETURN_RANGE[callee.property.name];
+      if (!range || !range.module) return null;
+      const objSym = this.symbolTable.lookup(callee.object.name);
+      return (objSym && objSym.importedFrom === range.module) ? range : null;
+    }
+    return null;
+  }
+
   /** Result of `null <op> n` under ucode semantics: null coerces to 0 for ordering,
    *  but `null == n` / `null === n` is always false (verified against the runtime). */
   private nullCompare(op: string, n: number): boolean {
@@ -769,13 +820,20 @@ export class TypeChecker {
     }
   }
 
+  /** Result of `NaN <op> n`: only `!=`/`!==` is true; every ordered/equal compare
+   *  is false (verified against the runtime — IEEE semantics). */
+  private nanCompare(op: string): boolean {
+    return op === '!=' || op === '!==';
+  }
+
   /**
-   * Is `result <op> n` constant for EVERY value `result` can take — an integer in
-   * [min, max] (max may be +Infinity), plus `null` when `canBeNull`? Returns
-   * 'true'/'false' when it's a constant (dead) comparison, else null. Infinity
-   * bounds compare natively. The null branch must agree, or we don't conclude.
+   * Is `result <op> n` constant for EVERY value `result` can take — a number in
+   * [min, max] (max may be ±Infinity), plus `null` (canBeNull) and/or `NaN`
+   * (canBeNaN)? Returns 'true'/'false' when it's a constant (dead) comparison,
+   * else null. Infinity bounds compare natively. The null/NaN branches must each
+   * agree with the interval verdict, or we don't conclude.
    */
-  private constComparison(min: number, max: number, canBeNull: boolean, op: string, n: number): 'true' | 'false' | null {
+  private constComparison(min: number, max: number, canBeNull: boolean, canBeNaN: boolean, op: string, n: number): 'true' | 'false' | null {
     let intervalAllTrue: boolean, intervalAllFalse: boolean;
     switch (op) {
       case '==': case '===': intervalAllFalse = (n < min || n > max); intervalAllTrue = (min === max && n === min); break;
@@ -788,8 +846,10 @@ export class TypeChecker {
     }
     let verdict: 'true' | 'false' | null = intervalAllTrue ? 'true' : (intervalAllFalse ? 'false' : null);
     if (verdict === null) return null;
-    // The null case (if reachable) must reach the SAME verdict, else it's not constant.
+    // The null / NaN cases (if reachable) must each reach the SAME verdict —
+    // otherwise the comparison isn't constant over the full return domain.
     if (canBeNull && (this.nullCompare(op, n) ? 'true' : 'false') !== verdict) return null;
+    if (canBeNaN && (this.nanCompare(op) ? 'true' : 'false') !== verdict) return null;
     return verdict;
   }
 
@@ -801,22 +861,17 @@ export class TypeChecker {
    * `length()>0`) are NOT constant, so they're left alone.
    */
   private checkConstantComparison(node: BinaryExpressionNode): void {
-    const asRangedCall = (n: AstNode) =>
-      n?.type === 'CallExpression' && (n as any).callee?.type === 'Identifier'
-        ? BUILTIN_RETURN_RANGE[((n as any).callee as IdentifierNode).name] ?? null
-        : null;
-
-    let range = asRangedCall(node.left);
+    let range = this.resolveRangedCall(node.left);
     let litVal = range ? this.numericLiteralValue(node.right) : null;
     let op: string = node.operator;
     if (!range) {
-      range = asRangedCall(node.right);
+      range = this.resolveRangedCall(node.right);
       litVal = range ? this.numericLiteralValue(node.left) : null;
       op = this.flipComparison(node.operator); // reason as `result <op> lit`
     }
     if (!range || litVal === null) return;
 
-    const always = this.constComparison(range.min, range.max, range.canBeNull, op, litVal);
+    const always = this.constComparison(range.min, range.max, range.canBeNull, range.canBeNaN, op, litVal);
     if (!always) return;
 
     const base = {
