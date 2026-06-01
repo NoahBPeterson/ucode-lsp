@@ -980,7 +980,20 @@ function findEnclosingContext(ast: any, document: TextDocument, position: { line
             node.type === 'BreakStatement' ||
             node.type === 'ContinueStatement';
         if (isStatement) {
-            result.enclosingStatementLine = document.positionAt(node.start).line;
+            const stmtLine = document.positionAt(node.start).line;
+            // An `else if` / `else` / `catch` / `finally` continuation begins on a
+            // line whose first token is `}` — a guard statement can't be inserted
+            // before it (it would land inside the PREVIOUS branch and dangle the
+            // chain). The outer statement (the chain-start `if`) was already set as
+            // we descended top-down; keep it so the guard hoists above the whole
+            // chain (valid, and narrows the variable for every branch).
+            const lineText = document.getText({
+                start: { line: stmtLine, character: 0 },
+                end: { line: stmtLine + 1, character: 0 },
+            });
+            if (!/^\s*\}/.test(lineText)) {
+                result.enclosingStatementLine = stmtLine;
+            }
         }
 
         // Visit all child nodes
@@ -1920,7 +1933,7 @@ function generateTypeNarrowingQuickFixes(
                 const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
                 const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
                 actions.push(makeInsertBeforeAction(guardLabel,
-                    `${tlIndent}if (${guardCond})\n${tlIndent}\treturn;\n`, tl, uri, diagnostic, document));
+                    `${tlIndent}if (${guardCond})\n${tlIndent}\t${keyword};\n`, tl, uri, diagnostic, document));
             } else if (ctx.inCondition) {
                 // Diagnostic is in the condition of a control structure (if/while/for).
                 // Guard must go BEFORE the entire control structure.
@@ -2008,7 +2021,7 @@ function generateTypeNarrowingQuickFixes(
                 const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
                 const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
                 actions.push(makeInsertBeforeAction(`Add type guard for \`${varName}\``,
-                    `${tlIndent}if (${earlyReturnGuard})\n${tlIndent}\treturn;\n`, tl, uri, diagnostic, document));
+                    `${tlIndent}if (${earlyReturnGuard})\n${tlIndent}\t${keyword2};\n`, tl, uri, diagnostic, document));
             } else if (ctx.inCondition) {
                 const targetLine = ctx.conditionOwnerLine >= 0 ? ctx.conditionOwnerLine : line;
                 const targetLineText = document.getText({ start: { line: targetLine, character: 0 }, end: { line: targetLine + 1, character: 0 } }).replace(/\r?\n$/, '');
@@ -2140,7 +2153,7 @@ function generateTypeNarrowingQuickFixes(
                         const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
                         const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
                         actions.push(makeInsertBeforeAction(`Add type guard for \`${innerInfo.varName}\``,
-                            `${tlIndent}if (${innerEarlyGuard})\n${tlIndent}\treturn;\n`, tl, uri, diagnostic, document));
+                            `${tlIndent}if (${innerEarlyGuard})\n${tlIndent}\t${ctx.inLoop ? 'continue' : 'return'};\n`, tl, uri, diagnostic, document));
                     } else if (ctx.inCondition) {
                         const targetLine = ctx.conditionOwnerLine >= 0 ? ctx.conditionOwnerLine : line;
                         const targetLineText = document.getText({ start: { line: targetLine, character: 0 }, end: { line: targetLine + 1, character: 0 } }).replace(/\r?\n$/, '');
@@ -2240,7 +2253,7 @@ function generateTypeNarrowingQuickFixes(
                         changes: {
                             [uri]: [
                                 TextEdit.insert({ line: tl, character: 0 },
-                                    `${tlIndent}let ${vn} = ${exprText};\n${tlIndent}if (${exEarlyGuard})\n${tlIndent}\treturn;\n`),
+                                    `${tlIndent}let ${vn} = ${exprText};\n${tlIndent}if (${exEarlyGuard})\n${tlIndent}\t${ctx.inLoop ? 'continue' : 'return'};\n`),
                                 TextEdit.replace(
                                     { start: { line, character: 0 }, end: { line, character: lineLength } },
                                     replaced

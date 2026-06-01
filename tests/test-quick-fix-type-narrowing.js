@@ -1233,4 +1233,65 @@ function get_next_cpu(weight, prev_cpu) {
       }
     });
   });
+
+  // ── Guard placement when the flagged expression is in an `else if` condition ──
+  // Regression: the guard used to land inside the PREVIOUS branch (before its `}`),
+  // mangling the chain. It must hoist above the whole if-chain, and use `continue`
+  // (not `return`) inside a loop. We APPLY the edit and re-analyze to prove the
+  // result parses and the original diagnostic is resolved.
+  describe('Guard in else-if condition (placement + loop keyword)', function() {
+    function applyEdits(code, edits) {
+      const lines = code.split('\n');
+      // line→offset table
+      const lineOffsets = [0];
+      for (let i = 0; i < lines.length; i++) lineOffsets.push(lineOffsets[i] + lines[i].length + 1);
+      const pos = (p) => lineOffsets[p.line] + p.character;
+      const sorted = [...edits].sort((a, b) => pos(b.range.start) - pos(a.range.start));
+      let out = code;
+      for (const e of sorted) out = out.slice(0, pos(e.range.start)) + e.newText + out.slice(pos(e.range.end));
+      return out;
+    }
+
+    const code = [
+      "'use strict';",
+      'function f(arr) {',
+      '\tfor (let j = 0; j < 3; j++) {',
+      '\t\tlet iface_name = arr[j];',
+      '\t\tlet t = 0;',
+      "\t\tif (iface_name == 'wlan') {",
+      '\t\t\tt = 1;',
+      "\t\t} else if (index(iface_name, 'mesh') != -1) {",
+      '\t\t\tt = 1;',
+      '\t\t}',
+      '\t}',
+      '}',
+      '',
+    ].join('\n');
+
+    it('hoists the guard above the chain, uses continue, and yields parseable code', async function() {
+      const { actions, diag } = await getActionsForCode(code, 'incompatible-function-argument');
+      assert.ok(diag, 'expected an incompatible-function-argument on index(iface_name, ...)');
+      const guard = findAction(actions, 'type guard');
+      assert.ok(guard, `expected a type-guard action, got: ${actions.map(a => a.title).join(', ')}`);
+
+      const edits = guard.edit.changes[Object.keys(guard.edit.changes)[0]];
+      const text = edits.map(e => e.newText).join('');
+      // loop → continue, not return
+      assert.match(text, /continue;/, `loop guard should use continue, got: ${text}`);
+      assert.doesNotMatch(text, /return;/, `loop guard must not use return, got: ${text}`);
+      // hoisted above the if-chain: inserted before the `if (iface_name == 'wlan')` line (5), not the `} else if` (7)
+      assert.strictEqual(edits[0].range.start.line, 5, `guard should insert at the chain-start line, got ${edits[0].range.start.line}`);
+
+      // Apply the edit and re-analyze — the result must parse (no broken `} else if` dangle)
+      // and no longer carry the original incompatible-function-argument.
+      const patched = applyEdits(code, edits);
+      assert.ok(!/\}\s*\n\s*if \(type\(iface_name\)/.test(patched),
+        `guard must not be stranded inside the previous branch:\n${patched}`);
+      const diags2 = await getDiagnostics(patched, `/tmp/test-qf-applied-${Date.now()}.uc`);
+      const parseErrors = diags2.filter(d => d.severity === 1 && /Expected|Unexpected|parse/i.test(d.message));
+      assert.strictEqual(parseErrors.length, 0, `patched code must parse cleanly, got: ${JSON.stringify(parseErrors.map(d => d.message))}`);
+      const stillFlagged = diags2.filter(d => d.code === 'incompatible-function-argument');
+      assert.strictEqual(stillFlagged.length, 0, `original diagnostic should be resolved, got: ${JSON.stringify(stillFlagged.map(d => d.message))}`);
+    });
+  });
 });
