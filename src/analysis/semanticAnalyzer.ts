@@ -183,6 +183,19 @@ export class SemanticAnalyzer extends BaseVisitor {
       );
     }
 
+    // Phase B (B5): build the per-function flow engines now that the main pass
+    // is complete — the checked-type cache (getTypeOf) and function signatures
+    // are fully populated, so the engine's fixpoint is sound. This MUST run
+    // before the flow-sensitive diagnostic filter below: that filter's
+    // re-narrowing (recheckExpressionWithCFG → getNarrowedTypeAtPosition) is now
+    // the engine's first diagnostic consumer, so it needs the engine populated.
+    // Diagnostics emitted DURING the main pass are still computed without the
+    // engine (it didn't exist yet) — the filter only ever SUPPRESSES false
+    // positives, so the engine can refine but never invent a diagnostic.
+    if (this.currentASTRoot) {
+      this.typeChecker.buildFlowEngines(this.currentASTRoot);
+    }
+
     // Post-process diagnostics to apply flow-sensitive narrowing
     this.diagnostics = this.filterDiagnosticsWithFlowSensitiveAnalysis(this.diagnostics);
 
@@ -195,10 +208,6 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     if (this.currentASTRoot) {
       result.ast = this.currentASTRoot;
-      // Phase B: build per-function flow engines now that the checked-type cache
-      // and function signatures are populated. Post-analysis only — diagnostics
-      // emitted during the main pass are unaffected (engines were empty then).
-      this.typeChecker.buildFlowEngines(this.currentASTRoot);
     }
 
     if (this.cfg) {
@@ -3972,20 +3981,15 @@ private addDiagnostic(
     const expectedTypes = diagnosticData.expectedTypes as UcodeType[];
     const typeNarrowing = this.typeChecker.getTypeNarrowing();
 
-    // Use type checker's comprehensive AST-based guard detection
-    // This handles null checks, truthy guards, builtin call guards, etc.
+    // Use the type checker's comprehensive AST-based guard detection, which
+    // (Phase B / B5) is now backed by the flow-type engine: it handles null
+    // checks, truthy guards, builtin call guards, type() guards, AND
+    // reassignment narrowing in one place. The SemanticAnalyzer's own duplicate
+    // type()-guard walk (findTypeGuardNarrowedTypes/searchTypeGuardForPosition/
+    // collectTypeGuardTypes/…) that used to back-stop this was proven redundant
+    // and deleted in B6 — every case it caught is subsumed here.
     const narrowedType = this.typeChecker.getNarrowedTypeAtPosition(varName, argumentOffset);
     if (narrowedType && typeNarrowing.isSubtypeOfUnion(narrowedType, expectedTypes)) {
-      return true;
-    }
-
-    // Fall back to semantic analyzer's type() guard detection
-    const guardTypes = this.findTypeGuardNarrowedTypes(varName, argumentOffset);
-    if (
-      guardTypes &&
-      guardTypes.length > 0 &&
-      guardTypes.every(type => expectedTypes.includes(type))
-    ) {
       return true;
     }
 
@@ -4095,204 +4099,6 @@ private addDiagnostic(
 
       return true; // Keep all other diagnostics
     });
-  }
-
-  private findTypeGuardNarrowedTypes(variableName: string, offset: number): UcodeType[] | null {
-    if (!this.currentASTRoot) {
-      return null;
-    }
-
-    return this.searchTypeGuardForPosition(this.currentASTRoot, variableName, offset);
-  }
-
-  private searchTypeGuardForPosition(node: AstNode, variableName: string, offset: number): UcodeType[] | null {
-    if (!this.nodeContainsPosition(node, offset)) {
-      return null;
-    }
-
-    switch (node.type) {
-      case 'IfStatement': {
-        const ifNode = node as IfStatementNode;
-        if (this.nodeContainsPosition(ifNode.consequent, offset)) {
-          const guardInfo = this.collectTypeGuardTypes(ifNode.test, variableName);
-          if (guardInfo.pure && guardInfo.types.size > 0) {
-            return Array.from(guardInfo.types);
-          }
-        }
-
-        const inConsequent = this.searchTypeGuardForPosition(ifNode.consequent, variableName, offset);
-        if (inConsequent) {
-          return inConsequent;
-        }
-
-        if (ifNode.alternate) {
-          const inAlternate = this.searchTypeGuardForPosition(ifNode.alternate, variableName, offset);
-          if (inAlternate) {
-            return inAlternate;
-          }
-        }
-        return null;
-      }
-
-      case 'BlockStatement': {
-        const blockNode = node as BlockStatementNode;
-        for (const statement of blockNode.body) {
-          const result = this.searchTypeGuardForPosition(statement, variableName, offset);
-          if (result) {
-            return result;
-          }
-        }
-        return null;
-      }
-
-      case 'FunctionDeclaration':
-      case 'FunctionExpression':
-      case 'ArrowFunctionExpression': {
-        const body = (node as any).body;
-        if (body) {
-          return this.searchTypeGuardForPosition(body, variableName, offset);
-        }
-        return null;
-      }
-
-      default:
-        break;
-    }
-
-    for (const key of Object.keys(node)) {
-      const child = (node as any)[key];
-      if (!child) {
-        continue;
-      }
-
-      if (Array.isArray(child)) {
-        for (const item of child) {
-          if (item && typeof item === 'object' && 'type' in item) {
-            const result = this.searchTypeGuardForPosition(item as AstNode, variableName, offset);
-            if (result) {
-              return result;
-            }
-          }
-        }
-      } else if (typeof child === 'object' && 'type' in child) {
-        const result = this.searchTypeGuardForPosition(child as AstNode, variableName, offset);
-        if (result) {
-          return result;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  private collectTypeGuardTypes(condition: AstNode, variableName: string): { types: Set<UcodeType>; pure: boolean } {
-    const result = { types: new Set<UcodeType>(), pure: true };
-
-    const visit = (expr: AstNode | null | undefined): void => {
-      if (!expr || !result.pure) {
-        return;
-      }
-
-      switch (expr.type) {
-        case 'LogicalExpression': {
-          const logical = expr as LogicalExpressionNode;
-          visit(logical.left);
-          visit(logical.right);
-          return;
-        }
-
-        case 'BinaryExpression': {
-          const binary = expr as BinaryExpressionNode;
-          if (binary.operator === '==' || binary.operator === '===') {
-            const direct = this.extractTypeCheck(binary.left, binary.right, variableName);
-            const reversed = this.extractTypeCheck(binary.right, binary.left, variableName);
-
-            const matchedType = direct ?? reversed;
-            if (matchedType) {
-              result.types.add(matchedType);
-              return;
-            }
-          }
-
-          result.pure = false;
-          return;
-        }
-
-        default:
-          result.pure = false;
-          return;
-      }
-    };
-
-    visit(condition);
-    return result;
-  }
-
-  private extractTypeCheck(left: AstNode, right: AstNode, variableName: string): UcodeType | null {
-    if (
-      left.type === 'CallExpression' &&
-      this.isTypeCallOnVariable(left as CallExpressionNode, variableName) &&
-      right.type === 'Literal'
-    ) {
-      const literal = right as LiteralNode;
-      if (typeof literal.value === 'string') {
-        return this.mapTypeStringToUcodeType(literal.value);
-      }
-    }
-
-    return null;
-  }
-
-  private isTypeCallOnVariable(node: CallExpressionNode, variableName: string): boolean {
-    if (node.callee.type !== 'Identifier') {
-      return false;
-    }
-
-    if ((node.callee as IdentifierNode).name !== 'type') {
-      return false;
-    }
-
-    if (!node.arguments || node.arguments.length !== 1) {
-      return false;
-    }
-
-    const arg = node.arguments[0];
-    return !!arg && arg.type === 'Identifier' && (arg as IdentifierNode).name === variableName;
-  }
-
-  private mapTypeStringToUcodeType(typeStr: string): UcodeType | null {
-    switch (typeStr) {
-      case 'string':
-        return UcodeType.STRING;
-      case 'int':
-        return UcodeType.INTEGER;
-      case 'double':
-        return UcodeType.DOUBLE;
-      case 'bool':
-        return UcodeType.BOOLEAN;
-      case 'array':
-        return UcodeType.ARRAY;
-      case 'object':
-        return UcodeType.OBJECT;
-      case 'function':
-        return UcodeType.FUNCTION;
-      case 'null':
-        return UcodeType.NULL;
-      default:
-        return null;
-    }
-  }
-
-  private nodeContainsPosition(node: AstNode | null | undefined, offset: number): boolean {
-    if (!node || typeof node !== 'object') {
-      return false;
-    }
-
-    if (typeof (node as any).start !== 'number' || typeof (node as any).end !== 'number') {
-      return false;
-    }
-
-    return offset >= (node as any).start && offset <= (node as any).end;
   }
 
   /**
