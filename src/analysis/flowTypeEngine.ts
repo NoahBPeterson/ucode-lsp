@@ -27,13 +27,14 @@ export type LValueKey = string;
 export type FlowEnvironment = ReadonlyMap<LValueKey, UcodeDataType>;
 
 /**
- * Transfer function for a basic block: given the environment on entry, produce
- * the environment on exit (after the block's statements/effects). B0 ships the
- * identity transfer; B1+ supply real ones.
+ * Statement-level transfer: given the environment before a straight-line
+ * statement, mutate it to reflect the statement's effect (declaration/assignment
+ * → rebind a variable). Mutates in place for efficiency; the engine clones at
+ * block boundaries. B0 ships identity; B1 supplies the assignment transfer.
  */
-export type TransferFn = (block: BasicBlock, inEnv: FlowEnvironment) => FlowEnvironment;
+export type StmtTransferFn = (stmt: AstNode, env: Map<LValueKey, UcodeDataType>) => void;
 
-const identityTransfer: TransferFn = (_block, inEnv) => inEnv;
+const identityStmtTransfer: StmtTransferFn = () => {};
 
 /**
  * B1 — assignment/declaration transfer. Walks a block's straight-line statements
@@ -47,8 +48,8 @@ const identityTransfer: TransferFn = (_block, inEnv) => inEnv;
  * `typeOf` returns undefined when a node has no checked type — then we leave the
  * binding alone (don't clobber a known type with unknown).
  */
-export function makeAssignmentTransfer(typeOf: (node: AstNode) => UcodeDataType | undefined): TransferFn {
-  const applyStmt = (stmt: AstNode, env: Map<LValueKey, UcodeDataType>): void => {
+export function makeAssignmentTransfer(typeOf: (node: AstNode) => UcodeDataType | undefined): StmtTransferFn {
+  return (stmt, env) => {
     if (stmt.type === 'VariableDeclaration') {
       for (const d of ((stmt as any).declarations ?? [])) {
         if (d?.id?.type !== 'Identifier') continue;
@@ -66,11 +67,6 @@ export function makeAssignmentTransfer(typeOf: (node: AstNode) => UcodeDataType 
         if (t !== undefined) env.set(expr.left.name, t);
       }
     }
-  };
-  return (block, inEnv) => {
-    const env = new Map(inEnv);
-    for (const stmt of block.statements) applyStmt(stmt, env);
-    return env;
   };
 }
 
@@ -132,13 +128,27 @@ function envsEqual(a: FlowEnvironment, b: FlowEnvironment): boolean {
 export class FlowTypeEngine {
   private readonly inEnv = new Map<number, FlowEnvironment>();
   private readonly outEnv = new Map<number, FlowEnvironment>();
+  /** Environment ENTERING each top-level block statement (final fixpoint pass) —
+   *  the reassignment-narrowed base of any variable referenced inside it. */
+  private readonly stmtEntry = new Map<AstNode, FlowEnvironment>();
   /** Iterations actually run, for tests/diagnostics. */
   public iterations = 0;
 
   constructor(
     private readonly cfg: ControlFlowGraph,
-    private readonly transfer: TransferFn = identityTransfer,
+    private readonly transfer: StmtTransferFn = identityStmtTransfer,
   ) {}
+
+  /** Fold the statement transfer over a block, recording per-statement entry
+   *  environments. Returns the block's exit environment. */
+  private runBlock(block: BasicBlock, inEnv: FlowEnvironment): FlowEnvironment {
+    const env = new Map(inEnv);
+    for (const stmt of block.statements) {
+      this.stmtEntry.set(stmt, new Map(env)); // env as the statement is reached
+      this.transfer(stmt, env);
+    }
+    return env;
+  }
 
   /** Run the forward dataflow to a fixpoint (worklist algorithm). Terminates
    *  because the type lattice has finite height (a finite set of base types,
@@ -164,7 +174,7 @@ export class FlowTypeEngine {
         : joinEnvironments(block.predecessors.map(p => this.outEnv.get(p.id) ?? empty));
       this.inEnv.set(block.id, newIn);
 
-      const newOut = this.transfer(block, newIn);
+      const newOut = this.runBlock(block, newIn);
       if (!envsEqual(newOut, this.outEnv.get(block.id) ?? empty)) {
         this.outEnv.set(block.id, newOut);
         for (const edge of block.successors) {
@@ -174,12 +184,23 @@ export class FlowTypeEngine {
     }
   }
 
-  /** Environment on entry to a block. */
-  getInEnv(blockId: number): FlowEnvironment {
-    return this.inEnv.get(blockId) ?? new Map();
-  }
-  /** Environment on exit from a block. */
-  getOutEnv(blockId: number): FlowEnvironment {
-    return this.outEnv.get(blockId) ?? new Map();
+  /** Environment on entry to / exit from a block. */
+  getInEnv(blockId: number): FlowEnvironment { return this.inEnv.get(blockId) ?? new Map(); }
+  getOutEnv(blockId: number): FlowEnvironment { return this.outEnv.get(blockId) ?? new Map(); }
+
+  /**
+   * The reassignment-narrowed BASE type of `varName` as referenced at `offset`:
+   * the environment entering the innermost block statement that contains the
+   * offset. This is the type a guard layer (collectGuards) then narrows further.
+   * Returns undefined when the offset isn't covered or the variable isn't tracked.
+   */
+  baseTypeAt(varName: LValueKey, offset: number): UcodeDataType | undefined {
+    let best: AstNode | undefined;
+    for (const stmt of this.stmtEntry.keys()) {
+      if (offset >= stmt.start && offset <= stmt.end) {
+        if (!best || (stmt.end - stmt.start) < (best.end - best.start)) best = stmt; // innermost
+      }
+    }
+    return best ? this.stmtEntry.get(best)!.get(varName) : undefined;
   }
 }
