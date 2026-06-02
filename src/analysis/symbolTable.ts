@@ -277,6 +277,15 @@ export function isTypeCompatible(actual: UcodeDataType, expected: UcodeDataType)
   );
 }
 
+/** One parameter of a user function's signature, captured at declaration time
+ *  for call-site argument checking. `type` is the declared/inferred type (JSDoc
+ *  `@param {T}` or `unknown`); `isRest` marks a `...spread` parameter (variadic). */
+export interface ParamInfo {
+  name: string;
+  type: UcodeDataType;
+  isRest: boolean;
+}
+
 export interface Symbol {
   name: string;
   type: SymbolType;
@@ -289,6 +298,7 @@ export interface Symbol {
   usedAt: number[];   // positions where used
   // Function-specific fields
   returnType?: UcodeDataType;   // Return type for functions (when dataType is FUNCTION)
+  parameters?: ParamInfo[];     // Ordered parameter signature for user functions (for call-site argument checking)
   // Import-specific fields
   importedFrom?: string;        // File path where this symbol is imported from
   importSpecifier?: string;     // Original name if aliased (e.g., 'run_command' for 'import { run_command as cmd }')

@@ -11,7 +11,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
@@ -1310,6 +1310,22 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (symbol) {
         symbol.dataType = UcodeType.FUNCTION;  // Functions should always have type 'function'
         symbol.returnType = inferredReturnType; // Store the actual return type separately
+
+        // Capture the parameter signature for call-site argument checking — but
+        // ONLY from a real definition, never a forward declaration (`function f;`
+        // has no param list, so it must not impose a 0-arg signature on calls).
+        // The param symbols are still in scope here (exitScope is below), so read
+        // each declared type; the rest param (if any) is tracked separately.
+        if (!node.forwardDeclaration) {
+          const paramInfos: ParamInfo[] = node.params.map(p => {
+            const psym = this.symbolTable.lookup(p.name);
+            return { name: p.name, type: psym ? psym.dataType : (UcodeType.UNKNOWN as UcodeDataType), isRest: false };
+          });
+          if (node.restParam) {
+            paramInfos.push({ name: node.restParam.name, type: UcodeType.ARRAY as UcodeDataType, isRest: true });
+          }
+          symbol.parameters = paramInfos;
+        }
 
         // Merge return property types (intersection: keep props present in ALL return branches)
         const returnPropEntries = this.functionReturnPropertyTypes.get(node) || [];

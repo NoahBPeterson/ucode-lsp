@@ -1491,6 +1491,13 @@ export class TypeChecker {
             }
           }
 
+          // Check the call's arguments against the user function's declared
+          // signature (in-file function declarations only — imported functions
+          // carry no param info yet). Additive: doesn't change the return type.
+          if (symbol.type === SymbolType.FUNCTION && symbol.parameters) {
+            this.checkUserFunctionCall(node, symbol);
+          }
+
           // For user-defined functions and other imported functions, return their return type
           if (symbol.returnType) {
             // Return the full return type (real unions) directly, so a call used
@@ -1676,12 +1683,37 @@ export class TypeChecker {
       });
     }
 
-    // Check argument types with enhanced union type support
-    for (let i = 0; i < Math.min(argCount, signature.parameters.length); i++) {
-      const expectedType = signature.parameters[i];
+    // Check argument types (shared with user-function calls). Builtins flag an
+    // unknown-typed actual arg (their C signatures are hard constraints).
+    this.checkArgumentTypes(node, signature.parameters, signature.name, { flagUnknownActual: true, softSeverity: false });
+
+    // Narrow return type based on argument types when nullMeansWrongType is set
+    let returnType = signature.returnType;
+    if (signature.nullMeansWrongType && isUnionType(returnType)) {
+      returnType = this.narrowBuiltinReturnType(returnType, signature, node);
+    }
+    // Return the rich return type directly (unions flow through).
+    return returnType;
+  }
+
+  /**
+   * Check each positional argument against its expected type, emitting
+   * `incompatible-function-argument` (or `nullable-argument` semantics via the
+   * partial-compatibility split). Shared by builtin calls and user-function
+   * calls. `opts.flagUnknownActual`: builtins flag an unknown-typed arg; user
+   * functions DON'T (bail on unknown — we're not confident it's wrong). An
+   * expected type of UNKNOWN is always skipped (no declared contract).
+   * `opts.softSeverity`: builtins escalate a DEFINITE mismatch to an error even
+   * in non-strict mode; user functions don't (ucode permits the call) — they
+   * warn, escalating to an error only under `'use strict'`.
+   */
+  private checkArgumentTypes(node: CallExpressionNode, expectedTypes: UcodeType[], fnName: string, opts: { flagUnknownActual: boolean; softSeverity: boolean }): void {
+    const argCount = node.arguments.length;
+    for (let i = 0; i < Math.min(argCount, expectedTypes.length); i++) {
+      const expectedType = expectedTypes[i];
       const arg = node.arguments[i];
       if (!arg || !expectedType) continue;
-      
+
       const actualType = this.dataTypeToUcodeType(this.checkNode(arg)) || UcodeType.UNKNOWN;
       let actualTypeData = this.getFullTypeFromNode(arg) || this.getTypeAsDataType(actualType);
 
@@ -1713,6 +1745,13 @@ export class TypeChecker {
         }
       }
 
+      // Bail on an unknown-typed actual arg unless the caller opts in (user
+      // functions: a value we can't type might well satisfy the contract).
+      if (!opts.flagUnknownActual) {
+        const am = isUnionType(actualTypeData) ? getUnionTypes(actualTypeData).map(m => dataTypeToBase(m)) : [dataTypeToBase(actualTypeData)];
+        if (am.some(m => m === UcodeType.UNKNOWN)) continue;
+      }
+
       if (expectedType !== UcodeType.UNKNOWN && !this.typeNarrowing.isSubtype(actualTypeData, expectedType)) {
         const incompatibleTypes = this.typeNarrowing.getIncompatibleTypes(actualTypeData, expectedType);
         const actualTypes = getUnionTypes(actualTypeData);
@@ -1721,24 +1760,26 @@ export class TypeChecker {
 
         const incompatibilityDesc = this.typeNarrowing.getIncompatibilityDescription(actualTypeData, expectedType);
         const message = incompatibilityDesc
-          ? `Function '${signature.name}': ${incompatibilityDesc}. Use a guard or assertion.`
-          : `Function '${signature.name}' expects ${expectedType} for argument ${i + 1}, got ${this.getTypeDescription(actualTypeData)}`;
+          ? `Function '${fnName}': ${incompatibilityDesc}. Use a guard or assertion.`
+          : `Function '${fnName}' expects ${expectedType} for argument ${i + 1}, got ${this.getTypeDescription(actualTypeData)}`;
         const diagData = {
-          functionName: signature.name,
+          functionName: fnName,
           argumentIndex: i,
           expectedType: expectedType as string,
           actualType: actualTypeData,
           variableName: this.getVariableName(arg)
         };
 
-        if (isPartiallyCompatible && !this.strictMode) {
-          // Possibly wrong (union/unknown with some valid types) — warning
+        // Warning when: partially compatible (union/unknown w/ some valid types),
+        // OR the caller uses soft severity (user functions). Either way, strict
+        // mode escalates to an error. Builtins keep their definite-mismatch error.
+        const asWarning = (opts.softSeverity || isPartiallyCompatible) && !this.strictMode;
+        if (asWarning) {
           this.warnings.push({
             message, start: arg.start, end: arg.end,
             severity: 'warning', code: 'incompatible-function-argument', data: diagData
           });
         } else {
-          // Definitely wrong, or strict mode — error
           this.errors.push({
             message, start: arg.start, end: arg.end,
             severity: 'error', code: 'incompatible-function-argument', data: diagData
@@ -1746,14 +1787,59 @@ export class TypeChecker {
         }
       }
     }
+  }
 
-    // Narrow return type based on argument types when nullMeansWrongType is set
-    let returnType = signature.returnType;
-    if (signature.nullMeansWrongType && isUnionType(returnType)) {
-      returnType = this.narrowBuiltinReturnType(returnType, signature, node);
+  /**
+   * Check a call to an in-file user function against its declared signature
+   * (param types + arity). Unlike builtins, ucode imposes NO runtime arity or
+   * type constraint on user calls (missing→null, extra→ignored, dynamic types),
+   * so EVERYTHING here is a warning — escalated to an error only under
+   * `'use strict'`. Sound by construction: bail on unknown arg/param types,
+   * only flag too-many on non-variadic functions, only flag too-few for params
+   * with a declared non-optional type.
+   */
+  private checkUserFunctionCall(node: CallExpressionNode, funcSymbol: UcodeSymbol): void {
+    const params = funcSymbol.parameters;
+    if (!params || params.length === 0 && node.arguments.length === 0) return;
+    // Spread arg → argument count/positions are unknowable; skip entirely (sound).
+    if (node.arguments.some(a => a && (a.type === 'SpreadElement' || (a.type as string) === 'RestElement'))) return;
+
+    const fnName = funcSymbol.name;
+    const variadic = params.some(p => p.isRest);
+    const positional = params.filter(p => !p.isRest);
+    const argCount = node.arguments.length;
+
+    // Argument TYPE checking — collapse each declared param type to a base; a
+    // union/unknown type yields UNKNOWN (skipped). Bail on unknown actual args.
+    const expectedBases: UcodeType[] = positional.map(p =>
+      isUnionType(p.type) ? UcodeType.UNKNOWN : dataTypeToBase(p.type));
+    this.checkArgumentTypes(node, expectedBases, fnName, { flagUnknownActual: false, softSeverity: true });
+
+    // Emit at warning severity, escalated to error under `'use strict'`.
+    const emit = (message: string) => {
+      const d = { message, start: node.start, end: node.end, code: UcodeErrorCode.INVALID_PARAMETER_COUNT };
+      if (this.strictMode) this.errors.push({ ...d, severity: 'error' });
+      else this.warnings.push({ ...d, severity: 'warning' });
+    };
+
+    // Too many arguments — only meaningful when non-variadic (no `...rest`), and
+    // ucode has no `arguments` object so the extra args are provably dead.
+    if (!variadic && argCount > positional.length) {
+      emit(`Function '${fnName}' takes ${positional.length} argument${positional.length === 1 ? '' : 's'} but ${argCount} were provided; the extra argument${argCount - positional.length === 1 ? ' is' : 's are'} ignored.`);
     }
-    // Return the rich return type directly (unions flow through).
-    return returnType;
+
+    // Too few arguments — only for missing params with a declared, NON-optional
+    // type (un-annotated/unknown or nullable `[name]`/`{T|null}` params are
+    // silent; ucode passes null for the missing ones).
+    for (let i = argCount; i < positional.length; i++) {
+      const p = positional[i]!;
+      const base = dataTypeToBase(p.type);
+      const isOptional = isUnionType(p.type)
+        ? getUnionTypes(p.type).some(m => dataTypeToBase(m) === UcodeType.NULL)
+        : base === UcodeType.NULL;
+      if (base === UcodeType.UNKNOWN || isOptional) continue;
+      emit(`Function '${fnName}' expects argument '${p.name}' (${base}); omitting it passes null.`);
+    }
   }
 
   /**
