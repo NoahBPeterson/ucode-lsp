@@ -16,7 +16,8 @@
  */
 
 import { BasicBlock, ControlFlowGraph } from './cfg/types';
-import { UcodeDataType, createUnionType, getUnionTypes } from './symbolTable';
+import { AstNode } from '../ast/nodes';
+import { UcodeType, UcodeDataType, createUnionType, getUnionTypes } from './symbolTable';
 
 /** An lvalue key is an identifier name or a constant member path ("parts[5]",
  *  "o.name") — the same key space getDottedPath produces. */
@@ -33,6 +34,45 @@ export type FlowEnvironment = ReadonlyMap<LValueKey, UcodeDataType>;
 export type TransferFn = (block: BasicBlock, inEnv: FlowEnvironment) => FlowEnvironment;
 
 const identityTransfer: TransferFn = (_block, inEnv) => inEnv;
+
+/**
+ * B1 — assignment/declaration transfer. Walks a block's straight-line statements
+ * and updates the environment: `let x = e` / `x = e` set env[x] to the CHECKED
+ * type of the RHS (via `typeOf`, i.e. typeChecker.getTypeOf). Because that
+ * checked type already carries reassignment / nullMeansWrongType narrowing
+ * (`x = substr(x,1)` → string, not string|null), the engine captures the
+ * narrowing the SSA-effective base missed (Phase A step 2 / T55). An
+ * uninitialized `let x;` sets env[x] = null (ucode's uninitialized value).
+ *
+ * `typeOf` returns undefined when a node has no checked type — then we leave the
+ * binding alone (don't clobber a known type with unknown).
+ */
+export function makeAssignmentTransfer(typeOf: (node: AstNode) => UcodeDataType | undefined): TransferFn {
+  const applyStmt = (stmt: AstNode, env: Map<LValueKey, UcodeDataType>): void => {
+    if (stmt.type === 'VariableDeclaration') {
+      for (const d of ((stmt as any).declarations ?? [])) {
+        if (d?.id?.type !== 'Identifier') continue;
+        if (d.init) {
+          const t = typeOf(d.init);
+          if (t !== undefined) env.set(d.id.name, t);
+        } else {
+          env.set(d.id.name, UcodeType.NULL); // `let x;` → null
+        }
+      }
+    } else if (stmt.type === 'ExpressionStatement') {
+      const expr = (stmt as any).expression;
+      if (expr?.type === 'AssignmentExpression' && expr.operator === '=' && expr.left?.type === 'Identifier') {
+        const t = typeOf(expr.right);
+        if (t !== undefined) env.set(expr.left.name, t);
+      }
+    }
+  };
+  return (block, inEnv) => {
+    const env = new Map(inEnv);
+    for (const stmt of block.statements) applyStmt(stmt, env);
+    return env;
+  };
+}
 
 /** Lattice JOIN of two types — the union of everything either side can be. Used
  *  at control-flow merge points (a variable narrowed differently on two incoming
