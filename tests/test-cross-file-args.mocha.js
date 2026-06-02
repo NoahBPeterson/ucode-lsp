@@ -54,6 +54,12 @@ describe('Cross-file user-function argument checking', function () {
     assert.strictEqual((await argDiags(`import { greet } from './lib.uc';\nfunction w(x) { return greet(x, 1); }`)).length, 0);
   });
 
+  // ── re-export following (barrel.uc re-exports greet from impl.uc) ────────────
+  it('follows a re-export chain (`import {x}; export {x}`) to the real signature', async () => {
+    assert.strictEqual((await argDiags(`import { greet } from './barrel.uc';\ngreet(123);`)).length, 1);
+    assert.strictEqual((await argDiags(`import { greet } from './barrel.uc';\ngreet("hi");`)).length, 0);
+  });
+
   it('is a warning normally, an error under "use strict"', async () => {
     assert.strictEqual((await argDiags(`import { greet } from './lib.uc';\ngreet(123, 5);`))[0].severity, 2);
     assert.strictEqual((await argDiags(`'use strict';\nimport { greet } from './lib.uc';\ngreet(123, 5);`))[0].severity, 1);

@@ -90,6 +90,24 @@ describe('User-function call argument checking', function () {
     assert.strictEqual((await argDiags(`/** @param {int} n */\nfunction fact(n) { return n <= 1 ? 1 : n * fact(n - 1); }`)).length, 0);
   });
 
+  // ── function-value aliasing (`let f = foo`) ─────────────────────────────────
+  it('checks a call through a function-valued variable (`let f = foo; f(x)`)', async () => {
+    assert.strictEqual((await argDiags(`${D}let f = foo;\nf(123);`)).length, 1);
+    assert.strictEqual((await argDiags(`${D}let f = foo;\nf("hi");`)).length, 0);
+  });
+
+  it('propagates the signature through an alias chain (`let g = f`)', async () => {
+    assert.strictEqual((await argDiags(`${D}let f = foo;\nlet g = f;\ng(123);`)).length, 1);
+  });
+
+  it('flags too-many through an alias', async () => {
+    assert.match((await argDiags(`${D}let f = foo;\nf("a","b");`))[0].message, /takes 1 argument but 2/);
+  });
+
+  it('does NOT carry a signature when aliasing an un-annotated function', async () => {
+    assert.strictEqual((await argDiags(`function bare(a) { return a; }\nlet f = bare;\nf(123);`)).length, 0);
+  });
+
   it('does NOT impose a 0-arg signature from a forward declaration (mutual recursion)', async () => {
     // `function is_odd;` is a prototype with no param list — it must not make
     // `is_odd(n - 1)` look like too-many-args. The real definition supplies the signature.

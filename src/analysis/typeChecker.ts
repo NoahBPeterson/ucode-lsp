@@ -1473,6 +1473,15 @@ export class TypeChecker {
       const symbol = this.symbolTable.lookupAtPosition(funcName, node.start);
 
       if (symbol) {
+        // Argument-check any call whose callee resolves to a symbol carrying a
+        // known signature — function declarations, imported functions, AND
+        // function-valued variables (`let f = greet; f(123)`). Known-module
+        // imports never carry `parameters`, so they're untouched. Additive: this
+        // doesn't change the call's resolved return type below.
+        if (symbol.parameters) {
+          this.checkUserFunctionCall(node, symbol);
+        }
+
         // Check for functions and imported functions
         if (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED) {
           // Return type inference for imported module functions
@@ -1489,15 +1498,6 @@ export class TypeChecker {
 
               return returnTypeData;
             }
-          }
-
-          // Check the call's arguments against the user function's declared
-          // signature. Covers in-file declarations (SymbolType.FUNCTION) and
-          // cross-file imports (SymbolType.IMPORTED) whose signature was resolved
-          // at import time; known-module imports returned above and never carry
-          // `parameters`. Additive: doesn't change the return type.
-          if (symbol.parameters) {
-            this.checkUserFunctionCall(node, symbol);
           }
 
           // For user-defined functions and other imported functions, return their return type

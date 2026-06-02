@@ -575,6 +575,14 @@ export class SemanticAnalyzer extends BaseVisitor {
           if (sym) {
             const srcSym = this.symbolTable.lookup((node.init as IdentifierNode).name);
             if (srcSym?.keysOfSymbol) sym.keysOfSymbol = srcSym.keysOfSymbol;
+            // Function-value aliasing: `let f = greet` (and chains `let g = f`)
+            // carry the callee's signature so `f(args)` is argument-checked like a
+            // direct call. Covers in-file and imported function references.
+            if (srcSym?.parameters) {
+              sym.parameters = srcSym.parameters;
+              if (srcSym.returnType !== undefined) sym.returnType = srcSym.returnType;
+              if (sym.dataType === UcodeType.UNKNOWN) sym.dataType = UcodeType.FUNCTION as UcodeDataType;
+            }
           }
         }
 
@@ -886,9 +894,6 @@ export class SemanticAnalyzer extends BaseVisitor {
             if (symbol.dataType === UcodeType.UNKNOWN) {
               symbol.dataType = UcodeType.FUNCTION as UcodeDataType;
             }
-            // Capture the cross-file parameter signature for call-site arg checking.
-            const params = this.fileResolver.getNamedExportFunctionParameters(effectiveUri, importedName);
-            if (params) symbol.parameters = params;
           } else if (symbol.dataType === UcodeType.UNKNOWN) {
             // Not a function — resolve a named-exported VARIABLE's type so e.g.
             // `let AllHostInfo = {}; export { AllHostInfo }` is `object` at the
@@ -900,6 +905,15 @@ export class SemanticAnalyzer extends BaseVisitor {
               if (typeInfo.nestedPropertyTypes) symbol.nestedPropertyTypes = typeInfo.nestedPropertyTypes;
               if (typeInfo.propertyFunctionReturnTypes) symbol.propertyFunctionReturnTypes = typeInfo.propertyFunctionReturnTypes;
             }
+          }
+          // Capture the cross-file parameter signature for call-site arg checking.
+          // Resolved independently of the return-info above so it works even when
+          // that resolver bailed — notably it FOLLOWS re-export chains
+          // (`import { x }; export { x }`) to the module that really declares it.
+          const params = this.fileResolver.getNamedExportFunctionParameters(effectiveUri, importedName);
+          if (params) {
+            symbol.parameters = params;
+            if (symbol.dataType === UcodeType.UNKNOWN) symbol.dataType = UcodeType.FUNCTION as UcodeDataType;
           }
         }
       }

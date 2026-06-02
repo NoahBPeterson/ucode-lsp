@@ -1231,8 +1231,13 @@ export class FileResolver {
      * getNamedExportFunctionReturnInfo, then reads each param's JSDoc type.
      * Returns null if the export is absent or isn't a function.
      */
-    getNamedExportFunctionParameters(fileUri: string, exportName: string): ParamInfo[] | null {
+    getNamedExportFunctionParameters(fileUri: string, exportName: string, _visited: Set<string> = new Set()): ParamInfo[] | null {
         try {
+            // Cycle guard for re-export chains (`export { x } ←→`).
+            const visitKey = `${fileUri}#${exportName}`;
+            if (_visited.has(visitKey)) return null;
+            _visited.add(visitKey);
+
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
             const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
@@ -1279,7 +1284,15 @@ export class FileResolver {
                             funcNode = topLevelFuncs.get(localName)!;
                         } else {
                             const init = topLevelVarInits.get(localName);
-                            if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) funcNode = init;
+                            if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) {
+                                funcNode = init;
+                            } else {
+                                // Re-export: `import { x } from './impl'; export { x };` — the
+                                // name isn't declared here, it's forwarded. Follow the chain to
+                                // the source module and resolve the signature there.
+                                const reexp = this.findReexportedSource(fileUri, localName);
+                                if (reexp) return this.getNamedExportFunctionParameters(reexp.uri, reexp.importedName, _visited);
+                            }
                         }
                         break;
                     }
