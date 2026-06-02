@@ -42,7 +42,7 @@ interface TypeGuardInfo {
   isNullPropagation?: boolean;
 }
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, Symbol as UcodeSymbol } from './symbolTable';
-import { FlowTypeEngine, makeAssignmentTransfer, FlowEnvironment } from './flowTypeEngine';
+import { FlowTypeEngine, makeAssignmentTransfer, FlowEnvironment, EdgeGuardFn } from './flowTypeEngine';
 import { CFGBuilder } from './cfg/cfgBuilder';
 import type { CheckResult } from './checkResult';
 import { logicalTypeInference } from './logicalTypeInference';
@@ -3020,6 +3020,56 @@ export class TypeChecker {
    * Used by hover functionality to show flow-sensitive types
    */
   getNarrowedTypeAtPosition(variableName: string, position: number): UcodeDataType | null {
+    // Symbol base (needed by both the engine refinement check and the legacy path).
+    // Try both lookup (current scope) and lookupAtPosition (exited scopes like callbacks).
+    let symbol = this.symbolTable.lookup(variableName);
+    if (!symbol) {
+      symbol = this.symbolTable.lookupAtPosition(variableName, position);
+    }
+
+    // C1 — the flow engine now folds in BOTH reassignment narrowing AND guards
+    // (edge transfers), so it is the primary authority. It only covers what the
+    // CFG models, though: guard forms the CFG treats as opaque (ternary /
+    // `&&`-as-bare-expression) are still seen only by the legacy position walk.
+    // So we take the MORE-NARROWED of the two — the engine carries reassignment
+    // narrowing the legacy lacks; the legacy carries the not-yet-in-CFG guard
+    // forms. Whichever is the strict subtype is the more precise (both are sound
+    // narrowings of the same point, so this is their meet, never a widening).
+    // The engine is a post-`visit` pass → empty during emission (→ undefined),
+    // so emission keeps the legacy result unchanged until C2.
+    let engineResult: UcodeDataType | undefined;
+    if (symbol) {
+      const flowFull = this.flowBaseAt(variableName, position);
+      if (flowFull !== undefined && !this.dataTypesCanonicalEqual(flowFull, symbol.dataType)) {
+        engineResult = flowFull;
+      }
+    }
+
+    const legacyResult = this.legacyNarrowedTypeAtPosition(variableName, position, symbol);
+
+    if (engineResult === undefined) return legacyResult;
+    if (legacyResult === null) return engineResult;
+    return this.moreNarrowed(engineResult, legacyResult);
+  }
+
+  /** Of two sound narrowings of the same point, the more precise (strict subtype).
+   *  Incomparable → the engine result (the authority). */
+  private moreNarrowed(engineResult: UcodeDataType, legacyResult: UcodeDataType): UcodeDataType {
+    if (this.dataTypesCanonicalEqual(engineResult, legacyResult)) return engineResult;
+    const engineMembers = getUnionTypes(engineResult) as SingleType[];
+    const legacyMembers = getUnionTypes(legacyResult) as SingleType[];
+    // legacy ⊆ engine → legacy is more narrowed (e.g. ternary the engine missed).
+    if (this.typeNarrowing.isSubtypeOfUnion(legacyResult, engineMembers)) return legacyResult;
+    // engine ⊆ legacy → engine is more narrowed (e.g. reassignment the legacy missed).
+    if (this.typeNarrowing.isSubtypeOfUnion(engineResult, legacyMembers)) return engineResult;
+    return engineResult;
+  }
+
+  /** The pre-C1 per-query narrowing: guard-context stack → position guard walk
+   *  (incl. ternary / `&&` forms) applied to the SSA-effective base. Retained as
+   *  one of the two inputs to `getNarrowedTypeAtPosition` until C2/C3 migrate the
+   *  remaining (during-emission) consumers and the not-yet-in-CFG guard forms. */
+  private legacyNarrowedTypeAtPosition(variableName: string, position: number, symbol: UcodeSymbol | null | undefined): UcodeDataType | null {
     // First check guard context stack (used for if statements with type guards)
     const guardType = this.getActiveGuardType(variableName, position);
     if (guardType) {
@@ -3028,12 +3078,6 @@ export class TypeChecker {
 
     const guards = this.getGuardsForPosition(this.currentAST, variableName, position);
 
-    // Get the base type from the symbol table if available
-    // Try both lookup (current scope) and lookupAtPosition (exited scopes like callbacks)
-    let symbol = this.symbolTable.lookup(variableName);
-    if (!symbol) {
-      symbol = this.symbolTable.lookupAtPosition(variableName, position);
-    }
     if (!symbol) {
       // If the variable isn't in the symbol table (e.g., callback parameter),
       // try to infer its narrowed type purely from guard information.
@@ -3046,25 +3090,9 @@ export class TypeChecker {
       return null;
     }
 
-    // Base type at this position. The flow engine (Phase B) computes a
-    // per-position type that carries reassignment / nullMeansWrongType narrowing
-    // across branches and loops (`let c; c = f();` and `c = substr(c,1)`), which
-    // the SSA-effective base cannot (Phase A step 2 / T55). The engine is a
-    // post-analysis pass, so during analysis flowEngines is empty (→ undefined)
-    // and we fall back to effectiveSymbolType — diagnostics emitted in the main
-    // pass are unchanged.
-    //
-    // We only treat the flow base as a *narrowing* when it genuinely refines the
-    // declared type (differs from `symbol.dataType`). Otherwise it merely echoes
-    // the declared type and must NOT flip the "no narrowing applies" signal
-    // (null) — callers rely on null to fall back to the declared type, and tests
-    // encode that contract (e.g. no narrowing after an if-body closes).
-    const flowBase = this.flowBaseAt(variableName, position);
-    const flowRefines = flowBase !== undefined
-        && !this.dataTypesCanonicalEqual(flowBase, symbol.dataType);
     const ssaActive = symbol.currentType !== undefined && symbol.currentTypeEffectiveFrom !== undefined
         && position >= symbol.currentTypeEffectiveFrom;
-    const baseType: UcodeDataType = flowRefines ? flowBase! : effectiveSymbolType(symbol, position);
+    const baseType: UcodeDataType = effectiveSymbolType(symbol, position);
 
     // Check if this position is inside a type guard
     if (guards.length > 0) {
@@ -3078,10 +3106,9 @@ export class TypeChecker {
       return narrowedType;
     }
 
-    // No guards — return the base only when the flow engine refines the declared
-    // type OR SSA narrowing is active; otherwise null signals "no narrowing
-    // applies" (callers fall back to the declared type).
-    return (flowRefines || ssaActive) ? baseType : null;
+    // No guards — return the base only when SSA narrowing is active; otherwise
+    // null signals "no narrowing applies" (callers fall back to the declared type).
+    return ssaActive ? baseType : null;
   }
 
   /** Order-independent structural equality of two data types (for the flow-base
@@ -3141,6 +3168,7 @@ export class TypeChecker {
     this.flowEngines = [];
     const typeOf = (n: AstNode) => this.nodeTypeForFlow(n);
     const transfer = makeAssignmentTransfer(typeOf);
+    const edgeGuard = this.makeEdgeGuardTransfer(); // C1: guards folded into the dataflow
 
     const visit = (node: AstNode): void => {
       if (!node || typeof node !== 'object') return;
@@ -3152,7 +3180,7 @@ export class TypeChecker {
           try {
             const cfg = new CFGBuilder('fn').build(fnBody);
             const entryEnv: FlowEnvironment = this.functionParamEnv(node);
-            const engine = new FlowTypeEngine(cfg, transfer, entryEnv);
+            const engine = new FlowTypeEngine(cfg, transfer, entryEnv, edgeGuard);
             engine.compute();
             this.flowEngines.push({ start: fnBody.start, end: fnBody.end, engine });
           } catch { /* never let engine construction break analysis */ }
@@ -3165,6 +3193,58 @@ export class TypeChecker {
       }
     };
     visit(ast);
+  }
+
+  /**
+   * C1: the engine's edge-guard transfer. For a conditional CFG edge (its
+   * `condition` AST + whether it's the negative/else/false/early-exit edge),
+   * narrow every tracked variable in the flowing env. Reuses the SAME guard
+   * extractors the per-query path uses (`collectPositiveTestGuards` /
+   * `extractTypeGuard` + the negated forms) and `applyTypeGuard`, so a guard
+   * form is authored in exactly one place — folded into the dataflow instead of
+   * re-walked per query. The accumulation across nested branches happens
+   * naturally as the env flows block-to-block.
+   */
+  private makeEdgeGuardTransfer(): EdgeGuardFn {
+    return (condition: AstNode, isNegative: boolean, env: Map<string, UcodeDataType>) => {
+      for (const varName of env.keys()) {
+        const guards = this.guardsFromEdgeCondition(condition, isNegative, varName);
+        if (guards.length === 0) continue;
+        let t = env.get(varName)!;
+        for (const g of guards) t = this.applyTypeGuard(t, g);
+        env.set(varName, t);
+      }
+    };
+  }
+
+  /**
+   * The guards that hold for `variableName` along a single branch edge whose
+   * test is `condition`. Positive edge (then / loop-body / true): the same
+   * positive-branch guards `collectGuards` collects for an if-consequent.
+   * Negative edge (else / false / early-exit fall-through): the negated type
+   * guard (skipping null-propagation, which doesn't flip) plus the `if (!x)`
+   * non-null form — mirroring `collectGuards`'s alternate branch exactly.
+   */
+  private guardsFromEdgeCondition(condition: AstNode, isNegative: boolean, variableName: string): TypeGuardInfo[] {
+    this.transitiveTypeAliases = [];
+    const guards: TypeGuardInfo[] = [];
+    if (!isNegative) {
+      this.collectPositiveTestGuards(condition, variableName, guards);
+    } else {
+      const guardInfo = this.extractTypeGuard(condition, variableName);
+      if (guardInfo && !guardInfo.isNullPropagation) {
+        guards.push({ ...guardInfo, isNegative: !guardInfo.isNegative });
+      }
+      if (condition.type === 'UnaryExpression') {
+        const unary = condition as UnaryExpressionNode;
+        if (unary.operator === '!' && unary.argument
+            && (unary.argument.type === 'Identifier' || unary.argument.type === 'MemberExpression')
+            && this.getDottedPath(unary.argument) === variableName) {
+          guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+        }
+      }
+    }
+    return guards;
   }
 
   /** Entry environment for a function — its parameters seeded with the resolved

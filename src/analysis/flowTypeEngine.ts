@@ -37,6 +37,17 @@ export type StmtTransferFn = (stmt: AstNode, env: Map<LValueKey, UcodeDataType>)
 const identityStmtTransfer: StmtTransferFn = () => {};
 
 /**
+ * Edge-level guard transfer (Phase C / C1): given a branch edge's condition and
+ * whether it is the negative (else / false / early-exit fall-through) edge,
+ * narrow the environment that flows along that edge. Mutates in place; the
+ * engine passes a CLONE of the predecessor's out-env so the predecessor's own
+ * state is untouched. Reuses the TypeChecker's guard extractors + applyTypeGuard
+ * (injected by buildFlowEngines) so each guard form is authored in exactly one
+ * place — this is what folds guard narrowing INTO the dataflow.
+ */
+export type EdgeGuardFn = (condition: AstNode, isNegative: boolean, env: Map<LValueKey, UcodeDataType>) => void;
+
+/**
  * B1 — assignment/declaration transfer. Walks a block's straight-line statements
  * and updates the environment: `let x = e` / `x = e` set env[x] to the CHECKED
  * type of the RHS (via `typeOf`, i.e. typeChecker.getTypeOf). Because that
@@ -76,6 +87,11 @@ export function makeAssignmentTransfer(typeOf: (node: AstNode) => UcodeDataType 
  *  singleton, so join is idempotent and commutative. */
 export function joinTypes(a: UcodeDataType, b: UcodeDataType): UcodeDataType {
   if (typesEqual(a, b)) return a;
+  // `unknown` is the lattice TOP ("could be anything"): if one incoming path is
+  // unknown, the merge is unknown — NOT `T|unknown`. Without this, an `if` that
+  // narrows on one path and falls through unguarded on the other would surface a
+  // spurious `string|unknown` instead of collapsing back to the declared type.
+  if (a === UcodeType.UNKNOWN || b === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
   return createUnionType([...getUnionTypes(a), ...getUnionTypes(b)]);
 }
 
@@ -142,7 +158,24 @@ export class FlowTypeEngine {
      *  wouldn't appear in the environment (and a join would drop a param that's
      *  only reassigned on some paths). */
     private readonly entryEnv: FlowEnvironment = new Map(),
+    /** C1: guard narrowing applied on conditional edges. Undefined → no guard
+     *  narrowing (B-era behavior: assignments only). */
+    private readonly edgeGuard?: EdgeGuardFn,
   ) {}
+
+  /** The in-env contribution of one predecessor `p` flowing into `block`: the
+   *  predecessor's out-env, narrowed by the guard on the p→block edge (if that
+   *  edge is conditional and a guard transfer is present). Returns the predecessor
+   *  out-env unchanged for unconditional edges. */
+  private edgeInEnv(p: BasicBlock, block: BasicBlock, empty: FlowEnvironment): FlowEnvironment {
+    const predOut = this.outEnv.get(p.id) ?? empty;
+    if (!this.edgeGuard) return predOut;
+    const edge = p.successors.find(e => e.target === block);
+    if (!edge?.condition) return predOut;
+    const narrowed = new Map(predOut);
+    this.edgeGuard(edge.condition, edge.isNegative ?? false, narrowed);
+    return narrowed;
+  }
 
   /** Fold the statement transfer over a block, recording per-statement entry
    *  environments. Returns the block's exit environment. */
@@ -155,6 +188,21 @@ export class FlowTypeEngine {
     return env;
   }
 
+  /** Block ids reachable from the entry by following successor edges. */
+  private reachableBlockIds(): Set<number> {
+    const seen = new Set<number>();
+    const stack: BasicBlock[] = [this.cfg.entry];
+    while (stack.length > 0) {
+      const b = stack.pop()!;
+      if (seen.has(b.id)) continue;
+      seen.add(b.id);
+      for (const edge of b.successors) {
+        if (!seen.has(edge.target.id)) stack.push(edge.target);
+      }
+    }
+    return seen;
+  }
+
   /** Run the forward dataflow to a fixpoint (worklist algorithm). Terminates
    *  because the type lattice has finite height (a finite set of base types,
    *  joined into bounded unions); a hard iteration cap is a widening backstop. */
@@ -165,7 +213,14 @@ export class FlowTypeEngine {
       this.outEnv.set(b.id, empty);
     }
 
-    const worklist: BasicBlock[] = [...this.cfg.blocks];
+    // Only blocks reachable from the entry participate. An UNREACHABLE block
+    // (e.g. the synthetic `after.return` block left dangling past an early
+    // `return`) has no predecessors but is NOT the entry — without this it would
+    // be wrongly seeded with the parameter env and its stale types would pollute
+    // a downstream join (e.g. a guard-narrowed merge would re-widen to `T|unknown`).
+    const reachable = this.reachableBlockIds();
+
+    const worklist: BasicBlock[] = this.cfg.blocks.filter(b => reachable.has(b.id));
     const cap = Math.max(64, this.cfg.blocks.length * this.cfg.blocks.length);
     let guard = 0;
 
@@ -174,16 +229,21 @@ export class FlowTypeEngine {
       this.iterations = guard;
       const block = worklist.shift()!;
 
-      const newIn = block.predecessors.length === 0
-        ? this.entryEnv // entry block: seed with parameters
-        : joinEnvironments(block.predecessors.map(p => this.outEnv.get(p.id) ?? empty));
+      // Entry seeds with parameters; every other reachable block joins its
+      // REACHABLE predecessors (an unreachable pred contributes nothing — and
+      // must not, or joinEnvironments' "present on all paths" rule would drop a
+      // variable the real paths agree on).
+      const reachablePreds = block.predecessors.filter(p => reachable.has(p.id));
+      const newIn = block === this.cfg.entry
+        ? this.entryEnv // entry: seed with parameters
+        : joinEnvironments(reachablePreds.map(p => this.edgeInEnv(p, block, empty)));
       this.inEnv.set(block.id, newIn);
 
       const newOut = this.runBlock(block, newIn);
       if (!envsEqual(newOut, this.outEnv.get(block.id) ?? empty)) {
         this.outEnv.set(block.id, newOut);
         for (const edge of block.successors) {
-          if (!worklist.includes(edge.target)) worklist.push(edge.target);
+          if (reachable.has(edge.target.id) && !worklist.includes(edge.target)) worklist.push(edge.target);
         }
       }
     }
