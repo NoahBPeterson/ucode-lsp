@@ -1751,6 +1751,7 @@ export class TypeChecker {
           let narrowed: UcodeDataType = actualTypeData;
           for (const g of guards) {
             narrowed = this.applyTypeGuard(narrowed, g);
+            if (process.env.GUARD_DEBUG) console.error('[GD]   after', JSON.stringify(g), '=>', JSON.stringify(narrowed));
           }
           actualTypeData = narrowed;
         }
@@ -3385,8 +3386,12 @@ export class TypeChecker {
                 // Handle AND chains: if (type(x) != "string" && type(x) != "array") return;
                 // When negated (early-return), this means x IS string OR array.
                 const andGuards = this.extractAndChainGuards(sibIf.test, variableName);
-                if (andGuards.length >= 2 && andGuards.every(g => g.isNegative)) {
-                  // All negative guards in AND: !(A && B) = !A || !B
+                // The `!(A && B) = !A || !B` union narrowing is only sound when
+                // EVERY term is a clean type-of guard. A null-propagation term
+                // (`substr(x,…) == lit`) breaks it — its negation says nothing
+                // about x's type — so bail on the combined narrowing entirely.
+                if (andGuards.length >= 2 && andGuards.every(g => g.isNegative)
+                    && !andGuards.some(g => g.isNullPropagation)) {
                   // Flip each to positive and combine as union
                   const types = andGuards.map(g => g.narrowToType).filter((t): t is UcodeType => t !== null);
                   if (types.length >= 2) {
@@ -3401,8 +3406,12 @@ export class TypeChecker {
                 // Handle OR chains: if (type(x) != "string" || !x) return;
                 // After early-return, !A && !B — each OR branch is independently false.
                 // Extract type guards from individual OR branches and negate each.
+                // Skip null-propagation guards: `!(substr(x,…) == lit)` is true for a
+                // null x too, so negating one would wrongly narrow x to null and
+                // (across a chain) erase an earlier type narrowing.
                 const orGuards = this.extractOrChainGuards(sibIf.test, variableName);
                 for (const og of orGuards) {
+                  if (og.isNullPropagation) continue;
                   guards.push({ ...og, isNegative: !og.isNegative });
                 }
               }

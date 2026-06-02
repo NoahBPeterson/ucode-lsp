@@ -52,6 +52,32 @@ describe('else-if narrowing with null-propagation guards', function () {
     assert.strictEqual((await argErrs(code)).length, 0);
   });
 
+  // The same unsound negation also lived in the early-exit OR / AND chain paths.
+  it('keeps the narrowing across an early-exit OR chain with a null-prop term', async () => {
+    const code = `function f(x) {
+      if (type(x) != "string") return;
+      if (substr(x, 0, 1) == 'a' || !x) return;
+      let y = rindex(x, 'm');
+    }`;
+    assert.strictEqual((await argErrs(code)).length, 0);
+  });
+
+  it('keeps the narrowing across an early-exit AND chain with a null-prop term', async () => {
+    const code = `function f(x) {
+      if (type(x) != "string") return;
+      if (substr(x, 0, 1) == 'a' && length(x) > 0) return;
+      let y = rindex(x, 'm');
+    }`;
+    assert.strictEqual((await argErrs(code)).length, 0);
+  });
+
+  it('still warns when there is NO type guard (an un-narrowed arg is genuinely unknown)', async () => {
+    // No `type(x)=="string"` — x is only known truthy, not string|array, so the
+    // "narrow this arg" warning is correct and must NOT be suppressed.
+    const code = `function f(x) { if (substr(x, 0, 1) == 'a' || !x) return; let y = rindex(x, 'm'); }`;
+    assert.ok((await argErrs(code)).length >= 1);
+  });
+
   it('still flags a genuinely wrong-typed builtin arg (fix is not over-broad)', async () => {
     // No narrowing here — arr[j] is unknown, but passing an array LITERAL to
     // substr must still be caught.
