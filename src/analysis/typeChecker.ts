@@ -2763,6 +2763,23 @@ export class TypeChecker {
         }
       }
     }
+
+    // try { … } catch { … }: terminates when the try block always terminates AND
+    // (there's no catch — an uncaught throw exits — OR the catch also terminates).
+    if (last.type === 'TryStatement') {
+      const t = last as TryStatementNode;
+      if (!this.blockAlwaysTerminates(t.block)) return false;
+      return !t.handler || this.blockAlwaysTerminates(t.handler.body);
+    }
+
+    // if/else where BOTH branches always terminate (an else is required — a bare
+    // `if` can fall through when the condition is false).
+    if (last.type === 'IfStatement') {
+      const ifStmt = last as IfStatementNode;
+      return !!ifStmt.consequent && this.blockAlwaysTerminates(ifStmt.consequent)
+        && !!ifStmt.alternate && this.blockAlwaysTerminates(ifStmt.alternate);
+    }
+
     return false;
   }
 
