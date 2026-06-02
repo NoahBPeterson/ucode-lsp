@@ -195,6 +195,10 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     if (this.currentASTRoot) {
       result.ast = this.currentASTRoot;
+      // Phase B: build per-function flow engines now that the checked-type cache
+      // and function signatures are populated. Post-analysis only — diagnostics
+      // emitted during the main pass are unaffected (engines were empty then).
+      this.typeChecker.buildFlowEngines(this.currentASTRoot);
     }
 
     if (this.cfg) {

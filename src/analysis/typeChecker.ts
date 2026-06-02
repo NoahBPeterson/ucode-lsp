@@ -42,6 +42,8 @@ interface TypeGuardInfo {
   isNullPropagation?: boolean;
 }
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, Symbol as UcodeSymbol } from './symbolTable';
+import { FlowTypeEngine, makeAssignmentTransfer, FlowEnvironment } from './flowTypeEngine';
+import { CFGBuilder } from './cfg/cfgBuilder';
 import type { CheckResult } from './checkResult';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
@@ -3044,14 +3046,25 @@ export class TypeChecker {
       return null;
     }
 
-    // Effective base type at this position: prefer SSA-tracked currentType
-    // when it's active. Without this, `let data = null; data = call(); …; let
-    // p = data;` would read `data.dataType=NULL` and downstream consumers
-    // would type p as `null` even though data's effective type post-assignment
-    // is whatever the call returned (typically UNKNOWN).
+    // Base type at this position. The flow engine (Phase B) computes a
+    // per-position type that carries reassignment / nullMeansWrongType narrowing
+    // across branches and loops (`let c; c = f();` and `c = substr(c,1)`), which
+    // the SSA-effective base cannot (Phase A step 2 / T55). The engine is a
+    // post-analysis pass, so during analysis flowEngines is empty (→ undefined)
+    // and we fall back to effectiveSymbolType — diagnostics emitted in the main
+    // pass are unchanged.
+    //
+    // We only treat the flow base as a *narrowing* when it genuinely refines the
+    // declared type (differs from `symbol.dataType`). Otherwise it merely echoes
+    // the declared type and must NOT flip the "no narrowing applies" signal
+    // (null) — callers rely on null to fall back to the declared type, and tests
+    // encode that contract (e.g. no narrowing after an if-body closes).
+    const flowBase = this.flowBaseAt(variableName, position);
+    const flowRefines = flowBase !== undefined
+        && !this.dataTypesCanonicalEqual(flowBase, symbol.dataType);
     const ssaActive = symbol.currentType !== undefined && symbol.currentTypeEffectiveFrom !== undefined
         && position >= symbol.currentTypeEffectiveFrom;
-    const baseType: UcodeDataType = effectiveSymbolType(symbol, position);
+    const baseType: UcodeDataType = flowRefines ? flowBase! : effectiveSymbolType(symbol, position);
 
     // Check if this position is inside a type guard
     if (guards.length > 0) {
@@ -3065,10 +3078,105 @@ export class TypeChecker {
       return narrowedType;
     }
 
-    // No guards — return the effective base type only when SSA narrowing is
-    // active, so callers reflect post-assignment state. Returning null otherwise
-    // signals "no narrowing applies" (callers fall back to the declared type).
-    return ssaActive ? baseType : null;
+    // No guards — return the base only when the flow engine refines the declared
+    // type OR SSA narrowing is active; otherwise null signals "no narrowing
+    // applies" (callers fall back to the declared type).
+    return (flowRefines || ssaActive) ? baseType : null;
+  }
+
+  /** Order-independent structural equality of two data types (for the flow-base
+   *  refinement check). Mirrors flowTypeEngine's canonical comparison. */
+  private dataTypesCanonicalEqual(a: UcodeDataType, b: UcodeDataType): boolean {
+    if (a === b) return true;
+    const canon = (t: UcodeDataType): string => {
+      if (typeof t === 'string') return t;
+      const u = getUnionTypes(t);
+      if (u.length > 1) return '|' + u.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).sort().join('|');
+      return JSON.stringify(t);
+    };
+    return canon(a) === canon(b);
+  }
+
+  /** Per-function flow engines, computed once after the main analysis pass.
+   *  Each entry covers a function body's source range. */
+  private flowEngines: Array<{ start: number; end: number; engine: FlowTypeEngine }> = [];
+
+  /** The flow engine's reassignment-narrowed base for `varName` at `position`,
+   *  using the INNERMOST enclosing function's engine. Empty (→ undefined) during
+   *  the main analysis pass, so it only augments post-analysis queries (hover). */
+  private flowBaseAt(variableName: string, position: number): UcodeDataType | undefined {
+    let best: { start: number; end: number; engine: FlowTypeEngine } | undefined;
+    for (const fe of this.flowEngines) {
+      if (position >= fe.start && position <= fe.end) {
+        if (!best || (fe.end - fe.start) < (best.end - best.start)) best = fe;
+      }
+    }
+    return best?.engine.baseTypeAt(variableName, position);
+  }
+
+  /** Side-effect-free type of an expression node, for the flow engine's transfer:
+   *  the cached checked type (carries reassignment narrowing) with a literal
+   *  fallback (literal inits aren't cached). */
+  private nodeTypeForFlow(node: AstNode): UcodeDataType | undefined {
+    const cached = this.getTypeOf(node);
+    if (cached !== undefined) return cached;
+    if (node.type === 'Literal') {
+      const v = (node as LiteralNode).value;
+      if (typeof v === 'string') return UcodeType.STRING;
+      if (typeof v === 'number') return Number.isInteger(v) ? UcodeType.INTEGER : UcodeType.DOUBLE;
+      if (typeof v === 'boolean') return UcodeType.BOOLEAN;
+      if (v === null) return UcodeType.NULL;
+    }
+    return undefined;
+  }
+
+  /**
+   * Build the per-function flow engines (Phase B). Called once by the analyzer
+   * AFTER the main checkNode pass, when the getTypeOf cache and function
+   * signatures are populated. Walks every function, builds a CFG from its body,
+   * seeds the entry env with the function's parameter types, and runs the
+   * dataflow to a fixpoint.
+   */
+  buildFlowEngines(ast: ProgramNode): void {
+    this.flowEngines = [];
+    const typeOf = (n: AstNode) => this.nodeTypeForFlow(n);
+    const transfer = makeAssignmentTransfer(typeOf);
+
+    const visit = (node: AstNode): void => {
+      if (!node || typeof node !== 'object') return;
+      const t = node.type;
+      if ((t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression')
+          && (node as any).body && !(node as any).forwardDeclaration) {
+        const fnBody = (node as any).body;
+        if (fnBody.type === 'BlockStatement') {
+          try {
+            const cfg = new CFGBuilder('fn').build(fnBody);
+            const entryEnv: FlowEnvironment = this.functionParamEnv(node);
+            const engine = new FlowTypeEngine(cfg, transfer, entryEnv);
+            engine.compute();
+            this.flowEngines.push({ start: fnBody.start, end: fnBody.end, engine });
+          } catch { /* never let engine construction break analysis */ }
+        }
+      }
+      for (const key of Object.keys(node)) {
+        const child = (node as any)[key];
+        if (Array.isArray(child)) child.forEach(c => { if (c && typeof c === 'object' && c.type) visit(c); });
+        else if (child && typeof child === 'object' && child.type) visit(child);
+      }
+    };
+    visit(ast);
+  }
+
+  /** Entry environment for a function — its parameters seeded with the resolved
+   *  signature types (from the function symbol's ParamInfo). */
+  private functionParamEnv(fnNode: AstNode): FlowEnvironment {
+    const env = new Map<string, UcodeDataType>();
+    const name = (fnNode as any).id?.name;
+    if (name) {
+      const sym = this.symbolTable.lookup(name);
+      for (const p of (sym?.parameters ?? [])) env.set(p.name, p.type);
+    }
+    return env;
   }
 
   /**
