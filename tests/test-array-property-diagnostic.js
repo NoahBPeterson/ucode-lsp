@@ -101,17 +101,21 @@ function check(label, actual, expected) {
 // ============================================================================
 // Exhaustive: property access on every UcodeType
 // Only object should be silent. Array, string, regex should error.
-// Integer, double, boolean, null, function — may or may not error depending
-// on existing checks; we're specifically testing array here.
+// Dot member access on a non-object value (int/double/string/bool/array/regex/
+// function) is a hard runtime reference error in ucode ("left-hand side is not an
+// array or object"), so it IS flagged (verified against /usr/local/bin/ucode).
+// OBJECT is the exception: objects allow access to MISSING properties (returns
+// null, no error), so it is NOT flagged here. null member access also errors at
+// runtime but is left to the null-safety diagnostics.
 // ============================================================================
 const snippetForType = (t) => Match.value(t).pipe(
-    Match.when(UcodeType.INTEGER,  () => ({ code: 'let v = 42;\nlet x = v.prop;', shouldError: false })),
-    Match.when(UcodeType.DOUBLE,   () => ({ code: 'let v = 3.14;\nlet x = v.prop;', shouldError: false })),
+    Match.when(UcodeType.INTEGER,  () => ({ code: 'let v = 42;\nlet x = v.prop;', shouldError: true })),
+    Match.when(UcodeType.DOUBLE,   () => ({ code: 'let v = 3.14;\nlet x = v.prop;', shouldError: true })),
     Match.when(UcodeType.STRING,   () => ({ code: 'let v = "hello";\nlet x = v.prop;', shouldError: true })),
-    Match.when(UcodeType.BOOLEAN,  () => ({ code: 'let v = true;\nlet x = v.prop;', shouldError: false })),
+    Match.when(UcodeType.BOOLEAN,  () => ({ code: 'let v = true;\nlet x = v.prop;', shouldError: true })),
     Match.when(UcodeType.ARRAY,    () => ({ code: 'let v = [1];\nlet x = v.prop;', shouldError: true })),
     Match.when(UcodeType.OBJECT,   () => ({ code: 'let v = {a:1};\nlet x = v.prop;', shouldError: false })),
-    Match.when(UcodeType.FUNCTION, () => ({ code: 'let v = () => 1;\nlet x = v.prop;', shouldError: false })),
+    Match.when(UcodeType.FUNCTION, () => ({ code: 'let v = () => 1;\nlet x = v.prop;', shouldError: true })),
     Match.when(UcodeType.REGEX,    () => ({ code: 'let v = /test/;\nlet x = v.prop;', shouldError: true })),
     Match.when(UcodeType.NULL,     () => null),
     Match.when(UcodeType.UNKNOWN,  () => null),

@@ -215,6 +215,30 @@ const REF_BASE_DISPLAY: Partial<Record<UcodeType, string>> = {
   [UcodeType.REGEX]: 'regexp', [UcodeType.NULL]: 'null',
 };
 
+/** Common JS string/number members → the ucode builtin to use instead. Surfaced
+ *  as a hint when a JS-ism like `s.startsWith(...)` is flagged. */
+const SCALAR_MEMBER_HINTS: Record<string, string> = {
+  length: 'Use length(x).',
+  startsWith: 'Use index(x, prefix) == 0.',
+  endsWith: 'Use a substr(x, …) comparison.',
+  indexOf: 'Use index(x, …).',
+  includes: 'Use index(x, …) != -1.',
+  toUpperCase: 'Use uc(x).',
+  toLowerCase: 'Use lc(x).',
+  trim: 'Use trim(x).',
+  trimStart: 'Use ltrim(x).',
+  trimEnd: 'Use rtrim(x).',
+  split: 'Use split(x, sep).',
+  replace: 'Use replace(x, …).',
+  substring: 'Use substr(x, …).',
+  substr: 'Use substr(x, …).',
+  slice: 'Use substr(x, …).',
+  charAt: 'Use substr(x, i, 1).',
+  charCodeAt: 'Use ord(x, i).',
+  toFixed: 'Use sprintf("%.2f", x).',
+  toString: 'Use sprintf("%s", x) or `"" + x`.',
+};
+
 export class TypeChecker {
   private symbolTable: SymbolTable;
   private builtinFunctions: Map<string, FunctionSignature>;
@@ -2341,6 +2365,16 @@ export class TypeChecker {
     // itself is used where union members matter (string-in-union check).
     const objectBase = this.dataTypeToUcodeType(objectType);
 
+    // For an identifier receiver whose checked type collapsed to UNKNOWN, prefer
+    // the flow-narrowed type (what hover shows) — so a value narrowed to a scalar
+    // by an early-exit guard (`if (type(x) != "string") continue;`) is still
+    // validated for invalid member access below. Equals objectBase otherwise.
+    let narrowedBase = objectBase;
+    if (!node.computed && objectBase === UcodeType.UNKNOWN && node.object.type === 'Identifier') {
+      const nt = this.getNarrowedTypeAtPosition((node.object as IdentifierNode).name, node.object.start);
+      if (nt && !isUnionType(nt)) narrowedBase = this.dataTypeToUcodeType(nt);
+    }
+
     // Check for array type — arrays in ucode have no properties or methods.
     // Also check union types containing array (e.g., array | null from sort/filter).
     if (!node.computed) {
@@ -2380,7 +2414,7 @@ export class TypeChecker {
     // STRING (e.g. `parts[0]` where parts is array<string> yields STRING|NULL,
     // whose base collapses to UNKNOWN). Catches the common JavaScript-port
     // mistake `someStr.toUpperCase()`. objectType IS the rich type now.
-    let receiverHasString = objectBase === UcodeType.STRING;
+    let receiverHasString = objectBase === UcodeType.STRING || narrowedBase === UcodeType.STRING;
     if (!receiverHasString && !node.computed) {
       if (objectType === UcodeType.STRING) {
         receiverHasString = true;
@@ -2391,13 +2425,30 @@ export class TypeChecker {
     if (receiverHasString && !node.computed) {
       // String has no properties.
       const propertyName = (node.property as IdentifierNode).name;
+      const hint = SCALAR_MEMBER_HINTS[propertyName];
       this.errors.push({
-        message: `Property '${propertyName}' does not exist on string type. Strings in ucode have no member variables or functions.`,
+        message: `Property '${propertyName}' does not exist on string type. Strings in ucode have no member variables or functions.${hint ? ' ' + hint : ''}`,
         start: node.property.start,
         end: node.property.end,
         severity: 'error'
       });
 
+      return UcodeType.UNKNOWN;
+    }
+
+    // Number / boolean / function have no properties either — `n.toFixed(2)`,
+    // `b.foo`, `fn.prop` raise the same runtime reference error (ucode functions
+    // are not objects; you cannot attach properties to them). Driven by
+    // narrowedBase so a value narrowed to one of these by a guard is caught too.
+    if (!node.computed && (narrowedBase === UcodeType.INTEGER || narrowedBase === UcodeType.DOUBLE || narrowedBase === UcodeType.BOOLEAN || narrowedBase === UcodeType.FUNCTION)) {
+      const propertyName = (node.property as IdentifierNode).name;
+      const hint = SCALAR_MEMBER_HINTS[propertyName];
+      this.errors.push({
+        message: `Property '${propertyName}' does not exist on ${narrowedBase} type. ucode ${narrowedBase}s are not objects.${hint ? ' ' + hint : ''}`,
+        start: node.property.start,
+        end: node.property.end,
+        severity: 'error'
+      });
       return UcodeType.UNKNOWN;
     }
 
