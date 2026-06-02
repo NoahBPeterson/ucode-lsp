@@ -860,6 +860,9 @@ export class SemanticAnalyzer extends BaseVisitor {
               symbol.propertyFunctionReturnTypes = returnInfo.propertyFunctionReturnTypes;
             }
           }
+          // Capture the cross-file parameter signature for call-site arg checking.
+          const params = this.fileResolver.getDefaultExportFunctionParameters(effectiveUri);
+          if (params) symbol.parameters = params;
         }
 
         // Populate returnType/returnPropertyTypes for named function imports.
@@ -883,6 +886,9 @@ export class SemanticAnalyzer extends BaseVisitor {
             if (symbol.dataType === UcodeType.UNKNOWN) {
               symbol.dataType = UcodeType.FUNCTION as UcodeDataType;
             }
+            // Capture the cross-file parameter signature for call-site arg checking.
+            const params = this.fileResolver.getNamedExportFunctionParameters(effectiveUri, importedName);
+            if (params) symbol.parameters = params;
           } else if (symbol.dataType === UcodeType.UNKNOWN) {
             // Not a function — resolve a named-exported VARIABLE's type so e.g.
             // `let AllHostInfo = {}; export { AllHostInfo }` is `object` at the

@@ -1492,9 +1492,11 @@ export class TypeChecker {
           }
 
           // Check the call's arguments against the user function's declared
-          // signature (in-file function declarations only — imported functions
-          // carry no param info yet). Additive: doesn't change the return type.
-          if (symbol.type === SymbolType.FUNCTION && symbol.parameters) {
+          // signature. Covers in-file declarations (SymbolType.FUNCTION) and
+          // cross-file imports (SymbolType.IMPORTED) whose signature was resolved
+          // at import time; known-module imports returned above and never carry
+          // `parameters`. Additive: doesn't change the return type.
+          if (symbol.parameters) {
             this.checkUserFunctionCall(node, symbol);
           }
 

@@ -2,7 +2,8 @@ import { UcodeLexer } from '../lexer';
 import { UcodeParser } from '../parser';
 import { FunctionDeclarationNode, AstNode, ExportDefaultDeclarationNode, ExportNamedDeclarationNode, IdentifierNode } from '../ast/nodes';
 import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
-import { UcodeType, UcodeDataType, SingleType, createUnionType, isUnionType, isObjectType, isArrayType } from './symbolTable';
+import { UcodeType, UcodeDataType, SingleType, createUnionType, isUnionType, isObjectType, isArrayType, type ParamInfo } from './symbolTable';
+import { parseJsDocComment, resolveTypeExpression } from './jsdocParser';
 import { getOpenDocumentContent } from './openDocuments';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -1222,6 +1223,146 @@ export class FileResolver {
         } catch {
             return null;
         }
+    }
+
+    /**
+     * Extract the parameter signature (ParamInfo[]) of a NAMED exported function,
+     * for cross-file call-site argument checking. Mirrors the node-finding of
+     * getNamedExportFunctionReturnInfo, then reads each param's JSDoc type.
+     * Returns null if the export is absent or isn't a function.
+     */
+    getNamedExportFunctionParameters(fileUri: string, exportName: string): ParamInfo[] | null {
+        try {
+            const filePath = this.uriToFilePath(fileUri);
+            if (!filePath || !fs.existsSync(filePath)) return null;
+            const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
+            const ast = this.getCachedAst(fileUri, source);
+            if (!ast) return null;
+            const body = (ast as any).body || [];
+
+            const topLevelFuncs = new Map<string, AstNode>();
+            const topLevelVarInits = new Map<string, AstNode>();
+            for (const stmt of body) {
+                if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) topLevelFuncs.set(stmt.id.name, stmt);
+                if (stmt.type === 'VariableDeclaration') {
+                    for (const decl of stmt.declarations || []) {
+                        if (decl.id?.name && decl.init) topLevelVarInits.set(decl.id.name, decl.init);
+                    }
+                }
+            }
+
+            let funcNode: AstNode | null = null;
+            for (const stmt of body) {
+                if (stmt.type !== 'ExportNamedDeclaration') continue;
+                const exportNode = stmt as ExportNamedDeclarationNode;
+                if (exportNode.declaration) {
+                    if (exportNode.declaration.type === 'FunctionDeclaration') {
+                        const funcDecl = exportNode.declaration as FunctionDeclarationNode;
+                        if (funcDecl.id?.name === exportName) { funcNode = funcDecl; break; }
+                    } else if (exportNode.declaration.type === 'VariableDeclaration') {
+                        const varDecl = exportNode.declaration as any;
+                        for (const declarator of varDecl.declarations || []) {
+                            if (declarator.id?.name !== exportName) continue;
+                            const init = declarator.init;
+                            if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) funcNode = init;
+                            break;
+                        }
+                        if (funcNode) break;
+                    }
+                } else if (exportNode.specifiers) {
+                    let matched = false;
+                    for (const specifier of exportNode.specifiers) {
+                        if (specifier.exported.name !== exportName) continue;
+                        matched = true;
+                        const localName = specifier.local.name;
+                        if (topLevelFuncs.has(localName)) {
+                            funcNode = topLevelFuncs.get(localName)!;
+                        } else {
+                            const init = topLevelVarInits.get(localName);
+                            if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) funcNode = init;
+                        }
+                        break;
+                    }
+                    if (matched) break;
+                }
+            }
+
+            return funcNode ? this.extractFunctionParameters(funcNode) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Extract the parameter signature of the DEFAULT exported function (inline
+     * `export default function(){}` or `export default foo` where foo is declared
+     * above). Returns null if there's no default-exported function.
+     */
+    getDefaultExportFunctionParameters(fileUri: string): ParamInfo[] | null {
+        try {
+            const filePath = this.uriToFilePath(fileUri);
+            if (!filePath || !fs.existsSync(filePath)) return null;
+            const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
+            const ast = this.getCachedAst(fileUri, source);
+            if (!ast) return null;
+            const body = (ast as any).body || [];
+
+            const topLevelFuncs = new Map<string, AstNode>();
+            for (const stmt of body) {
+                if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) topLevelFuncs.set(stmt.id.name, stmt);
+            }
+
+            let defaultDecl: AstNode | null = null;
+            for (const stmt of body) {
+                if (stmt.type === 'ExportDefaultDeclaration') { defaultDecl = (stmt as ExportDefaultDeclarationNode).declaration; break; }
+            }
+            if (!defaultDecl) return null;
+
+            let funcNode: AstNode | null = null;
+            if (defaultDecl.type === 'FunctionDeclaration' || defaultDecl.type === 'FunctionExpression') {
+                funcNode = defaultDecl;
+            } else if (defaultDecl.type === 'Identifier') {
+                const name = (defaultDecl as IdentifierNode).name;
+                if (topLevelFuncs.has(name)) funcNode = topLevelFuncs.get(name)!;
+            }
+
+            return funcNode ? this.extractFunctionParameters(funcNode) : null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Build a ParamInfo[] from a resolved function node, reading each parameter's
+     * JSDoc `@param {T}` type (unknown if unannotated). A forward declaration has
+     * no real signature, so it yields null. Mirrors the in-file capture in
+     * semanticAnalyzer's visitFunctionDeclaration.
+     */
+    private extractFunctionParameters(funcNode: AstNode): ParamInfo[] | null {
+        if ((funcNode as any).forwardDeclaration) return null;
+        const params = (funcNode as any).params || [];
+        const restParam = (funcNode as any).restParam;
+        const leadingJsDoc = (funcNode as any).leadingJsDoc;
+
+        const jsdocTypes = new Map<string, UcodeDataType>();
+        if (leadingJsDoc?.value) {
+            const parsed = parseJsDocComment(leadingJsDoc.value);
+            for (const tag of parsed.tags) {
+                if (tag.tag !== 'param' || !tag.name) continue;
+                const resolved = resolveTypeExpression(tag.typeExpression);
+                if (resolved !== null) jsdocTypes.set(tag.name, resolved);
+            }
+        }
+
+        const result: ParamInfo[] = params.map((p: any) => ({
+            name: p.name,
+            type: jsdocTypes.get(p.name) ?? (UcodeType.UNKNOWN as UcodeDataType),
+            isRest: false,
+        }));
+        if (restParam) {
+            result.push({ name: restParam.name, type: UcodeType.ARRAY as UcodeDataType, isRest: true });
+        }
+        return result;
     }
 
     /**
