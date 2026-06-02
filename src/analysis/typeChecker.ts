@@ -3238,7 +3238,13 @@ export class TypeChecker {
           position >= ifNode.alternate.start &&
           position <= ifNode.alternate.end) {
         const guardInfo = this.extractTypeGuard(ifNode.test, variableName);
-        if (guardInfo) {
+        // Don't negate a null-propagation guard into the else branch: a false
+        // `substr(x,…) == 'wlan'` (i.e. the else) does NOT imply x is null — the
+        // call also returns null when x isn't a string, so `!= 'wlan'` is true for
+        // BOTH a null x and a non-matching string x. Negating it wrongly narrows x
+        // to null, which compounds across an else-if chain (mirrors the early-exit
+        // guard at the sibling scan above).
+        if (guardInfo && !guardInfo.isNullPropagation) {
           guards.push({ ...guardInfo, isNegative: !guardInfo.isNegative });
         }
         // Negated identifier: if (!x) { ... } else { ... } → x is non-null in else
