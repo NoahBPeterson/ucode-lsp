@@ -2,22 +2,22 @@ const assert = require('assert');
 const { createLSPTestServer } = require('./lsp-test-helpers');
 
 // DIFFERENTIAL narrowing harness. Rather than enumerate every (guard × nesting ×
-// consumer) combination, this asserts an INVARIANT that any combination must
-// satisfy, so new false positives are caught without writing a test per shape:
+// consumer) combination — a combinatorial, unbounded space that produced the
+// 0.6.121–0.6.126 whack-a-mole — assert ONE invariant every combination must
+// satisfy, so divergences are caught without a test per shape:
 //
-//   The diagnostic engine must never be STRICTER than what hover shows.
-//   If hover reports a value as a clean `string` (the type trim()/uc() require),
-//   then trim(x)/uc(x) must NOT emit a nullable/unknown/incompatible diagnostic.
+//   The type a user SEES (hover) and the type the engine USES (diagnostics)
+//   must AGREE. Probe `trim(x)` (requires a non-null string, tolerates neither
+//   null nor unknown): hover reports `string` IFF the engine emits no warning.
 //
-// This is exactly the false-positive class the narrowing fixes 0.6.121–0.6.126
-// each closed one real-file-at-a-time. The probe is `trim(x)` — trim requires a
-// non-null string and tolerates neither null nor unknown, so the engine's view
-// is observable: a clean string → 0 warnings; string|null/unknown → a warning.
-//
-// (Known, separate gap NOT asserted here: hover currently UNDER-narrows a bare
-// `if (!x) return;` early-exit — shows string|null while the engine correctly
-// narrows to string. That is hover imprecision, not a false positive, and is
-// tracked for the hover/engine type-source unification.)
+// A violation in EITHER direction is a real bug:
+//   - hover='string' but a warning fires  → false positive (the 0.6.121–126 class)
+//   - hover wide but no warning            → hover under-narrows vs the engine
+//                                            (the bug 0.6.127 fixed: a `!x`
+//                                            early-exit guard used a non-position-
+//                                            aware symbol lookup that missed a
+//                                            function-local in a post-analysis
+//                                            hover query).
 describe('Narrowing consistency harness (hover vs diagnostics)', function () {
   this.timeout(30000);
   let lspServer;
@@ -30,15 +30,17 @@ describe('Narrowing consistency harness (hover vs diagnostics)', function () {
     assign: `let x; x = fs.readfile(p);`,
     inTry:  `let x; try { x = fs.readfile(p); } catch (e) { return false; }`,
   };
-  // Each guard places the `trim(x)` probe where x should be a non-null string.
+  // Each guard places the `trim(x)` probe. `none`/`elseBranch` do NOT narrow x
+  // (so hover stays wide AND a warning fires — also a consistent state).
   const GUARDS = {
-    ifTruthy:    (probe) => `  if (x) { ${probe} }`,
-    ifTypeStr:   (probe) => `  if (type(x) == "string") { ${probe} }`,
-    earlyNot:    (probe) => `  if (!x) return false;\n  ${probe}`,
-    earlyTypeNe: (probe) => `  if (type(x) != "string") return false;\n  ${probe}`,
-    earlyTryCat: (probe) => `  if (!x) { try { return true; } catch (e) { return false; } }\n  ${probe}`,
-    ternary:     ()      => `  let r = x ? trim(x) : null;`,
-    andChain:    ()      => `  let r = x && trim(x);`,
+    none:        `  let r = trim(x);`,
+    ifTruthy:    `  if (x) { let r = trim(x); }`,
+    ifTypeStr:   `  if (type(x) == "string") { let r = trim(x); }`,
+    earlyNot:    `  if (!x) return false;\n  let r = trim(x);`,
+    earlyTypeNe: `  if (type(x) != "string") return false;\n  let r = trim(x);`,
+    earlyTryCat: `  if (!x) { try { return true; } catch (e) { return false; } }\n  let r = trim(x);`,
+    ternary:     `  let r = x ? trim(x) : null;`,
+    elseBranch:  `  if (x) {} else { let r = trim(x); }`,
   };
 
   const probePos = (code) => {
@@ -54,19 +56,17 @@ describe('Narrowing consistency harness (hover vs diagnostics)', function () {
   const warnCount = (ds) => ds.filter(d =>
     /may be null|is unknown|nullable|possibly|argument 1/i.test(d.message || '')).length;
 
-  it('the engine never warns on a value hover reports as a clean string', async () => {
+  it('hover reports a clean string IFF the diagnostic engine emits no warning', async () => {
     const violations = [];
     for (const [sName, setup] of Object.entries(SETUPS)) {
-      for (const [gName, mk] of Object.entries(GUARDS)) {
-        const probe = `let r = trim(x);`;
-        const code = `import * as fs from 'fs';\nfunction f(p) {\n  ${setup}\n${mk(probe)}\n}`;
+      for (const [gName, body] of Object.entries(GUARDS)) {
+        const code = `import * as fs from 'fs';\nfunction f(p) {\n  ${setup}\n${body}\n}`;
         const { line, character } = probePos(code);
         const fp = `/tmp/harness-${sName}-${gName}.uc`;
-        const ht = hoverType(await lspServer.getHover(code, fp, line, character));
-        const warns = warnCount(await lspServer.getDiagnostics(code, fp));
-        // The invariant: a clean `string` per hover ⇒ no diagnostic.
-        if (ht === 'string' && warns > 0) {
-          violations.push(`${sName}/${gName}: hover='string' but ${warns} warning(s) (false positive)`);
+        const hoverClean = hoverType(await lspServer.getHover(code, fp, line, character)) === 'string';
+        const engineClean = warnCount(await lspServer.getDiagnostics(code, fp)) === 0;
+        if (hoverClean !== engineClean) {
+          violations.push(`${sName}/${gName}: hoverClean=${hoverClean} engineClean=${engineClean}`);
         }
       }
     }

@@ -3460,7 +3460,11 @@ export class TypeChecker {
                 const unary = sibIf.test as any;
                 if (unary.operator === '!' && unary.argument?.type === 'Identifier'
                     && unary.argument.name === variableName) {
-                  const sym = this.symbolTable.lookup(variableName);
+                  // Position-aware lookup: a hover/narrowing query runs AFTER the
+                  // function scope has exited, so plain lookup() misses a local
+                  // variable — lookupAtPosition finds it by the query position.
+                  const sym = this.symbolTable.lookup(variableName)
+                    ?? this.symbolTable.lookupAtPosition(variableName, position);
                   const effType = sym ? this.getEffectiveSymbolDataType(sym, position) : undefined;
                   if (effType && isUnionType(effType) && getUnionTypes(effType).includes(UcodeType.NULL)) {
                     guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
