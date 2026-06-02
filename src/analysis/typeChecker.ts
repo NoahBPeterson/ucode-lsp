@@ -41,7 +41,7 @@ interface TypeGuardInfo {
   // (e.g., length(x) <= 0) doesn't imply x is null — x could just be empty.
   isNullPropagation?: boolean;
 }
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, Symbol as UcodeSymbol } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, Symbol as UcodeSymbol } from './symbolTable';
 import type { CheckResult } from './checkResult';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
@@ -718,11 +718,7 @@ export class TypeChecker {
   }
 
   private getEffectiveSymbolDataType(symbol: UcodeSymbol, position: number): UcodeDataType {
-    if (symbol.currentType && symbol.currentTypeEffectiveFrom !== undefined && position >= symbol.currentTypeEffectiveFrom) {
-      return symbol.currentType;
-    }
-
-    return symbol.dataType;
+    return effectiveSymbolType(symbol, position);
   }
 
   private checkBinaryExpression(node: BinaryExpressionNode): CheckResult {
@@ -3046,11 +3042,9 @@ export class TypeChecker {
     // p = data;` would read `data.dataType=NULL` and downstream consumers
     // would type p as `null` even though data's effective type post-assignment
     // is whatever the call returned (typically UNKNOWN).
-    let baseType: UcodeDataType = symbol.dataType;
-    if (symbol.currentType !== undefined && symbol.currentTypeEffectiveFrom !== undefined
-        && position >= symbol.currentTypeEffectiveFrom) {
-      baseType = symbol.currentType;
-    }
+    const ssaActive = symbol.currentType !== undefined && symbol.currentTypeEffectiveFrom !== undefined
+        && position >= symbol.currentTypeEffectiveFrom;
+    const baseType: UcodeDataType = effectiveSymbolType(symbol, position);
 
     // Check if this position is inside a type guard
     if (guards.length > 0) {
@@ -3064,14 +3058,10 @@ export class TypeChecker {
       return narrowedType;
     }
 
-    // No guards — return the effective base type so callers reflect SSA state.
-    // Returning null would make `let p = data` (no guard) fall through to the
-    // original dataType, which is the bug this branch is fixing.
-    if (symbol.currentType !== undefined && symbol.currentTypeEffectiveFrom !== undefined
-        && position >= symbol.currentTypeEffectiveFrom) {
-      return baseType;
-    }
-    return null; // No narrowing applies and no SSA override
+    // No guards — return the effective base type only when SSA narrowing is
+    // active, so callers reflect post-assignment state. Returning null otherwise
+    // signals "no narrowing applies" (callers fall back to the declared type).
+    return ssaActive ? baseType : null;
   }
 
   /**

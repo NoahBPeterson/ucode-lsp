@@ -3,7 +3,7 @@
  * Handles type narrowing within conditional blocks and control flow
  */
 
-import { UcodeType, UcodeDataType, SymbolTable, getUnionTypes, singleTypeToBase } from './symbolTable';
+import { UcodeType, UcodeDataType, SymbolTable, getUnionTypes, singleTypeToBase, effectiveSymbolType } from './symbolTable';
 import { TypeNarrowingEngine } from './typeNarrowing';
 import { AstNode, IdentifierNode, BinaryExpressionNode, IfStatementNode, CallExpressionNode } from '../ast/nodes';
 
@@ -888,15 +888,9 @@ export class FlowSensitiveTypeTracker {
       const effectiveType = this.getEffectiveType(variableName, position);
       if (effectiveType) return effectiveType;
 
-      // Respect the SSA current type (post-assignment) when active at this
-      // position — `let c; c = fs.readfile(p);` gives c its assigned type
-      // (string|null), NOT the uninitialized declared `null`. Without this, a
-      // truthiness guard `if (c)` would removeNull(null) → unknown.
-      if (symbol.currentType !== undefined && symbol.currentTypeEffectiveFrom !== undefined
-          && position >= symbol.currentTypeEffectiveFrom) {
-        return symbol.currentType;
-      }
-      return symbol.dataType;
+      // Else the SSA-effective type (currentType when active, else declared) —
+      // shared with the rest of the narrowing machinery via effectiveSymbolType.
+      return effectiveSymbolType(symbol, position);
     }
     return null;
   }

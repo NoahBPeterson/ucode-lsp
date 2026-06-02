@@ -199,6 +199,20 @@ export function dataTypeToBase(type: UcodeDataType): UcodeType {
   return typeof t === 'string' ? (t as UcodeType) : UcodeType.UNKNOWN;
 }
 
+/** The effective type of a symbol at a source position: the SSA-tracked
+ *  `currentType` when it is active at the position (i.e. after the assignment
+ *  that set it), otherwise the declared `dataType`. This is THE single source for
+ *  "what type does this variable hold here" that the narrowing machinery builds
+ *  on — declared-vs-current divergence here was the root of several narrowing
+ *  bugs (a `let c; c = f();` has declared type null but an effective string|null). */
+export function effectiveSymbolType(symbol: Symbol, position: number): UcodeDataType {
+  if (symbol.currentType !== undefined && symbol.currentTypeEffectiveFrom !== undefined
+      && position >= symbol.currentTypeEffectiveFrom) {
+    return symbol.currentType;
+  }
+  return symbol.dataType;
+}
+
 /** Convert a SingleType to its display string */
 export const singleTypeToString: (t: SingleType) => string = Match.type<SingleType>().pipe(
   Match.when(Match.string, (s) => s),
