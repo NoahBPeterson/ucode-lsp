@@ -34,4 +34,21 @@ describe('Truthiness narrowing of a declare-then-assign variable', function () {
   it('still warns with no guard (control)', async () => {
     assert.ok((await flagged(`import * as fs from 'fs';\nfunction f(p){ let c; c = fs.readfile(p); let l = split(trim(c), '\\n'); }`)).length >= 1);
   });
+
+  // The NEGATIVE early-exit form on a declare-then-assign variable — the exact
+  // process_traceroute shape (`let c; try{ c=... }catch{...} if(!c){ …return… }`).
+  it('narrows after `if (!c) { …return… }` for a declare-then-assign-in-try variable', async () => {
+    const code = `"use strict";
+const fs = require('fs');
+export function process_traceroute(raw_tr_path, hostinfo_path, final_tr_path) {
+    let raw_tr_content;
+    try { raw_tr_content = fs.readfile(raw_tr_path); } catch (e) { return false; }
+    if (!raw_tr_content) {
+        try { fs.writefile(final_tr_path, ''); return true; } catch (e) { return false; }
+    }
+    const raw_lines = split(trim(raw_tr_content), '\\n');
+    return true;
+}`;
+    assert.strictEqual((await flagged(code)).length, 0);
+  });
 });

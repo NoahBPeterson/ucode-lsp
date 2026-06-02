@@ -3451,13 +3451,18 @@ export class TypeChecker {
                 }
               }
               // Handle: if (!x) die() → x is non-null after
-              // Only when variable has a known union type containing null
+              // Only when variable could be null. Use the EFFECTIVE type at this
+              // position (SSA currentType) — not the declared dataType — so a
+              // declare-then-assign variable (`let c; c = fs.readfile(p);`, whose
+              // declared type is the uninitialized `null`) is recognised as
+              // string|null and gets null removed after `if (!c) { … return }`.
               if (sibIf.test.type === 'UnaryExpression') {
                 const unary = sibIf.test as any;
                 if (unary.operator === '!' && unary.argument?.type === 'Identifier'
                     && unary.argument.name === variableName) {
                   const sym = this.symbolTable.lookup(variableName);
-                  if (sym && isUnionType(sym.dataType) && getUnionTypes(sym.dataType).includes(UcodeType.NULL)) {
+                  const effType = sym ? this.getEffectiveSymbolDataType(sym, position) : undefined;
+                  if (effType && isUnionType(effType) && getUnionTypes(effType).includes(UcodeType.NULL)) {
                     guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
                   }
                 }
