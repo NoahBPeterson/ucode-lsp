@@ -137,6 +137,11 @@ export class FlowTypeEngine {
   constructor(
     private readonly cfg: ControlFlowGraph,
     private readonly transfer: StmtTransferFn = identityStmtTransfer,
+    /** Seed for the entry block — the function's parameters and their declared
+     *  types. Parameters aren't `let`-declared in the body, so without this they
+     *  wouldn't appear in the environment (and a join would drop a param that's
+     *  only reassigned on some paths). */
+    private readonly entryEnv: FlowEnvironment = new Map(),
   ) {}
 
   /** Fold the statement transfer over a block, recording per-statement entry
@@ -170,7 +175,7 @@ export class FlowTypeEngine {
       const block = worklist.shift()!;
 
       const newIn = block.predecessors.length === 0
-        ? empty
+        ? this.entryEnv // entry block: seed with parameters
         : joinEnvironments(block.predecessors.map(p => this.outEnv.get(p.id) ?? empty));
       this.inEnv.set(block.id, newIn);
 
