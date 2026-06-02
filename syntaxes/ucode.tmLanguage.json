@@ -258,7 +258,7 @@
       "patterns": [
         {
           "name": "support.function.builtin.ucode",
-          "match": "\\b(print|printf|sprintf|length|substr|split|join|trim|ltrim|rtrim|chr|ord|uc|lc|type|keys|values|push|pop|shift|unshift|index|require|include|json|match|replace|system|time|sleep|localtime|gmtime|timelocal|timegm|min|max|uniq|b64enc|b64dec|hexenc|hexdec|hex|uchr|iptoarr|arrtoip|int|loadstring|loadfile|wildcard|regexp|assert|call|signal|clock|sourcepath|gc)\\b(?=\\s*\\()"
+          "match": "\\b(print|printf|sprintf|length|substr|split|join|trim|ltrim|rtrim|chr|ord|uc|lc|type|keys|values|push|pop|shift|unshift|index|rindex|require|include|json|match|replace|system|time|sleep|localtime|gmtime|timelocal|timegm|min|max|uniq|b64enc|b64dec|hexenc|hexdec|hex|uchr|iptoarr|arrtoip|int|loadstring|loadfile|wildcard|regexp|assert|call|signal|clock|sourcepath|gc|die|exists|exit|filter|getenv|map|proto|render|reverse|slice|sort|splice|trace|warn)\\b(?=\\s*\\()"
         },
         {
           "name": "entity.name.function.ucode",
