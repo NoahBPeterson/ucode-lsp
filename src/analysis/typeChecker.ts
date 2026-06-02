@@ -3160,6 +3160,47 @@ export class TypeChecker {
     return guards;
   }
 
+  /**
+   * Collect the guards that hold in the POSITIVE (truthy) branch of `test` for
+   * `variableName` — the type guard (incl. `&&` chains), plus truthiness of the
+   * variable itself (an identifier OR a constant member path like `parts[5]` /
+   * `o.name`), the `&&`-left-operand form, and a null-propagating call. Shared by
+   * if-statement consequents and ternary consequents.
+   */
+  private collectPositiveTestGuards(test: AstNode, variableName: string, guards: TypeGuardInfo[]): void {
+    // For compound `&&` tests like `type(x) == "string" && length(x) > 0`,
+    // extractTypeGuard handles single conditions; findGuardInCondition walks `&&`.
+    let guardInfo = this.extractTypeGuard(test, variableName);
+    if (!guardInfo && test.type === 'BinaryExpression'
+        && (test as BinaryExpressionNode).operator === '&&') {
+      guardInfo = this.findGuardInCondition(test, variableName);
+    }
+    if (guardInfo) guards.push(guardInfo);
+
+    // Truthiness of the variable itself: `x`, `parts[5]`, or `o.name` (identifier
+    // or constant member path) → non-null in the truthy branch.
+    if ((test.type === 'Identifier' || test.type === 'MemberExpression')
+        && this.getDottedPath(test) === variableName) {
+      guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+    }
+    // `&&` left-operand truthiness: `x && expr` / `parts[5] && expr`.
+    if (test.type === 'BinaryExpression') {
+      const tb = test as BinaryExpressionNode;
+      if (tb.operator === '&&'
+          && (tb.left.type === 'Identifier' || tb.left.type === 'MemberExpression')
+          && this.getDottedPath(tb.left) === variableName) {
+        guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+      }
+    }
+    // Truthiness of a null-propagating call: `if (length(x)) { ... }`.
+    if (test.type === 'CallExpression') {
+      const np = this.getNullPropagatingArg(test);
+      if (np && this.getArgVariableName(np.arg) === variableName) {
+        guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+      }
+    }
+  }
+
   private collectGuards(node: AstNode | null, variableName: string, position: number, guards: TypeGuardInfo[]): void {
     if (!node) {
       return;
@@ -3185,52 +3226,9 @@ export class TypeChecker {
       if (ifNode.consequent &&
           position >= ifNode.consequent.start &&
           position <= ifNode.consequent.end) {
-        // For compound `&&` tests like `type(x) == "string" && length(x) > 0`,
-        // extractTypeGuard handles single conditions and top-level OR chains
-        // but returns null on bare AND. findGuardInCondition walks `&&` chains
-        // and returns the first guard for the variable — so the test's
-        // narrowing intent (`type(x) == "string"` → narrow x to string) is
-        // honoured in the if-body.
-        let guardInfo = this.extractTypeGuard(ifNode.test, variableName);
-        if (!guardInfo && ifNode.test.type === 'BinaryExpression'
-            && (ifNode.test as BinaryExpressionNode).operator === '&&') {
-          guardInfo = this.findGuardInCondition(ifNode.test, variableName);
-        }
-        if (guardInfo) {
-          guards.push(guardInfo);
-        }
-        // Bare identifier truthiness: if (x) { ... } → x is non-null in consequent
-        if (ifNode.test.type === 'Identifier' &&
-            (ifNode.test as IdentifierNode).name === variableName) {
-          guards.push({
-            variableName,
-            narrowToType: UcodeType.NULL,
-            isNegative: true // Remove null
-          });
-        }
-        // && left identifier truthiness: if (x && expr) { ... } → x is non-null in consequent
-        if (ifNode.test.type === 'BinaryExpression') {
-          const testBin = ifNode.test as BinaryExpressionNode;
-          if (testBin.operator === '&&' && testBin.left.type === 'Identifier' &&
-              (testBin.left as IdentifierNode).name === variableName) {
-            guards.push({
-              variableName,
-              narrowToType: UcodeType.NULL,
-              isNegative: true // Remove null
-            });
-          }
-        }
-        // Truthiness of null-propagating call: if (length(x)) { ... }
-        if (ifNode.test.type === 'CallExpression') {
-          const np = this.getNullPropagatingArg(ifNode.test);
-          if (np) {
-            const argName = this.getArgVariableName(np.arg);
-            if (argName === variableName) {
-              guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
-            }
-          }
-        }
-        // Negated identifier: if (!x) { ... } → x is null/falsy in consequent (no narrowing benefit)
+        // Collect the positive-branch guards from the test (type guards + truthiness
+        // of an identifier / constant member path / null-propagating call).
+        this.collectPositiveTestGuards(ifNode.test, variableName, guards);
         this.collectGuards(ifNode.consequent, variableName, position, guards);
         return;
       }
@@ -3262,6 +3260,26 @@ export class TypeChecker {
         }
         // Bare identifier: if (x) { ... } else { ... } → x could be null in else (no removal)
         this.collectGuards(ifNode.alternate, variableName, position, guards);
+        return;
+      }
+    }
+
+    // Ternary `test ? consequent : alternate` — mirrors the if-statement narrowing.
+    // The consequent runs only when `test` is truthy, so it gets the same positive
+    // guards (e.g. `parts[5] ? uc(parts[5]) : null` narrows parts[5] to non-null).
+    if (node.type === 'ConditionalExpression') {
+      const cond = node as ConditionalExpressionNode;
+      if (position >= cond.consequent.start && position <= cond.consequent.end) {
+        this.collectPositiveTestGuards(cond.test, variableName, guards);
+        this.collectGuards(cond.consequent, variableName, position, guards);
+        return;
+      }
+      if (position >= cond.alternate.start && position <= cond.alternate.end) {
+        const guardInfo = this.extractTypeGuard(cond.test, variableName);
+        if (guardInfo && !guardInfo.isNullPropagation) {
+          guards.push({ ...guardInfo, isNegative: !guardInfo.isNegative });
+        }
+        this.collectGuards(cond.alternate, variableName, position, guards);
         return;
       }
     }
@@ -4006,9 +4024,20 @@ export class TypeChecker {
     }
     if (node.type === 'MemberExpression') {
       const member = node as MemberExpressionNode;
-      if (member.computed) return null;
       const objPath = this.getDottedPath(member.object);
       if (!objPath) return null;
+      if (member.computed) {
+        // A CONSTANT index (`parts[5]`, `obj["k"]`) is a stable path, so guards on
+        // it (e.g. `parts[5] ? uc(parts[5]) : null`) can be tracked. A variable
+        // index (`parts[i]`) can change between guard and use → not trackable.
+        if (member.property.type === 'Literal') {
+          const v = (member.property as LiteralNode).value;
+          if (typeof v === 'number' || typeof v === 'string') {
+            return `${objPath}[${JSON.stringify(v)}]`;
+          }
+        }
+        return null;
+      }
       if (member.property.type === 'Identifier') {
         return `${objPath}.${(member.property as IdentifierNode).name}`;
       }
