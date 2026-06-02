@@ -886,7 +886,17 @@ export class FlowSensitiveTypeTracker {
 
       // Then check flow-sensitive narrowing
       const effectiveType = this.getEffectiveType(variableName, position);
-      return effectiveType || symbol.dataType;
+      if (effectiveType) return effectiveType;
+
+      // Respect the SSA current type (post-assignment) when active at this
+      // position — `let c; c = fs.readfile(p);` gives c its assigned type
+      // (string|null), NOT the uninitialized declared `null`. Without this, a
+      // truthiness guard `if (c)` would removeNull(null) → unknown.
+      if (symbol.currentType !== undefined && symbol.currentTypeEffectiveFrom !== undefined
+          && position >= symbol.currentTypeEffectiveFrom) {
+        return symbol.currentType;
+      }
+      return symbol.dataType;
     }
     return null;
   }
