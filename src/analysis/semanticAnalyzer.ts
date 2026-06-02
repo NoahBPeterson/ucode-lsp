@@ -2377,37 +2377,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     this.visit(node.test);
     this.truthinessDepth--;
 
-    // Push indirect type guard contexts BEFORE visiting the body so builtin validators
-    // see narrowed types for patterns like: t = type(value); if (t == "object") { keys(value) }
-    // Only do this for INDIRECT guards (where the condition uses a variable assigned from type()).
-    // Direct guards (type(x) == "...") are handled by the type checker's checkIfStatement.
-    let guardCount = 0;
-    if (this.options.enableTypeChecking && node.test?.type === 'BinaryExpression') {
-      const test = node.test as BinaryExpressionNode;
-      if (test.left.type === 'Identifier' && test.right.type === 'Literal') {
-        // Only push guards if this is an indirect type check (identifier == string literal)
-        // where the identifier was assigned from type(). Direct type(x) == "..." is handled later.
-        const guards = this.typeChecker.analyzeIfGuards(node);
-        for (const guard of guards) {
-          if (node.consequent) {
-            this.typeChecker.pushGuardContextPublic(
-              guard.variableName, guard.positiveNarrowing,
-              node.consequent.start, node.consequent.end
-            );
-            guardCount++;
-          }
-        }
-      }
-    }
-
-    // Visit consequent and alternate normally
+    // Visit consequent and alternate normally. (The indirect-type-guard push onto
+    // the typeChecker's guardContextStack that used to wrap the consequent — for
+    // `t = type(value); if (t == "object") { keys(value) }` — was proven redundant
+    // and removed: that narrowing now flows through the per-query
+    // getGuardsForPosition walk and the engine-backed post-visit filter. Phase C2.)
     if (node.consequent) this.visit(node.consequent);
-
-    // Pop consequent guards
-    for (let i = 0; i < guardCount; i++) {
-      this.typeChecker.popGuardContextPublic();
-    }
-
     if (node.alternate) this.visit(node.alternate);
 
     if (this.options.enableTypeChecking) {

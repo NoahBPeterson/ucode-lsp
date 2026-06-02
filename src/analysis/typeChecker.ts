@@ -56,7 +56,6 @@ import { nl80211TypeRegistry } from './nl80211Types';
 import { Option } from 'effect';
 import { isKnownObjectType, isKnownModule, MODULE_REGISTRIES, OBJECT_REGISTRIES, type KnownObjectType } from './moduleDispatch';
 import { TypeNarrowingEngine } from './typeNarrowing';
-import { FlowSensitiveTypeTracker } from './flowSensitiveTyping';
 
 // Builtins that return null when their key argument is null/wrong-type
 const NULL_PROPAGATING_BUILTINS: Record<string, number> = {
@@ -249,8 +248,6 @@ export class TypeChecker {
   private builtinValidator: BuiltinValidator;
   private typeCompatibility: TypeCompatibilityChecker;
   private typeNarrowing: TypeNarrowingEngine;
-  private flowSensitiveTracker: FlowSensitiveTypeTracker;
-  private guardContextStack: Array<{variableName: string, narrowedType: UcodeDataType, startPos: number, endPos: number}> = [];
   private assignmentTargetDepth = 0;
   private truthinessDepth = 0;
   private currentAST: ProgramNode | null = null;
@@ -264,7 +261,6 @@ export class TypeChecker {
   private constantAssignmentProperties = new Map<string, Set<string>>();
   private strictMode = false;
   private transitiveTypeAliases: string[] = [];
-  private diagnosticTypeAliases: Map<string, string[]> = new Map();
   /** Optional FileResolver used to read literal values from imported files when
    *  constant-folding `ns.A.B` member chains into property-key strings. */
   private fileResolver: { findExportedObjectPropertyLiteral(uri: string, exp: string, prop: string, display?: boolean): string | null } | null = null;
@@ -279,15 +275,11 @@ export class TypeChecker {
     this.builtinValidator = new BuiltinValidator();
     this.typeCompatibility = new TypeCompatibilityChecker();
     this.typeNarrowing = new TypeNarrowingEngine();
-    this.flowSensitiveTracker = new FlowSensitiveTypeTracker(symbolTable);
 
     // Inject type checker into builtin validator
     // Use a method that returns the full type description including unions
     this.builtinValidator.setTypeChecker(this.getNodeTypeDescription.bind(this));
     this.builtinValidator.setFullTypeChecker(this.getFullTypeFromNode.bind(this));
-
-    // Set up callback so flowSensitiveTracker can access guard contexts from typeChecker
-    this.flowSensitiveTracker.setActiveGuardCallback(this.getActiveGuardType.bind(this));
 
     this.initializeBuiltins();
   }
@@ -682,34 +674,18 @@ export class TypeChecker {
     const symbol = this.symbolTable.lookup(node.name);
     if (symbol) {
       this.symbolTable.markUsed(node.name, node.start);
-      
-      // Check for active guard contexts first
-      const guardType = this.getActiveGuardType(node.name, node.start);
-      let dataType: UcodeDataType;
-      
-      if (guardType) {
-        // Use the narrowed type from guard context
-        dataType = guardType;
-      } else {
-        // Check for flow-sensitive type narrowing. Only PREFER it when it's
-        // actually informative: the flow tracker may record a narrowing to
-        // UNKNOWN (e.g. it couldn't resolve `parts[1]` to string|null the way
-        // the symbol table does). `UcodeType.UNKNOWN` is the truthy string
-        // 'unknown', so a bare `flow || symbol` would let that useless UNKNOWN
-        // clobber the symbol's real type — leaving e.g. trim(_val3) seeing
-        // `unknown` while hover (which reads the symbol) correctly shows
-        // `string`. Fall back to the symbol's effective type unless flow has
-        // something more specific.
-        const flowSensitiveType = this.flowSensitiveTracker.getEffectiveType(node.name, node.start);
-        dataType = (flowSensitiveType && flowSensitiveType !== UcodeType.UNKNOWN)
-          ? flowSensitiveType
-          : this.getEffectiveSymbolDataType(symbol, node.start);
-      }
-      
+
+      // The identifier's type is the symbol's SSA-effective type at this point.
+      // (Phase C: the guardContextStack + FlowSensitiveTypeTracker narrowing that
+      // used to wrap this was proven redundant — disabling both reads changed no
+      // diagnostics across the corpus + suites + the differential harness — so
+      // they were deleted. Guard narrowing for diagnostics flows through the
+      // arg-validation path's getGuardsForPosition and the engine-backed
+      // post-visit filter; for hover/completion through getNarrowedTypeAtPosition.)
+      //
       // Return the rich type directly — unions, arrays, object shapes flow
-      // through the return value (and the central checkNode cache), no longer
-      // collapsed to a flat enum with the real type hidden in _fullType.
-      return dataType;
+      // through the return value (and the central checkNode cache).
+      return this.getEffectiveSymbolDataType(symbol, node.start);
     } else {
       // Check if it's a builtin function
       const isBuiltin = allBuiltinFunctions.has(node.name);
@@ -1182,18 +1158,9 @@ export class TypeChecker {
     if (node.right.type === 'Identifier') {
       const variableName = (node.right as IdentifierNode).name;
 
-      // Incorporate guard contexts first (e.g., from equality null checks)
-      const guardContextType = this.getActiveGuardType(variableName, node.right.start);
-      if (guardContextType) {
-        rightTypeData = guardContextType;
-      } else {
-        const flowType = this.flowSensitiveTracker.getEffectiveType(variableName, node.right.start);
-        if (flowType) {
-          rightTypeData = flowType;
-        }
-      }
-
-      // Check if we're inside any type guard for this variable
+      // Guard narrowing for the right operand via the AST guard walk (the
+      // canonical collectGuards path; the guardContextStack / FlowSensitiveTypeTracker
+      // wrappers that used to precede this were proven redundant and removed — C2).
       // Use the position of the variable itself (node.right.start), not the start of the 'in' expression
       const guardChain = this.getGuardsForPosition(this.currentAST, variableName, node.right.start);
       if (guardChain.length > 0) {
@@ -1303,16 +1270,12 @@ export class TypeChecker {
       const identifierNode = node as IdentifierNode;
       const variableName = identifierNode.name;
 
-      // First check for active guard from outer scope (guardContextStack)
-      // Try CFG/fullType first, then symbol table, then UNKNOWN
-      let baseType: UcodeDataType = this.getFullTypeFromNode(node)
+      // Base type: checked type (carries reassignment narrowing) → symbol → UNKNOWN.
+      // (The guardContextStack lookup that used to wrap this was proven redundant
+      // and removed — C2. The AST guard walk below still applies guards.)
+      const baseType: UcodeDataType = this.getFullTypeFromNode(node)
         || this.symbolTable.lookup(variableName)?.dataType
         || UcodeType.UNKNOWN;
-
-      const activeGuardType = this.getActiveGuardType(variableName, node.start);
-      if (activeGuardType) {
-        baseType = activeGuardType;
-      }
 
       // Then check for flow-sensitive narrowing from current if statement
       const guards = this.getGuardsForPosition(this.currentAST, variableName, node.start);
@@ -2609,61 +2572,14 @@ export class TypeChecker {
     this.checkNode(node.test);
     this.truthinessDepth--;
 
-    // Analyze type guards and get the guard info
-    const guards = this.flowSensitiveTracker.analyzeIfStatement(node);
+    // Traverse both branches. (The guardContextStack push/pop that used to wrap
+    // these — fed by FlowSensitiveTypeTracker.analyzeIfStatement — was proven
+    // redundant and removed: guard narrowing for diagnostics flows through the
+    // per-query getGuardsForPosition walk and the engine-backed post-visit
+    // filter; for hover through getNarrowedTypeAtPosition. C2.)
+    if (node.consequent) this.checkNode(node.consequent);
+    if (node.alternate) this.checkNode(node.alternate);
 
-    // Add guards for transitively type-aliased variables
-    // e.g., if t1 = type(val1) and earlier guard established type(val1) == type(val2),
-    // then a guard on val1 also applies to val2
-    const extraGuards: typeof guards = [];
-    for (const guard of guards) {
-      const aliases = this.diagnosticTypeAliases.get(guard.variableName);
-      if (aliases) {
-        for (const alias of aliases) {
-          extraGuards.push({ ...guard, variableName: alias });
-        }
-      }
-    }
-    guards.push(...extraGuards);
-
-    // Process the consequent (then block) with positive narrowing
-    if (node.consequent) {
-      for (const guard of guards) {
-        this.pushGuardContext(
-          guard.variableName,
-          guard.positiveNarrowing,
-          node.consequent.start,
-          node.consequent.end
-        );
-      }
-
-      this.checkNode(node.consequent);
-
-      // Clean up guard contexts
-      for (let i = 0; i < guards.length; i++) {
-        this.popGuardContext();
-      }
-    }
-
-    // Process the alternate (else block) with negative narrowing
-    if (node.alternate) {
-      for (const guard of guards) {
-        this.pushGuardContext(
-          guard.variableName,
-          guard.negativeNarrowing,
-          node.alternate.start,
-          node.alternate.end
-        );
-      }
-      
-      this.checkNode(node.alternate);
-      
-      // Clean up guard contexts
-      for (let i = 0; i < guards.length; i++) {
-        this.popGuardContext();
-      }
-    }
-    
     return UcodeType.UNKNOWN; // If statements don't return values
   }
 
@@ -2681,63 +2597,15 @@ export class TypeChecker {
   }
 
   private checkBlockStatement(node: BlockStatementNode): CheckResult {
-    const savedDiagAliases = this.diagnosticTypeAliases;
-    this.diagnosticTypeAliases = new Map(savedDiagAliases);
-    for (let i = 0; i < node.body.length; i++) {
-      const statement = node.body[i]!;
-
-      // Detect early-exit if and push negative narrowing for remaining statements
-      if (statement.type === 'IfStatement') {
-        const ifStmt = statement as IfStatementNode;
-        if (ifStmt.consequent && this.blockAlwaysTerminates(ifStmt.consequent)) {
-          // Detect type-equality aliases for transitive narrowing in diagnostic path
-          const alias = this.detectTypeEqualityAlias(ifStmt.test);
-          if (alias) {
-            if (!this.diagnosticTypeAliases.has(alias.var1)) this.diagnosticTypeAliases.set(alias.var1, []);
-            if (!this.diagnosticTypeAliases.get(alias.var1)!.includes(alias.var2))
-              this.diagnosticTypeAliases.get(alias.var1)!.push(alias.var2);
-            if (!this.diagnosticTypeAliases.has(alias.var2)) this.diagnosticTypeAliases.set(alias.var2, []);
-            if (!this.diagnosticTypeAliases.get(alias.var2)!.includes(alias.var1))
-              this.diagnosticTypeAliases.get(alias.var2)!.push(alias.var1);
-          }
-          const guards = this.flowSensitiveTracker.analyzeIfStatement(ifStmt);
-          // Extend early-exit guards with transitive type aliases
-          const extraEarlyGuards: typeof guards = [];
-          for (const guard of guards) {
-            const aliases = this.diagnosticTypeAliases.get(guard.variableName);
-            if (aliases) {
-              for (const a of aliases) {
-                extraEarlyGuards.push({ ...guard, variableName: a });
-              }
-            }
-          }
-          guards.push(...extraEarlyGuards);
-          if (guards.length > 0) {
-            this.checkNode(statement);
-            // Push negative narrowing for the rest of the block
-            for (const guard of guards) {
-              this.pushGuardContext(
-                guard.variableName,
-                guard.negativeNarrowing,
-                statement.end,
-                node.end
-              );
-            }
-            // Check remaining statements
-            for (let j = i + 1; j < node.body.length; j++) {
-              this.checkNode(node.body[j]!);
-            }
-            for (let j = 0; j < guards.length; j++) {
-              this.popGuardContext();
-            }
-            return UcodeType.UNKNOWN;
-          }
-        }
-      }
-
+    // Plain straight-line traversal. (The early-exit-if detection that used to
+    // push negative narrowing onto the guardContextStack for the remaining
+    // statements — fed by FlowSensitiveTypeTracker.analyzeIfStatement + the
+    // diagnosticTypeAliases map — was proven redundant and removed: early-exit
+    // narrowing for diagnostics now flows through the per-query getGuardsForPosition
+    // walk and the engine-backed post-visit filter. C2.)
+    for (const statement of node.body) {
       this.checkNode(statement);
     }
-    this.diagnosticTypeAliases = savedDiagAliases;
     return UcodeType.UNKNOWN;
   }
 
@@ -2798,46 +2666,14 @@ export class TypeChecker {
   private checkSwitchStatement(node: SwitchStatementNode): CheckResult {
     this.checkNode(node.discriminant);
 
-    const switchInfo = this.getTypeSwitchVariable(node.discriminant);
-    const handledTypes: UcodeType[] = [];
-
+    // Traverse each case body. (The type-switch narrowing that used to push onto
+    // the guardContextStack per case — `switch (type(x)) { case "string": … }` —
+    // was proven redundant and removed: that narrowing for diagnostics flows
+    // through the per-query getGuardsForPosition switch handling, and for hover
+    // through getNarrowedTypeAtPosition. C2.)
     for (const caseNode of node.cases) {
-      let pushedGuard = false;
-
-      if (switchInfo && caseNode.consequent.length > 0) {
-        const { start, end } = this.getCaseRange(caseNode);
-        const baseType = this.getBaseTypeForPosition(switchInfo.variableName, start);
-        let narrowedType: UcodeDataType | null = null;
-
-        if (caseNode.test && caseNode.test.type === 'Literal') {
-          const caseLiteral = caseNode.test as LiteralNode;
-          if (typeof caseLiteral.value === 'string') {
-            const testedType = this.stringLiteralToUcodeType(caseLiteral.value);
-            if (testedType) {
-              if (!handledTypes.includes(testedType)) {
-                handledTypes.push(testedType);
-              }
-              narrowedType = this.typeNarrowing.keepOnlyTypes(baseType, [testedType]).narrowedType;
-            }
-          }
-        } else if (!caseNode.test && handledTypes.length > 0) {
-          narrowedType = this.typeNarrowing.removeTypesFromUnion(baseType, handledTypes).narrowedType;
-        } else if (!caseNode.test) {
-          narrowedType = baseType;
-        }
-
-        if (narrowedType) {
-          this.pushGuardContext(switchInfo.variableName, narrowedType, start, end);
-          pushedGuard = true;
-        }
-      }
-
       for (const statement of caseNode.consequent) {
         this.checkNode(statement);
-      }
-
-      if (switchInfo && pushedGuard) {
-        this.popGuardContext();
       }
     }
 
@@ -2947,21 +2783,6 @@ export class TypeChecker {
     return UcodeType.UNKNOWN;
   }
 
-  private getBaseTypeForPosition(variableName: string, position: number): UcodeDataType {
-    const guardType = this.getActiveGuardType(variableName, position);
-    if (guardType) {
-      return guardType;
-    }
-
-    const flowType = this.flowSensitiveTracker.getEffectiveType(variableName, position);
-    if (flowType) {
-      return flowType;
-    }
-
-    const symbol = this.symbolTable.lookup(variableName);
-    return symbol ? symbol.dataType : UcodeType.UNKNOWN;
-  }
-
   /**
    * Check if a switch case has a break/return statement
    */
@@ -2987,10 +2808,6 @@ export class TypeChecker {
 
   getCommonReturnType(types: UcodeDataType[]): UcodeDataType {
     return this.typeCompatibility.getCommonType(types);
-  }
-
-  get flowTracker(): FlowSensitiveTypeTracker {
-    return this.flowSensitiveTracker;
   }
 
   /**
@@ -3065,17 +2882,10 @@ export class TypeChecker {
     return engineResult;
   }
 
-  /** The pre-C1 per-query narrowing: guard-context stack → position guard walk
-   *  (incl. ternary / `&&` forms) applied to the SSA-effective base. Retained as
-   *  one of the two inputs to `getNarrowedTypeAtPosition` until C2/C3 migrate the
-   *  remaining (during-emission) consumers and the not-yet-in-CFG guard forms. */
+  /** The pre-C1 per-query narrowing: the position guard walk (incl. ternary /
+   *  `&&` forms) applied to the SSA-effective base. One of the two inputs to
+   *  `getNarrowedTypeAtPosition` (the other is the engine). */
   private legacyNarrowedTypeAtPosition(variableName: string, position: number, symbol: UcodeSymbol | null | undefined): UcodeDataType | null {
-    // First check guard context stack (used for if statements with type guards)
-    const guardType = this.getActiveGuardType(variableName, position);
-    if (guardType) {
-      return guardType;
-    }
-
     const guards = this.getGuardsForPosition(this.currentAST, variableName, position);
 
     if (!symbol) {
@@ -4810,40 +4620,6 @@ export class TypeChecker {
     }
 
     return children.filter(child => child != null);
-  }
-
-  private pushGuardContext(variableName: string, narrowedType: UcodeDataType, startPos: number, endPos: number): void {
-    this.guardContextStack.push({ variableName, narrowedType, startPos, endPos });
-  }
-
-  private popGuardContext(): void {
-    this.guardContextStack.pop();
-  }
-
-  private getActiveGuardType(variableName: string, position: number): UcodeDataType | null {
-    // Look through guard contexts from most recent to oldest
-    for (let i = this.guardContextStack.length - 1; i >= 0; i--) {
-      const guard = this.guardContextStack[i];
-      if (guard && guard.variableName === variableName &&
-          position >= guard.startPos &&
-          position <= guard.endPos) {
-        return guard.narrowedType;
-      }
-    }
-    return null;
-  }
-
-  // Public wrappers for guard context management (used by semantic analyzer)
-  analyzeIfGuards(node: IfStatementNode): { variableName: string; positiveNarrowing: UcodeDataType; negativeNarrowing: UcodeDataType }[] {
-    return this.flowSensitiveTracker.analyzeIfStatement(node);
-  }
-
-  pushGuardContextPublic(variableName: string, narrowedType: UcodeDataType, startPos: number, endPos: number): void {
-    this.pushGuardContext(variableName, narrowedType, startPos, endPos);
-  }
-
-  popGuardContextPublic(): void {
-    this.popGuardContext();
   }
 
 }
