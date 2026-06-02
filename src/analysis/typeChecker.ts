@@ -3726,17 +3726,19 @@ export class TypeChecker {
 
     // Look up the other variable's symbol — try regular lookup first, then position-aware
     // (imports/outer-scope variables may not be in the current scope after analysis)
+    const otherNode = (binaryExpr.left.type === 'Identifier' &&
+      (binaryExpr.left as IdentifierNode).name === otherVarName)
+      ? binaryExpr.left : binaryExpr.right;
     let otherSymbol = this.symbolTable.lookup(otherVarName);
     if (!otherSymbol) {
-      // Use the other identifier's position for lookupAtPosition
-      const otherNode = (binaryExpr.left.type === 'Identifier' &&
-        (binaryExpr.left as IdentifierNode).name === otherVarName)
-        ? binaryExpr.left : binaryExpr.right;
       otherSymbol = this.symbolTable.lookupAtPosition(otherVarName, otherNode.start);
     }
     if (!otherSymbol) return null;
 
-    const otherType = otherSymbol.dataType;
+    // Use the EFFECTIVE type at the comparison (SSA currentType) — a
+    // declare-then-assign other variable (`let y; y = f();`) has declared type
+    // `null` but an effective type of whatever was assigned.
+    const otherType = this.getEffectiveSymbolDataType(otherSymbol, otherNode.start);
     // Only narrow if the other variable has a known type
     if (otherType === UcodeType.UNKNOWN) return null;
 
@@ -3768,13 +3770,16 @@ export class TypeChecker {
         }
 
         if (allGuards.length >= 2) {
-          // Get the variable's original type
-          const symbol = this.symbolTable.lookup(variableName);
+          // Get the variable's original type at the guard — position-aware lookup
+          // and EFFECTIVE type (SSA currentType), so a declare-then-assign variable
+          // (`let x; x = f();`, declared `null`) narrows from its assigned type.
+          const symbol = this.symbolTable.lookup(variableName)
+            ?? this.symbolTable.lookupAtPosition(variableName, binaryExpr.start);
           if (!symbol) {
             return null;
           }
 
-          const originalType = symbol.dataType;
+          const originalType = this.getEffectiveSymbolDataType(symbol, binaryExpr.start);
           let originalTypes = getUnionTypes(originalType);
 
           // For UNKNOWN type with all-positive OR guards, narrow to the union of guarded types

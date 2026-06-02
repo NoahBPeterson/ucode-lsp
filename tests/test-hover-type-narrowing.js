@@ -322,9 +322,10 @@ function test17(x) {
     const anchor = code.indexOf('let v = x');
     const offset = code.indexOf('x', anchor + 8);
     const narrowed = result.typeChecker.getNarrowedTypeAtPosition('x', offset);
-    // OR guard extraction calls symbolTable.lookup which fails for scoped-out params
-    // so extractTypeGuard returns null for the OR chain
-    check('Test 17: OR positive guard in if-body', narrowed ? typeToString(narrowed) : 'null', 'null');
+    // `type(x) == "string" || type(x) == "array"` → in the body x is string OR array.
+    // (Position-aware lookup, 0.6.128, resolves the scoped-out param so the OR
+    // chain narrows; previously it returned null.)
+    check('Test 17: OR positive guard in if-body', narrowed ? typeToString(narrowed) : 'null', 'string | array');
 }
 
 {
@@ -357,11 +358,34 @@ function test19(x) {
     const anchor = code.indexOf('let v = x');
     const offset = code.indexOf('x', anchor + 8);
     const narrowed = result.typeChecker.getNarrowedTypeAtPosition('x', offset);
-    // OR with null check — extractTypeGuard handles OR chains
-    // type(x) == "string" || x == null: with unknown base, the OR guard logic
-    // needs all branches to be guards. null check IS a guard but for unknown base
-    // it won't narrow effectively
-    check('Test 19: OR guard with null check', narrowed ? typeToString(narrowed) : 'null', 'null');
+    // `type(x) == "string" || x == null` → in the body x is string OR null.
+    // (Position-aware lookup, 0.6.128, resolves the scoped-out param so the OR
+    // chain narrows to the union of its branches; previously it returned null.)
+    check('Test 19: OR guard with null check', narrowed ? typeToString(narrowed) : 'null', 'string | null');
+}
+
+// Variable-to-variable equality narrowing must read the OTHER variable's
+// EFFECTIVE type (SSA currentType), not its declared type. `let y; y = readfile()`
+// has declared type null but effective string|null; `if (x == y)` narrows x to
+// y's effective type, not null. (0.6.128 audit fix.)
+{
+    const code = `
+import * as fs from 'fs';
+function test19b(p) {
+    let y;
+    y = fs.readfile(p);
+    let x = trim("a");
+    if (x == y) {
+        let v = x;
+    }
+}
+`;
+    const result = analyze(code);
+    const anchor = code.indexOf('let v = x');
+    const offset = code.indexOf('x', anchor + 8);
+    const narrowed = result.typeChecker.getNarrowedTypeAtPosition('x', offset);
+    check('Test 19b: var-equality reads effective type of declare-then-assign other var',
+        narrowed ? typeToString(narrowed) : 'null', 'string | null');
 }
 
 // ============================================================
