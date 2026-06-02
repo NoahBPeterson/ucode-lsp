@@ -41,6 +41,10 @@ describe('Narrowing consistency harness (hover vs diagnostics)', function () {
     earlyTryCat: `  if (!x) { try { return true; } catch (e) { return false; } }\n  let r = trim(x);`,
     ternary:     `  let r = x ? trim(x) : null;`,
     elseBranch:  `  if (x) {} else { let r = trim(x); }`,
+    nestedIf:    `  if (p) { if (x) { let r = trim(x); } }`,
+    andGuard:    `  if (x && length(x) > 0) { let r = trim(x); }`,
+    earlyNotNested: `  if (p) { if (!x) return false; let r = trim(x); }`,
+    doubleEarly: `  if (!p) return false;\n  if (!x) return false;\n  let r = trim(x);`,
   };
 
   const probePos = (code) => {

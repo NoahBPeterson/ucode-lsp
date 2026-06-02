@@ -1289,7 +1289,14 @@ export class TypeChecker {
   }
 
   private getNodeTypeDescription(node: AstNode): UcodeType {
-    // For identifiers, check if there's a narrowed type in the current context
+    // For identifiers, check if there's a narrowed type in the current context.
+    // NOTE: this deliberately bases on getFullTypeFromNode (the node's CHECKED
+    // type, which carries reassignment / nullMeansWrongType narrowing — e.g.
+    // `strval = substr(strval,1)` is string, not string|null) rather than the
+    // SSA-effective declared/current type. Routing this through
+    // getNarrowedTypeAtPosition (Phase A step 2) under-narrows here and produces
+    // false positives (see test-hover-type-consistency T55); a clean merge needs
+    // the unified flow type from Phase B.
     if (node.type === 'Identifier') {
       const identifierNode = node as IdentifierNode;
       const variableName = identifierNode.name;
