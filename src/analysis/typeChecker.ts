@@ -892,21 +892,23 @@ export class TypeChecker {
   /** For `length(arr) <op> N` (either operand order) in its TRUE branch, the
    *  minimum L such that `length(arr) >= L` is guaranteed — or null when the
    *  comparison gives no lower bound (`<`, `<=`, `!=`). */
+  /** True when `n` is exactly `length(arrName)`. */
+  private isLengthCall(n: AstNode, arrName: string): boolean {
+    if (n?.type !== 'CallExpression') return false;
+    const c = n as CallExpressionNode;
+    return c.callee?.type === 'Identifier'
+      && (c.callee as IdentifierNode).name === 'length'
+      && c.arguments?.length === 1
+      && c.arguments[0]?.type === 'Identifier'
+      && (c.arguments[0] as IdentifierNode).name === arrName;
+  }
+
   private lengthLowerBound(b: BinaryExpressionNode, arrName: string): number | null {
-    const isLenCall = (n: AstNode): boolean => {
-      if (n?.type !== 'CallExpression') return false;
-      const c = n as CallExpressionNode;
-      return c.callee?.type === 'Identifier'
-        && (c.callee as IdentifierNode).name === 'length'
-        && c.arguments?.length === 1
-        && c.arguments[0]?.type === 'Identifier'
-        && (c.arguments[0] as IdentifierNode).name === arrName;
-    };
     let op: string = b.operator;
     let lit: number | null;
-    if (isLenCall(b.left)) {
+    if (this.isLengthCall(b.left, arrName)) {
       lit = this.numericLiteralValue(b.right);
-    } else if (isLenCall(b.right)) {
+    } else if (this.isLengthCall(b.right, arrName)) {
       lit = this.numericLiteralValue(b.left);
       op = this.flipComparison(op); // normalize to `length(arr) <op> lit`
     } else {
@@ -920,6 +922,93 @@ export class TypeChecker {
       case '>':   return lit + 1; // length > N  → length >= N+1
       default:    return null;    // <, <=, != → no lower bound
     }
+  }
+
+  /** Does a computed array access `obj[prop]` resolve to an in-bounds element
+   *  (so the usual `| null` for out-of-bounds doesn't apply)? Covers a literal
+   *  index proven by a `length(arr)` guard, and a variable index that is the
+   *  induction variable of a `for (i=0; i < length(arr); …)` loop. */
+  private computedAccessInBounds(objNode: AstNode, propNode: AstNode, position: number): boolean {
+    if (objNode.type !== 'Identifier') return false;
+    const arrName = (objNode as IdentifierNode).name;
+    const litIdx = this.numericLiteralValue(propNode);
+    if (litIdx !== null) return this.arrayIndexProvenInBounds(arrName, litIdx, position);
+    if (propNode.type === 'Identifier') return this.arrayIndexInBoundsViaLoop(arrName, (propNode as IdentifierNode).name, position);
+    return false;
+  }
+
+  /** Is `arr[idxVar]` in bounds because it sits inside a canonical index loop
+   *  `for (idxVar = 0…; idxVar < length(arr); …) { … arr[idxVar] … }`? The test
+   *  guarantees `idxVar < length(arr)` on entry to the body and the init a
+   *  non-negative start, so every `arr[idxVar]` in the body is in range — hence
+   *  non-null. Conservative: bails if `idxVar` or `arr` is reassigned anywhere in
+   *  the body (the bound could then be stale). */
+  private arrayIndexInBoundsViaLoop(arrName: string, idxVar: string, position: number): boolean {
+    const ast = this.currentAST;
+    if (!ast) return false;
+    const isIdx = (n: AstNode | null | undefined): boolean =>
+      n?.type === 'Identifier' && (n as IdentifierNode).name === idxVar;
+
+    // test guarantees `idxVar < length(arr)` (either operand order).
+    const testProvesUpper = (test: AstNode | null): boolean => {
+      if (test?.type !== 'BinaryExpression') return false;
+      const b = test as BinaryExpressionNode;
+      if (b.operator === '<' && isIdx(b.left) && this.isLengthCall(b.right, arrName)) return true;
+      if (b.operator === '>' && this.isLengthCall(b.left, arrName) && isIdx(b.right)) return true;
+      return false;
+    };
+    // init establishes `idxVar = <non-negative literal>`.
+    const initProvesLower = (init: AstNode | null): boolean => {
+      if (init?.type === 'VariableDeclaration') {
+        for (const d of (init as VariableDeclarationNode).declarations || []) {
+          if ((d as any)?.id?.name === idxVar) { const v = this.numericLiteralValue((d as any).init); return v !== null && v >= 0; }
+        }
+      }
+      const expr = init?.type === 'ExpressionStatement' ? (init as ExpressionStatementNode).expression : init;
+      if (expr?.type === 'AssignmentExpression') {
+        const a = expr as AssignmentExpressionNode;
+        if (a.operator === '=' && isIdx(a.left)) { const v = this.numericLiteralValue(a.right); return v !== null && v >= 0; }
+      }
+      return false;
+    };
+    // idxVar or arrName reassigned in the body → bail (bound may be stale).
+    const reassignedInBody = (body: AstNode): boolean => {
+      let found = false;
+      const scan = (n: any): void => {
+        if (found || !n || typeof n !== 'object' || typeof n.type !== 'string') return;
+        if (n.type === 'AssignmentExpression' && n.left?.type === 'Identifier'
+            && (n.left.name === idxVar || n.left.name === arrName)) { found = true; return; }
+        if (n.type === 'UnaryExpression' && (n.operator === '++' || n.operator === '--')
+            && n.argument?.type === 'Identifier' && n.argument.name === idxVar) { found = true; return; }
+        for (const k of Object.keys(n)) {
+          if (k === 'leadingJsDoc') continue;
+          const v = n[k];
+          if (Array.isArray(v)) { for (const it of v) scan(it); }
+          else if (v && typeof v === 'object' && typeof v.type === 'string') scan(v);
+        }
+      };
+      scan(body);
+      return found;
+    };
+
+    let proven = false;
+    const walk = (node: any): void => {
+      if (proven || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
+      if (node.type === 'ForStatement' && node.body
+          && position >= node.body.start && position <= node.body.end
+          && testProvesUpper(node.test) && initProvesLower(node.init) && !reassignedInBody(node.body)) {
+        proven = true;
+        return;
+      }
+      for (const k of Object.keys(node)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = node[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+      }
+    };
+    walk(ast);
+    return proven;
   }
 
   /** If `node` is a call to a range-registered builtin, return its range — but
@@ -2363,10 +2452,10 @@ export class TypeChecker {
         if (isArrayType(symbol.dataType as UcodeDataType)) {
           const elemType = getArrayElementType(symbol.dataType as UcodeDataType);
           const elemBase = this.dataTypeToUcodeType(elemType);
-          // A literal index proven in bounds by an enclosing `length(arr)` guard
-          // can't miss → drop the null (e.g. `if (length(parts)==10) parts[3]`).
-          const idx = this.numericLiteralValue(node.property);
-          if (idx !== null && this.arrayIndexProvenInBounds((node.object as IdentifierNode).name, idx, node.start)) {
+          // An index proven in bounds (literal under a `length` guard, or the
+          // induction var of a `for (i=0; i<length(arr); …)` loop) can't miss →
+          // drop the null.
+          if (this.computedAccessInBounds(node.object, node.property, node.start)) {
             return elemType;
           }
           // Return the rich `element | null` union directly.
@@ -2399,10 +2488,9 @@ export class TypeChecker {
       if (objFullType && isArrayType(objFullType)) {
         const elemType = getArrayElementType(objFullType);
         const elemBase = this.dataTypeToUcodeType(elemType);
-        // Literal index proven in bounds by an enclosing `length(arr)` guard → no null.
-        const idx = this.numericLiteralValue(node.property);
-        if (idx !== null && node.object.type === 'Identifier'
-            && this.arrayIndexProvenInBounds((node.object as IdentifierNode).name, idx, node.start)) {
+        // Index proven in bounds (literal under a `length` guard, or a `for`
+        // induction var) → no null.
+        if (this.computedAccessInBounds(node.object, node.property, node.start)) {
           return elemType;
         }
         // Return the rich `element | null` union directly.
