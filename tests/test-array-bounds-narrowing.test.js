@@ -85,3 +85,19 @@ test('reassigning the index or the array in the body bails (stays nullable)', ()
 test('a different array bound (length(b)) does not narrow a[i]', () => {
   expect(loopWarnCount(`function f(){ let a=[1,2,3]; let b=[1]; for (let i=0;i<length(b);i++){ print(substr("x", a[i], 1)); } }`)).toBe(1);
 });
+
+test('shrinking the array in the body bails (pop/shift/splice make a[i] OOB)', () => {
+  // A shrink before the access makes a[i] out of bounds → null, since the test
+  // ran against the old length. Must NOT narrow.
+  expect(loopWarnCount(`function f(){ let a=[1,2,3]; for (let i=0;i<length(a);i++){ pop(a); print(substr("x", a[i], 1)); } }`)).toBe(1);
+  expect(loopWarnCount(`function f(){ let a=[1,2,3]; for (let i=0;i<length(a);i++){ shift(a); print(substr("x", a[i], 1)); } }`)).toBe(1);
+  expect(loopWarnCount(`function f(){ let a=[1,2,3]; for (let i=0;i<length(a);i++){ splice(a,0,1); print(substr("x", a[i], 1)); } }`)).toBe(1);
+});
+
+test('growth (push/unshift) keeps a[i] in bounds — still narrows', () => {
+  expect(loopWarnCount(`function f(){ let a=[1,2,3]; for (let i=0;i<length(a);i++){ push(a, 9); print(substr("x", a[i], 1)); } }`)).toBe(0);
+});
+
+test('shrinking a DIFFERENT array does not bail a[i]', () => {
+  expect(loopWarnCount(`function f(){ let a=[1,2,3]; let c=[9]; for (let i=0;i<length(a);i++){ pop(c); print(substr("x", a[i], 1)); } }`)).toBe(0);
+});

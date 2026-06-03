@@ -971,7 +971,13 @@ export class TypeChecker {
       }
       return false;
     };
-    // idxVar or arrName reassigned in the body → bail (bound may be stale).
+    // The bound is invalidated within the body if idxVar/arrName is reassigned,
+    // OR arrName is shrunk by a length-changing builtin (pop/shift/splice) — a
+    // shrink before the access makes `arr[idxVar]` out of bounds (null), since the
+    // loop test ran against the OLD length. (push/unshift only GROW, so they keep
+    // every `arr[idxVar]` in range — no bail.) Conservative: any such op anywhere
+    // in the body bails, not just before the access.
+    const SHRINKERS = new Set(['pop', 'shift', 'splice']);
     const reassignedInBody = (body: AstNode): boolean => {
       let found = false;
       const scan = (n: any): void => {
@@ -980,6 +986,8 @@ export class TypeChecker {
             && (n.left.name === idxVar || n.left.name === arrName)) { found = true; return; }
         if (n.type === 'UnaryExpression' && (n.operator === '++' || n.operator === '--')
             && n.argument?.type === 'Identifier' && n.argument.name === idxVar) { found = true; return; }
+        if (n.type === 'CallExpression' && n.callee?.type === 'Identifier' && SHRINKERS.has(n.callee.name)
+            && n.arguments?.[0]?.type === 'Identifier' && n.arguments[0].name === arrName) { found = true; return; }
         for (const k of Object.keys(n)) {
           if (k === 'leadingJsDoc') continue;
           const v = n[k];
