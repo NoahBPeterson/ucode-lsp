@@ -1,4 +1,4 @@
-.TH UCODE-LSP 1 "2026-03-18" "0.6.16" "ucode-lsp manual"
+.TH UCODE-LSP 1 "2026-06-03" "0.6.137" "ucode-lsp manual"
 .SH NAME
 ucode-lsp \- language server and static checker for ucode
 .SH SYNOPSIS
@@ -231,6 +231,12 @@ incompatible argument types.
 .TP
 .B UC4001
 Unreachable code after return, break, continue, or die()/exit().
+.TP
+.B UC4005
+A loop mutates the collection it iterates. ucode iterates arrays by a live
+index, so shrinking (pop/shift/splice) silently skips elements and growing
+(push/unshift) may not terminate. An unconditional growth in a loop with no
+exit is a provable infinite loop and is reported as an error.
 .TP
 .B UC7001
 Unknown type in @param annotation.

@@ -14,7 +14,9 @@ import { UcodeLexer } from './lexer';
 import { UcodeParser } from './parser';
 import { SemanticAnalyzer } from './analysis';
 
-const VERSION = '0.6.16';
+// Read the version from package.json at build time so `--version` never drifts
+// from the published version. Bundled by webpack into dist/cli.js.
+const VERSION: string = require('../package.json').version;
 
 const HELP = `ucode-lsp v${VERSION} — ucode language server and checker
 
@@ -182,6 +184,8 @@ UC1005    Variable shadows a variable from an outer scope
 UC2006    printf/sprintf: wrong number of format arguments
 UC2007    printf/sprintf: incompatible argument type
 UC4001    Unreachable code after return/break/continue/die()/exit()
+UC4005    A loop mutates the collection it iterates (skips elements, or
+          loops forever — an error when the infinite loop is provable)
 UC7001    Unknown type in @param annotation
 UC7002    @param name does not match any function parameter
 UC7003    Missing @param annotations (strict mode, info severity)
