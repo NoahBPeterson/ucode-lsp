@@ -3455,23 +3455,44 @@ private addDiagnostic(
     return null;
   }
 
-  /** Does this block (or single statement) exit the LOOP — break / return / exit() /
-   *  die() / a both-branches-exiting if? NOTE: `continue` does NOT count — it stays
-   *  in the loop, so a mutation followed by `continue` still corrupts later
-   *  iterations. (`throw` is not a ucode construct.) */
+  /** A statement that unconditionally exits the loop / function / program:
+   *  break, return, exit(), die(), or assert(<falsy literal>) (which always
+   *  throws). NOTE: `continue` does NOT count — it stays in the loop.
+   *  (`throw` is not a ucode construct.) */
+  private isUnconditionalExitStatement(stmt: AstNode | null | undefined): boolean {
+    if (!stmt) return false;
+    if (stmt.type === 'ReturnStatement' || stmt.type === 'BreakStatement') return true;
+    if (stmt.type === 'ExpressionStatement') {
+      return this.isExitingCall((stmt as ExpressionStatementNode).expression);
+    }
+    return false;
+  }
+
+  /** A call that terminates: exit() / die() / assert(<falsy literal>). */
+  private isExitingCall(e: AstNode | null | undefined): boolean {
+    if (e?.type !== 'CallExpression') return false;
+    const c = e as CallExpressionNode;
+    if (c.callee?.type !== 'Identifier') return false;
+    const n = (c.callee as IdentifierNode).name;
+    if (n === 'exit' || n === 'die') return true;
+    if (n === 'assert') {
+      const a = c.arguments?.[0];
+      if (a?.type === 'Literal') {
+        const v = (a as LiteralNode).value;
+        return v === false || v === 0 || v === null || v === '';
+      }
+    }
+    return false;
+  }
+
+  /** Does this block (or single statement) exit the LOOP — its last statement is
+   *  an unconditional exit, or a both-branches-exiting if? */
   private blockExitsLoop(node: AstNode | null | undefined): boolean {
     if (!node) return false;
     const stmts: AstNode[] = node.type === 'BlockStatement' ? (node as BlockStatementNode).body : [node];
     if (stmts.length === 0) return false;
     const last = stmts[stmts.length - 1]!;
-    if (last.type === 'ReturnStatement' || last.type === 'BreakStatement') return true;
-    if (last.type === 'ExpressionStatement') {
-      const e = (last as ExpressionStatementNode).expression;
-      if (e?.type === 'CallExpression' && (e as CallExpressionNode).callee?.type === 'Identifier') {
-        const n = ((e as CallExpressionNode).callee as IdentifierNode).name;
-        if (n === 'exit' || n === 'die') return true;
-      }
-    }
+    if (this.isUnconditionalExitStatement(last)) return true;
     if (last.type === 'IfStatement') {
       const i = last as IfStatementNode;
       return this.blockExitsLoop(i.consequent) && !!i.alternate && this.blockExitsLoop(i.alternate);
@@ -3479,38 +3500,74 @@ private addDiagnostic(
     return false;
   }
 
-  /** UC4005: warn when a loop mutates the very collection it iterates. ucode
-   *  iterates arrays by a live index, so growing (push/unshift) loops forever and
-   *  shrinking (pop/shift/splice) silently skips elements. Suppressed when the
-   *  mutation is immediately followed by a loop/function/program exit (the
-   *  remove-and-break idiom), since no corrupted iteration then runs. */
+  /** Does the loop body contain ANY construct that can exit the loop (break,
+   *  return, exit(), die(), assert(falsy))? Used to decide whether an unconditional
+   *  growth is a PROVABLE infinite loop. Maximally inclusive (scans nested
+   *  functions/loops too) so it never under-reports an exit → never a false error. */
+  private bodyContainsLoopExit(node: AstNode): boolean {
+    let found = false;
+    const scan = (n: any): void => {
+      if (found || !n || typeof n !== 'object' || typeof n.type !== 'string') return;
+      if (n.type === 'BreakStatement' || n.type === 'ReturnStatement') { found = true; return; }
+      if (n.type === 'CallExpression' && this.isExitingCall(n)) { found = true; return; }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) scan(it); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') scan(v);
+      }
+    };
+    scan(node);
+    return found;
+  }
+
+  // Conditional-execution containers: a mutation nested inside one is NOT
+  // guaranteed to run every iteration, so it can't make the loop provably infinite.
+  private static readonly CONDITIONAL_CONTAINERS = new Set([
+    'IfStatement', 'ConditionalExpression', 'LogicalExpression', 'SwitchStatement',
+    'TryStatement', 'ForStatement', 'ForInStatement', 'WhileStatement', 'DoWhileStatement',
+  ]);
+
+  /** UC4005: flag a loop that mutates the very collection it iterates. ucode
+   *  iterates arrays by a live index, so shrinking (pop/shift/splice) silently
+   *  skips elements and growing (push/unshift) may never terminate. Suppressed
+   *  when the mutation is immediately followed by a loop/function/program exit
+   *  (the remove-and-break idiom). An UNCONDITIONAL growth in a loop with NO exit
+   *  anywhere is a PROVABLE infinite loop → reported as an error, not a warning. */
   private checkIterateeMutation(loopBody: AstNode, itereeName: string | null): void {
     if (!itereeName || !loopBody) return;
-    const walk = (node: any, enclosingBlock: AstNode): void => {
+    const bodyHasExit = this.bodyContainsLoopExit(loopBody);
+    const walk = (node: any, enclosingBlock: AstNode, conditional: boolean): void => {
       if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
       const block = node.type === 'BlockStatement' ? node : enclosingBlock;
+      const childConditional = conditional || SemanticAnalyzer.CONDITIONAL_CONTAINERS.has(node.type);
       if (node.type === 'CallExpression' && node.callee?.type === 'Identifier'
           && SemanticAnalyzer.ARRAY_MUTATORS.has(node.callee.name)
           && node.arguments?.[0]?.type === 'Identifier' && node.arguments[0].name === itereeName) {
         if (!this.blockExitsLoop(enclosingBlock)) {
-          const grows = node.callee.name === 'push' || node.callee.name === 'unshift';
+          const fn = node.callee.name;
+          const grows = fn === 'push' || fn === 'unshift';
+          const provablyInfinite = grows && !conditional && !bodyHasExit;
+          const message = provablyInfinite
+            ? `'${fn}()' grows '${itereeName}' every iteration and the loop has no exit — infinite loop.`
+            : grows
+              ? `'${fn}()' grows '${itereeName}' while iterating it — ucode iterates by live index, so this may not terminate.`
+              : `'${fn}()' removes from '${itereeName}' while iterating it — ucode iterates by live index, so elements are skipped.`;
           this.addDiagnosticErrorCode(
             UcodeErrorCode.COLLECTION_MUTATED_DURING_ITERATION,
-            `'${node.callee.name}()' mutates '${itereeName}' while it is being iterated — ucode iterates by live index, so this ` +
-              (grows ? 'can loop forever (the array keeps growing).' : 'silently skips elements.') +
-              ' Iterate a copy, collect changes and apply them after the loop, or exit the loop right after mutating.',
-            node.start, node.end, DiagnosticSeverity.Warning,
+            message, node.start, node.end,
+            provablyInfinite ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning,
           );
         }
       }
       for (const k of Object.keys(node)) {
         if (k === 'leadingJsDoc') continue;
         const v = node[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it, block); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, block);
+        if (Array.isArray(v)) { for (const it of v) walk(it, block, childConditional); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, block, childConditional);
       }
     };
-    walk(loopBody, loopBody);
+    walk(loopBody, loopBody, false);
   }
 
   private detectStrictMode(ast: ProgramNode): boolean {

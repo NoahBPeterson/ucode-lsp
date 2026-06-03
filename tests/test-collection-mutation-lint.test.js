@@ -52,3 +52,39 @@ test('mutating a different array, or an element, is not flagged', () => {
   expect(count(`function f(){ let b=[[1]]; for (let x in b){ push(x, 9); } }`)).toBe(0); // x is an element, not b
   expect(count(`function f(){ let b=[1,2,3]; for (let x in b){ print(x); } }`)).toBe(0);
 });
+
+// severity: an UNCONDITIONAL growth in a loop with NO exit is a provable infinite loop.
+function severities(code) {
+  const doc = {
+    getText: () => code,
+    positionAt: (o) => ({ line: 0, character: o }),
+    offsetAt: (p) => p.character,
+    uri: 'file:///t.uc', languageId: 'ucode', version: 1
+  };
+  const ast = new UcodeParser(new UcodeLexer(code, { rawMode: true }).tokenize(), code).parse().ast;
+  return new SemanticAnalyzer(doc, { enableScopeAnalysis: true, enableTypeChecking: true, enableControlFlowAnalysis: true })
+    .analyze(ast).diagnostics.filter(d => d.code === 'UC4005').map(d => d.severity); // 1=Error, 2=Warning
+}
+
+test('unconditional growth with no exit is an ERROR (provable infinite loop)', () => {
+  expect(severities(`function f(){ let b=[1,2,3]; for (let it in b){ push(b, 99); } }`)).toEqual([1]);
+  expect(severities(`function f(){ let b=[1,2,3]; for (let it in b) push(b, 99); }`)).toEqual([1]);
+  expect(severities(`function f(){ let b=[1,2,3]; for (let i=0;i<length(b);i++){ unshift(b, 0); } }`)).toEqual([1]);
+});
+
+test('growth is only a WARNING when an exit is possible or it is conditional', () => {
+  expect(severities(`function f(){ let b=[1,2,3]; for (let it in b){ push(b,99); if (it>9) break; } }`)).toEqual([2]);
+  expect(severities(`function f(){ let b=[1,2,3]; for (let it in b){ push(b,99); if (it>9) return; } }`)).toEqual([2]);
+  expect(severities(`function f(){ let b=[1,2,3]; for (let it in b){ if (it) push(b,99); } }`)).toEqual([2]);
+});
+
+test('shrink is always a WARNING (skips, but terminates)', () => {
+  expect(severities(`function f(){ let b=[1,2,3]; for (let it in b){ pop(b); } }`)).toEqual([2]);
+});
+
+test('assert(<falsy literal>) counts as a loop exit (suppresses)', () => {
+  expect(count(`function f(){ let b=[1,2,3]; for (let it in b){ splice(b,0,1); assert(false); } }`)).toBe(0);
+  expect(count(`function f(){ let b=[1,2,3]; for (let it in b){ push(b,99); assert(0); } }`)).toBe(0);
+  // a TRUTHY assert does not exit → still flagged
+  expect(count(`function f(){ let b=[1,2,3]; for (let it in b){ splice(b,0,1); assert(true); } }`)).toBe(1);
+});
