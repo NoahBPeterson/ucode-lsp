@@ -853,6 +853,75 @@ export class TypeChecker {
     switch (op) { case '<': return '>'; case '>': return '<'; case '<=': return '>='; case '>=': return '<='; default: return op; }
   }
 
+  /** Is `arr[index]` provably IN BOUNDS at `position`? Computed array access is
+   *  typed `element | null` because ucode returns null past the end — but when an
+   *  enclosing `if (length(arr) <op> N)` guard establishes a lower bound on the
+   *  length that exceeds a literal index, the access can't miss, so the null
+   *  drops (e.g. `if (length(parts) == 10) { … parts[3] … }` → parts[3] is string).
+   *  Handles the positive (consequent) branch + `&&` chains; conservative else. */
+  private arrayIndexProvenInBounds(arrName: string, index: number, position: number): boolean {
+    const ast = this.currentAST;
+    if (!ast || index < 0) return false;
+    let proven = false;
+    const checkTest = (test: AstNode | null | undefined): void => {
+      if (proven || !test) return;
+      if (test.type === 'BinaryExpression') {
+        const b = test as BinaryExpressionNode;
+        if (b.operator === '&&') { checkTest(b.left); checkTest(b.right); return; }
+        const lowerBound = this.lengthLowerBound(b, arrName);
+        if (lowerBound !== null && index < lowerBound) proven = true;
+      }
+    };
+    const walk = (node: any): void => {
+      if (proven || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
+      if (node.type === 'IfStatement' && node.consequent
+          && position >= node.consequent.start && position <= node.consequent.end) {
+        checkTest(node.test);
+      }
+      for (const k of Object.keys(node)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = node[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+      }
+    };
+    walk(ast);
+    return proven;
+  }
+
+  /** For `length(arr) <op> N` (either operand order) in its TRUE branch, the
+   *  minimum L such that `length(arr) >= L` is guaranteed — or null when the
+   *  comparison gives no lower bound (`<`, `<=`, `!=`). */
+  private lengthLowerBound(b: BinaryExpressionNode, arrName: string): number | null {
+    const isLenCall = (n: AstNode): boolean => {
+      if (n?.type !== 'CallExpression') return false;
+      const c = n as CallExpressionNode;
+      return c.callee?.type === 'Identifier'
+        && (c.callee as IdentifierNode).name === 'length'
+        && c.arguments?.length === 1
+        && c.arguments[0]?.type === 'Identifier'
+        && (c.arguments[0] as IdentifierNode).name === arrName;
+    };
+    let op: string = b.operator;
+    let lit: number | null;
+    if (isLenCall(b.left)) {
+      lit = this.numericLiteralValue(b.right);
+    } else if (isLenCall(b.right)) {
+      lit = this.numericLiteralValue(b.left);
+      op = this.flipComparison(op); // normalize to `length(arr) <op> lit`
+    } else {
+      return null;
+    }
+    if (lit === null) return null;
+    switch (op) {
+      case '==':
+      case '===': return lit;     // length == N → length >= N
+      case '>=':  return lit;     // length >= N → length >= N
+      case '>':   return lit + 1; // length > N  → length >= N+1
+      default:    return null;    // <, <=, != → no lower bound
+    }
+  }
+
   /** If `node` is a call to a range-registered builtin, return its range — but
    *  for MODULE functions (math.*), only when the call provably resolves to that
    *  module import (named `import { cos } from 'math'; cos(x)` or namespace
@@ -2294,6 +2363,12 @@ export class TypeChecker {
         if (isArrayType(symbol.dataType as UcodeDataType)) {
           const elemType = getArrayElementType(symbol.dataType as UcodeDataType);
           const elemBase = this.dataTypeToUcodeType(elemType);
+          // A literal index proven in bounds by an enclosing `length(arr)` guard
+          // can't miss → drop the null (e.g. `if (length(parts)==10) parts[3]`).
+          const idx = this.numericLiteralValue(node.property);
+          if (idx !== null && this.arrayIndexProvenInBounds((node.object as IdentifierNode).name, idx, node.start)) {
+            return elemType;
+          }
           // Return the rich `element | null` union directly.
           return createUnionType([elemBase, UcodeType.NULL]);
         }
@@ -2324,6 +2399,12 @@ export class TypeChecker {
       if (objFullType && isArrayType(objFullType)) {
         const elemType = getArrayElementType(objFullType);
         const elemBase = this.dataTypeToUcodeType(elemType);
+        // Literal index proven in bounds by an enclosing `length(arr)` guard → no null.
+        const idx = this.numericLiteralValue(node.property);
+        if (idx !== null && node.object.type === 'Identifier'
+            && this.arrayIndexProvenInBounds((node.object as IdentifierNode).name, idx, node.start)) {
+          return elemType;
+        }
         // Return the rich `element | null` union directly.
         return createUnionType([elemBase, UcodeType.NULL]);
       }
