@@ -10,7 +10,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
-         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode } from '../ast/nodes';
+         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode, ExpressionStatementNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -2390,9 +2390,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
-    
+
+    if (node.body) this.checkIterateeMutation(node.body, this.lengthBoundedArrayName(node.test));
+
     super.visitWhileStatement(node);
-    
+
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.pop();
     }
@@ -2402,6 +2404,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
+
+    if (node.body) this.checkIterateeMutation(node.body, this.lengthBoundedArrayName(node.test));
     
     if (this.options.enableScopeAnalysis) {
       // Create a new scope for the for loop to properly handle loop variable declarations
@@ -2433,11 +2437,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   visitForInStatement(node: any): void {
-    
+
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
-    
+
+    // The iteree is the for-in collection (`for (x in C)` → C).
+    if (node.body && node.right?.type === 'Identifier') {
+      this.checkIterateeMutation(node.body, (node.right as IdentifierNode).name);
+    }
+
     if (this.options.enableScopeAnalysis) {
       // Create a new scope for the for-in loop that will contain the iterator variables
       // This scope encompasses the entire loop body
@@ -3418,6 +3427,90 @@ private addDiagnostic(
 
       this.diagnostics.push(diagnostic);
     }
+  }
+
+  private static readonly ARRAY_MUTATORS = new Set(['pop', 'shift', 'splice', 'push', 'unshift']);
+
+  /** For a loop test comparing an INDEX VARIABLE to `length(C)` — `i < length(C)`
+   *  / `length(C) > i` (or `<=`/`>=`) — the array `C`. Requires the non-length
+   *  operand to be an identifier (the independently-advancing index): that's what
+   *  makes mutating C a bug. A test like `length(C) > 0` (no index var) is the
+   *  legitimate consume pattern (`while (length(C) > 0) shift(C)`), so it returns
+   *  null and is NOT flagged. */
+  private lengthBoundedArrayName(test: AstNode | null | undefined): string | null {
+    if (!test || test.type !== 'BinaryExpression') return null;
+    const b = test as BinaryExpressionNode;
+    if (!['<', '<=', '>', '>='].includes(b.operator)) return null;
+    const lenArg = (n: AstNode): string | null => {
+      if (n?.type !== 'CallExpression') return null;
+      const c = n as CallExpressionNode;
+      return c.callee?.type === 'Identifier' && (c.callee as IdentifierNode).name === 'length'
+        && c.arguments?.length === 1 && c.arguments[0]?.type === 'Identifier'
+        ? (c.arguments[0] as IdentifierNode).name : null;
+    };
+    const leftLen = lenArg(b.left);
+    const rightLen = lenArg(b.right);
+    if (leftLen && b.right?.type === 'Identifier') return leftLen;  // length(C) <op> i
+    if (rightLen && b.left?.type === 'Identifier') return rightLen; // i <op> length(C)
+    return null;
+  }
+
+  /** Does this block (or single statement) exit the LOOP — break / return / exit() /
+   *  die() / a both-branches-exiting if? NOTE: `continue` does NOT count — it stays
+   *  in the loop, so a mutation followed by `continue` still corrupts later
+   *  iterations. (`throw` is not a ucode construct.) */
+  private blockExitsLoop(node: AstNode | null | undefined): boolean {
+    if (!node) return false;
+    const stmts: AstNode[] = node.type === 'BlockStatement' ? (node as BlockStatementNode).body : [node];
+    if (stmts.length === 0) return false;
+    const last = stmts[stmts.length - 1]!;
+    if (last.type === 'ReturnStatement' || last.type === 'BreakStatement') return true;
+    if (last.type === 'ExpressionStatement') {
+      const e = (last as ExpressionStatementNode).expression;
+      if (e?.type === 'CallExpression' && (e as CallExpressionNode).callee?.type === 'Identifier') {
+        const n = ((e as CallExpressionNode).callee as IdentifierNode).name;
+        if (n === 'exit' || n === 'die') return true;
+      }
+    }
+    if (last.type === 'IfStatement') {
+      const i = last as IfStatementNode;
+      return this.blockExitsLoop(i.consequent) && !!i.alternate && this.blockExitsLoop(i.alternate);
+    }
+    return false;
+  }
+
+  /** UC4005: warn when a loop mutates the very collection it iterates. ucode
+   *  iterates arrays by a live index, so growing (push/unshift) loops forever and
+   *  shrinking (pop/shift/splice) silently skips elements. Suppressed when the
+   *  mutation is immediately followed by a loop/function/program exit (the
+   *  remove-and-break idiom), since no corrupted iteration then runs. */
+  private checkIterateeMutation(loopBody: AstNode, itereeName: string | null): void {
+    if (!itereeName || !loopBody) return;
+    const walk = (node: any, enclosingBlock: AstNode): void => {
+      if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+      const block = node.type === 'BlockStatement' ? node : enclosingBlock;
+      if (node.type === 'CallExpression' && node.callee?.type === 'Identifier'
+          && SemanticAnalyzer.ARRAY_MUTATORS.has(node.callee.name)
+          && node.arguments?.[0]?.type === 'Identifier' && node.arguments[0].name === itereeName) {
+        if (!this.blockExitsLoop(enclosingBlock)) {
+          const grows = node.callee.name === 'push' || node.callee.name === 'unshift';
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.COLLECTION_MUTATED_DURING_ITERATION,
+            `'${node.callee.name}()' mutates '${itereeName}' while it is being iterated — ucode iterates by live index, so this ` +
+              (grows ? 'can loop forever (the array keeps growing).' : 'silently skips elements.') +
+              ' Iterate a copy, collect changes and apply them after the loop, or exit the loop right after mutating.',
+            node.start, node.end, DiagnosticSeverity.Warning,
+          );
+        }
+      }
+      for (const k of Object.keys(node)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = node[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it, block); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, block);
+      }
+    };
+    walk(loopBody, loopBody);
   }
 
   private detectStrictMode(ast: ProgramNode): boolean {
