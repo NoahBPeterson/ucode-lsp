@@ -880,6 +880,12 @@ export class SemanticAnalyzer extends BaseVisitor {
             if (returnInfo.propertyFunctionReturnTypes) {
               symbol.propertyFunctionReturnTypes = returnInfo.propertyFunctionReturnTypes;
             }
+            // Carry each returned-member's source location (stamped with the
+            // factory's file URI) so go-to-def on `let v = factory(); v.member`
+            // lands in the factory's source — not the local `v`.
+            if (returnInfo.propertyDefinitionLocations) {
+              symbol.returnPropertyDefinitionLocations = this.stampLocations(returnInfo.propertyDefinitionLocations, effectiveUri);
+            }
           }
           // Capture the cross-file parameter signature for call-site arg checking.
           const params = this.fileResolver.getDefaultExportFunctionParameters(effectiveUri);
@@ -902,6 +908,9 @@ export class SemanticAnalyzer extends BaseVisitor {
               symbol.returnPropertyTypes = returnInfo.returnPropertyTypes;
               if (returnInfo.propertyFunctionReturnTypes) {
                 symbol.propertyFunctionReturnTypes = returnInfo.propertyFunctionReturnTypes;
+              }
+              if (returnInfo.propertyDefinitionLocations) {
+                symbol.returnPropertyDefinitionLocations = this.stampLocations(returnInfo.propertyDefinitionLocations, effectiveUri);
               }
             }
             if (symbol.dataType === UcodeType.UNKNOWN) {
@@ -2230,6 +2239,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               if (funcSym?.propertyFunctionReturnTypes) {
                 symbol.propertyFunctionReturnTypes = new Map(funcSym.propertyFunctionReturnTypes);
               }
+              // Carry the factory's returned-member source locations onto the
+              // bound variable so go-to-def on `v.member` lands in the factory
+              // source (e.g. `let platform = create_platform(); platform.env`).
+              if (funcSym?.returnPropertyDefinitionLocations) {
+                symbol.propertyDefinitionLocations = new Map(funcSym.returnPropertyDefinitionLocations);
+              }
             }
           }
         }
@@ -3066,6 +3081,17 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
+  /** Stamp file-local member offsets (from a FactoryReturnInfo) with their source
+   *  file URI, producing the {uri,start,end} map go-to-definition consumes. */
+  private stampLocations(
+    locs: Map<string, { start: number; end: number }>,
+    uri: string
+  ): Map<string, { uri: string; start: number; end: number }> {
+    const out = new Map<string, { uri: string; start: number; end: number }>();
+    for (const [prop, loc] of locs) out.set(prop, { uri, start: loc.start, end: loc.end });
+    return out;
+  }
+
   private isLiteralType(dataType: UcodeDataType, initNode: any): boolean {
     // Check if the dataType corresponds to a literal type and if the init node is actually a literal
     if (!initNode) return false;
@@ -3212,6 +3238,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               }
               if (funcSym?.propertyFunctionReturnTypes) {
                 symbol.propertyFunctionReturnTypes = new Map(funcSym.propertyFunctionReturnTypes);
+              }
+              // Carry the factory's returned-member source locations onto the
+              // bound variable so go-to-def on `v.member` lands in the factory
+              // source (e.g. `let platform = create_platform(); platform.env`).
+              if (funcSym?.returnPropertyDefinitionLocations) {
+                symbol.propertyDefinitionLocations = new Map(funcSym.returnPropertyDefinitionLocations);
               }
             }
           }

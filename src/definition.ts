@@ -43,110 +43,33 @@ export function handleDefinition(
         
         if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
             const symbolName = token.value;
-            
+            const tokenIndex = tokens.indexOf(token);
+
+            // If the cursor is on the PROPERTY of a member access `obj.prop`,
+            // resolve the MEMBER first. Otherwise a same-named local — e.g.
+            // `let env = platform.env;` — would be picked up by the bare-name
+            // lookup below and go-to-definition would land on that local instead
+            // of the member's real (often cross-file) definition.
+            const dotToken = tokenIndex >= 2 ? tokens[tokenIndex - 1] : undefined;
+            const objToken = tokenIndex >= 2 ? tokens[tokenIndex - 2] : undefined;
+            const isMemberProperty = dotToken?.type === TokenType.TK_DOT
+                && objToken?.type === TokenType.TK_LABEL && typeof objToken.value === 'string';
+
+            if (isMemberProperty) {
+                const memberDef = resolveMemberDefinition(
+                    symbolName, objToken!.value as string, tokens, tokenIndex, offset,
+                    analysisResult, document, documents, fileResolver);
+                if (memberDef) return memberDef;
+                // Member resolution missed — fall through to the bare-name lookup
+                // (preserves prior behavior; never worse than before).
+            }
+
             // Look up the symbol in the symbol table (position-aware for nested scopes)
             const symbol = analysisResult.symbolTable.lookupAtPosition(symbolName, offset)
                         || analysisResult.symbolTable.lookup(symbolName);
 
             if (symbol) {
                 return getSymbolDefinition(symbol, document, fileResolver);
-            }
-
-            // Check if this is a method on a known object type (e.g., ctx_dhcp.get)
-            // Look for preceding DOT + LABEL pattern in tokens
-            const tokenIndex = tokens.indexOf(token);
-            if (tokenIndex >= 2) {
-                const dotToken = tokens[tokenIndex - 1];
-                const objToken = tokens[tokenIndex - 2];
-                if (dotToken && dotToken.type === TokenType.TK_DOT &&
-                    objToken && objToken.type === TokenType.TK_LABEL && typeof objToken.value === 'string') {
-                    const objSymbol = analysisResult.symbolTable.lookupAtPosition(objToken.value, offset)
-                                   || analysisResult.symbolTable.lookup(objToken.value);
-
-                    // Namespace import member: `import * as U from './m'; U.foo()` —
-                    // resolve `foo` as an export of U's source module.
-                    if (objSymbol && objSymbol.type === SymbolType.IMPORTED
-                        && objSymbol.importSpecifier === '*' && objSymbol.importedFrom) {
-                        let nsUri: string | null;
-                        if (objSymbol.importedFrom.startsWith('file://')) {
-                            nsUri = objSymbol.importedFrom;
-                        } else if (objSymbol.importedFrom.startsWith('builtin://')) {
-                            nsUri = null;
-                        } else {
-                            nsUri = fileResolver.resolveImportPath(objSymbol.importedFrom, document.uri);
-                        }
-                        if (nsUri) {
-                            const nsLoc = locateFunctionDefinition(nsUri, symbolName, fileResolver);
-                            if (nsLoc) return nsLoc;
-                        }
-                    }
-
-                    // Factory-returned member: a param typed `@param {import('./sys.uc')} sh`
-                    // carries each member's cross-file source location. `sh.exec` jumps to
-                    // `exec`'s definition in sys.uc.
-                    const memberLoc = objSymbol?.propertyDefinitionLocations?.get(symbolName);
-                    if (memberLoc) {
-                        const target: TextDocument | undefined = documents.get(memberLoc.uri);
-                        const targetContent = target ? target.getText() : fileResolver.getFileContent(memberLoc.uri);
-                        if (targetContent !== null && targetContent !== undefined) {
-                            const tmpDoc = TextDocument.create(memberLoc.uri, 'ucode', 1, targetContent);
-                            const start = tmpDoc.positionAt(memberLoc.start);
-                            const end = tmpDoc.positionAt(memberLoc.end);
-                            return { uri: memberLoc.uri, range: { start, end } };
-                        }
-                    }
-
-                    // Chained namespace access: ns.A.B (cursor on B). objToken is
-                    // `A`, which isn't a symbol — but its preceding LABEL+DOT
-                    // points at `ns`, the namespace import. Land inside that
-                    // file at A's `B:` key (best-effort; falls through to the
-                    // generic resolver below on miss).
-                    if (!objSymbol && tokenIndex >= 4) {
-                        const dot2 = tokens[tokenIndex - 3];
-                        const baseToken = tokens[tokenIndex - 4];
-                        if (dot2?.type === TokenType.TK_DOT
-                            && baseToken?.type === TokenType.TK_LABEL
-                            && typeof baseToken.value === 'string') {
-                            const baseSym = analysisResult.symbolTable.lookupAtPosition(baseToken.value, offset)
-                                         || analysisResult.symbolTable.lookup(baseToken.value);
-                            if (baseSym?.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*' && baseSym.importedFrom) {
-                                let nsUri: string | null;
-                                if (baseSym.importedFrom.startsWith('file://')) {
-                                    nsUri = baseSym.importedFrom;
-                                } else if (baseSym.importedFrom.startsWith('builtin://')) {
-                                    nsUri = null;
-                                } else {
-                                    nsUri = fileResolver.resolveImportPath(baseSym.importedFrom, document.uri);
-                                }
-                                if (nsUri) {
-                                    const loc = fileResolver.findExportedObjectPropertyLocation(nsUri, objToken.value as string, symbolName);
-                                    if (loc) {
-                                        const target: TextDocument | undefined = documents.get(nsUri);
-                                        const targetContent = target ? target.getText() : fileResolver.getFileContent(nsUri);
-                                        if (targetContent !== null && targetContent !== undefined) {
-                                            const tmpDoc = TextDocument.create(nsUri, 'ucode', 1, targetContent);
-                                            const start = tmpDoc.positionAt(loc.start);
-                                            const end = tmpDoc.positionAt(loc.end);
-                                            return { uri: nsUri, range: { start, end } };
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    const moduleType = objSymbol ? extractModuleType(objSymbol.dataType) : null;
-                    if (objSymbol && moduleType) {
-                        const moduleName = moduleType.moduleName;
-                        if (isKnownObjectType(moduleName)) {
-                            const method = OBJECT_REGISTRIES[moduleName].getMethod(symbolName);
-                            if (Option.isSome(method)) {
-                                // Known built-in method — navigate to the object's declaration instead
-                                return getSymbolDefinition(objSymbol, document, fileResolver);
-                            }
-                        }
-                    }
-                }
             }
         }
     } catch (error) {
@@ -162,6 +85,112 @@ export function handleDefinition(
         }
     }
     
+    return null;
+}
+
+/**
+ * Resolve go-to-definition for the property of a member access `obj.member`
+ * (cursor on `member`). Returns the member's definition (often cross-file) or
+ * null to fall back to a plain symbol lookup. Tried BEFORE the bare-name lookup
+ * so a same-named local can't shadow the member.
+ */
+function resolveMemberDefinition(
+    symbolName: string,
+    objName: string,
+    tokens: any[],
+    tokenIndex: number,
+    offset: number,
+    analysisResult: SemanticAnalysisResult,
+    document: TextDocument,
+    documents: any,
+    fileResolver: FileResolver
+): Definition | null {
+    const objSymbol = analysisResult.symbolTable.lookupAtPosition(objName, offset)
+                   || analysisResult.symbolTable.lookup(objName);
+
+    // Namespace import member: `import * as U from './m'; U.foo()` —
+    // resolve `foo` as an export of U's source module.
+    if (objSymbol && objSymbol.type === SymbolType.IMPORTED
+        && objSymbol.importSpecifier === '*' && objSymbol.importedFrom) {
+        let nsUri: string | null;
+        if (objSymbol.importedFrom.startsWith('file://')) {
+            nsUri = objSymbol.importedFrom;
+        } else if (objSymbol.importedFrom.startsWith('builtin://')) {
+            nsUri = null;
+        } else {
+            nsUri = fileResolver.resolveImportPath(objSymbol.importedFrom, document.uri);
+        }
+        if (nsUri) {
+            const nsLoc = locateFunctionDefinition(nsUri, symbolName, fileResolver);
+            if (nsLoc) return nsLoc;
+        }
+    }
+
+    // Factory-returned member: a param typed `@param {import('./sys.uc')} sh`
+    // (or a local bound to an imported factory's return) carries each member's
+    // cross-file source location. `sh.exec` / `platform.env` jump to the member's
+    // definition in the factory's source module.
+    const memberLoc = objSymbol?.propertyDefinitionLocations?.get(symbolName);
+    if (memberLoc) {
+        const target: TextDocument | undefined = documents.get(memberLoc.uri);
+        const targetContent = target ? target.getText() : fileResolver.getFileContent(memberLoc.uri);
+        if (targetContent !== null && targetContent !== undefined) {
+            const tmpDoc = TextDocument.create(memberLoc.uri, 'ucode', 1, targetContent);
+            const start = tmpDoc.positionAt(memberLoc.start);
+            const end = tmpDoc.positionAt(memberLoc.end);
+            return { uri: memberLoc.uri, range: { start, end } };
+        }
+    }
+
+    // Chained namespace access: ns.A.B (cursor on B). objName is `A`, which
+    // isn't a symbol — but its preceding LABEL+DOT points at `ns`, the namespace
+    // import. Land inside that file at A's `B:` key.
+    if (!objSymbol && tokenIndex >= 4) {
+        const dot2 = tokens[tokenIndex - 3];
+        const baseToken = tokens[tokenIndex - 4];
+        if (dot2?.type === TokenType.TK_DOT
+            && baseToken?.type === TokenType.TK_LABEL
+            && typeof baseToken.value === 'string') {
+            const baseSym = analysisResult.symbolTable.lookupAtPosition(baseToken.value, offset)
+                         || analysisResult.symbolTable.lookup(baseToken.value);
+            if (baseSym?.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*' && baseSym.importedFrom) {
+                let nsUri: string | null;
+                if (baseSym.importedFrom.startsWith('file://')) {
+                    nsUri = baseSym.importedFrom;
+                } else if (baseSym.importedFrom.startsWith('builtin://')) {
+                    nsUri = null;
+                } else {
+                    nsUri = fileResolver.resolveImportPath(baseSym.importedFrom, document.uri);
+                }
+                if (nsUri) {
+                    const loc = fileResolver.findExportedObjectPropertyLocation(nsUri, objName, symbolName);
+                    if (loc) {
+                        const target: TextDocument | undefined = documents.get(nsUri);
+                        const targetContent = target ? target.getText() : fileResolver.getFileContent(nsUri);
+                        if (targetContent !== null && targetContent !== undefined) {
+                            const tmpDoc = TextDocument.create(nsUri, 'ucode', 1, targetContent);
+                            const start = tmpDoc.positionAt(loc.start);
+                            const end = tmpDoc.positionAt(loc.end);
+                            return { uri: nsUri, range: { start, end } };
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    const moduleType = objSymbol ? extractModuleType(objSymbol.dataType) : null;
+    if (objSymbol && moduleType) {
+        const moduleName = moduleType.moduleName;
+        if (isKnownObjectType(moduleName)) {
+            const method = OBJECT_REGISTRIES[moduleName].getMethod(symbolName);
+            if (Option.isSome(method)) {
+                // Known built-in method — navigate to the object's declaration instead
+                return getSymbolDefinition(objSymbol, document, fileResolver);
+            }
+        }
+    }
+
     return null;
 }
 

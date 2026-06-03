@@ -158,4 +158,41 @@ function f(x) { return x; }
       `with ./ already typed, expect bare 'sys.uc' append (no double ./), got: ${JSON.stringify(labels)}`
     );
   });
+
+  // --- go-to-definition on a factory-returned VALUE member via a local binding,
+  //     where a same-named local would otherwise shadow it (pbr's platform.env). ---
+
+  it('go-to-definition on a factory-returned member resolves through a local binding even when a same-named local exists', async () => {
+    const platFile = path.join(tmpDir, 'platform.uc');
+    fs.writeFileSync(platFile, `function create_platform(fs_mod) {
+\tlet env = { board_name: "x" };
+\tfunction detect() { return 1; }
+\treturn { env, detect };
+}
+export default create_platform;
+`);
+    // Consumer: `let env = platform.env;` — the local `env` (LHS) must NOT win
+    // over the member `platform.env` (RHS) for go-to-definition.
+    //   line 3: "\tlet env = platform.env;" → '.'=19, e=20, n=21
+    const CONSUMER = `import create_platform from './platform.uc';
+function create_pbr() {
+\tlet platform = create_platform();
+\tlet env = platform.env;
+\treturn env;
+}
+`;
+    try {
+      const def = await getDefinition(CONSUMER, consumerFile, 3, 21);
+      assert.ok(def, 'expected a definition for platform.env');
+      const loc = Array.isArray(def) ? def[0] : def;
+      assert.ok(loc && loc.uri.endsWith('platform.uc'),
+        `platform.env should resolve into platform.uc, got: ${loc && loc.uri}`);
+      const platText = fs.readFileSync(platFile, 'utf-8');
+      const targetLine = platText.split('\n')[loc.range.start.line];
+      assert.ok(/\benv\b/.test(targetLine),
+        `definition should land on the env member in the factory, got line: "${targetLine}"`);
+    } finally {
+      try { fs.unlinkSync(platFile); } catch (e) {}
+    }
+  });
 });
