@@ -17,7 +17,7 @@ import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
-import { FileResolver } from './fileResolver';
+import { FileResolver, type FactoryReturnInfo } from './fileResolver';
 import { CFGBuilder } from './cfg/cfgBuilder';
 import { CFGQueryEngine } from './cfg/queryEngine';
 import { type ControlFlowGraph } from './cfg/types';
@@ -874,19 +874,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // upstream (defaultIsFunction).
         if (specifier.type === 'ImportDefaultSpecifier' && defaultIsFunction && effectiveUri && effectiveUri.startsWith('file://')) {
           const returnInfo = this.fileResolver.getDefaultExportFunctionReturnInfo(effectiveUri);
-          if (returnInfo && returnInfo.returnType !== UcodeType.UNKNOWN) {
-            symbol.returnType = returnInfo.returnType;
-            symbol.returnPropertyTypes = returnInfo.returnPropertyTypes;
-            if (returnInfo.propertyFunctionReturnTypes) {
-              symbol.propertyFunctionReturnTypes = returnInfo.propertyFunctionReturnTypes;
-            }
-            // Carry each returned-member's source location (stamped with the
-            // factory's file URI) so go-to-def on `let v = factory(); v.member`
-            // lands in the factory's source — not the local `v`.
-            if (returnInfo.propertyDefinitionLocations) {
-              symbol.returnPropertyDefinitionLocations = this.stampLocations(returnInfo.propertyDefinitionLocations, effectiveUri);
-            }
-          }
+          if (returnInfo) this.applyFactoryReturnInfo(symbol, returnInfo, effectiveUri);
           // Capture the cross-file parameter signature for call-site arg checking.
           const params = this.fileResolver.getDefaultExportFunctionParameters(effectiveUri);
           if (params) symbol.parameters = params;
@@ -903,16 +891,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (specifier.type === 'ImportSpecifier' && effectiveUri && effectiveUri.startsWith('file://')) {
           const returnInfo = this.fileResolver.getNamedExportFunctionReturnInfo(effectiveUri, importedName);
           if (returnInfo) {
-            if (returnInfo.returnType !== UcodeType.UNKNOWN) {
-              symbol.returnType = returnInfo.returnType;
-              symbol.returnPropertyTypes = returnInfo.returnPropertyTypes;
-              if (returnInfo.propertyFunctionReturnTypes) {
-                symbol.propertyFunctionReturnTypes = returnInfo.propertyFunctionReturnTypes;
-              }
-              if (returnInfo.propertyDefinitionLocations) {
-                symbol.returnPropertyDefinitionLocations = this.stampLocations(returnInfo.propertyDefinitionLocations, effectiveUri);
-              }
-            }
+            this.applyFactoryReturnInfo(symbol, returnInfo, effectiveUri);
             if (symbol.dataType === UcodeType.UNKNOWN) {
               symbol.dataType = UcodeType.FUNCTION as UcodeDataType;
             }
@@ -2233,18 +2212,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             const callExpr = node.right as CallExpressionNode;
             if (callExpr.callee.type === 'Identifier') {
               const funcSym = this.symbolTable.lookup((callExpr.callee as IdentifierNode).name);
-              if (funcSym?.returnPropertyTypes) {
-                symbol.propertyTypes = new Map(funcSym.returnPropertyTypes);
-              }
-              if (funcSym?.propertyFunctionReturnTypes) {
-                symbol.propertyFunctionReturnTypes = new Map(funcSym.propertyFunctionReturnTypes);
-              }
-              // Carry the factory's returned-member source locations onto the
-              // bound variable so go-to-def on `v.member` lands in the factory
-              // source (e.g. `let platform = create_platform(); platform.env`).
-              if (funcSym?.returnPropertyDefinitionLocations) {
-                symbol.propertyDefinitionLocations = new Map(funcSym.returnPropertyDefinitionLocations);
-              }
+              if (funcSym) this.copyFactoryReturnToBinding(symbol, funcSym);
             }
           }
         }
@@ -3092,6 +3060,29 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return out;
   }
 
+  /** Apply a factory's return info to the imported function symbol: return type,
+   *  the returned object's property types + function-property return hints, and
+   *  each member's source location (uri-stamped) for go-to-definition. Shared by
+   *  the default- and named-import handlers. No-op when the return type is unknown. */
+  private applyFactoryReturnInfo(symbol: SymbolEntry, returnInfo: FactoryReturnInfo, uri: string): void {
+    if (returnInfo.returnType === UcodeType.UNKNOWN) return;
+    symbol.returnType = returnInfo.returnType;
+    symbol.returnPropertyTypes = returnInfo.returnPropertyTypes;
+    if (returnInfo.propertyFunctionReturnTypes) symbol.propertyFunctionReturnTypes = returnInfo.propertyFunctionReturnTypes;
+    if (returnInfo.propertyDefinitionLocations) symbol.returnPropertyDefinitionLocations = this.stampLocations(returnInfo.propertyDefinitionLocations, uri);
+  }
+
+  /** Copy a factory function's return shape onto a variable bound to its call
+   *  result (`let v = factory()`): the returned object's property types,
+   *  function-property return hints, and member source locations (so go-to-def on
+   *  `v.member` lands in the factory source). Shared by the assignment and
+   *  variable-declarator binding paths. */
+  private copyFactoryReturnToBinding(symbol: SymbolEntry, funcSym: SymbolEntry): void {
+    if (funcSym.returnPropertyTypes) symbol.propertyTypes = new Map(funcSym.returnPropertyTypes);
+    if (funcSym.propertyFunctionReturnTypes) symbol.propertyFunctionReturnTypes = new Map(funcSym.propertyFunctionReturnTypes);
+    if (funcSym.returnPropertyDefinitionLocations) symbol.propertyDefinitionLocations = new Map(funcSym.returnPropertyDefinitionLocations);
+  }
+
   private isLiteralType(dataType: UcodeDataType, initNode: any): boolean {
     // Check if the dataType corresponds to a literal type and if the init node is actually a literal
     if (!initNode) return false;
@@ -3233,18 +3224,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             const callExpr = node.init! as CallExpressionNode;
             if (callExpr.callee.type === 'Identifier') {
               const funcSym = this.symbolTable.lookup((callExpr.callee as IdentifierNode).name);
-              if (funcSym?.returnPropertyTypes) {
-                symbol.propertyTypes = new Map(funcSym.returnPropertyTypes);
-              }
-              if (funcSym?.propertyFunctionReturnTypes) {
-                symbol.propertyFunctionReturnTypes = new Map(funcSym.propertyFunctionReturnTypes);
-              }
-              // Carry the factory's returned-member source locations onto the
-              // bound variable so go-to-def on `v.member` lands in the factory
-              // source (e.g. `let platform = create_platform(); platform.env`).
-              if (funcSym?.returnPropertyDefinitionLocations) {
-                symbol.propertyDefinitionLocations = new Map(funcSym.returnPropertyDefinitionLocations);
-              }
+              if (funcSym) this.copyFactoryReturnToBinding(symbol, funcSym);
             }
           }
           return;
