@@ -1055,6 +1055,66 @@ function resolveSymbolAt(uri: string, position: { line: number; character: numbe
 /** All references to the symbol at `position` — in-file (scope-aware) plus, when
  *  this file exports the name, cross-file usages. `includeDeclaration` controls
  *  whether the binding's own declaration is included. */
+/** When `name` in `uri` is an imported symbol, resolve it to the file that declares
+ *  it and the name it has THERE (the export name). Lets a references/rename query
+ *  from an import site fan out across the whole workspace via findCrossFileReferences,
+ *  which keys on (exporter file, export name). Handles named (incl. `as` aliases)
+ *  and default imports; namespace member access (`ns.foo`) is not routed here. */
+function resolveImportedCanonical(uri: string, name: string): { canonicalUri: string; canonicalName: string } | null {
+    const entry = analysisCache.get(uri);
+    if (!entry) return null;
+    const resolver = getCrossRefResolver();
+    for (const b of getImportBindings(entry.result.ast)) {
+        const named = b.named.find(n => n.local === name);
+        if (named) {
+            const su = resolver.resolveImportPath(b.source, uri);
+            if (su) return { canonicalUri: su, canonicalName: named.imported };
+            return null;
+        }
+        if (b.defaultLocal === name) {
+            const su = resolver.resolveImportPath(b.source, uri);
+            // The default export's local name in the source (e.g. `export default create_sys`).
+            const cn = su ? resolver.getModuleExports(su)?.find(e => e.type === 'default')?.exportedName : undefined;
+            if (su && cn) return { canonicalUri: su, canonicalName: cn };
+            return null;
+        }
+    }
+    return null;
+}
+
+/** Offset span of a top-level declaration of `name` (function or variable), so a
+ *  reference/rename query includes the declaration itself — findFunctionReferences
+ *  intentionally omits declaration ids. */
+function findTopLevelDeclId(ast: any, name: string): { start: number; end: number } | null {
+    for (const stmt of (ast?.body ?? [])) {
+        const decl = stmt?.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt;
+        if (decl?.type === 'FunctionDeclaration' && decl.id?.name === name) return { start: decl.id.start, end: decl.id.end };
+        if (decl?.type === 'VariableDeclaration') {
+            for (const d of (decl.declarations ?? [])) {
+                if (d?.id?.type === 'Identifier' && d.id.name === name) return { start: d.id.start, end: d.id.end };
+            }
+        }
+    }
+    return null;
+}
+
+/** References to `name` WITHIN `targetUri` (the declaration + local usages). Uses the
+ *  open-file scope-aware analysis when available, else a parse-only name walk of the
+ *  workspace-cached AST. findCrossFileReferences excludes the exporter itself, so this
+ *  supplies the source file's own occurrences (including its declaration). */
+function collectInFileRefsByName(targetUri: string, name: string): Array<{ uri: string; range: Range }> {
+    const open = analysisCache.get(targetUri);
+    const openDoc = documents.get(targetUri);
+    const ast = open?.result.ast ?? getWorkspaceFile(uriToFilePath(targetUri))?.ast;
+    const doc = openDoc ?? getWorkspaceFile(uriToFilePath(targetUri))?.doc;
+    if (!ast || !doc) return [];
+    const out = findFunctionReferences(ast, name, null)
+        .map(s => ({ uri: targetUri, range: { start: doc.positionAt(s.start), end: doc.positionAt(s.end) } }));
+    const decl = findTopLevelDeclId(ast, name);
+    if (decl) out.push({ uri: targetUri, range: { start: doc.positionAt(decl.start), end: doc.positionAt(decl.end) } });
+    return out;
+}
+
 function collectReferences(uri: string, position: { line: number; character: number }, includeDeclaration: boolean): Location[] {
     const entry = analysisCache.get(uri);
     const document = documents.get(uri);
@@ -1082,9 +1142,19 @@ function collectReferences(uri: string, position: { line: number; character: num
     if (includeDeclaration && declaredAt !== undefined) {
         add(uri, { start: document.positionAt(declaredAt), end: document.positionAt(declaredAt + name.length) });
     }
-    // Cross-file: only resolves usages when THIS file is the exporter of `name`
-    // (returns [] otherwise). Matches the references CodeLens.
-    for (const r of findCrossFileReferences(uri, name)) add(r.uri, r.range as Range);
+    // Cross-file. If the cursor is on an IMPORTED symbol, route to its source file
+    // and fan out from there (the exporter's own refs + every importer). Otherwise
+    // treat THIS file as the potential exporter (findCrossFileReferences returns []
+    // when it doesn't export `name`).
+    const sym: any = entry.result.symbolTable?.lookupAtPosition?.(name, declaredAt ?? document.offsetAt(position))
+        ?? entry.result.symbolTable?.lookup?.(name);
+    const canon = sym?.type === SymbolType.IMPORTED ? resolveImportedCanonical(uri, name) : null;
+    if (canon) {
+        for (const r of collectInFileRefsByName(canon.canonicalUri, canon.canonicalName)) add(r.uri, r.range as Range);
+        for (const r of findCrossFileReferences(canon.canonicalUri, canon.canonicalName)) add(r.uri, r.range as Range);
+    } else {
+        for (const r of findCrossFileReferences(uri, name)) add(r.uri, r.range as Range);
+    }
     return locs;
 }
 
