@@ -1,51 +1,152 @@
-// Signature help for factory-returned methods: `sh.exec(…)` where `sh = create_sys(…)`.
-// The method's params are read from the factory's source-file definition.
-const { test, expect, afterEach } = require('bun:test');
+// Signature help — edge-case matrix.
+// Factory-returned methods (cross-file & via named/default factories), rest params,
+// zero params, active-parameter tracking, nested calls, and regressions for module
+// methods / builtins / user functions.
+const { test, expect, beforeAll, afterAll } = require('bun:test');
 const path = require('path');
 const fs = require('fs');
 const { createLSPTestServer } = require('./lsp-test-helpers');
 
-const ws = '/tmp/test-sig-suite';
-function writeFiles(files) {
+const ws = '/tmp/test-sig-matrix';
+
+const FILES = {
+  'sys.uc':
+`export default function create_sys(fs, pkg) {
+    return {
+        exec: function(cmd, timeout) { return ""; },
+        noargs: function() { return 1; },
+        rest: function(first, ...args) { return first; },
+    };
+}
+`,
+  'widget.uc':
+`export function make_widget(id) {
+    return { draw: function(x, y) { return x; } };
+}
+`,
+  'main.uc':
+`import create_sys from './sys';
+import { make_widget } from './widget';
+import * as fs from 'fs';
+let sh = create_sys(1, 2);
+let w = make_widget(7);
+let a = sh.exec();
+let b = sh.noargs();
+let c = sh.rest();
+let d = w.draw();
+let e = fs.open();
+let f2 = substr("hello", 0, 2);
+let g = create_sys();
+let z = sh.bogus();
+let p = sh.exec(11, 22);
+let q = substr(create_sys(), 0);
+`,
+};
+
+let server;
+beforeAll(async () => {
   fs.mkdirSync(ws, { recursive: true });
-  for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(ws, name), content);
-}
-afterEach(() => { try { fs.rmSync(ws, { recursive: true, force: true }); } catch {} });
+  for (const [name, content] of Object.entries(FILES)) fs.writeFileSync(path.join(ws, name), content);
+  server = createLSPTestServer({ workspaceRoot: ws });
+  await server.initialize();
+});
+afterAll(() => { try { server.shutdown(); } catch {} try { fs.rmSync(ws, { recursive: true, force: true }); } catch {} });
 
-async function sigLabels(openName, line, afterText) {
-  const s = createLSPTestServer({ workspaceRoot: ws });
-  try {
-    await s.initialize();
-    const fp = path.join(ws, openName);
-    const content = fs.readFileSync(fp, 'utf8');
-    const ch = content.split('\n')[line].indexOf(afterText) + afterText.length;
-    const sh = await s.getSignatureHelp(content, fp, line, ch);
-    return (sh && sh.signatures ? sh.signatures.map((x) => x.label) : []);
-  } finally {
-    s.shutdown();
-  }
+// Signature help with the cursor at `charInLine` (a column on line `lineIdx`).
+async function sigAt(file, lineIdx, charInLine) {
+  const fp = path.join(ws, file);
+  const sh = await server.getSignatureHelp(FILES[file], fp, lineIdx, charInLine);
+  return {
+    labels: sh && sh.signatures ? sh.signatures.map((s) => s.label) : [],
+    activeParameter: sh ? sh.activeParameter : undefined,
+    raw: sh,
+  };
+}
+// Column just inside the parens following `marker` on a line.
+function afterParen(file, lineIdx, marker) {
+  const line = FILES[file].split('\n')[lineIdx];
+  return line.indexOf(marker) + marker.length;
 }
 
-test('cross-file factory method shows its params', async () => {
-  writeFiles({
-    'sys.uc': `export default function create_sys(fs, pkg) {\n    return { exec: function(cmd, timeout) { return ""; } };\n}\n`,
-    'main.uc': `import create_sys from './sys';\nlet sh = create_sys(1, 2);\nlet r = sh.exec();\n`,
-  });
-  const labels = await sigLabels('main.uc', 2, 'exec(');
+test('SG1: cross-file (default factory) method shows its params', async () => {
+  const { labels } = await sigAt('main.uc', 5, afterParen('main.uc', 5, 'exec('));
   expect(labels).toContain('sh.exec(cmd, timeout)');
 });
 
-test('a rest parameter on a factory method is shown with ...', async () => {
-  writeFiles({
-    'lib.uc': `export function make() {\n    return { run: function(first, ...rest) { return first; } };\n}\n`,
-    'main.uc': `import { make } from './lib';\nlet w = make();\nlet r = w.run();\n`,
-  });
-  const labels = await sigLabels('main.uc', 2, 'run(');
-  expect(labels).toContain('w.run(first, ...rest)');
+test('SG2: a method with zero params', async () => {
+  const { labels } = await sigAt('main.uc', 6, afterParen('main.uc', 6, 'noargs('));
+  expect(labels).toContain('sh.noargs()');
 });
 
-// NOTE: same-file factory methods (`let w = make(); w.run()` with make local) do
-// NOT yet show signature help — the analyzer's local factory inference records
-// member return types but not member definition locations (only the cross-file
-// FileResolver path does). Tracked as a follow-up; the imported-factory case above
-// is the actual frontier gap and works.
+test('SG3: a rest parameter is rendered with ...', async () => {
+  const { labels } = await sigAt('main.uc', 7, afterParen('main.uc', 7, 'rest('));
+  expect(labels).toContain('sh.rest(first, ...args)');
+});
+
+test('SG4: cross-file NAMED factory method shows its params', async () => {
+  const { labels } = await sigAt('main.uc', 8, afterParen('main.uc', 8, 'draw('));
+  expect(labels).toContain('w.draw(x, y)');
+});
+
+test('SG5: module method still works (fs.open)', async () => {
+  const { labels } = await sigAt('main.uc', 9, afterParen('main.uc', 9, 'open('));
+  expect(labels.length).toBeGreaterThanOrEqual(1);
+  expect(labels[0]).toContain('open');
+});
+
+test('SG6: a global builtin still works (substr)', async () => {
+  const { labels } = await sigAt('main.uc', 10, afterParen('main.uc', 10, 'substr('));
+  expect(labels.length).toBeGreaterThanOrEqual(1);
+  expect(labels[0].toLowerCase()).toContain('substr');
+});
+
+test('SG7: a user function (the factory itself) shows its params', async () => {
+  const { labels } = await sigAt('main.uc', 11, afterParen('main.uc', 11, 'create_sys('));
+  expect(labels).toContain('create_sys(fs, pkg)');
+});
+
+test('SG8: a method that does not exist on the factory yields no signature', async () => {
+  const { raw } = await sigAt('main.uc', 12, afterParen('main.uc', 12, 'bogus('));
+  expect(!raw || !raw.signatures || raw.signatures.length === 0).toBe(true);
+});
+
+test('SG9: active parameter is 0 right after the open paren', async () => {
+  const { activeParameter } = await sigAt('main.uc', 5, afterParen('main.uc', 5, 'exec('));
+  expect(activeParameter).toBe(0);
+});
+
+test('SG10: active parameter advances to the second argument', async () => {
+  // `let p = sh.exec(11, 22);` — cursor inside the `22`.
+  const line = FILES['main.uc'].split('\n')[13];
+  const { labels, activeParameter } = await sigAt('main.uc', 13, line.indexOf('22'));
+  expect(labels).toContain('sh.exec(cmd, timeout)');
+  expect(activeParameter).toBe(1);
+});
+
+test('SG11: nested call resolves the INNER callee', async () => {
+  // `let q = substr(create_sys(), 0);` — cursor inside create_sys().
+  const line = FILES['main.uc'].split('\n')[14];
+  const { labels } = await sigAt('main.uc', 14, line.indexOf('create_sys()') + 'create_sys('.length);
+  expect(labels).toContain('create_sys(fs, pkg)');
+});
+
+test('SG12: outer call resolves when cursor is in its (non-nested) argument', async () => {
+  // same line, cursor after the `, ` before `0` — should be substr, active param 1.
+  const line = FILES['main.uc'].split('\n')[14];
+  const { labels } = await sigAt('main.uc', 14, line.lastIndexOf('0'));
+  expect(labels.length).toBeGreaterThanOrEqual(1);
+  expect(labels[0].toLowerCase()).toContain('substr');
+});
+
+test('SG13: no signature outside any call', async () => {
+  const { raw } = await sigAt('main.uc', 3, 0); // start of `let sh = ...`
+  expect(!raw || !raw.signatures || raw.signatures.length === 0).toBe(true);
+});
+
+test('SG14: the factory call itself (create_sys) tracks active param', async () => {
+  // `let sh = create_sys(1, 2);` cursor in the `2`
+  const line = FILES['main.uc'].split('\n')[3];
+  const { activeParameter, labels } = await sigAt('main.uc', 3, line.lastIndexOf('2'));
+  expect(labels).toContain('create_sys(fs, pkg)');
+  expect(activeParameter).toBe(1);
+});

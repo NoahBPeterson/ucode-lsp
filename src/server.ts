@@ -1087,7 +1087,8 @@ function resolveImportedCanonical(uri: string, name: string): { canonicalUri: st
  *  intentionally omits declaration ids. */
 function findTopLevelDeclId(ast: any, name: string): { start: number; end: number } | null {
     for (const stmt of (ast?.body ?? [])) {
-        const decl = stmt?.type === 'ExportNamedDeclaration' ? stmt.declaration : stmt;
+        const decl = (stmt?.type === 'ExportNamedDeclaration' || stmt?.type?.startsWith('ExportDefault'))
+            ? stmt.declaration : stmt;
         if (decl?.type === 'FunctionDeclaration' && decl.id?.name === name) return { start: decl.id.start, end: decl.id.end };
         if (decl?.type === 'VariableDeclaration') {
             for (const d of (decl.declarations ?? [])) {
@@ -1416,6 +1417,8 @@ function analyzeRenameTarget(uri: string, position: { line: number; character: n
     const name = resolved.name;
     const sym: any = entry.result.symbolTable?.lookupAtPosition?.(name, resolved.declaredAt)
         ?? entry.result.symbolTable?.lookup?.(name);
+    // Builtins are seeded into global scope with a synthetic declaration — never renameable.
+    if (sym?.type === SymbolType.BUILTIN) return { kind: 'blocked', reason: `'${name}' is a builtin function` };
 
     // Canonical (declaring file, export name) for a cross-file symbol.
     let canonical: { canonicalUri: string; canonicalName: string } | null = null;

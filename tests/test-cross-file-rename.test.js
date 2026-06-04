@@ -1,88 +1,222 @@
-// Cross-file rename: renaming a named export (from either the export site or an
-// import site) edits the declaration, every usage, AND the import/export specifiers
-// across the workspace. Aliased imports and default exports are refused (sound).
-const { test, expect, beforeEach, afterEach } = require('bun:test');
+// Cross-file rename — edge-case matrix.
+// Renaming a named export (from any site) edits the declaration, every usage, and
+// the import/export specifiers workspace-wide. Default exports, aliased imports,
+// builtins and invalid names are refused. Locals/params stay in-file.
+const { test, expect, beforeAll, afterAll } = require('bun:test');
 const path = require('path');
 const fs = require('fs');
 const { createLSPTestServer } = require('./lsp-test-helpers');
 
-const ws = '/tmp/test-xrename-suite';
-const libPath = path.join(ws, 'lib.uc');
-const mainPath = path.join(ws, 'main.uc');
+const ws = '/tmp/test-xrename-matrix';
 
-function writeFiles(files) {
+const FILES = {
+  'lib.uc':
+`export function foo() { return 1; }
+export function bar() { return foo(); }
+export let CONST = 42;
+export function gaz() { return 2; }
+export function nsmem() { return 3; }
+export function solo() { return 4; }
+function spec_fn() { return 5; }
+export { spec_fn };
+export function withlocal(p) { let tmp = p + 1; return tmp + tmp; }
+export default function dflt() { return 9; }
+`,
+  'main.uc':
+`import { foo, CONST } from './lib';
+import { gaz } from './lib';
+import { spec_fn } from './lib';
+import dflt from './lib';
+let r = foo() + foo() + CONST;
+let g = gaz();
+let sp = spec_fn();
+let d = dflt();
+`,
+  'other.uc':
+`import { foo } from './lib';
+let y = foo();
+`,
+  'aliased.uc':
+`import { gaz as gz } from './lib';
+let z = gz();
+`,
+  'nsuser.uc':
+`import * as lib from './lib';
+let q = lib.nsmem();
+`,
+  'unrel.uc':
+`function foo() { return 9; }
+let k = foo();
+`,
+};
+
+let server;
+beforeAll(async () => {
   fs.mkdirSync(ws, { recursive: true });
-  for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(ws, name), content);
-}
-afterEach(() => { try { fs.rmSync(ws, { recursive: true, force: true }); } catch {} });
+  for (const [name, content] of Object.entries(FILES)) fs.writeFileSync(path.join(ws, name), content);
+  server = createLSPTestServer({ workspaceRoot: ws });
+  await server.initialize();
+});
+afterAll(() => { try { server.shutdown(); } catch {} try { fs.rmSync(ws, { recursive: true, force: true }); } catch {} });
 
-// fileCount + per-file edited line set
-async function rename(openName, line, findStr, newName) {
-  const s = createLSPTestServer({ workspaceRoot: ws });
-  try {
-    await s.initialize();
-    const fp = path.join(ws, openName);
-    const content = fs.readFileSync(fp, 'utf8');
-    const ch = content.split('\n')[line].indexOf(findStr);
-    const we = await s.getRename(content, fp, line, ch, newName);
-    const changes = (we && we.changes) || {};
-    const byFile = {};
-    for (const [uri, edits] of Object.entries(changes)) {
-      byFile[path.basename(uri.replace('file://', ''))] = edits.length;
-    }
-    return byFile;
-  } finally {
-    s.shutdown();
+function colOf(file, lineIdx, token, nth = 1) {
+  const line = FILES[file].split('\n')[lineIdx];
+  const re = new RegExp('\\b' + token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g');
+  let m, count = 0;
+  while ((m = re.exec(line)) !== null) { if (++count === nth) return m.index; }
+  return line.indexOf(token);
+}
+// Returns { byFile: {basename: editCount}, newTexts: Set, edits: [...] }
+async function rename(file, lineIdx, token, newName) {
+  const fp = path.join(ws, file);
+  const we = await server.getRename(FILES[file], fp, lineIdx, colOf(file, lineIdx, token), newName);
+  const changes = (we && we.changes) || {};
+  const byFile = {};
+  const newTexts = new Set();
+  for (const [uri, edits] of Object.entries(changes)) {
+    byFile[path.basename(uri.replace('file://', ''))] = edits.length;
+    edits.forEach((e) => newTexts.add(e.newText));
   }
+  return { byFile, newTexts, fileCount: Object.keys(byFile).length };
+}
+async function prepare(file, lineIdx, token) {
+  const fp = path.join(ws, file);
+  return server.getPrepareRename(FILES[file], fp, lineIdx, colOf(file, lineIdx, token));
 }
 
-test('rename a named export from the import site edits both files (incl. specifiers)', async () => {
-  writeFiles({
-    'lib.uc': `export function foo() { return 1; }\nexport function bar() { return foo(); }\n`,
-    'main.uc': `import { foo } from './lib';\nlet a = foo();\n`,
-  });
-  // cursor on `foo` in main.uc usage (line 1)
-  const byFile = await rename('main.uc', 1, 'foo', 'baz');
-  // lib.uc: declaration + usage in bar() = 2 edits
-  expect(byFile['lib.uc']).toBe(2);
-  // main.uc: import specifier + usage = 2 edits
-  expect(byFile['main.uc']).toBe(2);
-});
-
-test('rename a named export from the export site edits both files', async () => {
-  writeFiles({
-    'lib.uc': `export function foo() { return 1; }\n`,
-    'main.uc': `import { foo } from './lib';\nlet a = foo();\nlet b = foo();\n`,
-  });
-  // cursor on `foo` in lib.uc declaration (line 0)
-  const byFile = await rename('lib.uc', 0, 'foo', 'baz');
-  expect(byFile['lib.uc']).toBe(1);  // declaration
+test('RN1: rename a named export from the export site edits decl, usages, specifiers', async () => {
+  const { byFile } = await rename('lib.uc', 0, 'foo', 'baz');
+  expect(byFile['lib.uc']).toBe(2);  // decl + usage in bar()
   expect(byFile['main.uc']).toBe(3); // import specifier + 2 usages
+  expect(byFile['other.uc']).toBe(2); // import specifier + usage
 });
 
-test('an aliased importer makes the rename refuse (no edits)', async () => {
-  writeFiles({
-    'lib.uc': `export function foo() { return 1; }\n`,
-    'main.uc': `import { foo as f } from './lib';\nlet a = f();\n`,
-  });
-  const byFile = await rename('lib.uc', 0, 'foo', 'baz');
-  expect(Object.keys(byFile).length).toBe(0);
+test('RN2: rename the same export from an import site', async () => {
+  const { byFile } = await rename('main.uc', 0, 'foo', 'baz');
+  expect(byFile['lib.uc']).toBe(2);
+  expect(byFile['main.uc']).toBe(3);
+  expect(byFile['other.uc']).toBe(2);
 });
 
-test('a default export refuses cross-file rename', async () => {
-  writeFiles({
-    'lib.uc': `export default function make() { return {}; }\n`,
-    'main.uc': `import mk from './lib';\nlet a = mk();\n`,
-  });
-  const byFile = await rename('lib.uc', 0, 'make', 'maker');
-  expect(Object.keys(byFile).length).toBe(0);
+test('RN3: rename from a usage site in another importer', async () => {
+  const { byFile } = await rename('other.uc', 1, 'foo', 'baz');
+  expect(byFile['lib.uc']).toBe(2);
+  expect(byFile['main.uc']).toBe(3);
 });
 
-test('a purely-local variable still renames in-file only', async () => {
-  writeFiles({
-    'lib.uc': `export function foo() { let temp = 1; return temp + temp; }\n`,
-  });
-  const byFile = await rename('lib.uc', 0, 'temp', 'val');
-  expect(byFile['lib.uc']).toBe(3); // declaration + 2 usages
-  expect(Object.keys(byFile).length).toBe(1);
+test('RN4: renaming foo never touches an unrelated same-named local in another file', async () => {
+  const { byFile } = await rename('lib.uc', 0, 'foo', 'baz');
+  expect(byFile['unrel.uc']).toBeUndefined();
+});
+
+test('RN5: every edit uses the new name', async () => {
+  const { newTexts } = await rename('lib.uc', 0, 'foo', 'baz');
+  expect([...newTexts]).toEqual(['baz']);
+});
+
+test('RN6: rename an exported VARIABLE', async () => {
+  const { byFile } = await rename('lib.uc', 2, 'CONST', 'LIMIT');
+  expect(byFile['lib.uc']).toBe(1); // declaration
+  expect(byFile['main.uc']).toBe(2); // import specifier + usage
+});
+
+test('RN7: an aliased importer makes rename refuse (export site)', async () => {
+  const { fileCount } = await rename('lib.uc', 3, 'gaz', 'gosh');
+  expect(fileCount).toBe(0);
+});
+
+test('RN8: aliased rename also refused from the aliased import site', async () => {
+  const { fileCount } = await rename('aliased.uc', 1, 'gz', 'gosh');
+  expect(fileCount).toBe(0);
+});
+
+test('RN9: a default export refuses cross-file rename (export site)', async () => {
+  const { fileCount } = await rename('lib.uc', 9, 'dflt', 'mk');
+  expect(fileCount).toBe(0);
+});
+
+test('RN10: default export refused from the import site too', async () => {
+  const { fileCount } = await rename('main.uc', 3, 'dflt', 'mk');
+  expect(fileCount).toBe(0);
+});
+
+test('RN11: a named export with no importers renames in its file only', async () => {
+  const { byFile, fileCount } = await rename('lib.uc', 5, 'solo', 'lonely');
+  expect(byFile['lib.uc']).toBe(1);
+  expect(fileCount).toBe(1);
+});
+
+test('RN12: `export { spec_fn }` specifier form renames decl + export + import specifiers', async () => {
+  const { byFile } = await rename('main.uc', 6, 'spec_fn', 'specialized');
+  expect(byFile['lib.uc']).toBe(2);  // declaration + export specifier
+  expect(byFile['main.uc']).toBe(2); // import specifier + usage
+});
+
+test('RN13: a namespace-imported member renames decl + the `ns.member` usage', async () => {
+  const { byFile } = await rename('lib.uc', 4, 'nsmem', 'nsM');
+  expect(byFile['lib.uc']).toBe(1);   // declaration
+  expect(byFile['nsuser.uc']).toBe(1); // lib.nsmem usage (import * untouched)
+});
+
+test('RN14: an exported-but-unused function renames in-file', async () => {
+  const { byFile, fileCount } = await rename('lib.uc', 1, 'bar', 'baz2');
+  expect(byFile['lib.uc']).toBe(1);
+  expect(fileCount).toBe(1);
+});
+
+test('RN15: a function-local variable renames in-file (decl + usages)', async () => {
+  const { byFile, fileCount } = await rename('lib.uc', 8, 'tmp', 'acc');
+  expect(byFile['lib.uc']).toBe(3); // decl + 2 usages
+  expect(fileCount).toBe(1);
+});
+
+test('RN16: a parameter renames in-file', async () => {
+  const { byFile, fileCount } = await rename('lib.uc', 8, 'p', 'n');
+  expect(byFile['lib.uc']).toBe(2); // param + usage
+  expect(fileCount).toBe(1);
+});
+
+test('RN17: a local variable in an importer renames in-file', async () => {
+  const { byFile, fileCount } = await rename('main.uc', 4, 'r', 'res');
+  expect(fileCount).toBe(1);
+  expect(byFile['main.uc']).toBeGreaterThanOrEqual(1);
+});
+
+test('RN18: an invalid new identifier is rejected', async () => {
+  const fp = path.join(ws, 'lib.uc');
+  const we = await server.getRename(FILES['lib.uc'], fp, 0, colOf('lib.uc', 0, 'foo'), '1bad');
+  expect(we).toBeFalsy();
+});
+
+test('RN19: renaming a builtin is refused', async () => {
+  // `return` line — use a builtin call; here we click a builtin name in a call.
+  fs.writeFileSync(path.join(ws, 'b.uc'), `let x = length("hi");\n`);
+  const we = await server.getRename(`let x = length("hi");\n`, path.join(ws, 'b.uc'), 0, 8, 'len');
+  expect(we).toBeFalsy();
+  fs.rmSync(path.join(ws, 'b.uc'), { force: true });
+});
+
+test('RN20: prepareRename returns a range for a renameable export', async () => {
+  const r = await prepare('lib.uc', 0, 'foo');
+  expect(r).toBeTruthy();
+  expect(r.placeholder).toBe('foo');
+});
+
+test('RN21: prepareRename returns null for an aliased (refused) export', async () => {
+  const r = await prepare('lib.uc', 3, 'gaz');
+  expect(r).toBeFalsy();
+});
+
+test('RN22: prepareRename returns null for a default export', async () => {
+  const r = await prepare('lib.uc', 9, 'dflt');
+  expect(r).toBeFalsy();
+});
+
+test('RN23: foo rename produces exactly one edit per occurrence (no dup ranges)', async () => {
+  const fp = path.join(ws, 'lib.uc');
+  const we = await server.getRename(FILES['lib.uc'], fp, 0, colOf('lib.uc', 0, 'foo'), 'baz');
+  for (const edits of Object.values(we.changes)) {
+    const keys = edits.map((e) => `${e.range.start.line}:${e.range.start.character}`);
+    expect(keys.length).toBe(new Set(keys).size);
+  }
 });

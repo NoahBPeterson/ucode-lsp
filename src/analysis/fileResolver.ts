@@ -589,7 +589,12 @@ export class FileResolver {
             const isFuncDecl = decl?.type === 'FunctionDeclaration' || decl?.type === 'FunctionExpression';
             // Check if default export is an identifier referencing a top-level function
             const isIdentifierFunc = decl?.type === 'Identifier' && topLevelFunctionNames?.has((decl as any).name);
-            const exportedName = decl?.type === 'Identifier' ? (decl as any).name : undefined;
+            // The default's source name: an `export default foo` identifier, OR the id
+            // of an inline `export default function foo()` (so cross-file refs/rename
+            // can resolve it — without this, exportedName was undefined for inline fns).
+            const exportedName = decl?.type === 'Identifier' ? (decl as any).name
+                : (decl?.type === 'FunctionDeclaration' || decl?.type === 'FunctionExpression') ? (decl as any).id?.name
+                : undefined;
             exports.push({
                 name: 'default',
                 type: 'default',
