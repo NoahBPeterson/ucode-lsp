@@ -21,6 +21,9 @@ function spec_fn() { return 5; }
 export { spec_fn };
 export function withlocal(p) { let tmp = p + 1; return tmp + tmp; }
 export default function dflt() { return 9; }
+export function shd() { return 7; }
+function realname() { return 8; }
+export { realname as aliasedExport };
 `,
   'main.uc':
 `import { foo, CONST } from './lib';
@@ -47,6 +50,15 @@ let q = lib.nsmem();
   'unrel.uc':
 `function foo() { return 9; }
 let k = foo();
+`,
+  'shadower.uc':
+`import { shd } from './lib';
+let s = shd();
+function gg() { let shd = 1; return shd + shd; }
+`,
+  'aliasimporter.uc':
+`import { aliasedExport } from './lib';
+let ae = aliasedExport();
 `,
 };
 
@@ -209,6 +221,28 @@ test('RN21: prepareRename returns null for an aliased (refused) export', async (
 
 test('RN22: prepareRename returns null for a default export', async () => {
   const r = await prepare('lib.uc', 9, 'dflt');
+  expect(r).toBeFalsy();
+});
+
+test('RN24: a nested local shadow in an importer refuses the rename (no corruption)', async () => {
+  // shadower.uc imports `shd` and also declares a nested `let shd` — a name-based
+  // rename would corrupt the nested binding, so it must refuse.
+  const { fileCount } = await rename('lib.uc', 10, 'shd', 'shdRenamed');
+  expect(fileCount).toBe(0);
+});
+
+test('RN25: an export ALIAS (`export { realname as aliasedExport }`) refuses rename', async () => {
+  const { fileCount } = await rename('aliasimporter.uc', 1, 'aliasedExport', 'renamed');
+  expect(fileCount).toBe(0);
+});
+
+test('RN26: the export-alias is also refused from the source export specifier', async () => {
+  const { fileCount } = await rename('lib.uc', 12, 'aliasedExport', 'renamed');
+  expect(fileCount).toBe(0);
+});
+
+test('RN27: prepareRename returns null for a shadowed export', async () => {
+  const r = await prepare('lib.uc', 10, 'shd');
   expect(r).toBeFalsy();
 });
 

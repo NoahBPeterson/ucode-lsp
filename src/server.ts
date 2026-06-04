@@ -778,7 +778,7 @@ function getCrossRefResolver(): FileResolver {
     return crossRefResolver;
 }
 
-interface WorkspaceFileEntry { mtimeMs: number; ast: any; doc: TextDocument; bindings: ImportBinding[] }
+interface WorkspaceFileEntry { mtimeMs: number; ast: any; doc: TextDocument; bindings: ImportBinding[]; openVersion?: number }
 const workspaceFileCache = new Map<string, WorkspaceFileEntry | null>();
 let wsFileListCache: { files: string[]; at: number } | null = null;
 const WS_FILE_TTL_MS = 10000;
@@ -802,6 +802,30 @@ function listWorkspaceUcodeFiles(): string[] {
 }
 
 function getWorkspaceFile(filePath: string): WorkspaceFileEntry | null {
+    const uri = filePathToUri(filePath);
+    const parseEntry = (content: string, doc: TextDocument, key: Partial<WorkspaceFileEntry>): WorkspaceFileEntry | null => {
+        try {
+            const lexer = new UcodeLexer(content, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, content);
+            parser.setComments(lexer.comments);
+            const ast = parser.parse().ast;
+            return { mtimeMs: -1, ...key, ast, doc, bindings: getImportBindings(ast) };
+        } catch { return null; }
+    };
+
+    // Prefer the live (possibly unsaved) editor buffer so cross-file refs/rename use
+    // current content, not stale disk. Cache by document version.
+    const openDoc = documents.get(uri);
+    if (openDoc) {
+        const cached = workspaceFileCache.get(filePath);
+        if (cached && cached.openVersion === openDoc.version) return cached;
+        const entry = parseEntry(openDoc.getText(), openDoc, { openVersion: openDoc.version });
+        workspaceFileCache.set(filePath, entry);
+        return entry;
+    }
+
+    // Closed file: read from disk, cached by mtime.
     let mtimeMs = 0;
     try { mtimeMs = fs.statSync(filePath).mtimeMs; } catch { return null; }
     const cached = workspaceFileCache.get(filePath);
@@ -809,13 +833,7 @@ function getWorkspaceFile(filePath: string): WorkspaceFileEntry | null {
     let entry: WorkspaceFileEntry | null = null;
     try {
         const content = fs.readFileSync(filePath, 'utf8');
-        const lexer = new UcodeLexer(content, { rawMode: true });
-        const tokens = lexer.tokenize();
-        const parser = new UcodeParser(tokens, content);
-        parser.setComments(lexer.comments);
-        const ast = parser.parse().ast;
-        const doc = TextDocument.create(filePathToUri(filePath), 'ucode', 1, content);
-        entry = { mtimeMs, ast, doc, bindings: getImportBindings(ast) };
+        entry = parseEntry(content, TextDocument.create(uri, 'ucode', 1, content), { mtimeMs });
     } catch { entry = null; }
     workspaceFileCache.set(filePath, entry);
     return entry;
@@ -1399,6 +1417,60 @@ function collectSpecifierSpansForRename(canonicalUri: string, canonicalName: str
     return out;
 }
 
+/** Does a NESTED scope in `ast` declare `name` (a param, or a local var/function
+ *  inside a function body)? Such a shadow is a DIFFERENT binding, but the parse-only
+ *  cross-file walk matches by name and would wrongly rewrite it — so we refuse the
+ *  rename when one exists. (Top-level redeclarations are already errors.) */
+function hasNestedShadow(ast: any, name: string): boolean {
+    let found = false;
+    const visit = (node: any, depth: number): void => {
+        if (found || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        const isFn = node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression';
+        if (depth > 0) {
+            if (node.type === 'FunctionDeclaration' && node.id?.name === name) { found = true; return; }
+            if (node.type === 'VariableDeclarator' && node.id?.type === 'Identifier' && node.id.name === name) { found = true; return; }
+        }
+        if (isFn) {
+            for (const p of (node.params ?? [])) {
+                if ((p?.name ?? p?.argument?.name) === name) { found = true; return; }
+            }
+            if (node.restParam?.name === name) { found = true; return; }
+        }
+        const childDepth = isFn ? depth + 1 : depth;
+        for (const k of Object.keys(node)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = node[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it, childDepth); }
+            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v, childDepth);
+        }
+    };
+    visit(ast, 0);
+    return found;
+}
+
+/** True if `canonicalName` is shadowed by a nested local in the source file or in
+ *  any importer of it — in which case a name-based cross-file rename is unsafe. */
+function renameHasShadowingConflict(canonicalUri: string, canonicalName: string): boolean {
+    const src = astAndDocFor(canonicalUri);
+    if (src && hasNestedShadow(src.ast, canonicalName)) return true;
+    const resolver = getCrossRefResolver();
+    const targetPath = path.resolve(uriToFilePath(canonicalUri));
+    for (const fp of listWorkspaceUcodeFiles()) {
+        if (path.resolve(fp) === targetPath) continue;
+        const uri = filePathToUri(fp);
+        const ad = astAndDocFor(uri);
+        if (!ad) continue;
+        let importsTarget = false;
+        for (const stmt of (ad.ast?.body ?? [])) {
+            if (stmt?.type !== 'ImportDeclaration') continue;
+            const r = resolver.resolveImportPath(stmt.source?.value, uri);
+            if (r && path.resolve(uriToFilePath(r)) === targetPath) { importsTarget = true; break; }
+        }
+        if (importsTarget && hasNestedShadow(ad.ast, canonicalName)) return true;
+    }
+    return false;
+}
+
 type RenameTarget =
     | { kind: 'local' }
     | { kind: 'crossfile'; canonicalUri: string; canonicalName: string }
@@ -1442,6 +1514,18 @@ function analyzeRenameTarget(uri: string, position: { line: number; character: n
     }
     if (hasAliasedImporter(canonical.canonicalUri, canonical.canonicalName)) {
         return { kind: 'blocked', reason: `'${name}' is imported under an alias elsewhere — cross-file rename of aliased imports isn't supported` };
+    }
+    // The export must correspond to a top-level declaration with the SAME name —
+    // otherwise it's an export alias (`export { foo as bar }`) or re-export, where a
+    // single-name rename would leave the source out of sync with importers.
+    const srcAst = astAndDocFor(canonical.canonicalUri)?.ast;
+    if (!srcAst || !findTopLevelDeclId(srcAst, canonical.canonicalName)) {
+        return { kind: 'blocked', reason: `'${name}' is exported under a different name (export alias/re-export) — rename its local declaration instead` };
+    }
+    // A nested local of the same name in the source or any importer would be wrongly
+    // rewritten by the name-based cross-file walk — refuse rather than corrupt it.
+    if (renameHasShadowingConflict(canonical.canonicalUri, canonical.canonicalName)) {
+        return { kind: 'blocked', reason: `'${name}' is shadowed by a same-named local in another scope — cross-file rename could corrupt it` };
     }
     return { kind: 'crossfile', canonicalUri: canonical.canonicalUri, canonicalName: canonical.canonicalName };
 }
