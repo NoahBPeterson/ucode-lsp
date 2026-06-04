@@ -65,6 +65,24 @@ const NULL_PROPAGATING_BUILTINS: Record<string, number> = {
   ord: 0, split: 0, substr: 0, b64enc: 0, b64dec: 0, hexdec: 0,
 };
 
+// Functions that return null for ANY non-string argument at the given index AND do
+// not coerce it (verified against the ucode runtime). A TRUTHY result therefore
+// proves that argument was a string, so in the branch where the call succeeds we
+// narrow it `unknown → string`. POSITIVE-ONLY: a falsy result does NOT prove a
+// non-string (a valid string can yield null/empty too — missing file, empty match),
+// so the failure branch is never narrowed. NB: uc()/lc() are EXCLUDED — they coerce
+// (uc(123) -> "123"), so a truthy result wouldn't prove a string argument.
+//
+// GLOBAL builtins: matched as bare unshadowed identifiers (`match(x)`, `split(x)`).
+const STRING_CONTRACT_GLOBAL_BUILTINS: Record<string, number> = {
+  match: 0, substr: 0, trim: 0, ltrim: 0, rtrim: 0, split: 0, ord: 0, b64dec: 0, hexdec: 0,
+};
+// fs MODULE functions: matched only when the callee resolves to the fs module
+// (`fs.stat(x)` or a `let stat = fs.stat` alias) — never a user's own `stat()`.
+const STRING_CONTRACT_FS_BUILTINS: Record<string, number> = {
+  stat: 0, lstat: 0, readfile: 0, open: 0, opendir: 0, realpath: 0, readlink: 0,
+};
+
 export interface FunctionSignature {
   name: string;
   parameters: UcodeType[];
@@ -1622,6 +1640,19 @@ export class TypeChecker {
     return returnType;
   }
 
+  /** True when a variable/parameter of this type could hold something callable —
+   *  i.e. its type is function or unknown, or a union that includes either. Used so
+   *  calling a function-valued variable (incl. `function | null` from loadstring())
+   *  isn't mistaken for an "Undefined function". */
+  private typeCouldBeCallable(dataType: UcodeDataType | undefined): boolean {
+    if (dataType === undefined) return false;
+    for (const member of getUnionTypes(dataType)) {
+      const base = singleTypeToBase(member);
+      if (base === UcodeType.FUNCTION || base === UcodeType.UNKNOWN) return true;
+    }
+    return false;
+  }
+
   private checkCallExpression(node: CallExpressionNode): CheckResult {
     if (node.callee.type === 'Identifier') {
       const funcName = (node.callee as IdentifierNode).name;
@@ -1686,24 +1717,19 @@ export class TypeChecker {
               return returnTypeData;
             }
           }
-          // Check if the variable's data type is function or if it could be callable
-          if (typeof symbol.dataType === 'string') {
-            if (symbol.dataType === UcodeType.FUNCTION) {
-              return UcodeType.UNKNOWN; // Function calls return unknown by default
-            } else if (symbol.dataType === UcodeType.UNKNOWN) {
-              // For variables with unknown type (like arrow functions or dynamically assigned functions),
-              // assume they might be callable to prevent false positives
-              return UcodeType.UNKNOWN;
-            }
+          // The variable holds something callable if its type is function or
+          // unknown — OR a union that includes either. e.g. `loadstring()` returns
+          // `function | null`, so a union check is required (a bare `=== FUNCTION`
+          // string test misses it and falsely reports "Undefined function").
+          if (this.typeCouldBeCallable(symbol.dataType)) {
+            return UcodeType.UNKNOWN; // function calls return unknown by default
           }
         }
         // Check for parameters that might be callback functions (e.g., cb(), uci_getter())
         else if (symbol.type === SymbolType.PARAMETER) {
-          // Parameters with unknown or function type could be callable
-          if (typeof symbol.dataType === 'string') {
-            if (symbol.dataType === UcodeType.FUNCTION || symbol.dataType === UcodeType.UNKNOWN) {
-              return UcodeType.UNKNOWN;
-            }
+          // Parameters whose type is (or includes) function/unknown could be callable.
+          if (this.typeCouldBeCallable(symbol.dataType)) {
+            return UcodeType.UNKNOWN;
           }
         }
       }
@@ -3400,6 +3426,13 @@ export class TypeChecker {
       if (np && this.getArgVariableName(np.arg) === variableName) {
         guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
       }
+      // Truthiness of an fs string-contract call: `if (stat(path)) { … }`, or the
+      // fall-through of `if (!stat(path)) return`. A non-null result proves the arg
+      // was a string, so narrow `unknown → string` here. Positive-only.
+      const sc = this.getStringContractArg(test);
+      if (sc && this.getArgVariableName(sc.arg) === variableName) {
+        guards.push({ variableName, narrowToType: UcodeType.STRING, isNegative: false });
+      }
     }
   }
 
@@ -3635,6 +3668,10 @@ export class TypeChecker {
                   guards.push({ ...og, isNegative: !og.isNegative });
                 }
               }
+              // Early-exit on a string-contract call: `if (!stat(path) || …) return;`
+              // proves `path` is a string in the fall-through. Independent of the
+              // type-guard extractors above (works whether or not guardInfo matched).
+              this.collectNegatedStringContractGuards(sibIf.test, variableName, guards);
               // Handle: if (!x) die() → x is non-null after
               // Only when variable could be null. Use the EFFECTIVE type at this
               // position (SSA currentType) — not the declared dataType — so a
@@ -3848,6 +3885,75 @@ export class TypeChecker {
     const arg = call.arguments[argIndex];
     if (!arg) return null;
     return { funcName, arg };
+  }
+
+  /** If `node` is a call to an fs string-contract function (stat/readfile/open/…),
+   *  return the argument node whose string-ness a truthy result proves. Resolves
+   *  both `fs.stat(x)` (member on an fs-typed object) and a local alias
+   *  `let stat = fs.stat; stat(x)` (identifier whose symbol resolves to fs.<fn>),
+   *  and gates on the callee actually being an fs function — so a user's own
+   *  `stat()` is never matched. Returns null otherwise. */
+  private getStringContractArg(node: AstNode): { arg: AstNode } | null {
+    if (node.type !== 'CallExpression') return null;
+    const call = node as CallExpressionNode;
+
+    // Position-aware lookup (keyed off the call's offset) so LOCAL aliases like
+    // `let stat = _fs.stat;` inside a function body resolve — a plain lookup() runs
+    // after scope exit and misses them.
+    const lookupSym = (name: string) =>
+      this.symbolTable.lookupAtPosition(name, call.start) ?? this.symbolTable.lookup(name);
+
+    let argIndex: number | undefined;
+    if (call.callee.type === 'Identifier') {
+      const name = (call.callee as IdentifierNode).name;
+      const sym = lookupSym(name);
+      if (sym?.importedFrom === 'fs') {
+        // fs function reached via import or a `let stat = fs.stat` alias.
+        argIndex = STRING_CONTRACT_FS_BUILTINS[sym.importSpecifier ?? name];
+      } else if ((!sym || sym.type === SymbolType.BUILTIN) && !this.symbolTable.shadowedBuiltins.has(name)) {
+        // Global builtin (`match(x)`, `split(x)`). The symbol table seeds builtins
+        // into global scope, so the resolved symbol is BUILTIN. A user that shadows
+        // it (`function match(){…}` — allowed in ucode) is excluded via the
+        // shadowedBuiltins set (a param shadow already resolves to a non-BUILTIN).
+        argIndex = STRING_CONTRACT_GLOBAL_BUILTINS[name];
+      }
+    } else if (call.callee.type === 'MemberExpression') {
+      const m = call.callee as MemberExpressionNode;
+      if (m.object.type === 'Identifier' && m.property.type === 'Identifier') {
+        const objSym = lookupSym((m.object as IdentifierNode).name);
+        const isFsObject = objSym?.importedFrom === 'fs'
+          || extractModuleType(objSym?.dataType as UcodeDataType)?.moduleName === 'fs';
+        if (isFsObject) argIndex = STRING_CONTRACT_FS_BUILTINS[(m.property as IdentifierNode).name];
+      }
+    }
+    if (argIndex === undefined) return null;
+    const arg = call.arguments[argIndex];
+    return arg ? { arg } : null;
+  }
+
+  /** For an early-exit guard `if (<test>) return;`, the code after it is reachable
+   *  only when `<test>` is FALSE. `!(A || B || …)` ⟹ every disjunct is false, so a
+   *  disjunct of the form `!stat(path)` means `stat(path)` is truthy in the
+   *  fall-through, which proves `path` is a string. Push that positive guard. */
+  private collectNegatedStringContractGuards(test: AstNode, variableName: string, guards: TypeGuardInfo[]): void {
+    const disjuncts: AstNode[] = [];
+    const split = (n: AstNode): void => {
+      if (n.type === 'BinaryExpression' && (n as BinaryExpressionNode).operator === '||') {
+        split((n as BinaryExpressionNode).left);
+        split((n as BinaryExpressionNode).right);
+      } else {
+        disjuncts.push(n);
+      }
+    };
+    split(test);
+    for (const d of disjuncts) {
+      if (d.type === 'UnaryExpression' && (d as any).operator === '!') {
+        const sc = this.getStringContractArg((d as any).argument);
+        if (sc && this.getArgVariableName(sc.arg) === variableName) {
+          guards.push({ variableName, narrowToType: UcodeType.STRING, isNegative: false });
+        }
+      }
+    }
   }
 
   private comparisonExcludesNull(operator: string, literalValue: any, callOnLeft: boolean): boolean {

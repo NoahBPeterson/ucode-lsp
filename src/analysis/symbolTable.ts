@@ -359,6 +359,11 @@ export class SymbolTable {
   private globalScope: Map<string, Symbol> = new Map();
   // Keep track of all symbols ever declared (including in exited scopes) for position-based lookup
   private allSymbols: Symbol[] = [];
+  // Builtin names a user re-declared at a scope where the builtin already lives (so
+  // declare() rejected it and the builtin entry survives). ucode allows shadowing a
+  // builtin with a user function, so consumers that special-case a builtin by name
+  // (e.g. string-contract narrowing) must NOT treat these as the builtin.
+  public readonly shadowedBuiltins: Set<string> = new Set();
 
   constructor() {
     // Initialize global scope
@@ -583,6 +588,11 @@ export class SymbolTable {
     
     // Check if already declared in current scope
     if (currentScopeMap.has(name)) {
+      // A user declaration colliding with a seeded builtin (rejected here, builtin
+      // survives) — record it so builtin-by-name consumers know it's shadowed.
+      if (currentScopeMap.get(name)?.type === SymbolType.BUILTIN && type !== SymbolType.BUILTIN) {
+        this.shadowedBuiltins.add(name);
+      }
       return false; // Already declared in current scope
     }
 
