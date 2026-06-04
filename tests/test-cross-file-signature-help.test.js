@@ -150,3 +150,16 @@ test('SG14: the factory call itself (create_sys) tracks active param', async () 
   expect(labels).toContain('create_sys(fs, pkg)');
   expect(activeParameter).toBe(1);
 });
+
+// SG15: a SAME-FILE factory's returned method also shows signature help (0.6.153 —
+// the local factory inference now records member definition locations, like the
+// cross-file path).
+test('SG15: same-file factory method shows its params', async () => {
+  const fp = path.join(ws, 'samefile.uc');
+  const content = `function make() { return { run: function(a, b, c) { return a; } }; }\nlet w = make();\nlet r = w.run();\n`;
+  fs.writeFileSync(fp, content);
+  const sh = await server.getSignatureHelp(content, fp, 2, content.split('\n')[2].indexOf('run(') + 4);
+  const labels = sh && sh.signatures ? sh.signatures.map((s) => s.label) : [];
+  fs.rmSync(fp, { force: true });
+  expect(labels).toContain('w.run(a, b, c)');
+});

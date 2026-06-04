@@ -68,6 +68,10 @@ export class SemanticAnalyzer extends BaseVisitor {
   private currentFunctionNode: FunctionDeclarationNode | null = null;
   private functionReturnTypes = new Map<FunctionDeclarationNode, { node: ReturnStatementNode, type: UcodeDataType }[]>();
   private functionReturnPropertyTypes = new Map<FunctionDeclarationNode, Map<string, UcodeDataType>[]>();
+  // Per return branch: source location of each function-valued property in a returned
+  // object literal, so signature help / goto-def works on a SAME-FILE factory's methods
+  // (the cross-file path gets these from FileResolver; this is the local equivalent).
+  private functionReturnPropertyLocations = new Map<FunctionDeclarationNode, Map<string, { uri: string; start: number; end: number }>[]>();
   private processingFunctionCallCallee = false; // Track when processing function call callee
   private visitingMemberBase = false; // Track when visiting the receiver of `obj.x` (suppresses the generic Undefined-variable for a known-module base, which validateModuleMember reports more specifically)
   private cfg: ControlFlowGraph | null = null;
@@ -119,6 +123,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.currentFunctionNode = null;
     this.functionReturnTypes.clear();
     this.functionReturnPropertyTypes.clear();
+    this.functionReturnPropertyLocations.clear();
     this.disabledLines.clear();
     this.disabledRanges = [];
     this.linesWithSuppressedDiagnostics.clear();
@@ -1315,6 +1320,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.currentFunctionNode = node;
       this.functionReturnTypes.set(node, []);
       this.functionReturnPropertyTypes.set(node, []);
+      this.functionReturnPropertyLocations.set(node, []);
 
       // Enter function scope
       this.symbolTable.enterScope();
@@ -1379,6 +1385,22 @@ export class SemanticAnalyzer extends BaseVisitor {
           }
           if (merged.size > 0) symbol.returnPropertyTypes = merged;
         }
+
+        // Merge the parallel member definition locations the same way (intersection),
+        // so a same-file factory's returned methods carry source offsets for signature
+        // help / goto-def. copyFactoryReturnToBinding then propagates these to a
+        // `let w = make()` binding's propertyDefinitionLocations.
+        const returnLocEntries = this.functionReturnPropertyLocations.get(node) || [];
+        if (returnLocEntries.length > 0) {
+          const mergedLocs = new Map(returnLocEntries[0]);
+          for (let i = 1; i < returnLocEntries.length; i++) {
+            const entry = returnLocEntries[i]!;
+            for (const key of [...mergedLocs.keys()]) {
+              if (!entry.has(key)) mergedLocs.delete(key);
+            }
+          }
+          if (mergedLocs.size > 0) symbol.returnPropertyDefinitionLocations = mergedLocs;
+        }
       }
 
       // Exit function scope
@@ -1416,6 +1438,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.currentFunctionNode = node as any; // Type compatibility - both have id, params, body
       this.functionReturnTypes.set(node as any, []);
       this.functionReturnPropertyTypes.set(node as any, []);
+      this.functionReturnPropertyLocations.set(node as any, []);
 
       // Enter function scope
       this.symbolTable.enterScope();
@@ -1479,6 +1502,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.currentFunctionNode = node as any; // Type compatibility for analysis
       this.functionReturnTypes.set(node as any, []);
       this.functionReturnPropertyTypes.set(node as any, []);
+      this.functionReturnPropertyLocations.set(node as any, []);
 
       // Enter function scope for parameters
       this.symbolTable.enterScope();
@@ -2326,9 +2350,26 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
         // Collect property types from returned object literals
         if (node.argument?.type === 'ObjectExpression') {
-          const propTypes = this.inferObjectLiteralPropertyTypes(node.argument as ObjectExpressionNode);
+          const objNode = node.argument as ObjectExpressionNode;
+          const propTypes = this.inferObjectLiteralPropertyTypes(objNode);
           if (propTypes) {
             this.functionReturnPropertyTypes.get(this.currentFunctionNode)?.push(propTypes);
+            // Record each function-valued property's source location (file-local
+            // offsets, stamped with this file's URI) so signature help / goto-def
+            // works on a SAME-FILE factory's returned methods — the cross-file path
+            // gets these from FileResolver; this is the local equivalent.
+            const locs = new Map<string, { uri: string; start: number; end: number }>();
+            for (const propEntry of (objNode.properties || [])) {
+              if ((propEntry as any).type !== 'Property') continue; // skip spread elements
+              const prop = propEntry as any;
+              const key = prop.key?.name ?? prop.key?.value;
+              const val = prop.value;
+              if (key != null && val && (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression')
+                  && typeof val.start === 'number' && typeof val.end === 'number') {
+                locs.set(String(key), { uri: this.textDocument.uri, start: val.start, end: val.end });
+              }
+            }
+            if (locs.size > 0) this.functionReturnPropertyLocations.get(this.currentFunctionNode)?.push(locs);
           }
         }
       }
