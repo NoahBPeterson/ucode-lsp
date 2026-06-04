@@ -132,3 +132,30 @@ test('signature help for an object-type method (fs.file handle .read)', async ()
   expect(sh).not.toBeNull();
   expect(sh.signatures[0].label.startsWith('h.read(')).toBe(true);
 });
+
+// ── Inlay hints ──────────────────────────────────────────────────────────────
+test('inlay hints: variable type hint for a non-obvious init + parameter-name hints', async () => {
+  const code = `import * as fs from 'fs';\nfunction f() {\n  let h = fs.open("/x", "r");\n  substr("hi", 1, 2);\n}`;
+  const hints = await server.getInlayHints(code, FILE, { line: 0, character: 0 }, { line: 5, character: 0 });
+  const labels = (hints || []).map(h => h.label);
+  expect(labels).toContain(': fs.file | null');   // type hint on `let h = fs.open(...)`
+  expect(labels).toContain('path:');               // param-name hints for fs.open
+  expect(labels).toContain('string:');             // param-name hints for substr
+  expect(labels).toContain('length:');
+});
+
+test('inlay hints: obvious literal inits get no type hint', async () => {
+  const code = `function f() {\n  let n = 5;\n  let s = "hi";\n}`;
+  const hints = await server.getInlayHints(code, FILE, { line: 0, character: 0 }, { line: 3, character: 0 });
+  const typeHints = (hints || []).filter(h => h.kind === 1); // InlayHintKind.Type
+  expect(typeHints.length).toBe(0);
+});
+
+// ── Workspace symbols ────────────────────────────────────────────────────────
+test('workspace symbols: query matches symbols in the open document', async () => {
+  const code = `function zzqq_unique_handler() { return 1; }\nlet zzqq_unique_const = 2;`;
+  const syms = await server.getWorkspaceSymbols(code, FILE, 'zzqq_unique');
+  const names = (syms || []).map(s => s.name).sort();
+  expect(names).toContain('zzqq_unique_handler');
+  expect(names).toContain('zzqq_unique_const');
+});

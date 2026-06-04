@@ -33,6 +33,10 @@ import {
     DocumentHighlightParams,
     SignatureHelp,
     SignatureHelpParams,
+    SymbolInformation,
+    WorkspaceSymbolParams,
+    InlayHint,
+    InlayHintParams,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -46,6 +50,7 @@ import { handleCompletion, handleCompletionResolve } from './completion';
 import { handleDefinition } from './definition';
 import { buildDocumentSymbols } from './documentSymbols';
 import { provideSignatureHelp } from './signatureHelp';
+import { provideInlayHints } from './inlayHints';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalyzer, SemanticAnalysisResult, SymbolType } from './analysis';
 import { UcodeParser } from './parser';
@@ -228,7 +233,9 @@ connection.onInitialize((params: InitializeParams) => {
             definitionProvider: true,
             referencesProvider: true,
             documentSymbolProvider: true,
+            workspaceSymbolProvider: true,
             documentHighlightProvider: true,
+            inlayHintProvider: true,
             renameProvider: {
                 prepareProvider: true
             },
@@ -1021,6 +1028,18 @@ connection.onReferences((params: ReferenceParams): Location[] => {
     return collectReferences(params.textDocument.uri, params.position, params.context?.includeDeclaration ?? true);
 });
 
+connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
+    const entry = analysisCache.get(params.textDocument.uri);
+    const document = documents.get(params.textDocument.uri);
+    if (!entry || !document) return [];
+    const start = document.offsetAt(params.range.start);
+    const end = document.offsetAt(params.range.end);
+    return provideInlayHints(
+        entry.result.ast, entry.result.symbolTable, allBuiltinFunctions,
+        start, end, (offset: number) => document.positionAt(offset),
+    );
+});
+
 connection.onSignatureHelp((params: SignatureHelpParams): SignatureHelp | null => {
     const entry = analysisCache.get(params.textDocument.uri);
     const document = documents.get(params.textDocument.uri);
@@ -1042,6 +1061,45 @@ connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => 
     const document = documents.get(params.textDocument.uri);
     if (!entry || !document) return [];
     return buildDocumentSymbols(entry.result.ast, (offset: number) => document.positionAt(offset));
+});
+
+connection.onWorkspaceSymbol((params: WorkspaceSymbolParams): SymbolInformation[] => {
+    // Index every workspace .uc file's symbols, filtered by the query (case-
+    // insensitive substring). Open documents use their live AST (unsaved edits);
+    // the rest come from the mtime-cached on-disk parse. Reuses buildDocumentSymbols.
+    const query = params.query.toLowerCase();
+    const results: SymbolInformation[] = [];
+    const seenPaths = new Set<string>();
+
+    const flatten = (syms: DocumentSymbol[], uri: string, container: string | undefined): void => {
+        for (const s of syms) {
+            if (results.length >= 1000) return;
+            if (query === '' || s.name.toLowerCase().includes(query)) {
+                const info: SymbolInformation = { name: s.name, kind: s.kind, location: Location.create(uri, s.selectionRange) };
+                if (container !== undefined) info.containerName = container;
+                results.push(info);
+            }
+            if (s.children && s.children.length) flatten(s.children, uri, s.name);
+        }
+    };
+
+    // Open documents first (live content).
+    for (const [uri, entry] of analysisCache.entries()) {
+        const document = documents.get(uri);
+        if (!document) continue;
+        try { seenPaths.add(path.resolve(uriToFilePath(uri))); } catch { /* ignore */ }
+        flatten(buildDocumentSymbols(entry.result.ast, (o: number) => document.positionAt(o)), uri, undefined);
+    }
+    // Then on-disk workspace files not currently open.
+    for (const filePath of listWorkspaceUcodeFiles()) {
+        if (results.length >= 1000) break;
+        if (seenPaths.has(path.resolve(filePath))) continue;
+        const wf = getWorkspaceFile(filePath);
+        if (!wf) continue;
+        const uri = filePathToUri(filePath);
+        flatten(buildDocumentSymbols(wf.ast, (o: number) => wf.doc.positionAt(o)), uri, undefined);
+    }
+    return results;
 });
 
 // ── Rename ──────────────────────────────────────────────────────────────────

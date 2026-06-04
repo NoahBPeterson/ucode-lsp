@@ -32,6 +32,8 @@ function createLSPTestServer(options = {}) {
       getRename: global.__sharedLSPServer.getRename,
       getPrepareRename: global.__sharedLSPServer.getPrepareRename,
       getSignatureHelp: global.__sharedLSPServer.getSignatureHelp,
+      getInlayHints: global.__sharedLSPServer.getInlayHints,
+      getWorkspaceSymbols: global.__sharedLSPServer.getWorkspaceSymbols,
       getCodeActions: global.__sharedLSPServer.getCodeActions,
       getCodeLens: global.__sharedLSPServer.getCodeLens,
       resolveCodeLens: global.__sharedLSPServer.resolveCodeLens,
@@ -574,6 +576,11 @@ function createLSPTestServer(options = {}) {
     sendPositionRequest('textDocument/prepareRename', content, file, line, character);
   const getSignatureHelp = (content, file, line, character) =>
     sendPositionRequest('textDocument/signatureHelp', content, file, line, character);
+  const getInlayHints = (content, file, rangeStart, rangeEnd) =>
+    sendPositionRequest('textDocument/inlayHint', content, file, 0, 0, { range: { start: rangeStart, end: rangeEnd } });
+  // Opens the doc (so it's analyzed + in the cache), then queries workspace symbols.
+  const getWorkspaceSymbols = (content, file, query) =>
+    sendPositionRequest('workspace/symbol', content, file, 0, 0, { query });
 
   // Cross-file tests: send a raw didOpen / didChange for an aux file (so a
   // change to file B can trigger the server's cross-file invalidation of file
@@ -618,6 +625,8 @@ function createLSPTestServer(options = {}) {
     getRename,
     getPrepareRename,
     getSignatureHelp,
+    getInlayHints,
+    getWorkspaceSymbols,
     getCodeActions,
     getCodeLens,
     resolveCodeLens,

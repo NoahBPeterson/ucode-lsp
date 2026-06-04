@@ -84,44 +84,38 @@ function buildSignature(name: string, paramLabels: string[], activeParam: number
     return { signatures: [sig], activeSignature: 0, activeParameter: active };
 }
 
-/**
- * Signature help at `offset`. Resolves an Identifier callee to a user function
- * (structured params) or a global builtin (params parsed from its doc). Member
- * callees (module methods) are out of scope for now.
- */
-export function provideSignatureHelp(
-    ast: any,
-    symbolTable: any,
-    builtins: Map<string, string>,
-    offset: number,
-): SignatureHelp | null {
-    const enclosing = findEnclosingCall(ast, offset);
-    if (!enclosing) return null;
-    const { call, activeParam } = enclosing;
-    const callee = call.callee;
+export interface CalleeParam { name: string; label: string; isRest: boolean }
+export interface CalleeSignature { displayName: string; params: CalleeParam[]; documentation?: string }
 
-    // Member call: `receiver.method(…)` on a known module namespace (fs.open) or
-    // object type (a fs.file handle's .read). Resolve the receiver's type and pull
-    // the method's signature from the registries.
-    if (callee?.type === 'MemberExpression' && !callee.computed && callee.property?.type === 'Identifier') {
+/**
+ * Resolve a call's callee to its parameter list, for any supported callee kind:
+ *   - `receiver.method(…)` on a known module namespace (fs.open) or object type
+ *     (an fs.file handle's .read) → registry signature
+ *   - a user function → its structured parameters (with types)
+ *   - a global builtin → param names parsed from its markdown doc
+ * `label` is the per-param display (with `?`/`...`/type); `name` is the bare name
+ * (for inlay parameter-name hints). Shared by signature help + inlay hints.
+ */
+export function resolveCalleeParameters(callee: any, symbolTable: any, builtins: Map<string, string>): CalleeSignature | null {
+    if (callee?.type === 'MemberExpression' && !callee.computed && callee.property?.type === 'Identifier'
+        && callee.object?.type === 'Identifier') {
         const method: string = callee.property.name;
         const obj = callee.object;
-        if (obj?.type === 'Identifier') {
-            const objSym: any = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
-            const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
-            if (mt) {
-                const tn = mt.moduleName;
-                const sigOpt = isKnownObjectType(tn) ? OBJECT_REGISTRIES[tn].getMethod(method)
-                    : isKnownModule(tn) ? MODULE_REGISTRIES[tn].getFunction(method)
-                    : Option.none();
-                if (Option.isSome(sigOpt)) {
-                    const sig = sigOpt.value;
-                    const labels = sig.parameters.map(p => p.optional ? `${p.name}?` : p.name);
-                    return buildSignature(`${obj.name}.${method}`, labels, activeParam, sig.description || undefined);
-                }
-            }
-        }
-        return null;
+        const objSym: any = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
+        const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
+        if (!mt) return null;
+        const tn = mt.moduleName;
+        const sigOpt = isKnownObjectType(tn) ? OBJECT_REGISTRIES[tn].getMethod(method)
+            : isKnownModule(tn) ? MODULE_REGISTRIES[tn].getFunction(method)
+            : Option.none();
+        if (Option.isNone(sigOpt)) return null;
+        const sig = sigOpt.value;
+        const res: CalleeSignature = {
+            displayName: `${obj.name}.${method}`,
+            params: sig.parameters.map(p => ({ name: p.name, label: p.optional ? `${p.name}?` : p.name, isRest: false })),
+        };
+        if (sig.description) res.documentation = sig.description;
+        return res;
     }
 
     if (callee?.type !== 'Identifier') return null;
@@ -131,17 +125,41 @@ export function provideSignatureHelp(
     const sym: any = symbolTable?.lookupAtPosition?.(name, callee.start) ?? symbolTable?.lookup?.(name);
     const userParams: ParamInfo[] | undefined = sym?.parameters;
     if (Array.isArray(userParams)) {
-        const labels = userParams.map(p => {
-            const base = (p.isRest ? '...' : '') + p.name;
-            const ty = p.type && typeof p.type === 'string' && p.type !== 'unknown' ? `: ${p.type}` : '';
-            return base + ty;
-        });
-        return buildSignature(name, labels, activeParam);
+        return {
+            displayName: name,
+            params: userParams.map(p => {
+                const ty = p.type && typeof p.type === 'string' && p.type !== 'unknown' ? `: ${p.type}` : '';
+                return { name: p.name, label: (p.isRest ? '...' : '') + p.name + ty, isRest: !!p.isRest };
+            }),
+        };
     }
 
     const doc = builtins.get(name);
     if (doc !== undefined) {
-        return buildSignature(name, builtinParamNames(doc), activeParam, firstDocLine(doc));
+        const res: CalleeSignature = {
+            displayName: name,
+            params: builtinParamNames(doc).map(n => ({ name: n.replace(/^\.\.\./, ''), label: n, isRest: n.startsWith('...') })),
+        };
+        const fl = firstDocLine(doc);
+        if (fl) res.documentation = fl;
+        return res;
     }
     return null;
+}
+
+/**
+ * Signature help at `offset`. Resolves the callee's parameters (see
+ * resolveCalleeParameters) and highlights the active argument.
+ */
+export function provideSignatureHelp(
+    ast: any,
+    symbolTable: any,
+    builtins: Map<string, string>,
+    offset: number,
+): SignatureHelp | null {
+    const enclosing = findEnclosingCall(ast, offset);
+    if (!enclosing) return null;
+    const sig = resolveCalleeParameters(enclosing.call.callee, symbolTable, builtins);
+    if (!sig) return null;
+    return buildSignature(sig.displayName, sig.params.map(p => p.label), enclosing.activeParam, sig.documentation);
 }
