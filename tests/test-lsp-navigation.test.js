@@ -163,6 +163,24 @@ test('UC3006 (module used without importing) offers add-import quick fixes', asy
   expect(titles).toContain("Add import * as fs from 'fs';");
 });
 
+// ── Completion on function-local module/handle variables ────────────────────
+test('completion resolves a function-local module-typed variable', async () => {
+  // `_ubus = ubus_mod || require('ubus')` → _ubus is a ubus module; `_ubus.`
+  // must list ubus functions even though _ubus is a function-LOCAL.
+  const code = `/** @param {module:ubus|null} ubus_mod */\nfunction f(ubus_mod) {\n  let _ubus = ubus_mod || require('ubus');\n  _ubus.\n}`;
+  const c = await server.getCompletions(code, FILE, 3, '  _ubus.'.length);
+  const items = Array.isArray(c) ? c : (c && c.items) || [];
+  expect(items.length).toBeGreaterThan(0);
+  expect(items.map(i => i.label)).toContain('connect');
+});
+
+test('completion resolves a function-local object-type handle', async () => {
+  const code = `import * as fs from 'fs';\nfunction f() {\n  let h = fs.open('/x', 'r');\n  h.\n}`;
+  const c = await server.getCompletions(code, FILE, 3, '  h.'.length);
+  const items = Array.isArray(c) ? c : (c && c.items) || [];
+  expect(items.map(i => i.label)).toContain('read');
+});
+
 // ── Workspace symbols ────────────────────────────────────────────────────────
 test('workspace symbols: query matches symbols in the open document', async () => {
   const code = `function zzqq_unique_handler() { return 1; }\nlet zzqq_unique_const = 2;`;

@@ -197,14 +197,14 @@ export function handleCompletion(
             }
 
             // Unified object type completions (fs.file/dir/proc, io.handle, uloop.*, uci.cursor, nl80211.listener, exception)
-            const objectTypeCompletions = getUnifiedObjectTypeCompletions(objectName, analysisResult);
+            const objectTypeCompletions = getUnifiedObjectTypeCompletions(objectName, analysisResult, offset);
             if (objectTypeCompletions.length > 0) {
                 connection.console.log(`Returning ${objectTypeCompletions.length} object type completions for ${objectName}`);
                 return objectTypeCompletions;
             }
 
             // Unified module completions (all 15 known modules)
-            const moduleCompletions = getUnifiedModuleCompletions(objectName, analysisResult);
+            const moduleCompletions = getUnifiedModuleCompletions(objectName, analysisResult, offset);
             if (moduleCompletions.length > 0) {
                 connection.console.log(`Returning ${moduleCompletions.length} module completions for ${objectName}`);
                 return moduleCompletions;
@@ -449,10 +449,12 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
  * Unified module completion: returns completions for any known module namespace import.
  * Replaces 15+ individual get*ModuleCompletions functions.
  */
-function getUnifiedModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+function getUnifiedModuleCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, offset?: number): CompletionItem[] {
     if (!analysisResult || !analysisResult.symbolTable) return [];
 
-    const symbol = lookupSymbol(objectName, analysisResult);
+    // Position-aware: resolves a function-LOCAL module-typed variable
+    // (`let _ubus = ubus_mod || require('ubus'); _ubus.`), not just globals.
+    const symbol = lookupSymbol(objectName, analysisResult, offset);
     if (!symbol) return [];
 
     // Determine the module name from multiple possible symbol shapes:
@@ -520,10 +522,12 @@ function getUnifiedModuleCompletions(objectName: string, analysisResult?: Semant
  * Unified object type completion: returns completions for any known object type.
  * Handles fs.file/dir/proc, io.handle, uloop.*, uci.cursor, nl80211.listener, exception.
  */
-function getUnifiedObjectTypeCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+function getUnifiedObjectTypeCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, offset?: number): CompletionItem[] {
     if (!analysisResult || !analysisResult.symbolTable) return [];
 
-    const symbol = lookupSymbol(objectName, analysisResult);
+    // Position-aware so a function-LOCAL handle (`let h = fs.open(...); h.`)
+    // resolves its object-type methods, not just a global of the same name.
+    const symbol = lookupSymbol(objectName, analysisResult, offset);
     if (!symbol || !symbol.dataType) return [];
 
     // Detect the object type from the symbol's dataType
