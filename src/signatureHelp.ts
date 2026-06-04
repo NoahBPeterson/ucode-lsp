@@ -96,14 +96,34 @@ export interface CalleeSignature { displayName: string; params: CalleeParam[]; d
  * `label` is the per-param display (with `?`/`...`/type); `name` is the bare name
  * (for inlay parameter-name hints). Shared by signature help + inlay hints.
  */
-export function resolveCalleeParameters(callee: any, symbolTable: any, builtins: Map<string, string>): CalleeSignature | null {
+/** Resolve a factory-returned method's parameters from its cross-file definition
+ *  location. Given (sourceUri, function-node start offset) it returns the method's
+ *  param list. Supplied by the server (which can parse the source file). */
+export type MemberParamResolver = (uri: string, fnStart: number) => CalleeParam[] | null;
+
+export function resolveCalleeParameters(
+    callee: any,
+    symbolTable: any,
+    builtins: Map<string, string>,
+    resolveMemberParams?: MemberParamResolver,
+): CalleeSignature | null {
     if (callee?.type === 'MemberExpression' && !callee.computed && callee.property?.type === 'Identifier'
         && callee.object?.type === 'Identifier') {
         const method: string = callee.property.name;
         const obj = callee.object;
         const objSym: any = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
         const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
-        if (!mt) return null;
+        if (!mt) {
+            // Not a module/object-registry receiver. It may be a factory-returned
+            // object (`let sh = create_sys(…); sh.exec(…)`) — resolve the method's
+            // params from its recorded cross-file definition location.
+            const loc = objSym?.propertyDefinitionLocations?.get?.(method);
+            if (loc && resolveMemberParams) {
+                const params = resolveMemberParams(loc.uri, loc.start);
+                if (params) return { displayName: `${obj.name}.${method}`, params };
+            }
+            return null;
+        }
         const tn = mt.moduleName;
         const sigOpt = isKnownObjectType(tn) ? OBJECT_REGISTRIES[tn].getMethod(method)
             : isKnownModule(tn) ? MODULE_REGISTRIES[tn].getFunction(method)
@@ -156,10 +176,11 @@ export function provideSignatureHelp(
     symbolTable: any,
     builtins: Map<string, string>,
     offset: number,
+    resolveMemberParams?: MemberParamResolver,
 ): SignatureHelp | null {
     const enclosing = findEnclosingCall(ast, offset);
     if (!enclosing) return null;
-    const sig = resolveCalleeParameters(enclosing.call.callee, symbolTable, builtins);
+    const sig = resolveCalleeParameters(enclosing.call.callee, symbolTable, builtins, resolveMemberParams);
     if (!sig) return null;
     return buildSignature(sig.displayName, sig.params.map(p => p.label), enclosing.activeParam, sig.documentation);
 }

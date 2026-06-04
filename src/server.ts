@@ -1197,12 +1197,47 @@ connection.onFoldingRanges((params: FoldingRangeParams): FoldingRange[] => {
     );
 });
 
+/** Find a function node (expression/decl) starting exactly at `start` in `ast`. */
+function findFunctionNodeAt(ast: any, start: number): any | null {
+    let found: any = null;
+    const visit = (node: any): void => {
+        if (found || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        if ((node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression' || node.type === 'FunctionDeclaration')
+            && node.start === start) { found = node; return; }
+        for (const k of Object.keys(node)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = node[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it); }
+            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v);
+        }
+    };
+    visit(ast);
+    return found;
+}
+
+/** Params of a factory-returned method, read from its source-file definition — so
+ *  signature help works for `sh.exec(…)` where `sh = create_sys(…)`. */
+function resolveMemberParamsAt(uri: string, fnStart: number): Array<{ name: string; label: string; isRest: boolean }> | null {
+    const ad = astAndDocFor(uri);
+    if (!ad) return null;
+    const fn = findFunctionNodeAt(ad.ast, fnStart);
+    if (!fn) return null;
+    const out = (fn.params ?? []).map((p: any) => {
+        const isRest = p.type === 'RestElement' || p.type === 'SpreadElement' || !!p.rest;
+        const name = (isRest ? (p.argument?.name ?? p.name) : p.name) ?? '';
+        return { name, label: (isRest ? '...' : '') + name, isRest };
+    });
+    // Rest params are parsed onto a separate `restParam` field, not into `params`.
+    if (fn.restParam?.name) out.push({ name: fn.restParam.name, label: '...' + fn.restParam.name, isRest: true });
+    return out;
+}
+
 connection.onSignatureHelp((params: SignatureHelpParams): SignatureHelp | null => {
     const entry = analysisCache.get(params.textDocument.uri);
     const document = documents.get(params.textDocument.uri);
     if (!entry || !document) return null;
     const offset = document.offsetAt(params.position);
-    return provideSignatureHelp(entry.result.ast, entry.result.symbolTable, allBuiltinFunctions, offset);
+    return provideSignatureHelp(entry.result.ast, entry.result.symbolTable, allBuiltinFunctions, offset, resolveMemberParamsAt);
 });
 
 connection.onDocumentHighlight((params: DocumentHighlightParams): DocumentHighlight[] => {
