@@ -37,6 +37,8 @@ import {
     WorkspaceSymbolParams,
     InlayHint,
     InlayHintParams,
+    FoldingRange,
+    FoldingRangeParams,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -51,6 +53,7 @@ import { handleDefinition } from './definition';
 import { buildDocumentSymbols } from './documentSymbols';
 import { provideSignatureHelp } from './signatureHelp';
 import { computeRawInlayHints, shiftRawHints, materializeRawHints, RawInlayHint } from './inlayHints';
+import { provideFoldingRanges } from './foldingRanges';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalyzer, SemanticAnalysisResult, SymbolType } from './analysis';
 import { UcodeParser } from './parser';
@@ -69,7 +72,7 @@ const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 // `reverseDeps`, it lets us invalidate dependents when one of their imports
 // changes (otherwise A.uc keeps using a stale view of B.uc's exports after
 // B.uc is edited or its on-disk content changes).
-const analysisCache = new Map<string, {result: SemanticAnalysisResult, tokens: any[], timestamp: number, imports: Set<string>}>();
+const analysisCache = new Map<string, {result: SemanticAnalysisResult, tokens: any[], timestamp: number, imports: Set<string>, comments: any[]}>();
 // Offset-anchored inlay hints from the last analysis, plus the document version and
 // text they were computed against. Lets the inlayHint handler shift hints through
 // edits (shiftRawHints) when a request arrives before re-analysis catches up, so
@@ -270,6 +273,7 @@ connection.onInitialize((params: InitializeParams) => {
             workspaceSymbolProvider: true,
             documentHighlightProvider: true,
             inlayHintProvider: true,
+            foldingRangeProvider: true,
             renameProvider: {
                 prepareProvider: true
             },
@@ -456,7 +460,7 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
         const analysisResult = analyzer.analyze(parseResult.ast);
         const newImports = analysisResult.resolvedImports ?? new Set<string>();
         updateImportDeps(textDocument.uri, newImports);
-        analysisCache.set(textDocument.uri, {result: analysisResult, tokens, timestamp: Date.now(), imports: newImports});
+        analysisCache.set(textDocument.uri, {result: analysisResult, tokens, timestamp: Date.now(), imports: newImports, comments: lexer.comments});
 
         // Precompute offset-anchored inlay hints for the whole document and cache
         // them with this version + text, so the inlayHint handler can serve (and
@@ -1111,6 +1115,16 @@ connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
     const start = document.offsetAt(params.range.start);
     const end = document.offsetAt(params.range.end);
     return materializeRawHints(raw, start, end, (offset: number) => document.positionAt(offset));
+});
+
+connection.onFoldingRanges((params: FoldingRangeParams): FoldingRange[] => {
+    const entry = analysisCache.get(params.textDocument.uri);
+    const document = documents.get(params.textDocument.uri);
+    if (!entry || !document) return [];
+    return provideFoldingRanges(
+        entry.result.ast, entry.comments ?? [], document.getText(),
+        (offset: number) => document.positionAt(offset).line,
+    );
 });
 
 connection.onSignatureHelp((params: SignatureHelpParams): SignatureHelp | null => {
