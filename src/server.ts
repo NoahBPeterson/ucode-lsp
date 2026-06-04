@@ -1289,21 +1289,129 @@ function isExportedName(ast: any, name: string): boolean {
     return false;
 }
 
-/** Why a symbol can't be renamed, or null if it can. */
-function renameBlockedReason(uri: string, position: { line: number; character: number }): string | null {
-    const entry = analysisCache.get(uri);
-    if (!entry) return 'no analysis for this document';
-    const resolved = resolveSymbolAt(uri, position);
-    if (!resolved) return 'not an identifier';
-    if (resolved.declaredAt === undefined) {
-        return `'${resolved.name}' has no local declaration to rename (builtin or unresolved)`;
+/** AST + position-mapper for any URI — the open scope-aware analysis if available,
+ *  else the parse-only workspace cache. */
+function astAndDocFor(uri: string): { ast: any; doc: TextDocument } | null {
+    const open = analysisCache.get(uri);
+    const openDoc = documents.get(uri);
+    if (open && openDoc) return { ast: open.result.ast, doc: openDoc };
+    const wf = getWorkspaceFile(uriToFilePath(uri));
+    return wf ? { ast: wf.ast, doc: wf.doc } : null;
+}
+
+/** Does any file import `canonicalName` from `canonicalUri` under an ALIAS
+ *  (`import { foo as f }`)? Aliased imports decouple the local name from the export,
+ *  so a single-name cross-file rename can't handle them — we refuse instead. */
+function hasAliasedImporter(canonicalUri: string, canonicalName: string): boolean {
+    const resolver = getCrossRefResolver();
+    const targetPath = path.resolve(uriToFilePath(canonicalUri));
+    for (const fp of listWorkspaceUcodeFiles()) {
+        if (path.resolve(fp) === targetPath) continue;
+        const uri = filePathToUri(fp);
+        const ad = astAndDocFor(uri);
+        if (!ad) continue;
+        for (const stmt of (ad.ast?.body ?? [])) {
+            if (stmt?.type !== 'ImportDeclaration') continue;
+            const resolved = resolver.resolveImportPath(stmt.source?.value, uri);
+            if (!resolved || path.resolve(uriToFilePath(resolved)) !== targetPath) continue;
+            for (const spec of (stmt.specifiers ?? [])) {
+                if (spec.type === 'ImportSpecifier' && spec.imported?.name === canonicalName
+                    && spec.local?.name !== canonicalName) return true;
+            }
+        }
     }
-    const sym: any = entry.result.symbolTable?.lookupAtPosition?.(resolved.name, resolved.declaredAt)
-        ?? entry.result.symbolTable?.lookup?.(resolved.name);
-    if (sym?.type === SymbolType.IMPORTED) return `'${resolved.name}' is imported — rename it in its source module`;
-    if (isExportedName(entry.result.ast, resolved.name)) return `'${resolved.name}' is exported — renaming would break importers`;
-    if (findCrossFileReferences(uri, resolved.name).length > 0) return `'${resolved.name}' is used in other files`;
-    return null;
+    return false;
+}
+
+/** Import/export SPECIFIER occurrences of `canonicalName` (e.g. `import { foo }`,
+ *  `export { foo }`) across the source file and every importer. findFunctionReferences
+ *  intentionally omits these, but a rename MUST update them or the import breaks. */
+function collectSpecifierSpansForRename(canonicalUri: string, canonicalName: string): Array<{ uri: string; range: Range }> {
+    const out: Array<{ uri: string; range: Range }> = [];
+    const resolver = getCrossRefResolver();
+    const targetPath = path.resolve(uriToFilePath(canonicalUri));
+    const rangeOf = (n: any, doc: TextDocument): Range => ({ start: doc.positionAt(n.start), end: doc.positionAt(n.end) });
+
+    // Source: `export { foo }` / `export { foo as x }` specifiers (rename the local `foo`).
+    const src = astAndDocFor(canonicalUri);
+    if (src) {
+        for (const stmt of (src.ast?.body ?? [])) {
+            if (stmt?.type === 'ExportNamedDeclaration' && !stmt.declaration) {
+                for (const spec of (stmt.specifiers ?? [])) {
+                    if (spec.local?.name === canonicalName) out.push({ uri: canonicalUri, range: rangeOf(spec.local, src.doc) });
+                }
+            }
+        }
+    }
+    // Importers: `import { foo }` specifiers (non-aliased — local shares the range).
+    for (const fp of listWorkspaceUcodeFiles()) {
+        if (path.resolve(fp) === targetPath) continue;
+        const uri = filePathToUri(fp);
+        const ad = astAndDocFor(uri);
+        if (!ad) continue;
+        for (const stmt of (ad.ast?.body ?? [])) {
+            if (stmt?.type !== 'ImportDeclaration') continue;
+            const resolved = resolver.resolveImportPath(stmt.source?.value, uri);
+            if (!resolved || path.resolve(uriToFilePath(resolved)) !== targetPath) continue;
+            for (const spec of (stmt.specifiers ?? [])) {
+                if (spec.type === 'ImportSpecifier' && spec.imported?.name === canonicalName) {
+                    out.push({ uri, range: rangeOf(spec.imported, ad.doc) });
+                }
+            }
+        }
+    }
+    return out;
+}
+
+type RenameTarget =
+    | { kind: 'local' }
+    | { kind: 'crossfile'; canonicalUri: string; canonicalName: string }
+    | { kind: 'blocked'; reason: string };
+
+/** Classify a rename request: a purely-local binding (in-file rename), a safe
+ *  cross-file named export (multi-file rename), or blocked (with a reason). */
+function analyzeRenameTarget(uri: string, position: { line: number; character: number }): RenameTarget {
+    const entry = analysisCache.get(uri);
+    if (!entry) return { kind: 'blocked', reason: 'no analysis for this document' };
+    const resolved = resolveSymbolAt(uri, position);
+    if (!resolved) return { kind: 'blocked', reason: 'not an identifier' };
+    if (resolved.declaredAt === undefined) {
+        return { kind: 'blocked', reason: `'${resolved.name}' has no local declaration to rename (builtin or unresolved)` };
+    }
+    const name = resolved.name;
+    const sym: any = entry.result.symbolTable?.lookupAtPosition?.(name, resolved.declaredAt)
+        ?? entry.result.symbolTable?.lookup?.(name);
+
+    // Canonical (declaring file, export name) for a cross-file symbol.
+    let canonical: { canonicalUri: string; canonicalName: string } | null = null;
+    if (sym?.type === SymbolType.IMPORTED) {
+        canonical = resolveImportedCanonical(uri, name);
+        if (!canonical) return { kind: 'blocked', reason: `'${name}' is imported but its source module couldn't be resolved` };
+    } else if (isExportedName(entry.result.ast, name)) {
+        canonical = { canonicalUri: uri, canonicalName: name };
+    }
+    if (!canonical) return { kind: 'local' };
+
+    // Cross-file safety: only NAMED exports with no aliased importers.
+    const resolver = getCrossRefResolver();
+    const exps = resolver.getModuleExports(canonical.canonicalUri);
+    const isNamed = !!exps?.some(e => e.type === 'named' && e.name === canonical!.canonicalName);
+    const isDefault = !!exps?.some(e => e.type === 'default' && e.exportedName === canonical!.canonicalName);
+    if (!isNamed) {
+        return isDefault
+            ? { kind: 'blocked', reason: `'${name}' is a default export — importers bind it positionally; rename each import's local name individually` }
+            : { kind: 'blocked', reason: `'${name}' isn't a resolvable named export` };
+    }
+    if (hasAliasedImporter(canonical.canonicalUri, canonical.canonicalName)) {
+        return { kind: 'blocked', reason: `'${name}' is imported under an alias elsewhere — cross-file rename of aliased imports isn't supported` };
+    }
+    return { kind: 'crossfile', canonicalUri: canonical.canonicalUri, canonicalName: canonical.canonicalName };
+}
+
+/** Why a symbol can't be renamed, or null if it can (local OR safe cross-file). */
+function renameBlockedReason(uri: string, position: { line: number; character: number }): string | null {
+    const target = analyzeRenameTarget(uri, position);
+    return target.kind === 'blocked' ? target.reason : null;
 }
 
 connection.onPrepareRename((params: PrepareRenameParams): { range: Range; placeholder: string } | null => {
@@ -1324,15 +1432,28 @@ connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null => {
     const newName = params.newName;
     // Reject invalid identifiers (the editor usually pre-validates, but be safe).
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(newName)) return null;
-    if (renameBlockedReason(params.textDocument.uri, params.position)) return null;
-    // includeDeclaration=true: rename the binding's declaration too. All edits are
-    // in-file (cross-file/exported names are refused above).
-    const locations = collectReferences(params.textDocument.uri, params.position, true);
-    if (locations.length === 0) return null;
-    const edits = locations
-        .filter(loc => loc.uri === params.textDocument.uri)
-        .map(loc => TextEdit.replace(loc.range, newName));
-    return { changes: { [params.textDocument.uri]: edits } };
+    const target = analyzeRenameTarget(params.textDocument.uri, params.position);
+    if (target.kind === 'blocked') return null;
+
+    // The reference set (declaration + usages across files, includeDeclaration=true).
+    const spans: Array<{ uri: string; range: Range }> =
+        collectReferences(params.textDocument.uri, params.position, true).map(l => ({ uri: l.uri, range: l.range }));
+    // Cross-file renames also need the import/export specifiers, which references omit.
+    if (target.kind === 'crossfile') {
+        spans.push(...collectSpecifierSpansForRename(target.canonicalUri, target.canonicalName));
+    }
+    if (spans.length === 0) return null;
+
+    // Dedup and group edits per file.
+    const changes: { [uri: string]: TextEdit[] } = {};
+    const seen = new Set<string>();
+    for (const { uri, range } of spans) {
+        const key = `${uri}:${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        (changes[uri] ??= []).push(TextEdit.replace(range, newName));
+    }
+    return { changes };
 });
 
 // --- Quick Fix helpers ---
