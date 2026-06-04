@@ -1743,7 +1743,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     const symbol = this.symbolTable.lookup(objectName);
     if (!symbol) {
       if (this.isKnownModuleName(objectName)) {
-        this.addDiagnostic(
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.MODULE_NOT_IMPORTED,
           `Cannot use '${objectName}' module without importing it first. Add: import { ${methodName} } from '${objectName}'; or import * as ${objectName} from '${objectName}';`,
           node.object.start,
           node.object.end,
@@ -2713,7 +2714,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
     const callNode = node as CallExpressionNode;
 
-    // Named import: open(), statvfs(), etc.
+    // Named import: open(), statvfs(), etc. (Bare `open()` without an import is
+    // intentionally treated as the fs builtin — see test-io-module.)
     if (callNode.callee.type === 'Identifier') {
       const funcName = (callNode.callee as IdentifierNode).name;
       // Skip if imported from a non-fs module (e.g. io.open)
@@ -2724,12 +2726,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       return getFsReturnObjectType(funcName);
     }
 
-    // Member expression: fs.open(), fs.statvfs(), etc.
+    // Member expression: fs.open(), fs.statvfs(), etc. — only when `fs` is the
+    // genuinely-imported fs module. An unimported (or shadowed) `fs` makes
+    // `fs.open()` invalid (UC3006), so it must not be typed as fs.file.
     if (callNode.callee.type === 'MemberExpression') {
       const memberNode = callNode.callee as MemberExpressionNode;
       if (memberNode.object.type === 'Identifier' &&
           (memberNode.object as IdentifierNode).name === 'fs' &&
           memberNode.property.type === 'Identifier') {
+        const fsSym = this.symbolTable.lookup('fs');
+        if (!fsSym || extractModuleType(fsSym.dataType)?.moduleName !== 'fs') return null;
         return getFsReturnObjectType((memberNode.property as IdentifierNode).name);
       }
     }

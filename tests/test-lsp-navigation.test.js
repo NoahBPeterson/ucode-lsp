@@ -151,6 +151,18 @@ test('inlay hints: obvious literal inits get no type hint', async () => {
   expect(typeHints.length).toBe(0);
 });
 
+// ── Quick fix: add missing module import (UC3006) ────────────────────────────
+test('UC3006 (module used without importing) offers add-import quick fixes', async () => {
+  const code = `function f() {\n  let h = fs.open('/', 'r');\n}`;
+  const ds = await server.getDiagnostics(code, FILE);
+  const d = (ds || []).find(x => x.code === 'UC3006');
+  expect(d).toBeTruthy();
+  const acts = await server.getCodeActions(FILE, [d], d.range.start.line, d.range.start.character);
+  const titles = (acts || []).map(a => a.title);
+  expect(titles).toContain("Add import { open } from 'fs';");
+  expect(titles).toContain("Add import * as fs from 'fs';");
+});
+
 // ── Workspace symbols ────────────────────────────────────────────────────────
 test('workspace symbols: query matches symbols in the open document', async () => {
   const code = `function zzqq_unique_handler() { return 1; }\nlet zzqq_unique_const = 2;`;

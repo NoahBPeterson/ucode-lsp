@@ -1765,6 +1765,19 @@ export class TypeChecker {
         }
       }
 
+      // Unimported known module (`fs.open()` with no `import`): the call is
+      // invalid (semanticAnalyzer flags UC3006), so don't infer a confident type
+      // — fall through to UNKNOWN. Without this, the generic resolver below maps
+      // `fs.open` to its return object type `fs.file` (dropping the `| null`),
+      // giving the broken/unimported call a MORE specific type than the correct
+      // imported call (`fs.file | null`). Once imported, fs has a symbol and the
+      // namespace branch above resolves the real return type.
+      if (memberCallee.object.type === 'Identifier' && memberCallee.property.type === 'Identifier'
+          && !this.symbolTable.lookup((memberCallee.object as IdentifierNode).name)
+          && isKnownModule((memberCallee.object as IdentifierNode).name)) {
+        return UcodeType.UNKNOWN;
+      }
+
       // Member expression calls — resolve the call's return type from the callee.
       const calleeType = this.checkNode(node.callee);
       // A callee that IS a function (bare FUNCTION) → calling it yields unknown:

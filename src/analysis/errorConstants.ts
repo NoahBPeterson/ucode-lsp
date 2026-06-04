@@ -31,6 +31,7 @@ export enum UcodeErrorCode {
   INVALID_EXPORT = 'UC3003',
   CIRCULAR_DEPENDENCY = 'UC3004',
   EXPORT_NOT_FOUND = 'UC3005',
+  MODULE_NOT_IMPORTED = 'UC3006',
 
   // Control flow errors (4000-4999)
   UNREACHABLE_CODE = 'UC4001',

@@ -597,6 +597,11 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 codeActions.push(...importActions);
             }
 
+            // UC3006: a known module used without importing it → offer to add the import.
+            if (diagnostic.code === 'UC3006' && ast) {
+                codeActions.push(...generateAddImportQuickFix(diagnostic, document, ast, params.textDocument.uri));
+            }
+
             // Quick-fix for the UC2009 type()-string mismatch: replace the wrong
             // type string (e.g. "number", "integer", "boolean") with the correct
             // ucode type name(s) ("int"/"double", "int", "bool").
@@ -2032,6 +2037,46 @@ function findFunctionAtOffset(node: any, offset: number): any | null {
  * Generate quick fix for UC7001 (unknown type in @param annotation).
  * If the unknown type name matches a resolvable module, offer import() replacement.
  */
+// Quick fix for UC3006 (a known module used without importing): insert an import
+// at the top of the file (after any existing imports / 'use strict'). Offers a
+// named import of the accessed method and a namespace import.
+function generateAddImportQuickFix(
+    diagnostic: any, document: TextDocument, ast: any, uri: string
+): CodeAction[] {
+    const moduleName = document.getText(diagnostic.range);
+    if (!/^[A-Za-z_]\w*$/.test(moduleName)) return [];
+    // The method accessed: the identifier after the `.` following the receiver.
+    const tailStart = document.offsetAt(diagnostic.range.end);
+    const tail = document.getText({ start: diagnostic.range.end, end: document.positionAt(tailStart + 64) });
+    const m = /^\s*\.\s*([A-Za-z_]\w*)/.exec(tail);
+    const methodName = m ? m[1] : null;
+
+    // Anchor: end of the leading run of imports / 'use strict' directive.
+    let anchorEnd = -1;
+    for (const stmt of (ast.body || [])) {
+        if (stmt?.type === 'ImportDeclaration') anchorEnd = stmt.end;
+        else if (anchorEnd === -1 && stmt?.type === 'ExpressionStatement'
+            && stmt.expression?.type === 'Literal' && stmt.expression.value === 'use strict') anchorEnd = stmt.end;
+        else break;
+    }
+    const mkAction = (importText: string, preferred: boolean): CodeAction => {
+        const edit = anchorEnd >= 0
+            ? TextEdit.insert(document.positionAt(anchorEnd), `\n${importText}`)
+            : TextEdit.insert({ line: 0, character: 0 }, `${importText}\n`);
+        return {
+            title: `Add ${importText}`,
+            kind: CodeActionKind.QuickFix,
+            diagnostics: [diagnostic],
+            isPreferred: preferred,
+            edit: { changes: { [uri]: [edit] } },
+        };
+    };
+    const actions: CodeAction[] = [];
+    if (methodName) actions.push(mkAction(`import { ${methodName} } from '${moduleName}';`, true));
+    actions.push(mkAction(`import * as ${moduleName} from '${moduleName}';`, !methodName));
+    return actions;
+}
+
 function generateImportTypeQuickFix(
     diagnostic: any, document: TextDocument, uri: string
 ): CodeAction[] {
