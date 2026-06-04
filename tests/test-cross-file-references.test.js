@@ -203,3 +203,17 @@ test('R21: bar references include foo usage, not bar itself, when querying foo',
   expect(got).toContain('lib.uc:1'); // the foo() call site
   expect(got).toContain('main.uc:4');
 });
+
+test('R22: namespace member from the IMPORTER side resolves cross-file', async () => {
+  // click `foo` in nsuser.uc `lib.foo()` — previously returned nothing.
+  const got = await refsAt('nsuser.uc', 2, 'foo');
+  expect(got).toContain('lib.uc:0');   // declaration
+  expect(got).toContain('main.uc:4');  // another importer's usage
+  expect(got).toContain('nsuser.uc:2'); // the lib.foo() site itself
+});
+
+test('R23: factory-returned method from the IMPORTER side resolves cross-file', async () => {
+  // click `run` in main.uc `w.run(1, 2)` (w = make()) — previously returned nothing.
+  const got = await refsAt('main.uc', 7, 'run');
+  expect(got).toContain('main.uc:7');
+});

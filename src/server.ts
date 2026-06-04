@@ -1134,10 +1134,80 @@ function collectInFileRefsByName(targetUri: string, name: string): Array<{ uri: 
     return out;
 }
 
+/** The non-computed member expression whose `.property` identifier spans `offset`. */
+function findMemberPropertyAt(ast: any, offset: number): { object: any; property: any } | null {
+    let found: { object: any; property: any } | null = null;
+    const visit = (node: any): void => {
+        if (found || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        if (node.type === 'MemberExpression' && !node.computed && node.property?.type === 'Identifier'
+            && offset >= node.property.start && offset <= node.property.end) {
+            found = { object: node.object, property: node.property };
+            return;
+        }
+        for (const k of Object.keys(node)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = node[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it); }
+            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v);
+        }
+    };
+    visit(ast);
+    return found;
+}
+
+/** When the cursor is on a member property `X.prop` whose receiver `X` is a namespace
+ *  import or a factory-returned local, resolve it to the file that declares `prop` so
+ *  references can fan out — clicking `lib.foo` / `sh.exec` in an importer otherwise
+ *  resolves to nothing (the bare name isn't an imported symbol). */
+function resolveMemberCanonical(uri: string, position: { line: number; character: number }): { canonicalUri: string; canonicalName: string } | null {
+    const entry = analysisCache.get(uri);
+    const document = documents.get(uri);
+    if (!entry || !document) return null;
+    const member = findMemberPropertyAt(entry.result.ast, document.offsetAt(position));
+    if (!member || member.object.type !== 'Identifier') return null;
+    const objName = member.object.name as string;
+    const propName = member.property.name as string;
+
+    // Namespace import: `import * as lib` → `lib.prop` is the named export `prop`.
+    const resolver = getCrossRefResolver();
+    for (const b of getImportBindings(entry.result.ast)) {
+        if (b.namespaceLocal === objName) {
+            const su = resolver.resolveImportPath(b.source, uri);
+            return su ? { canonicalUri: su, canonicalName: propName } : null;
+        }
+    }
+    // Factory-returned local: `let sh = make()` → `sh.prop` is a method whose source
+    // file is recorded on the receiver symbol's propertyDefinitionLocations.
+    const objSym: any = entry.result.symbolTable?.lookupAtPosition?.(objName, member.object.start)
+        ?? entry.result.symbolTable?.lookup?.(objName);
+    const loc = objSym?.propertyDefinitionLocations?.get?.(propName);
+    if (loc?.uri) return { canonicalUri: loc.uri, canonicalName: propName };
+    return null;
+}
+
 function collectReferences(uri: string, position: { line: number; character: number }, includeDeclaration: boolean): Location[] {
     const entry = analysisCache.get(uri);
     const document = documents.get(uri);
     if (!entry || !document) return [];
+
+    // Member-property click on an importer side (`lib.foo` / `sh.exec`): route to the
+    // file that declares it, then fan out. The bare property name isn't an imported
+    // symbol, so without this it would resolve to nothing.
+    const memberCanon = resolveMemberCanonical(uri, position);
+    if (memberCanon) {
+        const out: Location[] = [];
+        const seenM = new Set<string>();
+        const addM = (u: string, range: Range) => {
+            const key = `${u}:${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`;
+            if (seenM.has(key)) return;
+            seenM.add(key);
+            out.push(Location.create(u, range));
+        };
+        for (const r of collectInFileRefsByName(memberCanon.canonicalUri, memberCanon.canonicalName)) addM(r.uri, r.range as Range);
+        for (const r of findCrossFileReferences(memberCanon.canonicalUri, memberCanon.canonicalName)) addM(r.uri, r.range as Range);
+        return out;
+    }
+
     const resolved = resolveSymbolAt(uri, position);
     if (!resolved) return [];
     const { name, declaredAt, isReference } = resolved;
