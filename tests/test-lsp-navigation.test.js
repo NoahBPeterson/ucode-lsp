@@ -115,3 +115,20 @@ test('signature help for a user function uses its parameter list', async () => {
   expect(sh.signatures[0].label).toBe('greet(name, age)');
   expect(sh.activeParameter).toBe(1);
 });
+
+test('signature help for a module-namespace method (fs.open) with optional params', async () => {
+  const code = `import * as fs from 'fs';\nfunction f() { let h = fs.open("/etc/x", "r"); }`;
+  const p = at(code, 'fs.open("/etc/x", ', 'fs.open("/etc/x", '.length); // cursor at the 2nd arg
+  const sh = await server.getSignatureHelp(code, FILE, p.line, p.character);
+  expect(sh).not.toBeNull();
+  expect(sh.signatures[0].label).toBe('fs.open(path, mode?, perm?)');
+  expect(sh.activeParameter).toBe(1);
+});
+
+test('signature help for an object-type method (fs.file handle .read)', async () => {
+  const code = `import * as fs from 'fs';\nfunction f() {\n  let h = fs.open("/x", "r");\n  h.read(1024);\n}`;
+  const p = at(code, 'h.read(', 'h.read('.length);
+  const sh = await server.getSignatureHelp(code, FILE, p.line, p.character);
+  expect(sh).not.toBeNull();
+  expect(sh.signatures[0].label.startsWith('h.read(')).toBe(true);
+});

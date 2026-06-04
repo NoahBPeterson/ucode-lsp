@@ -7,6 +7,9 @@
 import {
     SignatureHelp, SignatureInformation, ParameterInformation, MarkupKind,
 } from 'vscode-languageserver/node';
+import { extractModuleType } from './analysis/symbolTable';
+import { isKnownModule, isKnownObjectType, MODULE_REGISTRIES, OBJECT_REGISTRIES } from './analysis/moduleDispatch';
+import { Option } from 'effect';
 
 interface ParamInfo { name: string; type?: any; isRest?: boolean }
 
@@ -95,11 +98,37 @@ export function provideSignatureHelp(
     const enclosing = findEnclosingCall(ast, offset);
     if (!enclosing) return null;
     const { call, activeParam } = enclosing;
-    if (call.callee?.type !== 'Identifier') return null;
-    const name: string = call.callee.name;
+    const callee = call.callee;
+
+    // Member call: `receiver.method(…)` on a known module namespace (fs.open) or
+    // object type (a fs.file handle's .read). Resolve the receiver's type and pull
+    // the method's signature from the registries.
+    if (callee?.type === 'MemberExpression' && !callee.computed && callee.property?.type === 'Identifier') {
+        const method: string = callee.property.name;
+        const obj = callee.object;
+        if (obj?.type === 'Identifier') {
+            const objSym: any = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
+            const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
+            if (mt) {
+                const tn = mt.moduleName;
+                const sigOpt = isKnownObjectType(tn) ? OBJECT_REGISTRIES[tn].getMethod(method)
+                    : isKnownModule(tn) ? MODULE_REGISTRIES[tn].getFunction(method)
+                    : Option.none();
+                if (Option.isSome(sigOpt)) {
+                    const sig = sigOpt.value;
+                    const labels = sig.parameters.map(p => p.optional ? `${p.name}?` : p.name);
+                    return buildSignature(`${obj.name}.${method}`, labels, activeParam, sig.description || undefined);
+                }
+            }
+        }
+        return null;
+    }
+
+    if (callee?.type !== 'Identifier') return null;
+    const name: string = callee.name;
 
     // User function first (so a local function shadowing a builtin name wins).
-    const sym: any = symbolTable?.lookupAtPosition?.(name, call.callee.start) ?? symbolTable?.lookup?.(name);
+    const sym: any = symbolTable?.lookupAtPosition?.(name, callee.start) ?? symbolTable?.lookup?.(name);
     const userParams: ParamInfo[] | undefined = sym?.parameters;
     if (Array.isArray(userParams)) {
         const labels = userParams.map(p => {
