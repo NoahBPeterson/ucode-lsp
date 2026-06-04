@@ -3025,9 +3025,23 @@ function generateTypeNarrowingQuickFixes(
                     : (exIsUnion
                         ? exExpectedTypes.map((t: string) => `type(${vn}) == "${t}"`).join(' || ')
                         : `type(${vn}) == "${expectedType}"`);
-                actions.push(makeReplaceLineAction(actionLabel,
-                    `${indent}let ${vn} = ${exprText};\n${indent}if (${wrapCond}) {\n${indent}\t${replaced.trim()}\n${indent}}`,
-                    line, lineLength, uri, diagnostic));
+                const declMatch = (varUsedLater && declaredVar)
+                    ? replaced.trim().match(/^((?:let|const)\s+\w+\s*=\s*)([\s\S]*?);?\s*$/)
+                    : null;
+                if (declMatch) {
+                    // Wrapping a declaration in an if-block would scope the declared
+                    // variable inside it and break its later uses. At top level we can't
+                    // early-return either, so use a scope-preserving ternary:
+                    //   let _val = expr;
+                    //   const x = <cond> ? <rhs> : null;
+                    actions.push(makeReplaceLineAction(actionLabel,
+                        `${indent}let ${vn} = ${exprText};\n${indent}${declMatch[1]}${wrapCond} ? ${declMatch[2]} : null;`,
+                        line, lineLength, uri, diagnostic));
+                } else {
+                    actions.push(makeReplaceLineAction(actionLabel,
+                        `${indent}let ${vn} = ${exprText};\n${indent}if (${wrapCond}) {\n${indent}\t${replaced.trim()}\n${indent}}`,
+                        line, lineLength, uri, diagnostic));
+                }
             }
         }
     }

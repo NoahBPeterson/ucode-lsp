@@ -467,3 +467,38 @@ describe('alternative fix paths (apply + resolve)', () => {
     expect(countCode(diags, 'nullable-argument')).toBe(0);
   });
 });
+
+// ── Scope preservation: a guard must NOT block-scope a declaration used later ──
+describe('declaration used later is not block-scoped by the guard', () => {
+  const H = '/**\n * @param {string} s\n */\nfunction htmldecode(s){return s;}\n';
+
+  test('top-level `const x = f(nullable)` used later → scope-preserving ternary, not a wrapping block', async () => {
+    const code = H + "const ssid = htmldecode(getenv('SSID'));\nif (!ssid) { print('x'); }\n";
+    const { diag, actions } = await fixCtx(code, 'scope', (d) => d.code === 'incompatible-function-argument');
+    expect(diag).toBeDefined();
+    const a = actions.find((x) => /and add type guard/.test(x.title));
+    expect(a).toBeDefined();
+    const { patched, diags } = await applyAndReanalyze(code, a, 'scope');
+    // Uses a ternary, not an if-block that would scope `ssid` away.
+    expect(patched).toContain('? htmldecode');
+    expect(patched).toContain(': null');
+    expect(patched).not.toMatch(/if \(type\([^)]*\) == "string"\) \{/);
+    expect(bracesBalanced(patched)).toBe(true);
+    // The crux: `ssid` is still in scope for `if (!ssid)` — no Undefined variable.
+    const undefSsid = diags.filter((d) => d.code === 'UC1001' && /ssid/.test(d.message || ''));
+    expect(undefSsid.length).toBe(0);
+    // And the original nullable-arg diagnostic is resolved.
+    expect(countCode(diags, 'incompatible-function-argument')).toBe(0);
+  });
+
+  test('top-level statement (non-declaration) still wraps in a block', async () => {
+    const code = H + "print(htmldecode(getenv('SSID')));\n";
+    const { diag, actions } = await fixCtx(code, 'nodecl', (d) => d.code === 'incompatible-function-argument');
+    expect(diag).toBeDefined();
+    const a = actions.find((x) => /and add type guard/.test(x.title));
+    expect(a).toBeDefined();
+    const { patched } = await applyAndReanalyze(code, a, 'nodecl');
+    expect(patched).toMatch(/if \(type\([^)]*\) == "string"\) \{/);
+    expect(bracesBalanced(patched)).toBe(true);
+  });
+});
