@@ -36,7 +36,10 @@ read
             `Expected 'readfile' in completions, got: ${names.filter(n => n.startsWith('read')).join(', ')}`);
     });
 
-    it('should complete scoped import inside function body', async function() {
+    it('should NOT complete an invalid import nested in a function body', async function() {
+        // Imports are only valid at module (top-level) scope. An import inside a
+        // function body is invalid (UC3007) and its binding must not enter scope,
+        // so it should not be offered as a completion.
         const code = `function create_pbr() {
     import {readfile} from 'fs';
     read
@@ -45,8 +48,8 @@ read
         // cursor at line 2, char 8 (after "    read")
         const completions = await getCompletions(code, testFile, 2, 8);
         const names = completionNames(completions);
-        assert.ok(names.includes('readfile'),
-            `Expected 'readfile' in completions inside function, got: ${names.filter(n => n.startsWith('read')).join(', ')}`);
+        assert.ok(!names.includes('readfile'),
+            `'readfile' should NOT be completed from an invalid nested import, got: ${names.filter(n => n.startsWith('read')).join(', ')}`);
     });
 
     it('should complete function parameters inside body', async function() {

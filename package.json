@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.6.143",
+  "version": "0.6.144",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
@@ -84,6 +84,12 @@
           "type": "number",
           "default": 100,
           "description": "Controls the maximum number of problems produced by the server."
+        },
+        "ucode.inlayHints.enable": {
+          "scope": "window",
+          "type": "boolean",
+          "default": true,
+          "description": "Show inlay hints (inline type and parameter-name annotations) in ucode files. The built-in 'editor.inlayHints.enabled' setting still applies on top of this."
         },
         "ucode.trace.server": {
           "scope": "window",

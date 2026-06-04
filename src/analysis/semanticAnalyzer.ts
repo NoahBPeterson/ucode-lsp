@@ -686,6 +686,23 @@ export class SemanticAnalyzer extends BaseVisitor {
        
   visitImportDeclaration(node: ImportDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
+      // Imports must appear at module (top-level) scope. getCurrentScope() is 0 at
+      // the module level and >0 inside any function body or block (e.g. an `if {}`),
+      // since visitBlockStatement/visitFunctionDeclaration each enterScope(). An import
+      // at a non-module scope is invalid, so we flag it AND do NOT declare its bindings:
+      // the names must not enter scope, so there's no module hover/completion for them
+      // and downstream uses correctly resolve as undefined.
+      if (this.symbolTable.getCurrentScope() > 0) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.IMPORT_NOT_TOP_LEVEL,
+          "Import declarations may only appear at the top level of a module, not inside a function or block",
+          node.start,
+          node.end,
+          DiagnosticSeverity.Error
+        );
+        return;
+      }
+
       const modulePath = node.source.value as string;
 
       // Validate import specifiers against module exports

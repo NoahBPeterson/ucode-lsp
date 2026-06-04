@@ -143,14 +143,29 @@ function createLSPTestServer(options = {}) {
           case 'client/registerCapability':
             respond(null);
             break;
-          case 'workspace/configuration':
-            respond(new Array((message.params?.items || []).length).fill(null));
+          case 'workspace/configuration': {
+            // Answer with injected values when a test passes `options.configuration`
+            // (a map of section -> value); otherwise default to null per item.
+            const items = message.params?.items || [];
+            respond(items.map((it) => {
+              const section = it?.section;
+              if (options.configuration && section && Object.prototype.hasOwnProperty.call(options.configuration, section)) {
+                return options.configuration[section];
+              }
+              return null;
+            }));
             break;
+          }
           case 'window/showMessageRequest':
             respond(message.params?.actions?.[0] ?? null);
             break;
           case 'workspace/applyEdit':
             respond({ applied: true });
+            break;
+          case 'workspace/inlayHint/refresh':
+          case 'workspace/semanticTokens/refresh':
+          case 'workspace/codeLens/refresh':
+            respond(null);
             break;
           default:
             respondErr(-32601, `Not implemented in test harness: ${message.method}`);

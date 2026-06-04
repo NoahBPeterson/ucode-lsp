@@ -50,7 +50,7 @@ import { handleCompletion, handleCompletionResolve } from './completion';
 import { handleDefinition } from './definition';
 import { buildDocumentSymbols } from './documentSymbols';
 import { provideSignatureHelp } from './signatureHelp';
-import { provideInlayHints } from './inlayHints';
+import { computeRawInlayHints, shiftRawHints, materializeRawHints, RawInlayHint } from './inlayHints';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalyzer, SemanticAnalysisResult, SymbolType } from './analysis';
 import { UcodeParser } from './parser';
@@ -70,6 +70,11 @@ const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 // changes (otherwise A.uc keeps using a stale view of B.uc's exports after
 // B.uc is edited or its on-disk content changes).
 const analysisCache = new Map<string, {result: SemanticAnalysisResult, tokens: any[], timestamp: number, imports: Set<string>}>();
+// Offset-anchored inlay hints from the last analysis, plus the document version and
+// text they were computed against. Lets the inlayHint handler shift hints through
+// edits (shiftRawHints) when a request arrives before re-analysis catches up, so
+// hints stay glued to the code instead of blanking or overlapping. See inlayHints.ts.
+const inlayCache = new Map<string, {version: number, text: string, raw: RawInlayHint[]}>();
 const reverseDeps = new Map<string, Set<string>>(); // importedUri → set of importer URIs
 
 // Debounce timers for document analysis - prevents re-analysis on every keystroke
@@ -89,6 +94,31 @@ const openAnalyzedVersion = new Map<string, number>();
 // Workspace folders for directory scanning
 let workspaceFolders: string[] = [];
 let hasConfigurationCapability = false;
+let hasInlayHintRefreshSupport = false;
+// Cached `ucode.inlayHints.enable` setting (refreshed on config change). The
+// inlayHint handler is synchronous, so we can't fetch config per request — we keep
+// the latest value here and re-pull it when the client signals a settings change.
+let inlayHintsEnabled = true;
+
+// Ask the editor to re-request inlay hints, ignoring failures. refresh() returns a
+// promise that rejects if the client can't service it; an uncaught rejection here
+// would surface as an unhandled rejection, so always swallow it.
+function requestInlayHintRefresh(): void {
+    if (!hasInlayHintRefreshSupport) return;
+    connection.languages.inlayHint.refresh().catch(() => { /* best-effort */ });
+}
+
+// Pull the current inlay-hint setting from the client and cache it. Falls back to
+// enabled if the client doesn't support workspace/configuration or the read fails.
+async function refreshInlayHintSetting(): Promise<void> {
+    if (!hasConfigurationCapability) { inlayHintsEnabled = true; return; }
+    try {
+        const cfg = await connection.workspace.getConfiguration({ section: 'ucode.inlayHints' });
+        inlayHintsEnabled = cfg?.enable !== false; // default true when unset
+    } catch {
+        inlayHintsEnabled = true;
+    }
+}
 let hasWorkspaceFolderCapability = false;
 
 // Simple URI to file path conversion for file:// URIs
@@ -205,6 +235,10 @@ connection.onInitialize((params: InitializeParams) => {
     hasWorkspaceFolderCapability = !!(
         capabilities.workspace && !!capabilities.workspace.workspaceFolders
     );
+    hasInlayHintRefreshSupport = !!(
+        capabilities.workspace && capabilities.workspace.inlayHint &&
+        capabilities.workspace.inlayHint.refreshSupport
+    );
 
     // Initialize workspace folders
     if (params.workspaceFolders) {
@@ -266,6 +300,10 @@ connection.onInitialized(async () => {
     if (hasConfigurationCapability) {
         connection.client.register(DidChangeConfigurationNotification.type, undefined);
     }
+    // Cache the initial inlay-hint setting. Fire-and-forget: awaiting a pull-based
+    // getConfiguration inside the initialized handler can stall the connection, so we
+    // let it resolve in the background and refresh hints once the value is known.
+    refreshInlayHintSetting().then(() => requestInlayHintRefresh());
     if (hasWorkspaceFolderCapability) {
         connection.workspace.onDidChangeWorkspaceFolders(async (event: WorkspaceFoldersChangeEvent) => {
             connection.console.log('Workspace folder change event received.');
@@ -316,6 +354,9 @@ documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
     // Drop the open-buffer override so cross-file resolution falls back to disk.
     clearOpenDocumentContent(e.document.uri);
     openAnalyzedVersion.delete(e.document.uri);
+    // Inlay hints only matter for open documents (no cross-file role like
+    // analysisCache), so drop the cache to avoid leaking entries for closed files.
+    inlayCache.delete(e.document.uri);
 });
 
 documents.onDidChangeContent(async (change: TextDocumentChangeEvent<TextDocument>) => {
@@ -417,14 +458,28 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
         updateImportDeps(textDocument.uri, newImports);
         analysisCache.set(textDocument.uri, {result: analysisResult, tokens, timestamp: Date.now(), imports: newImports});
 
+        // Precompute offset-anchored inlay hints for the whole document and cache
+        // them with this version + text, so the inlayHint handler can serve (and
+        // shift) them without re-walking the AST per request.
+        const rawHints = computeRawInlayHints(parseResult.ast, analysisResult.symbolTable, allBuiltinFunctions);
+        inlayCache.set(textDocument.uri, {version: textDocument.version, text, raw: rawHints});
+
         // Semantic analysis diagnostics are already filtered by the SemanticAnalyzer itself
         diagnostics.push(...analysisResult.diagnostics);
     } else {
         purgeImportDeps(textDocument.uri);
         analysisCache.delete(textDocument.uri);
+        inlayCache.delete(textDocument.uri);
     }
 
     connection.sendDiagnostics({ uri: textDocument.uri, diagnostics });
+
+    // The analysisCache (the source of inlay-hint positions) just changed. Inlay
+    // hint requests are debounced behind edits, so without an explicit refresh the
+    // editor keeps showing hints computed against the previous AST — their offsets
+    // no longer line up with the edited text and render on top of real code. Ask the
+    // editor to re-request now that the cache matches the current document version.
+    requestInlayHintRefresh();
 }
 
 /** Diff the file's previous and new import sets, updating reverseDeps so
@@ -1033,16 +1088,29 @@ connection.onReferences((params: ReferenceParams): Location[] => {
     return collectReferences(params.textDocument.uri, params.position, params.context?.includeDeclaration ?? true);
 });
 
+connection.onDidChangeConfiguration(async () => {
+    // Re-pull settings (e.g. ucode.inlayHints.enable) and ask the editor to
+    // re-request hints so toggling the setting takes effect immediately.
+    await refreshInlayHintSetting();
+    requestInlayHintRefresh();
+});
+
 connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
-    const entry = analysisCache.get(params.textDocument.uri);
+    if (!inlayHintsEnabled) return [];
+    const cached = inlayCache.get(params.textDocument.uri);
     const document = documents.get(params.textDocument.uri);
-    if (!entry || !document) return [];
+    if (!cached || !document) return [];
+    // The cached hint offsets are valid against the version they were computed from.
+    // Analysis is debounced behind edits, so the buffer may have advanced since. When
+    // it has, remap the offsets through the text delta (optimistic position-shift) so
+    // the hints stay glued to the code instead of overlapping it or blanking; the
+    // post-analysis inlayHint.refresh() then swaps in exact positions.
+    const raw = cached.version === document.version
+        ? cached.raw
+        : shiftRawHints(cached.raw, cached.text, document.getText());
     const start = document.offsetAt(params.range.start);
     const end = document.offsetAt(params.range.end);
-    return provideInlayHints(
-        entry.result.ast, entry.result.symbolTable, allBuiltinFunctions,
-        start, end, (offset: number) => document.positionAt(offset),
-    );
+    return materializeRawHints(raw, start, end, (offset: number) => document.positionAt(offset));
 });
 
 connection.onSignatureHelp((params: SignatureHelpParams): SignatureHelp | null => {
