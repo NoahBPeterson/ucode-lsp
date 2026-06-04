@@ -20,6 +20,19 @@ import {
     CodeLens,
     CodeLensParams,
     Command,
+    Location,
+    ReferenceParams,
+    Range,
+    DocumentSymbol,
+    DocumentSymbolParams,
+    RenameParams,
+    PrepareRenameParams,
+    WorkspaceEdit,
+    DocumentHighlight,
+    DocumentHighlightKind,
+    DocumentHighlightParams,
+    SignatureHelp,
+    SignatureHelpParams,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -31,9 +44,12 @@ import { findFunctionReferences, findNamespaceMemberReferences, findFactoryMetho
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
 import { handleDefinition } from './definition';
-import { SemanticAnalyzer, SemanticAnalysisResult } from './analysis';
+import { buildDocumentSymbols } from './documentSymbols';
+import { provideSignatureHelp } from './signatureHelp';
+import { allBuiltinFunctions } from './builtins';
+import { SemanticAnalyzer, SemanticAnalysisResult, SymbolType } from './analysis';
 import { UcodeParser } from './parser';
-import { UcodeLexer } from './lexer';
+import { UcodeLexer, TokenType } from './lexer';
 import { FileResolver } from './analysis/fileResolver';
 import { MODULE_REGISTRIES } from './analysis/moduleDispatch';
 import { Option } from 'effect';
@@ -210,6 +226,16 @@ connection.onInitialize((params: InitializeParams) => {
             },
             hoverProvider: true,
             definitionProvider: true,
+            referencesProvider: true,
+            documentSymbolProvider: true,
+            documentHighlightProvider: true,
+            renameProvider: {
+                prepareProvider: true
+            },
+            signatureHelpProvider: {
+                triggerCharacters: ['(', ','],
+                retriggerCharacters: [',']
+            },
             codeActionProvider: {
                 codeActionKinds: [CodeActionKind.QuickFix]
             },
@@ -907,6 +933,191 @@ connection.onDefinition((params) => {
         legacyCache.set(uri, entry.result);
     }
     return handleDefinition(params, documents, legacyCache);
+});
+
+// ── Symbol resolution shared by references / rename / highlight ─────────────
+
+interface ResolvedSymbol {
+    name: string;
+    /** offset of the binding's declaration id, if known (for include-declaration
+     *  handling and rename safety). */
+    declaredAt: number | undefined;
+    /** scope-aware predicate: is this name-matched identifier node the SAME
+     *  binding as the one under the cursor (vs a shadowing local/param)? */
+    isReference: (node: { start: number }) => boolean;
+}
+
+/** The identifier name at `offset`, using the cached lexer tokens. */
+function identifierNameAt(tokens: any[], offset: number): { name: string; start: number; end: number } | null {
+    if (!Array.isArray(tokens)) return null;
+    const tok = tokens.find(t => t && t.type === TokenType.TK_LABEL && t.pos <= offset && offset <= t.end);
+    return tok && typeof tok.value === 'string' ? { name: tok.value, start: tok.pos, end: tok.end } : null;
+}
+
+/** Resolve the symbol under the cursor into a name + scope-aware reference
+ *  predicate. Returns null when there's no identifier there. */
+function resolveSymbolAt(uri: string, position: { line: number; character: number }): ResolvedSymbol | null {
+    const entry = analysisCache.get(uri);
+    const document = documents.get(uri);
+    if (!entry || !document) return null;
+    const offset = document.offsetAt(position);
+    const ident = identifierNameAt(entry.tokens, offset);
+    if (!ident) return null;
+    const name = ident.name;
+    const symbolTable: any = entry.result.symbolTable;
+    const targetSym = symbolTable?.lookupAtPosition?.(name, offset) ?? symbolTable?.lookup?.(name);
+    const declaredAt: number | undefined = targetSym?.declaredAt;
+
+    // Scope-aware predicate (mirrors the references CodeLens): a name match counts
+    // only when it resolves to the SAME binding (same declaredAt). Without a
+    // symbol/declaredAt, fall back to plain name matching.
+    let isReference: (node: { start: number }) => boolean = () => true;
+    if (declaredAt !== undefined && typeof symbolTable?.lookupAtPosition === 'function') {
+        isReference = (node) => {
+            const s = symbolTable.lookupAtPosition(name, node.start) ?? symbolTable.lookup(name);
+            return !!s && s.declaredAt === declaredAt;
+        };
+    }
+    return { name, declaredAt, isReference };
+}
+
+/** All references to the symbol at `position` — in-file (scope-aware) plus, when
+ *  this file exports the name, cross-file usages. `includeDeclaration` controls
+ *  whether the binding's own declaration is included. */
+function collectReferences(uri: string, position: { line: number; character: number }, includeDeclaration: boolean): Location[] {
+    const entry = analysisCache.get(uri);
+    const document = documents.get(uri);
+    if (!entry || !document) return [];
+    const resolved = resolveSymbolAt(uri, position);
+    if (!resolved) return [];
+    const { name, declaredAt, isReference } = resolved;
+
+    const spans = findFunctionReferences(entry.result.ast, name, null, isReference);
+    const locs: Location[] = [];
+    const seen = new Set<string>();
+    const add = (u: string, range: Range) => {
+        const key = `${u}:${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        locs.push(Location.create(u, range));
+    };
+
+    for (const s of spans) {
+        // findFunctionReferences may include a variable's own declaration id (it
+        // only excludes function/param decl ids). Normalize via includeDeclaration.
+        if (!includeDeclaration && declaredAt !== undefined && s.start === declaredAt) continue;
+        add(uri, { start: document.positionAt(s.start), end: document.positionAt(s.end) });
+    }
+    if (includeDeclaration && declaredAt !== undefined) {
+        add(uri, { start: document.positionAt(declaredAt), end: document.positionAt(declaredAt + name.length) });
+    }
+    // Cross-file: only resolves usages when THIS file is the exporter of `name`
+    // (returns [] otherwise). Matches the references CodeLens.
+    for (const r of findCrossFileReferences(uri, name)) add(r.uri, r.range as Range);
+    return locs;
+}
+
+connection.onReferences((params: ReferenceParams): Location[] => {
+    return collectReferences(params.textDocument.uri, params.position, params.context?.includeDeclaration ?? true);
+});
+
+connection.onSignatureHelp((params: SignatureHelpParams): SignatureHelp | null => {
+    const entry = analysisCache.get(params.textDocument.uri);
+    const document = documents.get(params.textDocument.uri);
+    if (!entry || !document) return null;
+    const offset = document.offsetAt(params.position);
+    return provideSignatureHelp(entry.result.ast, entry.result.symbolTable, allBuiltinFunctions, offset);
+});
+
+connection.onDocumentHighlight((params: DocumentHighlightParams): DocumentHighlight[] => {
+    // Same-file occurrences of the symbol under the cursor (scope-aware), for the
+    // editor's "highlight all occurrences". Reuses the in-file reference set.
+    const locs = collectReferences(params.textDocument.uri, params.position, true)
+        .filter(loc => loc.uri === params.textDocument.uri);
+    return locs.map(loc => DocumentHighlight.create(loc.range, DocumentHighlightKind.Text));
+});
+
+connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => {
+    const entry = analysisCache.get(params.textDocument.uri);
+    const document = documents.get(params.textDocument.uri);
+    if (!entry || !document) return [];
+    return buildDocumentSymbols(entry.result.ast, (offset: number) => document.positionAt(offset));
+});
+
+// ── Rename ──────────────────────────────────────────────────────────────────
+// Safe scope: rename only PURELY-LOCAL bindings (locals, params, non-exported
+// functions) so we never emit a broken edit. A name that is imported, exported,
+// or used cross-file crosses the module boundary — renaming it in one file alone
+// would desync the others — so we refuse it (the editor shows "can't rename").
+
+/** Is `name` exported from this file (inline `export function/let`, an
+ *  `export { name }` specifier, or `export default name`)? */
+function isExportedName(ast: any, name: string): boolean {
+    const body = ast?.body;
+    if (!Array.isArray(body)) return false;
+    for (const stmt of body) {
+        const t = stmt?.type;
+        if (t === 'ExportNamedDeclaration') {
+            const decl = stmt.declaration;
+            if (decl?.type === 'FunctionDeclaration' && decl.id?.name === name) return true;
+            if (decl?.type === 'VariableDeclaration'
+                && (decl.declarations || []).some((d: any) => d?.id?.name === name)) return true;
+            for (const spec of (stmt.specifiers || [])) {
+                if (spec?.local?.name === name || spec?.exported?.name === name) return true;
+            }
+        } else if (t && t.startsWith('ExportDefault')) {
+            const d = stmt.declaration;
+            if (d?.type === 'Identifier' && d.name === name) return true;
+            if (d?.id?.name === name) return true;
+        }
+    }
+    return false;
+}
+
+/** Why a symbol can't be renamed, or null if it can. */
+function renameBlockedReason(uri: string, position: { line: number; character: number }): string | null {
+    const entry = analysisCache.get(uri);
+    if (!entry) return 'no analysis for this document';
+    const resolved = resolveSymbolAt(uri, position);
+    if (!resolved) return 'not an identifier';
+    if (resolved.declaredAt === undefined) {
+        return `'${resolved.name}' has no local declaration to rename (builtin or unresolved)`;
+    }
+    const sym: any = entry.result.symbolTable?.lookupAtPosition?.(resolved.name, resolved.declaredAt)
+        ?? entry.result.symbolTable?.lookup?.(resolved.name);
+    if (sym?.type === SymbolType.IMPORTED) return `'${resolved.name}' is imported — rename it in its source module`;
+    if (isExportedName(entry.result.ast, resolved.name)) return `'${resolved.name}' is exported — renaming would break importers`;
+    if (findCrossFileReferences(uri, resolved.name).length > 0) return `'${resolved.name}' is used in other files`;
+    return null;
+}
+
+connection.onPrepareRename((params: PrepareRenameParams): { range: Range; placeholder: string } | null => {
+    const entry = analysisCache.get(params.textDocument.uri);
+    const document = documents.get(params.textDocument.uri);
+    if (!entry || !document) return null;
+    if (renameBlockedReason(params.textDocument.uri, params.position)) return null;
+    const offset = document.offsetAt(params.position);
+    const ident = identifierNameAt(entry.tokens, offset);
+    if (!ident) return null;
+    return {
+        range: { start: document.positionAt(ident.start), end: document.positionAt(ident.end) },
+        placeholder: ident.name,
+    };
+});
+
+connection.onRenameRequest((params: RenameParams): WorkspaceEdit | null => {
+    const newName = params.newName;
+    // Reject invalid identifiers (the editor usually pre-validates, but be safe).
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(newName)) return null;
+    if (renameBlockedReason(params.textDocument.uri, params.position)) return null;
+    // includeDeclaration=true: rename the binding's declaration too. All edits are
+    // in-file (cross-file/exported names are refused above).
+    const locations = collectReferences(params.textDocument.uri, params.position, true);
+    if (locations.length === 0) return null;
+    const edits = locations
+        .filter(loc => loc.uri === params.textDocument.uri)
+        .map(loc => TextEdit.replace(loc.range, newName));
+    return { changes: { [params.textDocument.uri]: edits } };
 });
 
 // --- Quick Fix helpers ---

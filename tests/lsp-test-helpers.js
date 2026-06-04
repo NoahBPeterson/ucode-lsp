@@ -26,6 +26,12 @@ function createLSPTestServer(options = {}) {
       getCompletions: global.__sharedLSPServer.getCompletions,
       getHover: global.__sharedLSPServer.getHover,
       getDefinition: global.__sharedLSPServer.getDefinition,
+      getReferences: global.__sharedLSPServer.getReferences,
+      getDocumentSymbols: global.__sharedLSPServer.getDocumentSymbols,
+      getHighlights: global.__sharedLSPServer.getHighlights,
+      getRename: global.__sharedLSPServer.getRename,
+      getPrepareRename: global.__sharedLSPServer.getPrepareRename,
+      getSignatureHelp: global.__sharedLSPServer.getSignatureHelp,
       getCodeActions: global.__sharedLSPServer.getCodeActions,
       getCodeLens: global.__sharedLSPServer.getCodeLens,
       resolveCodeLens: global.__sharedLSPServer.resolveCodeLens,
@@ -529,6 +535,46 @@ function createLSPTestServer(options = {}) {
     });
   }
 
+  // Generic position-based request: opens the doc, then sends `method` with the
+  // given params (merged onto { textDocument, position }). Resolves with result.
+  function sendPositionRequest(method, testContent, testFilePath, line, character, extraParams = {}) {
+    return new Promise((resolve, reject) => {
+      const currentRequestId = requestId++;
+      const reqKey = idKey(currentRequestId);
+      const uri = `file://${testFilePath}`;
+      const didOpen = {
+        jsonrpc: '2.0', method: 'textDocument/didOpen',
+        params: { textDocument: { uri, languageId: 'ucode', version: 1, text: testContent } }
+      };
+      const req = {
+        jsonrpc: '2.0', id: currentRequestId, method,
+        params: { textDocument: { uri }, position: { line, character }, ...extraParams }
+      };
+      const timeout = setTimeout(() => {
+        if (pendingRequests.has(reqKey)) {
+          pendingRequests.delete(reqKey); inflightStartedAt.delete(reqKey);
+          reject(new Error(`Timeout waiting for ${method} response`));
+        }
+      }, 2000);
+      pendingRequests.set(reqKey, { resolve, reject, timeout });
+      inflightStartedAt.set(reqKey, Date.now());
+      serverProcess.stdin.write(createLSPMessage(didOpen));
+      setTimeout(() => serverProcess.stdin.write(createLSPMessage(req)), 10);
+    });
+  }
+  const getReferences = (content, file, line, character, includeDeclaration = true) =>
+    sendPositionRequest('textDocument/references', content, file, line, character, { context: { includeDeclaration } });
+  const getDocumentSymbols = (content, file) =>
+    sendPositionRequest('textDocument/documentSymbol', content, file, 0, 0, { position: undefined });
+  const getHighlights = (content, file, line, character) =>
+    sendPositionRequest('textDocument/documentHighlight', content, file, line, character);
+  const getRename = (content, file, line, character, newName) =>
+    sendPositionRequest('textDocument/rename', content, file, line, character, { newName });
+  const getPrepareRename = (content, file, line, character) =>
+    sendPositionRequest('textDocument/prepareRename', content, file, line, character);
+  const getSignatureHelp = (content, file, line, character) =>
+    sendPositionRequest('textDocument/signatureHelp', content, file, line, character);
+
   // Cross-file tests: send a raw didOpen / didChange for an aux file (so a
   // change to file B can trigger the server's cross-file invalidation of file
   // A) and wait for an UNSOLICITED publishDiagnostics on the importer URI.
@@ -566,6 +612,12 @@ function createLSPTestServer(options = {}) {
     getCompletions,
     getHover,
     getDefinition,
+    getReferences,
+    getDocumentSymbols,
+    getHighlights,
+    getRename,
+    getPrepareRename,
+    getSignatureHelp,
     getCodeActions,
     getCodeLens,
     resolveCodeLens,
