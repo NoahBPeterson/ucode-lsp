@@ -4,8 +4,113 @@
  */
 
 import type { FunctionSignature } from './moduleTypes';
-import type { ModuleDefinition, ConstantDefinition } from './registryFactory';
+import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
+
+// Methods of the connection object returned by ubus.connect() / open_channel().
+// Mirrors ucode/lib/ubus.c conn_fns[].
+const connectionMethods = new Map<string, FunctionSignature>([
+  ['call', {
+    name: 'call',
+    parameters: [
+      { name: 'object', type: 'string', optional: false },
+      { name: 'method', type: 'string', optional: false },
+      { name: 'data', type: 'object', optional: true },
+      { name: 'return_mode', type: 'string', optional: true },
+      { name: 'fd', type: 'integer', optional: true },
+      { name: 'fd_cb', type: 'function', optional: true },
+    ],
+    returnType: 'object | null',
+    description: 'Invoke a method on a ubus object and return its reply, or null on error (e.g. object/method not found).',
+  }],
+  ['list', {
+    name: 'list',
+    parameters: [
+      { name: 'object', type: 'string', optional: true },
+    ],
+    returnType: 'array | object | null',
+    description: "Without an argument, list all registered ubus object names (array). With an object name, return that object's method signatures. null on error.",
+  }],
+  ['defer', {
+    name: 'defer',
+    parameters: [
+      { name: 'object', type: 'string', optional: false },
+      { name: 'method', type: 'string', optional: false },
+      { name: 'data', type: 'object', optional: true },
+      { name: 'cb', type: 'function', optional: true },
+    ],
+    returnType: 'object | null',
+    description: 'Start an asynchronous ubus request, returning a deferred-request handle (resolved later via the callback), or null on error.',
+  }],
+  ['publish', {
+    name: 'publish',
+    parameters: [
+      { name: 'object', type: 'string', optional: false },
+      { name: 'methods', type: 'object', optional: true },
+      { name: 'subscribe_cb', type: 'function', optional: true },
+    ],
+    returnType: 'object | null',
+    description: 'Register (publish) a ubus object with the given methods so other clients can call it. Returns the published-object handle, or null on error.',
+  }],
+  ['remove', {
+    name: 'remove',
+    parameters: [
+      { name: 'object', type: 'object', optional: false },
+    ],
+    returnType: 'boolean | null',
+    description: 'Unregister a previously published object, listener, or subscriber. Returns true on success, null on error.',
+  }],
+  ['listener', {
+    name: 'listener',
+    parameters: [
+      { name: 'pattern', type: 'string', optional: false },
+      { name: 'cb', type: 'function', optional: false },
+    ],
+    returnType: 'object | null',
+    description: 'Register an event listener for the given event-name pattern. Returns a listener handle, or null on error.',
+  }],
+  ['subscriber', {
+    name: 'subscriber',
+    parameters: [
+      { name: 'notify_cb', type: 'function', optional: true },
+      { name: 'remove_cb', type: 'function', optional: true },
+      { name: 'patterns', type: 'array', optional: true },
+    ],
+    returnType: 'object | null',
+    description: 'Create a ubus subscriber that receives notifications from objects it subscribes to. Returns a subscriber handle, or null on error.',
+  }],
+  ['event', {
+    name: 'event',
+    parameters: [
+      { name: 'id', type: 'string', optional: false },
+      { name: 'data', type: 'object', optional: true },
+    ],
+    returnType: 'boolean | null',
+    description: 'Broadcast a ubus event with the given id and optional data. Returns true on success, null on error.',
+  }],
+  ['error', {
+    name: 'error',
+    parameters: [
+      { name: 'numeric', type: 'boolean', optional: true },
+    ],
+    returnType: 'integer | string | null',
+    description: 'Return the last error on this connection — the numeric code when `numeric` is true, otherwise a message string. null if there was no error.',
+  }],
+  ['disconnect', {
+    name: 'disconnect',
+    parameters: [],
+    returnType: 'boolean | null',
+    description: 'Close the ubus connection. Returns true on success, null on error.',
+  }],
+]);
+
+/** The connection object returned by ubus.connect() / open_channel(). */
+export const ubusConnectionObjectType: ObjectTypeDefinition = {
+  typeName: 'ubus.connection',
+  methods: connectionMethods,
+  formatDoc: (_name: string, sig: FunctionSignature) =>
+    `**ubus.connection.${sig.name}()**: \`${sig.returnType}\`\n\n${sig.description}`,
+};
 
 const functions = new Map<string, FunctionSignature>([
   ["error", {
@@ -22,7 +127,7 @@ const functions = new Map<string, FunctionSignature>([
       { name: "socket", type: "string", optional: true },
       { name: "timeout", type: "integer", optional: true, defaultValue: 30 }
     ],
-    returnType: "object | null",
+    returnType: "ubus.connection | null",
     description: "Establish a connection to the ubus daemon. Returns a connection object that can be used for further ubus operations, or null on connection failure."
   }],
   ["open_channel", {
@@ -33,7 +138,7 @@ const functions = new Map<string, FunctionSignature>([
       { name: "disconnect_cb", type: "function", optional: true },
       { name: "timeout", type: "integer", optional: true, defaultValue: 30 }
     ],
-    returnType: "object | null",
+    returnType: "ubus.connection | null",
     description: `Create a ubus channel connection using an existing file descriptor. Used for bidirectional communication over established connections.
 
 **Example:**

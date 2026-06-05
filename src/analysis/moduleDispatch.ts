@@ -35,7 +35,7 @@ import { exceptionObjectType } from './exceptionTypes';
 import { logModule } from './logTypes';
 import { rtnlModule } from './rtnlTypes';
 import { socketModule } from './socketTypes';
-import { ubusModule } from './ubusTypes';
+import { ubusModule, ubusConnectionObjectType } from './ubusTypes';
 import { zlibModule } from './zlibTypes';
 import { ioModule, ioHandleObjectType } from './ioTypes';
 import { nl80211Module, nl80211ListenerObjectType } from './nl80211Types';
@@ -80,6 +80,7 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'uloop.pipe': createObjectTypeRegistry(uloopPipeObjectType),
   'uci.cursor': createObjectTypeRegistry(uciCursorObjectType),
   'nl80211.listener': createObjectTypeRegistry(nl80211ListenerObjectType),
+  'ubus.connection': createObjectTypeRegistry(ubusConnectionObjectType),
   'exception': createObjectTypeRegistry(exceptionObjectType),
 };
 

@@ -37,11 +37,11 @@ function check(label, actual, expected) {
 // ============================================================================
 {
     const r = analyze(`import { connect } from 'ubus';\nlet a = connect();`);
-    check('ubus.connect() -> object | null', getType(r, 'a'), 'object | null');
+    check('ubus.connect() -> ubus.connection | null', getType(r, 'a'), 'ubus.connection | null');
 }
 {
     const r = analyze(`import { open_channel } from 'ubus';\nlet a = open_channel(3);`);
-    check('ubus.open_channel() -> object | null', getType(r, 'a'), 'object | null');
+    check('ubus.open_channel() -> ubus.connection | null', getType(r, 'a'), 'ubus.connection | null');
 }
 {
     const r = analyze(`import { guard } from 'ubus';\nlet a = guard();`);

@@ -23,6 +23,7 @@ export type KnownObjectType =
   | 'uloop.task' | 'uloop.interval' | 'uloop.signal' | 'uloop.pipe'
   | 'uci.cursor'
   | 'nl80211.listener'
+  | 'ubus.connection'
   | 'exception';
 
 // ---- Common function signature ----

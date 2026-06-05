@@ -47,7 +47,7 @@ for (const constName of expectedConstants) {
 console.log('\n🧪 Testing function signatures:');
 test('connect() signature is formatted correctly', () => {
   const sig = ubusTypeRegistry.formatFunctionSignature('connect');
-  return sig.includes('connect(') && sig.includes('object');
+  return sig.includes('connect(') && sig.includes('ubus.connection');
 });
 
 test('error() signature is formatted correctly', () => {
@@ -57,7 +57,7 @@ test('error() signature is formatted correctly', () => {
 
 test('open_channel() signature is formatted correctly', () => {
   const sig = ubusTypeRegistry.formatFunctionSignature('open_channel');
-  return sig.includes('open_channel(') && sig.includes('fd: integer') && sig.includes('object');
+  return sig.includes('open_channel(') && sig.includes('fd: integer') && sig.includes('ubus.connection');
 });
 
 test('guard() signature is formatted correctly', () => {
@@ -164,9 +164,9 @@ test('getValidImports() returns all expected exports', () => {
 
 // Test 10: Return type handling
 console.log('\n🧪 Testing return types:');
-test('connect() returns object type', () => {
+test('connect() returns the ubus.connection object type', () => {
   const func = ubusTypeRegistry.getFunction('connect');
-  return func && func.returnType === 'object | null';
+  return func && func.returnType === 'ubus.connection | null';
 });
 
 test('error() returns union type', () => {
