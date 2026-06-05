@@ -48,6 +48,32 @@ test('an explicit @param annotation is not clobbered', async () => {
   expect(await paramHover(c, 'annot', 3, '(mac')).toContain('object');
 });
 
+// UC7003 ("param has unknown type, annotate it") must not fire for a param whose
+// type we inferred from spread usage — it isn't unknown anymore. A genuinely
+// untyped param still gets the hint. (UC7003 is strict-mode only.)
+async function uc7003Params(content, tag) {
+  const d = await server.getDiagnostics(content, `/tmp/psi7-${tag}.uc`);
+  const u = (d || []).find((x) => x.code === 'UC7003');
+  return u ? u.message : null;
+}
+
+test('UC7003 does not fire for a spread-inferred param', async () => {
+  const c = `'use strict';\nfunction mac_array_string(mac) { return sprintf("%02x", ...mac); }\n`;
+  expect(await uc7003Params(c, 'spread')).toBeNull();
+});
+
+test('UC7003 does not fire for an object-spread-inferred param', async () => {
+  const c = `'use strict';\nfunction h(o) { return {...o}; }\n`;
+  expect(await uc7003Params(c, 'objspread')).toBeNull();
+});
+
+test('UC7003 still fires for a genuinely untyped param (control)', async () => {
+  const c = `'use strict';\nfunction g(z) { return z + 1; }\n`;
+  const msg = await uc7003Params(c, 'control');
+  expect(msg).not.toBeNull();
+  expect(msg).toContain('z');
+});
+
 test('the inferred array flows into the function signature (no spurious UC2006)', async () => {
   // mac inferred array; the spread call must not be re-flagged for arg count.
   const c = `function f(mac) { return sprintf("%02x:%02x:%02x", ...mac); }\n`;

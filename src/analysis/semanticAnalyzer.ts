@@ -1374,6 +1374,11 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Declare parameters (with JSDoc type annotations if present)
       this.applyJsDocToParams(node.leadingJsDoc, node.params);
 
+      // Usage inference (spread-of-param ⟹ array / array|object) BEFORE the
+      // unknown-param diagnostic, so a param whose type we can infer isn't nagged
+      // as "unknown" and the body is analyzed with the inferred type.
+      this.inferParamArrayFromSpread(node.params, node.body);
+
       // Emit diagnostic for unknown-typed params (strict mode only)
       if (!node.leadingJsDoc && node.params.length > 0) {
         this.emitMissingParamAnnotations(name, node.params, node.id.start, node.id.end);
@@ -1388,9 +1393,6 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Visit the function body to find all return statements.
       this.visit(node.body);
-
-      // Usage inference: spread-of-param ⟹ array (before the signature is captured).
-      this.inferParamArrayFromSpread(node.params, node.body);
 
       // Infer the final return type from all collected return types.
       const returnEntries = this.functionReturnTypes.get(node) || [];
@@ -1500,6 +1502,10 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Declare parameters in the function scope (with JSDoc type annotations if present)
       this.applyJsDocToParams(node.leadingJsDoc, node.params);
 
+      // Usage inference (spread-of-param ⟹ array / array|object) before the
+      // unknown-param diagnostic, so an inferable param isn't nagged as "unknown".
+      this.inferParamArrayFromSpread(node.params, node.body);
+
       // UC7003 for method-style function expressions (those with a derivable
       // name from their assignment target). Anonymous callbacks have no name and
       // are skipped, so `map(x => …)` etc. don't get noisy hints.
@@ -1526,9 +1532,6 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Visit the function body
       this.visit(node.body);
-
-      // Usage inference: spread-of-param ⟹ array.
-      this.inferParamArrayFromSpread(node.params, node.body);
 
       // Exit function scope
       this.symbolTable.exitScope(node.end);
@@ -1571,6 +1574,10 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
 
+      // Usage inference (spread-of-param ⟹ array / array|object) before the
+      // unknown-param diagnostic, so an inferable param isn't nagged as "unknown".
+      this.inferParamArrayFromSpread(node.params, node.body);
+
       // UC7003 only for arrows with a derivable name (assigned to a member/var),
       // never for bare callbacks.
       if (exprName && !node.leadingJsDoc && node.params.length > 0) {
@@ -1595,9 +1602,6 @@ export class SemanticAnalyzer extends BaseVisitor {
         // For expression bodies, visit normally
         this.visit(node.body);
       }
-
-      // Usage inference: spread-of-param ⟹ array.
-      this.inferParamArrayFromSpread(node.params, node.body);
 
       // Exit function scope
       this.symbolTable.exitScope(node.end);
