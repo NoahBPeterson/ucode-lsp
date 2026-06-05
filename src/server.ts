@@ -2403,11 +2403,30 @@ function generateJsDocQuickFix(
     ast: any, cursorOffset: number, document: TextDocument, uri: string,
     analysisResult: SemanticAnalysisResult
 ): CodeAction | null {
-    // Walk AST to find function declarations/expressions containing cursor
-    const funcNode = findFunctionAtOffset(ast, cursorOffset);
-    if (!funcNode) return null;
+    // Walk AST to find the innermost function at the cursor AND its parent — the
+    // parent decides whether a leading JSDoc block can actually attach.
+    const found = findFunctionWithParentAtOffset(ast, cursorOffset);
+    if (!found) return null;
+    const funcNode = found.fn;
+    const parent = found.parent;
     if (!funcNode.params || funcNode.params.length === 0) return null;
     if (funcNode.leadingJsDoc) return null; // Already has JSDoc
+
+    // A leading JSDoc block only binds to a function in a statement-leading position:
+    // a `function foo()` declaration, or a function expression that's the value of a
+    // variable declaration / assignment / object property. An anonymous function used
+    // inline (e.g. a `replace(s, re, function(ip){…})` callback argument) has no clean
+    // attachment point — inserting the block before the enclosing statement detaches it
+    // and never annotates the param. Don't offer the fix there.
+    if (funcNode.type !== 'FunctionDeclaration') {
+        const attachable = !!parent && (
+            (parent.type === 'VariableDeclarator' && parent.init === funcNode) ||
+            (parent.type === 'AssignmentExpression' && parent.right === funcNode) ||
+            (parent.type === 'Property' && parent.value === funcNode) ||
+            (typeof parent.type === 'string' && parent.type.startsWith('ExportDefault'))
+        );
+        if (!attachable) return null;
+    }
 
     // Check if any params are unknown-typed
     const symbolTable = analysisResult.symbolTable;
@@ -2467,6 +2486,28 @@ function generateJsDocQuickFix(
 }
 
 // Walk AST to find the innermost function declaration/expression containing the given offset
+/** The innermost function (decl/expr/arrow) containing `offset`, plus its parent
+ *  node — so callers can tell a declaration / assigned expression (JSDoc attaches)
+ *  from an inline callback argument (it doesn't). */
+function findFunctionWithParentAtOffset(ast: any, offset: number): { fn: any; parent: any } | null {
+    let best: { fn: any; parent: any } | null = null;
+    const visit = (node: any, parent: any): void => {
+        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        if ((node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression')
+            && typeof node.start === 'number' && offset >= node.start && offset <= node.end) {
+            best = { fn: node, parent }; // keep descending → innermost wins
+        }
+        for (const k of Object.keys(node)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = node[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it, node); }
+            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v, node);
+        }
+    };
+    visit(ast, null);
+    return best;
+}
+
 function findFunctionAtOffset(node: any, offset: number): any | null {
     if (!node || typeof node !== 'object') return null;
     if (node.start > offset || node.end < offset) return null;
