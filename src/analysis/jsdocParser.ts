@@ -3,7 +3,7 @@
  * Parses @param and @returns tags from JSDoc comments and resolves type expressions
  */
 
-import { UcodeType, UcodeDataType, SingleType, createUnionType, isObjectType, isArrayType } from './symbolTable';
+import { UcodeType, UcodeDataType, SingleType, createUnionType, createArrayType, isObjectType, isArrayType } from './symbolTable';
 import { isKnownModule, isKnownObjectType } from './moduleDispatch';
 
 export interface JsDocTag {
@@ -147,6 +147,19 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
       }
     }
     return createUnionType(types);
+  }
+
+  // Element-typed arrays: `array<T>` (matches the LSP's own display), `Array<T>`,
+  // or the JSDoc/TS `T[]` form → ArrayType(T). The element type is resolved
+  // recursively (so `string[][]` and `array<fs.file>` work); an unresolved element
+  // falls back to `unknown`. (Unions inside `<>` are not split here — `array<a|b>`
+  // is an unsupported edge, since the `|` handler above runs first.)
+  const angleMatch = typeExpr.match(/^[Aa]rray<(.+)>$/);
+  const bracketMatch = typeExpr.match(/^(.+)\[\]$/);
+  const elementExpr = angleMatch ? angleMatch[1] : (bracketMatch ? bracketMatch[1] : null);
+  if (elementExpr) {
+    const elementType = resolveTypeExpression(elementExpr.trim()) ?? (UcodeType.UNKNOWN as UcodeDataType);
+    return createArrayType(elementType);
   }
 
   // Handle module: prefix → module type
