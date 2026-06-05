@@ -7,8 +7,25 @@
  */
 
 import type { FunctionSignature } from './moduleTypes';
-import type { ModuleDefinition, ConstantDefinition } from './registryFactory';
+import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
+
+// The event listener returned by rtnl.listener() — mirrors ucode/lib/rtnl.c
+// listener_fns[].
+const rtnlListenerMethods = new Map<string, FunctionSignature>([
+  ['set_commands', { name: 'set_commands', parameters: [
+      { name: 'commands', type: 'array', optional: false },
+    ], returnType: 'boolean | null', description: 'Replace the set of RTM_* command numbers this listener receives. Returns true on success, null on error.' }],
+  ['close', { name: 'close', parameters: [], returnType: 'boolean | null', description: 'Stop and remove the listener. Returns true on success, null on error.' }],
+]);
+
+/** The rtnl event listener returned by rtnl.listener(). */
+export const rtnlListenerObjectType: ObjectTypeDefinition = {
+  typeName: 'rtnl.listener',
+  methods: rtnlListenerMethods,
+  formatDoc: (_name: string, sig: FunctionSignature) =>
+    `**rtnl.listener.${sig.name}()**: \`${sig.returnType}\`\n\n${sig.description}`,
+};
 
 // Backwards-compat type aliases
 export type RtnlFunctionSignature = FunctionSignature;

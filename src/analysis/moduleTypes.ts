@@ -24,6 +24,10 @@ export type KnownObjectType =
   | 'uci.cursor'
   | 'nl80211.listener'
   | 'ubus.connection'
+  | 'rtnl.listener'
+  | 'socket'
+  | 'struct.instance' | 'struct.buffer'
+  | 'zlib.deflate' | 'zlib.inflate'
   | 'exception';
 
 // ---- Common function signature ----

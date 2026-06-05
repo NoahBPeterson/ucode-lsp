@@ -4,8 +4,49 @@
  */
 
 import type { FunctionSignature } from './moduleTypes';
-import type { ModuleDefinition } from './registryFactory';
+import type { ModuleDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
+
+// struct.new() instance — mirrors ucode/lib/struct.c struct_inst_fns[].
+const structInstanceMethods = new Map<string, FunctionSignature>([
+  ['pack', { name: 'pack', parameters: [
+      { name: 'values', type: 'any', optional: false },
+    ], returnType: 'string', description: "Pack the given values into a binary string according to this struct's format." }],
+  ['unpack', { name: 'unpack', parameters: [
+      { name: 'input', type: 'string', optional: false },
+      { name: 'offset', type: 'integer', optional: true },
+    ], returnType: 'array | null', description: "Unpack values from a binary string according to this struct's format. Returns an array of values, or null on error." }],
+]);
+
+/** The compiled struct returned by struct.new(). */
+export const structInstanceObjectType: ObjectTypeDefinition = {
+  typeName: 'struct.instance',
+  methods: structInstanceMethods,
+  formatDoc: (_name: string, sig: FunctionSignature) =>
+    `**struct.instance.${sig.name}()**: \`${sig.returnType}\`\n\n${sig.description}`,
+};
+
+// struct.buffer() format buffer — mirrors ucode/lib/struct.c buffer_inst_fns[].
+const structBufferMethods = new Map<string, FunctionSignature>([
+  ['pos', { name: 'pos', parameters: [{ name: 'offset', type: 'integer', optional: true }], returnType: 'integer | struct.buffer', description: 'Get the current read/write position, or set it when an offset is given.' }],
+  ['length', { name: 'length', parameters: [], returnType: 'integer', description: 'Return the total number of bytes in the buffer.' }],
+  ['start', { name: 'start', parameters: [], returnType: 'struct.buffer', description: 'Reset the position to the start of the buffer.' }],
+  ['end', { name: 'end', parameters: [], returnType: 'struct.buffer', description: 'Move the position to the end of the buffer.' }],
+  ['set', { name: 'set', parameters: [{ name: 'format', type: 'string', optional: false }, { name: 'values', type: 'any', optional: false }], returnType: 'struct.buffer', description: 'Write values at the current position per the format, without advancing.' }],
+  ['put', { name: 'put', parameters: [{ name: 'format', type: 'string', optional: false }, { name: 'values', type: 'any', optional: false }], returnType: 'struct.buffer', description: 'Write values at the current position per the format and advance.' }],
+  ['get', { name: 'get', parameters: [{ name: 'format', type: 'string', optional: false }], returnType: 'any', description: 'Read values at the current position per the format, without advancing.' }],
+  ['read', { name: 'read', parameters: [{ name: 'format', type: 'string', optional: false }], returnType: 'array', description: 'Read values at the current position per the format and advance.' }],
+  ['slice', { name: 'slice', parameters: [{ name: 'from', type: 'integer', optional: true }, { name: 'to', type: 'integer', optional: true }], returnType: 'string', description: 'Return a substring of the buffer between the given byte offsets.' }],
+  ['pull', { name: 'pull', parameters: [{ name: 'length', type: 'integer', optional: true }], returnType: 'string', description: 'Read and return raw bytes from the current position, advancing it.' }],
+]);
+
+/** The format buffer returned by struct.buffer(). */
+export const structBufferObjectType: ObjectTypeDefinition = {
+  typeName: 'struct.buffer',
+  methods: structBufferMethods,
+  formatDoc: (_name: string, sig: FunctionSignature) =>
+    `**struct.buffer.${sig.name}()**: \`${sig.returnType}\`\n\n${sig.description}`,
+};
 
 const functions = new Map<string, FunctionSignature>([
   ["pack", {

@@ -4,8 +4,74 @@
  */
 
 import type { FunctionSignature } from './moduleTypes';
-import type { ModuleDefinition, ConstantDefinition } from './registryFactory';
+import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
+
+// Methods of a socket handle (socket.create/connect/listen()). Mirrors
+// ucode/lib/socket.c socket_fns[]; signatures from each uc_socket_inst_* args_get.
+const socketMethods = new Map<string, FunctionSignature>([
+  ['connect', { name: 'connect', parameters: [
+      { name: 'address', type: 'string | array', optional: false },
+      { name: 'port', type: 'integer', optional: true },
+    ], returnType: 'boolean | null', description: 'Connect the socket to a remote address. Returns true on success, null on error.' }],
+  ['bind', { name: 'bind', parameters: [
+      { name: 'address', type: 'string | array', optional: false },
+    ], returnType: 'boolean | null', description: 'Bind the socket to a local address. Returns true on success, null on error.' }],
+  ['listen', { name: 'listen', parameters: [
+      { name: 'backlog', type: 'integer', optional: true },
+    ], returnType: 'boolean | null', description: 'Mark the socket as accepting connections, with an optional backlog. Returns true on success, null on error.' }],
+  ['accept', { name: 'accept', parameters: [
+      { name: 'address', type: 'object', optional: true },
+      { name: 'flags', type: 'integer', optional: true },
+    ], returnType: 'socket | null', description: 'Accept an incoming connection, returning a new connected socket, or null on error.' }],
+  ['send', { name: 'send', parameters: [
+      { name: 'data', type: 'string', optional: false },
+      { name: 'flags', type: 'integer', optional: true },
+      { name: 'address', type: 'string | array', optional: true },
+    ], returnType: 'integer | null', description: 'Send data on the socket. Returns the number of bytes sent, or null on error.' }],
+  ['sendmsg', { name: 'sendmsg', parameters: [
+      { name: 'data', type: 'string | array', optional: true },
+      { name: 'address', type: 'string | array', optional: true },
+      { name: 'flags', type: 'integer', optional: true },
+    ], returnType: 'integer | null', description: 'Send a message with optional ancillary data. Returns the number of bytes sent, or null on error.' }],
+  ['recv', { name: 'recv', parameters: [
+      { name: 'length', type: 'integer', optional: false },
+      { name: 'flags', type: 'integer', optional: true },
+      { name: 'address', type: 'object', optional: true },
+    ], returnType: 'string | null', description: 'Receive up to `length` bytes from the socket. Returns the received string, or null on error.' }],
+  ['recvmsg', { name: 'recvmsg', parameters: [
+      { name: 'length', type: 'integer', optional: true },
+      { name: 'flags', type: 'integer', optional: true },
+    ], returnType: 'object | null', description: 'Receive a message, returning an object with the data and ancillary fields, or null on error.' }],
+  ['setopt', { name: 'setopt', parameters: [
+      { name: 'level', type: 'integer', optional: false },
+      { name: 'option', type: 'integer', optional: false },
+      { name: 'value', type: 'integer | string | object', optional: false },
+    ], returnType: 'boolean | null', description: 'Set a socket option. Returns true on success, null on error.' }],
+  ['getopt', { name: 'getopt', parameters: [
+      { name: 'level', type: 'integer', optional: false },
+      { name: 'option', type: 'integer', optional: false },
+    ], returnType: 'integer | string | object | null', description: 'Get a socket option value, or null on error.' }],
+  ['fileno', { name: 'fileno', parameters: [], returnType: 'integer | null', description: 'Return the underlying file descriptor number of the socket.' }],
+  ['shutdown', { name: 'shutdown', parameters: [
+      { name: 'how', type: 'integer', optional: false },
+    ], returnType: 'boolean | null', description: 'Shut down part or all of the connection. Returns true on success, null on error.' }],
+  ['peercred', { name: 'peercred', parameters: [], returnType: 'object | null', description: 'Return the credentials (pid/uid/gid) of the peer process for a UNIX socket, or null.' }],
+  ['peername', { name: 'peername', parameters: [], returnType: 'object | null', description: 'Return the address of the connected peer, or null on error.' }],
+  ['sockname', { name: 'sockname', parameters: [], returnType: 'object | null', description: 'Return the local address the socket is bound to, or null on error.' }],
+  ['close', { name: 'close', parameters: [], returnType: 'boolean | null', description: 'Close the socket. Returns true on success, null on error.' }],
+  ['error', { name: 'error', parameters: [
+      { name: 'numeric', type: 'boolean', optional: true },
+    ], returnType: 'integer | string | null', description: 'Return the last socket error — numeric code when `numeric` is true, else a message string. null if no error.' }],
+]);
+
+/** The socket handle returned by socket.create() / connect() / listen(). */
+export const socketObjectType: ObjectTypeDefinition = {
+  typeName: 'socket',
+  methods: socketMethods,
+  formatDoc: (_name: string, sig: FunctionSignature) =>
+    `**socket.${sig.name}()**: \`${sig.returnType}\`\n\n${sig.description}`,
+};
 
 // Backwards-compat type aliases
 export type SocketFunctionSignature = FunctionSignature;

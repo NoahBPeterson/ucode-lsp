@@ -29,14 +29,14 @@ import { debugModule } from './debugTypes';
 import { digestModule } from './digestTypes';
 import { mathModule } from './mathTypes';
 import { resolvModule } from './resolvTypes';
-import { structModule } from './structTypes';
+import { structModule, structInstanceObjectType, structBufferObjectType } from './structTypes';
 import { fsModule, statvfsObjectType } from './fsModuleTypes';
 import { exceptionObjectType } from './exceptionTypes';
 import { logModule } from './logTypes';
-import { rtnlModule } from './rtnlTypes';
-import { socketModule } from './socketTypes';
+import { rtnlModule, rtnlListenerObjectType } from './rtnlTypes';
+import { socketModule, socketObjectType } from './socketTypes';
 import { ubusModule, ubusConnectionObjectType } from './ubusTypes';
-import { zlibModule } from './zlibTypes';
+import { zlibModule, zlibDeflateObjectType, zlibInflateObjectType } from './zlibTypes';
 import { ioModule, ioHandleObjectType } from './ioTypes';
 import { nl80211Module, nl80211ListenerObjectType } from './nl80211Types';
 import { uciModule, uciCursorObjectType } from './uciTypes';
@@ -81,6 +81,12 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'uci.cursor': createObjectTypeRegistry(uciCursorObjectType),
   'nl80211.listener': createObjectTypeRegistry(nl80211ListenerObjectType),
   'ubus.connection': createObjectTypeRegistry(ubusConnectionObjectType),
+  'rtnl.listener': createObjectTypeRegistry(rtnlListenerObjectType),
+  'socket': createObjectTypeRegistry(socketObjectType),
+  'struct.instance': createObjectTypeRegistry(structInstanceObjectType),
+  'struct.buffer': createObjectTypeRegistry(structBufferObjectType),
+  'zlib.deflate': createObjectTypeRegistry(zlibDeflateObjectType),
+  'zlib.inflate': createObjectTypeRegistry(zlibInflateObjectType),
   'exception': createObjectTypeRegistry(exceptionObjectType),
 };
 

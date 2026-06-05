@@ -4,8 +4,44 @@
  */
 
 import type { FunctionSignature } from './moduleTypes';
-import type { ModuleDefinition, ConstantDefinition } from './registryFactory';
+import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
+
+// Streaming deflate (zlib.deflater()) — mirrors ucode/lib/zlib.c strmd_fns[].
+const deflateMethods = new Map<string, FunctionSignature>([
+  ['write', { name: 'write', parameters: [
+      { name: 'data', type: 'string', optional: false },
+      { name: 'flush', type: 'boolean', optional: true },
+    ], returnType: 'boolean', description: 'Feed a chunk of data into the deflate stream. Pass flush=true on the final chunk. Returns true on success.' }],
+  ['read', { name: 'read', parameters: [], returnType: 'string | null', description: 'Read the compressed output produced so far, or null if none is available.' }],
+  ['error', { name: 'error', parameters: [], returnType: 'string | null', description: 'Return the last error message for the stream, or null if there was none.' }],
+]);
+
+/** The streaming compressor returned by zlib.deflater(). */
+export const zlibDeflateObjectType: ObjectTypeDefinition = {
+  typeName: 'zlib.deflate',
+  methods: deflateMethods,
+  formatDoc: (_name: string, sig: FunctionSignature) =>
+    `**zlib.deflate.${sig.name}()**: \`${sig.returnType}\`\n\n${sig.description}`,
+};
+
+// Streaming inflate (zlib.inflater()) — mirrors ucode/lib/zlib.c strmi_fns[].
+const inflateMethods = new Map<string, FunctionSignature>([
+  ['write', { name: 'write', parameters: [
+      { name: 'data', type: 'string', optional: false },
+      { name: 'flush', type: 'boolean', optional: true },
+    ], returnType: 'boolean', description: 'Feed a chunk of compressed data into the inflate stream. Pass flush=true on the final chunk. Returns true on success.' }],
+  ['read', { name: 'read', parameters: [], returnType: 'string | null', description: 'Read the decompressed output produced so far, or null if none is available.' }],
+  ['error', { name: 'error', parameters: [], returnType: 'string | null', description: 'Return the last error message for the stream, or null if there was none.' }],
+]);
+
+/** The streaming decompressor returned by zlib.inflater(). */
+export const zlibInflateObjectType: ObjectTypeDefinition = {
+  typeName: 'zlib.inflate',
+  methods: inflateMethods,
+  formatDoc: (_name: string, sig: FunctionSignature) =>
+    `**zlib.inflate.${sig.name}()**: \`${sig.returnType}\`\n\n${sig.description}`,
+};
 
 const functions = new Map<string, FunctionSignature>([
   ["deflate", {
