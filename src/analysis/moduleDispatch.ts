@@ -35,7 +35,7 @@ import { exceptionObjectType } from './exceptionTypes';
 import { logModule } from './logTypes';
 import { rtnlModule, rtnlListenerObjectType } from './rtnlTypes';
 import { socketModule, socketObjectType } from './socketTypes';
-import { ubusModule, ubusConnectionObjectType } from './ubusTypes';
+import { ubusModule, ubusConnectionObjectType, ubusChannelObjectType, ubusDeferredObjectType, ubusObjectObjectType, ubusRequestObjectType, ubusNotifyObjectType, ubusListenerObjectType, ubusSubscriberObjectType } from './ubusTypes';
 import { zlibModule, zlibDeflateObjectType, zlibInflateObjectType } from './zlibTypes';
 import { ioModule, ioHandleObjectType } from './ioTypes';
 import { nl80211Module, nl80211ListenerObjectType } from './nl80211Types';
@@ -81,6 +81,13 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'uci.cursor': createObjectTypeRegistry(uciCursorObjectType),
   'nl80211.listener': createObjectTypeRegistry(nl80211ListenerObjectType),
   'ubus.connection': createObjectTypeRegistry(ubusConnectionObjectType),
+  'ubus.channel': createObjectTypeRegistry(ubusChannelObjectType),
+  'ubus.deferred': createObjectTypeRegistry(ubusDeferredObjectType),
+  'ubus.object': createObjectTypeRegistry(ubusObjectObjectType),
+  'ubus.request': createObjectTypeRegistry(ubusRequestObjectType),
+  'ubus.notify': createObjectTypeRegistry(ubusNotifyObjectType),
+  'ubus.listener': createObjectTypeRegistry(ubusListenerObjectType),
+  'ubus.subscriber': createObjectTypeRegistry(ubusSubscriberObjectType),
   'rtnl.listener': createObjectTypeRegistry(rtnlListenerObjectType),
   'socket': createObjectTypeRegistry(socketObjectType),
   'struct.instance': createObjectTypeRegistry(structInstanceObjectType),

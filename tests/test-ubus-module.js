@@ -57,7 +57,7 @@ test('error() signature is formatted correctly', () => {
 
 test('open_channel() signature is formatted correctly', () => {
   const sig = ubusTypeRegistry.formatFunctionSignature('open_channel');
-  return sig.includes('open_channel(') && sig.includes('fd: integer') && sig.includes('ubus.connection');
+  return sig.includes('open_channel(') && sig.includes('fd: integer') && sig.includes('ubus.channel');
 });
 
 test('guard() signature is formatted correctly', () => {

@@ -39,7 +39,7 @@ const connectionMethods = new Map<string, FunctionSignature>([
       { name: 'data', type: 'object', optional: true },
       { name: 'cb', type: 'function', optional: true },
     ],
-    returnType: 'object | null',
+    returnType: 'ubus.deferred | null',
     description: 'Start an asynchronous ubus request, returning a deferred-request handle (resolved later via the callback), or null on error.',
   }],
   ['publish', {
@@ -49,7 +49,7 @@ const connectionMethods = new Map<string, FunctionSignature>([
       { name: 'methods', type: 'object', optional: true },
       { name: 'subscribe_cb', type: 'function', optional: true },
     ],
-    returnType: 'object | null',
+    returnType: 'ubus.object | null',
     description: 'Register (publish) a ubus object with the given methods so other clients can call it. Returns the published-object handle, or null on error.',
   }],
   ['remove', {
@@ -66,7 +66,7 @@ const connectionMethods = new Map<string, FunctionSignature>([
       { name: 'pattern', type: 'string', optional: false },
       { name: 'cb', type: 'function', optional: false },
     ],
-    returnType: 'object | null',
+    returnType: 'ubus.listener | null',
     description: 'Register an event listener for the given event-name pattern. Returns a listener handle, or null on error.',
   }],
   ['subscriber', {
@@ -76,7 +76,7 @@ const connectionMethods = new Map<string, FunctionSignature>([
       { name: 'remove_cb', type: 'function', optional: true },
       { name: 'patterns', type: 'array', optional: true },
     ],
-    returnType: 'object | null',
+    returnType: 'ubus.subscriber | null',
     description: 'Create a ubus subscriber that receives notifications from objects it subscribes to. Returns a subscriber handle, or null on error.',
   }],
   ['event', {
@@ -104,13 +104,92 @@ const connectionMethods = new Map<string, FunctionSignature>([
   }],
 ]);
 
-/** The connection object returned by ubus.connect() / open_channel(). */
+/** The connection object returned by ubus.connect(). */
 export const ubusConnectionObjectType: ObjectTypeDefinition = {
   typeName: 'ubus.connection',
   methods: connectionMethods,
   formatDoc: (_name: string, sig: FunctionSignature) =>
     `**ubus.connection.${sig.name}()**: \`${sig.returnType}\`\n\n${sig.description}`,
 };
+
+// Helper to build an ObjectTypeDefinition for a ubus handle.
+const ubusObjectType = (typeName: string, methods: Map<string, FunctionSignature>): ObjectTypeDefinition => ({
+  typeName,
+  methods,
+  formatDoc: (_name: string, sig: FunctionSignature) =>
+    `**${typeName}.${sig.name}()**: \`${sig.returnType}\`\n\n${sig.description}`,
+});
+
+// ── Secondary handles (returned by connection/channel/object/request methods) ──
+// All mirror ucode/lib/ubus.c *_fns[].
+
+// chan_fns — the channel from ubus.open_channel().
+export const ubusChannelObjectType = ubusObjectType('ubus.channel', new Map<string, FunctionSignature>([
+  ['request', { name: 'request', parameters: [
+      { name: 'method', type: 'string', optional: false },
+      { name: 'data', type: 'object', optional: true },
+      { name: 'return_mode', type: 'string', optional: true },
+      { name: 'fd', type: 'integer', optional: true },
+      { name: 'fd_cb', type: 'function', optional: true },
+    ], returnType: 'ubus.request | null', description: 'Issue a request on the channel, returning a request handle, or null on error.' }],
+  ['defer', { name: 'defer', parameters: [
+      { name: 'method', type: 'string', optional: false },
+      { name: 'data', type: 'object', optional: true },
+      { name: 'cb', type: 'function', optional: true },
+    ], returnType: 'ubus.deferred | null', description: 'Issue an asynchronous request on the channel, returning a deferred-request handle, or null on error.' }],
+  ['error', { name: 'error', parameters: [{ name: 'numeric', type: 'boolean', optional: true }], returnType: 'integer | string | null', description: 'Return the last channel error, or null if none.' }],
+  ['disconnect', { name: 'disconnect', parameters: [], returnType: 'boolean | null', description: 'Close the channel. Returns true on success, null on error.' }],
+]));
+
+// defer_fns — a pending asynchronous request (from conn/channel.defer()).
+export const ubusDeferredObjectType = ubusObjectType('ubus.deferred', new Map<string, FunctionSignature>([
+  ['await', { name: 'await', parameters: [{ name: 'timeout', type: 'integer', optional: true }], returnType: 'object | null', description: 'Block until the deferred request completes and return its reply, or null on error/timeout.' }],
+  ['completed', { name: 'completed', parameters: [], returnType: 'boolean', description: 'Return whether the deferred request has finished.' }],
+  ['abort', { name: 'abort', parameters: [], returnType: 'boolean', description: 'Cancel the pending request. Returns true if it was aborted.' }],
+]));
+
+// object_fns — a published object (from conn.publish()).
+export const ubusObjectObjectType = ubusObjectType('ubus.object', new Map<string, FunctionSignature>([
+  ['subscribed', { name: 'subscribed', parameters: [], returnType: 'boolean', description: 'Return whether any client is currently subscribed to this object.' }],
+  ['notify', { name: 'notify', parameters: [
+      { name: 'type', type: 'string', optional: false },
+      { name: 'data', type: 'object', optional: true },
+      { name: 'data_cb', type: 'function', optional: true },
+      { name: 'status_cb', type: 'function', optional: true },
+    ], returnType: 'ubus.notify | null', description: 'Send a notification to subscribers, returning a notify handle, or null on error.' }],
+  ['remove', { name: 'remove', parameters: [], returnType: 'boolean | null', description: 'Unregister the published object. Returns true on success, null on error.' }],
+]));
+
+// request_fns — a server-side request handle.
+export const ubusRequestObjectType = ubusObjectType('ubus.request', new Map<string, FunctionSignature>([
+  ['reply', { name: 'reply', parameters: [
+      { name: 'reply', type: 'object', optional: true },
+      { name: 'rcode', type: 'integer', optional: true },
+    ], returnType: 'boolean | null', description: 'Send a reply (and optional status code) for the request. Returns true on success, null on error.' }],
+  ['error', { name: 'error', parameters: [{ name: 'rcode', type: 'integer', optional: false }], returnType: 'boolean | null', description: 'Complete the request with an error status code.' }],
+  ['defer', { name: 'defer', parameters: [], returnType: 'boolean | null', description: 'Defer the reply, keeping the request open to answer later.' }],
+  ['get_fd', { name: 'get_fd', parameters: [], returnType: 'integer | null', description: 'Return a file descriptor attached to the request, or null if none.' }],
+  ['set_fd', { name: 'set_fd', parameters: [{ name: 'fd', type: 'integer', optional: false }], returnType: 'boolean | null', description: 'Attach a file descriptor to the reply.' }],
+  ['new_channel', { name: 'new_channel', parameters: [{ name: 'timeout', type: 'integer', optional: true }], returnType: 'ubus.channel | null', description: 'Convert the request into a bidirectional channel, returning the channel handle, or null on error.' }],
+]));
+
+// notify_fns — an in-flight notification (from object.notify()).
+export const ubusNotifyObjectType = ubusObjectType('ubus.notify', new Map<string, FunctionSignature>([
+  ['completed', { name: 'completed', parameters: [], returnType: 'boolean', description: 'Return whether all subscribers have acknowledged the notification.' }],
+  ['abort', { name: 'abort', parameters: [], returnType: 'boolean', description: 'Cancel the pending notification.' }],
+]));
+
+// listener_fns — an event listener (from conn.listener()).
+export const ubusListenerObjectType = ubusObjectType('ubus.listener', new Map<string, FunctionSignature>([
+  ['remove', { name: 'remove', parameters: [], returnType: 'boolean | null', description: 'Stop and remove the event listener. Returns true on success, null on error.' }],
+]));
+
+// subscriber_fns — a subscriber (from conn.subscriber()).
+export const ubusSubscriberObjectType = ubusObjectType('ubus.subscriber', new Map<string, FunctionSignature>([
+  ['subscribe', { name: 'subscribe', parameters: [{ name: 'path', type: 'string', optional: false }], returnType: 'boolean | null', description: 'Subscribe to notifications from the named object path. Returns true on success, null on error.' }],
+  ['unsubscribe', { name: 'unsubscribe', parameters: [{ name: 'path', type: 'string', optional: false }], returnType: 'boolean | null', description: 'Stop receiving notifications from the named object path.' }],
+  ['remove', { name: 'remove', parameters: [], returnType: 'boolean | null', description: 'Tear down the subscriber. Returns true on success, null on error.' }],
+]));
 
 const functions = new Map<string, FunctionSignature>([
   ["error", {
@@ -138,7 +217,7 @@ const functions = new Map<string, FunctionSignature>([
       { name: "disconnect_cb", type: "function", optional: true },
       { name: "timeout", type: "integer", optional: true, defaultValue: 30 }
     ],
-    returnType: "ubus.connection | null",
+    returnType: "ubus.channel | null",
     description: `Create a ubus channel connection using an existing file descriptor. Used for bidirectional communication over established connections.
 
 **Example:**

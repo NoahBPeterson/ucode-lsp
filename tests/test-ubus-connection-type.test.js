@@ -51,3 +51,42 @@ test('hover on a connection method that returns null-able works (list)', async (
   const h = await server.getHover(SRC, fp, 3, lines[3].indexOf('list'));
   expect(firstLine(h)).toContain('ubus.connection.list');
 });
+
+// Secondary ubus handles: conn.defer/publish/subscriber/listener and
+// open_channel return typed handles whose methods resolve (multi-hop chaining).
+const SRC2 = `import * as ubus from 'ubus';
+let conn = ubus.connect();
+let d = conn.defer("o", "m");
+let r = d.await();
+let o = conn.publish("x");
+let n = o.notify("t");
+let sub = conn.subscriber();
+let ch = ubus.open_channel(3);
+let rq = ch.request("m");
+`;
+const fp2 = '/tmp/test-ubus-conn2.uc';
+const l2 = SRC2.split('\n');
+async function hoverIn(src, file, lineIdx, token) {
+  await server.getDiagnostics(src, file);
+  const h = await server.getHover(src, file, lineIdx, src.split('\n')[lineIdx].indexOf(token));
+  return firstLine(h);
+}
+
+test('conn.defer() returns a typed ubus.deferred handle', async () => {
+  expect(await hoverIn(SRC2, fp2, 2, 'd ')).toContain('ubus.deferred');
+  expect(await hoverIn(SRC2, fp2, 3, 'await')).toContain('ubus.deferred.await');
+});
+
+test('conn.publish() returns ubus.object; object.notify() returns ubus.notify', async () => {
+  expect(await hoverIn(SRC2, fp2, 4, 'o ')).toContain('ubus.object');
+  expect(await hoverIn(SRC2, fp2, 5, 'notify')).toContain('ubus.object.notify');
+});
+
+test('conn.subscriber() returns a typed ubus.subscriber handle', async () => {
+  expect(await hoverIn(SRC2, fp2, 6, 'sub')).toContain('ubus.subscriber');
+});
+
+test('open_channel() returns ubus.channel; channel.request() returns ubus.request', async () => {
+  expect(await hoverIn(SRC2, fp2, 7, 'ch ')).toContain('ubus.channel');
+  expect(await hoverIn(SRC2, fp2, 8, 'request')).toContain('ubus.channel.request');
+});

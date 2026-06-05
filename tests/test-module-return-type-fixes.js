@@ -41,7 +41,7 @@ function check(label, actual, expected) {
 }
 {
     const r = analyze(`import { open_channel } from 'ubus';\nlet a = open_channel(3);`);
-    check('ubus.open_channel() -> ubus.connection | null', getType(r, 'a'), 'ubus.connection | null');
+    check('ubus.open_channel() -> ubus.channel | null', getType(r, 'a'), 'ubus.channel | null');
 }
 {
     const r = analyze(`import { guard } from 'ubus';\nlet a = guard();`);
