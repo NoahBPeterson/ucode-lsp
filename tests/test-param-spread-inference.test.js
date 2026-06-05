@@ -1,6 +1,7 @@
-// An unannotated parameter spread in a call or array literal (`f(...p)`, `[...p]`)
-// is inferred as `array`. Object-literal spread (`{...p}`) is NOT — it implies an
-// object — and an explicit @param annotation always wins.
+// Spread of an unannotated parameter is typed by the spread context (verified
+// against the ucode interpreter): call / array-literal spread (`f(...p)`, `[...p]`)
+// only accepts an array → `array`; object-literal spread (`{...p}`) accepts an array
+// OR an object → `array | object`. An explicit @param annotation always wins.
 const { test, expect, beforeAll, afterAll } = require('bun:test');
 const { createLSPTestServer } = require('./lsp-test-helpers');
 
@@ -31,9 +32,15 @@ test('no spread leaves the param unknown', async () => {
   expect(await paramHover(`function k(z) { return z + 1; }\n`, 'none', 0, '(z')).toContain('unknown');
 });
 
-test('object-literal spread does NOT infer array', async () => {
+test('object-literal spread infers array | object (ucode accepts both)', async () => {
   const t = await paramHover(`function m(o) { return {...o}; }\n`, 'obj', 0, '(o');
-  expect(t).not.toContain('array');
+  expect(t).toContain('array | object');
+});
+
+test('a param spread in both call and object contexts resolves to array (call wins)', async () => {
+  const t = await paramHover(`function g(p) { foo(...p); return {...p}; }\n`, 'both', 0, '(p');
+  expect(t).toContain('array');
+  expect(t).not.toContain('object');
 });
 
 test('an explicit @param annotation is not clobbered', async () => {

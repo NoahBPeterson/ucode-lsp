@@ -1290,23 +1290,29 @@ export class SemanticAnalyzer extends BaseVisitor {
     };
   }
 
-  /** Lightweight usage inference: an unannotated parameter spread in a CALL or
-   *  ARRAY LITERAL (`f(...p)`, `[...p]`) must be an array — those contexts only
-   *  accept an array operand. (Object-literal spread `{...p}` is excluded: it
-   *  implies an object, not an array.) Call AFTER the body is visited, while the
-   *  param symbols are still in scope; only upgrades params still typed `unknown`,
-   *  so JSDoc annotations and callback-element inference are never clobbered. Does
-   *  not descend into nested functions, where a same-named param could shadow. */
+  /** Lightweight usage inference from spread of an unannotated parameter. The
+   *  operand type is dictated by the spread context — verified against the ucode
+   *  interpreter:
+   *    - call / array-literal spread (`f(...p)`, `[...p]`) only accept an array
+   *      → `array`;
+   *    - object-literal spread (`{...p}`) accepts an array OR an object (an array
+   *      spreads as index→value keys) → `array | object`.
+   *  Call/array context is the stronger signal, so it wins when a param appears in
+   *  both. Call AFTER the body is visited, while the param symbols are still in
+   *  scope; only upgrades params still typed `unknown`, so JSDoc annotations and
+   *  callback-element inference are never clobbered. Does not descend into nested
+   *  functions, where a same-named param could shadow. */
   private inferParamArrayFromSpread(params: { name: string }[], body: AstNode): void {
     if (!params || params.length === 0 || !body) return;
     const paramNames = new Set(params.map(p => p.name));
-    const arrayParams = new Set<string>();
+    const arrayCtx = new Set<string>();   // call / array-literal spread ⟹ array
+    const objectCtx = new Set<string>();  // object-literal spread ⟹ array | object
     const walk = (n: any, parent: any): void => {
       if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
-      if (n.type === 'SpreadElement' && n.argument?.type === 'Identifier'
-          && paramNames.has(n.argument.name)
-          && (parent?.type === 'CallExpression' || parent?.type === 'ArrayExpression')) {
-        arrayParams.add(n.argument.name as string);
+      if (n.type === 'SpreadElement' && n.argument?.type === 'Identifier' && paramNames.has(n.argument.name)) {
+        const name = n.argument.name as string;
+        if (parent?.type === 'CallExpression' || parent?.type === 'ArrayExpression') arrayCtx.add(name);
+        else if (parent?.type === 'ObjectExpression') objectCtx.add(name);
       }
       // Stop at nested function boundaries — their params are a different scope.
       if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return;
@@ -1318,10 +1324,13 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
     };
     walk(body, null);
-    for (const pname of arrayParams) {
+    for (const pname of paramNames) {
       const sym = this.symbolTable.lookup(pname);
-      if (sym && sym.dataType === UcodeType.UNKNOWN) {
+      if (!sym || sym.dataType !== UcodeType.UNKNOWN) continue;
+      if (arrayCtx.has(pname)) {
         sym.dataType = UcodeType.ARRAY as UcodeDataType;
+      } else if (objectCtx.has(pname)) {
+        sym.dataType = createUnionType([UcodeType.ARRAY, UcodeType.OBJECT]) as UcodeDataType;
       }
     }
   }
