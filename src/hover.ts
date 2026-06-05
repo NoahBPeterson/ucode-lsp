@@ -707,6 +707,22 @@ export function handleHover(
                             };
                         }
                     }
+                    // Member-path type narrowing: a `type(o.x) == "str"` guard narrows
+                    // the member path `o.x` at this position even though the base object
+                    // has no known shape. Reflect that before the generic fallback.
+                    if (analysisResult.typeChecker) {
+                        const narrowed = analysisResult.typeChecker.getNarrowedTypeAtPosition(`${objectName}.${memberName}`, offset);
+                        if (narrowed != null) {
+                            const ts = typeToString(narrowed);
+                            if (ts && ts !== 'unknown') {
+                                return {
+                                    contents: { kind: MarkupKind.Markdown, value: `**${memberName}**: \`${ts}\`\n\nNarrowed on \`${objectName}.${memberName}\`` },
+                                    range: { start: document.positionAt(memberContext.memberTokenPos), end: document.positionAt(memberContext.memberTokenEnd) }
+                                };
+                            }
+                        }
+                    }
+
                     // Base is `unknown` (e.g. `let ctx = unknown_call(); ctx.get`) or a
                     // generic `object` with no known shape (e.g. `@param {object} pkg;
                     // pkg.rt_tables_file`). We can't resolve the member's type, but
@@ -845,6 +861,24 @@ export function handleHover(
             if (memberExpressionInfo && analysisResult && !memberExpressionInfo.cursorOnObject) {
                 // Only show method/property hover when cursor is on the property side
                 // When cursor is on the object side, fall through to the variable type display
+
+                // Member-path type narrowing: a `type(o.x) == "str"` guard narrows the
+                // member path `o.x` at this position, so reflect that in the hover.
+                if (analysisResult.typeChecker) {
+                    const dotted = memberExpressionInfo.chain
+                        ? memberExpressionInfo.chain.join('.')
+                        : `${memberExpressionInfo.objectName}.${memberExpressionInfo.propertyName}`;
+                    const narrowed = analysisResult.typeChecker.getNarrowedTypeAtPosition(dotted, offset);
+                    if (narrowed != null) {
+                        const ts = typeToString(narrowed);
+                        if (ts && ts !== 'unknown') {
+                            return {
+                                contents: { kind: MarkupKind.Markdown, value: `**${memberExpressionInfo.propertyName}**: \`${ts}\`` },
+                                range: { start: document.positionAt(token.pos), end: document.positionAt(token.end) }
+                            };
+                        }
+                    }
+                }
 
                 // Unified member hover: check object types and module namespaces
                 const memberHoverDoc = getUnifiedMemberHover(memberExpressionInfo, analysisResult, document.uri);
@@ -1052,6 +1086,18 @@ export function handleHover(
                         };
                     }
                 }
+            }
+
+            // A member property access (`.prop`) — even on a computed or complex base
+            // like `best[k].signal` or `f().signal`, where detectMemberExpression's
+            // LABEL.LABEL pattern doesn't match — must NOT fall back to a same-named
+            // global builtin (e.g. the `signal` builtin). Show a minimal property hover.
+            const tokIdx = tokens.findIndex((t: any) => t.pos <= offset && offset < t.end);
+            if (tokIdx > 0 && tokens[tokIdx - 1]?.type === TokenType.TK_DOT) {
+                return {
+                    contents: { kind: MarkupKind.Markdown, value: `**${word}**: \`unknown\`` },
+                    range: { start: document.positionAt(token.pos), end: document.positionAt(token.end) }
+                };
             }
 
             // Check built-in functions BEFORE exception properties

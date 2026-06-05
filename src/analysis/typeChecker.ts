@@ -2258,6 +2258,17 @@ export class TypeChecker {
   }
 
   private checkMemberExpression(node: MemberExpressionNode): CheckResult {
+    // Member-path type narrowing: a `type(o.x) == "str"` guard in scope narrows the
+    // member path `o.x` itself. getNarrowedTypeAtPosition resolves a dotted path with
+    // no symbol via the guards alone, so this only fires inside such a guard's branch.
+    if (!node.computed && node.property.type === 'Identifier') {
+      const dotted = this.getDottedPath(node);
+      if (dotted && dotted.includes('.')) {
+        const narrowed = this.getNarrowedTypeAtPosition(dotted, node.start);
+        if (narrowed !== null) return narrowed;
+      }
+    }
+
     // Chained member access (base.A.B): when `node.object` is itself a
     // MemberExpression `base.A` and `base.nestedPropertyTypes['A']` knows the
     // type of B, return it. Without this hop, `let x = ns.ALFRED_TYPES.HOSTINFO`
