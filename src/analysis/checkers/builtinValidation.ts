@@ -1275,6 +1275,12 @@ export class BuiltinValidator {
     const allSpecifiers = parseFormatSpecifiers(literal.value);
     const specifiers = allSpecifiers.filter(s => s.specifier !== '%'); // exclude %% (literal percent)
     const dataArgs = node.arguments.slice(1); // arguments after the format string
+
+    // A spread argument (`sprintf(fmt, ...mac)`) expands to an unknown number of
+    // values at runtime, so neither the count nor the per-position types can be
+    // checked statically — bail out of both checks entirely.
+    if (dataArgs.some(arg => arg.type === 'SpreadElement')) return;
+
     const specCount = specifiers.length;
     const argCount = dataArgs.length;
 
