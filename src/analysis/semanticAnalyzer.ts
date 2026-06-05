@@ -1290,6 +1290,42 @@ export class SemanticAnalyzer extends BaseVisitor {
     };
   }
 
+  /** Lightweight usage inference: an unannotated parameter spread in a CALL or
+   *  ARRAY LITERAL (`f(...p)`, `[...p]`) must be an array — those contexts only
+   *  accept an array operand. (Object-literal spread `{...p}` is excluded: it
+   *  implies an object, not an array.) Call AFTER the body is visited, while the
+   *  param symbols are still in scope; only upgrades params still typed `unknown`,
+   *  so JSDoc annotations and callback-element inference are never clobbered. Does
+   *  not descend into nested functions, where a same-named param could shadow. */
+  private inferParamArrayFromSpread(params: { name: string }[], body: AstNode): void {
+    if (!params || params.length === 0 || !body) return;
+    const paramNames = new Set(params.map(p => p.name));
+    const arrayParams = new Set<string>();
+    const walk = (n: any, parent: any): void => {
+      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+      if (n.type === 'SpreadElement' && n.argument?.type === 'Identifier'
+          && paramNames.has(n.argument.name)
+          && (parent?.type === 'CallExpression' || parent?.type === 'ArrayExpression')) {
+        arrayParams.add(n.argument.name as string);
+      }
+      // Stop at nested function boundaries — their params are a different scope.
+      if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return;
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it, n); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, n);
+      }
+    };
+    walk(body, null);
+    for (const pname of arrayParams) {
+      const sym = this.symbolTable.lookup(pname);
+      if (sym && sym.dataType === UcodeType.UNKNOWN) {
+        sym.dataType = UcodeType.ARRAY as UcodeDataType;
+      }
+    }
+  }
+
   visitFunctionDeclaration(node: FunctionDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
@@ -1343,6 +1379,9 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Visit the function body to find all return statements.
       this.visit(node.body);
+
+      // Usage inference: spread-of-param ⟹ array (before the signature is captured).
+      this.inferParamArrayFromSpread(node.params, node.body);
 
       // Infer the final return type from all collected return types.
       const returnEntries = this.functionReturnTypes.get(node) || [];
@@ -1479,6 +1518,9 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Visit the function body
       this.visit(node.body);
 
+      // Usage inference: spread-of-param ⟹ array.
+      this.inferParamArrayFromSpread(node.params, node.body);
+
       // Exit function scope
       this.symbolTable.exitScope(node.end);
       this.functionScopes.pop();
@@ -1544,6 +1586,9 @@ export class SemanticAnalyzer extends BaseVisitor {
         // For expression bodies, visit normally
         this.visit(node.body);
       }
+
+      // Usage inference: spread-of-param ⟹ array.
+      this.inferParamArrayFromSpread(node.params, node.body);
 
       // Exit function scope
       this.symbolTable.exitScope(node.end);
