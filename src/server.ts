@@ -2306,6 +2306,26 @@ function inferParamTypesFromUsage(
             }
         }
 
+        // Source 6: spreading a param. Same "runtime errors on the wrong type"
+        // basis as the builtins, verified against the ucode interpreter:
+        //   - call / array-literal spread (`f(...p)`, `[...p]`) only accept an
+        //     array (everything else is "not iterable"). → `array`.
+        //   - object-literal spread (`{...p}`) accepts an array OR an object (an
+        //     array spreads as index→value keys). → `array | object`.
+        if (node.type === 'CallExpression' || node.type === 'ArrayExpression' || node.type === 'ObjectExpression') {
+            const items = node.type === 'CallExpression' ? node.arguments
+                : node.type === 'ArrayExpression' ? node.elements
+                : node.properties;
+            if (Array.isArray(items)) {
+                const allowed = node.type === 'ObjectExpression' ? ['array', 'object'] : ['array'];
+                for (const it of items) {
+                    if (it?.type === 'SpreadElement' && it.argument?.type === 'Identifier' && paramNames.has(it.argument.name)) {
+                        addConstraint(it.argument.name, allowed);
+                    }
+                }
+            }
+        }
+
         for (const key of Object.keys(node)) {
             if (key === 'leadingJsDoc' || key === '_fullType' || key === '_specCache') continue;
             const v = node[key];

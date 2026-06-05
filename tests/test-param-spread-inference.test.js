@@ -1,7 +1,12 @@
-// Spread of an unannotated parameter is typed by the spread context (verified
-// against the ucode interpreter): call / array-literal spread (`f(...p)`, `[...p]`)
-// only accepts an array → `array`; object-literal spread (`{...p}`) accepts an array
-// OR an object → `array | object`. An explicit @param annotation always wins.
+// Spreading a parameter is NOT a type fact about what's passed in — it's a
+// precondition the body imposes on callers, which the LSP never verifies. So:
+//   - the param's type stays `unknown` (honest),
+//   - UC7003 ("document this param") still fires,
+//   - and the spread only feeds the EXISTING Add-JSDoc usage inference, proposing
+//     `{array}` (call/array spread) or `{array | object}` (object spread) as an
+//     editable suggestion — the same path as push()->array etc.
+// Once the human accepts that annotation, it's a declared contract and hover shows
+// the type through the ordinary @param pipeline (covered by JSDoc tests elsewhere).
 const { test, expect, beforeAll, afterAll } = require('bun:test');
 const { createLSPTestServer } = require('./lsp-test-helpers');
 
@@ -10,73 +15,54 @@ beforeAll(async () => { server = createLSPTestServer(); await server.initialize(
 afterAll(() => { try { server.shutdown(); } catch {} });
 
 const firstLine = (h) => (h && h.contents) ? (typeof h.contents === 'string' ? h.contents : h.contents.value || '').split('\n')[0] : '';
-async function paramHover(content, tag, lineIdx, token) {
+
+// The text the "Add JSDoc" quick fix would insert for the function on `funcLine`.
+async function addJsDocText(content, tag) {
   const fp = `/tmp/psi-${tag}.uc`;
-  await server.getDiagnostics(content, fp);
-  return firstLine(await server.getHover(content, fp, lineIdx, content.split('\n')[lineIdx].indexOf(token) + 1));
+  const d = await server.getDiagnostics(content, fp);
+  const jd = (d || []).find((x) => x.code === 'UC7003'
+    || ((x.code === 'incompatible-function-argument' || x.code === 'nullable-argument') && x.data && x.data.variableName));
+  if (!jd) return null;
+  const acts = await server.getCodeActions(fp, [jd], jd.range.start.line, jd.range.start.character);
+  const fix = (acts || []).find((a) => /JSDoc/i.test(a.title));
+  if (!fix || !fix.edit || !fix.edit.changes) return null;
+  return Object.values(fix.edit.changes)[0][0].newText;
 }
 
-test('call-spread infers array (the sprintf(...mac) case)', async () => {
-  expect(await paramHover(`function f(mac) { return sprintf("%x", ...mac); }\n`, 'call', 0, '(mac')).toContain('array');
+test('a spread param is NOT assumed to be array — it stays unknown', async () => {
+  const c = `function mac_array_string(mac) { return sprintf("%02x", ...mac); }\n`;
+  const fp = '/tmp/psi-unknown.uc';
+  await server.getDiagnostics(c, fp);
+  const h = await server.getHover(c, fp, 0, c.indexOf('(mac') + 1);
+  expect(firstLine(h)).toContain('unknown');
 });
 
-test('array-literal spread infers array', async () => {
-  expect(await paramHover(`function g(xs) { return [...xs]; }\n`, 'arr', 0, '(xs')).toContain('array');
-});
-
-test('arrow function call-spread infers array', async () => {
-  expect(await paramHover(`let h = (ys) => max(...ys);\n`, 'arrow', 0, '(ys')).toContain('array');
-});
-
-test('no spread leaves the param unknown', async () => {
-  expect(await paramHover(`function k(z) { return z + 1; }\n`, 'none', 0, '(z')).toContain('unknown');
-});
-
-test('object-literal spread infers array | object (ucode accepts both)', async () => {
-  const t = await paramHover(`function m(o) { return {...o}; }\n`, 'obj', 0, '(o');
-  expect(t).toContain('array | object');
-});
-
-test('a param spread in both call and object contexts resolves to array (call wins)', async () => {
-  const t = await paramHover(`function g(p) { foo(...p); return {...p}; }\n`, 'both', 0, '(p');
-  expect(t).toContain('array');
-  expect(t).not.toContain('object');
-});
-
-test('an explicit @param annotation is not clobbered', async () => {
-  const c = `/**\n * @param {object} mac\n */\nfunction f(mac) { return sprintf("%x", ...mac); }\n`;
-  expect(await paramHover(c, 'annot', 3, '(mac')).toContain('object');
-});
-
-// UC7003 ("param has unknown type, annotate it") must not fire for a param whose
-// type we inferred from spread usage — it isn't unknown anymore. A genuinely
-// untyped param still gets the hint. (UC7003 is strict-mode only.)
-async function uc7003Params(content, tag) {
-  const d = await server.getDiagnostics(content, `/tmp/psi7-${tag}.uc`);
-  const u = (d || []).find((x) => x.code === 'UC7003');
-  return u ? u.message : null;
-}
-
-test('UC7003 does not fire for a spread-inferred param', async () => {
+test('UC7003 still fires for a spread param (contract is undocumented)', async () => {
   const c = `'use strict';\nfunction mac_array_string(mac) { return sprintf("%02x", ...mac); }\n`;
-  expect(await uc7003Params(c, 'spread')).toBeNull();
+  const d = await server.getDiagnostics(c, '/tmp/psi-uc7003.uc');
+  expect((d || []).some((x) => x.code === 'UC7003')).toBe(true);
 });
 
-test('UC7003 does not fire for an object-spread-inferred param', async () => {
+test('Add-JSDoc suggests {array} from a call-spread', async () => {
+  const c = `'use strict';\nfunction mac_array_string(mac) { return sprintf("%02x", ...mac); }\n`;
+  expect(await addJsDocText(c, 'call')).toContain('@param {array} mac');
+});
+
+test('Add-JSDoc suggests {array} from an array-literal spread', async () => {
+  const c = `'use strict';\nfunction g(xs) { return length([...xs]); }\n`;
+  expect(await addJsDocText(c, 'arrlit')).toContain('@param {array} xs');
+});
+
+test('Add-JSDoc suggests {array | object} from an object-literal spread', async () => {
   const c = `'use strict';\nfunction h(o) { return {...o}; }\n`;
-  expect(await uc7003Params(c, 'objspread')).toBeNull();
+  expect(await addJsDocText(c, 'objlit')).toContain('@param {array | object} o');
 });
 
-test('UC7003 still fires for a genuinely untyped param (control)', async () => {
-  const c = `'use strict';\nfunction g(z) { return z + 1; }\n`;
-  const msg = await uc7003Params(c, 'control');
-  expect(msg).not.toBeNull();
-  expect(msg).toContain('z');
-});
-
-test('the inferred array flows into the function signature (no spurious UC2006)', async () => {
-  // mac inferred array; the spread call must not be re-flagged for arg count.
-  const c = `function f(mac) { return sprintf("%02x:%02x:%02x", ...mac); }\n`;
-  const d = await server.getDiagnostics(c, '/tmp/psi-sig.uc');
-  expect((d || []).find((x) => x.code === 'UC2006')).toBeUndefined();
+test('a spread arg does not invent a call-site contract (no false arg error)', async () => {
+  // mac is unknown, so calling with a string must NOT be flagged against an
+  // assumed array signature.
+  const c = `function f(mac) { return sprintf("%x", ...mac); }\nf("aabbcc");\n`;
+  const d = await server.getDiagnostics(c, '/tmp/psi-callsite.uc');
+  const argErr = (d || []).find((x) => x.code === 'incompatible-function-argument' && x.range.start.line === 1);
+  expect(argErr).toBeUndefined();
 });

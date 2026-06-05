@@ -1290,51 +1290,6 @@ export class SemanticAnalyzer extends BaseVisitor {
     };
   }
 
-  /** Lightweight usage inference from spread of an unannotated parameter. The
-   *  operand type is dictated by the spread context — verified against the ucode
-   *  interpreter:
-   *    - call / array-literal spread (`f(...p)`, `[...p]`) only accept an array
-   *      → `array`;
-   *    - object-literal spread (`{...p}`) accepts an array OR an object (an array
-   *      spreads as index→value keys) → `array | object`.
-   *  Call/array context is the stronger signal, so it wins when a param appears in
-   *  both. Call AFTER the body is visited, while the param symbols are still in
-   *  scope; only upgrades params still typed `unknown`, so JSDoc annotations and
-   *  callback-element inference are never clobbered. Does not descend into nested
-   *  functions, where a same-named param could shadow. */
-  private inferParamArrayFromSpread(params: { name: string }[], body: AstNode): void {
-    if (!params || params.length === 0 || !body) return;
-    const paramNames = new Set(params.map(p => p.name));
-    const arrayCtx = new Set<string>();   // call / array-literal spread ⟹ array
-    const objectCtx = new Set<string>();  // object-literal spread ⟹ array | object
-    const walk = (n: any, parent: any): void => {
-      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
-      if (n.type === 'SpreadElement' && n.argument?.type === 'Identifier' && paramNames.has(n.argument.name)) {
-        const name = n.argument.name as string;
-        if (parent?.type === 'CallExpression' || parent?.type === 'ArrayExpression') arrayCtx.add(name);
-        else if (parent?.type === 'ObjectExpression') objectCtx.add(name);
-      }
-      // Stop at nested function boundaries — their params are a different scope.
-      if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return;
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it, n); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, n);
-      }
-    };
-    walk(body, null);
-    for (const pname of paramNames) {
-      const sym = this.symbolTable.lookup(pname);
-      if (!sym || sym.dataType !== UcodeType.UNKNOWN) continue;
-      if (arrayCtx.has(pname)) {
-        sym.dataType = UcodeType.ARRAY as UcodeDataType;
-      } else if (objectCtx.has(pname)) {
-        sym.dataType = createUnionType([UcodeType.ARRAY, UcodeType.OBJECT]) as UcodeDataType;
-      }
-    }
-  }
-
   visitFunctionDeclaration(node: FunctionDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
@@ -1373,11 +1328,6 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Declare parameters (with JSDoc type annotations if present)
       this.applyJsDocToParams(node.leadingJsDoc, node.params);
-
-      // Usage inference (spread-of-param ⟹ array / array|object) BEFORE the
-      // unknown-param diagnostic, so a param whose type we can infer isn't nagged
-      // as "unknown" and the body is analyzed with the inferred type.
-      this.inferParamArrayFromSpread(node.params, node.body);
 
       // Emit diagnostic for unknown-typed params (strict mode only)
       if (!node.leadingJsDoc && node.params.length > 0) {
@@ -1502,10 +1452,6 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Declare parameters in the function scope (with JSDoc type annotations if present)
       this.applyJsDocToParams(node.leadingJsDoc, node.params);
 
-      // Usage inference (spread-of-param ⟹ array / array|object) before the
-      // unknown-param diagnostic, so an inferable param isn't nagged as "unknown".
-      this.inferParamArrayFromSpread(node.params, node.body);
-
       // UC7003 for method-style function expressions (those with a derivable
       // name from their assignment target). Anonymous callbacks have no name and
       // are skipped, so `map(x => …)` etc. don't get noisy hints.
@@ -1573,10 +1519,6 @@ export class SemanticAnalyzer extends BaseVisitor {
           this.symbolTable.declare(param.name, SymbolType.PARAMETER, paramType, param);
         }
       }
-
-      // Usage inference (spread-of-param ⟹ array / array|object) before the
-      // unknown-param diagnostic, so an inferable param isn't nagged as "unknown".
-      this.inferParamArrayFromSpread(node.params, node.body);
 
       // UC7003 only for arrows with a derivable name (assigned to a member/var),
       // never for bare callbacks.
