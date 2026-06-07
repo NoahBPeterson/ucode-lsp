@@ -35,6 +35,7 @@ function createLSPTestServer(options = {}) {
       getInlayHints: global.__sharedLSPServer.getInlayHints,
       getFoldingRanges: global.__sharedLSPServer.getFoldingRanges,
       getDocumentLinks: global.__sharedLSPServer.getDocumentLinks,
+      notifyWatchedFileChange: global.__sharedLSPServer.notifyWatchedFileChange,
       getWorkspaceSymbols: global.__sharedLSPServer.getWorkspaceSymbols,
       getCodeActions: global.__sharedLSPServer.getCodeActions,
       getCodeLens: global.__sharedLSPServer.getCodeLens,
@@ -599,6 +600,13 @@ function createLSPTestServer(options = {}) {
     sendPositionRequest('textDocument/foldingRange', content, file, 0, 0);
   const getDocumentLinks = (content, file) =>
     sendPositionRequest('textDocument/documentLink', content, file, 0, 0);
+  // Simulate an external file change/create/delete (FileChangeType: 1/2/3).
+  function notifyWatchedFileChange(uri, type) {
+    serverProcess.stdin.write(createLSPMessage({
+      jsonrpc: '2.0', method: 'workspace/didChangeWatchedFiles',
+      params: { changes: [{ uri, type }] },
+    }));
+  }
   // Opens the doc (so it's analyzed + in the cache), then queries workspace symbols.
   const getWorkspaceSymbols = (content, file, query) =>
     sendPositionRequest('workspace/symbol', content, file, 0, 0, { query });
@@ -649,6 +657,7 @@ function createLSPTestServer(options = {}) {
     getInlayHints,
     getFoldingRanges,
     getDocumentLinks,
+    notifyWatchedFileChange,
     getWorkspaceSymbols,
     getCodeActions,
     getCodeLens,

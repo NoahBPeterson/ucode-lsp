@@ -548,9 +548,19 @@ async function invalidateDependents(changedUri: string): Promise<void> {
             if (openDoc) {
                 await validateAndAnalyzeDocument(openDoc);
             } else {
-                // Closed file: drop the cache so the next open re-parses.
-                purgeImportDeps(dep);
-                analysisCache.delete(dep);
+                // Closed dependent: re-analyze from disk so its workspace-wide
+                // diagnostics stay fresh — an export it relied on may have changed
+                // (e.g. now-missing import) — and the result is re-published.
+                try {
+                    const depPath = uriToFilePath(dep);
+                    const content = await fs.promises.readFile(depPath, 'utf8');
+                    await validateAndAnalyzeDocument(TextDocument.create(dep, 'ucode', 1, content));
+                } catch {
+                    // File gone/unreadable: drop caches and clear its problems.
+                    purgeImportDeps(dep);
+                    analysisCache.delete(dep);
+                    connection.sendDiagnostics({ uri: dep, diagnostics: [] });
+                }
             }
         }
     }
@@ -581,6 +591,10 @@ connection.onDidChangeWatchedFiles(async (params: DidChangeWatchedFilesParams) =
             case FileChangeType.Deleted:
                 purgeImportDeps(change.uri);
                 analysisCache.delete(change.uri);
+                inlayCache.delete(change.uri);
+                // Clear the file's published problems — otherwise its diagnostics
+                // from the startup scan linger in the Problems panel after deletion.
+                connection.sendDiagnostics({ uri: change.uri, diagnostics: [] });
                 await invalidateDependents(change.uri);
                 break;
         }
