@@ -22,7 +22,12 @@ function testResult(testName, condition, details = '') {
 // Expected math functions from math.c analysis
 const expectedFunctions = [
   'abs', 'atan2', 'cos', 'exp', 'log', 'sin', 'sqrt', 'pow', 'rand', 'srand', 'isnan',
-  'deg2rad', 'rad2deg' // upstream 81066c5
+  'deg2rad', 'rad2deg', // upstream 81066c5
+  // ext_maths set (upstream 0beaa9d..3ec4e5c)
+  'acos', 'asin', 'atan', 'tan', 'cosh', 'sinh', 'tanh',
+  'expm1', 'log1p', 'log10', 'log2', 'cbrt', 'hypot', 'copysign',
+  'fmin', 'fmax', 'clamp', 'sign', 'signbit', 'signnz', 'isinf',
+  'floor', 'ceil', 'round', 'trunc'
 ];
 
 // Test 1: All expected functions are present

@@ -39,14 +39,18 @@ testResult('Mixed valid and invalid validation', validCount === 3 && invalidCoun
   `Valid: ${validCount}, Invalid: ${invalidCount}`);
 
 // Test 4: All valid math functions validation
-const allMathFunctions = ['abs', 'atan2', 'cos', 'exp', 'log', 'sin', 'sqrt', 'pow', 'rand', 'srand', 'isnan'];
+const allMathFunctions = ['abs', 'atan2', 'cos', 'exp', 'log', 'sin', 'sqrt', 'pow', 'rand', 'srand', 'isnan',
+  'deg2rad', 'rad2deg',
+  'acos', 'asin', 'atan', 'tan', 'cosh', 'sinh', 'tanh', 'expm1', 'log1p', 'log10', 'log2',
+  'cbrt', 'hypot', 'copysign', 'fmin', 'fmax', 'clamp', 'sign', 'signbit', 'signnz', 'isinf',
+  'floor', 'ceil', 'round', 'trunc'];
 const allValidMathFunctions = allMathFunctions.every(func => mathTypeRegistry.isValidMathImport(func));
 testResult('All valid math functions validation', allValidMathFunctions,
   `All ${allMathFunctions.length} functions are valid: ${allValidMathFunctions}`);
 
 // Test 5: Available exports list
 const availableExports = mathTypeRegistry.getValidMathImports();
-const exportsMatchExpected = availableExports.length === 13 && availableExports.includes('abs') && availableExports.includes('sin');
+const exportsMatchExpected = availableExports.length === allMathFunctions.length && availableExports.includes('abs') && availableExports.includes('sin');
 testResult('Available exports list', exportsMatchExpected,
   `Available exports: ${availableExports.length}, Contains abs and sin: ${exportsMatchExpected}`);
 

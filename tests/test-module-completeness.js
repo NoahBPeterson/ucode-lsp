@@ -27,7 +27,8 @@ const EXPECTED_FUNCTIONS = {
     ],
     io: ['error', 'new', 'open', 'from', 'pipe'],
     log: ['openlog', 'syslog', 'closelog', 'ulog_open', 'ulog', 'ulog_close', 'ulog_threshold', 'INFO', 'NOTE', 'WARN', 'ERR'],
-    math: ['abs', 'atan2', 'cos', 'exp', 'log', 'sin', 'sqrt', 'pow', 'rand', 'srand', 'isnan', 'deg2rad', 'rad2deg'], // upstream 81066c5
+    math: ['abs', 'atan2', 'cos', 'exp', 'log', 'sin', 'sqrt', 'pow', 'rand', 'srand', 'isnan', 'deg2rad', 'rad2deg', // upstream 81066c5
+      'acos', 'asin', 'atan', 'tan', 'cosh', 'sinh', 'tanh', 'expm1', 'log1p', 'log10', 'log2', 'cbrt', 'hypot', 'copysign', 'fmin', 'fmax', 'clamp', 'sign', 'signbit', 'signnz', 'isinf', 'floor', 'ceil', 'round', 'trunc'], // ext_maths 0beaa9d..3ec4e5c
     nl80211: ['error', 'request', 'waitfor', 'listener'],
     resolv: ['query', 'error'],
     rtnl: ['request', 'listener', 'error'],
