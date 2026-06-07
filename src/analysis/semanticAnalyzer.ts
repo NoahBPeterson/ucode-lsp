@@ -977,6 +977,14 @@ export class SemanticAnalyzer extends BaseVisitor {
     const resolvedUri = this.fileResolver.resolveImportPath(actualModulePath, this.textDocument.uri);
 
     if (resolvedUri) {
+      // Record the cross-file dependency edge as soon as the PATH resolves —
+      // BEFORE validating the specific export. Even if the named/default export is
+      // currently missing (error below), the importer still depends on this file:
+      // if the file later adds the export, the server must re-analyze this importer
+      // to clear the error. Recording the edge only on a valid export would strand
+      // the importer's diagnostics when the export is added later.
+      if (resolvedUri.startsWith('file://')) this.resolvedImports.add(resolvedUri);
+
       const moduleExports = this.fileResolver.getModuleExports(resolvedUri);
 
       if (moduleExports && specifier.type === 'ImportSpecifier') {
