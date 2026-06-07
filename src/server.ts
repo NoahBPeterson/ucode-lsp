@@ -647,14 +647,32 @@ function appendCrossFileAutoImports(
 ): CompletionItem[] {
     if (!base.some(i => i.kind === CompletionItemKind.Keyword)) return base;
     if (workspaceFolders.length === 0) return base;
-    // Never in member position (`o.foo|` / `o.|`): a property is not a top-level name.
     const text = document.getText();
+
+    // Never inside a string literal (e.g. the module path of an `import … from '…'`):
+    // scan the current line tracking quote state up to the cursor.
+    const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+    let inStr: string | null = null;
+    for (let j = lineStart; j < offset; j++) {
+        const ch = text[j];
+        if (inStr) {
+            if (ch === '\\') { j++; continue; }
+            if (ch === inStr) inStr = null;
+        } else if (ch === '"' || ch === "'" || ch === '`') {
+            inStr = ch;
+        }
+    }
+    if (inStr) return base;
+
+    // Never in member position (`o.foo|` / `o.|`, including across whitespace and
+    // newlines like `o.\n  foo|`): a property is not a top-level name.
     let i = offset - 1;
     while (i >= 0 && /[A-Za-z0-9_$]/.test(text[i]!)) i--;
-    while (i >= 0 && (text[i] === ' ' || text[i] === '\t')) i--;
+    while (i >= 0 && /\s/.test(text[i]!)) i--; // skip whitespace incl. newlines/CR
     if (i >= 0 && text[i] === '.') return base;
 
-    const have = new Set(base.map(i => i.label)); // already offered (locals, builtins, imports)
+    const inScope = new Set(base.map(i => i.label)); // locals, builtins, existing imports
+    const seen = new Set<string>(); // name+source pairs already added (allow same name from different files)
     const resolver = getCrossRefResolver();
     const currentPath = path.resolve(uriToFilePath(uri));
     const currentDir = path.dirname(currentPath);
@@ -671,8 +689,10 @@ function appendCrossFileAutoImports(
         for (const exp of exports) {
             if (exp.type !== 'named') continue; // default import name is the importer's choice — skip
             const name = exp.name;
-            if (have.has(name)) continue; // already in scope / offered
-            have.add(name);
+            if (inScope.has(name)) continue; // already imported / a local / a builtin
+            const key = `${name} ${rel}`;
+            if (seen.has(key)) continue; // same export from the same file already added
+            seen.add(key);
             const importText = `import { ${name} } from '${rel}';`;
             additions.push({
                 label: name,
