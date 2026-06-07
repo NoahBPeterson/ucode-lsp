@@ -39,6 +39,9 @@ import {
     InlayHintParams,
     FoldingRange,
     DocumentLink,
+    CompletionItem,
+    CompletionItemKind,
+    MarkupKind,
     FoldingRangeParams,
 } from 'vscode-languageserver/node';
 
@@ -56,6 +59,7 @@ import { provideSignatureHelp } from './signatureHelp';
 import { computeRawInlayHints, shiftRawHints, materializeRawHints, RawInlayHint } from './inlayHints';
 import { provideFoldingRanges } from './foldingRanges';
 import { provideDocumentLinks } from './documentLinks';
+import { computeImportInsertEdit } from './importEdit';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalyzer, SemanticAnalysisResult, SymbolType } from './analysis';
 import { UcodeParser } from './parser';
@@ -606,8 +610,72 @@ connection.onCompletion(async (params) => {
         }
     }
     
-    return handleCompletion(params, documents, connection, analysisResult);
+    const base = handleCompletion(params, documents, connection, analysisResult);
+    try {
+        const document = documents.get(params.textDocument.uri);
+        if (document && analysisResult?.ast) {
+            const offset = document.offsetAt(params.position);
+            return appendCrossFileAutoImports(base, params.textDocument.uri, document, analysisResult.ast, offset);
+        }
+    } catch (e) {
+        connection.console.log('auto-import error: ' + e);
+    }
+    return base;
 });
+
+// Append completion items for named exports of OTHER workspace files that aren't
+// already in scope, each carrying an `additionalTextEdits` that inserts the import.
+// Only fires in general (statement/expression) context — detected by the presence
+// of keyword items, which handleCompletion emits only there (never after `.`, in a
+// function-name slot, or inside an import).
+function appendCrossFileAutoImports(
+    base: CompletionItem[], uri: string, document: TextDocument, ast: any, offset: number
+): CompletionItem[] {
+    if (!base.some(i => i.kind === CompletionItemKind.Keyword)) return base;
+    if (workspaceFolders.length === 0) return base;
+    // Never in member position (`o.foo|` / `o.|`): a property is not a top-level name.
+    const text = document.getText();
+    let i = offset - 1;
+    while (i >= 0 && /[A-Za-z0-9_$]/.test(text[i]!)) i--;
+    while (i >= 0 && (text[i] === ' ' || text[i] === '\t')) i--;
+    if (i >= 0 && text[i] === '.') return base;
+
+    const have = new Set(base.map(i => i.label)); // already offered (locals, builtins, imports)
+    const resolver = getCrossRefResolver();
+    const currentPath = path.resolve(uriToFilePath(uri));
+    const currentDir = path.dirname(currentPath);
+    const additions: CompletionItem[] = [];
+    const MAX = 500;
+
+    for (const filePath of listWorkspaceUcodeFiles()) {
+        if (path.resolve(filePath) === currentPath) continue;
+        const fileUri = filePathToUri(filePath);
+        const exports = resolver.getModuleExports(fileUri);
+        if (!exports) continue;
+        let rel = path.relative(currentDir, filePath).replace(/\\/g, '/');
+        if (!rel.startsWith('.')) rel = './' + rel;
+        for (const exp of exports) {
+            if (exp.type !== 'named') continue; // default import name is the importer's choice — skip
+            const name = exp.name;
+            if (have.has(name)) continue; // already in scope / offered
+            have.add(name);
+            const importText = `import { ${name} } from '${rel}';`;
+            additions.push({
+                label: name,
+                kind: exp.isFunction ? CompletionItemKind.Function : CompletionItemKind.Variable,
+                detail: `Auto-import from ${rel}`,
+                documentation: { kind: MarkupKind.Markdown, value: `Named export from \`${rel}\`. Selecting this adds:\n\n\`\`\`\n${importText}\n\`\`\`` },
+                sortText: `8${name}`, // rank below locals/builtins/keywords
+                additionalTextEdits: [computeImportInsertEdit(ast, document, importText)],
+            });
+            if (additions.length >= MAX) {
+                connection.console.log(`auto-import: capped at ${MAX} candidates`);
+                return base.concat(additions);
+            }
+        }
+    }
+    return base.concat(additions);
+}
 
 connection.onCompletionResolve((item) => {
     return handleCompletionResolve(item);
@@ -2587,18 +2655,8 @@ function generateAddImportQuickFix(
     const m = /^\s*\.\s*([A-Za-z_]\w*)/.exec(tail);
     const methodName = m ? m[1] : null;
 
-    // Anchor: end of the leading run of imports / 'use strict' directive.
-    let anchorEnd = -1;
-    for (const stmt of (ast.body || [])) {
-        if (stmt?.type === 'ImportDeclaration') anchorEnd = stmt.end;
-        else if (anchorEnd === -1 && stmt?.type === 'ExpressionStatement'
-            && stmt.expression?.type === 'Literal' && stmt.expression.value === 'use strict') anchorEnd = stmt.end;
-        else break;
-    }
     const mkAction = (importText: string, preferred: boolean): CodeAction => {
-        const edit = anchorEnd >= 0
-            ? TextEdit.insert(document.positionAt(anchorEnd), `\n${importText}`)
-            : TextEdit.insert({ line: 0, character: 0 }, `${importText}\n`);
+        const edit = computeImportInsertEdit(ast, document, importText);
         return {
             title: `Add ${importText}`,
             kind: CodeActionKind.QuickFix,
