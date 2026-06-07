@@ -38,6 +38,7 @@ import {
     InlayHint,
     InlayHintParams,
     FoldingRange,
+    DocumentLink,
     FoldingRangeParams,
 } from 'vscode-languageserver/node';
 
@@ -54,6 +55,7 @@ import { buildDocumentSymbols } from './documentSymbols';
 import { provideSignatureHelp } from './signatureHelp';
 import { computeRawInlayHints, shiftRawHints, materializeRawHints, RawInlayHint } from './inlayHints';
 import { provideFoldingRanges } from './foldingRanges';
+import { provideDocumentLinks } from './documentLinks';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalyzer, SemanticAnalysisResult, SymbolType } from './analysis';
 import { UcodeParser } from './parser';
@@ -274,6 +276,7 @@ connection.onInitialize((params: InitializeParams) => {
             documentHighlightProvider: true,
             inlayHintProvider: true,
             foldingRangeProvider: true,
+            documentLinkProvider: { resolveProvider: false },
             renameProvider: {
                 prepareProvider: true
             },
@@ -1284,6 +1287,13 @@ connection.onFoldingRanges((params: FoldingRangeParams): FoldingRange[] => {
         entry.result.ast, entry.comments ?? [], document.getText(),
         (offset: number) => document.positionAt(offset).line,
     );
+});
+
+connection.onDocumentLinks((params): DocumentLink[] => {
+    const entry = analysisCache.get(params.textDocument.uri);
+    const document = documents.get(params.textDocument.uri);
+    if (!entry || !document) return [];
+    return provideDocumentLinks(entry.result.ast, document, getCrossRefResolver(), params.textDocument.uri);
 });
 
 /** Find a function node (expression/decl) starting exactly at `start` in `ast`. */

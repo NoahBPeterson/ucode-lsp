@@ -34,6 +34,7 @@ function createLSPTestServer(options = {}) {
       getSignatureHelp: global.__sharedLSPServer.getSignatureHelp,
       getInlayHints: global.__sharedLSPServer.getInlayHints,
       getFoldingRanges: global.__sharedLSPServer.getFoldingRanges,
+      getDocumentLinks: global.__sharedLSPServer.getDocumentLinks,
       getWorkspaceSymbols: global.__sharedLSPServer.getWorkspaceSymbols,
       getCodeActions: global.__sharedLSPServer.getCodeActions,
       getCodeLens: global.__sharedLSPServer.getCodeLens,
@@ -596,6 +597,8 @@ function createLSPTestServer(options = {}) {
     sendPositionRequest('textDocument/inlayHint', content, file, 0, 0, { range: { start: rangeStart, end: rangeEnd } });
   const getFoldingRanges = (content, file) =>
     sendPositionRequest('textDocument/foldingRange', content, file, 0, 0);
+  const getDocumentLinks = (content, file) =>
+    sendPositionRequest('textDocument/documentLink', content, file, 0, 0);
   // Opens the doc (so it's analyzed + in the cache), then queries workspace symbols.
   const getWorkspaceSymbols = (content, file, query) =>
     sendPositionRequest('workspace/symbol', content, file, 0, 0, { query });
@@ -645,6 +648,7 @@ function createLSPTestServer(options = {}) {
     getSignatureHelp,
     getInlayHints,
     getFoldingRanges,
+    getDocumentLinks,
     getWorkspaceSymbols,
     getCodeActions,
     getCodeLens,
