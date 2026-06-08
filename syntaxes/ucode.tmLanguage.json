@@ -99,7 +99,7 @@
           "beginCaptures": {
             "1": { "name": "string.regexp.ucode" }
           },
-          "end": "(/[gis]*)",
+          "end": "(/[gis]*)|((?<!\\\\)$)",
           "endCaptures": {
             "1": { "name": "string.regexp.ucode" }
           },
@@ -111,7 +111,7 @@
             {
               "name": "constant.other.character-class.regexp.ucode",
               "begin": "\\[",
-              "end": "\\]",
+              "end": "\\]|((?<!\\\\)$)",
               "patterns": [
                 {
                   "name": "constant.character.escape.regexp.ucode",
@@ -128,7 +128,7 @@
         {
           "name": "string.quoted.double.ucode",
           "begin": "\"",
-          "end": "\"",
+          "end": "\"|((?<!\\\\)$)",
           "patterns": [
             {
               "name": "constant.character.escape.ucode",
@@ -139,7 +139,7 @@
         {
           "name": "string.quoted.single.ucode",
           "begin": "'",
-          "end": "'",
+          "end": "'|((?<!\\\\)$)",
           "patterns": [
             {
               "name": "constant.character.escape.ucode",
