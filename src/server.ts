@@ -368,6 +368,9 @@ documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
     // Inlay hints only matter for open documents (no cross-file role like
     // analysisCache), so drop the cache to avoid leaking entries for closed files.
     inlayCache.delete(e.document.uri);
+    // The closed file reverts from its (possibly edited) buffer to disk — its
+    // exports may differ, so refresh the auto-import index.
+    invalidateExportIndex();
 });
 
 documents.onDidChangeContent(async (change: TextDocumentChangeEvent<TextDocument>) => {
@@ -574,6 +577,11 @@ connection.onDidChangeWatchedFiles(async (params: DidChangeWatchedFilesParams) =
             continue;
         }
 
+        // A .uc file was created/changed/deleted — its exports may have changed, so
+        // drop the auto-import index (and file list) so the next completion rebuilds.
+        invalidateExportIndex();
+        wsFileListCache = null;
+
         switch (change.type) {
             case FileChangeType.Created:
             case FileChangeType.Changed:
@@ -672,40 +680,29 @@ function appendCrossFileAutoImports(
     if (i >= 0 && text[i] === '.') return base;
 
     const inScope = new Set(base.map(i => i.label)); // locals, builtins, existing imports
-    const seen = new Set<string>(); // name+source pairs already added (allow same name from different files)
-    const resolver = getCrossRefResolver();
     const currentPath = path.resolve(uriToFilePath(uri));
     const currentDir = path.dirname(currentPath);
     const additions: CompletionItem[] = [];
     const MAX = 500;
 
-    for (const filePath of listWorkspaceUcodeFiles()) {
-        if (path.resolve(filePath) === currentPath) continue;
-        const fileUri = filePathToUri(filePath);
-        const exports = resolver.getModuleExports(fileUri);
-        if (!exports) continue;
-        let rel = path.relative(currentDir, filePath).replace(/\\/g, '/');
+    // Iterate the cached workspace export index (no per-keystroke disk reads).
+    for (const entry of getWorkspaceExportIndex()) {
+        if (entry.filePath === currentPath) continue; // don't import from the current file
+        if (inScope.has(entry.name)) continue; // already imported / a local / a builtin
+        let rel = path.relative(currentDir, entry.filePath).replace(/\\/g, '/');
         if (!rel.startsWith('.')) rel = './' + rel;
-        for (const exp of exports) {
-            if (exp.type !== 'named') continue; // default import name is the importer's choice — skip
-            const name = exp.name;
-            if (inScope.has(name)) continue; // already imported / a local / a builtin
-            const key = `${name} ${rel}`;
-            if (seen.has(key)) continue; // same export from the same file already added
-            seen.add(key);
-            const importText = `import { ${name} } from '${rel}';`;
-            additions.push({
-                label: name,
-                kind: exp.isFunction ? CompletionItemKind.Function : CompletionItemKind.Variable,
-                detail: `Auto-import from ${rel}`,
-                documentation: { kind: MarkupKind.Markdown, value: `Named export from \`${rel}\`. Selecting this adds:\n\n\`\`\`\n${importText}\n\`\`\`` },
-                sortText: `8${name}`, // rank below locals/builtins/keywords
-                additionalTextEdits: [computeImportInsertEdit(ast, document, importText)],
-            });
-            if (additions.length >= MAX) {
-                connection.console.log(`auto-import: capped at ${MAX} candidates`);
-                return base.concat(additions);
-            }
+        const importText = `import { ${entry.name} } from '${rel}';`;
+        additions.push({
+            label: entry.name,
+            kind: entry.isFunction ? CompletionItemKind.Function : CompletionItemKind.Variable,
+            detail: `Auto-import from ${rel}`,
+            documentation: { kind: MarkupKind.Markdown, value: `Named export from \`${rel}\`. Selecting this adds:\n\n\`\`\`\n${importText}\n\`\`\`` },
+            sortText: `8${entry.name}`, // rank below locals/builtins/keywords
+            additionalTextEdits: [computeImportInsertEdit(ast, document, importText)],
+        });
+        if (additions.length >= MAX) {
+            connection.console.log(`auto-import: capped at ${MAX} candidates`);
+            return base.concat(additions);
         }
     }
     return base.concat(additions);
@@ -905,6 +902,34 @@ function listWorkspaceUcodeFiles(): string[] {
     wsFileListCache = { files, at: now };
     return files;
 }
+
+// Cached flat index of every NAMED export across the workspace, for auto-import.
+// Building it reads each file (via getModuleExports' content-cached parse) once;
+// completion then iterates this in memory instead of re-reading N files per
+// keystroke. Invalidated on file save/create/delete + close (invalidateExportIndex)
+// with the same TTL as the file list as a backstop. Entries are unique per
+// (name, filePath), so a name exported by two files yields two pickable sources.
+interface ExportIndexEntry { name: string; filePath: string; isFunction: boolean; }
+let exportIndexCache: { entries: ExportIndexEntry[]; at: number } | null = null;
+
+function getWorkspaceExportIndex(): ExportIndexEntry[] {
+    const now = Date.now();
+    if (exportIndexCache && now - exportIndexCache.at < WS_FILE_TTL_MS) return exportIndexCache.entries;
+    const resolver = getCrossRefResolver();
+    const entries: ExportIndexEntry[] = [];
+    for (const filePath of listWorkspaceUcodeFiles()) {
+        const exports = resolver.getModuleExports(filePathToUri(filePath));
+        if (!exports) continue;
+        const resolved = path.resolve(filePath); // normalize for current-file comparison
+        for (const exp of exports) {
+            if (exp.type === 'named') entries.push({ name: exp.name, filePath: resolved, isFunction: exp.isFunction });
+        }
+    }
+    exportIndexCache = { entries, at: now };
+    return entries;
+}
+
+function invalidateExportIndex(): void { exportIndexCache = null; }
 
 function getWorkspaceFile(filePath: string): WorkspaceFileEntry | null {
     const uri = filePathToUri(filePath);
