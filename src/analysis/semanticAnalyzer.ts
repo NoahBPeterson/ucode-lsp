@@ -296,14 +296,23 @@ export class SemanticAnalyzer extends BaseVisitor {
   private hoistFunctionDeclarations(node: ProgramNode): void {
     if (!this.options.enableScopeAnalysis) return;
     for (const stmt of node.body) {
+      // A top-level function declaration — bare or wrapped in `export` (named or
+      // default). `export function reload()` parses as an ExportNamedDeclaration
+      // whose `.declaration` is the FunctionDeclaration; without unwrapping it, a
+      // forward reference to an exported function (`config_set` calling `reload`
+      // defined later in the module) was wrongly flagged "Undefined function".
+      let funcNode: FunctionDeclarationNode | null = null;
       if (stmt.type === 'FunctionDeclaration') {
-        const funcNode = stmt as FunctionDeclarationNode;
-        if (funcNode.id && funcNode.id.name) {
-          // Use a synthetic node with start=0 so lookupAtPosition sees the
-          // hoisted symbol as declared before any forward reference.
-          const hoistedNode = { ...funcNode.id, start: 0 };
-          this.symbolTable.declare(funcNode.id.name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, hoistedNode);
-        }
+        funcNode = stmt as FunctionDeclarationNode;
+      } else if ((stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportDefaultDeclaration')
+          && (stmt as any).declaration?.type === 'FunctionDeclaration') {
+        funcNode = (stmt as any).declaration as FunctionDeclarationNode;
+      }
+      if (funcNode?.id?.name) {
+        // Use a synthetic node with start=0 so lookupAtPosition sees the
+        // hoisted symbol as declared before any forward reference.
+        const hoistedNode = { ...funcNode.id, start: 0 };
+        this.symbolTable.declare(funcNode.id.name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, hoistedNode);
       }
     }
   }
