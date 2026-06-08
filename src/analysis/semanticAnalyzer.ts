@@ -1685,6 +1685,22 @@ export class SemanticAnalyzer extends BaseVisitor {
           );
         }
       } else {
+        // Forward reference to a function used as a VALUE (assignment, callback
+        // argument, etc.): ucode doesn't hoist, so the name is null here — and it
+        // crashes if that null is later invoked (`map(arr, fnDefinedLater)`). The
+        // call-callee case is reported by the type checker, so skip it here to avoid
+        // a duplicate. Only top-level functions are hoisted (declaredAt = real pos),
+        // so this fires precisely when the reference precedes the declaration.
+        if (symbol.type === SymbolType.FUNCTION && symbol.declaredAt !== undefined
+            && symbol.declaredAt > node.start && !this.processingFunctionCallCallee) {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.FUNCTION_USED_BEFORE_DECLARATION,
+            `Function '${node.name}' is used before its declaration — ucode does not hoist functions, so this fails at runtime. Move the declaration above this use, or add a forward declaration \`function ${node.name};\`.`,
+            node.start,
+            node.end,
+            DiagnosticSeverity.Error,
+          );
+        }
         // Mark as used
         this.symbolTable.markUsed(node.name, node.start);
       }

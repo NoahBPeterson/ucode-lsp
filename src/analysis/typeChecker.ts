@@ -1752,6 +1752,7 @@ export class TypeChecker {
           start: node.start,
           end: node.end,
           severity: 'error',
+          code: UcodeErrorCode.FUNCTION_USED_BEFORE_DECLARATION,
         });
         return UcodeType.UNKNOWN;
       }
