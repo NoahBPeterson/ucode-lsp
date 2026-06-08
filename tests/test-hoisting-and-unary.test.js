@@ -32,10 +32,16 @@ function getDiagnosticMessages(result) {
 }
 
 // ---------------------------------------------------------------------------
-// Function hoisting
+// Function forward references — ucode does NOT hoist function values (verified
+// against /usr/local/bin/ucode: a call to a function declared later fails at
+// runtime with "access to undeclared variable"). So a forward reference is flagged
+// "used before its declaration"; backward references and recursion are fine.
 // ---------------------------------------------------------------------------
-describe('Function hoisting', () => {
-    test('forward reference to a top-level function should not produce "Undefined function"', () => {
+describe('Function forward references (ucode does not hoist)', () => {
+    const usedBeforeDecl = (result, name) => result.diagnostics.filter(d =>
+        d.message.includes(`Function '${name}' is used before its declaration`));
+
+    test('forward reference to a later top-level function IS flagged', () => {
         const code = `
 let result = greet("world");
 
@@ -43,25 +49,37 @@ function greet(name) {
     return "hello " + name;
 }
 `;
-        const result = analyze(code);
-        const undefinedErrors = result.diagnostics.filter(d =>
-            d.message.includes('Undefined function: greet')
-        );
-        expect(undefinedErrors.length).toBe(0);
+        expect(usedBeforeDecl(analyze(code), 'greet').length).toBeGreaterThan(0);
     });
 
-    test('truly undefined function should still produce an error', () => {
+    test('a backward reference (function declared earlier) is clean', () => {
+        const code = `
+function greet(name) {
+    return "hello " + name;
+}
+let result = greet("world");
+`;
+        expect(usedBeforeDecl(analyze(code), 'greet').length).toBe(0);
+    });
+
+    test('recursion (a function calling itself) is clean', () => {
+        const code = `
+function fac(n) { return n <= 1 ? 1 : n * fac(n - 1); }
+fac(5);
+`;
+        expect(usedBeforeDecl(analyze(code), 'fac').length).toBe(0);
+    });
+
+    test('truly undefined function still produces "Undefined function"', () => {
         const code = `
 let result = doesNotExist();
 `;
         const result = analyze(code);
-        const undefinedErrors = result.diagnostics.filter(d =>
-            d.message.includes('Undefined function: doesNotExist')
-        );
-        expect(undefinedErrors.length).toBeGreaterThan(0);
+        expect(result.diagnostics.filter(d => d.message.includes('Undefined function: doesNotExist')).length).toBeGreaterThan(0);
+        expect(usedBeforeDecl(result, 'doesNotExist').length).toBe(0);
     });
 
-    test('multiple forward references should all resolve', () => {
+    test('multiple forward references are each flagged', () => {
         const code = `
 let a = foo();
 let b = bar();
@@ -70,23 +88,19 @@ function foo() { return 1; }
 function bar() { return 2; }
 `;
         const result = analyze(code);
-        const undefinedErrors = result.diagnostics.filter(d =>
-            d.message.includes('Undefined function')
-        );
-        expect(undefinedErrors.length).toBe(0);
+        expect(usedBeforeDecl(result, 'foo').length).toBeGreaterThan(0);
+        expect(usedBeforeDecl(result, 'bar').length).toBeGreaterThan(0);
     });
 
-    test('function redeclaration is allowed (last definition wins, like JS/ucode)', () => {
+    test('function redeclaration with a backward call is clean', () => {
         const code = `
 function dup() { return 1; }
 function dup() { return 2; }
 dup();
 `;
         const result = analyze(code);
-        const undefinedErrors = result.diagnostics.filter(d =>
-            d.message.includes('Undefined function: dup')
-        );
-        expect(undefinedErrors.length).toBe(0);
+        expect(result.diagnostics.filter(d => d.message.includes('Undefined function: dup')).length).toBe(0);
+        expect(usedBeforeDecl(result, 'dup').length).toBe(0);
     });
 });
 

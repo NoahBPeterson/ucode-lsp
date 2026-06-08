@@ -1739,7 +1739,23 @@ export class TypeChecker {
       if (signature) {
         return this.validateBuiltinCall(node, signature);
       }
-      
+
+      // Position-aware lookup failed. If the name IS a function declared LATER in
+      // scope, this is a forward reference — ucode doesn't hoist function values, so
+      // it errors at runtime as "access to undeclared variable". Give a clear message
+      // distinct from a genuinely-undefined call (which is the `else` below).
+      const laterDecl = this.symbolTable.lookup(funcName);
+      if (laterDecl && laterDecl.type === SymbolType.FUNCTION
+          && laterDecl.declaredAt !== undefined && laterDecl.declaredAt > node.start) {
+        this.errors.push({
+          message: `Function '${funcName}' is used before its declaration — ucode does not hoist functions, so this fails at runtime. Move the declaration above this use, or add a forward declaration \`function ${funcName};\`.`,
+          start: node.start,
+          end: node.end,
+          severity: 'error',
+        });
+        return UcodeType.UNKNOWN;
+      }
+
       this.errors.push({
         message: `Undefined function: ${funcName}`,
         start: node.start,

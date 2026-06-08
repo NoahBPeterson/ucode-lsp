@@ -309,10 +309,15 @@ export class SemanticAnalyzer extends BaseVisitor {
         funcNode = (stmt as any).declaration as FunctionDeclarationNode;
       }
       if (funcNode?.id?.name) {
-        // Use a synthetic node with start=0 so lookupAtPosition sees the
-        // hoisted symbol as declared before any forward reference.
-        const hoistedNode = { ...funcNode.id, start: 0 };
-        this.symbolTable.declare(funcNode.id.name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, hoistedNode);
+        // Pre-declare all top-level functions (so type/completion/signature features
+        // see them) at their REAL declaration position. ucode does NOT hoist function
+        // values — a reference to a function declared later is a runtime "undeclared
+        // variable" error. Declaring at the real position lets position-aware lookup
+        // (lookupAtPosition, declaredAt <= position) resolve backward references and
+        // recursion while leaving a forward reference unresolved → flagged. An
+        // explicit `function f;` forward declaration appears earlier in node.body, so
+        // it's pre-declared first and makes later references resolve.
+        this.symbolTable.declare(funcNode.id.name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, funcNode.id);
       }
     }
   }

@@ -1,8 +1,10 @@
-// Forward references to EXPORTED function declarations must resolve. `export function
-// reload()` parses as an ExportNamedDeclaration wrapping a FunctionDeclaration, and
-// hoistFunctionDeclarations previously only unwrapped bare declarations — so a
-// function calling an exported function defined later in the same module (e.g. the
-// real unetacl `config_set` → `reload`) was wrongly flagged "Undefined function".
+// ucode does NOT hoist function values: a reference to a function declared later is
+// a runtime error ("access to undeclared variable" — verified against the ucode
+// interpreter), for plain AND exported functions. So the LSP flags forward references
+// "used before its declaration"; backward references, recursion, and explicit
+// `function f;` forward declarations are fine. (Imports are irrelevant — importing
+// only one function still loads the whole module; the issue is purely declaration
+// order within the module.)
 const { test, expect, beforeAll, afterAll } = require('bun:test');
 const { createLSPTestServer } = require('./lsp-test-helpers');
 
@@ -10,39 +12,46 @@ let server;
 beforeAll(async () => { server = createLSPTestServer(); await server.initialize(); });
 afterAll(() => { try { server.shutdown(); } catch {} });
 
-async function undefinedFns(content, tag) {
-  const d = await server.getDiagnostics(content, `/tmp/efr-${tag}.uc`);
-  return (d || []).filter((x) => /Undefined function/.test(x.message || '')).map((x) => x.message);
-}
+const msgs = async (content, tag) => (await server.getDiagnostics(content, `/tmp/efr-${tag}.uc`) || []).map((x) => x.message);
+const usedBefore = (ms, name) => ms.filter((m) => m.includes(`Function '${name}' is used before its declaration`));
+const undefinedFn = (ms, name) => ms.filter((m) => m.includes(`Undefined function: ${name}`));
 
-test('forward ref to a later EXPORTED function does not error (the unetacl case)', async () => {
+test('forward ref to a later EXPORTED function is flagged (the unetacl config_set→reload bug)', async () => {
   const c = `export function config_set(obj, file) {\n    obj.config_file = file;\n    return reload(obj);\n}\nexport function reload(obj) {\n    return 0;\n}\n`;
-  expect(await undefinedFns(c, 'export')).toEqual([]);
+  const m = await msgs(c, 'export-fwd');
+  expect(usedBefore(m, 'reload').length).toBeGreaterThan(0);
 });
 
-test('a plain function forward-refs a later exported function', async () => {
-  const c = `function helper() { return reload(); }\nexport function reload() { return 0; }\n`;
-  expect(await undefinedFns(c, 'mixed')).toEqual([]);
+test('forward ref to a later PLAIN function is flagged', async () => {
+  const c = `function helper() { return later(); }\nfunction later() { return 0; }\n`;
+  expect(usedBefore(await msgs(c, 'plain-fwd'), 'later').length).toBeGreaterThan(0);
 });
 
-test('forward ref to a later `export default function` resolves', async () => {
-  const c = `function caller() { return main(); }\nexport default function main() { return 1; }\n`;
-  expect(await undefinedFns(c, 'default')).toEqual([]);
-});
-
-test('backward ref to an exported function still works', async () => {
+test('backward ref to an exported function is clean', async () => {
   const c = `export function reload(obj) { return 0; }\nexport function config_set(obj) { return reload(obj); }\n`;
-  expect(await undefinedFns(c, 'backward')).toEqual([]);
+  expect(usedBefore(await msgs(c, 'export-bwd'), 'reload').length).toBe(0);
 });
 
-test('a genuinely undefined function is still flagged (no false negative)', async () => {
+test('recursion is clean', async () => {
+  const c = `export function fac(n) { return n <= 1 ? 1 : n * fac(n - 1); }\n`;
+  expect(usedBefore(await msgs(c, 'rec'), 'fac').length).toBe(0);
+});
+
+test('an explicit `function f;` forward declaration makes a forward ref clean', async () => {
+  const c = `function reload;\nexport function config_set(obj) { return reload(obj); }\nexport function reload(obj) { return 0; }\n`;
+  expect(usedBefore(await msgs(c, 'fwd-decl'), 'reload').length).toBe(0);
+});
+
+test('mutual recursion: the forward half is flagged, the backward half is not', async () => {
+  const c = `function isEven(n) { return n == 0 || isOdd(n - 1); }\nfunction isOdd(n) { return n != 0 && isEven(n - 1); }\n`;
+  const m = await msgs(c, 'mutual');
+  expect(usedBefore(m, 'isOdd').length).toBeGreaterThan(0);  // isEven→isOdd is forward
+  expect(usedBefore(m, 'isEven').length).toBe(0);            // isOdd→isEven is backward
+});
+
+test('a genuinely undefined call is "Undefined function", not "used before declaration"', async () => {
   const c = `export function f(obj) { return totallyMissing(obj); }\n`;
-  const msgs = await undefinedFns(c, 'real');
-  expect(msgs.length).toBe(1);
-  expect(msgs[0]).toContain('totallyMissing');
-});
-
-test('mutual forward/backward recursion between exported functions', async () => {
-  const c = `export function ping(n) { return n > 0 ? pong(n - 1) : 0; }\nexport function pong(n) { return n > 0 ? ping(n - 1) : 0; }\n`;
-  expect(await undefinedFns(c, 'mutual')).toEqual([]);
+  const m = await msgs(c, 'undef');
+  expect(undefinedFn(m, 'totallyMissing').length).toBe(1);
+  expect(usedBefore(m, 'totallyMissing').length).toBe(0);
 });
