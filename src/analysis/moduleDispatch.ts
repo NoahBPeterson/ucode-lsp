@@ -157,7 +157,9 @@ export function getModuleMemberDocumentation(m: KnownModule, member: string): Op
   const reg = MODULE_REGISTRIES[m];
   const funcDoc = reg.getFunctionDocumentation(member);
   if (Option.isSome(funcDoc)) return funcDoc;
-  return reg.getConstantDocumentation(member);
+  const constDoc = reg.getConstantDocumentation(member);
+  if (Option.isSome(constDoc)) return constDoc;
+  return reg.getObjectExportDocumentation(member);
 }
 
 /**
@@ -169,6 +171,8 @@ export function getImportedSymbolDocumentation(m: KnownModule, name: string): Op
   if (Option.isSome(funcDoc)) return funcDoc;
   const constDoc = reg.getConstantDocumentation(name);
   if (Option.isSome(constDoc)) return constDoc;
+  const exportDoc = reg.getObjectExportDocumentation(name);
+  if (Option.isSome(exportDoc)) return exportDoc;
   return Option.some(reg.getModuleDocumentation());
 }
 

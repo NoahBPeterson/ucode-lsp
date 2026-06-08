@@ -57,6 +57,11 @@ export interface ModuleRegistry {
   getFunctionDocumentation(name: string): Option.Option<string>;
   getConstantNames(): string[];
   getConstantDocumentation(name: string): Option.Option<string>;
+  /** Names of object-handle exports (e.g. fs `stdin`/`stdout`/`stderr`). */
+  getObjectExportNames(): string[];
+  /** The KnownObjectType string for an object-handle export (e.g. 'fs.file'), or null. */
+  getObjectExportType(name: string): string | null;
+  getObjectExportDocumentation(name: string): Option.Option<string>;
   isValidImport(name: string): boolean;
   getValidImports(): string[];
   getModuleDocumentation(): string;

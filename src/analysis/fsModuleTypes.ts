@@ -4,7 +4,20 @@
  */
 
 import { FsObjectType } from './fsTypes';
-import type { ModuleDefinition, PropertyDefinition, ObjectTypeDefinition } from './registryFactory';
+import type { ModuleDefinition, PropertyDefinition, ObjectTypeDefinition, ObjectExportDefinition } from './registryFactory';
+
+/**
+ * fs object-handle exports: the module adds stdin/stdout/stderr to its scope as
+ * `fs.file` resources (ucode lib/fs.c: ucv_object_add(scope, "stdin",
+ * uc_resource_new(file_type, stdin)), etc.). They are importable
+ * (`import { stdin } from "fs"`) and namespace-accessible (`fs.stdin`), and carry all
+ * fs.file methods. They are never null (always valid handles).
+ */
+export const fsObjectExports: ReadonlyMap<string, ObjectExportDefinition> = new Map([
+  ["stdin",  { name: "stdin",  objectType: "fs.file", description: "Standard input stream as an `fs.file` handle (file descriptor 0, opened for reading)." }],
+  ["stdout", { name: "stdout", objectType: "fs.file", description: "Standard output stream as an `fs.file` handle (file descriptor 1, opened for writing)." }],
+  ["stderr", { name: "stderr", objectType: "fs.file", description: "Standard error stream as an `fs.file` handle (file descriptor 2, opened for writing)." }],
+]);
 
 /**
  * Look up an fs function by name and extract its FsObjectType from the return type string.
@@ -395,6 +408,7 @@ export const fsModule: ModuleDefinition = {
   name: 'fs',
   functions: fsModuleFunctions,
   constantDocumentation: fsConstantDocumentation,
+  objectExports: fsObjectExports,
   documentation: `## FS Module
 
 **File system operations for ucode scripts**
@@ -458,8 +472,8 @@ file.close();
 
 *Hover over individual function names for detailed parameter and return type information.*`,
   importValidation: {
-    isValid: (name: string) => fsModuleFunctions.has(name) || fsConstants.has(name),
-    getValidImports: () => [...Array.from(fsModuleFunctions.keys()), ...Array.from(fsConstants.keys())],
+    isValid: (name: string) => fsModuleFunctions.has(name) || fsConstants.has(name) || fsObjectExports.has(name),
+    getValidImports: () => [...Array.from(fsModuleFunctions.keys()), ...Array.from(fsConstants.keys()), ...Array.from(fsObjectExports.keys())],
   },
 };
 

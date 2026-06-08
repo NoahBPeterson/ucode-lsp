@@ -812,6 +812,15 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (reg && reg.getFunctionNames().includes(importedName)) {
         dataType = UcodeType.FUNCTION as UcodeDataType;
       }
+      // Object-handle exports (e.g. fs `stdin`/`stdout`/`stderr` → `fs.file`) are typed
+      // as their object type — using the same ModuleType wrapper form as a local
+      // fs.open() handle ({ type: object, moduleName: 'fs.file' }) — so member access
+      // (`stdin.read(...)`) dispatches through the existing object-type machinery
+      // (hover/signature-help/completion/methods).
+      const objType = reg?.getObjectExportType(importedName);
+      if (objType) {
+        dataType = { type: UcodeType.OBJECT, moduleName: objType } as UcodeDataType;
+      }
     }
 
     // Validate imports from known modules (skips debug/digest/io/zlib which allow any import)
@@ -854,14 +863,22 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
 
         const effectiveUri = resolvedUri || this.fileResolver.resolveImportPath(actualModulePath, this.textDocument.uri);
-        symbol.importedFrom = this.normalizeImportedFrom(source, effectiveUri);
-        symbol.importSpecifier = importedName;
+        // Object-handle exports (fs stdin/stdout/stderr → fs.file) behave like a local
+        // fs.file handle, NOT a module namespace — so don't stamp importedFrom, which
+        // would make member access/hover/type-resolution treat them as the module. The
+        // dataType is already the object type, so all object-type machinery applies.
+        const dataTypeHandle = extractModuleType(dataType);
+        const isObjectHandleExport = dataTypeHandle != null && isKnownObjectType(dataTypeHandle.moduleName);
+        if (!isObjectHandleExport) {
+          symbol.importedFrom = this.normalizeImportedFrom(source, effectiveUri);
+          symbol.importSpecifier = importedName;
 
-        // Track file:// imports for the server's cross-file cache invalidation.
-        // builtin:// modules don't have on-disk content to change, so they're
-        // skipped — only user modules need dependent re-analysis.
-        if (effectiveUri && effectiveUri.startsWith('file://')) {
-          this.resolvedImports.add(effectiveUri);
+          // Track file:// imports for the server's cross-file cache invalidation.
+          // builtin:// modules don't have on-disk content to change, so they're
+          // skipped — only user modules need dependent re-analysis.
+          if (effectiveUri && effectiveUri.startsWith('file://')) {
+            this.resolvedImports.add(effectiveUri);
+          }
         }
 
         // Namespace imports (`import * as ns from './file.uc'`): the LSP already
@@ -1835,6 +1852,17 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     // Only validate method calls
     if (!this.processingFunctionCallCallee) {
+      return;
+    }
+
+    // An object-handle symbol (e.g. an imported fs `stdin` typed `fs.file`) is NOT a
+    // module namespace — its member access is validated by the object-type machinery,
+    // not module-member checks. Without this, `stdin.read()` would be wrongly flagged
+    // "not available on the fs module" (since 'fs.file' normalizes to 'fs'). Guard on
+    // `!isKnownModule` so a namespace import whose name doubles as an object type
+    // (e.g. `socket` is both a module and an object type) is still validated.
+    const handleType = extractModuleType(symbol.dataType);
+    if (handleType && isKnownObjectType(handleType.moduleName) && !isKnownModule(handleType.moduleName)) {
       return;
     }
 

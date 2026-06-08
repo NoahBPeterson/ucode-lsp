@@ -2442,6 +2442,12 @@ export class TypeChecker {
         if (memberName && MODULE_REGISTRIES[modName].getFunctionNames().includes(memberName)) {
           return UcodeType.FUNCTION;
         }
+        // Object-handle exports (e.g. fs.stdin/stdout/stderr → fs.file): resolve to the
+        // object type so `fs.stdin.read(...)` chains and hover shows the handle type.
+        const objExportType = memberName ? MODULE_REGISTRIES[modName].getObjectExportType(memberName) : null;
+        if (objExportType) {
+          return { type: UcodeType.OBJECT, moduleName: objExportType } as UcodeDataType;
+        }
       }
 
       // Check if this is an rtnl constants object with a specific property

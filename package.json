@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.6.179",
+  "version": "0.6.180",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
@@ -43,6 +43,7 @@
         "extensions": [
           ".uc"
         ],
+        "firstLine": "^#!.*\\bucode\\b",
         "configuration": "./language-configuration.json",
         "mimetypes": [
           "text/x-ucode"

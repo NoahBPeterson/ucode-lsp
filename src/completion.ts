@@ -515,6 +515,23 @@ function getUnifiedModuleCompletions(objectName: string, analysisResult?: Semant
         completions.push(item);
     }
 
+    // Add object-handle exports (e.g. fs stdin/stdout/stderr → fs.file)
+    for (const exportName of reg.getObjectExportNames()) {
+        const exportType = reg.getObjectExportType(exportName);
+        const exportDoc = reg.getObjectExportDocumentation(exportName);
+        const item: CompletionItem = {
+            label: exportName,
+            kind: CompletionItemKind.Variable,
+            detail: `${moduleName} module export${exportType ? ` (${exportType})` : ''}`,
+            sortText: `0_${exportName}`,
+            insertText: exportName
+        };
+        if (Option.isSome(exportDoc)) {
+            item.documentation = { kind: MarkupKind.Markdown, value: exportDoc.value };
+        }
+        completions.push(item);
+    }
+
     return completions;
 }
 
@@ -835,6 +852,28 @@ function getNamespaceImportCompletions(objectName: string, analysisResult?: Sema
     return [];
 }
 
+/** Method/property completions for a known object type (e.g. fs.file). */
+function objectTypeMethodCompletions(objectType: KnownObjectType): CompletionItem[] {
+    const reg = OBJECT_REGISTRIES[objectType];
+    if (!reg) return [];
+    const isPropertyType = reg.isPropertyBased ?? false;
+    const completions: CompletionItem[] = [];
+    for (const methodName of reg.getMethodNames()) {
+        const methodDoc = reg.getMethodDocumentation(methodName);
+        const item: CompletionItem = {
+            label: methodName,
+            kind: isPropertyType ? CompletionItemKind.Property : CompletionItemKind.Method,
+            detail: `${objectType} ${isPropertyType ? 'property' : 'method'}`,
+            insertText: methodName,
+        };
+        if (Option.isSome(methodDoc)) {
+            item.documentation = { kind: MarkupKind.Markdown, value: methodDoc.value };
+        }
+        completions.push(item);
+    }
+    return completions;
+}
+
 function getPropertyChainCompletions(objectName: string, propertyChain: string[], analysisResult?: SemanticAnalysisResult, offset?: number): CompletionItem[] {
     const fs = require('fs');
 
@@ -847,8 +886,21 @@ function getPropertyChainCompletions(objectName: string, propertyChain: string[]
         return [];
     }
 
+    // Pattern: <module-namespace>.<objectExport>.  (e.g. `fs.stdin.`) → the handle's
+    // methods. The namespace symbol carries moduleName='fs'; the member is an object
+    // export typed as fs.file, so offer that object type's methods.
+    if (symbol.type === SymbolType.IMPORTED && propertyChain.length === 1) {
+        const modName = extractModuleType(symbol.dataType)?.moduleName ?? symbol.importedFrom;
+        if (modName && isKnownModule(modName)) {
+            const objType = MODULE_REGISTRIES[modName].getObjectExportType(propertyChain[0]!);
+            if (objType && isKnownObjectType(objType)) {
+                return objectTypeMethodCompletions(objType);
+            }
+        }
+    }
+
     // Handle specific known patterns
-    
+
     // Pattern: namespace.default.* (e.g., logModule.default.debug)
     if (symbol.type === SymbolType.IMPORTED && 
         symbol.importedFrom && 

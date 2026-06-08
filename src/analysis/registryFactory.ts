@@ -23,11 +23,24 @@ export interface PropertyDefinition {
   readonly description: string;
 }
 
+/**
+ * A module member that is an object-handle VALUE (not a function or a constant) —
+ * e.g. fs exports `stdin`/`stdout`/`stderr` as `fs.file` resources. `objectType` is a
+ * KnownObjectType string (e.g. 'fs.file') so the imported binding dispatches through
+ * the existing object-type machinery (hover/signature-help/completion/methods).
+ */
+export interface ObjectExportDefinition {
+  readonly name: string;
+  readonly objectType: string;
+  readonly description: string;
+}
+
 export interface ModuleDefinition {
   readonly name: string;
   readonly functions: ReadonlyMap<string, FunctionSignature>;
   readonly constants?: ReadonlyMap<string, ConstantDefinition>;
   readonly constantDocumentation?: ReadonlyMap<string, string>;
+  readonly objectExports?: ReadonlyMap<string, ObjectExportDefinition>;
   readonly documentation: string;
   readonly importValidation?: {
     isValid: (name: string) => boolean;
@@ -96,7 +109,8 @@ function formatPropertyDoc(typeName: string, prop: PropertyDefinition): string {
 export function createModuleRegistry(def: ModuleDefinition): ModuleRegistry {
   const functionNames = Array.from(def.functions.keys());
   const constantNames = def.constants ? Array.from(def.constants.keys()) : [];
-  const allImports = [...functionNames, ...constantNames];
+  const objectExportNames = def.objectExports ? Array.from(def.objectExports.keys()) : [];
+  const allImports = [...functionNames, ...constantNames, ...objectExportNames];
 
   return {
     moduleName: def.name as KnownModule,
@@ -117,6 +131,13 @@ export function createModuleRegistry(def: ModuleDefinition): ModuleRegistry {
         const c = def.constants.get(name);
         if (c) return Option.some(`**(constant) ${c.name}** = ${c.value}\n\n${c.description}`);
       }
+      return Option.none();
+    },
+    getObjectExportNames: () => objectExportNames,
+    getObjectExportType: (name: string) => def.objectExports?.get(name)?.objectType ?? null,
+    getObjectExportDocumentation: (name: string) => {
+      const e = def.objectExports?.get(name);
+      if (e) return Option.some(`**(variable) ${e.name}**: \`${e.objectType}\`\n\n${e.description}`);
       return Option.none();
     },
     isValidImport: def.importValidation?.isValid ?? ((name: string) => allImports.includes(name)),
