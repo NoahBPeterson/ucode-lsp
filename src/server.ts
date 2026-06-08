@@ -48,6 +48,7 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
+import { isUcodeSourceFile } from './shebang';
 import { collectFunctionDeclarations, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
 import { findFunctionReferences, findNamespaceMemberReferences, findFactoryMethodReferences, formatReferencesTitle, getImportBindings, type ImportBinding } from './references';
 // import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
@@ -174,7 +175,7 @@ async function scanDirectoryRecursively(dir: string, ucodeFiles: string[]): Prom
                     continue;
                 }
                 await scanDirectoryRecursively(fullPath, ucodeFiles);
-            } else if (entry.isFile() && entry.name.endsWith('.uc')) {
+            } else if (entry.isFile() && isUcodeSourceFile(fullPath)) {
                 ucodeFiles.push(fullPath);
             }
         }
@@ -573,7 +574,13 @@ connection.onDidChangeWatchedFiles(async (params: DidChangeWatchedFilesParams) =
     for (const change of params.changes) {
         const filePath = uriToFilePath(change.uri);
 
-        if (!filePath.endsWith('.uc')) {
+        // Accept .uc files and extensionless ucode shebang scripts. On a Delete the
+        // file is gone (can't peek the shebang), so also accept any extensionless path
+        // so a removed script's stale diagnostics get cleared (clearing is a no-op for
+        // a non-ucode file).
+        const isUcode = isUcodeSourceFile(filePath)
+            || (change.type === FileChangeType.Deleted && !path.basename(filePath).includes('.'));
+        if (!isUcode) {
             continue;
         }
 
@@ -895,7 +902,7 @@ function listWorkspaceUcodeFiles(): string[] {
         for (const e of entries) {
             const full = path.join(dir, e.name);
             if (e.isDirectory()) { if (!shouldSkipDirectory(e.name)) walk(full); }
-            else if (e.isFile() && e.name.endsWith('.uc')) files.push(full);
+            else if (e.isFile() && isUcodeSourceFile(full)) files.push(full);
         }
     };
     for (const folder of workspaceFolders) walk(folder);
