@@ -175,3 +175,26 @@ test('45 a socket namespace still rejects an invalid method (the guard stays pre
 test('46 importing a real fs function alongside handles keeps both valid', async () => {
   expect(await errs(`import { readfile, stdin, ST_RDONLY } from "fs";\nlet c = readfile("/x");\nstdin.fileno();\nlet flag = ST_RDONLY;\n`)).toEqual([]);
 });
+
+// ── N. Inline namespace-chain completion (fs.stdin.) ─────────────────────────
+test('47 fs.stdin. completes fs.file METHODS (not the fs module list)', async () => {
+  const c = labels(await server.getCompletions(`import * as fs from "fs";\nfs.stdin.\n`, uri(), 1, 9));
+  for (const m of ['read', 'write', 'fileno', 'close', 'seek']) expect(c).toContain(m);
+});
+test('48 fs.stdin. does NOT offer fs module functions (no open/readfile)', async () => {
+  const c = labels(await server.getCompletions(`import * as fs from "fs";\nfs.stdin.\n`, uri(), 1, 9));
+  expect(c).not.toContain('open');
+  expect(c).not.toContain('readfile');
+});
+test('49 fs.stdout. and fs.stderr. complete fs.file methods', async () => {
+  const out = labels(await server.getCompletions(`import * as fs from "fs";\nfs.stdout.\n`, uri(), 1, 10));
+  expect(out).toContain('write');
+  const err = labels(await server.getCompletions(`import * as fs from "fs";\nfs.stderr.\n`, uri(), 1, 10));
+  expect(err).toContain('write');
+});
+test('50 bare `fs.` still completes the module list (functions + exports), unaffected', async () => {
+  const c = labels(await server.getCompletions(`import * as fs from "fs";\nfs.\n`, uri(), 1, 3));
+  expect(c).toContain('open');     // module function
+  expect(c).toContain('stdin');    // object export
+  expect(c).not.toContain('read'); // fs.file method must NOT leak into the module list
+});

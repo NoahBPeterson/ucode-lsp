@@ -203,11 +203,16 @@ export function handleCompletion(
                 return objectTypeCompletions;
             }
 
-            // Unified module completions (all 15 known modules)
-            const moduleCompletions = getUnifiedModuleCompletions(objectName, analysisResult, offset);
-            if (moduleCompletions.length > 0) {
-                connection.console.log(`Returning ${moduleCompletions.length} module completions for ${objectName}`);
-                return moduleCompletions;
+            // Unified module completions (all 15 known modules) — only for a bare
+            // `module.` access. With a further property chain (e.g. `fs.stdin.`), the
+            // module list is wrong; fall through to the property-chain handler so the
+            // member's own type (fs.stdin → fs.file) drives the completion.
+            if (!propertyChain || propertyChain.length === 0) {
+                const moduleCompletions = getUnifiedModuleCompletions(objectName, analysisResult, offset);
+                if (moduleCompletions.length > 0) {
+                    connection.console.log(`Returning ${moduleCompletions.length} module completions for ${objectName}`);
+                    return moduleCompletions;
+                }
             }
 
             // nl80211/rtnl constants object completions
