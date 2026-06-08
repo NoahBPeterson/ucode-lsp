@@ -1748,7 +1748,7 @@ export class TypeChecker {
       if (laterDecl && laterDecl.type === SymbolType.FUNCTION
           && laterDecl.declaredAt !== undefined && laterDecl.declaredAt > node.start) {
         this.errors.push({
-          message: `Function '${funcName}' is used before its declaration — ucode does not hoist functions, so this fails at runtime. Move the declaration above this use, or add a forward declaration \`function ${funcName};\`.`,
+          message: `Function '${funcName}' is used before its declaration. Move its declaration above this use.`,
           start: node.start,
           end: node.end,
           severity: 'error',

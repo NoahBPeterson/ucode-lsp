@@ -1695,7 +1695,7 @@ export class SemanticAnalyzer extends BaseVisitor {
             && symbol.declaredAt > node.start && !this.processingFunctionCallCallee) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.FUNCTION_USED_BEFORE_DECLARATION,
-            `Function '${node.name}' is used before its declaration — ucode does not hoist functions, so this fails at runtime. Move the declaration above this use, or add a forward declaration \`function ${node.name};\`.`,
+            `Function '${node.name}' is used before its declaration. Move its declaration above this use.`,
             node.start,
             node.end,
             DiagnosticSeverity.Error,

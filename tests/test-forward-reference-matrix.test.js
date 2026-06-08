@@ -183,9 +183,9 @@ test('45 a forward-call diagnostic has Error severity', async () => {
   const d = usedBefore(await ds('function a(){ return b(); }\nfunction b(){ return 1; }\n'), 'b');
   expect(d[0].severity).toBe(1);
 });
-test('46 the message includes the `function f;` forward-declaration hint', async () => {
+test('46 the message gives the universal fix (move the declaration up)', async () => {
   const d = usedBefore(await ds('function a(){ return b(); }\nfunction b(){ return 1; }\n'), 'b');
-  expect(d[0].message).toContain('forward declaration `function b;`');
+  expect(d[0].message).toContain('Move its declaration above this use');
 });
 test('47 a forward CALL carries code UC1009', async () => {
   const d = usedBefore(await ds('function a(){ return b(); }\nfunction b(){ return 1; }\n'), 'b');
