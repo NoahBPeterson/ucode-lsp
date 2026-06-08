@@ -167,6 +167,31 @@ export function resolveCalleeParameters(
     return null;
 }
 
+/** Parameter TYPES for a member call `recv.method(...)` where `recv` resolves to a
+ *  module namespace (`import * as struct`) or a known object-handle type
+ *  (`struct.instance`, `fs.file`, …). Returns null otherwise. Unlike
+ *  resolveCalleeParameters (which keeps only display labels for signature help),
+ *  this surfaces each parameter's declared type so usage inference can constrain an
+ *  argument — e.g. `inst.unpack(mac)` ⟹ `mac` is `string`. The receiver's type may
+ *  be nullable (`struct.instance | null`); extractModuleType handles the union. */
+export function resolveMemberCallParameterTypes(
+    callee: any, symbolTable: any
+): Array<{ name: string; type: string; optional: boolean }> | null {
+    if (!(callee?.type === 'MemberExpression' && !callee.computed
+        && callee.property?.type === 'Identifier' && callee.object?.type === 'Identifier')) return null;
+    const method: string = callee.property.name;
+    const obj = callee.object;
+    const objSym: any = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
+    const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
+    if (!mt) return null;
+    const tn = mt.moduleName;
+    const sigOpt = isKnownObjectType(tn) ? OBJECT_REGISTRIES[tn].getMethod(method)
+        : isKnownModule(tn) ? MODULE_REGISTRIES[tn].getFunction(method)
+        : Option.none();
+    if (Option.isNone(sigOpt)) return null;
+    return sigOpt.value.parameters.map((p: any) => ({ name: p.name, type: p.type, optional: !!p.optional }));
+}
+
 /**
  * Signature help at `offset`. Resolves the callee's parameters (see
  * resolveCalleeParameters) and highlights the active argument.

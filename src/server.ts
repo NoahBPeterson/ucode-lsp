@@ -55,7 +55,7 @@ import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
 import { handleDefinition } from './definition';
 import { buildDocumentSymbols } from './documentSymbols';
-import { provideSignatureHelp } from './signatureHelp';
+import { provideSignatureHelp, resolveMemberCallParameterTypes } from './signatureHelp';
 import { computeRawInlayHints, shiftRawHints, materializeRawHints, RawInlayHint } from './inlayHints';
 import { provideFoldingRanges } from './foldingRanges';
 import { provideDocumentLinks } from './documentLinks';
@@ -690,7 +690,7 @@ function appendCrossFileAutoImports(
             if (exp.type !== 'named') continue; // default import name is the importer's choice — skip
             const name = exp.name;
             if (inScope.has(name)) continue; // already imported / a local / a builtin
-            const key = `${name} ${rel}`;
+            const key = `${name} ${rel}`;
             if (seen.has(key)) continue; // same export from the same file already added
             seen.add(key);
             const importText = `import { ${name} } from '${rel}';`;
@@ -2286,6 +2286,7 @@ function inferParamTypesFromUsage(
     allDiagnostics: any[],
     callerInferences?: AllInferences,
     funcsByName?: Map<string, any>,
+    symbolTable?: any,
 ): ParamInference {
     const paramNames = new Set<string>(funcNode.params.map((p: any) => p.name));
     const bodyStart = funcNode.body?.start ?? funcNode.start;
@@ -2418,6 +2419,27 @@ function inferParamTypesFromUsage(
             }
         }
 
+        // Source 7: a param passed to a MEMBER call `recv.method(arg)` where recv is
+        // a module namespace (`struct.unpack(fmt, x)`) or an object handle
+        // (`inst.unpack(x)`). Source 2 only reads Identifier-callee builtins/imports;
+        // member calls were invisible. We resolve the method's parameter TYPES (the
+        // same receiver resolution hover/signature-help use) and constrain each
+        // param-identifier arg — e.g. unpack's `input: string` ⟹ x is string. Sound
+        // as a suggestion: the method errors at runtime on the wrong type.
+        if (node.type === 'CallExpression' && node.callee?.type === 'MemberExpression'
+            && symbolTable && Array.isArray(node.arguments)) {
+            const params = resolveMemberCallParameterTypes(node.callee, symbolTable);
+            if (params) {
+                for (let i = 0; i < node.arguments.length && i < params.length; i++) {
+                    const arg = node.arguments[i];
+                    const ptype = params[i]?.type;
+                    if (!arg || arg.type !== 'Identifier' || !paramNames.has(arg.name) || !ptype) continue;
+                    const allowed = splitTypeUnion(ptype).filter(t => t !== 'unknown' && t !== 'any');
+                    if (allowed.length > 0) addConstraint(arg.name, allowed);
+                }
+            }
+        }
+
         // Source 6: spreading a param. Same "runtime errors on the wrong type"
         // basis as the builtins, verified against the ucode interpreter:
         //   - call / array-literal spread (`f(...p)`, `[...p]`) only accept an
@@ -2482,7 +2504,7 @@ function inferParamTypesFromUsage(
  */
 const inferenceCache = new WeakMap<object, { diagVersion: unknown, result: AllInferences }>();
 
-function inferAllParamTypesFromUsage(ast: any, allDiagnostics: any[]): AllInferences {
+function inferAllParamTypesFromUsage(ast: any, allDiagnostics: any[], symbolTable?: any): AllInferences {
     // Cache keyed on the AST; invalidate if the diagnostic set changed.
     const cached = inferenceCache.get(ast);
     if (cached && cached.diagVersion === allDiagnostics) return cached.result;
@@ -2512,7 +2534,7 @@ function inferAllParamTypesFromUsage(ast: any, allDiagnostics: any[]): AllInfere
     for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
         let changed = false;
         for (const fn of funcs) {
-            const next = inferParamTypesFromUsage(fn, allDiagnostics, result, funcsByName);
+            const next = inferParamTypesFromUsage(fn, allDiagnostics, result, funcsByName, symbolTable);
             const cur = result.get(fn)!;
             for (const [paramName, newType] of next) {
                 if (cur.get(paramName) !== newType) {
@@ -2571,11 +2593,11 @@ function generateJsDocQuickFix(
     }
     if (unknownParams.length === 0) return null;
 
-    const allInferences = inferAllParamTypesFromUsage(ast, analysisResult.diagnostics || []);
+    const allInferences = inferAllParamTypesFromUsage(ast, analysisResult.diagnostics || [], analysisResult.symbolTable);
     const inferred = allInferences.get(funcNode)
         // Fallback: if the function wasn't collected (e.g., different AST handle),
         // do a single-shot inference without cross-function propagation.
-        ?? inferParamTypesFromUsage(funcNode, analysisResult.diagnostics || []);
+        ?? inferParamTypesFromUsage(funcNode, analysisResult.diagnostics || [], undefined, undefined, analysisResult.symbolTable);
     const inferredCount = [...inferred.values()].filter(t => t !== 'unknown').length;
 
     // Build JSDoc comment text. Indent with the line's LEADING WHITESPACE only —
