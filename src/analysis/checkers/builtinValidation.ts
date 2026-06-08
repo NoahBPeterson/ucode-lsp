@@ -210,7 +210,14 @@ export class BuiltinValidator {
     argPosition: number,
     allowedTypes: UcodeType[],
     toleratedTypes?: UcodeType[],
-    customErrorMessage?: string
+    customErrorMessage?: string,
+    // `safeInTestContext`: this builtin's result, compared/tested, reads correctly
+    // for a wrong-type/null arg — i.e. it's a sound type-test idiom. Only `length`
+    // qualifies (`length(x) > 0` → `null > 0` is `false` = "empty/invalid", correct).
+    // Contrast `index(x,y) != -1` → `null != -1` is `true` = "found", a logic bug —
+    // so index/match/etc. must NOT pass this. When true, the truthiness/comparison
+    // suppression applies even under `'use strict'`.
+    safeInTestContext: boolean = false
   ): boolean {
     if (!arg) {
       return true; // Argument presence should be checked before this call
@@ -308,10 +315,14 @@ export class BuiltinValidator {
       }
     } else if (argType === UcodeType.UNKNOWN) {
       // Unknown type — could be anything.
-      // Suppress warning in truthiness context (e.g., if (!length(x))) since builtins
-      // safely return null for invalid types, making this a valid type-check pattern.
-      // In strict mode, always warn — no suppressions.
-      if (this.strictMode || !this.inTruthinessContext) {
+      // Suppress in a TEST context (`if (!length(x))`, `length(x) > 0`): there the
+      // expression IS the type-check, not a risky use of the value. Non-strict always
+      // honors this. Under 'use strict' we keep nagging (the value might still be
+      // misused) UNLESS the builtin is a sound test idiom (`safeInTestContext`, i.e.
+      // length): strict mode changes undeclared-variable access, not length()'s
+      // return behavior, so length()-in-a-predicate is just as safe in strict. A bare
+      // value use (`let n = length(x)`) is non-truthiness, so it's still flagged.
+      if ((this.strictMode && !safeInTestContext) || !this.inTruthinessContext) {
         const message = customErrorMessage ||
           `Argument ${argPosition} of ${funcName}() is unknown. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
 
@@ -433,7 +444,7 @@ export class BuiltinValidator {
     // length(null) safely returns null — tolerate null so array|null doesn't warn.
     // Unknown still warns: unresolved types deserve attention even in truthiness context.
     this.validateArgumentType(arg, 'length', 1, [UcodeType.STRING, UcodeType.ARRAY, UcodeType.OBJECT],
-      [UcodeType.NULL]);
+      [UcodeType.NULL], undefined, /* safeInTestContext */ true);
     return true;
   }
 

@@ -1852,6 +1852,48 @@ export class TypeChecker {
     return UcodeType.UNKNOWN;
   }
 
+  /**
+   * For `filter(arr, (x) => GUARD(x))`, return GUARD applied to `currentElement`
+   * (the input array's element type) — i.e. the narrowed element type of the kept
+   * elements — or null when there's nothing to narrow (callback isn't a function,
+   * no params, no extractable test, or no recognized guard). Reuses the if-consequent
+   * machinery: the callback's first parameter is the guard subject, and filter keeps
+   * truthy-predicate elements, so only positive-branch guards apply.
+   */
+  private narrowFilterElementType(node: CallExpressionNode, currentElement: UcodeDataType): UcodeDataType | null {
+    const cb = node.arguments[1];
+    if (!cb || (cb.type !== 'ArrowFunctionExpression' && cb.type !== 'FunctionExpression')) return null;
+    const params = (cb as ArrowFunctionExpressionNode | FunctionExpressionNode).params;
+    const subject = params?.[0]?.name;
+    if (!subject) return null;
+    const test = this.extractPredicateTest(cb as ArrowFunctionExpressionNode | FunctionExpressionNode);
+    if (!test) return null;
+    this.transitiveTypeAliases = [];
+    const guards: TypeGuardInfo[] = [];
+    this.collectPositiveTestGuards(test, subject, guards);
+    if (guards.length === 0) return null;
+    let elem = currentElement;
+    for (const g of guards) elem = this.applyTypeGuard(elem, g);
+    // No actual narrowing (e.g. a length()/truthy guard on an unknown element) —
+    // leave the type untouched rather than re-wrapping it.
+    return elem === currentElement ? null : elem;
+  }
+
+  /** The boolean test a predicate callback returns: an expression-bodied arrow's body
+   *  directly, or a block body (arrow or function) whose sole statement is
+   *  `return <expr>`. Multi-statement bodies are skipped (return null → no narrowing). */
+  private extractPredicateTest(cb: ArrowFunctionExpressionNode | FunctionExpressionNode): AstNode | null {
+    if (cb.type === 'ArrowFunctionExpression' && cb.expression) return cb.body;
+    const body = cb.body as BlockStatementNode | undefined;
+    if (body && body.type === 'BlockStatement' && Array.isArray(body.body)) {
+      const stmts = body.body.filter((s) => s.type !== 'EmptyStatement');
+      if (stmts.length === 1 && stmts[0]?.type === 'ReturnStatement') {
+        return (stmts[0] as ReturnStatementNode).argument;
+      }
+    }
+    return null;
+  }
+
   private validateBuiltinCall(node: CallExpressionNode, signature: FunctionSignature): CheckResult {
     // Ensure all arguments are checked first to populate their cached types
     for (const arg of node.arguments) {
@@ -1863,8 +1905,21 @@ export class TypeChecker {
     // First check special cases
     this.builtinValidator.inTruthinessContext = this.truthinessDepth > 0;
     if (this.validateSpecialBuiltins(node, signature)) {
-      const narrowed = this.builtinValidator.narrowedReturnType;
+      let narrowed = this.builtinValidator.narrowedReturnType;
       this.builtinValidator.narrowedReturnType = null;
+      // filter(arr, (x) => GUARD(x)) is a type-narrowing construct: it keeps only the
+      // elements GUARD accepts, so the result's element type is GUARD applied to the
+      // input element type. Reuses the same positive-branch guard engine as
+      // if-consequents. (validateFilterFunction already set `narrowed` to array<E>.)
+      if (signature.name === 'filter' && narrowed !== null) {
+        const curElem = isArrayType(narrowed)
+          ? getArrayElementType(narrowed)
+          : (narrowed === UcodeType.ARRAY ? (UcodeType.UNKNOWN as UcodeDataType) : null);
+        if (curElem !== null) {
+          const refined = this.narrowFilterElementType(node, curElem);
+          if (refined !== null) narrowed = createArrayType(refined);
+        }
+      }
       if (narrowed !== null) {
         // Return the narrowed rich type directly.
         return narrowed;
