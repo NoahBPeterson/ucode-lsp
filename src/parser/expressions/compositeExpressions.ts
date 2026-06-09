@@ -4,9 +4,10 @@
  */
 
 import { TokenType } from '../../lexer';
-import { 
-  AstNode, IdentifierNode, ArrayExpressionNode, ObjectExpressionNode, 
-  PropertyNode, MemberExpressionNode, LiteralNode, SpreadElementNode
+import {
+  AstNode, IdentifierNode, ArrayExpressionNode, ObjectExpressionNode,
+  PropertyNode, MemberExpressionNode, LiteralNode, SpreadElementNode,
+  FunctionExpressionNode, ArrowFunctionExpressionNode
 } from '../../ast/nodes';
 import { PrimaryExpressions } from './primaryExpressions';
 
@@ -73,6 +74,14 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
           continue; // Skip regular property parsing
         }
 
+        // Capture JSDoc immediately preceding the property key, anchored at the property
+        // start so findLeadingJsDoc's only-whitespace adjacency check passes. A function
+        // value anchors at its `function` keyword (with `key:` in between), so it never
+        // captures property-leading JSDoc itself — mirror VariableDeclaration by capturing
+        // it here and propagating it down to a function/arrow value.
+        const propAnchor = this.peek();
+        const propJsDoc = propAnchor ? this.findLeadingJsDoc(propAnchor.pos) : undefined;
+
         let key: AstNode;
         let computed = false;
 
@@ -111,9 +120,10 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
               end: value.end,
               key,
               value,
-              computed: false
+              computed: false,
+              ...(propJsDoc ? { leadingJsDoc: propJsDoc } : {})
             });
-            
+
             continue; // Skip the regular property parsing below
           } else {
             // Regular property with colon: treat key as string literal
@@ -154,13 +164,23 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
         const value = this.parseExpression();
         if (!value) continue;
 
+        // Propagate the property's JSDoc onto a function/arrow value (if it has none of
+        // its own) so applyJsDocToParams types its params; also keep it on the Property
+        // node for hover. Mirrors the VariableDeclaration → init propagation.
+        if (propJsDoc
+            && (value.type === 'FunctionExpression' || value.type === 'ArrowFunctionExpression')
+            && !(value as FunctionExpressionNode | ArrowFunctionExpressionNode).leadingJsDoc) {
+          (value as FunctionExpressionNode | ArrowFunctionExpressionNode).leadingJsDoc = propJsDoc;
+        }
+
         properties.push({
           type: 'Property',
           start: key.start,
           end: value.end,
           key,
           value,
-          computed
+          computed,
+          ...(propJsDoc ? { leadingJsDoc: propJsDoc } : {})
         });
       } while (this.match(TokenType.TK_COMMA));
     }

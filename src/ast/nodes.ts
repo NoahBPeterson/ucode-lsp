@@ -154,6 +154,7 @@ export interface PropertyNode extends AstNode {
   key: AstNode;
   value: AstNode;
   computed: boolean; // true for {[key]: value}
+  leadingJsDoc?: JsDocCommentNode; // JSDoc immediately before the property key (if any)
 }
 
 // Conditional expression: test ? consequent : alternate
