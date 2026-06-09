@@ -90,6 +90,11 @@ export class SemanticAnalyzer extends BaseVisitor {
   private callbackElementType: UcodeDataType | null = null; // Element type to pass to callback parameters (filter/map/sort)
   private typedefRegistry: Map<string, ParsedTypedef> = new Map(); // File-level @typedef definitions
   private strictMode = false; // Whether 'use strict'; is present
+  // Names that are bare-assignment targets (`x = …`, not `let`/`const`) somewhere in the
+  // module. In non-strict ucode that auto-creates an implicit GLOBAL, so reading such a
+  // name anywhere is valid (returns null until assigned, never a runtime error). Used to
+  // suppress UC1001 for provable implicit globals. Empty under 'use strict'.
+  private implicitGlobalNames = new Set<string>();
   // Name to attribute to the next function-expression we visit, set by the
   // enclosing assignment/declaration (e.g. `nft_file.init = function(){}`), so a
   // method-style function expression can get the same UC7003 "add @param" hint as
@@ -231,6 +236,9 @@ export class SemanticAnalyzer extends BaseVisitor {
   visitProgram(node: ProgramNode): void {
     // Hoist top-level function declarations so forward references resolve
     this.hoistFunctionDeclarations(node);
+    // Collect implicit globals (non-strict bare assignments) so reads of them aren't
+    // flagged "Undefined variable".
+    this.collectImplicitGlobalNames(node);
     // Global scope analysis
     super.visitProgram(node);
     // Flag forward declarations that are never completed by a real definition
@@ -293,6 +301,38 @@ export class SemanticAnalyzer extends BaseVisitor {
    * Pre-register all top-level function declarations in the symbol table
    * so that forward references (calling a function before its declaration) work.
    */
+  /**
+   * Collect every name that is the target of a bare assignment (`name = …`, or `name++`),
+   * i.e. NOT a `let`/`const` declaration. In non-strict ucode such an assignment
+   * auto-creates an implicit global (verified vs the interpreter), so reading the name
+   * anywhere is valid. We use this set to suppress UC1001 only where it's provably safe;
+   * locals/params still resolve via normal scope lookup, and genuine typos (read-only,
+   * never assigned) stay flagged. Empty under 'use strict' (there, bare assignment to an
+   * undeclared name is itself a runtime error, so we keep flagging).
+   */
+  private collectImplicitGlobalNames(node: ProgramNode): void {
+    this.implicitGlobalNames.clear();
+    if (this.strictMode) return;
+    const names = this.implicitGlobalNames;
+    const walk = (n: any): void => {
+      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+      if (n.type === 'AssignmentExpression' && n.left?.type === 'Identifier' && n.left.name) {
+        names.add(n.left.name);
+      } else if (n.type === 'UnaryExpression' && (n.operator === '++' || n.operator === '--')
+          && n.argument?.type === 'Identifier' && n.argument.name) {
+        // `x++` / `--x` on an undeclared name also auto-creates the implicit global.
+        names.add(n.argument.name);
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+      }
+    };
+    walk(node);
+  }
+
   private hoistFunctionDeclarations(node: ProgramNode): void {
     if (!this.options.enableScopeAnalysis) return;
     for (const stmt of node.body) {
@@ -1692,7 +1732,10 @@ export class SemanticAnalyzer extends BaseVisitor {
         // A known-module base used unimported (`fs.open()`) is reported more
         // specifically by validateModuleMember — skip the generic message there.
         const isUnimportedModuleBase = this.visitingMemberBase && this.isKnownModuleName(node.name);
-        if (!isBuiltin && !isGlobalProperty && !this.processingFunctionCallCallee && !isUnimportedModuleBase) {
+        // A provable implicit global: bare-assigned somewhere in this (non-strict) module,
+        // so it resolves to a real global at runtime — never an "undefined variable".
+        const isImplicitGlobal = this.implicitGlobalNames.has(node.name);
+        if (!isBuiltin && !isGlobalProperty && !this.processingFunctionCallCallee && !isUnimportedModuleBase && !isImplicitGlobal) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.UNDEFINED_VARIABLE,
             `Undefined variable: ${node.name}`,
