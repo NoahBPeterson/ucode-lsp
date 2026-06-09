@@ -1918,6 +1918,18 @@ export class TypeChecker {
     if (this.validateSpecialBuiltins(node, signature)) {
       let narrowed = this.builtinValidator.narrowedReturnType;
       this.builtinValidator.narrowedReturnType = null;
+      // require("builtin-module") is generically typed as that module — wherever it
+      // appears (inline, property/member assignment, reassignment), not just at a
+      // `let x = require()` binding. So the module type flows through the normal SSA /
+      // property / member-read machinery. The arg must be a literal naming a known
+      // builtin module; file-path requires (./…) need cross-file resolution → TODO.
+      if (signature.name === 'require') {
+        const reqArg = node.arguments[0];
+        if (reqArg && reqArg.type === 'Literal' && typeof (reqArg as LiteralNode).value === 'string'
+            && isKnownModule((reqArg as LiteralNode).value as string)) {
+          return { type: UcodeType.OBJECT, moduleName: (reqArg as LiteralNode).value as string } as UcodeDataType;
+        }
+      }
       // filter(arr, (x) => GUARD(x)) is a type-narrowing construct: it keeps only the
       // elements GUARD accepts, so the result's element type is GUARD applied to the
       // input element type. Reuses the same positive-branch guard engine as
