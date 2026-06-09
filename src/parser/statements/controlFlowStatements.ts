@@ -232,11 +232,20 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     const start = this.previous()!.pos;
     
     let argument: AstNode | null = null;
-    if (!this.check(TokenType.TK_SCOL) && !this.isAtEnd()) {
+    // A return value's terminating `;` is optional immediately before a block close `}`
+    // (or EOF) — that's valid ucode, verified vs the interpreter, strict and non-strict —
+    // but still required between two statements. Mirror the general statement-terminator
+    // rule so `return expr` before `}` isn't a false UC6004, while `return expr` followed
+    // by another statement still is. Also skip parsing an expression for bare `return }`.
+    if (!this.check(TokenType.TK_SCOL) && !this.check(TokenType.TK_RBRACE) && !this.isAtEnd()) {
       argument = this.parseExpression();
     }
-    
-    this.consume(TokenType.TK_SCOL, "Expected ';' after return value");
+
+    if (this.check(TokenType.TK_RBRACE) || this.isAtEnd()) {
+      this.match(TokenType.TK_SCOL); // optional before block close / EOF
+    } else {
+      this.consume(TokenType.TK_SCOL, "Expected ';' after return value");
+    }
     
     return {
       type: 'ReturnStatement',
