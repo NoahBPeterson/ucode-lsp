@@ -11,7 +11,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode, ExpressionStatementNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
@@ -2698,9 +2698,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // iterator var ends up `unknown` instead of the element type.
         const rightBase = dataTypeToBase(this.typeChecker.checkNode(node.right));
         const rightFullType = this.getIterableFullType(node.right);
+        const elemType = this.iterableElementType(rightFullType, true);
         let iterType: UcodeDataType;
-        if (rightFullType && isArrayType(rightFullType)) {
-          iterType = getArrayElementType(rightFullType);
+        if (elemType !== null) {
+          iterType = elemType; // union-aware: array<T>|null → T, etc.
         } else if (rightBase === UcodeType.OBJECT) {
           iterType = UcodeType.STRING as UcodeDataType;
         } else if (rightBase === UcodeType.STRING) {
@@ -2755,15 +2756,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // type-checked).
             const rightBase = dataTypeToBase(this.typeChecker.checkNode(node.right));
             const rightFullType = this.getIterableFullType(node.right);
+            const elemType = this.iterableElementType(rightFullType, true);
             let iterType: UcodeDataType;
-            if (rightFullType && isArrayType(rightFullType)) {
-              iterType = getArrayElementType(rightFullType);
+            if (elemType !== null) {
+              iterType = elemType; // union-aware: array<string>|null → string, etc.
             } else if (rightBase === UcodeType.OBJECT) {
               iterType = UcodeType.STRING as UcodeDataType; // object keys are strings
             } else if (rightBase === UcodeType.STRING) {
               iterType = UcodeType.STRING as UcodeDataType; // iterating string chars
             } else {
-              iterType = UcodeType.UNKNOWN as UcodeDataType; // bare array / unknown → no element info
+              iterType = UcodeType.UNKNOWN as UcodeDataType; // unknown → no element info
             }
 
             this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, iterType, iteratorNode);
@@ -2833,10 +2835,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             
             // Value variable type depends on the array element type
             const rightFullType = this.getIterableFullType(node.right);
-            let valueType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
-            if (rightFullType && isArrayType(rightFullType)) {
-              valueType = getArrayElementType(rightFullType);
-            }
+            // The value var of `for (k, v in …)` is the array element (union-aware:
+            // array<T>|null → T); object values aren't strings, so object/string members
+            // make this give up → value stays unknown (objectAndStringYieldString=false).
+            const valueElem = this.iterableElementType(rightFullType, false);
+            const valueType: UcodeDataType = valueElem !== null ? valueElem : (UcodeType.UNKNOWN as UcodeDataType);
             this.symbolTable.declare(valueName, SymbolType.VARIABLE, valueType, valueNode);
             this.symbolTable.markUsed(valueName, valueNode.start);
           }
@@ -2863,6 +2866,39 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
   /** Get the full UcodeDataType for an iterable expression (identifier lookup or
    *  the type checker's cached rich type for the node). */
+  /**
+   * The element type produced by iterating `t` with `for-in`, union-aware. for-in
+   * iterates array VALUES (→ the element type), object keys / string chars (→ string),
+   * and is a no-op on `null` (verified vs the interpreter). For a union — the common
+   * `array<T> | null` shape from `fs.lsdir`/`split`/`json`/… — each member contributes
+   * its iterable element type and `null` members are dropped, so `array<string> | null`
+   * → `string`. Returns null (caller falls back to UNKNOWN) if any non-null member is
+   * uniterable/unknown, so we never invent a wrong element type.
+   *
+   * `objectAndStringYieldString` distinguishes the loop-variable contexts: the single
+   * loop variable (and the bare iterator) binds keys/chars, so an object/string member
+   * yields `string`; but the *value* variable of a two-variable `for (k, v in …)` is the
+   * array element only — an object's values aren't strings — so that caller passes
+   * `false` and object/string members make it give up (value stays unknown), preserving
+   * prior behavior.
+   */
+  private iterableElementType(t: UcodeDataType | null, objectAndStringYieldString: boolean): UcodeDataType | null {
+    if (!t) return null;
+    const elems: SingleType[] = [];
+    for (const member of getUnionTypes(t)) {
+      const base = singleTypeToBase(member);
+      if (base === UcodeType.NULL) continue; // for-in over null is a no-op
+      if (isArrayType(member)) {
+        for (const e of getUnionTypes(getArrayElementType(member))) elems.push(e);
+      } else if (objectAndStringYieldString && (base === UcodeType.OBJECT || base === UcodeType.STRING)) {
+        elems.push(UcodeType.STRING);
+      } else {
+        return null; // uniterable / unknown member → don't guess
+      }
+    }
+    return elems.length ? createUnionType(elems) : null;
+  }
+
   private getIterableFullType(node: any): UcodeDataType | null {
     if (node.type === 'Identifier') {
       // Prefer the narrowed type at this position (e.g. after `type(x) == 'array'`
