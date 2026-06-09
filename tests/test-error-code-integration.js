@@ -53,11 +53,15 @@ describe('Error Code Integration Tests', function() {
       assert(undefinedVarErrors.length > 0, 'Should have undefined variable errors');
     });
 
-    it('should have VARIABLE_REDECLARATION error code for redeclared variables', function() {
-      const redeclarationErrors = diagnostics.filter(d =>
-        d.code === 'UC1003' || d.message.includes('already declared')
+    it('should have VARIABLE_REDECLARATION error code for redeclared variables', async function() {
+      // ucode only rejects `let` redeclaration under 'use strict' (verified vs the
+      // interpreter: non-strict allows it, last definition wins). So check against a
+      // strict snippet — that's where UC1003 legitimately fires.
+      const d = await getDiagnostics("'use strict';\nlet dup = 1;\nlet dup = 2;\n", path.join(__dirname, 'test-redecl-strict.uc'));
+      const redeclarationErrors = d.filter(e =>
+        e.code === 'UC1003' || e.message.includes('already declared')
       );
-      assert(redeclarationErrors.length > 0, 'Should have variable redeclaration errors');
+      assert(redeclarationErrors.length > 0, 'Should have variable redeclaration errors (strict)');
     });
 
     it('should have UNUSED_VARIABLE warning code for unused variables', function() {

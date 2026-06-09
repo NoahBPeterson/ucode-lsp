@@ -278,6 +278,10 @@ export class TypeChecker {
   private nodeTypes = new WeakMap<AstNode, CheckResult>();
   private constantAssignmentProperties = new Map<string, Set<string>>();
   private strictMode = false;
+  // Names that are non-strict implicit globals (bare-assigned somewhere). Shared from
+  // the semantic analyzer so a call to one isn't reported "Undefined function".
+  private implicitGlobalNames: ReadonlySet<string> = new Set();
+  setImplicitGlobalNames(names: ReadonlySet<string>): void { this.implicitGlobalNames = names; }
   private transitiveTypeAliases: string[] = [];
   /** Optional FileResolver used to read literal values from imported files when
    *  constant-folding `ns.A.B` member chains into property-key strings. */
@@ -1754,6 +1758,13 @@ export class TypeChecker {
           severity: 'error',
           code: UcodeErrorCode.FUNCTION_USED_BEFORE_DECLARATION,
         });
+        return UcodeType.UNKNOWN;
+      }
+
+      // A non-strict implicit global (bare-assigned somewhere) provably exists as a
+      // global; it may hold a function (e.g. `uvol_uci_commit = ctx.uci_commit`), so
+      // calling it isn't "undefined" — same leniency as an unknown-typed callable.
+      if (!this.strictMode && this.implicitGlobalNames.has(funcName)) {
         return UcodeType.UNKNOWN;
       }
 

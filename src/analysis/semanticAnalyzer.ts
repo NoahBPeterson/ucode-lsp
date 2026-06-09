@@ -236,9 +236,14 @@ export class SemanticAnalyzer extends BaseVisitor {
   visitProgram(node: ProgramNode): void {
     // Hoist top-level function declarations so forward references resolve
     this.hoistFunctionDeclarations(node);
+    // Bare `name = require("mod")` (no let) → declare name as a module handle, so
+    // `name.member` resolves and isn't flagged "use module without importing".
+    this.hoistBareRequireModules(node);
     // Collect implicit globals (non-strict bare assignments) so reads of them aren't
-    // flagged "Undefined variable".
+    // flagged "Undefined variable", and share the set with the type checker so a call
+    // to an implicit global isn't flagged "Undefined function".
     this.collectImplicitGlobalNames(node);
+    this.typeChecker.setImplicitGlobalNames(this.implicitGlobalNames);
     // Global scope analysis
     super.visitProgram(node);
     // Flag forward declarations that are never completed by a real definition
@@ -322,6 +327,43 @@ export class SemanticAnalyzer extends BaseVisitor {
           && n.argument?.type === 'Identifier' && n.argument.name) {
         // `x++` / `--x` on an undeclared name also auto-creates the implicit global.
         names.add(n.argument.name);
+      } else if (n.type === 'ForInStatement' && n.left?.type === 'Identifier' && n.left.name) {
+        // A bare `for (x in …)` loop variable (no `let`) is an implicit global that
+        // persists after the loop (verified vs the interpreter). Strict mode flags it
+        // separately (visitForInStatement).
+        names.add(n.left.name);
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+      }
+    };
+    walk(node);
+  }
+
+  /**
+   * Bare `name = require("mod")` (no `let`/`const`) is the non-strict CommonJS-import
+   * pattern — it loads the module into an implicit global. `let name = require(...)` is
+   * already handled in visitVariableDeclarator; this covers the bare form so `name.member`
+   * (e.g. `math.rand()`) resolves through the module registry instead of being flagged
+   * "Cannot use 'math' module without importing". Only known builtin modules are handled
+   * here (file-path requires remain a TODO). Declared at module scope so position doesn't
+   * matter.
+   */
+  private hoistBareRequireModules(node: ProgramNode): void {
+    if (!this.options.enableScopeAnalysis) return;
+    const walk = (n: any): void => {
+      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+      if (n.type === 'AssignmentExpression' && n.operator === '=' && n.left?.type === 'Identifier' && n.left.name
+          && n.right?.type === 'CallExpression' && n.right.callee?.type === 'Identifier'
+          && n.right.callee.name === 'require' && n.right.arguments?.length === 1
+          && n.right.arguments[0]?.type === 'Literal' && typeof n.right.arguments[0].value === 'string'
+          && isKnownModule(n.right.arguments[0].value)) {
+        const moduleName = n.right.arguments[0].value;
+        const dataType = { type: UcodeType.OBJECT, moduleName } as UcodeDataType;
+        this.symbolTable.declare(n.left.name, SymbolType.MODULE, dataType, n.left);
       }
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc') continue;
@@ -530,16 +572,21 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Check for redeclaration and shadowing
       const existingSymbol = this.symbolTable.lookupInCurrentScope(name);
       
-      // Check if we have a real redeclaration (same scope, not builtin)
+      // Check if we have a real redeclaration (same scope, not builtin).
       if (existingSymbol && existingSymbol.type !== SymbolType.BUILTIN) {
-        // True redeclaration in same scope - always an error
-        this.addDiagnosticErrorCode(
-          UcodeErrorCode.VARIABLE_REDECLARATION,
-          `Variable '${name}' is already declared in this scope`,
-          node.id.start,
-          node.id.end,
-          DiagnosticSeverity.Error,
-        );
+        // ucode only rejects `let` redeclaration under 'use strict' (verified vs the
+        // interpreter: non-strict allows it, last definition wins; strict is a syntax
+        // error). So flag it only in strict mode; in non-strict it's permitted (and the
+        // existing symbol is kept, matching the prior no-redeclare behavior).
+        if (this.strictMode) {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.VARIABLE_REDECLARATION,
+            `Variable '${name}' is already declared in this scope`,
+            node.id.start,
+            node.id.end,
+            DiagnosticSeverity.Error,
+          );
+        }
       } else {
         // Check for shadowing
         const shadowedSymbol = this.symbolTable.lookup(name);
@@ -2631,6 +2678,19 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // and `obj[data_generator]` wouldn't narrow through propertyTypes.
         const iteratorName = node.left.name;
         const iteratorNode = node.left;
+
+        // Under 'use strict', a bare `for (x in …)` loop variable is a runtime error
+        // ("access to undeclared variable x") — it must be declared `for (let x in …)`.
+        // In non-strict it's an implicit global (collected above), so no diagnostic.
+        if (this.strictMode) {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.UNDEFINED_VARIABLE,
+            `Loop variable '${iteratorName}' is not declared — under 'use strict', declare it with 'let' (for (let ${iteratorName} in …)).`,
+            iteratorNode.start,
+            iteratorNode.end,
+            DiagnosticSeverity.Error,
+          );
+        }
 
         // Run type-checking on the iterable FIRST so its rich type is cached
         // (e.g. `keys()` → array<string>). Otherwise getIterableFullType reads

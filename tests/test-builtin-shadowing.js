@@ -63,7 +63,8 @@ let length = 42;
 
   describe('Variable Redeclaration Errors', function() {
     it('should show ERROR for same-scope variable redeclaration', async function() {
-      const testContent = `
+      // ucode only rejects `let` redeclaration under 'use strict' (non-strict allows it).
+      const testContent = `'use strict';
 let myVar = 1;
 let myVar = 2; // Redeclaration error
 function test() {
@@ -86,12 +87,14 @@ function test() {
     });
 
     it('should distinguish between shadowing and redeclaration', async function() {
-      const testContent = `
+      // 'use strict' so the `let` redeclaration is an error (builtin-shadowing warnings
+      // fire regardless of strict).
+      const testContent = `'use strict';
 // Shadowing builtins - should be warnings
 let signal = "handler";
 let printf = function() {};
 
-// True redeclaration - should be error  
+// True redeclaration - should be error
 let myVar = 1;
 let myVar = 2;
 `;
