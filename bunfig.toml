@@ -1,0 +1,8 @@
+# Scope `bun test` discovery to tests/ so it does not walk the large vendored
+# trees in this workspace. Walking 45k+ files pushes bun past its ~10k-fd limit and
+# trips a bun-test child-process stdio bug (oven-sh/bun#24690): the harness spawns the
+# LSP server and the child stdin/stdout pipes silently stop working, hanging every
+# server-based test. Scoping discovery keeps the fd count low. See
+# docs/bun-test-child-stdio-repro.md.
+[test]
+root = "tests"
