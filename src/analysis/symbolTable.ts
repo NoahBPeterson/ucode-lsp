@@ -508,7 +508,9 @@ export class SymbolTable {
     this.globalScope.set('REQUIRE_SEARCH_PATH', {
       name: 'REQUIRE_SEARCH_PATH',
       type: SymbolType.VARIABLE,
-      dataType: UcodeType.ARRAY as UcodeDataType,
+      // Every element is a search-path string (verified vs the interpreter), so type it
+      // as array<string> like ARGV — a bare `array` left the for-in element `unknown`.
+      dataType: createArrayType(UcodeType.STRING),
       scope: 0,
       declared: true,
       used: false,
