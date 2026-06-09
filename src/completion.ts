@@ -121,6 +121,14 @@ export function handleCompletion(
             return createJsDocCompletions(jsDocCompletion, document.uri, connection);
         }
 
+        // Inside the options object of loadfile(path, { … }) / loadstring(code, { … }),
+        // offer the ParseConfig keys. Runs before the `{`-trigger guard below so typing
+        // the opening brace surfaces them. Returns undefined elsewhere.
+        const parseConfigCtx = detectParseConfigOptionsContext(offset, tokens);
+        if (parseConfigCtx) {
+            return createParseConfigCompletions(parseConfigCtx.alreadyPresent);
+        }
+
         // `{` is registered as a completion trigger character SOLELY for JSDoc
         // type annotations (`@param {string}`). When the user opens a code block
         // — `function f(x) {` then Enter — the same trigger fires here, outside
@@ -1467,6 +1475,117 @@ function detectDestructuredImportContext(offset: number, tokens: any[]): { modul
     }
 
     return undefined;
+}
+
+// ── ParseConfig options-object completion (loadfile/loadstring 2nd arg) ───────────────
+// The keys accepted by loadfile(path, options) / loadstring(code, options), from ucode
+// lib.c `uc_compile_parse_config` (@typedef module:core.ParseConfig).
+const PARSE_CONFIG_PROPERTIES: { name: string; type: string; doc: string }[] = [
+    { name: 'lstrip_blocks', type: 'boolean', doc: 'Strip whitespace preceding template directives.' },
+    { name: 'trim_blocks', type: 'boolean', doc: 'Trim trailing newlines following template directives.' },
+    { name: 'strict_declarations', type: 'boolean', doc: 'Compile in strict mode — require variables to be declared.' },
+    { name: 'raw_mode', type: 'boolean', doc: 'Compile in plain script mode (`true`) rather than template mode.' },
+    { name: 'module_search_path', type: 'string[]', doc: 'Override the module search path for compile-time imports.' },
+    { name: 'force_dynlink_list', type: 'string[]', doc: 'Module names to treat as dynamic (`*.so`) extensions at compile time.' },
+];
+
+/**
+ * Detect that the cursor is at a key position inside the options object of a
+ * `loadfile(path, { … })` / `loadstring(code, { … })` call, and return the keys already
+ * present (to filter them out). Token-based (resilient to incomplete code): find the
+ * enclosing `{`, require it to be the 2nd argument (preceded by `,`) of a `loadfile`/
+ * `loadstring` call, and ensure we're not in a value position (after a `:`).
+ */
+function detectParseConfigOptionsContext(offset: number, tokens: any[]): { alreadyPresent: string[] } | undefined {
+    let idx = -1;
+    for (let i = 0; i < tokens.length; i++) {
+        if (tokens[i].pos < offset) idx = i; else break;
+    }
+    if (idx < 0) return undefined;
+
+    // enclosing `{` (depth-aware over nested braces/brackets/parens)
+    let depth = 0;
+    let braceIdx = -1;
+    for (let i = idx; i >= 0; i--) {
+        const t = tokens[i].type;
+        if (t === TokenType.TK_RBRACE || t === TokenType.TK_RPAREN || t === TokenType.TK_RBRACK) depth++;
+        else if (t === TokenType.TK_LPAREN || t === TokenType.TK_LBRACK) {
+            if (depth === 0) return undefined; // directly inside (...) or [...], not {...}
+            depth--;
+        } else if (t === TokenType.TK_LBRACE) {
+            if (depth === 0) { braceIdx = i; break; }
+            depth--;
+        }
+    }
+    if (braceIdx < 0) return undefined;
+
+    // the options object is the 2nd argument → its `{` is immediately preceded by `,`
+    if (braceIdx - 1 < 0 || tokens[braceIdx - 1].type !== TokenType.TK_COMMA) return undefined;
+
+    // walk back over the first argument (depth-aware) to the call's `(`
+    depth = 0;
+    let parenIdx = -1;
+    for (let i = braceIdx - 2; i >= 0; i--) {
+        const t = tokens[i].type;
+        if (t === TokenType.TK_RPAREN || t === TokenType.TK_RBRACE || t === TokenType.TK_RBRACK) depth++;
+        else if (t === TokenType.TK_LBRACE || t === TokenType.TK_LBRACK) {
+            if (depth === 0) return undefined;
+            depth--;
+        } else if (t === TokenType.TK_LPAREN) {
+            if (depth === 0) { parenIdx = i; break; }
+            depth--;
+        }
+    }
+    if (parenIdx <= 0) return undefined;
+
+    // callee must be loadfile / loadstring
+    const callee = tokens[parenIdx - 1];
+    if (callee.type !== TokenType.TK_LABEL) return undefined;
+    if (callee.value !== 'loadfile' && callee.value !== 'loadstring') return undefined;
+
+    // not in value position: a `:` at object depth 0 before any `,`/`{` ⇒ typing a value
+    let localDepth = 0;
+    for (let i = idx; i > braceIdx; i--) {
+        const t = tokens[i].type;
+        if (t === TokenType.TK_RBRACE || t === TokenType.TK_RPAREN || t === TokenType.TK_RBRACK) localDepth++;
+        else if (t === TokenType.TK_LBRACE || t === TokenType.TK_LPAREN || t === TokenType.TK_LBRACK) {
+            if (localDepth === 0) break;
+            localDepth--;
+        } else if (localDepth === 0 && t === TokenType.TK_COLON) {
+            return undefined;
+        } else if (localDepth === 0 && t === TokenType.TK_COMMA) {
+            break;
+        }
+    }
+
+    // collect already-present keys (`key :` at object depth 0)
+    const alreadyPresent: string[] = [];
+    let d2 = 0;
+    for (let i = braceIdx + 1; i < tokens.length; i++) {
+        const t = tokens[i].type;
+        if (t === TokenType.TK_LBRACE || t === TokenType.TK_LPAREN || t === TokenType.TK_LBRACK) d2++;
+        else if (t === TokenType.TK_RBRACE || t === TokenType.TK_RPAREN || t === TokenType.TK_RBRACK) {
+            if (d2 === 0) break;
+            d2--;
+        } else if (d2 === 0 && (t === TokenType.TK_LABEL || t === TokenType.TK_STRING)
+                   && i + 1 < tokens.length && tokens[i + 1].type === TokenType.TK_COLON) {
+            alreadyPresent.push(String(tokens[i].value));
+        }
+    }
+
+    return { alreadyPresent };
+}
+
+function createParseConfigCompletions(alreadyPresent: string[]): CompletionItem[] {
+    const present = new Set(alreadyPresent);
+    return PARSE_CONFIG_PROPERTIES.filter(p => !present.has(p.name)).map(p => ({
+        label: p.name,
+        kind: CompletionItemKind.Property,
+        detail: `ParseConfig.${p.name}: ${p.type}`,
+        documentation: { kind: MarkupKind.Markdown, value: p.doc },
+        insertText: p.name,
+        sortText: `0_${p.name}`,
+    }));
 }
 
 /**

@@ -597,9 +597,11 @@ export class BuiltinValidator {
   }
 
   validateLoadstringFunction(node: CallExpressionNode): boolean {
-    if (node.arguments.length !== 1) {
+    // loadstring(code[, options]) — the optional 2nd arg is a ParseConfig object
+    // (raw_mode, strict_declarations, …); C uc_loadstring forwards it to uc_load_common.
+    if (node.arguments.length < 1 || node.arguments.length > 2) {
       this.errors.push({
-        message: `loadstring() expects 1 argument, got ${node.arguments.length}`,
+        message: `loadstring() expects 1-2 arguments, got ${node.arguments.length}`,
         start: node.start,
         end: node.end,
         severity: 'error'
@@ -611,6 +613,9 @@ export class BuiltinValidator {
     if (!arg) return true;
 
     this.validateArgumentType(arg, 'loadstring', 1, [UcodeType.STRING]);
+    if (node.arguments[1]) {
+      this.validateArgumentType(node.arguments[1], 'loadstring', 2, [UcodeType.OBJECT]);
+    }
     return true;
   }
 
@@ -1497,9 +1502,11 @@ export class BuiltinValidator {
   }
 
   validateLoadfileFunction(node: CallExpressionNode): boolean {
-    if (node.arguments.length !== 1) {
+    // loadfile(path[, options]) — the optional 2nd arg is a ParseConfig object
+    // (raw_mode, strict_declarations, …); C uc_loadfile forwards it to uc_load_common.
+    if (node.arguments.length < 1 || node.arguments.length > 2) {
       this.errors.push({
-        message: `loadfile() expects 1 argument, got ${node.arguments.length}`,
+        message: `loadfile() expects 1-2 arguments, got ${node.arguments.length}`,
         start: node.start,
         end: node.end,
         severity: 'error'
@@ -1513,6 +1520,9 @@ export class BuiltinValidator {
     // C: returns NULL if path not string; returns compiled function otherwise
     this.narrowForArgType(arg, [UcodeType.STRING], UcodeType.FUNCTION);
     this.validateArgumentType(arg, 'loadfile', 1, [UcodeType.STRING]);
+    if (node.arguments[1]) {
+      this.validateArgumentType(node.arguments[1], 'loadfile', 2, [UcodeType.OBJECT]);
+    }
 
     return true;
   }

@@ -116,12 +116,20 @@ describe('Module Functions Validation Tests', function() {
       assert(errors[0].message.includes('loadfile') && errors[0].message.includes('got object'), 'Should mention loadfile and object');
     });
 
-    it('should require exactly one parameter', async () => {
+    it('should require at least one parameter', async () => {
       const errors = await getValidationErrors(`
         print(loadfile());
       `);
       assert.strictEqual(errors.length, 1, 'Should have error for no parameters');
-      assert.match(errors[0].message, /loadfile\(\) expects 1 argument, got 0/);
+      assert.match(errors[0].message, /loadfile\(\) expects 1-2 arguments, got 0/);
+    });
+
+    it('should accept an optional ParseConfig options object', async () => {
+      const errors = await getValidationErrors(`
+        let func = loadfile("/path/to/script.uc", { raw_mode: true });
+        print(func);
+      `);
+      assert.strictEqual(errors.length, 0, 'Should not error on the documented 2-arg form');
     });
   });
 
@@ -142,12 +150,20 @@ describe('Module Functions Validation Tests', function() {
       assert(errors[0].message.includes('loadstring') && errors[0].message.includes('got boolean'), 'Should mention loadstring and boolean');
     });
 
-    it('should require exactly one parameter', async () => {
+    it('should require at least one parameter', async () => {
       const errors = await getValidationErrors(`
         print(loadstring());
       `);
       assert.strictEqual(errors.length, 1, 'Should have error for no parameters');
-      assert.match(errors[0].message, /loadstring\(\) expects 1 argument, got 0/);
+      assert.match(errors[0].message, /loadstring\(\) expects 1-2 arguments, got 0/);
+    });
+
+    it('should accept an optional ParseConfig options object', async () => {
+      const errors = await getValidationErrors(`
+        let func = loadstring("return 1+1;", { raw_mode: true });
+        print(func);
+      `);
+      assert.strictEqual(errors.length, 0, 'Should not error on the documented 2-arg form');
     });
   });
 
