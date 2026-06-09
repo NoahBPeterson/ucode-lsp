@@ -8,6 +8,18 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
+
+// Default workspace for tests that don't pass `workspaceRoot`: an isolated empty temp
+// dir, NOT the developer's cwd. Using cwd made the server scan whatever happened to be
+// checked out under the repo (e.g. vendored OpenWrt trees with tens of thousands of
+// files), stalling startup and flooding the harness. Tests that need a real workspace
+// pass `workspaceRoot` explicitly.
+const ISOLATED_TEST_WORKSPACE = (() => {
+  try { return fs.mkdtempSync(path.join(os.tmpdir(), 'ucode-lsp-ws-')); }
+  catch { return os.tmpdir(); }
+})();
 
 /**
  * Creates an LSP test server instance with the robust Buffer-based protocol handling
@@ -233,7 +245,7 @@ function createLSPTestServer(options = {}) {
         }
       };
 
-      const wsRoot = options.workspaceRoot || process.cwd();
+      const wsRoot = options.workspaceRoot || ISOLATED_TEST_WORKSPACE;
       const initialize = {
         jsonrpc: '2.0',
         id: requestId++,

@@ -34,13 +34,26 @@ read in `use()` → no hover.
 
 ## 0. PERF: workspace scan on large trees (shebang-peek cost)
 The 0.6.182 shebang detection reads the first 128 bytes of **every extensionless file**
-during the workspace walk (`scanAndAnalyzeWorkspace`, `listWorkspaceUcodeFiles`). In a
-workspace that contains a big vendored tree (e.g. an OpenWrt checkout — ~3.4k
-extensionless files, 45k total), this makes the scan slow enough to stall the server on
-startup (it stalled the test harness, which uses cwd as the workspace). Mitigations to
-consider: skip the peek for non-executable files (needs a cheap stat), cap total peeks,
-respect `.gitignore`, run the walk fully async/yielding, or skip obviously-vendored
-subtrees. (Today, gitignoring or not nesting such trees under the workspace avoids it.)
+during the workspace walk (`scanAndAnalyzeWorkspace`, `listWorkspaceUcodeFiles`). On a
+big vendored tree (e.g. an OpenWrt checkout — measured: ~3.3k extensionless files, only
+**11** of which are ucode) that's ~320ms of wasted I/O per walk, repeated on every
+file-index TTL refresh.
+
+DONE (0.6.186):
+- **Async, non-blocking walk** — `scanDirectoryRecursively` awaits `isUcodeSourceFileAsync`
+  so the peek yields to the event loop instead of blocking per file.
+- **mtime-keyed peek cache** (`shebangPeekCache` in shebang.ts) — a file's `isUcode`
+  verdict only changes when its first line changes (→ mtime changes), so the verdict is
+  cached by mtime and re-walks reuse it. Measured: cold 324ms → warm **9ms** (36×) on the
+  OpenWrt tree. Auto-invalidates on mtime change; no eviction needed.
+
+Ruled out (per design constraints): skip-nested-git-repos (REJECTED — nested repos must
+be supported) and executable-bit filtering (UNSOUND — not all ucode shebang scripts are
+chmod +x; misses files). Reading the first line is the only sound `isUcode` test.
+
+REMAINING lever (approved, not built): an opt-in `ucode.workspace.exclude` setting
+(glob/dir patterns) so a user can drop a huge vendored subtree from the scan entirely —
+cuts both the walk and the analyze cost, default off (nothing excluded), no hardcoding.
 
 ## 5. Host-context (parameter shape) typing
 The real uvol `ubi.uc` does `fs = ctx.fs` where `ctx` is an untyped parameter and the

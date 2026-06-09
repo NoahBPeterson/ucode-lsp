@@ -48,7 +48,7 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
-import { isUcodeSourceFile } from './shebang';
+import { isUcodeSourceFile, isUcodeSourceFileAsync } from './shebang';
 import { collectFunctionDeclarations, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
 import { findFunctionReferences, findNamespaceMemberReferences, findFactoryMethodReferences, formatReferencesTitle, getImportBindings, type ImportBinding } from './references';
 // import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
@@ -175,7 +175,7 @@ async function scanDirectoryRecursively(dir: string, ucodeFiles: string[]): Prom
                     continue;
                 }
                 await scanDirectoryRecursively(fullPath, ucodeFiles);
-            } else if (entry.isFile() && isUcodeSourceFile(fullPath)) {
+            } else if (entry.isFile() && await isUcodeSourceFileAsync(fullPath)) {
                 ucodeFiles.push(fullPath);
             }
         }
