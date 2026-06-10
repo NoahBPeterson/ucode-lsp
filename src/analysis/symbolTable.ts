@@ -594,19 +594,16 @@ export class SymbolTable {
       // survives) — record it so builtin-by-name consumers know it's shadowed.
       if (currentScopeMap.get(name)?.type === SymbolType.BUILTIN && type !== SymbolType.BUILTIN) {
         this.shadowedBuiltins.add(name);
-        // An import OR a function declaration legally shadows a builtin in module scope
-        // (verified vs the interpreter: `function split(s){…}` runs, shadowing the
-        // builtin), and that binding — not the builtin — must win for member/call
-        // resolution. So let it replace the seeded builtin (and succeed), instead of
-        // falsely failing with UC3001 / UC1007. The `let`/`const` (VARIABLE) path keeps
-        // its prior behavior (builtin survives the map; handled in visitVariableDeclarator).
-        if (type === SymbolType.IMPORTED || type === SymbolType.FUNCTION) {
-          // fall through to the declaration below, overwriting the builtin entry
-        } else {
-          return false;
-        }
+        // ANY non-builtin declaration (let/const, function, import, parameter) legally
+        // shadows a seeded builtin (verified vs the interpreter), and the local binding —
+        // not the builtin — must win for hover / member / call resolution. So replace the
+        // builtin entry and succeed, instead of failing with UC3001/UC1007 or leaving the
+        // builtin's hover on the local. The "shadows builtin" WARNING (UC1008/UC1005) is
+        // emitted separately by the visit handlers, and shadowedBuiltins is recorded for
+        // builtin-by-name consumers — both independent of this replacement.
+        // (fall through to the declaration below, overwriting the builtin entry)
       } else {
-        return false; // Already declared in current scope
+        return false; // Already declared in current scope (a real, non-builtin collision)
       }
     }
 

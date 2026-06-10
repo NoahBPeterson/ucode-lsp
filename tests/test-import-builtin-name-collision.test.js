@@ -83,3 +83,35 @@ test('13 the export-library shape (object + function, both builtin-named) has no
   const code = 'let assert = { match: function(a,b){ return a==b; } };\nfunction split(s) { return [s]; }\nexport { assert, split };\n';
   expect(await errs(code)).toEqual([]); // (a UC1008 "shadows builtin" *warning* on `let assert` is separate/by-design)
 });
+
+// ── Hover reflects the local shadow, not the builtin ─────────────────────────
+async function hoverAt(code, marker, id) {
+  const mi = code.lastIndexOf(marker);
+  const i = mi + marker.indexOf(id);
+  const pre = code.slice(0, i);
+  const line = (pre.match(/\n/g) || []).length;
+  const col = i - (pre.lastIndexOf('\n') + 1);
+  const h = await server.getHover(code, path.join(dir, `consumer-${n++}.uc`), line, col);
+  const v = h && h.contents && (h.contents.value || h.contents);
+  return (typeof v === 'string' ? v : JSON.stringify(v || ''));
+}
+test('14 hover on a `let` that shadows a builtin shows the local, not the builtin', async () => {
+  const t = await hoverAt('let assert = { match: function(a,b){ return a==b; } };\nlet z = assert;\n', 'let assert', 'assert');
+  expect(t).toContain('object');
+  expect(t).not.toMatch(/built-in function/);
+});
+test('15 hover on a USAGE of the shadowing local shows the local', async () => {
+  const code = 'let assert = { match: function(a,b){ return a==b; } };\nlet z = assert;\n';
+  const t = await hoverAt(code, 'z = assert', 'assert');
+  expect(t).toContain('object');
+  expect(t).not.toMatch(/built-in function/);
+});
+test('16 hover on a function that shadows a builtin shows the function, not the builtin', async () => {
+  const t = await hoverAt('function split(s) { return [s]; }\nlet z = split;\n', 'z = split', 'split');
+  expect(t).toContain('function');
+  expect(t).not.toMatch(/built-in function/);
+});
+test('17 the still-genuine builtin (not shadowed) still hovers as the builtin (regression)', async () => {
+  const t = await hoverAt('let x = length([1,2]);\nprint(length);\n', 'print(length', 'length');
+  expect(t).toMatch(/built-in|length/);
+});
