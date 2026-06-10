@@ -191,7 +191,8 @@ export const ubusSubscriberObjectType = ubusObjectType('ubus.subscriber', new Ma
   ['remove', { name: 'remove', parameters: [], returnType: 'boolean | null', description: 'Tear down the subscriber. Returns true on success, null on error.' }],
 ]));
 
-const functions = new Map<string, FunctionSignature>([
+// The C global_fns list (ubus.c) — registered into the module scope.
+const globalFunctions = new Map<string, FunctionSignature>([
   ["error", {
     name: "error",
     parameters: [
@@ -237,6 +238,19 @@ let chan = open_channel(fd, function(msg) {
     returnType: "function | boolean | null",
     description: "Set or get the global ubus exception handler. If called without arguments, returns current handler. If called with a handler function, sets it as the exception handler."
   }]
+]);
+
+// ubus.c `uc_module_init()` registers BOTH function lists into the module scope:
+//   uc_function_list_register(scope, global_fns);   // error, connect, open_channel, guard
+//   uc_function_list_register(scope, conn_fns);      // list, call, defer, publish, remove,
+//                                                    // listener, subscriber, event, …
+// So the connection functions are valid members of the `ubus` module namespace too, not
+// only of a connection object — `ubus.call(...)`, `ubus.publish(...)`, `ubus.listener(...)`
+// are real (29 occurrences in the OpenWrt corpus). Model the module's member set as the
+// union (the module-level `error` description wins for the namespace).
+const functions = new Map<string, FunctionSignature>([
+  ...connectionMethods,
+  ...globalFunctions,
 ]);
 
 // Backwards-compat exports

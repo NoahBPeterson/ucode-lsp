@@ -34,7 +34,10 @@ const EXPECTED_FUNCTIONS = {
     rtnl: ['request', 'listener', 'error'],
     socket: ['create', 'connect', 'listen', 'sockaddr', 'nameinfo', 'addrinfo', 'poll', 'error', 'strerror', 'pair', 'open'],
     struct: ['pack', 'unpack', 'new', 'buffer'],
-    ubus: ['error', 'connect', 'open_channel', 'guard'],
+    // ubus.c registers BOTH global_fns AND conn_fns into the module scope (auto-docs/03)
+    ubus: ['error', 'connect', 'open_channel', 'guard',                                  // global_fns
+      'list', 'call', 'defer', 'publish', 'remove', 'listener', 'subscriber', 'event', 'disconnect'], // conn_fns
+
     uci: ['error', 'cursor'],
     uloop: [
         'error', 'init', 'run', 'timer', 'handle', 'process', 'task', 'guard',
