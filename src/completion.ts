@@ -560,6 +560,13 @@ function getUnifiedObjectTypeCompletions(objectName: string, analysisResult?: Se
     const symbol = lookupSymbol(objectName, analysisResult, offset);
     if (!symbol || !symbol.dataType) return [];
 
+    // A namespace import of a known module (`import * as socket`) shares the object-handle
+    // dataType shape when the module name doubles as an object type (socket). It is NOT an
+    // object handle — `socket.` should complete module functions/constants, so bail here and
+    // let getUnifiedModuleCompletions handle it.
+    const nsMod = extractModuleType(symbol.dataType);
+    if (symbol.importSpecifier === '*' && nsMod && isKnownModule(nsMod.moduleName)) return [];
+
     // Detect the object type from the symbol's dataType
     let objectType: KnownObjectType | null = null;
 

@@ -2465,8 +2465,18 @@ export class TypeChecker {
         }
       }
 
+      // A namespace import of a known module (`import * as socket from "socket"`) carries
+      // the same {OBJECT, moduleName} shape as an object handle that module returns (e.g.
+      // socket.create() also yields moduleName:'socket') — they're only distinguishable by
+      // importSpecifier === '*'. For the namespace, `socket.create`/`socket.AF_INET` are
+      // MODULE member access (functions/constants), not object methods, so skip the
+      // object-type branch and let the module branch below resolve them.
+      const nsModInfo = extractModuleType(symbol.dataType);
+      const isModuleNamespace = symbol.importSpecifier === '*'
+        && nsModInfo != null && isKnownModule(nsModInfo.moduleName);
+
       // Check if this is a known object type (fs.file/dir/proc, io.handle, uloop.*, uci.cursor, nl80211.listener)
-      const detectedObjectType = this.detectObjectType(symbol.dataType);
+      const detectedObjectType = isModuleNamespace ? null : this.detectObjectType(symbol.dataType);
       if (detectedObjectType && !node.computed) {
         const methodName = (node.property as IdentifierNode).name;
         const method = OBJECT_REGISTRIES[detectedObjectType].getMethod(methodName);
@@ -2492,6 +2502,10 @@ export class TypeChecker {
         const memberName = this.getStaticPropertyName(node.property);
         if (memberName && MODULE_REGISTRIES[modName].getFunctionNames().includes(memberName)) {
           return UcodeType.FUNCTION;
+        }
+        // Module constants (socket.AF_INET, socket.SOCK_STREAM, …) are integers.
+        if (memberName && MODULE_REGISTRIES[modName].getConstantNames().includes(memberName)) {
+          return UcodeType.INTEGER;
         }
         // Object-handle exports (e.g. fs.stdin/stdout/stderr → fs.file): resolve to the
         // object type so `fs.stdin.read(...)` chains and hover shows the handle type.

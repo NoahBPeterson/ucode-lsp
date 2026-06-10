@@ -1007,8 +1007,15 @@ export class SemanticAnalyzer extends BaseVisitor {
         // fs.file handle, NOT a module namespace — so don't stamp importedFrom, which
         // would make member access/hover/type-resolution treat them as the module. The
         // dataType is already the object type, so all object-type machinery applies.
+        // An object-handle export (fs stdin/stdout/stderr → fs.file) only ever arrives via
+        // a NAMED import. A namespace import (`import * as socket`) is always a module
+        // namespace — even when the module's name doubles as an object type (`socket` is
+        // both), so it must keep importedFrom/importSpecifier='*' and be resolved as the
+        // module, not an object handle. Without this exclusion `import * as socket` looks
+        // identical to a local socket object and every module fn/constant false-errors.
         const dataTypeHandle = extractModuleType(dataType);
-        const isObjectHandleExport = dataTypeHandle != null && isKnownObjectType(dataTypeHandle.moduleName);
+        const isObjectHandleExport = specifier.type !== 'ImportNamespaceSpecifier'
+          && dataTypeHandle != null && isKnownObjectType(dataTypeHandle.moduleName);
         if (!isObjectHandleExport) {
           symbol.importedFrom = this.normalizeImportedFrom(source, effectiveUri);
           symbol.importSpecifier = importedName;
