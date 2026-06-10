@@ -85,6 +85,14 @@ const VALID_SIGNAL_NAMES = new Set([
 
 const UNHANDLABLE_SIGNALS = new Set(['KILL', 'STOP']);
 
+// ParseConfig keys accepted by loadfile/loadstring's optional options object, from ucode
+// lib.c uc_compile_parse_config. Boolean fields are coerced via ucv_is_truish (any value
+// works but a non-boolean is almost certainly a mistake); array fields are read with
+// ucv_array_length, so a NON-array value is silently dropped (intent lost) — both worth a
+// warning. Unknown keys are ignored by ucode, so they're flagged as likely typos.
+const PARSE_CONFIG_BOOLEAN_KEYS = new Set(['lstrip_blocks', 'trim_blocks', 'strict_declarations', 'raw_mode']);
+const PARSE_CONFIG_ARRAY_KEYS = new Set(['module_search_path', 'force_dynlink_list']);
+
 function isNumberLikeString(s: string): boolean {
   const trimmed = s.trim();
   if (trimmed === '') return false;
@@ -615,6 +623,7 @@ export class BuiltinValidator {
     this.validateArgumentType(arg, 'loadstring', 1, [UcodeType.STRING]);
     if (node.arguments[1]) {
       this.validateArgumentType(node.arguments[1], 'loadstring', 2, [UcodeType.OBJECT]);
+      this.validateParseConfigObject(node.arguments[1], 'loadstring');
     }
     return true;
   }
@@ -1522,9 +1531,52 @@ export class BuiltinValidator {
     this.validateArgumentType(arg, 'loadfile', 1, [UcodeType.STRING]);
     if (node.arguments[1]) {
       this.validateArgumentType(node.arguments[1], 'loadfile', 2, [UcodeType.OBJECT]);
+      this.validateParseConfigObject(node.arguments[1], 'loadfile');
     }
 
     return true;
+  }
+
+  /**
+   * Validate the property values of a loadfile/loadstring ParseConfig options object
+   * literal. ucode silently coerces/drops wrong-typed values (booleans via truthiness;
+   * non-array path values are ignored), so these are warnings, not errors — but they
+   * catch real mistakes (e.g. `force_dynlink_list: 'x'` is silently dropped). Unknown
+   * keys are ignored by ucode → flagged as likely typos. Only fires for an object
+   * literal; a variable/spread options arg is left alone. Known value types only (an
+   * unknown-typed value, e.g. a variable, is not flagged).
+   */
+  private validateParseConfigObject(optionsArg: any, fnName: string): void {
+    if (!optionsArg || optionsArg.type !== 'ObjectExpression' || !Array.isArray(optionsArg.properties)) return;
+    for (const prop of optionsArg.properties) {
+      if (!prop || prop.type !== 'Property' || prop.computed) continue;
+      const key = prop.key;
+      const keyName = key && key.type === 'Literal' ? key.value : (key ? key.name : undefined);
+      if (typeof keyName !== 'string') continue;
+      const value = prop.value;
+      if (PARSE_CONFIG_BOOLEAN_KEYS.has(keyName)) {
+        const vt = this.getNodeType(value);
+        if (vt !== UcodeType.UNKNOWN && vt !== UcodeType.BOOLEAN) {
+          this.warnings.push({
+            message: `${fnName}() ParseConfig option '${keyName}' expects a boolean, got ${vt} (ucode coerces it via truthiness)`,
+            start: value.start, end: value.end, severity: 'warning'
+          });
+        }
+      } else if (PARSE_CONFIG_ARRAY_KEYS.has(keyName)) {
+        const vt = this.getNodeType(value);
+        if (vt !== UcodeType.UNKNOWN && vt !== UcodeType.ARRAY) {
+          this.warnings.push({
+            message: `${fnName}() ParseConfig option '${keyName}' expects an array of strings, got ${vt} (non-array values are ignored)`,
+            start: value.start, end: value.end, severity: 'warning'
+          });
+        }
+      } else {
+        this.warnings.push({
+          message: `Unknown ParseConfig option '${keyName}' (ignored by ${fnName}())`,
+          start: key.start, end: key.end, severity: 'warning'
+        });
+      }
+    }
   }
 
   validateSourcepathFunction(node: CallExpressionNode): boolean {

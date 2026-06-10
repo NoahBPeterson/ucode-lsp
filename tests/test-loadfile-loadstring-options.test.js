@@ -80,3 +80,31 @@ test('13 loadfile(path, <non-object>) flags the 2nd arg', async () => {
 test('14 loadstring(code, <non-object>) flags the 2nd arg', async () => {
   expect((await errs('loadstring("x", "nope");\n')).some((m) => /loadstring.*(object|argument 2)/i.test(m))).toBe(true);
 });
+
+// ── ParseConfig property value types (warnings — ucode coerces/drops, never errors) ──
+const warns = async (code) => (await server.getDiagnostics(code, `/tmp/lfo-${n++}.uc`) || []).filter((x) => x.severity === 2).map((x) => x.message);
+test('15 boolean key with a string value warns (expects a boolean)', async () => {
+  expect((await warns("loadfile('./c.uc', { raw_mode: 'lol' });\n")).some((m) => /'raw_mode' expects a boolean/.test(m))).toBe(true);
+});
+test('16 boolean key with a boolean value is clean', async () => {
+  expect((await warns("loadfile('./c.uc', { raw_mode: true });\n")).some((m) => /raw_mode/.test(m))).toBe(false);
+});
+test('17 array key with a string value warns (expects an array) — value is silently dropped by ucode', async () => {
+  expect((await warns("loadfile('./c.uc', { force_dynlink_list: 'lol' });\n")).some((m) => /'force_dynlink_list' expects an array/.test(m))).toBe(true);
+});
+test('18 array key with an array value is clean', async () => {
+  expect((await warns("loadfile('./c.uc', { module_search_path: ['/x'] });\n")).some((m) => /module_search_path/.test(m))).toBe(false);
+});
+test('19 boolean key with an integer value warns', async () => {
+  expect((await warns("loadstring('1', { strict_declarations: 5 });\n")).some((m) => /'strict_declarations' expects a boolean/.test(m))).toBe(true);
+});
+test('20 an unknown ParseConfig key warns (likely typo)', async () => {
+  expect((await warns("loadfile('./c.uc', { raw_modee: true });\n")).some((m) => /Unknown ParseConfig option 'raw_modee'/.test(m))).toBe(true);
+});
+test('21 a value of unknown type (a variable) is NOT flagged (could be a boolean at runtime)', async () => {
+  expect((await warns("function f(flag){ return loadfile('./c.uc', { raw_mode: flag }); }\n")).some((m) => /raw_mode/.test(m))).toBe(false);
+});
+test('22 these are warnings, not errors', async () => {
+  const e = (await server.getDiagnostics("loadfile('./c.uc', { raw_mode: 'lol' });\n", `/tmp/lfo-${n++}.uc`) || []).filter((x) => x.severity === 1 && /raw_mode/.test(x.message));
+  expect(e.length).toBe(0);
+});
