@@ -1,10 +1,13 @@
 # Importing a name that matches a builtin → false UC3001 "already declared" + cascading member errors
 
-> **STATUS: FIXED in 0.6.197.** `SymbolTable.declare()` now lets an `IMPORTED` symbol
-> shadow a seeded builtin (replaces the builtin entry, returns success) instead of failing
-> with UC3001 — so the imported binding wins for member/call resolution. `let`/`function`
-> shadows are unchanged. Tests: `tests/test-import-builtin-name-collision.test.js` (10).
-> Repro: `import-builtin-name-demo.uc` + `import-builtin-name-lib.uc`.
+> **STATUS: FIXED in 0.6.197 (imports); 0.6.198 (function declarations).**
+> `SymbolTable.declare()` now lets an `IMPORTED` *or* `FUNCTION` declaration shadow a
+> seeded builtin (replaces the builtin entry, returns success) instead of failing with
+> UC3001 / UC1007 — so that binding wins for member/call resolution. `let`/`const` shadows
+> are unchanged (builtin survives the map; handled in visitVariableDeclarator, with a
+> UC1008 "shadows builtin" *warning*). Tests:
+> `tests/test-import-builtin-name-collision.test.js` (13). Repro:
+> `import-builtin-name-demo.uc` + `import-builtin-name-lib.uc`.
 
 **Severity: high.** Importing a symbol whose name happens to match a ucode builtin function (e.g. `assert`, `split`, `join`, `index`, `match`, `replace`, `trim`, `keys`, `values`, `push`, `pop`, …) raises a false `UC3001 "Imported symbol 'X' is already declared in current scope"` **error**, and the builtin's type then shadows the import so every member access on the imported value produces a second false error.
 

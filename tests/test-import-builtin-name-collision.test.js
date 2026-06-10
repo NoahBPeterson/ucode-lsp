@@ -70,3 +70,16 @@ test('10 `let assert = …` shadowing a builtin still resolves to the local (reg
   // not an import — should not error out; local wins
   expect((await errs('let assert = { match: function(a,b){ return a==b; } };\nassert.match(1,1);\n')).some((m) => /does not exist on function type/.test(m))).toBe(false);
 });
+
+// ── A function DECLARATION named like a builtin legally shadows it ────────────
+test('11 `function split(s) {…}` (a builtin name) raises no UC1007 "already declared"', async () => {
+  expect((await errs('function split(s) { return [s]; }\n')).some((m) => /already declared in this scope/.test(m))).toBe(false);
+});
+test('12 a builtin-named local function is called with ITS arity, not the builtin\'s', async () => {
+  // local split(s) takes 1 arg; the builtin needs >=2 — must not flag the 1-arg call
+  expect((await errs('function split(s) { return [s]; }\nprint(split("x"), "\\n");\n')).some((m) => /split.*expects at least 2/.test(m))).toBe(false);
+});
+test('13 the export-library shape (object + function, both builtin-named) has no errors', async () => {
+  const code = 'let assert = { match: function(a,b){ return a==b; } };\nfunction split(s) { return [s]; }\nexport { assert, split };\n';
+  expect(await errs(code)).toEqual([]); // (a UC1008 "shadows builtin" *warning* on `let assert` is separate/by-design)
+});
