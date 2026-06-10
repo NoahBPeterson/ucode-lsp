@@ -41,10 +41,13 @@ export class UcodeLexer {
     private templates: number[] = []; // Stack of brace depth counters for template placeholders
     private eofEmitted: boolean = false; // Track if EOF has been emitted
 
+    private rawMode: boolean = false;
+
     constructor(source: string, config?: ParseConfig) {
         this.source = source;
-        
+
         if (config?.rawMode) {
+            this.rawMode = true;
             this.state = LexState.UC_LEX_IDENTIFY_TOKEN;
         }
     }
@@ -98,37 +101,42 @@ export class UcodeLexer {
     }
 
     private identifyBlock(): Token | null {
-        if (this.pos >= this.source.length) {
-            this.state = LexState.UC_LEX_EOF;
-            return this.emitBuffer(TokenType.TK_TEXT);
-        }
-
-        const ch = this.peekChar();
-        
-        if (ch === '{') {
-            const next = this.peekChar(1);
-            
-            if (next === '{') {
-                // Expression block
-                const text = this.emitBuffer(TokenType.TK_TEXT);
-                this.state = LexState.UC_LEX_BLOCK_EXPRESSION_EMIT_TAG;
-                return text;
-            } else if (next === '%') {
-                // Statement block
-                const text = this.emitBuffer(TokenType.TK_TEXT);
-                this.state = LexState.UC_LEX_BLOCK_STATEMENT_EMIT_TAG;
-                return text;
-            } else if (next === '#') {
-                // Comment block
-                const text = this.emitBuffer(TokenType.TK_TEXT);
-                this.state = LexState.UC_LEX_BLOCK_COMMENT;
-                return text;
+        // Consume template text character-by-character until a tag or EOF. This is a LOOP,
+        // not tail self-recursion — N chars of trailing text used to mean N stack frames,
+        // so a large text run overflowed the stack (auto-docs/01). (Raw mode no longer
+        // enters this state at all, but template mode must not crash here either.)
+        while (true) {
+            if (this.pos >= this.source.length) {
+                this.state = LexState.UC_LEX_EOF;
+                return this.emitBuffer(TokenType.TK_TEXT);
             }
-        }
 
-        this.buffer += this.nextChar();
-        this.updatePosition(ch);
-        return this.identifyBlock();
+            const ch = this.peekChar();
+
+            if (ch === '{') {
+                const next = this.peekChar(1);
+
+                if (next === '{') {
+                    // Expression block
+                    const text = this.emitBuffer(TokenType.TK_TEXT);
+                    this.state = LexState.UC_LEX_BLOCK_EXPRESSION_EMIT_TAG;
+                    return text;
+                } else if (next === '%') {
+                    // Statement block
+                    const text = this.emitBuffer(TokenType.TK_TEXT);
+                    this.state = LexState.UC_LEX_BLOCK_STATEMENT_EMIT_TAG;
+                    return text;
+                } else if (next === '#') {
+                    // Comment block
+                    const text = this.emitBuffer(TokenType.TK_TEXT);
+                    this.state = LexState.UC_LEX_BLOCK_COMMENT;
+                    return text;
+                }
+            }
+
+            this.buffer += this.nextChar();
+            this.updatePosition(ch);
+        }
     }
 
     private blockExpressionEmitTag(): Token | null {
@@ -180,19 +188,26 @@ export class UcodeLexer {
 
         const ch = this.peekChar();
 
-        // Check for block endings
-        if (ch === '}' && this.peekChar(1) === '}') {
-            this.nextChar();
-            this.nextChar();
-            this.state = LexState.UC_LEX_IDENTIFY_BLOCK;
-            return this.emitToken(TokenType.TK_REXP);
-        }
+        // Check for block endings — ONLY in template mode. In raw mode (which every LSP
+        // call site uses) a bare `}}` is just two close-braces from a nested object/array
+        // literal (`{a:{b:1}}`) and `%}` is `%` then `}`. Treating them as template
+        // block-end tags here flips the lexer back into template mode and swallows the
+        // rest of the file — auto-docs/01: false "Expected '}'"/"Unexpected token", every
+        // later diagnostic dropped, and a stack-overflow crash on large trailing text.
+        if (!this.rawMode) {
+            if (ch === '}' && this.peekChar(1) === '}') {
+                this.nextChar();
+                this.nextChar();
+                this.state = LexState.UC_LEX_IDENTIFY_BLOCK;
+                return this.emitToken(TokenType.TK_REXP);
+            }
 
-        if (ch === '%' && this.peekChar(1) === '}') {
-            this.nextChar();
-            this.nextChar();
-            this.state = LexState.UC_LEX_IDENTIFY_BLOCK;
-            return this.emitToken(TokenType.TK_RSTM);
+            if (ch === '%' && this.peekChar(1) === '}') {
+                this.nextChar();
+                this.nextChar();
+                this.state = LexState.UC_LEX_IDENTIFY_BLOCK;
+                return this.emitToken(TokenType.TK_RSTM);
+            }
         }
 
         // Template literal placeholder start
@@ -620,10 +635,19 @@ export class UcodeLexer {
         for (let len = 3; len >= 1; len--) {
             const substr = this.source.substring(this.pos, this.pos + len);
             if (substr in Operators) {
+                const operatorType = Operators[substr];
+                // In raw mode the template delimiters `{{`/`}}`/`{%`/`%}` are NOT operators —
+                // they're ordinary brace/percent runs (a nested object literal `{a:{b:1}}`,
+                // or `%` then `}`). Skip them here so the single-char fallback tokenizes
+                // `}}` as two `}`, etc. Matching `}}` as one TK_REXP token is what fed the
+                // parser garbage and flipped the lexer into template mode (auto-docs/01).
+                if (this.rawMode && (operatorType === TokenType.TK_LEXP || operatorType === TokenType.TK_REXP
+                    || operatorType === TokenType.TK_LSTM || operatorType === TokenType.TK_RSTM)) {
+                    continue;
+                }
                 for (let i = 0; i < len; i++) {
                     this.nextChar();
                 }
-                const operatorType = Operators[substr];
                 if (operatorType) {
                     return this.emitToken(operatorType, substr, startPos);
                 }
