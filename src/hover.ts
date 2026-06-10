@@ -949,7 +949,28 @@ export function handleHover(
                 if (!symbol) {
                     symbol = analysisResult.symbolTable.lookup(word);
                 }
-                
+
+                // A bare name that's a property of the builtin `global` object
+                // (`global.X = …`) has no declared symbol of its own, but it IS a real
+                // global binding — synthesize one from the stored property type so hover
+                // shows the function/value instead of nothing. Mirrors the
+                // "Undefined function"/"Undefined variable" suppression for these names.
+                if (!symbol) {
+                    const globalSym = analysisResult.symbolTable.lookup('global');
+                    const propType = globalSym?.propertyTypes?.get(word);
+                    if (propType !== undefined) {
+                        symbol = {
+                            name: word,
+                            type: propType === UcodeType.FUNCTION ? SymbolType.FUNCTION : SymbolType.VARIABLE,
+                            dataType: propType,
+                            scope: 0,
+                            declared: true,
+                            used: true,
+                            node: { type: 'Identifier', start: token.pos, end: token.end, name: word },
+                        } as any;
+                    }
+                }
+
                 // (Arrow/function rest parameters are registered in the symbol
                 // table with isRestParam and rendered by the symbol path below.)
 

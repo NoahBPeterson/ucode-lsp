@@ -1,9 +1,11 @@
 # `global.X = fn` callable as bare `X()` — false "Undefined function"
 
-Status: **DONE (0.6.194)** — collectGlobalPropertyNames pre-pass (dot + computed-string
-`global.X =`) shared with the type checker via setGlobalPropertyNames; the "Undefined
-function" path suppresses these (NOT strict-gated). Tests
-test-global-property-functions.test.js (12). Verified vs `/usr/local/bin/ucode`.
+Status: **DONE (0.6.194; hover in 0.6.195)** — collectGlobalPropertyNames pre-pass (dot +
+computed-string `global.X =`) shared with the type checker via setGlobalPropertyNames; the
+"Undefined function" path suppresses these (NOT strict-gated). 0.6.195: hover.ts also
+synthesizes a hover for a bare `global.X` name from `global.propertyTypes` (function →
+"(function)", value → its type) so the name isn't hover-less. Tests
+test-global-property-functions.test.js (16). Verified vs `/usr/local/bin/ucode`.
 Date: 2026-06-08. Corpus: `packages/utils/prometheus-node-exporter-ucode/files/metrics.uc`.
 
 ## Symptom

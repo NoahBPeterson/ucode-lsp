@@ -66,3 +66,32 @@ test('11 a non-global object property does NOT suppress a bare call', async () =
 test('12 a genuinely undefined function is still flagged', async () => {
   expect((await undefMsgs('totallyMissing();\n')).some((m) => /Undefined function: totallyMissing/.test(m))).toBe(true);
 });
+
+// ── Hover on a global-property name (synthesized from global.propertyTypes) ───
+async function hoverAt(code, marker, idInMarker) {
+  const mi = code.lastIndexOf(marker);
+  const i = mi + marker.indexOf(idInMarker);
+  const pre = code.slice(0, i);
+  const line = (pre.match(/\n/g) || []).length;
+  const col = i - (pre.lastIndexOf('\n') + 1);
+  const h = await server.getHover(code, `/tmp/gpf-${n++}.uc`, line, col);
+  const v = h && h.contents && (h.contents.value || h.contents);
+  return (typeof v === 'string' ? v : JSON.stringify(v || ''));
+}
+test('13 hover on a bare-called global function shows it is a function', async () => {
+  const t = await hoverAt('global.handle = function(e) { return e; };\nhandle({});\n', 'handle({', 'handle');
+  expect(t).toContain('function');
+  expect(t).toContain('handle');
+});
+test('14 hover on a global-function reference (not a call) resolves too', async () => {
+  const t = await hoverAt('global.cb = function() { return 1; };\nlet r = cb;\n', 'r = cb', 'cb');
+  expect(t).toContain('function');
+});
+test('15 hover on a global VALUE property shows its value type', async () => {
+  const t = await hoverAt('global.myval = 7;\nlet z = myval;\n', 'z = myval', 'myval');
+  expect(t).toContain('integer');
+});
+test('16 a normal local variable still hovers normally (regression)', async () => {
+  const t = await hoverAt('let local = "x";\nlet z = local;\n', 'z = local', 'local');
+  expect(t).toContain('string');
+});
