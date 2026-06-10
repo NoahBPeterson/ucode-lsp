@@ -465,7 +465,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
-  visitVariableDeclarator(node: VariableDeclaratorNode, _kind: string = 'let'): void {
+  visitVariableDeclarator(node: VariableDeclaratorNode, kind: string = 'let'): void {
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
 
@@ -655,6 +655,10 @@ export class SemanticAnalyzer extends BaseVisitor {
         this.symbolTable.declare(name, symbolType, dataType, node.id, node.init || undefined);
 
         const declaredSymbol = this.symbolTable.lookup(name);
+        if (declaredSymbol && kind === 'const') {
+          // Mark const bindings so a later assignment/increment is flagged (UC1010).
+          declaredSymbol.isConstant = true;
+        }
         if (declaredSymbol && node.init && this.isLiteralType(dataType, node.init)) {
           declaredSymbol.initialLiteralType = dataType;
         }
@@ -2320,10 +2324,33 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // The template literal itself will be typed as string by the type checker
   }
 
+  /** Flag assignment/increment of a `const` binding (UC1010) — a hard ucode error
+   *  ("Invalid assignment to constant 'x'"). Only a bare identifier target is a
+   *  violation; mutating a const object's property/element (`const o={}; o.x=1`,
+   *  `const a=[]; a[0]=1`) is legal in ucode, so member targets are left alone. */
+  private checkConstReassignment(target: AstNode, isUpdate: boolean): void {
+    if (!target || target.type !== 'Identifier') return;
+    const name = (target as IdentifierNode).name;
+    const symbol = this.symbolTable.lookup(name);
+    if (!symbol || !symbol.isConstant) return;
+    const message = isUpdate
+      ? `Invalid increment/decrement of constant '${name}'. A 'const' binding cannot be modified.`
+      : `Invalid assignment to constant '${name}'. A 'const' binding cannot be reassigned.`;
+    this.addDiagnosticErrorCode(
+      UcodeErrorCode.CONST_REASSIGNMENT,
+      message,
+      target.start,
+      target.end,
+      DiagnosticSeverity.Error
+    );
+  }
+
   visitAssignmentExpression(node: AssignmentExpressionNode): void {
     this.assignmentLeftDepth++;
     this.visit(node.left);
     this.assignmentLeftDepth--;
+    // `const x = 1; x = 2;` (and every compound form `x += 1`, …) is a ucode error.
+    this.checkConstReassignment(node.left, false);
     // Attribute a method-style function expression to its assignment target so it
     // gets the UC7003 hint (`nft_file.init = function(target){…}` → name "init").
     const rt = node.right.type;
@@ -2506,6 +2533,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (node.operator === '!') this.truthinessDepth++;
     super.visitUnaryExpression(node);
     if (node.operator === '!') this.truthinessDepth--;
+
+    // `const x = 1; x++;` / `--x;` is a ucode error ("Invalid increment/decrement of constant").
+    if (node.operator === '++' || node.operator === '--') {
+      this.checkConstReassignment(node.argument, true);
+    }
 
     if (this.options.enableTypeChecking) {
       this.typeChecker.setTruthinessDepth(this.truthinessDepth);

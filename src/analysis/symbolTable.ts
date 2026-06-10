@@ -316,6 +316,7 @@ export interface Symbol {
   // Import-specific fields
   importedFrom?: string;        // File path where this symbol is imported from
   importSpecifier?: string;     // Original name if aliased (e.g., 'run_command' for 'import { run_command as cmd }')
+  isConstant?: boolean;         // True when declared with `const` — reassignment is a ucode error (UC1010)
   definitionLocation?: {        // Location of the actual definition
     uri: string;
     range: { start: number; end: number };
