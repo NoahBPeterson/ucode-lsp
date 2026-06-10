@@ -644,6 +644,19 @@ export class SemanticAnalyzer extends BaseVisitor {
           this.processInitializerTypeInference(node, name);
         }
 
+        // Function-valued variable: `let f = () => {…}` / `let f = function(){…}`. The
+        // arrow/expression visitor stashed the inferred return type on the init node;
+        // stamp the symbol as a FUNCTION carrying that returnType so call sites
+        // (inferFunctionCallReturnType) resolve `f(...)`'s type like a named function.
+        if (node.init.type === 'ArrowFunctionExpression' || node.init.type === 'FunctionExpression') {
+          const fnSym = this.symbolTable.lookup(name);
+          if (fnSym) {
+            fnSym.dataType = UcodeType.FUNCTION as UcodeDataType;
+            const rt = (node.init as any)._inferredReturnType;
+            if (rt !== undefined && rt !== null) fnSym.returnType = rt;
+          }
+        }
+
         // Upgrade array literal type to ArrayType if element type can be inferred
         if (node.init.type === 'ArrayExpression') {
           const sym = this.symbolTable.lookup(name);
@@ -1605,6 +1618,12 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Visit the function body
       this.visit(node.body);
 
+      // Infer the return type (common type of all returns) and stash it on the node —
+      // an anonymous function expression has no symbol of its own, so the binding site
+      // (variable declarator / assignment) reads `_inferredReturnType` off the node.
+      const fnReturnTypes = (this.functionReturnTypes.get(node as any) || []).map(e => e.type);
+      (node as any)._inferredReturnType = this.typeChecker.getCommonReturnType(fnReturnTypes);
+
       // Exit function scope
       this.symbolTable.exitScope(node.end);
       this.functionScopes.pop();
@@ -1670,6 +1689,21 @@ export class SemanticAnalyzer extends BaseVisitor {
         // For expression bodies, visit normally
         this.visit(node.body);
       }
+
+      // Infer the return type and stash it on the node (arrows are anonymous, so the
+      // binding site reads `_inferredReturnType`). Block body → common type of the
+      // collected returns; expression body `(x) => expr` → the expression's type
+      // (computed here while the params are still in scope, before exitScope).
+      let arrowReturnType: UcodeDataType;
+      if (node.body.type === 'BlockStatement') {
+        const rts = (this.functionReturnTypes.get(node as any) || []).map(e => e.type);
+        arrowReturnType = this.typeChecker.getCommonReturnType(rts);
+      } else {
+        // Inference-only: the body was already validated during the visit above, so query
+        // its type without re-emitting diagnostics (checkNode would double-report).
+        arrowReturnType = this.typeChecker.checkNodeQuietly(node.body) ?? (UcodeType.UNKNOWN as UcodeDataType);
+      }
+      (node as any)._inferredReturnType = arrowReturnType;
 
       // Exit function scope
       this.symbolTable.exitScope(node.end);
@@ -3313,6 +3347,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
       // Return the raw return type without conversion to preserve unions
       // Builtins are handled by the type checker which narrows return types based on argument types
+      return symbol.returnType || null;
+    }
+
+    // Function-valued variable: `let f = () => {…}` / `let f = function(){…}` is a
+    // VARIABLE whose dataType is FUNCTION and whose returnType was inferred at the
+    // declaration. Resolve its call-site return type too (guarded on returnType being
+    // set, so ordinary variables are unaffected).
+    if (symbol && symbol.dataType === UcodeType.FUNCTION && symbol.returnType !== undefined) {
       return symbol.returnType || null;
     }
 

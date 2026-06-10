@@ -449,6 +449,25 @@ export class TypeChecker {
     this.errors = errors;
   }
 
+  /**
+   * Compute a node's type WITHOUT emitting any diagnostics. For inference-only queries on
+   * a node the caller has already validated in its proper context (e.g. an expression-body
+   * arrow's return type — its body is validated during the semantic visit, so re-checking
+   * it here must not double-report). Snapshots and restores both this checker's and the
+   * builtin validator's error/warning buffers (getErrors/getWarnings return the live arrays).
+   */
+  checkNodeQuietly(node: AstNode): UcodeDataType {
+    const tcE = this.errors.length, tcW = this.warnings.length;
+    const bvErr = this.builtinValidator.getErrors(), bvWarn = this.builtinValidator.getWarnings();
+    const bvE = bvErr.length, bvW = bvWarn.length;
+    const result = this.checkNode(node);
+    this.errors.length = tcE;
+    this.warnings.length = tcW;
+    bvErr.length = bvE;
+    bvWarn.length = bvW;
+    return result;
+  }
+
   withAssignmentTarget<T>(fn: () => T): T {
     this.assignmentTargetDepth++;
     try {
