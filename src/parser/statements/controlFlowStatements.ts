@@ -53,7 +53,10 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     const start = this.previous()!.pos;
 
     this.consume(TokenType.TK_LPAREN, "Expected '(' after 'if'");
-    const test = this.parseExpression();
+    // Parse at COMMA precedence so the sequence operator is accepted in the condition
+    // (`if (a = 1, b = 2)` is valid ucode — verified vs /usr/local/bin/ucode), matching
+    // parenthesized expressions and the for-init/update productions.
+    const test = this.parseExpression(Precedence.COMMA);
     if (!test) return null;
 
     this.consume(TokenType.TK_RPAREN, "Expected ')' after if condition");
@@ -80,7 +83,9 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     const start = this.previous()!.pos;
 
     this.consume(TokenType.TK_LPAREN, "Expected '(' after 'while'");
-    const test = this.parseExpression();
+    // COMMA precedence — `while (a = next(), b = next())` is valid ucode (the sequence
+    // operator drives the multi-assignment loop-condition idiom in the corpus).
+    const test = this.parseExpression(Precedence.COMMA);
     if (!test) return null;
 
     this.consume(TokenType.TK_RPAREN, "Expected ')' after while condition");
@@ -337,7 +342,9 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     const start = this.previous()!.pos;
     
     this.consume(TokenType.TK_LPAREN, "Expected '(' after 'switch'");
-    const discriminant = this.parseExpression();
+    // COMMA precedence — `switch (a, b)` is valid ucode (the discriminant is a full
+    // expression, sequence operator included).
+    const discriminant = this.parseExpression(Precedence.COMMA);
     if (!discriminant) return null;
     
     this.consume(TokenType.TK_RPAREN, "Expected ')' after switch discriminant");
