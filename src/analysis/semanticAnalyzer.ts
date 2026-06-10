@@ -95,6 +95,10 @@ export class SemanticAnalyzer extends BaseVisitor {
   // name anywhere is valid (returns null until assigned, never a runtime error). Used to
   // suppress UC1001 for provable implicit globals. Empty under 'use strict'.
   private implicitGlobalNames = new Set<string>();
+  // Names installed on the builtin `global` object via `global.X = …` anywhere in the
+  // module. Shared with the type checker so a bare call `X(...)` isn't a false "Undefined
+  // function" — `global.X` is a real global binding in BOTH strict and non-strict mode.
+  private globalPropertyNames = new Set<string>();
   // Name to attribute to the next function-expression we visit, set by the
   // enclosing assignment/declaration (e.g. `nft_file.init = function(){}`), so a
   // method-style function expression can get the same UC7003 "add @param" hint as
@@ -244,6 +248,11 @@ export class SemanticAnalyzer extends BaseVisitor {
     // to an implicit global isn't flagged "Undefined function".
     this.collectImplicitGlobalNames(node);
     this.typeChecker.setImplicitGlobalNames(this.implicitGlobalNames);
+    // Collect `global.X = …` property names so a bare call `X(...)` isn't flagged
+    // "Undefined function" (the variable check already honors these via isGlobalProperty;
+    // the call check did not). Legal in strict mode too, so not strict-gated.
+    this.collectGlobalPropertyNames(node);
+    this.typeChecker.setGlobalPropertyNames(this.globalPropertyNames);
     // Global scope analysis
     super.visitProgram(node);
     // Flag forward declarations that are never completed by a real definition
@@ -332,6 +341,37 @@ export class SemanticAnalyzer extends BaseVisitor {
         // persists after the loop (verified vs the interpreter). Strict mode flags it
         // separately (visitForInStatement).
         names.add(n.left.name);
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+      }
+    };
+    walk(node);
+  }
+
+  /**
+   * Collect every name installed on the builtin `global` object via `global.X = …`
+   * (dot form) or `global["X"] = …` (string-literal computed form) anywhere in the
+   * module. Mirrors collectImplicitGlobalNames so the shared set is robust to traversal
+   * order. Unlike implicit globals this is NOT strict-gated — `global.X = fn` is a real
+   * global binding under `'use strict'` too (verified vs the interpreter).
+   */
+  private collectGlobalPropertyNames(node: ProgramNode): void {
+    this.globalPropertyNames.clear();
+    const names = this.globalPropertyNames;
+    const walk = (n: any): void => {
+      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+      if (n.type === 'AssignmentExpression' && n.operator === '=' && n.left?.type === 'MemberExpression'
+          && n.left.object?.type === 'Identifier' && n.left.object.name === 'global') {
+        const prop = n.left.property;
+        if (!n.left.computed && prop?.type === 'Identifier' && prop.name) {
+          names.add(prop.name);
+        } else if (n.left.computed && prop?.type === 'Literal' && typeof prop.value === 'string') {
+          names.add(prop.value);
+        }
       }
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc') continue;

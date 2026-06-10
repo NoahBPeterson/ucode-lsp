@@ -282,6 +282,8 @@ export class TypeChecker {
   // the semantic analyzer so a call to one isn't reported "Undefined function".
   private implicitGlobalNames: ReadonlySet<string> = new Set();
   setImplicitGlobalNames(names: ReadonlySet<string>): void { this.implicitGlobalNames = names; }
+  private globalPropertyNames: ReadonlySet<string> = new Set();
+  setGlobalPropertyNames(names: ReadonlySet<string>): void { this.globalPropertyNames = names; }
   private transitiveTypeAliases: string[] = [];
   /** Optional FileResolver used to read literal values from imported files when
    *  constant-folding `ns.A.B` member chains into property-key strings. */
@@ -1784,6 +1786,13 @@ export class TypeChecker {
       // global; it may hold a function (e.g. `uvol_uci_commit = ctx.uci_commit`), so
       // calling it isn't "undefined" — same leniency as an unknown-typed callable.
       if (!this.strictMode && this.implicitGlobalNames.has(funcName)) {
+        return UcodeType.UNKNOWN;
+      }
+
+      // A function installed on the builtin `global` object (`global.X = function…`) is a
+      // real global binding, callable bare as `X(...)` — in strict mode too (unlike the
+      // non-strict implicit globals above), so this suppression is not strict-gated.
+      if (this.globalPropertyNames.has(funcName)) {
         return UcodeType.UNKNOWN;
       }
 
