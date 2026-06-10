@@ -28,6 +28,19 @@ function getType(result, varName) {
     return sym ? typeToString(sym.dataType) : 'NOT FOUND';
 }
 
+// A function parameter is the only genuinely type-unknown value in ucode (its type depends
+// on the caller). For the UNKNOWN arg case we check the inferred RETURN type of a one-line
+// function applying the builtin to its parameter, rather than a top-level binding (a bare
+// `let v;` is now typed null, not unknown).
+function getRet(result, fnName) {
+    const sym = result.symbolTable.lookup(fnName);
+    return sym && sym.returnType ? typeToString(sym.returnType) : 'NO RETURN TYPE';
+}
+function applied(builtinCall) {
+    // builtinCall is e.g. 'hex(v)' / 'int(v)' — wrap so `v` is a genuine unknown param.
+    return analyze(`function _u(v) { return ${builtinCall}; }`);
+}
+
 let passed = 0, failed = 0;
 function check(label, actual, expected) {
     if (actual === expected) { passed++; }
@@ -45,7 +58,7 @@ const snippetForType = (t) => Match.value(t).pipe(
     Match.when(UcodeType.FUNCTION, () => 'let v = () => 1;'),
     Match.when(UcodeType.REGEX,    () => 'let v = /test/;'),
     Match.when(UcodeType.NULL,     () => 'let v = null;'),
-    Match.when(UcodeType.UNKNOWN,  () => 'let v;'),
+    Match.when(UcodeType.UNKNOWN,  () => null), // UNKNOWN is special-cased via a fn-param (a top-level binding can't be genuinely unknown)
     Match.when(UcodeType.UNION,    () => null),
     Match.exhaustive
 );
@@ -86,11 +99,15 @@ const hexExpected = (t) => Match.value(t).pipe(
 );
 
 for (const ucType of CONCRETE_TYPES) {
-    const snippet = snippetForType(ucType);
     const expected = hexExpected(ucType);
-    if (snippet === null || expected === null) continue;
-    const code = `${snippet}\nlet a = hex(v);`;
-    const r = analyze(code);
+    if (expected === null) continue;
+    if (ucType === UcodeType.UNKNOWN) {
+        check(`hex(${ucType}) -> ${expected}`, getRet(applied('hex(v)'), '_u'), expected);
+        continue;
+    }
+    const snippet = snippetForType(ucType);
+    if (snippet === null) continue;
+    const r = analyze(`${snippet}\nlet a = hex(v);`);
     check(`hex(${ucType}) -> ${expected}`, getType(r, 'a'), expected);
 }
 
@@ -135,11 +152,15 @@ const intExpected = (t) => Match.value(t).pipe(
 );
 
 for (const ucType of CONCRETE_TYPES) {
-    const snippet = snippetForType(ucType);
     const expected = intExpected(ucType);
-    if (snippet === null || expected === null) continue;
-    const code = `${snippet}\nlet a = int(v);`;
-    const r = analyze(code);
+    if (expected === null) continue;
+    if (ucType === UcodeType.UNKNOWN) {
+        check(`int(${ucType}) -> ${expected}`, getRet(applied('int(v)'), '_u'), expected);
+        continue;
+    }
+    const snippet = snippetForType(ucType);
+    if (snippet === null) continue;
+    const r = analyze(`${snippet}\nlet a = int(v);`);
     check(`int(${ucType}) -> ${expected}`, getType(r, 'a'), expected);
 }
 

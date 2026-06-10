@@ -56,12 +56,14 @@ function check(label, actual, expected) {
 // This was previously silent — the fix detects array in union types.
 // ============================================================================
 {
-    const errs = getErrors('let x;\nlet sids = sort(keys(x));\nlet n = sids.length;');
+    // `x` is a function parameter so its type is genuinely unknown (a bare `let x;` is now
+    // typed null, which would collapse keys(x)/sort(...) to null instead of array | null).
+    const errs = getErrors('function _u(x) {\nlet sids = sort(keys(x));\nlet n = sids.length;\n}');
     check('nullable arr.length errors', errs.length > 0, true);
     check('nullable arr.length mentions array', errs[0]?.includes('array'), true);
 }
 {
-    const errs = getErrors('let x;\nlet sids = filter(keys(x), k => true);\nlet n = sids.length;');
+    const errs = getErrors('function _u(x) {\nlet sids = filter(keys(x), k => true);\nlet n = sids.length;\n}');
     check('filter result .length errors', errs.length > 0, true);
 }
 

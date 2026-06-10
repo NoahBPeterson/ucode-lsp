@@ -26,6 +26,14 @@ function getType(result, varName) {
     return sym ? typeToString(sym.dataType) : 'NOT FOUND';
 }
 
+// A function parameter is the only genuinely type-unknown value in ucode (its type depends
+// on the caller). For "unknown arg -> union" cases we check the inferred RETURN type of a
+// one-line function whose body applies the builtin to its parameter.
+function getRet(result, fnName) {
+    const sym = result.symbolTable.lookup(fnName);
+    return sym && sym.returnType ? typeToString(sym.returnType) : 'NO RETURN TYPE';
+}
+
 let passed = 0, failed = 0;
 function check(label, actual, expected) {
     if (actual === expected) { passed++; }
@@ -49,8 +57,8 @@ function check(label, actual, expected) {
 
 // Unknown type → full union preserved
 {
-    const r = analyze(`import { glob } from "fs";\nlet x;\nlet a = glob(x);`);
-    check('glob(unknown) -> array<string> | null', getType(r, 'a'), 'array<string> | null');
+    const r = analyze(`import { glob } from "fs";\nfunction _u(x) { return glob(x); }`);
+    check('glob(unknown) -> array<string> | null', getRet(r, '_u'), 'array<string> | null');
 }
 
 // Wrong types → null (definitely not string)
@@ -99,8 +107,8 @@ function check(label, actual, expected) {
     check('lsdir(string) -> array<string> | null', getType(r, 'a'), 'array<string> | null');
 }
 {
-    const r = analyze(`import { lsdir } from "fs";\nlet x;\nlet a = lsdir(x);`);
-    check('lsdir(unknown) -> array<string> | null', getType(r, 'a'), 'array<string> | null');
+    const r = analyze(`import { lsdir } from "fs";\nfunction _u(x) { return lsdir(x); }`);
+    check('lsdir(unknown) -> array<string> | null', getRet(r, '_u'), 'array<string> | null');
 }
 
 // ============================================================================
@@ -121,8 +129,8 @@ function check(label, actual, expected) {
 
 // Unknown first arg
 {
-    const r = analyze(`let x;\nlet a = proto(x);`);
-    check('proto(unknown) 1-arg -> object | null', getType(r, 'a'), 'object | null');
+    const r = analyze(`function _u(x) { return proto(x); }`);
+    check('proto(unknown) 1-arg -> object | null', getRet(r, '_u'), 'object | null');
 }
 
 // ============================================================================
@@ -143,8 +151,8 @@ function check(label, actual, expected) {
 
 // Unknown first arg → full union (could be anything)
 {
-    const r = analyze(`let x;\nlet a = proto(x, {});`);
-    check('proto(unknown, obj) 2-arg -> object | null', getType(r, 'a'), 'object | null');
+    const r = analyze(`function _u(x) { return proto(x, {}); }`);
+    check('proto(unknown, obj) 2-arg -> object | null', getRet(r, '_u'), 'object | null');
 }
 
 // Wrong first arg types → null

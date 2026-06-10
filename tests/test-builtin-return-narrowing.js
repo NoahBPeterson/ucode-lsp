@@ -30,6 +30,14 @@ function getType(result, varName) {
     return sym ? typeToString(sym.dataType) : 'NOT FOUND';
 }
 
+// A function parameter is the only genuinely type-unknown value in ucode (its type
+// depends on the caller). For "unknown arg -> union" cases we check the inferred RETURN
+// type of a one-line function whose body applies the builtin to its parameter.
+function getRet(result, fnName) {
+    const sym = result.symbolTable.lookup(fnName);
+    return sym && sym.returnType ? typeToString(sym.returnType) : 'NO RETURN TYPE';
+}
+
 let passed = 0, failed = 0;
 function check(label, actual, expected) {
     if (actual === expected) { passed++; }
@@ -56,8 +64,8 @@ function check(label, actual, expected) {
     check('length(object) -> integer', getType(r, 'a'), 'integer');
 }
 {
-    const r = analyze(`let x; let a = length(x);`);
-    check('length(unknown) -> integer | null', getType(r, 'a'), 'integer | null');
+    const r = analyze(`function _u(x) { return length(x); }`);
+    check('length(unknown) -> integer | null', getRet(r, '_u'), 'integer | null');
 }
 
 // --- index(haystack, needle): arg1 is string|array -> integer; otherwise integer | null ---
@@ -70,8 +78,8 @@ function check(label, actual, expected) {
     check('index(array, int) -> integer', getType(r, 'a'), 'integer');
 }
 {
-    const r = analyze(`let x; let a = index(x, "l");`);
-    check('index(unknown, string) -> integer | null', getType(r, 'a'), 'integer | null');
+    const r = analyze(`function _u(x) { return index(x, "l"); }`);
+    check('index(unknown, string) -> integer | null', getRet(r, '_u'), 'integer | null');
 }
 
 // --- rindex(haystack, needle): arg1 is string|array -> integer; otherwise integer | null ---
@@ -80,8 +88,8 @@ function check(label, actual, expected) {
     check('rindex(string, string) -> integer', getType(r, 'a'), 'integer');
 }
 {
-    const r = analyze(`let x; let a = rindex(x, "l");`);
-    check('rindex(unknown, string) -> integer | null', getType(r, 'a'), 'integer | null');
+    const r = analyze(`function _u(x) { return rindex(x, "l"); }`);
+    check('rindex(unknown, string) -> integer | null', getRet(r, '_u'), 'integer | null');
 }
 
 // --- join(sep, arr): arg2 is array -> string; otherwise string | null ---
@@ -90,8 +98,8 @@ function check(label, actual, expected) {
     check('join(string, array) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = join(",", x);`);
-    check('join(string, unknown) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`function _u(x) { return join(",", x); }`);
+    check('join(string, unknown) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // --- substr(str, start, len?): arg1 is string -> string; otherwise string | null ---
@@ -100,8 +108,8 @@ function check(label, actual, expected) {
     check('substr(string, int, int) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = substr(x, 1);`);
-    check('substr(unknown, int) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`function _u(x) { return substr(x, 1); }`);
+    check('substr(unknown, int) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // --- trim(str, chars?): arg1 is string -> string; otherwise string | null ---
@@ -110,8 +118,8 @@ function check(label, actual, expected) {
     check('trim(string) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = trim(x);`);
-    check('trim(unknown) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`function _u(x) { return trim(x); }`);
+    check('trim(unknown) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // --- ltrim ---
@@ -120,8 +128,8 @@ function check(label, actual, expected) {
     check('ltrim(string) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = ltrim(x);`);
-    check('ltrim(unknown) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`function _u(x) { return ltrim(x); }`);
+    check('ltrim(unknown) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // --- rtrim ---
@@ -130,8 +138,8 @@ function check(label, actual, expected) {
     check('rtrim(string) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = rtrim(x);`);
-    check('rtrim(unknown) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`function _u(x) { return rtrim(x); }`);
+    check('rtrim(unknown) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // --- replace(str, pattern, repl): all 3 args non-null -> string; otherwise string | null ---
@@ -140,8 +148,8 @@ function check(label, actual, expected) {
     check('replace(string, string, string) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = replace(x, "l", "r");`);
-    check('replace(unknown, string, string) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`function _u(x) { return replace(x, "l", "r"); }`);
+    check('replace(unknown, string, string) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // --- uc(str): arg is non-null -> string; otherwise string | null ---
@@ -150,8 +158,8 @@ function check(label, actual, expected) {
     check('uc(string) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = uc(x);`);
-    check('uc(unknown) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`function _u(x) { return uc(x); }`);
+    check('uc(unknown) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // --- lc(str): arg is non-null -> string; otherwise string | null ---
@@ -160,8 +168,8 @@ function check(label, actual, expected) {
     check('lc(string) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = lc(x);`);
-    check('lc(unknown) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`function _u(x) { return lc(x); }`);
+    check('lc(unknown) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // --- type(val): arg is non-null -> string; null arg -> null ---
@@ -175,8 +183,8 @@ function check(label, actual, expected) {
     check('type(array) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = type(x);`);
-    check('type(unknown) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`function _u(x) { return type(x); }`);
+    check('type(unknown) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // --- keys(obj): arg is object -> array; otherwise array | null ---
@@ -185,8 +193,8 @@ function check(label, actual, expected) {
     check('keys(object) -> array<string>', getType(r, 'a'), 'array<string>');
 }
 {
-    const r = analyze(`let x; let a = keys(x);`);
-    check('keys(unknown) -> array | null', getType(r, 'a'), 'array | null');
+    const r = analyze(`function _u(x) { return keys(x); }`);
+    check('keys(unknown) -> array | null', getRet(r, '_u'), 'array | null');
 }
 
 // --- values(obj): arg is object -> array; otherwise array | null ---
@@ -195,8 +203,8 @@ function check(label, actual, expected) {
     check('values(object) -> array', getType(r, 'a'), 'array');
 }
 {
-    const r = analyze(`let x; let a = values(x);`);
-    check('values(unknown) -> array | null', getType(r, 'a'), 'array | null');
+    const r = analyze(`function _u(x) { return values(x); }`);
+    check('values(unknown) -> array | null', getRet(r, '_u'), 'array | null');
 }
 
 // --- uniq(arr): arg is array -> array; otherwise array | null ---
@@ -206,8 +214,8 @@ function check(label, actual, expected) {
     check('uniq(array<integer>) -> array<integer>', getType(r, 'a'), 'array<integer>');
 }
 {
-    const r = analyze(`let x; let a = uniq(x);`);
-    check('uniq(unknown) -> array | null', getType(r, 'a'), 'array | null');
+    const r = analyze(`function _u(x) { return uniq(x); }`);
+    check('uniq(unknown) -> array | null', getRet(r, '_u'), 'array | null');
 }
 
 // --- b64enc(str): arg is string -> string; otherwise string | null ---
@@ -216,8 +224,8 @@ function check(label, actual, expected) {
     check('b64enc(string) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = b64enc(x);`);
-    check('b64enc(unknown) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`function _u(x) { return b64enc(x); }`);
+    check('b64enc(unknown) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // --- hexenc(val): arg is non-null -> string; otherwise string | null ---
@@ -226,8 +234,8 @@ function check(label, actual, expected) {
     check('hexenc(string) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = hexenc(x);`);
-    check('hexenc(unknown) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`function _u(x) { return hexenc(x); }`);
+    check('hexenc(unknown) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // --- wildcard(subject, pattern, nocase?): arg1 non-null, arg2 string -> boolean ---
@@ -236,8 +244,8 @@ function check(label, actual, expected) {
     check('wildcard(string, string) -> boolean', getType(r, 'a'), 'boolean');
 }
 {
-    const r = analyze(`let x; let a = wildcard(x, "*.txt");`);
-    check('wildcard(unknown, string) -> boolean | null', getType(r, 'a'), 'boolean | null');
+    const r = analyze(`function _u(x) { return wildcard(x, "*.txt"); }`);
+    check('wildcard(unknown, string) -> boolean | null', getRet(r, '_u'), 'boolean | null');
 }
 
 // --- splice(arr, start, count?, ...items): arg1 is array -> array; otherwise array | null ---
@@ -247,8 +255,8 @@ function check(label, actual, expected) {
     check('splice(array<integer>, int, int) -> array<integer>', getType(r, 'a'), 'array<integer>');
 }
 {
-    const r = analyze(`let x; let a = splice(x, 1, 1);`);
-    check('splice(unknown, int, int) -> array | null', getType(r, 'a'), 'array | null');
+    const r = analyze(`function _u(x) { return splice(x, 1, 1); }`);
+    check('splice(unknown, int, int) -> array | null', getRet(r, '_u'), 'array | null');
 }
 
 // --- split(str, sep, limit?): arg1 string + arg2 string -> array; already partially handled ---
@@ -258,9 +266,9 @@ function check(label, actual, expected) {
     check('split(string, string) -> array<string>', getType(r, 'a'), 'array<string>');
 }
 {
-    const r = analyze(`let x; let a = split(x, ",");`);
+    const r = analyze(`function _u(x) { return split(x, ","); }`);
     // split's elements are always strings even when arg1 is unknown → preserve <string>.
-    check('split(unknown, string) -> array<string> | null', getType(r, 'a'), 'array<string> | null');
+    check('split(unknown, string) -> array<string> | null', getRet(r, '_u'), 'array<string> | null');
 }
 
 // --- replace(subject, search, repl): returns null ONLY when subject is null. ---
@@ -275,9 +283,9 @@ function check(label, actual, expected) {
     check('replace(string, string, string) -> string', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`let x; let a = replace(x, /[0-9]/g, "");`);
+    const r = analyze(`function _u(x) { return replace(x, /[0-9]/g, ""); }`);
     // unknown subject → could be null → keep the union (don't force null, don't force string)
-    check('replace(unknown, regex, string) -> string | null', getType(r, 'a'), 'string | null');
+    check('replace(unknown, regex, string) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // ============================================================================
@@ -415,8 +423,8 @@ function check(label, actual, expected) {
     check('slice(array<integer>, int, int) -> array<integer>', getType(r, 'a'), 'array<integer>');
 }
 {
-    const r = analyze(`let x; let a = slice(x, 1, 3);`);
-    check('slice(unknown, int, int) -> array | null', getType(r, 'a'), 'array | null');
+    const r = analyze(`function _u(x) { return slice(x, 1, 3); }`);
+    check('slice(unknown, int, int) -> array | null', getRet(r, '_u'), 'array | null');
 }
 
 // --- sort(val): works on arrays AND objects ---
@@ -456,8 +464,8 @@ function check(label, actual, expected) {
     check('sort(function) -> null', getType(r, 'a'), 'null');
 }
 {
-    const r = analyze(`let x; let a = sort(x);`);
-    check('sort(unknown) -> array | null', getType(r, 'a'), 'array | null');
+    const r = analyze(`function _u(x) { return sort(x); }`);
+    check('sort(unknown) -> array | null', getRet(r, '_u'), 'array | null');
 }
 
 // --- signal(sig): 1 arg -> query handler; 2 args -> narrows to arg2 type ---
@@ -492,8 +500,8 @@ function check(label, actual, expected) {
 }
 // Unknown arg2 — can't narrow, keep full union
 {
-    const r = analyze(`let x; let a = signal(15, x);`);
-    check('signal(int, unknown) -> function | string | null', getType(r, 'a'), 'function | string | null');
+    const r = analyze(`function _u(x) { return signal(15, x); }`);
+    check('signal(int, unknown) -> function | string | null', getRet(r, '_u'), 'function | string | null');
 }
 
 // --- proto: 1 arg -> object|null (getter); 2 args -> first arg type ---
@@ -529,8 +537,8 @@ function check(label, actual, expected) {
 }
 {
     // unknown subject, valid regex -> still array<string> | null (null on no-match)
-    const r = analyze(`let x; let m = match(x, /(\\d)/);`);
-    check('match(unknown, /re/) -> array<string> | null', getType(r, 'm'), 'array<string> | null');
+    const r = analyze(`function _u(x) { return match(x, /(\\d)/); }`);
+    check('match(unknown, /re/) -> array<string> | null', getRet(r, '_u'), 'array<string> | null');
 }
 {
     // regex arg is definitely the wrong type -> always null

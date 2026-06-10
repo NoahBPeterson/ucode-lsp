@@ -26,6 +26,14 @@ function getType(result, varName) {
     return sym ? typeToString(sym.dataType) : 'NOT FOUND';
 }
 
+// A function parameter is the only genuinely type-unknown value in ucode (its type
+// depends on the caller). For "unknown arg -> union" cases we check the inferred RETURN
+// type of a one-line function whose body applies the builtin to its parameter.
+function getRet(result, fnName) {
+    const sym = result.symbolTable.lookup(fnName);
+    return sym && sym.returnType ? typeToString(sym.returnType) : 'NO RETURN TYPE';
+}
+
 let passed = 0, failed = 0;
 function check(label, actual, expected) {
     if (actual === expected) { passed++; }
@@ -72,16 +80,16 @@ function check(label, actual, expected) {
     check('dirname(string) -> string (narrowed)', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`import { dirname } from 'fs';\nlet x; let a = dirname(x);`);
-    check('dirname(unknown) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`import { dirname } from 'fs';\nfunction _u(x) { return dirname(x); }`);
+    check('dirname(unknown) -> string | null', getRet(r, '_u'), 'string | null');
 }
 {
     const r = analyze(`import { basename } from 'fs';\nlet a = basename("/tmp/test.txt");`);
     check('basename(string) -> string (narrowed)', getType(r, 'a'), 'string');
 }
 {
-    const r = analyze(`import { basename } from 'fs';\nlet x; let a = basename(x);`);
-    check('basename(unknown) -> string | null', getType(r, 'a'), 'string | null');
+    const r = analyze(`import { basename } from 'fs';\nfunction _u(x) { return basename(x); }`);
+    check('basename(unknown) -> string | null', getRet(r, '_u'), 'string | null');
 }
 
 // ============================================================================

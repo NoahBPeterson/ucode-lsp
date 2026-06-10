@@ -498,6 +498,13 @@ export class SemanticAnalyzer extends BaseVisitor {
             }
             break;
         }
+      } else if (node.id && node.id.type === 'Identifier') {
+        // No initializer: in ucode an uninitialized binding is definitively `null`
+        // (verified vs /usr/local/bin/ucode: `let x; type(x) == "null"`), not "unknown".
+        // SSA flow still overrides this the moment the variable is assigned, so this only
+        // governs the window before the first assignment (and bare `let x;` everywhere).
+        // Guarded to plain identifiers so destructuring patterns are left to their own path.
+        dataType = UcodeType.NULL as UcodeDataType;
       }
 
       // Special handling for require() calls

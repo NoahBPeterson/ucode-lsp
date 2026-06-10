@@ -58,20 +58,21 @@ const snippetForType = (t) => Match.value(t).pipe(
 const CONCRETE_TYPES = Object.values(UcodeType).filter(t => t !== UcodeType.UNION && t !== UcodeType.UNKNOWN);
 
 // ============================================================================
-// 1. Basic: uninitialized variable is unknown before assignment, typed after
+// 1. Basic: uninitialized variable is `null` before assignment, typed after
+//    (ucode: an uninitialized binding is definitively null — verified vs the interpreter)
 // ============================================================================
 {
     const code = 'let x;\nprint(x);\nx = [1, 2, 3];\nprint(x);\n';
     const r = analyze(code);
     const beforeOffset = code.indexOf('print(x)') + 6;
     const afterOffset = code.lastIndexOf('print(x)') + 6;
-    check('uninitialized before assignment -> unknown', hoverTypeAt(r, 'x', beforeOffset), 'unknown');
+    check('uninitialized before assignment -> null', hoverTypeAt(r, 'x', beforeOffset), 'null');
     check('uninitialized after assignment -> array<integer>', hoverTypeAt(r, 'x', afterOffset), 'array<integer>');
 }
 
 // ============================================================================
 // 2. Exhaustive: every UcodeType assigned to uninitialized variable
-//    Before assignment → unknown. After → the assigned type.
+//    Before assignment → null (uninitialized). After → the assigned type.
 // ============================================================================
 for (const ucType of CONCRETE_TYPES) {
     const info = snippetForType(ucType);
@@ -80,7 +81,7 @@ for (const ucType of CONCRETE_TYPES) {
     const r = analyze(code);
     const beforeOffset = code.indexOf('print(x)') + 6;
     const afterOffset = code.lastIndexOf('print(x)') + 6;
-    check(`${ucType}: before assignment -> unknown`, hoverTypeAt(r, 'x', beforeOffset), 'unknown');
+    check(`${ucType}: before assignment -> null`, hoverTypeAt(r, 'x', beforeOffset), 'null');
     check(`${ucType}: after assignment -> ${info.expected}`, hoverTypeAt(r, 'x', afterOffset), info.expected);
 }
 
@@ -110,7 +111,7 @@ for (const ucType of CONCRETE_TYPES) {
         if (idx >= 0) offsets.push(offset + idx + 6);
         offset += line.length + 1;
     }
-    check('multi-assign: before any assignment -> unknown', hoverTypeAt(r, 'x', offsets[0]), 'unknown');
+    check('multi-assign: before any assignment -> null', hoverTypeAt(r, 'x', offsets[0]), 'null');
     // After last assignment (integer), hover should show integer
     check('multi-assign: after last assignment -> integer', hoverTypeAt(r, 'x', offsets[2]), 'integer');
 }
@@ -142,7 +143,7 @@ print(cpus);
     const r = analyze(code);
     const beforeOffset = code.indexOf('print(cpus)') + 6;
     const afterOffset = code.lastIndexOf('print(cpus)') + 6;
-    check('real-world: cpus before map assignment -> unknown', hoverTypeAt(r, 'cpus', beforeOffset), 'unknown');
+    check('real-world: cpus before map assignment -> null', hoverTypeAt(r, 'cpus', beforeOffset), 'null');
     // After map() assignment, cpus should have a type (at minimum array)
     const afterType = hoverTypeAt(r, 'cpus', afterOffset);
     check('real-world: cpus after map assignment is array-ish', afterType.startsWith('array'), true);
@@ -161,7 +162,7 @@ print(handle);
     const r = analyze(code);
     const beforeOffset = code.indexOf('print(handle)') + 6;
     const afterOffset = code.lastIndexOf('print(handle)') + 6;
-    check('fs.open: handle before assignment -> unknown', hoverTypeAt(r, 'handle', beforeOffset), 'unknown');
+    check('fs.open: handle before assignment -> null', hoverTypeAt(r, 'handle', beforeOffset), 'null');
     // After assignment, should be fs.file or fs.file | null
     const afterType = hoverTypeAt(r, 'handle', afterOffset);
     check('fs.open: handle after assignment includes fs.file', afterType.includes('fs.file'), true);
