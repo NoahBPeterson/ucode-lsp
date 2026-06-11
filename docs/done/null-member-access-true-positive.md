@@ -56,8 +56,17 @@ Fixed by gating that early-return on `effectiveSymbolType(...) !== NULL` — onc
 reassigned to null, its dead object shape is ignored and the null check fires (most-recent
 type wins). Guards still suppress it (`x = null; if (x) x.a` is clean).
 
-## Remaining Tier-1 scope notes
+## Property writes (0.6.207)
 
-- **Property writes** (`x.foo = 1`) use a different ucode message ("attempt to set property
-  on null value") and are not separately flagged yet.
-- **Tier 2** (`T | null`) is not flagged at all.
+`x.foo = 1` / `x[0] = 1` on a null receiver was already flagged (the assignment LHS flows
+through `checkMemberExpression`), but with the read-flavored message. ucode reports a
+*different* error for writes ("Type error: attempt to set property on null value" vs the
+read's "Reference error: …is null"), and optional chaining can't appear on an assignment
+LHS. So when `isAssignmentTargetContext()` is true the message now says "Cannot set
+property 'foo' on a null value … Assign a non-null value first, or guard against null" and
+drops the `?.` suggestion. Reassignment-to-null and guards are honored for writes too.
+
+## Remaining scope notes
+
+- **Tier 2** (`T | null` "possibly null") is not flagged at all — separate, higher-FP-risk
+  follow-up.

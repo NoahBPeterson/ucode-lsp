@@ -44,6 +44,31 @@ test('the message names the null identifier', async () => {
   expect((await errs('let cfg;\ncfg.port;\n')).some((m) => /'cfg' is null/.test(m))).toBe(true);
 });
 
+// ── Property WRITES on null (ucode: "attempt to set property on null value") ─
+test('writing a property of a null var is flagged', async () => {
+  expect(await flagged('let x;\nx.foo = 1;\n')).toBe(true);
+});
+test('writing an element of a null var is flagged', async () => {
+  expect(await flagged('let x;\nx[0] = 1;\n')).toBe(true);
+});
+test('a property write uses the "set property" message (not "access"/optional-chaining)', async () => {
+  const m = await errs('let x;\nx.foo = 1;\n');
+  expect(m.some((x) => /set property 'foo' on a null value/.test(x))).toBe(true);
+  // optional chaining is not valid on an assignment LHS — must not be suggested
+  expect(m.some((x) => /optional chaining/.test(x))).toBe(false);
+});
+test('a READ still uses the "access property" + optional-chaining message', async () => {
+  const m = await errs('let x;\nlet y = x.foo;\n');
+  expect(m.some((x) => /access property 'foo' of a null value/.test(x))).toBe(true);
+  expect(m.some((x) => /optional chaining/.test(x))).toBe(true);
+});
+test('a property write after reassignment to null is flagged', async () => {
+  expect(await flagged('let x = { a: 1 };\nx = null;\nx.a = 9;\n')).toBe(true);
+});
+test('a property write guarded by `if (x)` is clean', async () => {
+  expect(await flagged('let x;\nif (x) {\n  x.foo = 1;\n}\n')).toBe(false);
+});
+
 // ── Not flagged: optional chaining (the sanctioned safe form) ────────────────
 test('optional chaining x?.foo is NOT flagged', async () => {
   expect(await flagged('let x;\nlet y = x?.foo;\n')).toBe(false);

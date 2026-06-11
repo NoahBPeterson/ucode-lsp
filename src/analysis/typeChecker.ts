@@ -2739,14 +2739,24 @@ export class TypeChecker {
     }
     if (baseIsNull) {
       if (!node.optional) {
-        const what = node.computed
-          ? 'index into'
-          : `access property '${(node.property as IdentifierNode).name}' of`;
         const who = node.object.type === 'Identifier'
           ? ` ('${(node.object as IdentifierNode).name}' is null here)`
           : '';
+        // A write target (`x.foo = 1`) is a *different* ucode error than a read
+        // ("Type error: attempt to set property on null value" vs "Reference error: …"),
+        // and optional chaining can't be used on an assignment LHS — so tailor the message.
+        const isWrite = this.isAssignmentTargetContext();
+        const prop = node.computed ? null : (node.property as IdentifierNode).name;
+        let message: string;
+        if (isWrite) {
+          const what = prop ? `set property '${prop}' on` : 'set an element of';
+          message = `Cannot ${what} a null value${who} — this is a runtime error in ucode (attempt to set property on null). Assign a non-null value first, or guard against null.`;
+        } else {
+          const what = prop ? `access property '${prop}' of` : 'index into';
+          message = `Cannot ${what} a null value${who} — this is a runtime error in ucode. Use optional chaining (?.) if the value may be null.`;
+        }
         this.errors.push({
-          message: `Cannot ${what} a null value${who} — this is a runtime error in ucode. Use optional chaining (?.) if the value may be null.`,
+          message,
           start: node.property.start,
           end: node.property.end,
           severity: 'error'
