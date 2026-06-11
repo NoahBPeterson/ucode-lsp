@@ -2396,12 +2396,17 @@ export class TypeChecker {
     const who = node.object.type === 'Identifier' ? `'${(node.object as IdentifierNode).name}'` : 'this value';
     const isWrite = this.isAssignmentTargetContext();
     const verb = isWrite ? 'setting' : 'accessing';
-    this.warnings.push({
+    const base = {
       message: `${who} may be null here — ${verb} property '${(node.property as IdentifierNode).name}' will fail at runtime if it is null. Guard against null${isWrite ? '' : ', or use optional chaining (?.)'}.`,
       start: node.property.start,
       end: node.property.end,
-      severity: 'warning'
-    });
+    };
+    // Severity policy (mirrors the other nullable/impossible-comparison checks): a possibly-
+    // null deref only crashes IF null, so it's a WARNING by default — but under `'use strict'`
+    // the author has opted into strict checking, so escalate it to an ERROR. (ucode's runtime
+    // null-deref is identical in both modes; this is an LSP strictness policy, not semantics.)
+    if (this.strictMode) this.errors.push({ ...base, severity: 'error' });
+    else this.warnings.push({ ...base, severity: 'warning' });
   }
 
   private checkMemberExpression(node: MemberExpressionNode): CheckResult {

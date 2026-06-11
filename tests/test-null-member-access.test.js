@@ -154,6 +154,24 @@ test('a scalar|null receiver is left to its own error (no Tier 2 warning)', asyn
   expect(await warnedNull('let x = (1 > 0) ? 5 : null;\nx.foo;\n')).toBe(false);
 });
 
+// ── Under `'use strict'`, Tier 2 escalates from warning to error ─────────────
+const sevOfNull = async (code) => {
+  const d = (await server.getDiagnostics(code, uri()) || []).filter((x) => /may be null/.test(x.message));
+  return d.map((x) => x.severity); // 1 = error, 2 = warning
+};
+test('non-strict: possibly-null is a WARNING (severity 2)', async () => {
+  expect(await sevOfNull('import { open } from "fs";\nlet f = open("/x");\nf.read(64);\n')).toEqual([2]);
+});
+test("'use strict': possibly-null escalates to an ERROR (severity 1)", async () => {
+  expect(await sevOfNull('\'use strict\';\nimport { open } from "fs";\nlet f = open("/x");\nf.read(64);\n')).toEqual([1]);
+});
+test("'use strict': a guarded nullable handle is still clean (no escalation when narrowed)", async () => {
+  expect(await sevOfNull('\'use strict\';\nimport { open } from "fs";\nlet f = open("/x");\nif (f) { f.read(64); }\n')).toEqual([]);
+});
+test("'use strict': cursor().foreach escalates to error", async () => {
+  expect(await sevOfNull('\'use strict\';\nimport { cursor } from "uci";\ncursor().foreach("a", "b", (s) => {});\n')).toEqual([1]);
+});
+
 // ── Does not disturb the existing primitive-access diagnostics ───────────────
 test('regression: array property access still gets its own (array) error, not the null one', async () => {
   const m = await errs('let a = [1, 2];\nlet y = a.length;\n');

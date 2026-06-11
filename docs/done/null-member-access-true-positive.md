@@ -82,6 +82,13 @@ a null receiver is a hard runtime error (Tier 1). `foreach` handling null *entri
 irrelevant — the *receiver* (the cursor) is what may be null, and that crashes before any
 iteration.
 
+**`'use strict'` escalation (0.6.209).** A possibly-null deref crashes identically in strict
+and non-strict mode (verified — `'use strict'` governs *declarations*, not nulls), so this is
+an LSP strictness *policy*, not semantics: under `'use strict'` the Tier-2 warning becomes an
+**error** (mirroring TypeScript's `strictNullChecks`, and the same severity-escalation the
+impossible-comparison / nullable-argument checks already use). Narrowing still applies, so
+guarded code stays clean in both modes. Tier 1 (provably null) is an error regardless.
+
 ## Remaining scope notes
 
 - Computed nullable index (`(array<T>|null)[i]`) isn't Tier-2-flagged yet (the computed-union
