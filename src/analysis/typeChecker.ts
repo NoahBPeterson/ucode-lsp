@@ -2832,30 +2832,30 @@ export class TypeChecker {
     }
 
     // Check for array type — arrays in ucode have no properties or methods.
-    // Also check union types containing array (e.g., array | null from sort/filter).
+    // Also handle unions containing array (`array | null` from sort/filter, `object | array`
+    // from the polymorphic nl80211/rtnl request() returns).
     if (!node.computed) {
-      let isArrayAccess = objectBase === UcodeType.ARRAY;
-      if (!isArrayAccess && node.object.type === 'Identifier') {
+      // Determine array/object membership from the richest type available (the checked rich
+      // type for any expression; the SSA/declared type for an identifier).
+      let dt: UcodeDataType = objectType;
+      if (node.object.type === 'Identifier') {
         const sym = this.symbolTable.lookup((node.object as IdentifierNode).name);
-        if (sym) {
-          const dt = sym.currentType || sym.dataType;
-          if (dt === UcodeType.ARRAY || isArrayType(dt as UcodeDataType)) {
-            isArrayAccess = true;
-          } else if (isUnionType(dt as UcodeDataType)) {
-            const members = getUnionTypes(dt as UcodeDataType);
-            // An `object | array` union supports dot-access: the object member has the
-            // property, and dot-access on the array member is null-safe in ucode (returns
-            // null, no throw — verified: `(c ? {a:5} : [1]).a` prints 5). So only treat it
-            // as an array-access error when there's an array member and NO object member.
-            isArrayAccess = members.some(m => singleTypeToBase(m) === UcodeType.ARRAY)
-              && !members.some(m => singleTypeToBase(m) === UcodeType.OBJECT);
-          }
-        }
+        if (sym) dt = (sym.currentType || sym.dataType) as UcodeDataType;
       }
-      if (isArrayAccess) {
-        const propertyName = node.property.type === 'Identifier'
-          ? (node.property as IdentifierNode).name
-          : String((node.property as LiteralNode).value);
+      let hasArray = objectBase === UcodeType.ARRAY || dt === UcodeType.ARRAY || isArrayType(dt);
+      let hasObject = false;
+      if (isUnionType(dt)) {
+        const members = getUnionTypes(dt);
+        if (members.some(m => singleTypeToBase(m) === UcodeType.ARRAY)) hasArray = true;
+        if (members.some(m => singleTypeToBase(m) === UcodeType.OBJECT)) hasObject = true;
+      }
+
+      const propertyName = node.property.type === 'Identifier'
+        ? (node.property as IdentifierNode).name
+        : String((node.property as LiteralNode).value);
+
+      if (hasArray && !hasObject) {
+        // Pure array (or array | null | scalar) — arrays have no named members. Hard error.
         this.errors.push({
           message: `Property '${propertyName}' does not exist on array type. Arrays in ucode have no properties or methods. Use builtin functions instead (e.g., length(array), filter(array, callback)).`,
           start: node.property.start,
@@ -2863,6 +2863,24 @@ export class TypeChecker {
           severity: 'error'
         });
         return UcodeType.UNKNOWN;
+      }
+
+      if (hasArray && hasObject) {
+        // `object | array` union — property access is valid on the object member but the
+        // array member has no properties (access returns null, never a real value). Since we
+        // can't prove which it is here, this is "possibly array" — WARN (and ERROR under
+        // `'use strict'`), mirroring the possibly-null Tier-2 policy. (nl80211/rtnl request()
+        // are genuinely irreducible here: object-vs-array is a runtime reply-count property,
+        // not derivable from the arguments — verified in nl80211.c.) Fall through so the
+        // object member can still resolve the type.
+        const base = {
+          message: `Property '${propertyName}' is accessed on a value that may be an array — arrays have no properties (the access returns null). Narrow the type or guard the array case.`,
+          start: node.property.start,
+          end: node.property.end,
+          code: UcodeErrorCode.POSSIBLY_ARRAY_MEMBER_ACCESS,
+        };
+        if (this.strictMode) this.errors.push({ ...base, severity: 'error' });
+        else this.warnings.push({ ...base, severity: 'warning' });
       }
     }
     

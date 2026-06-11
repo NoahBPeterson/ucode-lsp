@@ -50,6 +50,7 @@ export enum UcodeErrorCode {
   METHOD_NOT_FOUND = 'UC5004',
   NULL_MEMBER_ACCESS = 'UC5005',          // member access on a provably-null receiver (Tier 1)
   POSSIBLY_NULL_MEMBER_ACCESS = 'UC5006', // member access on a possibly-null (T | null) receiver (Tier 2)
+  POSSIBLY_ARRAY_MEMBER_ACCESS = 'UC5007', // property access on a possibly-array (object | array) receiver
 
   // Syntax and parsing errors (6000-6999)
   SYNTAX_ERROR = 'UC6001',
