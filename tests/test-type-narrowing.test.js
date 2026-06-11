@@ -154,22 +154,20 @@ test('should narrow variable type to exclude null inside null guard block (via d
     if (type(test) == 'string') {
         return null;
     }
-    if (type(test) == 'int') {
-        return [5];
-    }
     return {"a": 5};
 }
 
-let a = null_or_object(1); // Should be: null | array | object
+let a = null_or_object(1); // Should be: null | object
 
-// Test 1: Outside the guard, 'a' should cause null diagnostic
-if (5 in a) { // This should show error: possibly null
+// Probe via member access (a.a) — ucode's 'in' is null-safe, so it no longer signals null.
+// Test 1: Outside the guard, 'a' should cause a possibly-null diagnostic
+if (a.a) { // This should warn: possibly null
     print("error case");
 }
 
 if (a != null) {
-    // Test 2: Inside this block, 'a' should be narrowed to: array | object (null removed)
-    if (5 in a) { // This should NOT show null error due to type narrowing
+    // Test 2: Inside this block, 'a' is narrowed to object (null removed)
+    if (a.a) { // This should NOT warn due to type narrowing
         print("found");
     }
 }`;
@@ -192,7 +190,7 @@ if (a != null) {
     // Find the unguarded "if (5 in a)" - it's before any "if (a != null)"
     let outsideGuardLineNum = -1;
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i].includes('if (5 in a)')) {
+      if (lines[i].includes('if (a.a)')) {
         outsideGuardLineNum = i;
         break; // Take the first occurrence
       }
@@ -204,7 +202,7 @@ if (a != null) {
       if (lines[i].includes('if (a != null)')) {
         foundNullGuard = true;
       }
-      if (foundNullGuard && lines[i].includes('if (5 in a)')) {
+      if (foundNullGuard && lines[i].includes('if (a.a)')) {
         insideGuardLineNum = i;
         break;
       }

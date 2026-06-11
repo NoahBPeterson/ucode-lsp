@@ -220,7 +220,12 @@ export class TypeNarrowingEngine {
   /**
    * Check if type requires null checking before use with operators
    */
-  requiresNullCheck(type: UcodeDataType, _operation: 'in' | 'dot' | 'call'): boolean {
+  requiresNullCheck(type: UcodeDataType, operation: 'in' | 'dot' | 'call'): boolean {
+    // The `in` operator is null-safe: `'x' in null` → false (no throw), so a nullable right
+    // side never needs a guard. Only `.`/call throw on null. (Verified vs the interpreter.)
+    if (operation === 'in') {
+      return false;
+    }
     if (!this.containsNull(type)) {
       return false;
     }

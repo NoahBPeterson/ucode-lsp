@@ -1387,46 +1387,25 @@ export class TypeChecker {
       }
     }
     
-    // Check basic compatibility - right side must be object or array
-    if (!this.typeNarrowing.isSubtype(rightTypeData, UcodeType.OBJECT) && 
-        !this.typeNarrowing.isSubtype(rightTypeData, UcodeType.ARRAY)) {
-      // If it's a union type with some compatible types, provide more specific error
-      const incompatibleTypes = this.typeNarrowing.getIncompatibleTypes(rightTypeData, UcodeType.OBJECT);
-      const compatibleWithArray = this.typeNarrowing.isSubtype(rightTypeData, UcodeType.ARRAY);
-      
-      if (incompatibleTypes.length > 0 && (compatibleWithArray || this.typeNarrowing.containsType(rightTypeData, UcodeType.OBJECT))) {
-        // Some parts of the union are compatible, some aren't
-        const incompatibilityDesc = this.typeNarrowing.getIncompatibilityDescription(rightTypeData, UcodeType.OBJECT);
-        this.warnings.push({
-          message: `'in' operator: ${incompatibilityDesc}. Use a guard or assertion.`,
-          start: node.right.start,
-          end: node.right.end,
-          severity: 'warning'
-        });
-      } else {
-        // Completely incompatible
-        this.errors.push({
-          message: `'in' operator requires object or array on right side, got ${this.getTypeDescription(rightTypeData)}`,
-          start: node.right.start,
-          end: node.right.end,
-          severity: 'error'
-        });
-      }
-      return UcodeType.BOOLEAN;
-    }
-
-    // Check for null safety in union types
-    if (this.typeNarrowing.requiresNullCheck(rightTypeData, 'in')) {
+    // ucode's `in` operator NEVER throws — it returns false for any non-collection right
+    // side (verified vs the interpreter: `'x' in null` / `5` / `"s"` / `true` all → false).
+    // So a right side that CONTAINS an array or object is a valid, meaningful membership
+    // test: the array/object member is the point, and null/scalar members just yield false
+    // safely — no null guard needed (unlike `.`/call, which DO throw on null). This makes
+    // `'x' in keys(o)` / `map(p,…)` / `filter(p,…)` (typed `array | null`) clean, and also
+    // `object | null` / `object | array`. Only a right side that can NEVER be a collection
+    // (pure scalar/null) is flagged — `'x' in 5` is always false, a likely mistake.
+    const rightSupportsIn =
+      this.typeNarrowing.isSubtype(rightTypeData, UcodeType.OBJECT) ||
+      this.typeNarrowing.isSubtype(rightTypeData, UcodeType.ARRAY) ||
+      this.typeNarrowing.containsType(rightTypeData, UcodeType.OBJECT) ||
+      this.typeNarrowing.containsType(rightTypeData, UcodeType.ARRAY);
+    if (!rightSupportsIn) {
       this.errors.push({
-        message: `Object is possibly 'null'. Use a guard or the optional-in operator.`,
+        message: `'in' operator requires object or array on right side, got ${this.getTypeDescription(rightTypeData)}`,
         start: node.right.start,
         end: node.right.end,
-        severity: 'error',
-        code: 'nullable-in-operator',
-        data: {
-          variableName: this.getVariableName(node.right),
-          operatorType: 'in'
-        }
+        severity: 'error'
       });
     }
 

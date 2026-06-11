@@ -10,13 +10,13 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 |---|---|---|---|
 | [01](../done/01-lexer-double-brace-mode-flip-crash.md) | ✅ **FIXED 0.6.196** — `}}`/`{{`/`%}` in code flips lexer to template mode → **server crash** + silent diagnostic drop (triggered by ordinary nested object literals) | crash / false-pos | **critical** |
 | [02](../done/02-import-name-collides-with-builtin.md) | ✅ **FIXED 0.6.197–198** — Importing/defining a builtin-named symbol (`assert`, …21 names) → false UC3001/UC1007 + cascading member errors (breaks `utest`) | false-pos | high |
-| [03](03-socket-namespace-typed-as-object.md) | `import * as socket` typed as the socket *object* → module funcs/constants false-error; wrong completion; hover disagrees | false-pos | high |
-| [04](04-ubus-module-missing-conn-fns.md) | `ubus` module missing `call`/`publish`/`listener`/… (registered on module scope per ubus.c) | false-pos | med-high |
+| [03](../done/03-socket-namespace-typed-as-object.md) | ✅ **FIXED 0.6.200** — `import * as socket` typed as the socket *object* → module funcs/constants false-error; wrong completion; hover disagrees | false-pos | high |
+| [04](../done/04-ubus-module-missing-conn-fns.md) | ✅ **FIXED 0.6.201** — `ubus` module missing `call`/`publish`/`listener`/… (registered on module scope per ubus.c) | false-pos | med-high |
 | [05](05-cross-function-variable-type-leak.md) | A `fs.proc` local leaks its type into a same-named local in another function | false-pos | medium |
-| [06](06-comma-operator-in-conditions.md) | Comma operator rejected in `if`/`while`/`do-while` conditions → parse cascade + false UC6001 | false-pos (parse) | medium |
-| [07](07-union-object-array-member-access.md) | Dot access on `object \| array` union → false "does not exist on array type" (nl80211/rtnl `request()`) | false-pos | medium |
+| [06](../done/06-comma-operator-in-conditions.md) | ✅ **FIXED 0.6.203** — Comma operator rejected in `if`/`while`/`switch` conditions → parse cascade + false UC6001 (ucode has no do-while) | false-pos (parse) | medium |
+| [07](../done/07-union-object-array-member-access.md) | ✅ **FIXED 0.6.211** — Dot access on `object \| array` union → false "does not exist on array type" (nl80211/rtnl `request()`) | false-pos | medium |
 | [08](08-disable-comment-ux.md) | `// ucode-lsp disable` only downgrades severity, no next-line/file/rule form, self-flags when unused | UX | medium |
-| [09](09-in-operator-over-map-filter-keys.md) | `'x' in map/filter/keys(param)` → false "'in' requires object or array" (array return not propagated) | false-pos | medium |
+| [09](../done/09-in-operator-over-map-filter-keys.md) | ✅ **FIXED 0.6.213** — `'x' in map/filter/keys(param)` → false "'in' requires object or array" (ucode's `in` is null-safe over anything) | false-pos | medium |
 | [10](10-render-builtin-variadic-arity.md) | `render()` modeled as max-2-args; ucode's `render(fn, ...args)` is variadic | false-pos | low-med |
 | [11](11-default-keyword-in-brace-specifiers.md) | `import { default as X }` / `export { x as default }` rejected (valid in ucode) | false-pos (parse) | medium |
 | [12](12-uc1008-builtin-shadow-noise.md) | UC1008 warns on shadowing builtins for everyday names (`type`/`index`/`length`/…) | noise | low |
@@ -28,7 +28,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 
 | # | Finding | Kind | Severity |
 |---|---|---|---|
-| [16](16-const-reassignment-never-flagged.md) | Reassigning a `const` is never flagged — the validator is dead code (hybrid-validator import commented out) | false-neg | high |
+| [16](../done/16-const-reassignment-never-flagged.md) | ✅ **FIXED 0.6.202** — Reassigning a `const` is never flagged — the validator is dead code (hybrid-validator import commented out) | false-neg | high |
 | [17](17-use-before-declaration-contradictory.md) | Using a `let`/`const` before its declaration emits contradictory UC1001 "undefined" + UC1006 "unused" for the same var | false-pos | medium |
 | [18](18-call-non-function-misleading-message.md) | Calling a defined non-function variable reports "Undefined function: X" (X is defined, just not callable) | message | low |
 | [19](19-nested-object-member-completion.md) | Member completion past the first hop (`o.a.b.`) returns the parent's keys, not the nested object's members | completion | medium |

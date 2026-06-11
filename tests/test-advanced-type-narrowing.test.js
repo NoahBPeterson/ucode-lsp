@@ -426,8 +426,9 @@ test("should NOT narrow type in logical OR (||) expressions", async () => {
 
 let a = null_or_object(1);
 
-// OR does not provide narrowing - if left is truthy, right is not evaluated
-let result = a == null || 5 in a; // Should still show null error`;
+// OR does not provide narrowing - if left is truthy, right is not evaluated.
+// (Probe via member access - the in operator is null-safe, so it no longer signals null.)
+let result = a == null || a.a; // Should still show possibly-null on a.a`;
 
   const testPath = path.join(__dirname, "temp-or-no-narrowing.uc");
   fs.writeFileSync(testPath, content);
@@ -436,7 +437,7 @@ let result = a == null || 5 in a; // Should still show null error`;
     const diagnostics = await getDiagnostics(content, testPath);
 
     const lines = content.split("\n");
-    const orLineNum = lines.findIndex(line => line.includes("|| 5 in a"));
+    const orLineNum = lines.findIndex(line => line.includes("|| a.a"));
 
     const nullDiagnostics = diagnostics.filter(d =>
       d.message.includes("null") &&
@@ -723,8 +724,8 @@ test("should NOT narrow in left side of AND", async () => {
 
 let a = maybeNull(3);
 
-// 'a' in left side should still show null error
-let result = "val" in a && a != null;`;
+// 'a' in left side should still show null error (probe via member access)
+let result = a.val && a != null;`;
 
   const testPath = path.join(__dirname, "temp-no-narrow-left.uc");
   fs.writeFileSync(testPath, content);
@@ -733,7 +734,7 @@ let result = "val" in a && a != null;`;
     const diagnostics = await getDiagnostics(content, testPath);
 
     const lines = content.split("\n");
-    const leftSideLineNum = lines.findIndex(line => line.includes('"val" in a'));
+    const leftSideLineNum = lines.findIndex(line => line.includes('a.val &&'));
 
     const nullDiagnostics = diagnostics.filter(d =>
       d.message.includes("null") &&
@@ -759,8 +760,8 @@ test("should handle AND with different variable", async () => {
 let a = maybeNull(3);
 let b = maybeNull(7);
 
-// Guard for 'a' should not affect 'b'
-let result = a != null && "val" in b;`;
+// Guard for 'a' should not affect 'b' (probe via member access on the unguarded b)
+let result = a != null && b.val;`;
 
   const testPath = path.join(__dirname, "temp-and-wrong-var.uc");
   fs.writeFileSync(testPath, content);
@@ -1019,15 +1020,15 @@ let r2 = b != null && length(b);`;
 
 test("should NOT leak narrowing outside AND expression", async () => {
   const content = `function maybeNull(x) {
-    return x > 5 ? null : [1, 2];
+    return x > 5 ? null : {"val": 1};
 }
 
 let a = maybeNull(3);
 
-let inAnd = a != null && length(a);
+let inAnd = a != null && a.val;
 
-// Outside the AND, 'a' should still be nullable
-let afterAnd = 5 in a;`;
+// Outside the AND, 'a' should still be nullable (probe via member access)
+let afterAnd = a.val;`;
 
   const testPath = path.join(__dirname, "temp-no-leak-and.uc");
   fs.writeFileSync(testPath, content);
