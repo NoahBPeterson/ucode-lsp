@@ -192,7 +192,12 @@ let rendered = render(template, context);`;
       assert(hover.contents && hover.contents.value, 'Should have hover content');
       assert(hover.contents.value.includes('render'), 'Should mention render function');
       assert(hover.contents.value.includes('template'), 'Should describe template rendering');
-      assert(hover.contents.value.includes('{{name}}'), 'Should have template example');
+      // render's string form is a FILE PATH (include-like), not an inline template — and the
+      // doc now documents both the string and function forms. Assert it has an example and
+      // documents the function (variadic) form, rather than the old (incorrect) `{{name}}`
+      // inline-template example.
+      assert(hover.contents.value.includes('**Example:**'), 'Should have an example');
+      assert(hover.contents.value.includes('function'), 'Should document the function form');
     });
   });
 

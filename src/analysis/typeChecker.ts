@@ -395,7 +395,10 @@ export class TypeChecker {
       { name: 'warn', parameters: [], returnType: UcodeType.INTEGER, variadic: true },
       { name: 'trace', parameters: [UcodeType.INTEGER], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]), minParams: 0, maxParams: 1 },
       { name: 'proto', parameters: [UcodeType.OBJECT], returnType: createUnionType([UcodeType.OBJECT, UcodeType.NULL]), minParams: 1, maxParams: 2 },
-      { name: 'render', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), minParams: 1, maxParams: 2 },
+      // Two-faced: render(path:string, scope?:object) OR render(fn:function, ...args). The
+      // arity/type rules per form are enforced by validateRenderFunction (variadic here so the
+      // generic fallback, if ever reached, is lenient). Both forms return string|null.
+      { name: 'render', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), variadic: true, minParams: 1 },
       
       // NOTE: File System functions (error, open, readfile, etc.) are now fs.* module functions only
       
@@ -2354,6 +2357,8 @@ export class TypeChecker {
         return this.builtinValidator.validateSubstrFunction(node);
       case 'proto':
         return this.builtinValidator.validateProtoFunction(node);
+      case 'render':
+        return this.builtinValidator.validateRenderFunction(node);
       default:
         return false;
     }

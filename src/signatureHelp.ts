@@ -44,16 +44,24 @@ function findEnclosingCall(ast: any, offset: number): { call: any; activeParam: 
     return { call: best, activeParam };
 }
 
-/** Parameter names parsed from a builtin's markdown doc `**Parameters:**` block
- *  (bullets like `- \`name\` (type): desc`). Returns [] when absent. */
-function builtinParamNames(doc: string): string[] {
-    const m = /\*\*Parameters:\*\*\s*([\s\S]*?)(?:\n\s*\n|\*\*Returns|\*\*Note|\*\*Example|$)/.exec(doc);
-    if (!m) return [];
+/** Parameter names from ONE `**Parameters:**` block body (bullets like
+ *  `- \`name\` (type): desc`). */
+function paramNamesFromBlock(block: string): string[] {
     const names: string[] = [];
     const re = /^\s*[-*]\s*`([^`]+)`/gm;
     let bullet: RegExpExecArray | null;
-    while ((bullet = re.exec(m[1]!)) !== null) names.push(bullet[1]!.trim());
+    while ((bullet = re.exec(block)) !== null) names.push(bullet[1]!.trim());
     return names;
+}
+
+/** ALL `**Parameters:**` blocks in a builtin doc — one param-name set per overload
+ *  (e.g. `render`'s template form and function form). One block → single-element array. */
+function builtinParamNameSets(doc: string): string[][] {
+    const re = /\*\*Parameters:\*\*\s*([\s\S]*?)(?:\n\s*\n|\*\*Returns|\*\*Note|\*\*Example|$)/g;
+    const sets: string[][] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(doc)) !== null) sets.push(paramNamesFromBlock(m[1]!));
+    return sets;
 }
 
 /** The first line of a builtin doc, for a compact signature-help description. */
@@ -62,30 +70,70 @@ function firstDocLine(doc: string): string {
     return line.replace(/\*\*/g, '').trim();
 }
 
-function buildSignature(name: string, paramLabels: string[], activeParam: number, doc?: string): SignatureHelp {
-    const hasRest = paramLabels.length > 0 && /^\.\.\./.test(paramLabels[paramLabels.length - 1]!);
+function hasRestParam(paramLabels: string[]): boolean {
+    return paramLabels.length > 0 && /^\.\.\./.test(paramLabels[paramLabels.length - 1]!);
+}
+
+/** One SignatureInformation with [start,end) label offsets into `label` so the editor
+ *  highlights the exact param span (more robust than string-matching). */
+function makeSignatureInformation(name: string, paramLabels: string[], doc?: string): SignatureInformation {
     const label = `${name}(${paramLabels.join(', ')})`;
-    // Build ParameterInformation with [start,end) label offsets into `label` so the
-    // editor highlights the exact span (more robust than string-matching).
     const params: ParameterInformation[] = [];
     let cursor = name.length + 1; // just past '('
-    for (let i = 0; i < paramLabels.length; i++) {
-        const p = paramLabels[i]!;
+    for (const p of paramLabels) {
         params.push(ParameterInformation.create([cursor, cursor + p.length]));
         cursor += p.length + 2; // ', '
     }
-    // Clamp the active param: a rest/vararg param absorbs all trailing arguments.
-    let active = activeParam;
-    if (active >= paramLabels.length) active = hasRest ? paramLabels.length - 1 : Math.max(0, paramLabels.length - 1);
-    if (paramLabels.length === 0) active = 0;
-
     const sig: SignatureInformation = { label, parameters: params };
     if (doc) sig.documentation = { kind: MarkupKind.Markdown, value: doc };
-    return { signatures: [sig], activeSignature: 0, activeParameter: active };
+    return sig;
+}
+
+/** Clamp the active param to a signature's param list (a rest param absorbs all trailing args). */
+function clampActiveParam(paramLabels: string[], activeParam: number): number {
+    if (paramLabels.length === 0) return 0;
+    if (activeParam >= paramLabels.length) return hasRestParam(paramLabels) ? paramLabels.length - 1 : paramLabels.length - 1;
+    return activeParam;
+}
+
+function buildSignature(name: string, paramLabels: string[], activeParam: number, doc?: string): SignatureHelp {
+    const sig = makeSignatureInformation(name, paramLabels, doc);
+    return { signatures: [sig], activeSignature: 0, activeParameter: clampActiveParam(paramLabels, activeParam) };
+}
+
+/** Pick which overload is active, given the call's first-argument AST node and the active
+ *  parameter index. Heuristic (no type inference): a function-expression/arrow first arg →
+ *  the variadic (rest) form; a string-literal first arg → a non-rest form; otherwise the
+ *  form whose arity fits the current argument position (preferring a rest form once the
+ *  fixed forms are exceeded). Falls back to the first overload. */
+function selectActiveOverload(sets: string[][], arg0: any, activeParam: number): number {
+    const restIdx = sets.findIndex(hasRestParam);
+    const nonRestIdx = sets.findIndex(s => !hasRestParam(s));
+    if (arg0) {
+        const t = arg0.type;
+        if ((t === 'ArrowFunctionExpression' || t === 'FunctionExpression') && restIdx >= 0) return restIdx;
+        if (t === 'Literal' && typeof arg0.value === 'string' && nonRestIdx >= 0) return nonRestIdx;
+    }
+    if (restIdx >= 0 && nonRestIdx >= 0 && activeParam >= sets[nonRestIdx]!.length) return restIdx;
+    return 0;
+}
+
+/** Build a multi-signature SignatureHelp (overloads), choosing the active one. */
+function buildOverloadedSignature(name: string, paramSets: string[][], arg0: any, activeParam: number, doc?: string): SignatureHelp {
+    const activeSignature = selectActiveOverload(paramSets, arg0, activeParam);
+    const signatures = paramSets.map(labels => makeSignatureInformation(name, labels, doc));
+    return { signatures, activeSignature, activeParameter: clampActiveParam(paramSets[activeSignature]!, activeParam) };
 }
 
 export interface CalleeParam { name: string; label: string; isRest: boolean }
-export interface CalleeSignature { displayName: string; params: CalleeParam[]; documentation?: string }
+export interface CalleeSignature {
+    displayName: string;
+    params: CalleeParam[];
+    documentation?: string;
+    /** Multiple parameter sets, one per overload (e.g. render's template vs function form).
+     *  `params` remains the primary set (used by inlay hints); signature help shows all. */
+    overloadParams?: CalleeParam[][];
+}
 
 /**
  * Resolve a call's callee to its parameter list, for any supported callee kind:
@@ -156,10 +204,15 @@ export function resolveCalleeParameters(
 
     const doc = builtins.get(name);
     if (doc !== undefined) {
+        const toParams = (ns: string[]): CalleeParam[] =>
+            ns.map(n => ({ name: n.replace(/^\.\.\./, ''), label: n, isRest: n.startsWith('...') }));
+        const sets = builtinParamNameSets(doc);
         const res: CalleeSignature = {
             displayName: name,
-            params: builtinParamNames(doc).map(n => ({ name: n.replace(/^\.\.\./, ''), label: n, isRest: n.startsWith('...') })),
+            params: toParams(sets[0] ?? []),
         };
+        // Multiple `**Parameters:**` blocks → overloads (e.g. render's two forms).
+        if (sets.length > 1) res.overloadParams = sets.map(toParams);
         const fl = firstDocLine(doc);
         if (fl) res.documentation = fl;
         return res;
@@ -207,5 +260,10 @@ export function provideSignatureHelp(
     if (!enclosing) return null;
     const sig = resolveCalleeParameters(enclosing.call.callee, symbolTable, builtins, resolveMemberParams);
     if (!sig) return null;
+    if (sig.overloadParams && sig.overloadParams.length > 1) {
+        const arg0 = enclosing.call.arguments?.[0];
+        const sets = sig.overloadParams.map(ps => ps.map(p => p.label));
+        return buildOverloadedSignature(sig.displayName, sets, arg0, enclosing.activeParam, sig.documentation);
+    }
     return buildSignature(sig.displayName, sig.params.map(p => p.label), enclosing.activeParam, sig.documentation);
 }

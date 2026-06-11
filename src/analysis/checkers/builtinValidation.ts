@@ -1155,6 +1155,47 @@ export class BuiltinValidator {
     return true;
   }
 
+  /** `render()` is two-faced, decided by the first argument's type (verified vs the
+   *  interpreter + ucode/lib.c uc_render):
+   *    - render(path: string, scope?: object)  — include-like; max 2 args.
+   *    - render(fn: function, ...args)          — calls fn, forwards ALL trailing args (variadic).
+   *  Both return string|null (the function form returns fn's captured print output). A
+   *  provably non-string, non-function first arg is a runtime error ("Passed filename is not a
+   *  string"), so it's flagged; an unknown/union first arg is enforced to string|function
+   *  (consistent with the policy that type-expecting builtins don't silently accept unknown). */
+  validateRenderFunction(node: CallExpressionNode): boolean {
+    if (!this.checkArgumentCount(node, 'render', 1)) return true;
+    const arg0 = node.arguments[0];
+    const arg0type = this.getNodeType(arg0);
+
+    if (arg0type === UcodeType.FUNCTION) {
+      // Function form — variadic; trailing args are forwarded to fn (any type, no cap).
+      return true;
+    }
+
+    if (arg0type === UcodeType.STRING) {
+      // Template/include form — render(path, scope?). 2nd arg is the scope object.
+      if (node.arguments.length >= 2) {
+        this.validateArgumentType(node.arguments[1], 'render', 2, [UcodeType.OBJECT, UcodeType.NULL]);
+      }
+      if (node.arguments.length > 2) {
+        this.errors.push({
+          message: `Function 'render' (template form) expects at most 2 arguments, got ${node.arguments.length}`,
+          start: node.start,
+          end: node.end,
+          severity: 'error'
+        });
+      }
+      return true;
+    }
+
+    // Ambiguous / provably-wrong first arg → must be a string (template path) or function.
+    // Flags concrete wrong types (render(5)/render({})) and unknown ("narrow to ..."). The
+    // form is undetermined, so no arity cap / trailing-arg checks here.
+    this.validateArgumentType(arg0, 'render', 1, [UcodeType.STRING, UcodeType.FUNCTION]);
+    return true;
+  }
+
   validateClockFunction(node: CallExpressionNode): boolean {
     if (node.arguments[0])
       this.isKnownTruish(node.arguments[0]);

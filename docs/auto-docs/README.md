@@ -17,7 +17,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [07](../done/07-union-object-array-member-access.md) | ✅ **FIXED 0.6.211** — Dot access on `object \| array` union → false "does not exist on array type" (nl80211/rtnl `request()`) | false-pos | medium |
 | [08](08-disable-comment-ux.md) | `// ucode-lsp disable` only downgrades severity, no next-line/file/rule form, self-flags when unused | UX | medium |
 | [09](../done/09-in-operator-over-map-filter-keys.md) | ✅ **FIXED 0.6.213** — `'x' in map/filter/keys(param)` → false "'in' requires object or array" (ucode's `in` is null-safe over anything) | false-pos | medium |
-| [10](10-render-builtin-variadic-arity.md) | `render()` modeled as max-2-args; ucode's `render(fn, ...args)` is variadic | false-pos | low-med |
+| [10](../done/10-render-builtin-variadic-arity.md) | ✅ **FIXED 0.6.214** — `render()` modeled as max-2-args; ucode's `render(fn, ...args)` is variadic | false-pos | low-med |
 | [11](11-default-keyword-in-brace-specifiers.md) | `import { default as X }` / `export { x as default }` rejected (valid in ucode) | false-pos (parse) | medium |
 | [12](12-uc1008-builtin-shadow-noise.md) | UC1008 warns on shadowing builtins for everyday names (`type`/`index`/`length`/…) | noise | low |
 | [13](13-nullable-argument-message-clarity.md) | nullable-argument message says "expects string or object" when the cause is nullability | message clarity | low |
