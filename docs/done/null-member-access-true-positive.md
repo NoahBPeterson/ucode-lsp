@@ -89,6 +89,20 @@ an LSP strictness *policy*, not semantics: under `'use strict'` the Tier-2 warni
 impossible-comparison / nullable-argument checks already use). Narrowing still applies, so
 guarded code stays clean in both modes. Tier 1 (provably null) is an error regardless.
 
+## Quick fixes (0.6.210)
+
+Both diagnostics carry a code (`UC5005` provably-null, `UC5006` possibly-null) and fix-data,
+and `server.ts` offers:
+1. **Optional chaining** — `.`→`?.` (or `[`→`?.[`). Not offered on an assignment LHS (`?.`
+   is invalid there).
+2. **Null guard** — wrap the statement in `if (receiver) …`. Identifier receivers only (a
+   direct call like `cursor()` would be evaluated twice, so guard is suppressed there —
+   optional chaining is offered instead). Restricted to `ExpressionStatement` (wrapping a
+   declaration would change scoping).
+
+Tests: `tests/test-null-access-quickfix.test.js` (10) — edit text verified, write/direct-chain
+exclusions, and applying a fix clears the diagnostic.
+
 ## Remaining scope notes
 
 - Computed nullable index (`(array<T>|null)[i]`) isn't Tier-2-flagged yet (the computed-union

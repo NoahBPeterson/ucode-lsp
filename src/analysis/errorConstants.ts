@@ -48,6 +48,8 @@ export enum UcodeErrorCode {
   INVALID_METHOD_CALL = 'UC5002',
   PROPERTY_NOT_FOUND = 'UC5003',
   METHOD_NOT_FOUND = 'UC5004',
+  NULL_MEMBER_ACCESS = 'UC5005',          // member access on a provably-null receiver (Tier 1)
+  POSSIBLY_NULL_MEMBER_ACCESS = 'UC5006', // member access on a possibly-null (T | null) receiver (Tier 2)
 
   // Syntax and parsing errors (6000-6999)
   SYNTAX_ERROR = 'UC6001',

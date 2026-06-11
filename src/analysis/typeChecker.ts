@@ -2380,6 +2380,22 @@ export class TypeChecker {
     }
   }
 
+  /** Fix-data for the null-access quick fixes (optional chaining / null guard). Carries the
+   *  source offsets the code-action handler needs (object span, property start, computed flag,
+   *  write flag, and whether the receiver is a bare identifier — for the guard). */
+  private nullAccessFixData(node: MemberExpressionNode): any {
+    return {
+      nullAccess: {
+        objStart: node.object.start,
+        objEnd: node.object.end,
+        propStart: node.property.start,
+        computed: !!node.computed,
+        isWrite: this.isAssignmentTargetContext(),
+        isIdentifier: node.object.type === 'Identifier',
+      },
+    };
+  }
+
   /** Tier 2: WARN (not error) on a non-optional `.prop` access whose receiver is a
    *  possibly-null union (`T | null`) where every non-null member is an object/handle — it
    *  crashes at runtime iff null on this path (verified: `cursor()`/`fs.open()` are nullable
@@ -2400,6 +2416,8 @@ export class TypeChecker {
       message: `${who} may be null here — ${verb} property '${(node.property as IdentifierNode).name}' will fail at runtime if it is null. Guard against null${isWrite ? '' : ', or use optional chaining (?.)'}.`,
       start: node.property.start,
       end: node.property.end,
+      code: UcodeErrorCode.POSSIBLY_NULL_MEMBER_ACCESS,
+      data: this.nullAccessFixData(node),
     };
     // Severity policy (mirrors the other nullable/impossible-comparison checks): a possibly-
     // null deref only crashes IF null, so it's a WARNING by default — but under `'use strict'`
@@ -2798,7 +2816,9 @@ export class TypeChecker {
           message,
           start: node.property.start,
           end: node.property.end,
-          severity: 'error'
+          severity: 'error',
+          code: UcodeErrorCode.NULL_MEMBER_ACCESS,
+          data: this.nullAccessFixData(node),
         });
       }
       return UcodeType.NULL; // null.foo errors; null?.foo short-circuits — both yield null

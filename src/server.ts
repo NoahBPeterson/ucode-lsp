@@ -719,6 +719,85 @@ connection.onCompletionResolve((item) => {
     return handleCompletionResolve(item);
 });
 
+/** The innermost ExpressionStatement node containing `offset` (for the null-guard fix —
+ *  wrapping a declaration would change scoping, so only statements qualify). */
+function findEnclosingExpressionStatement(ast: any, offset: number): any {
+    let found: any = null;
+    const walk = (node: any) => {
+        if (!node || typeof node !== 'object') return;
+        if (typeof node.start === 'number' && typeof node.end === 'number'
+            && offset >= node.start && offset <= node.end && node.type === 'ExpressionStatement') {
+            found = node; // keep descending so the innermost wins
+        }
+        for (const k of Object.keys(node)) {
+            const v = (node as any)[k];
+            if (Array.isArray(v)) { for (const e of v) walk(e); }
+            else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+        }
+    };
+    walk(ast);
+    return found;
+}
+
+/** Quick fixes for UC5005 (null) / UC5006 (possibly-null) member access:
+ *   1. Optional chaining — replace `.` with `?.` (or `[` with `?.[`). Not offered for an
+ *      assignment LHS (`?.` is invalid there).
+ *   2. Null guard — wrap the statement in `if (receiver) …`. Only for a bare-identifier
+ *      receiver (a direct call like `cursor()` would be evaluated twice) inside a statement. */
+function generateNullAccessQuickFixes(diagnostic: any, document: any, uri: string, ast: any): CodeAction[] {
+    const data = diagnostic.data?.nullAccess;
+    if (!data) return [];
+    const { objStart, objEnd, propStart, computed, isWrite, isIdentifier } = data;
+    const fullText: string = document.getText();
+    const actions: CodeAction[] = [];
+
+    // 1. Optional chaining (invalid on an assignment LHS).
+    if (!isWrite) {
+        let editRange: any = null;
+        let title = '';
+        if (!computed) {
+            const dot = fullText.indexOf('.', objEnd);
+            if (dot >= 0 && dot < propStart) {
+                editRange = { start: document.positionAt(dot), end: document.positionAt(dot + 1) };
+                title = "Use optional chaining ('?.')";
+            }
+        } else {
+            const br = fullText.indexOf('[', objEnd);
+            if (br >= 0 && br < propStart) {
+                editRange = { start: document.positionAt(br), end: document.positionAt(br) };
+                title = "Use optional chaining ('?.[')";
+            }
+        }
+        if (editRange) {
+            actions.push({
+                title,
+                kind: CodeActionKind.QuickFix,
+                diagnostics: [diagnostic],
+                isPreferred: true,
+                edit: { changes: { [uri]: [TextEdit.replace(editRange, '?.')] } },
+            });
+        }
+    }
+
+    // 2. Null guard — `if (receiver) <statement>` (identifier receiver only; no double-eval).
+    if (isIdentifier && ast) {
+        const stmt = findEnclosingExpressionStatement(ast, document.offsetAt(diagnostic.range.start));
+        if (stmt) {
+            const objText = fullText.slice(objStart, objEnd);
+            const stmtText = fullText.slice(stmt.start, stmt.end);
+            const range = { start: document.positionAt(stmt.start), end: document.positionAt(stmt.end) };
+            actions.push({
+                title: `Guard with 'if (${objText})'`,
+                kind: CodeActionKind.QuickFix,
+                diagnostics: [diagnostic],
+                edit: { changes: { [uri]: [TextEdit.replace(range, `if (${objText}) ${stmtText}`)] } },
+            });
+        }
+    }
+
+    return actions;
+}
+
 connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
     const document = documents.get(params.textDocument.uri);
     if (!document) {
@@ -768,6 +847,12 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // UC3006: a known module used without importing it → offer to add the import.
             if (diagnostic.code === 'UC3006' && ast) {
                 codeActions.push(...generateAddImportQuickFix(diagnostic, document, ast, params.textDocument.uri));
+            }
+
+            // UC5005/UC5006: member access on a null / possibly-null receiver →
+            // offer optional chaining (`.`→`?.`) and a null guard (`if (x) …`).
+            if (diagnostic.code === 'UC5005' || diagnostic.code === 'UC5006') {
+                codeActions.push(...generateNullAccessQuickFixes(diagnostic, document, params.textDocument.uri, ast));
             }
 
             // Quick-fix for the UC2009 type()-string mismatch: replace the wrong
