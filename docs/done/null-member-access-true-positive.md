@@ -66,7 +66,23 @@ LHS. So when `isAssignmentTargetContext()` is true the message now says "Cannot 
 property 'foo' on a null value … Assign a non-null value first, or guard against null" and
 drops the `?.` suggestion. Reassignment-to-null and guards are honored for writes too.
 
+## Tier 2 — possibly-null `T | null` (0.6.208)
+
+Now flagged as a **warning** (not an error — it only crashes *if* null on that path).
+Scoped to non-optional `.prop` access where every non-null union member is an object/handle
+(so the access would otherwise be valid; scalar/array non-null members keep their own
+"no members" errors — no double-flagging). Covers both direct chains (`cursor().foreach(...)`,
+`fs.open(x).read()`) and stored handles (`let f = open(x); f.read()`), the latter via an
+up-front check because handle method-resolution returns early. Flow narrowing silences it:
+truthy guards, `if (x != null)`, early returns, and optional chaining all remove null.
+
+Not noise — verified the producers are genuinely nullable: `uci.c` documents `cursor()` as
+`@returns {?module:uci.cursor}` and `fs.open()` is likewise nullable, and a member access on
+a null receiver is a hard runtime error (Tier 1). `foreach` handling null *entries* is
+irrelevant — the *receiver* (the cursor) is what may be null, and that crashes before any
+iteration.
+
 ## Remaining scope notes
 
-- **Tier 2** (`T | null` "possibly null") is not flagged at all — separate, higher-FP-risk
-  follow-up.
+- Computed nullable index (`(array<T>|null)[i]`) isn't Tier-2-flagged yet (the computed-union
+  path returns the element type early); deferred.

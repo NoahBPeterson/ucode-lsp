@@ -75,9 +75,13 @@ function parseBSSConfigurations() {
         assert.strictEqual(warningOnCiphers, true, 'Should warn on ciphers line (outside guard)');
         assert.strictEqual(warningOnBands, true, 'Should warn on bands line (outside guard)');
 
-        // Total count check
-        assert.strictEqual(mapWarnings.length, 2,
-            `Expected 2 warnings (ciphers and bands) but got ${mapWarnings.length}. Warnings: ${JSON.stringify(mapWarnings.map(d => ({ line: d.range.start.line, message: d.message })), null, 2)}`);
+        // Total count check — scoped to the three map() lines this test is about. (The
+        // `cursor()` receiver on line 34 now also produces a legitimate "may be null"
+        // Tier-2 warning — cursor() returns `uci.cursor | null` — which is orthogonal here.)
+        const mapLineWarnings = mapWarnings.filter(d =>
+            [authLine, ciphersLine, bandsLine].includes(d.range.start.line));
+        assert.strictEqual(mapLineWarnings.length, 2,
+            `Expected 2 warnings (ciphers and bands) but got ${mapLineWarnings.length}. Warnings: ${JSON.stringify(mapLineWarnings.map(d => ({ line: d.range.start.line, message: d.message })), null, 2)}`);
     });
 
     it('should narrow in regular functions (baseline - this should pass)', async function() {

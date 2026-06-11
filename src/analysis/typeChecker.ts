@@ -2380,6 +2380,30 @@ export class TypeChecker {
     }
   }
 
+  /** Tier 2: WARN (not error) on a non-optional `.prop` access whose receiver is a
+   *  possibly-null union (`T | null`) where every non-null member is an object/handle — it
+   *  crashes at runtime iff null on this path (verified: `cursor()`/`fs.open()` are nullable
+   *  per the C source, and a member access on null is a hard error). Guards / optional
+   *  chaining remove null from `effType`, so guarded code is silent. Scalar/array non-null
+   *  members are left to their own "no members" errors (no redundant double-flagging). */
+  private warnPossiblyNullMember(node: MemberExpressionNode, effType: UcodeDataType): void {
+    if (node.optional || node.computed || node.property.type !== 'Identifier') return;
+    if (!isUnionType(effType)) return;
+    const members = getUnionTypes(effType);
+    if (!members.some(m => singleTypeToBase(m) === UcodeType.NULL)) return;
+    const nonNull = members.filter(m => singleTypeToBase(m) !== UcodeType.NULL);
+    if (nonNull.length === 0 || !nonNull.every(m => singleTypeToBase(m) === UcodeType.OBJECT)) return;
+    const who = node.object.type === 'Identifier' ? `'${(node.object as IdentifierNode).name}'` : 'this value';
+    const isWrite = this.isAssignmentTargetContext();
+    const verb = isWrite ? 'setting' : 'accessing';
+    this.warnings.push({
+      message: `${who} may be null here — ${verb} property '${(node.property as IdentifierNode).name}' will fail at runtime if it is null. Guard against null${isWrite ? '' : ', or use optional chaining (?.)'}.`,
+      start: node.property.start,
+      end: node.property.end,
+      severity: 'warning'
+    });
+  }
+
   private checkMemberExpression(node: MemberExpressionNode): CheckResult {
     // Member-path type narrowing: a `type(o.x) == "str"` guard in scope narrows the
     // member path `o.x` itself. getNarrowedTypeAtPosition resolves a dotted path with
@@ -2444,6 +2468,16 @@ export class TypeChecker {
       // Don't duplicate the error here by calling checkNode(node.object)
       if (!symbol) {
         return UcodeType.UNKNOWN;
+      }
+
+      // Tier 2 possibly-null warning for an IDENTIFIER receiver, emitted up front because the
+      // object-handle method-resolution branch below returns early for handles (`fs.file|null`,
+      // `uci.cursor|null`, …) — so a stored handle used unguarded (`let c = cursor(); c.foreach()`)
+      // would otherwise never reach the late Tier-2 site. Uses the flow-narrowed type so guards
+      // silence it. Does not return — the existing resolution still computes the member type.
+      {
+        const ntp = this.getNarrowedTypeAtPosition((node.object as IdentifierNode).name, node.object.start);
+        this.warnPossiblyNullMember(node, ntp ?? effectiveSymbolType(symbol, node.object.start));
       }
 
       if (!node.computed &&
@@ -2763,6 +2797,13 @@ export class TypeChecker {
         });
       }
       return UcodeType.NULL; // null.foo errors; null?.foo short-circuits — both yield null
+    }
+
+    // Tier 2 for a NON-identifier receiver (a direct chain like `cursor().foreach(...)` /
+    // `fs.open(x).read()`). Identifier receivers are handled up front (see above) because
+    // their handle resolution returns early. `objectType` is the checked type of the chain.
+    if (node.object.type !== 'Identifier') {
+      this.warnPossiblyNullMember(node, objectType);
     }
 
     // Check for array type — arrays in ucode have no properties or methods.

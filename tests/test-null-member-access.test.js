@@ -116,6 +116,44 @@ test('a nullable union receiver (Tier 2) is NOT flagged by Tier 1', async () => 
   expect((await errs('let arr = sort(keys({a:1}));\nlet n = arr[0];\n')).some((m) => /null value/.test(m))).toBe(false);
 });
 
+// ── Tier 2: possibly-null (T | null) member access → WARNING ─────────────────
+const warns = async (code) => (await server.getDiagnostics(code, uri()) || []).filter((x) => x.severity === 2).map((x) => x.message);
+const warnedNull = async (code) => (await warns(code)).some((m) => /may be null/.test(m));
+
+test('object|null (from a ternary) accessed unguarded warns', async () => {
+  expect(await warnedNull('let o = { a: 1 };\nlet x = (1 > 0) ? o : null;\nx.a;\n')).toBe(true);
+});
+test('the possibly-null diagnostic is a WARNING, not an error', async () => {
+  const code = 'let o = { a: 1 };\nlet x = (1 > 0) ? o : null;\nx.a;\n';
+  const d = await server.getDiagnostics(code, uri());
+  expect(d.some((x) => x.severity === 2 && /may be null/.test(x.message))).toBe(true);
+  expect(d.some((x) => x.severity === 1 && /may be null/.test(x.message))).toBe(false);
+});
+test('a nullable uci cursor() handle (direct chain) warns', async () => {
+  expect(await warnedNull('import { cursor } from "uci";\ncursor().foreach("a", "b", (s) => {});\n')).toBe(true);
+});
+test('a STORED nullable cursor handle used unguarded warns', async () => {
+  expect(await warnedNull('import { cursor } from "uci";\nlet c = cursor();\nc.foreach("a", "b", (s) => {});\n')).toBe(true);
+});
+test('a nullable fs.open() handle used unguarded warns', async () => {
+  expect(await warnedNull('import { open } from "fs";\nlet f = open("/x");\nf.read(64);\n')).toBe(true);
+});
+test('a guarded nullable handle does NOT warn', async () => {
+  expect(await warnedNull('import { open } from "fs";\nlet f = open("/x");\nif (f) { f.read(64); }\n')).toBe(false);
+});
+test('an early-return-guarded nullable handle does NOT warn', async () => {
+  expect(await warnedNull('import { open } from "fs";\nlet f = open("/x");\nif (!f) return;\nf.read(64);\n')).toBe(false);
+});
+test('optional chaining on a nullable handle does NOT warn', async () => {
+  expect(await warnedNull('import { open } from "fs";\nlet f = open("/x");\nf?.read(64);\n')).toBe(false);
+});
+test('a plain (non-nullable) object does NOT warn', async () => {
+  expect(await warnedNull('let o = { a: 1 };\no.a;\n')).toBe(false);
+});
+test('a scalar|null receiver is left to its own error (no Tier 2 warning)', async () => {
+  expect(await warnedNull('let x = (1 > 0) ? 5 : null;\nx.foo;\n')).toBe(false);
+});
+
 // ── Does not disturb the existing primitive-access diagnostics ───────────────
 test('regression: array property access still gets its own (array) error, not the null one', async () => {
   const m = await errs('let a = [1, 2];\nlet y = a.length;\n');
