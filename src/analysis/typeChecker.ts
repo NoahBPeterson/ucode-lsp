@@ -2714,6 +2714,41 @@ export class TypeChecker {
       if (nt && !isUnionType(nt)) narrowedBase = this.dataTypeToUcodeType(nt);
     }
 
+    // A provably-null receiver: `let x; x.foo` / `x[0]` / `x.foo()` is a hard ucode runtime
+    // error ("Reference error: left-hand side expression is null"). Optional chaining
+    // (`?.` / `?.[`) short-circuits to null and is the sanctioned form, so it's exempt.
+    // Tier 1 only — fires when the base is EXACTLY null. A `T | null` union collapses to
+    // UNKNOWN here, so unions ("possibly null") are deliberately NOT flagged.
+    //
+    // Honor flow narrowing for an identifier receiver: a truthy guard `if (x) x.foo` makes
+    // the body unreachable for a provably-null x (so it never errors at runtime), and a
+    // reassignment `x = {}` changes the type — in both cases the narrowed type at this
+    // position is no longer null, so don't flag. Only flag when x is STILL null here.
+    let baseIsNull = (objectBase === UcodeType.NULL || narrowedBase === UcodeType.NULL);
+    if (node.object.type === 'Identifier') {
+      const nt = this.getNarrowedTypeAtPosition((node.object as IdentifierNode).name, node.object.start);
+      if (nt !== null && nt !== undefined) {
+        baseIsNull = (this.dataTypeToUcodeType(nt) === UcodeType.NULL);
+      }
+    }
+    if (baseIsNull) {
+      if (!node.optional) {
+        const what = node.computed
+          ? 'index into'
+          : `access property '${(node.property as IdentifierNode).name}' of`;
+        const who = node.object.type === 'Identifier'
+          ? ` ('${(node.object as IdentifierNode).name}' is null here)`
+          : '';
+        this.errors.push({
+          message: `Cannot ${what} a null value${who} — this is a runtime error in ucode. Use optional chaining (?.) if the value may be null.`,
+          start: node.property.start,
+          end: node.property.end,
+          severity: 'error'
+        });
+      }
+      return UcodeType.NULL; // null.foo errors; null?.foo short-circuits — both yield null
+    }
+
     // Check for array type — arrays in ucode have no properties or methods.
     // Also check union types containing array (e.g., array | null from sort/filter).
     if (!node.computed) {
