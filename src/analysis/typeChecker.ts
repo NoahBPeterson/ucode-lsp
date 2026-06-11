@@ -2843,7 +2843,12 @@ export class TypeChecker {
             isArrayAccess = true;
           } else if (isUnionType(dt as UcodeDataType)) {
             const members = getUnionTypes(dt as UcodeDataType);
-            isArrayAccess = members.some(m => singleTypeToBase(m) === UcodeType.ARRAY);
+            // An `object | array` union supports dot-access: the object member has the
+            // property, and dot-access on the array member is null-safe in ucode (returns
+            // null, no throw — verified: `(c ? {a:5} : [1]).a` prints 5). So only treat it
+            // as an array-access error when there's an array member and NO object member.
+            isArrayAccess = members.some(m => singleTypeToBase(m) === UcodeType.ARRAY)
+              && !members.some(m => singleTypeToBase(m) === UcodeType.OBJECT);
           }
         }
       }
