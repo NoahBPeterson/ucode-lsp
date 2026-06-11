@@ -63,6 +63,22 @@ test('reassignment to an object before access suppresses it', async () => {
   expect(await flagged('let x;\nx = { foo: 1 };\nlet y = x.foo;\n')).toBe(false);
 });
 
+// ── Reassignment TO null is caught (most-recent SSA type wins) ───────────────
+test('reassigning an object to null then accessing it IS flagged (stale shape ignored)', async () => {
+  // `let x = {a:1}; x = null; x.a` — x is null here despite the dead {a:1} property shape
+  expect(await flagged('let x = { a: 1 };\nx = null;\nlet y = x.a;\n')).toBe(true);
+});
+test('reassigning any value to null then accessing it is flagged', async () => {
+  expect(await flagged('let x = 5;\nx = null;\nlet y = x.foo;\n')).toBe(true);
+});
+test('reassigned-to-null then guarded by `if (x)` is suppressed', async () => {
+  expect(await flagged('let x = { a: 1 };\nx = null;\nif (x) {\n  let y = x.a;\n}\n')).toBe(false);
+});
+test('a stale object shape is NOT used after reassignment to null (no false property type)', async () => {
+  // Before the SSA fix, `x.a` returned the dead {a:1} integer shape and skipped the check.
+  expect(await flagged('let x = { a: 1 };\nx = null;\nx.a;\n')).toBe(true);
+});
+
 // ── Not flagged: non-null / unknown / union receivers ────────────────────────
 test('an object variable is not flagged', async () => {
   expect(await flagged('let o = { a: 1 };\nlet y = o.a;\n')).toBe(false);

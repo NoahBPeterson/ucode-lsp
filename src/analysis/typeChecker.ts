@@ -2460,8 +2460,14 @@ export class TypeChecker {
         }
 
         if (propertyName && symbol.propertyTypes && symbol.propertyTypes.has(propertyName)) {
-          // Return the rich property type directly.
-          return symbol.propertyTypes.get(propertyName)!;
+          // Don't trust stale propertyTypes once the variable has been reassigned to null
+          // (its object-ness is gone). Most-recent type wins: `let x = {a:1}; x = null; x.a`
+          // must see x as null here — not the dead {a:1} shape — so it falls through to the
+          // null-receiver check below instead of returning the defunct property type.
+          if (this.dataTypeToUcodeType(effectiveSymbolType(symbol, node.object.start)) !== UcodeType.NULL) {
+            // Return the rich property type directly.
+            return symbol.propertyTypes.get(propertyName)!;
+          }
         }
       }
 
