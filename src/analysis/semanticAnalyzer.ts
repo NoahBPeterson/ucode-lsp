@@ -705,6 +705,10 @@ export class SemanticAnalyzer extends BaseVisitor {
             fnSym.dataType = UcodeType.FUNCTION as UcodeDataType;
             const rt = (node.init as any)._inferredReturnType;
             if (rt !== undefined && rt !== null) fnSym.returnType = rt;
+            // Stamp the param signature so call sites argument-check `f(...)` like a
+            // named function (JSDoc `@param {T}` types flow through the param symbols).
+            const params = (node.init as any)._inferredParams as ParamInfo[] | undefined;
+            if (params) fnSym.parameters = params;
           }
         }
 
@@ -1609,6 +1613,24 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
+  /**
+   * Build the parameter signature for an arrow / function-expression while its
+   * params are still declared in the function scope (read each declared type so
+   * JSDoc `@param {T}` annotations are reflected). Mirrors the named-function
+   * `paramInfos` build; the binding site stamps it onto the variable symbol so
+   * `let f = (x) => …` / `let f = function(x){…}` calls get argument-checked.
+   */
+  private buildFunctionExprParamInfos(node: { params: { name: string }[]; restParam?: { name: string } | null }): ParamInfo[] {
+    const paramInfos: ParamInfo[] = node.params.map(p => {
+      const psym = this.symbolTable.lookup(p.name);
+      return { name: p.name, type: psym ? psym.dataType : (UcodeType.UNKNOWN as UcodeDataType), isRest: false };
+    });
+    if (node.restParam) {
+      paramInfos.push({ name: node.restParam.name, type: UcodeType.ARRAY as UcodeDataType, isRest: true });
+    }
+    return paramInfos;
+  }
+
   visitObjectExpression(node: ObjectExpressionNode): void {
     // Extract property types for `this` context inside method bodies
     const propTypes = this.inferObjectLiteralPropertyTypes(node);
@@ -1681,6 +1703,9 @@ export class SemanticAnalyzer extends BaseVisitor {
       // (variable declarator / assignment) reads `_inferredReturnType` off the node.
       const fnReturnTypes = (this.functionReturnTypes.get(node as any) || []).map(e => e.type);
       (node as any)._inferredReturnType = this.typeChecker.getCommonReturnType(fnReturnTypes);
+
+      // Stash the param signature (read while still in scope) for the binding site.
+      (node as any)._inferredParams = this.buildFunctionExprParamInfos(node);
 
       // Exit function scope
       this.symbolTable.exitScope(node.end);
@@ -1762,6 +1787,9 @@ export class SemanticAnalyzer extends BaseVisitor {
         arrowReturnType = this.typeChecker.checkNodeQuietly(node.body) ?? (UcodeType.UNKNOWN as UcodeDataType);
       }
       (node as any)._inferredReturnType = arrowReturnType;
+
+      // Stash the param signature (read while still in scope) for the binding site.
+      (node as any)._inferredParams = this.buildFunctionExprParamInfos(node);
 
       // Exit function scope
       this.symbolTable.exitScope(node.end);
