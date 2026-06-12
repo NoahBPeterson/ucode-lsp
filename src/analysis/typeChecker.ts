@@ -3783,6 +3783,33 @@ export class TypeChecker {
       }
     }
 
+    // `while (test) body` — the test is truthy on entry to every iteration, so the
+    // body gets the same positive guards as an if-consequent (e.g. `while (x)` or
+    // `while ((line = fh.read('line')))` narrows the subject to non-null in the body).
+    if (node.type === 'WhileStatement') {
+      const whileNode = node as WhileStatementNode;
+      if (whileNode.body &&
+          position >= whileNode.body.start &&
+          position <= whileNode.body.end) {
+        this.collectPositiveTestGuards(whileNode.test, variableName, guards);
+        this.collectGuards(whileNode.body, variableName, position, guards);
+        return;
+      }
+    }
+
+    // `for (init; test; update) body` — same as `while`: the test is truthy in the
+    // body. (A `for` with no test imposes no guard.)
+    if (node.type === 'ForStatement') {
+      const forNode = node as ForStatementNode;
+      if (forNode.test && forNode.body &&
+          position >= forNode.body.start &&
+          position <= forNode.body.end) {
+        this.collectPositiveTestGuards(forNode.test, variableName, guards);
+        this.collectGuards(forNode.body, variableName, position, guards);
+        return;
+      }
+    }
+
     // Ternary `test ? consequent : alternate` — mirrors the if-statement narrowing.
     // The consequent runs only when `test` is truthy, so it gets the same positive
     // guards (e.g. `parts[5] ? uc(parts[5]) : null` narrows parts[5] to non-null).

@@ -168,8 +168,8 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [133](133-string-literal-nan-not-flagged.md) | Non-numeric string *literal* arithmetic → NaN not flagged | false-neg | low |
 | [134](134-bitwise-numeric-string-warning.md) | Bitwise op on a numeric-string operand warns | false-pos | low |
 | [135](135-regex-literal-left-equality-not-flagged.md) | `/re/ == 1` (regex on left) always-false not flagged | false-neg | low |
-| [136](136-while-loop-no-narrowing.md) | `while (cond)` body gets no narrowing | false-pos | medium |
-| [137](137-for-loop-no-narrowing.md) | `for (;cond;)` body gets no narrowing | false-pos | low-med |
+| [136](../done/136-while-loop-no-narrowing.md) | ✅ **FIXED 0.6.219** — `while (cond)` body now narrows the subject (collectGuards WhileStatement case); the canonical `while ((line = fh.read('line')))` idiom is clean | false-pos | medium |
+| [137](../done/137-for-loop-no-narrowing.md) | ✅ **FIXED 0.6.219** — `for (;cond;)` body now narrows the subject (collectGuards ForStatement case) | false-pos | low-med |
 | [138](138-index-element-narrowing-fails.md) | `if (a[0])` doesn't narrow the element | false-pos | low |
 | [139](139-member-hover-unnarrowed-in-guard.md) | Member hover shows un-narrowed type inside a guard | hover | low |
 | [140](140-reassign-null-in-guard-widens.md) | Reassign to `null` in a narrowed block widens to `unknown` | over-narrow | low |
