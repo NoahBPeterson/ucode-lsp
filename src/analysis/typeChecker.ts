@@ -2072,7 +2072,13 @@ export class TypeChecker {
           argumentIndex: i,
           expectedType: expectedType as string,
           actualType: actualTypeData,
-          variableName: this.getVariableName(arg)
+          variableName: this.getVariableName(arg),
+          // Whether a type guard could ever rescue this call: true when the actual
+          // type has a member that could satisfy the contract (a union with a valid
+          // arm, or unknown). A DEFINITE mismatch (a literal `1` for a string param,
+          // any single provably-wrong type) is not narrowable — `type(1)=="string"`
+          // is always false — so the quick-fix layer must not offer a guard there.
+          narrowable: hasCompatibleType
         };
 
         // Warning when: partially compatible (union/unknown w/ some valid types),

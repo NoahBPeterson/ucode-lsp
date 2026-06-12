@@ -54,6 +54,22 @@ describe('Quick Fix Type Narrowing Code Actions', function() {
     return edits[0].newText;
   }
 
+  // Apply an action's edits to `code` and return the resulting document. Quick
+  // fixes are now AST-node-range based (they replace e.g. just a braceless body
+  // node, leaving the header/else/comments untouched), so assertions about the
+  // surrounding structure must look at the APPLIED result, not the raw newText.
+  function applyAction(code, action) {
+    const edits = action.edit.changes[Object.keys(action.edit.changes)[0]];
+    const lines = code.split('\n');
+    const lineOffsets = [0];
+    for (let i = 0; i < lines.length; i++) lineOffsets.push(lineOffsets[i] + lines[i].length + 1);
+    const pos = (p) => lineOffsets[p.line] + p.character;
+    let out = code;
+    for (const e of [...edits].sort((a, b) => pos(b.range.start) - pos(a.range.start)))
+      out = out.slice(0, pos(e.range.start)) + e.newText + out.slice(pos(e.range.end));
+    return out;
+  }
+
   // Shared test code snippets
   const funcCode = `
 function maybeNull(x) {
@@ -612,13 +628,15 @@ print(process({}, "a", ["x"]));
       assert(matching.length > 0, 'Should have incompatible-function-argument diagnostic');
       const extract = findAction(actions, 'Extract');
       assert(extract, `Should offer extract action, got: ${actions.map(a => a.title).join(', ')}`);
-      const text = getEditText(extract);
-      // Should wrap the for-loop body in braces
-      assert(text.includes('for (let line in extra) {'), `Should expand for-loop with brace, got: ${text}`);
+      // The body node is wrapped in a block; the `for (...)` header is left untouched
+      // (and, being on its own line here, keeps its own line — the `{` opens where
+      // the braceless body was).
+      const text = applyAction(code, extract);
+      assert(text.includes('for (let line in extra)'), `Should keep the for header, got: ${text}`);
+      assert(/\{\s*\n\s*let _val/.test(text), `Should open a block with the extracted var, got: ${text}`);
       assert(text.includes('let _val'), `Should extract to variable, got: ${text}`);
       assert(text.includes('continue;'), `Should use continue in loop, got: ${text}`);
       assert(text.includes('push(_val, line)'), `Should replace expression in body, got: ${text}`);
-      assert(text.trimEnd().endsWith('}'), `Should close the block, got: ${text}`);
       // The plural-singular naming (targets→target) must NOT kick in here: `target`
       // is already the index/param, so it would collide. Falls back to _val.
       assert(!text.includes('let target ='), `Must not collide with the index var, got: ${text}`);
@@ -723,12 +741,12 @@ print(quiet_mode('on', null));
       assert(matching.length > 0, 'Should have incompatible-function-argument diagnostic');
       const extract = findAction(actions, 'Extract');
       assert(extract, `Should offer extract action, got: ${actions.map(a => a.title).join(', ')}`);
-      const text = getEditText(extract);
-      // Should preserve else-if chain and expand body into block
+      // Only the else-if's braceless body is wrapped; the `else if (…)` header is
+      // left untouched (so it's preserved in the applied result, not re-emitted).
+      const text = applyAction(code, extract);
       assert(text.includes('else if (uci_getter) {'), `Should keep else-if prefix, got: ${text}`);
       assert(text.includes('let _val'), `Should extract to variable inside block, got: ${text}`);
       assert(text.includes('return;') || text.includes('continue;'), `Should have guard keyword, got: ${text}`);
-      assert(text.endsWith('}'), `Should close the block, got: ${text}`);
       // Should NOT have insert-before actions that break the chain
       const insertGuard = findAction(actions, 'Add null guard');
       assert(!insertGuard, `Should NOT offer insert-before guard on else line`);
@@ -941,8 +959,9 @@ print(get_len({timeout: '30'}));
       }
       const defaultAction = findAction(allActions, 'type guard with default');
       assert(defaultAction, `Should offer 'type guard with default', got: ${allActions.map(a => a.title).join(', ')}`);
-      const text = getEditText(defaultAction);
-      // Should extract variable, add type guard with fallback
+      // Two offset edits (prelude + replace the `expr || fallback` node) → check the
+      // applied result rather than a single edit's newText.
+      const text = applyAction(code, defaultAction);
       assert(text.includes('let _val = s.timeout'), `Should extract s.timeout, got: ${text}`);
       assert(text.includes("_val = '600'"), `Should assign fallback '600', got: ${text}`);
       assert(text.includes('length(_val)'), `Should replace expr with _val, got: ${text}`);
@@ -974,11 +993,10 @@ print(get_config(null));
       const defaultAction = findAction(actions, 'type guard with default');
       assert(defaultAction, `Should offer 'type guard with default', got: ${actions.map(a => a.title).join(', ')}`);
       if (defaultAction.edit && defaultAction.edit.changes) {
-        const edits = Object.values(defaultAction.edit.changes)[0];
-        const insertText = edits.map(e => e.newText).join('');
-        assert(insertText.includes('let _val'), `Should extract to variable, got: ${insertText}`);
-        assert(insertText.includes("_val = '0'"), `Should assign fallback, got: ${insertText}`);
-        assert(insertText.includes('length(_val)'), `Should replace in object, got: ${insertText}`);
+        const applied = applyAction(code, defaultAction);
+        assert(applied.includes('let _val'), `Should extract to variable, got: ${applied}`);
+        assert(applied.includes("_val = '0'"), `Should assign fallback, got: ${applied}`);
+        assert(applied.includes('length(_val)'), `Should replace in object, got: ${applied}`);
       }
       // Should NOT offer "Wrap" — can't wrap an object property
       const wrapAction = findAction(actions, 'Wrap in');

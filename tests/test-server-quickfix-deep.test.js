@@ -32,6 +32,17 @@ async function actionsFor(code, file, pick) {
 }
 const editTextOf = (a) => (a && a.edit && a.edit.changes) ? Object.values(a.edit.changes)[0].map((e) => e.newText).join('') : '';
 
+// Apply an action's TextEdits to `code` (end-to-start so offsets stay valid).
+function applyAction(code, a) {
+  const edits = Object.values(a.edit.changes)[0];
+  const lines = code.split('\n');
+  const off = (p) => { let o = 0; for (let i = 0; i < p.line; i++) o += lines[i].length + 1; return o + p.character; };
+  let out = code;
+  for (const e of [...edits].sort((x, y) => off(y.range.start) - off(x.range.start)))
+    out = out.slice(0, off(e.range.start)) + e.newText + out.slice(off(e.range.end));
+  return out;
+}
+
 describe('server.ts quick-fix deep branches (e2e)', () => {
   test('nullable arg in a one-liner loop body → block-expanding guard with continue', async () => {
     const code = M + 'function p(){\n  let val = maybeNull(3);\n  while (true) split(val, ",");\n}\n';
@@ -49,10 +60,12 @@ describe('server.ts quick-fix deep branches (e2e)', () => {
     expect(diag).toBeDefined();
     const guard = actions.find((a) => /null guard for `val`/i.test(a.title));
     expect(guard).toBeDefined();
-    const text = editTextOf(guard);
-    expect(text).toContain('if (val == null)');
-    expect(text).toContain('else');      // the else clause is carried through the block expansion
-    expect(text).toContain('print("no")');
+    // The fix replaces ONLY the braceless body node with a block, so the `else`
+    // (untouched) is preserved in the applied result rather than re-emitted.
+    const patched = applyAction(code, guard);
+    expect(patched).toContain('if (val == null) return;');
+    expect(patched).toContain('else');
+    expect(patched).toContain('print("no")');
   });
 
   test('type-mismatch arg in a braceless if-body with else → type guard, else preserved', async () => {
@@ -61,9 +74,10 @@ describe('server.ts quick-fix deep branches (e2e)', () => {
     expect(diag).toBeDefined();
     const guard = actions.find((a) => /type guard for `x`/i.test(a.title));
     expect(guard).toBeDefined();
-    const text = editTextOf(guard);
-    expect(text).toContain('type(x) != "string"');
-    expect(text).toContain('print("x")');
+    const patched = applyAction(code, guard);
+    expect(patched).toContain('type(x) != "string"');
+    expect(patched).toContain('print("x")');
+    expect(patched).toContain('else');
   });
 
   test('arg `expr || fallback` in strict mode → "Add type guard with default"', async () => {

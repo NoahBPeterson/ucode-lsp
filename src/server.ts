@@ -831,7 +831,7 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // Add type narrowing specific quick fixes
             if (diagnostic.code) {
                 const typeNarrowingActions = generateTypeNarrowingQuickFixes(
-                    diagnostic, document, params.textDocument.uri, lineText, ast, cacheEntry?.result?.symbolTable
+                    diagnostic, document, params.textDocument.uri, ast, cacheEntry?.result?.symbolTable
                 );
                 codeActions.push(...typeNarrowingActions);
             }
@@ -1897,6 +1897,10 @@ interface EnclosingContext {
     enclosingStatementLine: number;
     /** Line of the nearest enclosing function declaration/expression */
     enclosingFunctionLine: number;
+    /** The nearest enclosing function node (declaration/expression/arrow) */
+    enclosingFunction: any | null;
+    /** The nearest enclosing statement node (used to source verbatim text / detect declarations) */
+    enclosingStatement: any | null;
 }
 
 /**
@@ -1910,7 +1914,9 @@ function findEnclosingContext(ast: any, document: TextDocument, position: { line
         inCondition: false, conditionOwnerLine: -1,
         enclosingControl: null, enclosingControlBody: null,
         enclosingStatementLine: -1,
-        enclosingFunctionLine: -1
+        enclosingFunctionLine: -1,
+        enclosingFunction: null,
+        enclosingStatement: null
     };
     if (!ast) return result;
 
@@ -1936,6 +1942,7 @@ function findEnclosingContext(ast: any, document: TextDocument, position: { line
         result.inFunction = newInFunc;
         if (isFunc) {
             result.enclosingFunctionLine = document.positionAt(node.start).line;
+            result.enclosingFunction = node;
         }
         result.inLoop = newInLoop;
         result.inLoopHeader = inLoopHeader;
@@ -1982,6 +1989,7 @@ function findEnclosingContext(ast: any, document: TextDocument, position: { line
             });
             if (!/^\s*\}/.test(lineText)) {
                 result.enclosingStatementLine = stmtLine;
+                result.enclosingStatement = node;
             }
         }
 
@@ -2054,98 +2062,6 @@ function isNullProblem(data: any): boolean {
     return types.includes('null');
 }
 
-/**
- * Parse a one-liner control structure into prefix and body.
- * Handles: else if (...) body; | else body; | for (...) body; | while (...) body; | if (...) body;
- * e.g. "    else if (x) doStuff();" → { indent: "    ", prefix: "else if (x)", body: "doStuff();" }
- */
-function parseOneLinerControl(lineText: string): { indent: string; prefix: string; body: string } | null {
-    const indent = lineText.match(/^(\s*)/)?.[1] || '';
-    const trimmed = lineText.trimStart();
-
-    // Keywords that use parenthesised conditions
-    const parenKeywords = ['else if', 'for', 'while', 'if'];
-
-    for (const kw of parenKeywords) {
-        if (!trimmed.startsWith(kw)) continue;
-        // Ensure it's a keyword boundary (not a prefix of a longer word)
-        const after = trimmed[kw.length];
-        if (after && after !== ' ' && after !== '\t' && after !== '(') continue;
-
-        const parenStart = trimmed.indexOf('(', kw.length);
-        if (parenStart === -1) continue;
-        let depth = 0;
-        let parenEnd = -1;
-        for (let i = parenStart; i < trimmed.length; i++) {
-            if (trimmed[i] === '(') depth++;
-            else if (trimmed[i] === ')') { depth--; if (depth === 0) { parenEnd = i; break; } }
-        }
-        if (parenEnd === -1) continue;
-        const prefix = trimmed.substring(0, parenEnd + 1);
-        const rest = trimmed.substring(parenEnd + 1).trim();
-        if (rest.startsWith('{') || !rest) return null; // already a block or empty
-        return { indent, prefix, body: rest };
-    }
-
-    // Plain else (no condition)
-    if (trimmed.startsWith('else')) {
-        const rest = trimmed.substring(4).trim();
-        if (rest.startsWith('{') || rest.startsWith('if') || !rest) return null;
-        return { indent, prefix: 'else', body: rest };
-    }
-
-    return null;
-}
-
-/**
- * Check if the diagnostic is on the body of a braceless control structure
- * that spans multiple lines (body on the next line).
- * e.g.:
- *     for (let x in items)
- *         push(arr, x);       ← diagnostic here
- */
-function findBracelessParent(
-    document: TextDocument, line: number
-): { parentIndent: string; prefix: string; parentLine: number } | null {
-    for (let prevLine = line - 1; prevLine >= Math.max(0, line - 3); prevLine--) {
-        const prevText = document.getText({
-            start: { line: prevLine, character: 0 },
-            end: { line: prevLine + 1, character: 0 }
-        }).replace(/\r?\n$/, '');
-
-        const trimmed = prevText.trim();
-        if (!trimmed) continue; // skip empty lines
-
-        // Strip trailing line comment for structure detection
-        const trimmedNoComment = trimmed.replace(/\/\/.*$/, '').trimEnd();
-
-        // Check for control structure ending with ) and no {
-        const parenKeywords = ['for', 'while', 'if', 'else if'];
-        for (const kw of parenKeywords) {
-            if (!trimmedNoComment.startsWith(kw)) continue;
-            const after = trimmedNoComment[kw.length];
-            if (after && after !== ' ' && after !== '\t' && after !== '(') continue;
-            // Verify it ends with ) (no opening brace)
-            if (trimmedNoComment.endsWith(')')) {
-                const parentIndent = prevText.match(/^(\s*)/)?.[1] || '';
-                // Preserve trailing comment: insert { before the comment
-                const trailingComment = trimmed.substring(trimmedNoComment.length).trim();
-                const prefix = trailingComment
-                    ? `${trimmedNoComment} { ${trailingComment}`
-                    : `${trimmedNoComment} {`;
-                return { parentIndent, prefix, parentLine: prevLine };
-            }
-        }
-        // Plain else without brace
-        if (trimmed === 'else') {
-            const parentIndent = prevText.match(/^(\s*)/)?.[1] || '';
-            return { parentIndent, prefix: 'else', parentLine: prevLine };
-        }
-        break; // found a non-empty line that's not a braceless control structure
-    }
-    return null;
-}
-
 /** Create a code action that inserts text before a given line */
 function makeInsertBeforeAction(
     title: string, insertText: string, line: number,
@@ -2185,51 +2101,48 @@ function makeInsertBeforeAction(
     };
 }
 
-/** Create a code action that replaces a full line */
-function makeReplaceLineAction(
-    title: string, newText: string, line: number, lineLength: number,
-    uri: string, diagnostic: any
+/**
+ * Determine whether the enclosing function is "inline" — i.e. a guard inserted
+ * before the diagnostic LINE would land OUTSIDE the function body. This is the
+ * case for an expression-body arrow (`x => expr`, no block at all) and for any
+ * function whose block `{` opens on or after the diagnostic line (single-line
+ * arrow / function expression / object method / callback). In those cases the
+ * guard must be placed INSIDE the function body instead.
+ */
+function isInlineFunctionBody(fn: any, document: TextDocument, diagLine: number): boolean {
+    if (!fn || !fn.body || typeof fn.body.start !== 'number') return false;
+    if (fn.body.type !== 'BlockStatement') return true; // expression-body arrow
+    return document.positionAt(fn.body.start).line >= diagLine;
+}
+
+/**
+ * Create a code action that inserts a guard statement INSIDE the enclosing
+ * function's body. For a block body the guard is inserted right after `{`; for
+ * an expression-body arrow the body is rewritten to a block that early-returns
+ * on the guard and then returns the original expression.
+ */
+function makeInlineFunctionGuardAction(
+    title: string, fn: any, guardStmt: string,
+    uri: string, diagnostic: any, document: TextDocument
 ): CodeAction {
+    if (fn.body.type === 'BlockStatement') {
+        const afterBrace = document.positionAt(fn.body.start + 1);
+        return {
+            title,
+            kind: CodeActionKind.QuickFix,
+            diagnostics: [diagnostic],
+            edit: { changes: { [uri]: [TextEdit.insert(afterBrace, ` ${guardStmt}`)] } }
+        };
+    }
+    // Expression-body arrow: `=> EXPR` becomes `=> { GUARD return EXPR; }`
+    const start = document.positionAt(fn.body.start);
+    const end = document.positionAt(fn.body.end);
+    const exprText = document.getText({ start, end });
     return {
         title,
         kind: CodeActionKind.QuickFix,
         diagnostics: [diagnostic],
-        edit: {
-            changes: {
-                [uri]: [TextEdit.replace(
-                    { start: { line, character: 0 }, end: { line, character: lineLength } },
-                    newText
-                )]
-            }
-        }
-    };
-}
-
-/** Replace an expression at a specific character position in a string, not just the first match */
-function replaceAt(text: string, search: string, replacement: string, charPos: number): string {
-    const idx = text.indexOf(search, charPos);
-    if (idx === -1) return text.replace(search, replacement); // fallback to first match
-    return text.substring(0, idx) + replacement + text.substring(idx + search.length);
-}
-
-/** Create a code action that replaces a range of lines (startLine..endLine inclusive) */
-function makeReplaceRangeAction(
-    title: string, newText: string,
-    startLine: number, endLine: number, endLineLength: number,
-    uri: string, diagnostic: any
-): CodeAction {
-    return {
-        title,
-        kind: CodeActionKind.QuickFix,
-        diagnostics: [diagnostic],
-        edit: {
-            changes: {
-                [uri]: [TextEdit.replace(
-                    { start: { line: startLine, character: 0 }, end: { line: endLine, character: endLineLength } },
-                    newText
-                )]
-            }
-        }
+        edit: { changes: { [uri]: [TextEdit.replace({ start, end }, `{ ${guardStmt} return ${exprText}; }`)] } }
     };
 }
 
@@ -2918,9 +2831,115 @@ function generateImportTypeQuickFix(
     return actions;
 }
 
+/** Leading-whitespace indentation of the line containing `offset`. */
+function indentOf(document: TextDocument, offset: number): string {
+    const lineNum = document.positionAt(offset).line;
+    const text = document.getText({ start: { line: lineNum, character: 0 }, end: { line: lineNum + 1, character: 0 } });
+    return text.match(/^([ \t]*)/)?.[1] || '';
+}
+
+/** Verbatim source text of an AST node. */
+function nodeSource(document: TextDocument, node: { start: number; end: number }): string {
+    return document.getText({ start: document.positionAt(node.start), end: document.positionAt(node.end) });
+}
+
+/**
+ * Deepest control statement (if/while/for/for-in) whose NON-block body contains
+ * `offset` — i.e. a braceless body that must be wrapped in `{ }` to host a guard.
+ * `else if` chains are followed into the inner `if` (its consequent is the real
+ * braceless body). AST-derived, so it covers one-liner and multi-line braceless
+ * forms uniformly: the caller replaces the body node's range, leaving the header,
+ * any `else`, and trailing comments untouched.
+ */
+function findBracelessControlBody(ast: any, offset: number): { control: any; body: any } | null {
+    let found: { control: any; body: any } | null = null;
+    function walk(node: any): void {
+        if (!node || typeof node !== 'object' || typeof node.start !== 'number') return;
+        if (offset < node.start || offset > node.end) return;
+        const bodies: any[] =
+            node.type === 'IfStatement' ? [node.consequent, node.alternate]
+            : (node.type === 'WhileStatement' || node.type === 'ForStatement' || node.type === 'ForInStatement') ? [node.body]
+            : [];
+        for (const b of bodies) {
+            // `else if` → alternate is an IfStatement; skip it here and let the walk
+            // descend into it so we land on the inner consequent instead.
+            if (b && b.type !== 'BlockStatement' && b.type !== 'IfStatement'
+                && offset >= b.start && offset <= b.end) {
+                found = { control: node, body: b }; // deepest match wins as we descend
+            }
+        }
+        for (const key of Object.keys(node)) {
+            const v = node[key];
+            if (Array.isArray(v)) v.forEach(walk);
+            else if (v && typeof v === 'object') walk(v);
+        }
+    }
+    walk(ast);
+    return found;
+}
+
+/**
+ * Wrap a braceless control body in a `{ }` block that hosts `guardStmt` before the
+ * original body. Replaces ONLY the body node's range, so the header / `else` /
+ * trailing comments are preserved verbatim — no line surgery, no comment hazards.
+ */
+function makeBracelessGuardAction(
+    title: string, body: any, guardStmt: string,
+    bodyTransform: ((src: string) => string) | null, prelude: string,
+    uri: string, diagnostic: any, document: TextDocument
+): CodeAction {
+    // Indent off the body's line: for a one-liner this is the control's indent;
+    // for a multi-line braceless body it's the (deeper) body indent — either way
+    // the block's contents and closing `}` line up with where the body was.
+    const base = indentOf(document, body.start);
+    const bodySrc = nodeSource(document, body);
+    const bodyText = bodyTransform ? bodyTransform(bodySrc) : bodySrc;
+    const inner = `${prelude}${base}\t${guardStmt}\n${base}\t${bodyText}`;
+    const newText = `{\n${inner}\n${base}}`;
+    return {
+        title,
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        edit: { changes: { [uri]: [TextEdit.replace(
+            { start: document.positionAt(body.start), end: document.positionAt(body.end) }, newText)] } }
+    };
+}
+
+/**
+ * End offset of a `let/const NAME = …;` declaration of `name` that sits before
+ * `diagOffset` on the same line (the single-line-function-body case, where a guard
+ * must be inserted after the declaration rather than before the line — which would
+ * land outside the function). AST-derived; returns the nearest such declaration end.
+ */
+function findSameLineDeclEnd(ast: any, name: string, diagOffset: number, document: TextDocument, diagLine: number): number | null {
+    let res: number | null = null;
+    function walk(node: any): void {
+        if (!node || typeof node !== 'object') return;
+        if (node.type === 'VariableDeclaration' && Array.isArray(node.declarations)
+            && typeof node.end === 'number' && node.end <= diagOffset
+            && document.positionAt(node.start).line === diagLine
+            && node.declarations.some((d: any) => d?.id?.name === name)) {
+            if (res == null || node.end > res) res = node.end;
+        }
+        for (const key of Object.keys(node)) {
+            const v = node[key];
+            if (Array.isArray(v)) v.forEach(walk);
+            else if (v && typeof v === 'object') walk(v);
+        }
+    }
+    walk(ast);
+    return res;
+}
+
+/** Verbatim source of `node` with the sub-range `[start,end)` replaced by `repl`. */
+function nodeSourceWith(document: TextDocument, node: { start: number; end: number }, start: number, end: number, repl: string): string {
+    const src = nodeSource(document, node);
+    return src.slice(0, start - node.start) + repl + src.slice(end - node.start);
+}
+
 // Generate quick fixes for type narrowing diagnostics
 function generateTypeNarrowingQuickFixes(
-    diagnostic: any, document: TextDocument, uri: string, lineText: string, ast?: any, symbolTable?: any
+    diagnostic: any, document: TextDocument, uri: string, ast?: any, symbolTable?: any
 ): CodeAction[] {
     const actions: CodeAction[] = [];
 
@@ -2930,181 +2949,141 @@ function generateTypeNarrowingQuickFixes(
 
     const { code, data } = diagnostic;
     const line = diagnostic.range.start.line;
-    const indent = lineText.match(/^(\s*)/)?.[1] || '';
-    const trimmedContent = lineText.trim();
-    const lineLength = lineText.length;
+    const diagOffset = document.offsetAt(diagnostic.range.start);
 
-    // Determine enclosing context
+    // Enclosing context — every structural decision below is read from these AST
+    // nodes, never re-parsed from the line text.
     const ctx = findEnclosingContext(ast, document, diagnostic.range.start);
 
     const varName: string | null = data.variableName || null;
     const expectedType: string = data.expectedType || data.expectedTypes?.[0] || '';
 
-    // If the diagnostic is on a different line than its enclosing statement,
-    // it's inside a multi-line expression (object literal, array, nested call, etc.)
-    // and guards must be inserted before the statement, not before the diagnostic line.
+    // Indentation = the leading whitespace of the diagnostic's line (whitespace only).
+    const indent = indentOf(document, diagOffset);
+
+    // Diagnostic on a later line than its enclosing statement → it sits inside a
+    // multi-line expression (object literal, array, nested call); guards go before
+    // the statement, not before the diagnostic line.
     const stmtLine = ctx.enclosingStatementLine;
     const needsStatementRedirect = stmtLine >= 0 && stmtLine < line;
 
-    // --- AST-aware structure detection ---
-    // If the diagnostic is in the condition of a control structure (if/while/for),
-    // the guard must go BEFORE the control structure, not inside its body.
-    // If the diagnostic is in the body of a braceless control structure,
-    // the body must be expanded to a block to insert the guard.
-    const oneLiner = ctx.inCondition ? null : parseOneLinerControl(lineText);
-    const bracelessParent = !oneLiner && !ctx.inCondition ? findBracelessParent(document, line) : null;
-    // AST-based: check if the body of the enclosing control structure is not a block.
-    // This covers both same-line (one-liner) and next-line braceless bodies.
-    const bodyNeedsBlock = ctx.enclosingControlBody != null &&
-        ctx.enclosingControlBody.type !== 'BlockStatement';
-    const needsBlockExpansion = !ctx.inCondition && (bodyNeedsBlock || !!(oneLiner || bracelessParent));
+    // The braceless control body (if/while/for, one-liner OR multi-line) that holds
+    // the diagnostic. Its body node gets wrapped in a `{ }` block to host the guard —
+    // header, `else`, and trailing comments are left untouched. Not applied when the
+    // diagnostic is in the control's CONDITION (guard goes before the control then).
+    const braceless = ctx.inCondition || !ast ? null : findBracelessControlBody(ast, diagOffset);
+    const needsBlockExpansion = braceless != null;
 
-    // Detect else clause that would be orphaned when expanding a braceless if-body to a block.
-    // e.g., `if (x < 0)\n    stmt;\nelse\n    other;` → the else must be preserved after `}`.
-    let elseClauseText: string | null = null;
-    let elseClauseEndLine = -1;
-    if (bracelessParent && ctx.enclosingControl?.type === 'IfStatement' && ctx.enclosingControl.alternate) {
-        const altEnd = document.positionAt(ctx.enclosingControl.alternate.end);
-        // The "else" keyword is between the consequent end and alternate start.
-        // Get the full text from the line after the diagnostic to the end of the alternate.
-        const elseKeywordLine = line + 1;
-        if (elseKeywordLine <= altEnd.line) {
-            const elseText = document.getText({
-                start: { line: elseKeywordLine, character: 0 },
-                end: { line: altEnd.line, character: altEnd.character }
-            });
-            elseClauseText = elseText;
-            elseClauseEndLine = altEnd.line;
-        }
-    }
     const nullish = isNullProblem(data);
+
+    // A parameter of an "inline" function (expression-body arrow, or a single-line
+    // arrow / function-expression / object method / callback) can't host a guard
+    // inserted before the diagnostic LINE — that lands outside the function. The
+    // guard goes inside the function body instead.
+    const inlineFn = !needsStatementRedirect && !ctx.inCondition && !braceless &&
+        isInlineFunctionBody(ctx.enclosingFunction, document, line)
+        ? ctx.enclosingFunction
+        : null;
 
     // Handle all three diagnostic codes uniformly
     if (code !== 'nullable-argument' && code !== 'incompatible-function-argument' && code !== 'nullable-in-operator') {
         return actions;
     }
 
-    // Check if the line declares a variable that is used later (wrapping would
-    // scope it inside the if-block, making it inaccessible afterwards).
-    const declaredVar = trimmedContent.match(/^(?:let|const)\s+(\w+)\s*=/)?.[1];
+    // A DEFINITE type mismatch can't be rescued by a type guard (a literal `1` for a
+    // string param → `type(1)=="string"` is always false). Offer nothing.
+    if (data.narrowable === false && !nullish) {
+        return actions;
+    }
+
+    // Does the enclosing statement declare a variable used later? (Wrapping it in an
+    // if-block would scope it inside.) Read from the AST, not a line regex.
+    const declStmt = ctx.enclosingStatement;
+    const declaredVar: string | undefined = declStmt && declStmt.type === 'VariableDeclaration'
+        ? declStmt.declarations?.[0]?.id?.name : undefined;
     const varUsedLater = declaredVar ? isVariableUsedAfterLine(document, line, declaredVar) : false;
+
+    // A same-line `let NAME = …;` declaration of the guard subject (single-line
+    // function body) — the guard is inserted after it, not before the line.
+    const declCase1End = varName && ast && !needsStatementRedirect && !ctx.inCondition
+        ? findSameLineDeclEnd(ast, varName, diagOffset, document, line)
+        : null;
+
+    // Emit an early-return / continue guard at the right place for the context. All
+    // placements are offset-anchored (comment-safe); none parse line text. Returns
+    // false only at module top level (no enclosing fn/loop/control), where the caller
+    // offers a "Wrap" action instead.
+    const keyword = ctx.inLoop ? 'continue' : 'return';
+    const pushEarlyGuard = (title: string, guardCond: string): boolean => {
+        const guardStmt = `if (${guardCond}) ${keyword};`;
+        if (needsStatementRedirect) {
+            const tlIndent = indentOf(document, document.offsetAt({ line: stmtLine, character: 0 }));
+            actions.push(makeInsertBeforeAction(title,
+                `${tlIndent}if (${guardCond})\n${tlIndent}\t${keyword};\n`, stmtLine, uri, diagnostic, document));
+        } else if (ctx.inCondition) {
+            const targetLine = ctx.conditionOwnerLine >= 0 ? ctx.conditionOwnerLine : line;
+            const targetIndent = indentOf(document, document.offsetAt({ line: targetLine, character: 0 }));
+            actions.push(makeInsertBeforeAction(title,
+                `${targetIndent}if (${guardCond})\n${targetIndent}\t${keyword};\n`, targetLine, uri, diagnostic, document));
+        } else if (declCase1End != null) {
+            actions.push({
+                title, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
+                edit: { changes: { [uri]: [TextEdit.insert(document.positionAt(declCase1End), ` ${guardStmt}`)] } }
+            });
+        } else if (braceless) {
+            actions.push(makeBracelessGuardAction(title, braceless.body, guardStmt, null, '', uri, diagnostic, document));
+        } else if (inlineFn) {
+            actions.push(makeInlineFunctionGuardAction(title, inlineFn, guardStmt, uri, diagnostic, document));
+        } else if (ctx.inLoop || ctx.inFunction) {
+            actions.push(makeInsertBeforeAction(title,
+                `${indent}if (${guardCond})\n${indent}\t${keyword};\n`, line, uri, diagnostic, document));
+        } else {
+            return false;
+        }
+        return true;
+    };
+
+    // Offer "Wrap in guard" — replaces the enclosing statement's node range with
+    // `if (cond) { <stmt> }`. Only valid at the same scope as the statement, so it's
+    // gated by the caller. Node-range based → preserves indent and trailing comments.
+    const pushWrap = (title: string, cond: string): void => {
+        if (!declStmt) return;
+        const base = indentOf(document, declStmt.start);
+        actions.push({
+            title, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
+            edit: { changes: { [uri]: [TextEdit.replace(
+                { start: document.positionAt(declStmt.start), end: document.positionAt(declStmt.end) },
+                `if (${cond}) {\n${base}\t${nodeSource(document, declStmt)}\n${base}}`)] } }
+        });
+    };
+    // Wrap is offered only at the statement's own scope (not redirected, not in a
+    // condition/loop-header, not needing block expansion, not a same-line decl, not
+    // an inline-fn param) and when the declared var isn't used after the line.
+    const wrapAllowed = !needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader
+        && !ctx.inCondition && !needsBlockExpansion && declCase1End == null && !inlineFn;
 
     if (varName) {
         // === SIMPLE IDENTIFIER ===
-
-        // Check if the variable is declared on the same line before the diagnostic.
-        // This happens in one-liner functions: function f(x) { let _p = foo(x); return bar(_p); }
-        // or when the variable is a parameter: function f(iface) { return index(iface, 'x'); }
-        // In that case, "insert before line" would place the guard outside the function.
-        // Instead, insert inline after the declaration or function body opening brace.
-        const escapedName = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const diagChar = diagnostic.range.start.character;
-        let inlineDeclPos: number | null = null;
-
-        // Case 1: let/const/var declaration on the same line before the diagnostic
-        const declRegex = new RegExp(`(?:let|const|var)\\s+${escapedName}\\s*=[^;]*;`);
-        const declMatch = lineText.match(declRegex);
-        if (declMatch && declMatch.index != null && declMatch.index + declMatch[0].length <= diagChar) {
-            inlineDeclPos = declMatch.index + declMatch[0].length;
-        }
-
-        // Case 2: variable is a function parameter and the function body is on the same line
-        // e.g. function foo(iface) { return index(iface, 'x'); }
-        if (inlineDeclPos == null) {
-            const paramRegex = new RegExp(`function\\s+\\w*\\s*\\([^)]*\\b${escapedName}\\b[^)]*\\)\\s*\\{`);
-            const paramMatch = lineText.match(paramRegex);
-            if (paramMatch && paramMatch.index != null && paramMatch.index + paramMatch[0].length <= diagChar) {
-                inlineDeclPos = paramMatch.index + paramMatch[0].length;
-            }
-        }
-
         if (nullish) {
             const guardCond = `${varName} == null`;
-            const wrapCond = `${varName} != null`;
-            const guardLabel = `Add null guard for \`${varName}\``;
-            const wrapLabel = `Wrap in null guard for \`${varName}\``;
-
-            // Skip if this exact guard already exists above
-            if (guardAlreadyExists(document, line, guardCond, ctx.enclosingFunctionLine)) {
-                return actions;
-            }
-
-            const keyword = ctx.inLoop ? 'continue' : 'return';
-            if (needsStatementRedirect) {
-                const tl = stmtLine;
-                const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
-                const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
-                actions.push(makeInsertBeforeAction(guardLabel,
-                    `${tlIndent}if (${guardCond})\n${tlIndent}\t${keyword};\n`, tl, uri, diagnostic, document));
-            } else if (ctx.inCondition) {
-                // Diagnostic is in the condition of a control structure (if/while/for).
-                // Guard must go BEFORE the entire control structure.
-                const targetLine = ctx.conditionOwnerLine >= 0 ? ctx.conditionOwnerLine : line;
-                const targetLineText = document.getText({ start: { line: targetLine, character: 0 }, end: { line: targetLine + 1, character: 0 } }).replace(/\r?\n$/, '');
-                const targetIndent = targetLineText.match(/^(\s*)/)?.[1] || '';
-                actions.push(makeInsertBeforeAction(guardLabel,
-                    `${targetIndent}if (${guardCond})\n${targetIndent}\t${keyword};\n`, targetLine, uri, diagnostic, document));
-            } else if (inlineDeclPos != null) {
-                actions.push({
-                    title: guardLabel,
-                    kind: CodeActionKind.QuickFix,
-                    diagnostics: [diagnostic],
-                    edit: { changes: { [uri]: [TextEdit.insert({ line, character: inlineDeclPos }, ` if (${guardCond}) ${keyword};`)] } }
-                });
-            } else if (oneLiner) {
-                actions.push(makeReplaceLineAction(
-                    guardLabel,
-                    `${oneLiner.indent}${oneLiner.prefix} {\n${oneLiner.indent}\tif (${guardCond}) ${keyword};\n${oneLiner.indent}\t${oneLiner.body}\n${oneLiner.indent}}`,
-                    line, lineLength, uri, diagnostic
-                ));
-            } else if (bracelessParent) {
-                const bp = bracelessParent;
-                const elseSuffix = elseClauseText ? `\n${elseClauseText}` : '';
-                const endLine = elseClauseEndLine >= 0 ? elseClauseEndLine : line;
-                const endLen = elseClauseEndLine >= 0
-                    ? document.getText({ start: { line: endLine, character: 0 }, end: { line: endLine + 1, character: 0 } }).replace(/\r?\n$/, '').length
-                    : lineLength;
-                actions.push(makeReplaceRangeAction(
-                    guardLabel,
-                    `${bp.parentIndent}${bp.prefix}\n${indent}if (${guardCond}) ${keyword};\n${lineText}\n${bp.parentIndent}}${elseSuffix}`,
-                    bp.parentLine, endLine, endLen, uri, diagnostic
-                ));
-            } else if (ctx.inLoop) {
-                actions.push(makeInsertBeforeAction(guardLabel,
-                    `${indent}if (${guardCond})\n${indent}\tcontinue;\n`, line, uri, diagnostic, document));
-            } else if (ctx.inFunction) {
-                actions.push(makeInsertBeforeAction(guardLabel,
-                    `${indent}if (${guardCond})\n${indent}\treturn;\n`, line, uri, diagnostic, document));
-            }
-
-            // Don't offer "Wrap" when the line opens a block — wrapping just
-            // the header without the body produces broken code.
-            if (!needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader && !ctx.inCondition && !needsBlockExpansion && inlineDeclPos == null && !trimmedContent.endsWith('{')) {
-                actions.push(makeReplaceLineAction(
-                    wrapLabel,
-                    `${indent}if (${wrapCond}) {\n${indent}\t${trimmedContent}\n${indent}}`,
-                    line, lineLength, uri, diagnostic
-                ));
-            }
+            if (guardAlreadyExists(document, line, guardCond, ctx.enclosingFunctionLine)) return actions;
+            pushEarlyGuard(`Add null guard for \`${varName}\``, guardCond);
+            if (wrapAllowed) pushWrap(`Wrap in null guard for \`${varName}\``, `${varName} != null`);
         } else {
-            // Type mismatch (not null)
-            // Filter out "null" — type(x) never returns "null" in ucode, so it can't be used in a type guard.
-            // e.g. expected "object | null" → guard only on "object".
+            // Type mismatch — filter "null" (type(x) never returns "null", so a guard
+            // can't test for it). e.g. expected "object | null" → guard only on "object".
             let expectedTypes: string[] = (data.expectedTypes || expectedType.split(' | ').map((s: string) => s.trim()))
                 .filter((t: string) => t !== 'null');
             if (expectedTypes.length === 0) return actions;
 
-            // Tighten the expected types by looking at all downstream usages of the variable.
-            // e.g. length(x) expects string|array|object, but join('\n', x) expects array →
-            // intersect to just array, producing a single clean guard.
-            if (ast && varName) {
-                const diagOffset = document.offsetAt(diagnostic.range.start);
+            // Tighten via downstream usages: length(x) wants string|array|object, but a
+            // later join('\n', x) wants array → intersect to a single clean guard.
+            if (ast) {
                 const tighter = findTightestTypeConstraint(ast, varName, diagOffset, expectedTypes);
                 if (tighter) expectedTypes = tighter;
             }
 
             const isUnionExpected = expectedTypes.length > 1;
-
             const earlyReturnGuard = isUnionExpected
                 ? expectedTypes.map((t: string) => `type(${varName}) != "${t}"`).join(' && ')
                 : `type(${varName}) != "${expectedTypes[0]}"`;
@@ -3112,121 +3091,35 @@ function generateTypeNarrowingQuickFixes(
                 ? expectedTypes.map((t: string) => `type(${varName}) == "${t}"`).join(' || ')
                 : `type(${varName}) == "${expectedTypes[0]}"`;
 
-            // Skip if this exact guard already exists above
-            if (guardAlreadyExists(document, line, earlyReturnGuard, ctx.enclosingFunctionLine)) {
-                return actions;
-            }
+            if (guardAlreadyExists(document, line, earlyReturnGuard, ctx.enclosingFunctionLine)) return actions;
+            pushEarlyGuard(`Add type guard for \`${varName}\``, earlyReturnGuard);
 
-            const keyword2 = ctx.inLoop ? 'continue' : 'return';
-            if (needsStatementRedirect) {
-                const tl = stmtLine;
-                const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
-                const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
-                actions.push(makeInsertBeforeAction(`Add type guard for \`${varName}\``,
-                    `${tlIndent}if (${earlyReturnGuard})\n${tlIndent}\t${keyword2};\n`, tl, uri, diagnostic, document));
-            } else if (ctx.inCondition) {
-                const targetLine = ctx.conditionOwnerLine >= 0 ? ctx.conditionOwnerLine : line;
-                const targetLineText = document.getText({ start: { line: targetLine, character: 0 }, end: { line: targetLine + 1, character: 0 } }).replace(/\r?\n$/, '');
-                const targetIndent = targetLineText.match(/^(\s*)/)?.[1] || '';
-                actions.push(makeInsertBeforeAction(`Add type guard for \`${varName}\``,
-                    `${targetIndent}if (${earlyReturnGuard})\n${targetIndent}\t${keyword2};\n`, targetLine, uri, diagnostic, document));
-            } else if (inlineDeclPos != null) {
-                actions.push({
-                    title: `Add type guard for \`${varName}\``,
-                    kind: CodeActionKind.QuickFix,
-                    diagnostics: [diagnostic],
-                    edit: { changes: { [uri]: [TextEdit.insert({ line, character: inlineDeclPos }, ` if (${earlyReturnGuard}) ${keyword2};`)] } }
-                });
-            } else if (oneLiner) {
-                actions.push(makeReplaceLineAction(
-                    `Add type guard for \`${varName}\``,
-                    `${oneLiner.indent}${oneLiner.prefix} {\n${oneLiner.indent}\tif (${earlyReturnGuard}) ${keyword2};\n${oneLiner.indent}\t${oneLiner.body}\n${oneLiner.indent}}`,
-                    line, lineLength, uri, diagnostic
-                ));
-            } else if (bracelessParent) {
-                const bp = bracelessParent;
-                const elseSuffix = elseClauseText ? `\n${elseClauseText}` : '';
-                const endLine = elseClauseEndLine >= 0 ? elseClauseEndLine : line;
-                const endLen = elseClauseEndLine >= 0
-                    ? document.getText({ start: { line: endLine, character: 0 }, end: { line: endLine + 1, character: 0 } }).replace(/\r?\n$/, '').length
-                    : lineLength;
-                actions.push(makeReplaceRangeAction(
-                    `Add type guard for \`${varName}\``,
-                    `${bp.parentIndent}${bp.prefix}\n${indent}if (${earlyReturnGuard}) ${keyword2};\n${lineText}\n${bp.parentIndent}}${elseSuffix}`,
-                    bp.parentLine, endLine, endLen, uri, diagnostic
-                ));
-            } else if (ctx.inLoop) {
-                actions.push(makeInsertBeforeAction(`Add type guard for \`${varName}\``,
-                    `${indent}if (${earlyReturnGuard})\n${indent}\tcontinue;\n`, line, uri, diagnostic, document));
-            } else if (ctx.inFunction) {
-                actions.push(makeInsertBeforeAction(`Add type guard for \`${varName}\``,
-                    `${indent}if (${earlyReturnGuard})\n${indent}\treturn;\n`, line, uri, diagnostic, document));
-            }
-
-            // "Type guard with default" — when the arg is `expr || fallback`,
-            // extract expr, guard its type, assign fallback if wrong type, then use it.
-            // e.g. int(s.timeout || '600') →
-            //   let _val = s.timeout;
-            //   if (type(_val) != "string" && ...) _val = '600';
-            //   let timeout = int(_val);
+            // "Type guard with default" — the arg is `expr || fallback`: extract expr to
+            // a temp, assign the fallback when its type is wrong, then use the temp. Two
+            // offset-anchored edits (prelude before the statement + replace the `expr ||
+            // fallback` node with the temp) — comment-safe, no line reconstruction.
             if (data.fallbackStart != null && data.fullExprStart != null) {
                 const leftExprText = varName || document.getText(diagnostic.range).trim();
-                const fallbackText = document.getText({
-                    start: document.positionAt(data.fallbackStart),
-                    end: document.positionAt(data.fallbackEnd)
-                });
-                const fullExprText = document.getText({
-                    start: document.positionAt(data.fullExprStart),
-                    end: document.positionAt(data.fullExprEnd)
-                });
+                const fallbackText = document.getText({ start: document.positionAt(data.fallbackStart), end: document.positionAt(data.fallbackEnd) });
                 const vn = uniqueValName(document, line);
                 const guardCond = isUnionExpected
                     ? expectedTypes.map((t: string) => `type(${vn}) != "${t}"`).join(' && ')
                     : `type(${vn}) != "${expectedTypes[0]}"`;
-                const fullExprCharPos = document.positionAt(data.fullExprStart).character;
-                const replacedLine = replaceAt(lineText, fullExprText, vn, fullExprCharPos);
-                if (replacedLine !== lineText) {
-                    if (needsStatementRedirect) {
-                        // Insert extraction + guard before the statement containing the object literal
-                        const tl = stmtLine;
-                        const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
-                        const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
-                        actions.push({
-                            title: `Add type guard with default`,
-                            kind: CodeActionKind.QuickFix,
-                            diagnostics: [diagnostic],
-                            edit: {
-                                changes: {
-                                    [uri]: [
-                                        TextEdit.insert({ line: tl, character: 0 },
-                                            `${tlIndent}let ${vn} = ${leftExprText};\n${tlIndent}if (${guardCond})\n${tlIndent}\t${vn} = ${fallbackText};\n`),
-                                        TextEdit.replace(
-                                            { start: { line, character: 0 }, end: { line, character: lineLength } },
-                                            replacedLine
-                                        )
-                                    ]
-                                }
-                            }
-                        });
-                    } else {
-                        actions.push(makeReplaceLineAction(
-                            `Add type guard with default`,
-                            `${indent}let ${vn} = ${leftExprText};\n${indent}if (${guardCond})\n${indent}\t${vn} = ${fallbackText};\n${replacedLine}`,
-                            line, lineLength, uri, diagnostic
-                        ));
-                    }
-                }
+                const tl = needsStatementRedirect ? stmtLine : line;
+                const tlIndent = indentOf(document, document.offsetAt({ line: tl, character: 0 }));
+                actions.push({
+                    title: `Add type guard with default`,
+                    kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
+                    edit: { changes: { [uri]: [
+                        TextEdit.insert({ line: tl, character: 0 },
+                            `${tlIndent}let ${vn} = ${leftExprText};\n${tlIndent}if (${guardCond})\n${tlIndent}\t${vn} = ${fallbackText};\n`),
+                        TextEdit.replace(
+                            { start: document.positionAt(data.fullExprStart), end: document.positionAt(data.fullExprEnd) }, vn)
+                    ] } }
+                });
             }
 
-            // Don't offer "Wrap" when the line opens a block — wrapping just
-            // the header without the body produces broken code.
-            if (!needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader && !ctx.inCondition && !needsBlockExpansion && inlineDeclPos == null && !trimmedContent.endsWith('{')) {
-                actions.push(makeReplaceLineAction(
-                    `Wrap in type guard for \`${varName}\``,
-                    `${indent}if (${wrapGuard}) {\n${indent}\t${trimmedContent}\n${indent}}`,
-                    line, lineLength, uri, diagnostic
-                ));
-            }
+            if (wrapAllowed) pushWrap(`Wrap in type guard for \`${varName}\``, wrapGuard);
         }
     } else if (!ctx.inLoopHeader) {
         // === COMPLEX EXPRESSION (no variable name) ===
@@ -3235,186 +3128,114 @@ function generateTypeNarrowingQuickFixes(
         const exprText = document.getText(diagnostic.range);
         if (!exprText) return actions;
 
-        // For function call expressions like keys(env.netifd_mark) whose result is nullable,
-        // trace through the AST to find the inner argument that needs a type guard.
+        // For nullable call results like keys(env.netifd_mark), trace into the AST to
+        // find the inner argument that needs the guard.
         if (!needsBlockExpansion && ast && data.argumentOffset != null) {
             const innerInfo = findInnerGuardTarget(ast, data.argumentOffset);
             if (innerInfo) {
                 const innerExpectedTypes = innerInfo.expectedTypes.filter((t: string) => t !== 'null');
                 if (innerExpectedTypes.length === 0) return actions;
                 const innerIsUnion = innerExpectedTypes.length > 1;
-                const innerExpected = innerExpectedTypes.join(' | ');
                 const innerEarlyGuard = innerIsUnion
                     ? innerExpectedTypes.map((t: string) => `type(${innerInfo.varName}) != "${t}"`).join(' && ')
-                    : `type(${innerInfo.varName}) != "${innerExpected}"`;
-
-                // Skip if this exact guard already exists above — fall through to extract-to-variable
+                    : `type(${innerInfo.varName}) != "${innerExpectedTypes.join(' | ')}"`;
                 if (!guardAlreadyExists(document, line, innerEarlyGuard, ctx.enclosingFunctionLine)) {
-                    if (needsStatementRedirect) {
-                        const tl = stmtLine;
-                        const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
-                        const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
-                        actions.push(makeInsertBeforeAction(`Add type guard for \`${innerInfo.varName}\``,
-                            `${tlIndent}if (${innerEarlyGuard})\n${tlIndent}\t${ctx.inLoop ? 'continue' : 'return'};\n`, tl, uri, diagnostic, document));
-                    } else if (ctx.inCondition) {
-                        const targetLine = ctx.conditionOwnerLine >= 0 ? ctx.conditionOwnerLine : line;
-                        const targetLineText = document.getText({ start: { line: targetLine, character: 0 }, end: { line: targetLine + 1, character: 0 } }).replace(/\r?\n$/, '');
-                        const targetIndent = targetLineText.match(/^(\s*)/)?.[1] || '';
-                        const kw2 = ctx.inLoop ? 'continue' : 'return';
-                        actions.push(makeInsertBeforeAction(`Add type guard for \`${innerInfo.varName}\``,
-                            `${targetIndent}if (${innerEarlyGuard})\n${targetIndent}\t${kw2};\n`, targetLine, uri, diagnostic, document));
-                    } else if (ctx.inLoop) {
-                        actions.push(makeInsertBeforeAction(`Add type guard for \`${innerInfo.varName}\``,
-                            `${indent}if (${innerEarlyGuard})\n${indent}\tcontinue;\n`, line, uri, diagnostic, document));
-                    } else if (ctx.inFunction) {
-                        actions.push(makeInsertBeforeAction(`Add type guard for \`${innerInfo.varName}\``,
-                            `${indent}if (${innerEarlyGuard})\n${indent}\treturn;\n`, line, uri, diagnostic, document));
-                    }
+                    pushEarlyGuard(`Add type guard for \`${innerInfo.varName}\``, innerEarlyGuard);
                     return actions;
                 }
-                // Guard already exists — fall through to extract-to-variable path
+                // Guard already exists — fall through to extract-to-variable.
             }
         }
 
-        // Prefer a readable singular name for plural array accesses (`parts[0]`
-        // → `part`); generic `_val` otherwise. Pass the symbol table + position
-        // so collision detection is scope-aware (ignores comments/strings).
-        const vn = suggestExtractName(document, exprText, symbolTable, document.offsetAt(diagnostic.range.start));
-        const kw = ctx.inLoop ? 'continue' : 'return';
+        // Prefer a readable singular name for `parts[0]` → `part`; `_val` otherwise.
+        const vn = suggestExtractName(document, exprText, symbolTable, diagOffset);
 
-        // Build guard condition (filter out "null" — type(x) never returns "null")
+        // Guard condition (filter "null" — type(x) never returns "null").
         const exExpectedTypes: string[] = (data.expectedTypes || expectedType.split(' | ').map((s: string) => s.trim()))
             .filter((t: string) => t !== 'null');
         if (!nullish && exExpectedTypes.length === 0) return actions;
         const exIsUnion = exExpectedTypes.length > 1;
-        const exEarlyGuard = nullish
-            ? `${vn} == null`
-            : (exIsUnion
-                ? exExpectedTypes.map((t: string) => `type(${vn}) != "${t}"`).join(' && ')
-                : `type(${vn}) != "${expectedType}"`);
+        const exEarlyGuard = nullish ? `${vn} == null`
+            : (exIsUnion ? exExpectedTypes.map((t: string) => `type(${vn}) != "${t}"`).join(' && ') : `type(${vn}) != "${expectedType}"`);
+        const wrapCond = nullish ? `${vn} != null`
+            : (exIsUnion ? exExpectedTypes.map((t: string) => `type(${vn}) == "${t}"`).join(' || ') : `type(${vn}) == "${expectedType}"`);
         const shortExpr = exprText.length > 30 ? exprText.substring(0, 27) + '...' : exprText;
-        const actionLabel = nullish
-            ? `Extract \`${shortExpr}\` and add null guard`
-            : `Extract \`${shortExpr}\` and add type guard`;
+        const actionLabel = nullish ? `Extract \`${shortExpr}\` and add null guard` : `Extract \`${shortExpr}\` and add type guard`;
 
-        // Replace the expression at the diagnostic position, not the first match on the line.
-        const exprCharPos = diagnostic.range.start.character;
+        // The flagged expression's offset range (replacing this node range — not a
+        // line substring — is exact and comment-safe).
+        const flagStart = document.offsetAt(diagnostic.range.start);
+        const flagEnd = document.offsetAt(diagnostic.range.end);
 
         if (needsStatementRedirect) {
-            // Extract before the statement containing the object literal
-            const tl = stmtLine;
-            const tlText = document.getText({ start: { line: tl, character: 0 }, end: { line: tl + 1, character: 0 } }).replace(/\r?\n$/, '');
-            const tlIndent = tlText.match(/^(\s*)/)?.[1] || '';
-            // If there's a || fallback, replace the full expression (not just left side)
-            // and use the fallback in the type guard default instead
-            let replaceExpr = exprText;
-            let replaceCharPos = exprCharPos;
-            if (data.fullExprStart != null && data.fullExprEnd != null) {
-                replaceExpr = document.getText({
-                    start: document.positionAt(data.fullExprStart),
-                    end: document.positionAt(data.fullExprEnd)
-                });
-                replaceCharPos = document.positionAt(data.fullExprStart).character;
-            }
-            const replaced = replaceAt(lineText, replaceExpr, vn, replaceCharPos);
-            if (replaced !== lineText) {
-                // If fallback exists, offer "type guard with default" instead of early return
-                if (data.fallbackStart != null) {
-                    const fallbackText = document.getText({
-                        start: document.positionAt(data.fallbackStart),
-                        end: document.positionAt(data.fallbackEnd)
-                    });
-                    const defaultGuardCond = nullish ? `${vn} == null`
-                        : (exIsUnion
-                            ? exExpectedTypes.map((t: string) => `type(${vn}) != "${t}"`).join(' && ')
-                            : `type(${vn}) != "${expectedType}"`);
-                    actions.push({
-                        title: `Add type guard with default`,
-                        kind: CodeActionKind.QuickFix,
-                        diagnostics: [diagnostic],
-                        edit: {
-                            changes: {
-                                [uri]: [
-                                    TextEdit.insert({ line: tl, character: 0 },
-                                        `${tlIndent}let ${vn} = ${exprText};\n${tlIndent}if (${defaultGuardCond})\n${tlIndent}\t${vn} = ${fallbackText};\n`),
-                                    TextEdit.replace(
-                                        { start: { line, character: 0 }, end: { line, character: lineLength } },
-                                        replaced
-                                    )
-                                ]
-                            }
-                        }
-                    });
-                }
-                // Also offer extract + early return
+            const tlIndent = indentOf(document, document.offsetAt({ line: stmtLine, character: 0 }));
+            // With a `|| fallback`, the whole `expr || fallback` node is what gets
+            // replaced by the temp; otherwise just the flagged expression.
+            const hasFallback = data.fullExprStart != null && data.fullExprEnd != null;
+            const rRange = hasFallback
+                ? { start: document.positionAt(data.fullExprStart), end: document.positionAt(data.fullExprEnd) }
+                : diagnostic.range;
+            if (data.fallbackStart != null) {
+                const fallbackText = document.getText({ start: document.positionAt(data.fallbackStart), end: document.positionAt(data.fallbackEnd) });
+                const defaultGuardCond = nullish ? `${vn} == null`
+                    : (exIsUnion ? exExpectedTypes.map((t: string) => `type(${vn}) != "${t}"`).join(' && ') : `type(${vn}) != "${expectedType}"`);
                 actions.push({
-                    title: actionLabel,
-                    kind: CodeActionKind.QuickFix,
-                    diagnostics: [diagnostic],
-                    edit: {
-                        changes: {
-                            [uri]: [
-                                TextEdit.insert({ line: tl, character: 0 },
-                                    `${tlIndent}let ${vn} = ${exprText};\n${tlIndent}if (${exEarlyGuard})\n${tlIndent}\t${ctx.inLoop ? 'continue' : 'return'};\n`),
-                                TextEdit.replace(
-                                    { start: { line, character: 0 }, end: { line, character: lineLength } },
-                                    replaced
-                                )
-                            ]
-                        }
-                    }
+                    title: `Add type guard with default`, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
+                    edit: { changes: { [uri]: [
+                        TextEdit.insert({ line: stmtLine, character: 0 }, `${tlIndent}let ${vn} = ${exprText};\n${tlIndent}if (${defaultGuardCond})\n${tlIndent}\t${vn} = ${fallbackText};\n`),
+                        TextEdit.replace(rRange, vn)
+                    ] } }
                 });
             }
-        } else if (oneLiner) {
-            // In the one-liner body, offset by the prefix position on the line
-            const bodyStart = lineText.indexOf(oneLiner.body);
-            const replacedBody = replaceAt(oneLiner.body, exprText, vn, exprCharPos - (bodyStart >= 0 ? bodyStart : 0));
-            if (replacedBody !== oneLiner.body) {
-                actions.push(makeReplaceLineAction(actionLabel,
-                    `${oneLiner.indent}${oneLiner.prefix} {\n${oneLiner.indent}\tlet ${vn} = ${exprText};\n${oneLiner.indent}\tif (${exEarlyGuard}) ${kw};\n${oneLiner.indent}\t${replacedBody}\n${oneLiner.indent}}`,
-                    line, lineLength, uri, diagnostic));
-            }
-        } else if (bracelessParent) {
-            const bp = bracelessParent;
-            const replacedLine = replaceAt(lineText, exprText, vn, exprCharPos);
-            if (replacedLine !== lineText) {
-                actions.push(makeReplaceRangeAction(actionLabel,
-                    `${bp.parentIndent}${bp.prefix}\n${indent}let ${vn} = ${exprText};\n${indent}if (${exEarlyGuard}) ${kw};\n${replacedLine}\n${bp.parentIndent}}`,
-                    bp.parentLine, line, lineLength, uri, diagnostic));
-            }
+            actions.push({
+                title: actionLabel, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
+                edit: { changes: { [uri]: [
+                    TextEdit.insert({ line: stmtLine, character: 0 }, `${tlIndent}let ${vn} = ${exprText};\n${tlIndent}if (${exEarlyGuard})\n${tlIndent}\t${keyword};\n`),
+                    TextEdit.replace(rRange, vn)
+                ] } }
+            });
+        } else if (braceless) {
+            // Wrap the braceless body in a block: extract + guard, then the body with
+            // the flagged expression swapped for the temp.
+            const base = indentOf(document, braceless.body.start);
+            actions.push(makeBracelessGuardAction(actionLabel, braceless.body,
+                `if (${exEarlyGuard}) ${keyword};`,
+                () => nodeSourceWith(document, braceless.body, flagStart, flagEnd, vn),
+                `${base}\tlet ${vn} = ${exprText};\n`,
+                uri, diagnostic, document));
+        } else if (inlineFn) {
+            // The flagged expression sits in an inline function body; extracting to a
+            // `let` before the line would hoist it out of the function. Offer nothing.
         } else if (ctx.inLoop || ctx.inFunction) {
-            const replaced = replaceAt(lineText, exprText, vn, exprCharPos);
-            if (replaced !== lineText) {
-                actions.push(makeReplaceLineAction(actionLabel,
-                    `${indent}let ${vn} = ${exprText};\n${indent}if (${exEarlyGuard})\n${indent}\t${kw};\n${replaced}`,
-                    line, lineLength, uri, diagnostic));
+            actions.push({
+                title: actionLabel, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
+                edit: { changes: { [uri]: [
+                    TextEdit.insert({ line, character: 0 }, `${indent}let ${vn} = ${exprText};\n${indent}if (${exEarlyGuard})\n${indent}\t${keyword};\n`),
+                    TextEdit.replace(diagnostic.range, vn)
+                ] } }
+            });
+        } else if (declStmt) {
+            // Top level — no early return. If the declared var is used later, wrap the
+            // declaration's value in a scope-preserving ternary; otherwise wrap the
+            // whole statement in an if-block. A SINGLE replace of the statement node
+            // range (the extracted `let` is part of the new text) — at top level the
+            // statement starts at column 0, so a separate insert there would overlap.
+            const base = indentOf(document, declStmt.start);
+            const stmtRange = { start: document.positionAt(declStmt.start), end: document.positionAt(declStmt.end) };
+            const prelude = `let ${vn} = ${exprText};\n${base}`;
+            let newText: string;
+            if (varUsedLater && declaredVar && declStmt.type === 'VariableDeclaration') {
+                const declr = declStmt.declarations[0];
+                const initSrc = declr.init ? nodeSourceWith(document, declr.init, flagStart, flagEnd, vn) : vn;
+                newText = `${prelude}${declStmt.kind} ${declr.id.name} = ${wrapCond} ? ${initSrc} : null;`;
+            } else {
+                const stmtSrc = nodeSourceWith(document, declStmt, flagStart, flagEnd, vn);
+                newText = `${prelude}if (${wrapCond}) {\n${base}\t${stmtSrc}\n${base}}`;
             }
-        } else {
-            const replaced = replaceAt(lineText, exprText, vn, exprCharPos);
-            if (replaced !== lineText) {
-                const wrapCond = nullish
-                    ? `${vn} != null`
-                    : (exIsUnion
-                        ? exExpectedTypes.map((t: string) => `type(${vn}) == "${t}"`).join(' || ')
-                        : `type(${vn}) == "${expectedType}"`);
-                const declMatch = (varUsedLater && declaredVar)
-                    ? replaced.trim().match(/^((?:let|const)\s+\w+\s*=\s*)([\s\S]*?);?\s*$/)
-                    : null;
-                if (declMatch) {
-                    // Wrapping a declaration in an if-block would scope the declared
-                    // variable inside it and break its later uses. At top level we can't
-                    // early-return either, so use a scope-preserving ternary:
-                    //   let _val = expr;
-                    //   const x = <cond> ? <rhs> : null;
-                    actions.push(makeReplaceLineAction(actionLabel,
-                        `${indent}let ${vn} = ${exprText};\n${indent}${declMatch[1]}${wrapCond} ? ${declMatch[2]} : null;`,
-                        line, lineLength, uri, diagnostic));
-                } else {
-                    actions.push(makeReplaceLineAction(actionLabel,
-                        `${indent}let ${vn} = ${exprText};\n${indent}if (${wrapCond}) {\n${indent}\t${replaced.trim()}\n${indent}}`,
-                        line, lineLength, uri, diagnostic));
-                }
-            }
+            actions.push({
+                title: actionLabel, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
+                edit: { changes: { [uri]: [TextEdit.replace(stmtRange, newText)] } }
+            });
         }
     }
 
