@@ -15,7 +15,22 @@ const os = require('os');
 const { UcodeLexer } = require(path.resolve('src/lexer/ucodeLexer'));
 const { UcodeParser } = require(path.resolve('src/parser/ucodeParser'));
 const { SemanticAnalyzer } = require(path.resolve('src/analysis/semanticAnalyzer'));
+const { VERSION_MODULES, VERSION_MODULE_FUNCTIONS } = require(path.resolve('src/analysis/ucodeVersions'));
 const { TextDocument } = require('vscode-languageserver-textdocument');
+
+// Pinned ucode hashes per OpenWrt release (PKG_SOURCE_VERSION from each branch's
+// package/utils/ucode/Makefile) — the ground truth for module availability.
+const UCODE_DIR = path.resolve('ucode');
+const HASH = { '24.10': '3f64c8089bf3ea4847c96b91df09fbfcaec19e1d', '25.12': '85922056ef7abeace3cca3ab28bc1ac2d88e31b1' };
+const MODULE_FILE = { io: 'lib/io.c', fs: 'lib/fs.c', socket: 'lib/socket.c', math: 'lib/math.c', nl80211: 'lib/nl80211.c', struct: 'lib/struct.c' };
+
+function gitShow(hash, file) {
+  try { return cp.execFileSync('git', ['-C', UCODE_DIR, 'show', `${hash}:${file}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
+  catch { return null; } // file absent at that hash
+}
+function haveUcodeGit() {
+  try { cp.execFileSync('git', ['-C', UCODE_DIR, 'cat-file', '-e', HASH['24.10']], { stdio: 'ignore' }); return true; } catch { return false; }
+}
 
 const TARGETS = ['main', '25.12', '24.10', '23.05', '22.03'];
 const ORACLE = { 'main': 'ucode_main', '25.12': 'ucode25_12', '24.10': 'ucode24_10', '23.05': 'ucode23_05', '22.03': 'ucode22_03' };
@@ -105,6 +120,40 @@ describe('UC6005 module-function gating (fs.mkdtemp/dup2, socket.open/pair)', ()
     const code = "import * as fs from 'fs';\nfs.open('/x');\n";
     expect(f6005(code, '24.10')).toBe(false);
   });
+});
+
+// The authoritative check that the registry's `introducedIn` claims are CORRECT:
+// cross-check each 25.12-introduced module/function against the real ucode source at
+// the 24.10 and 25.12 pinned hashes (modules can't be witnessed by the binary
+// oracles — they load as .so plugins). Skips if the vendored ucode/.git is absent.
+describe('source cross-check: registry introducedIn vs ucode source at pinned hashes', () => {
+  const ok = haveUcodeGit();
+
+  test.if(ok)('every introducedIn:25.12 MODULE is absent at 24.10 and present at 25.12', () => {
+    for (const [mod, intro] of Object.entries(VERSION_MODULES)) {
+      if (intro !== '25.12') continue;
+      const file = MODULE_FILE[mod];
+      expect(file, `no MODULE_FILE mapping for '${mod}'`).toBeDefined();
+      expect(gitShow(HASH['24.10'], file), `${file} should be ABSENT at 24.10`).toBeNull();
+      expect(gitShow(HASH['25.12'], file), `${file} should be PRESENT at 25.12`).not.toBeNull();
+    }
+  });
+
+  test.if(ok)('every introducedIn:25.12 FUNCTION is absent at 24.10 and present at 25.12', () => {
+    for (const [key, intro] of Object.entries(VERSION_MODULE_FUNCTIONS)) {
+      if (intro !== '25.12') continue;
+      const [mod, fn] = key.split('.');
+      const file = MODULE_FILE[mod];
+      expect(file, `no MODULE_FILE mapping for '${mod}'`).toBeDefined();
+      const at2410 = gitShow(HASH['24.10'], file) || '';
+      const at2512 = gitShow(HASH['25.12'], file) || '';
+      const registered = (src) => new RegExp(`\\{\\s*"${fn}"`).test(src); // { "fn", uc_… } in the function list
+      expect(registered(at2410), `${key} should be ABSENT in ${file} at 24.10`).toBe(false);
+      expect(registered(at2512), `${key} should be PRESENT in ${file} at 25.12`).toBe(true);
+    }
+  });
+
+  if (!ok) test.skip('vendored ucode/.git absent — source cross-check skipped', () => {});
 });
 
 describe('cross-check vs per-version oracle binaries', () => {
