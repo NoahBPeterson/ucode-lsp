@@ -51,6 +51,8 @@ export const VERSION_MODULES: Record<string, UcodeTargetVersion> = {
   // lib/io.c introduced 2025-11-29 (commit 559860c), after the 24.10 snapshot
   // (2025-07-18) and absent from that tree. First shipped in 25.12.
   io: '25.12',
+  // lib/digest.c absent at the 23.05 hash; first shipped in 24.10.
+  digest: '24.10',
 };
 
 /**
@@ -70,6 +72,15 @@ export const VERSION_MODULE_FUNCTIONS: Record<string, UcodeTargetVersion> = {
   // Added 2025-08-07, after the 24.10 snapshot.
   'socket.open': '25.12',
   'socket.pair': '25.12',
+
+  // --- 23.05 → 24.10 additions (module-level functions; absent at the 23.05 hash) ---
+  'socket.strerror': '24.10',
+  'struct.buffer': '24.10',     // struct.new existed in 23.05; struct.buffer is new
+  'zlib.deflater': '24.10',     // streaming API (deflater/inflater objects)
+  'zlib.inflater': '24.10',
+  'uloop.guard': '24.10',
+  'ubus.open_channel': '24.10',
+  'ubus.guard': '24.10',
 };
 
 export interface VersionGatedFeature {

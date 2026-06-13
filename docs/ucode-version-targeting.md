@@ -47,6 +47,12 @@ disable the version checks (reflect the language as it currently is).
 | the `io` module (`import … from 'io'`) | `25.12` (lib/io.c, 2025-11-29) | absent on 24.10/23.05/22.03 |
 | `fs.mkdtemp`, `fs.dup2` | `25.12` (2025-11-07) | absent on 24.10/23.05/22.03 |
 | `socket.open`, `socket.pair` | `25.12` (2025-08-07) | absent on 24.10/23.05/22.03 |
+| the `digest` module (`import … from 'digest'`) | `24.10` (lib/digest.c) | absent on 23.05/22.03 |
+| `socket.strerror` | `24.10` | absent on 23.05/22.03 |
+| `struct.buffer` | `24.10` | (`struct.new` existed) absent on 23.05/22.03 |
+| `zlib.deflater`, `zlib.inflater` | `24.10` | absent on 23.05/22.03 |
+| `uloop.guard` | `24.10` | absent on 23.05/22.03 |
+| `ubus.open_channel`, `ubus.guard` | `24.10` | absent on 23.05/22.03 |
 
 Module functions are gated at both the named-import (`import { mkdtemp } from 'fs'`)
 and namespace-member (`fs.mkdtemp()`) sites via `VERSION_MODULE_FUNCTIONS`.
@@ -60,6 +66,14 @@ are lower value (source-verified, listed for completeness):
 - `struct` `X`/`Z` format chars — new in the pack/unpack format mini-language.
 - `nl80211` listener `.request()` — a method on the object returned by `listener()`;
   the top-level `request()` already existed, so gating the name would false-positive.
+- 23.05→24.10 OBJECT-method / non-module-function additions: `fs.ioctl` (file-handle
+  method), `ubus` channel/request methods (`request`/`defer`/`await`/`get_fd`/…),
+  `uci` cursor methods (`list_append`/`list_remove`), `zlib`/`struct` stream/buffer
+  object methods. These aren't reachable by the import/namespace hooks (they live on
+  returned object types), so they're not gated.
+
+Optional chaining (`?.`) was reworked internally in 24.10 (commit a616fee) but the
+syntax already parsed on 23.05 (oracle-verified), so it is NOT a divergence.
 
 ## Verifying against per-release oracles
 

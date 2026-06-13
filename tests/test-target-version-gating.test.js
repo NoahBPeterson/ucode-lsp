@@ -21,8 +21,19 @@ const { TextDocument } = require('vscode-languageserver-textdocument');
 // Pinned ucode hashes per OpenWrt release (PKG_SOURCE_VERSION from each branch's
 // package/utils/ucode/Makefile) — the ground truth for module availability.
 const UCODE_DIR = path.resolve('ucode');
-const HASH = { '24.10': '3f64c8089bf3ea4847c96b91df09fbfcaec19e1d', '25.12': '85922056ef7abeace3cca3ab28bc1ac2d88e31b1' };
-const MODULE_FILE = { io: 'lib/io.c', fs: 'lib/fs.c', socket: 'lib/socket.c', math: 'lib/math.c', nl80211: 'lib/nl80211.c', struct: 'lib/struct.c' };
+const HASH = {
+  '22.03': '46d93c9cc5da6fce581df86159bd0fc4357de41c',
+  '23.05': '1a8a0bcf725520820802ad433db22d8f64fbed6c',
+  '24.10': '3f64c8089bf3ea4847c96b91df09fbfcaec19e1d',
+  '25.12': '85922056ef7abeace3cca3ab28bc1ac2d88e31b1',
+};
+// The release immediately BEFORE each one (a feature introducedIn V must be absent here).
+const PREDECESSOR = { '23.05': '22.03', '24.10': '23.05', '25.12': '24.10' };
+const MODULE_FILE = {
+  io: 'lib/io.c', fs: 'lib/fs.c', socket: 'lib/socket.c', math: 'lib/math.c',
+  nl80211: 'lib/nl80211.c', struct: 'lib/struct.c', digest: 'lib/digest.c',
+  zlib: 'lib/zlib.c', uloop: 'lib/uloop.c', ubus: 'lib/ubus.c', uci: 'lib/uci.c',
+};
 
 function gitShow(hash, file) {
   try { return cp.execFileSync('git', ['-C', UCODE_DIR, 'show', `${hash}:${file}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
@@ -129,31 +140,58 @@ describe('UC6005 module-function gating (fs.mkdtemp/dup2, socket.open/pair)', ()
 describe('source cross-check: registry introducedIn vs ucode source at pinned hashes', () => {
   const ok = haveUcodeGit();
 
-  test.if(ok)('every introducedIn:25.12 MODULE is absent at 24.10 and present at 25.12', () => {
+  test.if(ok)('every gated MODULE is absent at its predecessor release and present at introducedIn', () => {
     for (const [mod, intro] of Object.entries(VERSION_MODULES)) {
-      if (intro !== '25.12') continue;
+      const prev = PREDECESSOR[intro];
+      if (!prev) continue; // introducedIn 'main' has no pinned hash to check
       const file = MODULE_FILE[mod];
       expect(file, `no MODULE_FILE mapping for '${mod}'`).toBeDefined();
-      expect(gitShow(HASH['24.10'], file), `${file} should be ABSENT at 24.10`).toBeNull();
-      expect(gitShow(HASH['25.12'], file), `${file} should be PRESENT at 25.12`).not.toBeNull();
+      expect(gitShow(HASH[prev], file), `${file} should be ABSENT at ${prev}`).toBeNull();
+      expect(gitShow(HASH[intro], file), `${file} should be PRESENT at ${intro}`).not.toBeNull();
     }
   });
 
-  test.if(ok)('every introducedIn:25.12 FUNCTION is absent at 24.10 and present at 25.12', () => {
+  test.if(ok)('every gated FUNCTION is absent at its predecessor release and present at introducedIn', () => {
     for (const [key, intro] of Object.entries(VERSION_MODULE_FUNCTIONS)) {
-      if (intro !== '25.12') continue;
+      const prev = PREDECESSOR[intro];
+      if (!prev) continue;
       const [mod, fn] = key.split('.');
       const file = MODULE_FILE[mod];
       expect(file, `no MODULE_FILE mapping for '${mod}'`).toBeDefined();
-      const at2410 = gitShow(HASH['24.10'], file) || '';
-      const at2512 = gitShow(HASH['25.12'], file) || '';
-      const registered = (src) => new RegExp(`\\{\\s*"${fn}"`).test(src); // { "fn", uc_… } in the function list
-      expect(registered(at2410), `${key} should be ABSENT in ${file} at 24.10`).toBe(false);
-      expect(registered(at2512), `${key} should be PRESENT in ${file} at 25.12`).toBe(true);
+      const atPrev = gitShow(HASH[prev], file) || '';
+      const atIntro = gitShow(HASH[intro], file) || '';
+      const registered = (src) => new RegExp(`\\{\\s*"${fn}"`).test(src); // { "fn", uc_… }
+      expect(registered(atPrev), `${key} should be ABSENT in ${file} at ${prev}`).toBe(false);
+      expect(registered(atIntro), `${key} should be PRESENT in ${file} at ${intro}`).toBe(true);
     }
   });
 
   if (!ok) test.skip('vendored ucode/.git absent — source cross-check skipped', () => {});
+});
+
+describe('UC6005 gating for 23.05 → 24.10 additions', () => {
+  function f6005(code, tv) {
+    const doc = TextDocument.create('file:///t.uc', 'ucode', 1, code);
+    const { ast } = new UcodeParser(new UcodeLexer(code, { rawMode: true }).tokenize(), code).parse();
+    return new SemanticAnalyzer(doc, { targetVersion: tv }).analyze(ast).diagnostics.some(d => d.code === 'UC6005');
+  }
+  const cases = {
+    'digest module': "import { md5 } from 'digest';\nmd5('x');\n",
+    'socket.strerror': "import { strerror } from 'socket';\nstrerror(1);\n",
+    'struct.buffer': "import * as struct from 'struct';\nstruct.buffer();\n",
+    'zlib.deflater': "import { deflater } from 'zlib';\ndeflater();\n",
+    'uloop.guard (namespace)': "import * as uloop from 'uloop';\nuloop.guard();\n",
+    'ubus.open_channel': "import { open_channel } from 'ubus';\nopen_channel();\n",
+  };
+  for (const [name, code] of Object.entries(cases)) {
+    test(`${name}: flagged on 23.05/22.03, clean on 24.10/25.12/main`, () => {
+      expect(f6005(code, 'main')).toBe(false);
+      expect(f6005(code, '25.12')).toBe(false);
+      expect(f6005(code, '24.10')).toBe(false);
+      expect(f6005(code, '23.05')).toBe(true);
+      expect(f6005(code, '22.03')).toBe(true);
+    });
+  }
 });
 
 describe('cross-check vs per-version oracle binaries', () => {
