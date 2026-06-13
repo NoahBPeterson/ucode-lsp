@@ -56,6 +56,9 @@ disable the version checks (reflect the language as it currently is).
 
 | `fs.file.ioctl()` (handle method) | `24.10` | absent on 23.05/22.03 |
 | `uci.cursor.list_append()` / `list_remove()` (handle methods) | `24.10` | absent on 23.05/22.03 |
+| the `debug` / `log` / `socket` / `zlib` modules | `23.05` | absent on 22.03 |
+| `fs.pipe`, `nl80211.listener`, `rtnl.listener`, `uloop.interval`, `uloop.signal` | `23.05` | absent on 22.03 |
+| `fs.file.isatty()` / `truncate()` / `lock()` (handle methods) | `23.05` | absent on 22.03 |
 
 Module functions are gated at the named-import (`import { mkdtemp } from 'fs'`) and
 namespace-member (`fs.mkdtemp()`) sites via `VERSION_MODULE_FUNCTIONS`. Methods on
@@ -82,6 +85,15 @@ are lower value (source-verified, listed for completeness):
 
 Optional chaining (`?.`) was reworked internally in 24.10 (commit a616fee) but the
 syntax already parsed on 23.05 (oracle-verified), so it is NOT a divergence.
+
+No SYNTAX divergence exists in 22.03→23.05 either: arrow functions, optional chaining,
+spread (call/array/object), template literals, rest params, and `**` all parse
+identically across 22.03→main (oracle-verified); destructuring and default params are
+rejected on every version (correctly). The 22.03→23.05 deltas are all module/
+function/method additions. 22.03→23.05 object methods on NEW-constructor types
+(nl80211/rtnl listener `close`/`set_commands`; `uloop.interval`/`signal` handle
+methods `expirations`/`signo`) are covered by their gated constructors, so not
+separately gated.
 
 ## Verifying against per-release oracles
 

@@ -147,6 +147,13 @@ export class SemanticAnalyzer extends BaseVisitor {
       `${feature.label} requires {INTRO}'s ucode`, `To stay compatible, ${feature.remedy}`, start, end);
   }
 
+  /** True when the whole module is itself gated out at the current target (so a
+   *  per-function/method gate on it would be a redundant second diagnostic). */
+  private moduleGatedOutAtTarget(moduleName: string): boolean {
+    const v = VERSION_MODULES[moduleName];
+    return !!v && targetLacksFeature(this.targetVersion, v);
+  }
+
   /** Emit UC6005 if the target predates `introducedIn`. `{INTRO}` in `what` is
    *  replaced with the introducing release; `remedy` ends with the how-to-fix hint. */
   private flagVersionMin(introducedIn: UcodeTargetVersion, what: string, remedy: string, start: number, end: number): void {
@@ -1069,7 +1076,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // Version-gated: the function exists on the LSP's (newest) model but was
         // added after the configured target's ucode → UC6005 on the specifier.
         const fnIntro = VERSION_MODULE_FUNCTIONS[`${source}.${importedName}`];
-        if (fnIntro) {
+        if (fnIntro && !this.moduleGatedOutAtTarget(source)) {
           this.flagVersionMin(fnIntro, `\`${source}.${importedName}\` requires {INTRO}'s ucode`,
             `it isn't available on the target`, specifier.imported.start, specifier.imported.end);
         }
@@ -2227,7 +2234,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // target's ucode → UC6005. The handle-creating function (fs.open/cursor) may
       // predate the method, so this is the only place these get caught.
       const objIntro = VERSION_OBJECT_METHODS[`${handleType.moduleName}.${methodName}`];
-      if (objIntro) {
+      if (objIntro && !this.moduleGatedOutAtTarget(handleType.moduleName.split('.')[0] || handleType.moduleName)) {
         this.flagVersionMin(objIntro, `\`${handleType.moduleName}.${methodName}()\` requires {INTRO}'s ucode`,
           `it isn't available on the target`, node.property.start, node.property.end);
       }
@@ -2243,7 +2250,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Version-gated: `module.method()` where the method was added after the
     // configured target's ucode (e.g. `fs.mkdtemp()` on a 24.10 target) → UC6005.
     const memberIntro = VERSION_MODULE_FUNCTIONS[`${moduleName}.${methodName}`];
-    if (memberIntro) {
+    if (memberIntro && !this.moduleGatedOutAtTarget(moduleName)) {
       this.flagVersionMin(memberIntro, `\`${moduleName}.${methodName}\` requires {INTRO}'s ucode`,
         `it isn't available on the target`, node.property.start, node.property.end);
     }

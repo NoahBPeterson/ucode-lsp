@@ -53,6 +53,11 @@ export const VERSION_MODULES: Record<string, UcodeTargetVersion> = {
   io: '25.12',
   // lib/digest.c absent at the 23.05 hash; first shipped in 24.10.
   digest: '24.10',
+  // lib/{debug,log,socket,zlib}.c absent at the 22.03 hash; first shipped in 23.05.
+  debug: '23.05',
+  log: '23.05',
+  socket: '23.05',
+  zlib: '23.05',
 };
 
 /**
@@ -81,6 +86,13 @@ export const VERSION_MODULE_FUNCTIONS: Record<string, UcodeTargetVersion> = {
   'uloop.guard': '24.10',
   'ubus.open_channel': '24.10',
   'ubus.guard': '24.10',
+
+  // --- 22.03 → 23.05 additions (module-level functions; absent at the 22.03 hash) ---
+  'fs.pipe': '23.05',
+  'nl80211.listener': '23.05',
+  'rtnl.listener': '23.05',
+  'uloop.interval': '23.05',
+  'uloop.signal': '23.05',
 };
 
 /**
@@ -97,6 +109,10 @@ export const VERSION_OBJECT_METHODS: Record<string, UcodeTargetVersion> = {
   // uci.cursor list mutators added in 24.10 (cursor() existed in 23.05).
   'uci.cursor.list_append': '24.10',
   'uci.cursor.list_remove': '24.10',
+  // fs.file methods added in 23.05 (fs.open() existed in 22.03, so otherwise silent).
+  'fs.file.isatty': '23.05',
+  'fs.file.truncate': '23.05',
+  'fs.file.lock': '23.05',
 };
 
 export interface VersionGatedFeature {

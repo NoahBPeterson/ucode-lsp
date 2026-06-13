@@ -33,6 +33,7 @@ const MODULE_FILE = {
   io: 'lib/io.c', fs: 'lib/fs.c', socket: 'lib/socket.c', math: 'lib/math.c',
   nl80211: 'lib/nl80211.c', struct: 'lib/struct.c', digest: 'lib/digest.c',
   zlib: 'lib/zlib.c', uloop: 'lib/uloop.c', ubus: 'lib/ubus.c', uci: 'lib/uci.c',
+  debug: 'lib/debug.c', log: 'lib/log.c', rtnl: 'lib/rtnl.c', resolv: 'lib/resolv.c',
 };
 
 function gitShow(hash, file) {
@@ -231,6 +232,43 @@ describe('UC6005 object-method gating (handle methods added in 24.10)', () => {
   }
   test('a pre-existing handle method (fs.file.read) is NOT flagged on 23.05', () => {
     expect(f6005("import { open } from 'fs';\nlet f = open('/x');\nf.read('line');\n", '23.05')).toBe(false);
+  });
+});
+
+describe('UC6005 gating for 22.03 → 23.05 additions', () => {
+  function n6005(code, tv) {
+    const doc = TextDocument.create('file:///t.uc', 'ucode', 1, code);
+    const { ast } = new UcodeParser(new UcodeLexer(code, { rawMode: true }).tokenize(), code).parse();
+    return new SemanticAnalyzer(doc, { targetVersion: tv }).analyze(ast).diagnostics.filter(d => d.code === 'UC6005').length;
+  }
+  const cases = {
+    'socket module': "import { create } from 'socket';\n",
+    'zlib module': "import { deflate } from 'zlib';\n",
+    'log module': "import { openlog } from 'log';\n",
+    'debug module': "import { memdump } from 'debug';\n",
+    'fs.pipe': "import { pipe } from 'fs';\npipe();\n",
+    'nl80211.listener': "import { listener } from 'nl80211';\nlistener();\n",
+    'rtnl.listener': "import { listener } from 'rtnl';\nlistener();\n",
+    'uloop.interval (namespace)': "import * as uloop from 'uloop';\nuloop.interval(1);\n",
+    'uloop.signal (namespace)': "import * as uloop from 'uloop';\nuloop.signal('SIGINT', () => {});\n",
+    'fs.file.lock (method)': "import { open } from 'fs';\nlet f = open('/x');\nf.lock('x');\n",
+    'fs.file.truncate (method)': "import { open } from 'fs';\nlet f = open('/x');\nf.truncate(0);\n",
+    'fs.file.isatty (method)': "import { open } from 'fs';\nlet f = open('/x');\nf.isatty();\n",
+  };
+  for (const [name, code] of Object.entries(cases)) {
+    test(`${name}: flagged on 22.03, clean on 23.05+`, () => {
+      expect(n6005(code, 'main')).toBe(0);
+      expect(n6005(code, '23.05')).toBe(0);
+      expect(n6005(code, '22.03')).toBeGreaterThan(0);
+    });
+  }
+  test('no double-flag: a gated-MODULE function (socket.open) on 22.03 yields exactly one UC6005', () => {
+    // socket module is gated (23.05) AND socket.open is gated (25.12); on 22.03 only
+    // the module-level diagnostic should fire, not both.
+    expect(n6005("import { open } from 'socket';\nopen();\n", '22.03')).toBe(1);
+  });
+  test('a pre-existing fs.file method (read) is NOT flagged on 22.03', () => {
+    expect(n6005("import { open } from 'fs';\nlet f = open('/x');\nf.read('line');\n", '22.03')).toBe(0);
   });
 });
 
