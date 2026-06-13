@@ -26,7 +26,7 @@ import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType } from './fsMo
 import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
-import { UcodeTargetVersion, VersionGatedFeature, VERSION_FEATURES, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
+import { UcodeTargetVersion, VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
 import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
 import { JsDocCommentNode } from '../ast/nodes';
 import { Either, Option } from 'effect';
@@ -143,10 +143,18 @@ export class SemanticAnalyzer extends BaseVisitor {
    */
   private flagVersionFeature(feature: VersionGatedFeature, start: number, end: number): void {
     if (!targetLacksFeature(this.targetVersion, feature.introducedIn)) return;
-    const intro = feature.introducedIn === 'main' ? 'OpenWrt main/snapshot' : `OpenWrt ${feature.introducedIn}`;
+    this.flagVersionMin(feature.introducedIn,
+      `${feature.label} requires {INTRO}'s ucode`, `To stay compatible, ${feature.remedy}`, start, end);
+  }
+
+  /** Emit UC6005 if the target predates `introducedIn`. `{INTRO}` in `what` is
+   *  replaced with the introducing release; `remedy` ends with the how-to-fix hint. */
+  private flagVersionMin(introducedIn: UcodeTargetVersion, what: string, remedy: string, start: number, end: number): void {
+    if (!targetLacksFeature(this.targetVersion, introducedIn)) return;
+    const intro = introducedIn === 'main' ? 'OpenWrt main/snapshot' : `OpenWrt ${introducedIn}`;
     this.addDiagnosticErrorCode(
       UcodeErrorCode.TARGET_VERSION_UNSUPPORTED,
-      `${feature.label} requires ${intro}'s ucode, but the configured target is OpenWrt ${this.targetVersion}. To stay compatible, ${feature.remedy} — or change \`ucode.targetVersion\`.`,
+      `${what.replace('{INTRO}', intro)}, but the configured target is OpenWrt ${this.targetVersion}. ${remedy} — or change \`ucode.targetVersion\`.`,
       start, end, DiagnosticSeverity.Warning,
     );
   }
@@ -962,6 +970,14 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
 
       const modulePath = node.source.value as string;
+
+      // Version-gated: a builtin module that doesn't exist on the configured target
+      // (e.g. `io` predates OpenWrt 25.12) → UC6005 on the module path.
+      const moduleIntro = VERSION_MODULES[modulePath];
+      if (moduleIntro) {
+        this.flagVersionMin(moduleIntro, `The \`${modulePath}\` module requires {INTRO}'s ucode`,
+          `it isn't available on the target`, node.source.start, node.source.end);
+      }
 
       // Validate import specifiers against module exports
       for (const specifier of node.specifiers) {

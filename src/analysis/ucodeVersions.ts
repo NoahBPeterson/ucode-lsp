@@ -38,6 +38,21 @@ export function targetLacksFeature(target: UcodeTargetVersion, introduced: Ucode
   return UCODE_TARGET_VERSIONS.indexOf(target) < UCODE_TARGET_VERSIONS.indexOf(introduced);
 }
 
+/**
+ * Builtin MODULES → the release they were introduced in. Importing the module on
+ * an older target is flagged (it doesn't exist there). Source-verified against the
+ * per-release ucode trees (the module's `lib/*.c` is absent at older hashes).
+ *
+ * NOTE: module functions load as shared `.so` plugins at runtime, so the per-
+ * version oracle *binaries* can't verify module availability — confirm these from
+ * the ucode SOURCE at each release's pinned hash (package/utils/ucode/Makefile).
+ */
+export const VERSION_MODULES: Record<string, UcodeTargetVersion> = {
+  // lib/io.c introduced 2025-11-29 (commit 559860c), after the 24.10 snapshot
+  // (2025-07-18) and absent from that tree. First shipped in 25.12.
+  io: '25.12',
+};
+
 export interface VersionGatedFeature {
   /** Stable id (also the diagnostic's `data.feature`). */
   id: string;

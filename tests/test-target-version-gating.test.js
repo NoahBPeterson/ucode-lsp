@@ -64,6 +64,24 @@ describe('UC6005 export-function-without-semicolon gating', () => {
   });
 });
 
+describe('UC6005 module-availability gating (io module)', () => {
+  // The `io` module (lib/io.c) was introduced after the 24.10 snapshot, first
+  // shipping in 25.12. Importing it on an older target is flagged. (Module
+  // availability is source-verified, not oracle-verified: builtin modules load as
+  // shared .so plugins, so the per-version binaries can't witness it.)
+  const IO = "import { open } from 'io';\n";
+  function flags6005Mod(code, tv) {
+    const doc = TextDocument.create('file:///t.uc', 'ucode', 1, code);
+    const { ast } = new UcodeParser(new UcodeLexer(code, { rawMode: true }).tokenize(), code).parse();
+    return new SemanticAnalyzer(doc, { targetVersion: tv }).analyze(ast).diagnostics.some(d => d.code === 'UC6005');
+  }
+  test('flagged on releases older than 25.12, clean on 25.12/main', () => {
+    expect(flags6005Mod(IO, 'main')).toBe(false);
+    expect(flags6005Mod(IO, '25.12')).toBe(false);
+    for (const t of ['24.10', '23.05', '22.03']) expect(flags6005Mod(IO, t)).toBe(true);
+  });
+});
+
 describe('cross-check vs per-version oracle binaries', () => {
   const haveOracles = TARGETS.every(t => oracleAvailable(ORACLE[t]));
   test.if(haveOracles)('LSP flags UC6005 for a target iff that version rejects the code', () => {
