@@ -679,9 +679,38 @@ export class TypeChecker {
         return this.checkCatchClause(node as any);
       case 'ThisExpression':
         return UcodeType.OBJECT;
+      case 'DeleteExpression':
+        return this.checkDeleteExpression(node as DeleteExpressionNode);
       default:
         return UcodeType.UNKNOWN;
     }
+  }
+
+  /**
+   * `delete` removes an OBJECT property. Applied to an array element (`delete
+   * arr[i]`) ucode throws at runtime ("left-hand side expression is not an
+   * object"). Flag it when the receiver is provably an array; `delete obj.k` and
+   * `delete obj[k]` (object receiver, or unknown) stay clean.
+   */
+  private checkDeleteExpression(node: DeleteExpressionNode): CheckResult {
+    const arg = node.argument;
+
+    if (arg.type === 'MemberExpression' && (arg as MemberExpressionNode).computed) {
+      const objNode = (arg as MemberExpressionNode).object;
+      const objType = this.checkNode(objNode) ?? UcodeType.UNKNOWN;
+      // Only when the receiver is DEFINITELY an array (not a union like array|null,
+      // not unknown) — otherwise we can't be sure it isn't a deletable object.
+      if (isArrayType(objType) || objType === UcodeType.ARRAY) {
+        this.errors.push({
+          message: `'delete' removes object properties; the left-hand side here is an array. Deleting an array element is a runtime error in ucode.`,
+          start: node.start,
+          end: node.end,
+          severity: 'error',
+          code: UcodeErrorCode.INVALID_OPERATION,
+        });
+      }
+    }
+    return UcodeType.UNKNOWN;
   }
 
   getResult(): TypeCheckResult {

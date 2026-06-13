@@ -22,7 +22,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [12](12-uc1008-builtin-shadow-noise.md) | UC1008 warns on shadowing builtins for everyday names (`type`/`index`/`length`/…) | noise | low |
 | [13](13-nullable-argument-message-clarity.md) | nullable-argument message says "expects string or object" when the cause is nullability | message clarity | low |
 | [14](14-nullish-assign-member-typed-as-array.md) | `(obj.k ||= {})[key]=v` mis-infers `obj.k` as array → `keys()` false-errors | false-pos | low |
-| [15](15-delete-array-index-false-negative.md) | `delete arr[i]` is a real ucode error but the LSP reports nothing | false-neg | low |
+| [15](../done/15-delete-array-index-false-negative.md) | ✅ **FIXED 0.6.220** — `delete arr[i]` on an array element now emits UC2002 (was a silent false negative) | false-neg | low |
 
 ## Findings 16–30 (validation pipeline, completion/hover, lexer)
 
@@ -132,7 +132,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [102](102-builtin-completion-detail-no-signature.md) | Builtin completion items carry no signature in `detail` | completion | low |
 | [103](103-missing-diagnostic-codes-systemic.md) | Systemic: the type/semantic/parser diagnostic surface ships with no `code` | quality | medium |
 | [104](104-dead-registry-codes.md) | Many `UC####` registry codes (and the whole `src/validations/` dir) are dead | dead code | low |
-| [105](105-function-redeclaration-unreachable.md) | UC1007 unreachable — strict-mode function redeclaration silently accepted | false-neg | medium |
+| [105](../done/105-function-redeclaration-unreachable.md) | ✅ **FIXED 0.6.220** — strict-mode function redeclaration now emits UC1007 (was unreachable; non-strict = last wins) | false-neg | medium |
 | [106](106-severity-gated-on-strict-mode.md) | UC2008/UC2009 severity flips with `'use strict'` though the bug is strict-independent | inconsistency | low |
 | [107](107-argument-validation-inconsistent.md) | Argument-validation: 3 wordings, mixed codes, the most-severe case un-coded | inconsistency | low |
 | [108](108-is-unknown-mislabels-nullable.md) | "is unknown" mislabels a value that has a known nullable type | message | low |
@@ -199,7 +199,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [164](164-zlib-stream-write-missing-null.md) | zlib stream `write()` can return null, modeled `boolean` | inference | low |
 | [165](165-uloop-methods-missing-null.md) | uloop object methods drop `\|null` on the error path | inference | low |
 | [166](166-socket-pair-io-pipe-element-type.md) | `socket.pair`/`io.pipe` return `array\|null`, element type lost | inference | low |
-| [167](167-export-undeclared-name-not-flagged.md) | Exporting an undeclared name not flagged (hard ucode error) | false-neg | low-med |
+| [167](../done/167-export-undeclared-name-not-flagged.md) | ✅ **FIXED 0.6.220** — exporting a non-module-local name (undeclared / builtin / imported) now emits UC3003 | false-neg | low-med |
 | [168](168-default-import-object-shape-lost.md) | Default-imported object loses its shape | inference | low |
 | [169](169-default-import-function-return-lost.md) | Default-imported function loses its return type | inference | low |
 | [170](170-transitive-export-type-lost.md) | Transitively re-derived export loses its type | inference | low |

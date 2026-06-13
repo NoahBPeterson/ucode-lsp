@@ -10,7 +10,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
          PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
          ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
-         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode, ExpressionStatementNode } from '../ast/nodes';
+         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode, ExpressionStatementNode, DeleteExpressionNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
 import { BaseVisitor } from './visitor';
@@ -90,6 +90,11 @@ export class SemanticAnalyzer extends BaseVisitor {
   private callbackElementType: UcodeDataType | null = null; // Element type to pass to callback parameters (filter/map/sort)
   private typedefRegistry: Map<string, ParsedTypedef> = new Map(); // File-level @typedef definitions
   private strictMode = false; // Whether 'use strict'; is present
+  // Function symbols whose REAL declaration has been visited. The hoist pre-pass
+  // pre-declares every top-level function, so the symbol table alone can't tell a
+  // first declaration from a redeclaration; this set records the first real visit
+  // so a second `function NAME` in the same scope can be flagged (UC1007).
+  private realizedFunctions = new Set<SymbolEntry>();
   // Names that are bare-assignment targets (`x = …`, not `let`/`const`) somewhere in the
   // module. In non-strict ucode that auto-creates an implicit GLOBAL, so reading such a
   // name anywhere is valid (returns null until assigned, never a runtime error). Used to
@@ -258,6 +263,42 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Flag forward declarations that are never completed by a real definition
     if (this.options.enableScopeAnalysis) {
       this.checkForwardDeclarations(node);
+      // Flag `export { name }` of a name that isn't a module-local binding.
+      this.checkExportedNames(node);
+    }
+  }
+
+  /**
+   * Every name in an `export { … }` specifier list must be a module-LOCAL binding
+   * (a `let`/`const`/`function` declared in this file). ucode rejects exporting an
+   * undeclared name, a builtin, an imported name, or any other non-local — all are
+   * hard compile errors ("Attempt to export undeclared or non-local variable").
+   * Run as a post-pass so a name declared later in the module still resolves.
+   */
+  private checkExportedNames(node: ProgramNode): void {
+    for (const stmt of node.body) {
+      if (stmt.type !== 'ExportNamedDeclaration') continue;
+      const exp = stmt as ExportNamedDeclarationNode;
+      // `export function f(){}` / `export const x = …` declare inline — always valid.
+      if (exp.declaration) continue;
+      for (const spec of (exp.specifiers || [])) {
+        const name = spec.local?.name;
+        if (!name) continue;
+        const sym = this.symbolTable.lookup(name);
+        const isLocal = sym && (sym.type === SymbolType.VARIABLE || sym.type === SymbolType.FUNCTION);
+        if (isLocal) continue;
+        const reason = !sym ? `it is not declared in this module`
+          : sym.type === SymbolType.IMPORTED ? `it is imported, not declared here (re-exporting an import is not allowed)`
+          : sym.type === SymbolType.BUILTIN ? `it is a builtin, not a module-local variable`
+          : `it is not a module-local variable`;
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.INVALID_EXPORT,
+          `Cannot export '${name}': ${reason}.`,
+          spec.local.start,
+          spec.local.end,
+          DiagnosticSeverity.Error,
+        );
+      }
     }
   }
 
@@ -1495,6 +1536,24 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
 
+      // Same-scope function redeclaration. The hoist pre-pass already declared every
+      // top-level function, so `declare()` can't detect a duplicate — instead check
+      // whether THIS scope's function symbol of this name was already realized by an
+      // earlier real declaration. ucode allows redeclaration in non-strict (last wins)
+      // but it's a syntax error under 'use strict' — mirror UC1003 (let redeclaration).
+      const scopeSym = this.symbolTable.lookupInCurrentScope(name);
+      if (scopeSym && scopeSym.type === SymbolType.FUNCTION && this.realizedFunctions.has(scopeSym)) {
+        if (this.strictMode) {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.FUNCTION_REDECLARATION,
+            `Function '${name}' is already declared in this scope`,
+            node.id.start,
+            node.id.end,
+            DiagnosticSeverity.Error
+          );
+        }
+      }
+
       // Declare the function (may already exist from hoisting pre-pass).
       const existing = this.symbolTable.lookup(name);
       const alreadyHoisted = existing && existing.type === SymbolType.FUNCTION;
@@ -1514,6 +1573,13 @@ export class SemanticAnalyzer extends BaseVisitor {
         // actual function declaration, not the synthetic hoisted position.
         existing.node = node.id;
         existing.declaredAt = node.id.start;
+      }
+
+      // Mark this scope's function symbol as realized, so a later same-scope
+      // declaration of the same name is recognised as a redeclaration.
+      const realizedSym = this.symbolTable.lookupInCurrentScope(name);
+      if (realizedSym && realizedSym.type === SymbolType.FUNCTION) {
+        this.realizedFunctions.add(realizedSym);
       }
 
       // Set context for nested return statement analysis.
@@ -1629,6 +1695,23 @@ export class SemanticAnalyzer extends BaseVisitor {
       paramInfos.push({ name: node.restParam.name, type: UcodeType.ARRAY as UcodeDataType, isRest: true });
     }
     return paramInfos;
+  }
+
+  visitDeleteExpression(node: DeleteExpressionNode): void {
+    // Validate the operand subtree (member-access checks, undefined vars, …).
+    this.visit(node.argument);
+    // Then run the delete-specific check (e.g. `delete arr[i]` is a runtime error)
+    // through the type checker and surface its diagnostics.
+    if (this.options.enableTypeChecking) {
+      this.typeChecker.checkNode(node);
+      const result = this.typeChecker.getResult();
+      for (const error of result.errors) {
+        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
+      }
+      for (const warning of result.warnings) {
+        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
+      }
+    }
   }
 
   visitObjectExpression(node: ObjectExpressionNode): void {
