@@ -267,6 +267,9 @@ export interface FunctionDeclarationNode extends AstNode {
   // `body` is a synthetic empty block. A forward declaration that is never
   // completed by a real definition is an unimplemented stub.
   forwardDeclaration?: boolean;
+  /** Whether a trailing `;` immediately followed the declaration. Relevant for
+   *  the `export function` form (ucode ≤24.10 requires it; main made it optional). */
+  hadSemicolon?: boolean;
 }
 
 // Function expressions: function(params) { body }
@@ -389,6 +392,10 @@ export interface ExportNamedDeclarationNode extends AstNode {
   declaration: AstNode | null;
   specifiers: ExportSpecifierNode[];
   source: LiteralNode | null;
+  /** For the `export function NAME(){}` form: whether a trailing `;` followed the
+   *  function. ucode ≤24.10 requires it; main made it optional. Undefined for the
+   *  other export forms (which consume their own terminator). */
+  declarationHadSemicolon?: boolean;
 }
 
 // Export default: export default function() {}

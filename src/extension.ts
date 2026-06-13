@@ -70,6 +70,26 @@ function showFunctionReferences(
     vscode.commands.executeCommand('editor.action.showReferences', docUri, pos, locs);
 }
 
+// Prompt for the OpenWrt release whose ucode the diagnostics should target, and
+// persist it to the `ucode.targetVersion` setting. Invoked from the UC6005 quick fix.
+async function selectTargetVersion(): Promise<void> {
+    const items: vscode.QuickPickItem[] = [
+        { label: 'main', description: 'OpenWrt main / snapshot — newest ucode (default)' },
+        { label: '24.10', description: 'OpenWrt 24.10 (ucode 2025-07-18)' },
+        { label: '23.05', description: 'OpenWrt 23.05 (ucode 2024-07-11)' },
+        { label: '22.03', description: 'OpenWrt 22.03 (ucode 2022-12-02)' },
+    ];
+    const cfg = vscode.workspace.getConfiguration('ucode');
+    const current = cfg.get<string>('targetVersion', 'main');
+    const pick = await vscode.window.showQuickPick(items, {
+        title: 'ucode: target OpenWrt release',
+        placeHolder: `Current: ${current}. Diagnostics will target this release's ucode.`,
+    });
+    if (pick) {
+        await cfg.update('targetVersion', pick.label, vscode.ConfigurationTarget.Workspace);
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     console.log('ucode extension is being activated');
     
@@ -108,7 +128,8 @@ export function activate(context: vscode.ExtensionContext) {
     // CodeLens click targets (the lenses themselves come from the server).
     context.subscriptions.push(
         vscode.commands.registerCommand('ucode.showFunctionHistory', showFunctionHistory),
-        vscode.commands.registerCommand('ucode.showFunctionReferences', showFunctionReferences)
+        vscode.commands.registerCommand('ucode.showFunctionReferences', showFunctionReferences),
+        vscode.commands.registerCommand('ucode.selectTargetVersion', selectTargetVersion)
     );
 
     // Start the client. This will also launch the server

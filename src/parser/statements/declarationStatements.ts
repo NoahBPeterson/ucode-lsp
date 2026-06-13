@@ -159,7 +159,8 @@ export abstract class DeclarationStatements extends ExpressionParser {
         end: hadSemicolon ? this.previous()!.end : body.end,
         id,
         params,
-        body
+        body,
+        hadSemicolon
       };
 
       if (restParam) {
@@ -366,21 +367,29 @@ export abstract class DeclarationStatements extends ExpressionParser {
     if (this.check(TokenType.TK_FUNC) || this.check(TokenType.TK_LOCAL) || this.check(TokenType.TK_CONST)) {
       let declaration: AstNode | null = null;
       
+      let isFuncDecl = false;
       if (this.match(TokenType.TK_FUNC)) {
         declaration = this.parseFunctionDeclaration(true, start); // Exported function
+        isFuncDecl = true;
       } else if (this.match(TokenType.TK_LOCAL, TokenType.TK_CONST)) {
         declaration = this.parseVariableDeclaration(start);
       }
 
       if (!declaration) return null;
 
+      // `export function NAME(){}` may be followed by an optional `;`. ucode ≤24.10
+      // REQUIRES it; main made it optional. parseFunctionDeclaration already
+      // consumed/recorded it (node.hadSemicolon), so read it from the declaration —
+      // a version-gated diagnostic flags the no-`;` form on older targets. (The
+      // var-decl forms consume their own `;`, so this only matters for functions.)
       return {
         type: 'ExportNamedDeclaration',
         start,
         end: declaration.end,
         declaration,
         specifiers: [],
-        source: null
+        source: null,
+        ...(isFuncDecl ? { declarationHadSemicolon: (declaration as FunctionDeclarationNode).hadSemicolon === true } : {}),
       };
     }
 

@@ -57,6 +57,7 @@ export enum UcodeErrorCode {
   UNEXPECTED_TOKEN = 'UC6002',
   MISSING_SEMICOLON = 'UC6003',
   PARSER_ERROR = 'UC6004',
+  TARGET_VERSION_UNSUPPORTED = 'UC6005', // syntax valid in newer ucode but not the configured ucode.targetVersion
 
   // JSDoc annotation errors (7000-7999)
   JSDOC_UNKNOWN_TYPE = 'UC7001',

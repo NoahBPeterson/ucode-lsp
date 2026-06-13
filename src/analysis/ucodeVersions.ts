@@ -1,0 +1,62 @@
+/**
+ * ucode target-version model + the registry of version-divergent language
+ * features.
+ *
+ * ucode has no semver — OpenWrt pins a dated git snapshot per release. The LSP
+ * targets the NEWEST grammar by default ('main'); when the user configures an
+ * older `ucode.targetVersion`, any syntax/feature introduced AFTER that release
+ * is flagged (it would fail to compile on the target's older ucode).
+ *
+ * To add a newly-discovered divergence: add ONE entry to `VERSION_FEATURES`
+ * (with the release it was `introducedIn`) and call `analyzer.flagVersionFeature`
+ * at the detection site. The gating + messaging is handled centrally.
+ *
+ * Verify a divergence with the locally-built oracles
+ * (`ucode22_03`/`ucode23_05`/`ucode24_10`/`ucode_main` on PATH), not the system
+ * `ucode` binary (which is an arbitrary, often-older build).
+ */
+
+/** Supported ucode targets, OLDEST → NEWEST. Index is the version ordering. */
+export const UCODE_TARGET_VERSIONS = ['22.03', '23.05', '24.10', 'main'] as const;
+export type UcodeTargetVersion = typeof UCODE_TARGET_VERSIONS[number];
+
+/** OpenWrt release → the ucode git snapshot date it pins (for diagnostics/help). */
+export const UCODE_SNAPSHOT_DATES: Record<UcodeTargetVersion, string> = {
+  '22.03': '2022-12-02',
+  '23.05': '2024-07-11',
+  '24.10': '2025-07-18',
+  'main': 'newest',
+};
+
+/** `true` when `target` is older than `introduced` (so it lacks that feature). */
+export function targetLacksFeature(target: UcodeTargetVersion, introduced: UcodeTargetVersion): boolean {
+  return UCODE_TARGET_VERSIONS.indexOf(target) < UCODE_TARGET_VERSIONS.indexOf(introduced);
+}
+
+export interface VersionGatedFeature {
+  /** Stable id (also the diagnostic's `data.feature`). */
+  id: string;
+  /** The OLDEST target release in which this syntax/feature is valid. */
+  introducedIn: UcodeTargetVersion;
+  /** Human description of the feature, used to open the diagnostic message. */
+  label: string;
+  /** What to do to stay compatible with an older target. */
+  remedy: string;
+}
+
+/**
+ * The registry of version-divergent ucode features. Verified against the
+ * per-release oracles. Keep this the single source of truth.
+ */
+export const VERSION_FEATURES = {
+  /** `export function f(){}` without a trailing `;`. Valid on main; on 24.10 and
+   *  earlier the `;` is required (`Syntax error: Unexpected token, Expecting ';'`).
+   *  Introduced 2026-02-11 ("compiler: allow export function declarations without
+   *  trailing semicolon"), after the 24.10 snapshot. */
+  exportFunctionNoSemicolon: {
+    id: 'export-function-no-semicolon',
+    introducedIn: 'main',
+    label: 'An `export function` declaration without a trailing `;`',
+    remedy: 'add a `;` after the function',
+  },
+} as const satisfies Record<string, VersionGatedFeature>;

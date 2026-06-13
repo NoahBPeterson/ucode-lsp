@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.6.221",
+  "version": "0.6.222",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
@@ -74,6 +74,11 @@
         "command": "ucode.showFunctionReferences",
         "title": "Show Function References",
         "category": "ucode"
+      },
+      {
+        "command": "ucode.selectTargetVersion",
+        "title": "Select target OpenWrt/ucode version",
+        "category": "ucode"
       }
     ],
     "configuration": {
@@ -85,6 +90,24 @@
           "type": "number",
           "default": 100,
           "description": "Controls the maximum number of problems produced by the server."
+        },
+        "ucode.targetVersion": {
+          "scope": "resource",
+          "type": "string",
+          "enum": [
+            "main",
+            "24.10",
+            "23.05",
+            "22.03"
+          ],
+          "enumDescriptions": [
+            "OpenWrt main / snapshot (newest ucode; the language as it currently is)",
+            "OpenWrt 24.10 (ucode snapshot 2025-07-18)",
+            "OpenWrt 23.05 (ucode snapshot 2024-07-11)",
+            "OpenWrt 22.03 (ucode snapshot 2022-12-02)"
+          ],
+          "default": "main",
+          "markdownDescription": "Which OpenWrt release's ucode the diagnostics should target. Defaults to `main` (newest). A handful of newer ucode syntax features are flagged when targeting an older release that lacks them (e.g. `export function` without a trailing `;`, added after 24.10)."
         },
         "ucode.inlayHints.enable": {
           "scope": "window",

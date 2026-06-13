@@ -26,6 +26,7 @@ import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType } from './fsMo
 import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
+import { UcodeTargetVersion, VersionGatedFeature, VERSION_FEATURES, targetLacksFeature } from './ucodeVersions';
 import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
 import { JsDocCommentNode } from '../ast/nodes';
 import { Either, Option } from 'effect';
@@ -38,6 +39,9 @@ export interface SemanticAnalysisOptions {
   enableUnusedVariableDetection?: boolean;
   enableShadowingWarnings?: boolean;
   workspaceRoot?: string | undefined;
+  /** Which OpenWrt release's ucode to target for version-divergent diagnostics
+   *  (e.g. `export function` without a trailing `;`). Defaults to 'main' (newest). */
+  targetVersion?: UcodeTargetVersion;
 }
 
 export interface SemanticAnalysisResult {
@@ -125,7 +129,26 @@ export class SemanticAnalyzer extends BaseVisitor {
       enableShadowingWarnings: true,
       ...options
     };
-    
+
+  }
+
+  private get targetVersion(): UcodeTargetVersion {
+    return this.options.targetVersion ?? 'main';
+  }
+
+  /**
+   * Emit a portability diagnostic for a version-gated feature when the configured
+   * target release predates the feature. Centralizes the gating + messaging so a
+   * new divergence is just a `VERSION_FEATURES` entry plus a call here.
+   */
+  private flagVersionFeature(feature: VersionGatedFeature, start: number, end: number): void {
+    if (!targetLacksFeature(this.targetVersion, feature.introducedIn)) return;
+    const intro = feature.introducedIn === 'main' ? 'OpenWrt main/snapshot' : `OpenWrt ${feature.introducedIn}`;
+    this.addDiagnosticErrorCode(
+      UcodeErrorCode.TARGET_VERSION_UNSUPPORTED,
+      `${feature.label} requires ${intro}'s ucode, but the configured target is OpenWrt ${this.targetVersion}. To stay compatible, ${feature.remedy} — or change \`ucode.targetVersion\`.`,
+      start, end, DiagnosticSeverity.Warning,
+    );
   }
 
   analyze(ast: AstNode): SemanticAnalysisResult {
@@ -3786,6 +3809,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   visitExportNamedDeclaration(node: ExportNamedDeclarationNode): void {
     // For export function declarations like: export function foo() {}
     if (node.declaration) {
+      // Version-gated: `export function NAME(){}` without a trailing `;` only
+      // compiles on ucode newer than OpenWrt 24.10. Flag it when targeting older.
+      if (node.declaration.type === 'FunctionDeclaration' && node.declarationHadSemicolon === false) {
+        this.flagVersionFeature(VERSION_FEATURES.exportFunctionNoSemicolon, node.start, node.declaration.end);
+      }
+
       // Visit the actual declaration (function, variable, etc.)
       this.visit(node.declaration);
       

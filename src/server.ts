@@ -63,6 +63,7 @@ import { provideDocumentLinks } from './documentLinks';
 import { computeImportInsertEdit } from './importEdit';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalyzer, SemanticAnalysisResult, SymbolType } from './analysis';
+import { UCODE_TARGET_VERSIONS, UcodeTargetVersion } from './analysis/ucodeVersions';
 import { UcodeParser } from './parser';
 import { UcodeLexer, TokenType } from './lexer';
 import { FileResolver } from './analysis/fileResolver';
@@ -128,6 +129,27 @@ async function refreshInlayHintSetting(): Promise<void> {
     } catch {
         inlayHintsEnabled = true;
     }
+}
+
+// Cached `ucode.targetVersion` — which OpenWrt release's ucode the diagnostics
+// target. Drives version-gated diagnostics (see analysis/ucodeVersions.ts). The
+// analyzer runs synchronously, so we keep the latest value and re-pull on change.
+let ucodeTargetVersion: UcodeTargetVersion = 'main';
+
+async function refreshTargetVersion(): Promise<boolean> {
+    const prev = ucodeTargetVersion;
+    let next: UcodeTargetVersion = 'main';
+    if (hasConfigurationCapability) {
+        try {
+            const cfg = await connection.workspace.getConfiguration({ section: 'ucode' });
+            const v = cfg?.targetVersion;
+            if (typeof v === 'string' && (UCODE_TARGET_VERSIONS as readonly string[]).includes(v)) {
+                next = v as UcodeTargetVersion;
+            }
+        } catch { /* keep default */ }
+    }
+    ucodeTargetVersion = next;
+    return next !== prev; // did it change?
 }
 let hasWorkspaceFolderCapability = false;
 
@@ -316,6 +338,11 @@ connection.onInitialized(async () => {
     // getConfiguration inside the initialized handler can stall the connection, so we
     // let it resolve in the background and refresh hints once the value is known.
     refreshInlayHintSetting().then(() => requestInlayHintRefresh());
+    // Pull the initial target ucode version; re-validate open docs if it isn't the
+    // default (so version-gated diagnostics reflect a configured older target).
+    refreshTargetVersion().then((changed) => {
+        if (changed) for (const doc of documents.all()) validateAndAnalyzeDocument(doc);
+    });
     if (hasWorkspaceFolderCapability) {
         connection.workspace.onDidChangeWorkspaceFolders(async (event: WorkspaceFoldersChangeEvent) => {
             connection.console.log('Workspace folder change event received.');
@@ -467,6 +494,7 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
             enableUnusedVariableDetection: true,
             enableShadowingWarnings: true,
             workspaceRoot: workspaceFolders.length > 0 ? workspaceFolders[0] : process.cwd(),
+            targetVersion: ucodeTargetVersion,
         });
         const analysisResult = analyzer.analyze(parseResult.ast);
         const newImports = analysisResult.resolvedImports ?? new Set<string>();
@@ -853,6 +881,24 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // offer optional chaining (`.`→`?.`) and a null guard (`if (x) …`).
             if (diagnostic.code === 'UC5005' || diagnostic.code === 'UC5006') {
                 codeActions.push(...generateNullAccessQuickFixes(diagnostic, document, params.textDocument.uri, ast));
+            }
+
+            // UC6005: syntax valid in newer ucode but not the configured target. Offer
+            // the compat fix (here: add the trailing `;`) plus a command to retarget.
+            if (diagnostic.code === 'UC6005') {
+                codeActions.push({
+                    title: `Add ';' (compatible with OpenWrt ${ucodeTargetVersion})`,
+                    kind: CodeActionKind.QuickFix,
+                    diagnostics: [diagnostic],
+                    isPreferred: true,
+                    edit: { changes: { [params.textDocument.uri]: [TextEdit.insert(diagnostic.range.end, ';')] } },
+                });
+                codeActions.push({
+                    title: 'Change ucode target version…',
+                    kind: CodeActionKind.QuickFix,
+                    diagnostics: [diagnostic],
+                    command: { title: 'Change ucode target version', command: 'ucode.selectTargetVersion' },
+                });
             }
 
             // Quick-fix for the UC2009 type()-string mismatch: replace the wrong
@@ -1478,6 +1524,12 @@ connection.onDidChangeConfiguration(async () => {
     // re-request hints so toggling the setting takes effect immediately.
     await refreshInlayHintSetting();
     requestInlayHintRefresh();
+    // If the target ucode version changed, re-validate every open document so
+    // version-gated diagnostics update immediately.
+    const targetChanged = await refreshTargetVersion();
+    if (targetChanged) {
+        for (const doc of documents.all()) validateAndAnalyzeDocument(doc);
+    }
 });
 
 connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
