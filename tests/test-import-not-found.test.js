@@ -51,7 +51,7 @@ test('should not warn when relative import can be resolved', async () => {
 
     try {
       const testPath = path.join(__dirname, 'temp-test-import-found.uc');
-      const testContent = `import { run_command } from './temp-test-existing-module';
+      const testContent = `import { run_command } from './temp-test-existing-module.uc';
 
 let result = run_command('test');
 `;

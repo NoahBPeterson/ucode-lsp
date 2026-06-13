@@ -433,7 +433,7 @@ describe('PBR Cross-File Property Inference', function() {
 
   describe('pbr.uc (factory function default export)', function() {
     const lines = [
-      "import create_pbr from './pbr';",
+      "import create_pbr from './pbr.uc';",
       'let pbr = create_pbr(null, null, null);',
       'let ss = pbr.start_service;',
       'let st = pbr.stop_service;',

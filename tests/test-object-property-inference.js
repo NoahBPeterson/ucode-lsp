@@ -185,7 +185,7 @@ describe('Object Property Type Inference', function() {
     try {
       const testFilePath = path.join(moduleDir, 'consumer.uc');
       const lines = [
-        "import create_mod from './mymod';",
+        "import create_mod from './mymod.uc';",
         'let m = create_mod();',
         'let mn = m.name;',
         'let md = m.do_stuff;',

@@ -121,45 +121,34 @@ export class FileResolver {
 
             const currentDir = path.dirname(currentFilePath);
             
-            // Handle relative imports
+            // Handle relative imports. ucode resolves these STRICTLY against the
+            // importing file's directory, with the extension exactly as written —
+            // it does NOT auto-append `.uc` (finding #70) and there is NO
+            // workspace-root fallback (finding #71); `./` / `../` are importer-
+            // relative only. A path that doesn't exist there is unresolved (→ UC3002),
+            // matching the interpreter ("Unable to resolve path for module './x'").
             if (importPath.startsWith('./') || importPath.startsWith('../')) {
                 const resolvedPath = path.resolve(currentDir, importPath);
-                
-                // Check if file exists
                 if (fs.existsSync(resolvedPath)) {
                     return this.filePathToUri(resolvedPath);
                 }
-                
-                // Try with .uc extension if not present
-                if (!resolvedPath.endsWith('.uc')) {
-                    const withExtension = resolvedPath + '.uc';
-                    if (fs.existsSync(withExtension)) {
-                        return this.filePathToUri(withExtension);
-                    }
-                }
-
-                // Fallback: treat relative dot-notation imports as workspace-relative
-                if (importPath.startsWith('./')) {
-                    const workspaceRelativePath = path.resolve(this.workspaceRoot, importPath.replace(/^\.\//, ''));
-                    if (fs.existsSync(workspaceRelativePath)) {
-                        return this.filePathToUri(workspaceRelativePath);
-                    }
-
-                    if (!workspaceRelativePath.endsWith('.uc')) {
-                        const workspaceWithExtension = workspaceRelativePath + '.uc';
-                        if (fs.existsSync(workspaceWithExtension)) {
-                            return this.filePathToUri(workspaceWithExtension);
-                        }
-                    }
-                }
+                return null;
             }
-            
-            // Handle absolute paths
+
+            // Handle absolute paths. A leading `/` is a real filesystem path in
+            // ucode (finding #72), so check it on disk FIRST. Only if that doesn't
+            // exist do we fall back to interpreting it as workspace-root-relative —
+            // a dev convenience for runtime paths (e.g. /usr/share/ucode/…) mirrored
+            // into the workspace.
             if (importPath.startsWith('/')) {
-                const absolutePath = path.resolve(this.workspaceRoot, importPath.substring(1));
-                if (fs.existsSync(absolutePath)) {
-                    return this.filePathToUri(absolutePath);
+                if (fs.existsSync(importPath)) {
+                    return this.filePathToUri(importPath);
                 }
+                const workspaceRel = path.resolve(this.workspaceRoot, importPath.substring(1));
+                if (fs.existsSync(workspaceRel)) {
+                    return this.filePathToUri(workspaceRel);
+                }
+                return null;
             }
 
             // Handle bare module names — resolve relative to importing file's directory
@@ -622,8 +611,12 @@ export class FileResolver {
                         });
                     }
                 }
-            } else if (exportNode.specifiers) {
-                // export { foo, bar }
+            } else if (exportNode.specifiers && !exportNode.source) {
+                // export { foo, bar } — only a LOCAL specifier list is a real export.
+                // A re-export `export { foo } from "…"` (source present) is not valid
+                // ucode syntax (finding #69), so it exports nothing — don't invent the
+                // names, or downstream `import { foo } from <this module>` resolves a
+                // phantom export.
                 for (const specifier of exportNode.specifiers) {
                     exports.push({
                         name: specifier.exported.name,

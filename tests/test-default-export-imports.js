@@ -151,10 +151,12 @@ import * as logsNs from './u1905/u1905d/src/u1905/log.uc';
 
   describe('Completions for Default Exports', function() {
     it('should provide completions for default import methods', async function() {
-      const testContent = `import logs from './tests/u1905/u1905d/src/u1905/log.uc';
+      const testContent = `import logs from './u1905/u1905d/src/u1905/log.uc';
 logs.`;
 
-      const completions = await getCompletions(testContent, '/tmp/default-completions.uc', 1, 5);
+      // Anchor the doc in tests/ so the relative import resolves to the real
+      // fixture (strict relative resolution — no workspace-root fallback).
+      const completions = await getCompletions(testContent, `${__dirname}/default-completions.uc`, 1, 5);
       
       console.log(`Completions result:`, typeof completions, completions);
       

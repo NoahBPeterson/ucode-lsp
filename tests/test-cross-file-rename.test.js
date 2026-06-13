@@ -26,25 +26,25 @@ function realname() { return 8; }
 export { realname as aliasedExport };
 `,
   'main.uc':
-`import { foo, CONST } from './lib';
-import { gaz } from './lib';
-import { spec_fn } from './lib';
-import dflt from './lib';
+`import { foo, CONST } from './lib.uc';
+import { gaz } from './lib.uc';
+import { spec_fn } from './lib.uc';
+import dflt from './lib.uc';
 let r = foo() + foo() + CONST;
 let g = gaz();
 let sp = spec_fn();
 let d = dflt();
 `,
   'other.uc':
-`import { foo } from './lib';
+`import { foo } from './lib.uc';
 let y = foo();
 `,
   'aliased.uc':
-`import { gaz as gz } from './lib';
+`import { gaz as gz } from './lib.uc';
 let z = gz();
 `,
   'nsuser.uc':
-`import * as lib from './lib';
+`import * as lib from './lib.uc';
 let q = lib.nsmem();
 `,
   'unrel.uc':
@@ -52,12 +52,12 @@ let q = lib.nsmem();
 let k = foo();
 `,
   'shadower.uc':
-`import { shd } from './lib';
+`import { shd } from './lib.uc';
 let s = shd();
 function gg() { let shd = 1; return shd + shd; }
 `,
   'aliasimporter.uc':
-`import { aliasedExport } from './lib';
+`import { aliasedExport } from './lib.uc';
 let ae = aliasedExport();
 `,
 };

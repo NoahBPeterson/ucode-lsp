@@ -125,10 +125,11 @@ test('21 a parent-directory path links (importer in subdir)', async () => {
   expect(ls.length).toBe(1);
   expect(ls[0].target).toMatch(/lib\.uc$/);
 });
-test('22 a path without the .uc extension still resolves and links', async () => {
+test('22 a relative path WITHOUT the .uc extension does not resolve (so no link)', async () => {
+  // ucode requires the explicit `.uc` for relative imports (finding #70), so an
+  // extensionless path is unresolvable — no clickable link is produced.
   const ls = await links("import { helper } from './lib';\n");
-  expect(ls.length).toBe(1);
-  expect(ls[0].target).toMatch(/lib\.uc$/);
+  expect(ls.length).toBe(0);
 });
 test('23 the link target is an absolute file:// URI', async () => {
   const ls = await links("import { helper } from './lib.uc';\n");

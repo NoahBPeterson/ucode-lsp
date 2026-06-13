@@ -25,8 +25,8 @@ const FILES = {
 }
 `,
   'main.uc':
-`import create_sys from './sys';
-import { make_widget } from './widget';
+`import create_sys from './sys.uc';
+import { make_widget } from './widget.uc';
 import * as fs from 'fs';
 let sh = create_sys(1, 2);
 let w = make_widget(7);

@@ -53,10 +53,13 @@ describe('resolveImportPath', () => {
     expect(got).toBe(uriOf('lib.uc'));
   });
 
-  test('relative import without extension resolves to .uc', () => {
+  test('relative import requires the explicit .uc extension (ucode does not auto-append it)', () => {
     W('noext.uc', 'export function g() {};\n');
     const fr = new FileResolver(dir);
-    expect(fr.resolveImportPath('./noext', uriOf('app.uc'))).toBe(uriOf('noext.uc'));
+    // ucode: `import … from './noext'` → "Unable to resolve path" (finding #70).
+    expect(fr.resolveImportPath('./noext', uriOf('app.uc'))).toBe(null);
+    // With the extension it resolves.
+    expect(fr.resolveImportPath('./noext.uc', uriOf('app.uc'))).toBe(uriOf('noext.uc'));
   });
 
   test('bare same-directory name', () => {

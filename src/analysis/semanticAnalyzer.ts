@@ -277,8 +277,28 @@ export class SemanticAnalyzer extends BaseVisitor {
    */
   private checkExportedNames(node: ProgramNode): void {
     for (const stmt of node.body) {
+      // `export * from "…"` — ucode has no re-export grammar at all (finding #69).
+      if (stmt.type === 'ExportAllDeclaration') {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.SYNTAX_ERROR,
+          `ucode does not support \`export * from …\`. Import the names and re-export them as local bindings.`,
+          stmt.start, stmt.end, DiagnosticSeverity.Error,
+        );
+        continue;
+      }
       if (stmt.type !== 'ExportNamedDeclaration') continue;
       const exp = stmt as ExportNamedDeclarationNode;
+      // `export { x } from "…"` — re-export syntax, also unsupported in ucode
+      // (finding #69). Flag the whole statement; the specifier-local check below is
+      // skipped (the names refer to the other module, not this one).
+      if (exp.source) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.SYNTAX_ERROR,
+          `ucode does not support \`export { … } from …\` re-exports. Import the names first, then export them.`,
+          exp.start, exp.end, DiagnosticSeverity.Error,
+        );
+        continue;
+      }
       // `export function f(){}` / `export const x = …` declare inline — always valid.
       if (exp.declaration) continue;
       for (const spec of (exp.specifiers || [])) {

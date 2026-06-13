@@ -13,7 +13,7 @@ beforeAll(async () => {
   fs.mkdirSync(ws, { recursive: true });
   fs.writeFileSync(libPath, `export function foo() { return 1; }\n`);
   // On DISK, main uses foo once.
-  fs.writeFileSync(mainPath, `import { foo } from './lib';\nlet a = foo();\n`);
+  fs.writeFileSync(mainPath, `import { foo } from './lib.uc';\nlet a = foo();\n`);
   server = createLSPTestServer({ workspaceRoot: ws });
   await server.initialize();
 });
@@ -21,7 +21,7 @@ afterAll(() => { try { server.shutdown(); } catch {} try { fs.rmSync(ws, { recur
 
 test('rename from another file sees an open importer\'s unsaved extra usage', async () => {
   // Open main.uc with an UNSAVED second usage (differs from disk).
-  const unsavedMain = `import { foo } from './lib';\nlet a = foo();\nlet b = foo();\n`;
+  const unsavedMain = `import { foo } from './lib.uc';\nlet a = foo();\nlet b = foo();\n`;
   await server.getDiagnostics(unsavedMain, mainPath); // didOpen with unsaved content
 
   // Rename foo from lib.uc; the edit set must reflect the live buffer (2 usages).

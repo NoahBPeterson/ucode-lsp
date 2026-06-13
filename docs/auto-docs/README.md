@@ -91,10 +91,10 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [66](66-jsdoc-union-unknown-member-collapse.md) | A union with one unresolvable member collapses the whole type to `unknown` | silent loss | low |
 | [67](67-jsdoc-duplicate-param.md) | Duplicate `@param` for the same name silently last-wins, no warning | message | low |
 | [68](68-jsdoc-blank-line-attaches.md) | A JSDoc comment separated by a blank line still attaches to the function | convention | low |
-| [69](69-export-from-reexport-accepted.md) | `export { x } from`/`export * from` accepted, but ucode rejects them | false-neg | medium |
-| [70](70-import-missing-uc-extension.md) | Relative imports missing the `.uc` extension accepted; ucode requires it | false-neg | medium |
-| [71](71-relative-import-workspace-fallback.md) | `./x.uc` falls back to workspace-root resolution — unsound, hides broken imports | false-neg | medium |
-| [72](72-absolute-import-path-backwards.md) | Absolute import paths handled backwards (real flagged, fake `/x` accepted) | false-pos/neg | low-med |
+| [69](../done/69-export-from-reexport-accepted.md) | ✅ **FIXED 0.6.221** — `export { x } from` / `export *` rejected (UC6001); findExports no longer invents the re-exported names | false-neg | medium |
+| [70](../done/70-import-missing-uc-extension.md) | ✅ **FIXED 0.6.221** — relative imports now require the explicit `.uc` (no auto-append) → UC3002 | false-neg | medium |
+| [71](../done/71-relative-import-workspace-fallback.md) | ✅ **FIXED 0.6.221** — removed the unsound workspace-root fallback for `./`/`../` imports | false-neg | medium |
+| [72](../done/72-absolute-import-path-backwards.md) | ✅ **FIXED 0.6.221** — absolute `/path` imports checked on the real filesystem first (workspace-relative only as fallback) | false-pos/neg | low-med |
 | [73](73-parse-failed-dependency-misreported.md) | Importing from a file that fails to parse → misleading "does not export X" | message | low-med |
 | [74](74-self-import-not-detected.md) | Self-import not detected as a circular dependency | false-neg | low |
 | [75](75-circular-import-not-detected.md) | Circular imports (a↔b) not detected | false-neg | low |

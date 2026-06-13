@@ -21,9 +21,9 @@ export function nsmem() { return 3; }
 export default function dflt() { return 9; }
 `,
   'main.uc':
-`import { foo, CONST } from './lib';
-import { make } from './lib';
-import dflt from './lib';
+`import { foo, CONST } from './lib.uc';
+import { make } from './lib.uc';
+import dflt from './lib.uc';
 let w = make();
 let r = foo();
 let s = foo() + CONST;
@@ -31,15 +31,15 @@ let t = dflt();
 let u = w.run(1, 2);
 `,
   'other.uc':
-`import { foo } from './lib';
+`import { foo } from './lib.uc';
 let y = foo();
 `,
   'aliasref.uc':
-`import { foo as fa } from './lib';
+`import { foo as fa } from './lib.uc';
 let z = fa() + fa();
 `,
   'nsuser.uc':
-`import * as lib from './lib';
+`import * as lib from './lib.uc';
 let q = lib.nsmem();
 let p = lib.foo();
 `,
@@ -48,7 +48,7 @@ let p = lib.foo();
 let n = foo();
 `,
   'deep/sub.uc':
-`import { foo } from '../lib';
+`import { foo } from '../lib.uc';
 let d = foo();
 `,
 };
