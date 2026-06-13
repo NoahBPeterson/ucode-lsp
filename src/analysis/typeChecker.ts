@@ -1433,8 +1433,15 @@ export class TypeChecker {
       this.typeNarrowing.containsType(rightTypeData, UcodeType.OBJECT) ||
       this.typeNarrowing.containsType(rightTypeData, UcodeType.ARRAY);
     if (!rightSupportsIn) {
+      // Only a provably-non-collection RHS reaches here: an `unknown`-typed RHS is
+      // already exempt (isTypeCompatible treats unknown as compatible) and so is
+      // `object|null` / `array|null` (containsType). So what's left — a concrete
+      // scalar/null with no object/array member — makes `in` ALWAYS false. ucode
+      // doesn't throw on it, but it's a logic bug, so keep it an error. (The old
+      // message claimed `in` "requires" a collection, implying a throw — it doesn't;
+      // the real defect is that the test can never succeed.)
       this.errors.push({
-        message: `'in' operator requires object or array on right side, got ${this.getTypeDescription(rightTypeData)}`,
+        message: `'in' over a ${this.getTypeDescription(rightTypeData)} is always false — 'in' tests object keys or array elements`,
         start: node.right.start,
         end: node.right.end,
         severity: 'error'
@@ -3288,7 +3295,7 @@ export class TypeChecker {
 
   private checkCatchClause(node: any): CheckResult {
     // Enter catch scope
-    this.symbolTable.enterScope();
+    this.symbolTable.enterScope(node?.start ?? 0);
 
     // Declare catch parameter (the exception variable)
     if (node.param) {

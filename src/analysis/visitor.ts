@@ -13,7 +13,8 @@ import {
   CatchClauseNode, SwitchStatementNode, SwitchCaseNode, ConditionalExpressionNode,
   ForInStatementNode, EmptyStatementNode, ThisExpressionNode, DeleteExpressionNode,
   ImportDeclarationNode, ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
-  ArrowFunctionExpressionNode, ExportNamedDeclarationNode, ExportDefaultDeclarationNode, TemplateLiteralNode
+  ArrowFunctionExpressionNode, ExportNamedDeclarationNode, ExportDefaultDeclarationNode, TemplateLiteralNode,
+  SpreadElementNode
 } from '../ast/nodes';
 
 export interface VisitorMethods {
@@ -57,6 +58,7 @@ export interface VisitorMethods {
   visitExportNamedDeclaration?(node: ExportNamedDeclarationNode): void;
   visitExportDefaultDeclaration?(node: ExportDefaultDeclarationNode): void;
   visitTemplateLiteral?(node: TemplateLiteralNode): void;
+  visitSpreadElement?(node: SpreadElementNode): void;
 }
 
 export class BaseVisitor implements VisitorMethods {
@@ -181,6 +183,9 @@ export class BaseVisitor implements VisitorMethods {
         break;
       case 'TemplateLiteral':
         this.visitTemplateLiteral(node as TemplateLiteralNode);
+        break;
+      case 'SpreadElement':
+        this.visitSpreadElement(node as SpreadElementNode);
         break;
     }
   }
@@ -436,5 +441,10 @@ export class BaseVisitor implements VisitorMethods {
       this.visit(expression);
     }
     // Template quasis (the string parts) don't need visiting as they're just text
+  }
+
+  visitSpreadElement(node: SpreadElementNode): void {
+    // Visit the spread argument so its identifiers are analyzed (and marked used)
+    this.visit(node.argument);
   }
 }

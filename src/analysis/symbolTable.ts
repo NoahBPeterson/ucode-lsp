@@ -335,6 +335,7 @@ export interface Symbol {
     currentTypeEffectiveFrom?: number | undefined; // Source offset where currentType becomes active
     neverReturns?: boolean; // True if function always terminates (die/exit/throw on all paths)
     scopeEnd?: number; // End offset of the scope this symbol was declared in (set when scope exits)
+    scopeStart?: number; // Start offset of the block scope this symbol was declared in (set at declare)
     jsdocDescription?: string; // Description from @param JSDoc tag
     isRestParam?: boolean; // True if this parameter was declared with ...spread syntax
     isExceptionParam?: boolean; // True if this is a catch-clause parameter (exception object)
@@ -356,6 +357,10 @@ export interface Symbol {
 
 export class SymbolTable {
   private scopes: Map<string, Symbol>[] = [];
+  // Start offset of each active scope (parallel to `scopes`). Global scope starts at 0.
+  // Stamped onto symbols at declare() so use-before-declaration can tell whether a use
+  // falls inside the declaration's block (reachable) or outside it (genuinely undefined).
+  private scopeStarts: number[] = [0];
   private currentScope = 0;
   private globalScope: Map<string, Symbol> = new Map();
   // Keep track of all symbols ever declared (including in exited scopes) for position-based lookup
@@ -561,13 +566,15 @@ export class SymbolTable {
     });
   }
 
-  enterScope(): void {
+  enterScope(startOffset = 0): void {
     this.scopes.push(new Map());
+    this.scopeStarts.push(startOffset);
     this.currentScope++;
   }
 
   exitScope(endOffset?: number): void {
     if (this.scopes.length > 1) {
+      this.scopeStarts.pop();
       // Stamp scopeEnd on all symbols in the exiting scope so lookupAtPosition
       // can determine if a position falls within a symbol's scope
       if (endOffset !== undefined) {
@@ -617,6 +624,7 @@ export class SymbolTable {
       used: false,
       node,
       declaredAt: node.start,
+      scopeStart: this.scopeStarts[this.scopeStarts.length - 1] ?? 0,
       usedAt: [],
       ...(initNode && { initNode })
     };
@@ -686,6 +694,30 @@ export class SymbolTable {
       }
     }
     return bestMatch;
+  }
+
+  /**
+   * Find a `let`/`const` declaration of `name` that is USED BEFORE IT IS DECLARED at
+   * `useStart`: i.e. it is declared later in source (declaredAt > useStart) but the use
+   * falls inside that declaration's own block scope (scopeStart ≤ useStart ≤ scopeEnd).
+   *
+   * This is what distinguishes a reachable forward reference (`print(C); const C=5;` —
+   * always a bug in ucode, which never hoists let/const) from a use that refers to a
+   * declaration in a scope it can't reach (a sibling/inner block, or a block that has
+   * already closed) — the latter returns null here and is reported as plain "undefined".
+   * The innermost enclosing declaration (largest scopeStart) wins.
+   */
+  findInScopeLaterDeclaration(name: string, useStart: number): Symbol | null {
+    let best: Symbol | null = null;
+    for (const symbol of this.allSymbols) {
+      if (symbol.name !== name) continue;
+      if (symbol.type !== SymbolType.VARIABLE) continue; // let/const only; functions handled separately
+      if (symbol.declaredAt === undefined || symbol.declaredAt <= useStart) continue; // not "later"
+      if (symbol.scopeStart === undefined || symbol.scopeStart > useStart) continue; // use precedes the block
+      if (symbol.scopeEnd !== undefined && useStart > symbol.scopeEnd) continue; // use after the block closed
+      if (!best || (symbol.scopeStart ?? 0) > (best.scopeStart ?? 0)) best = symbol;
+    }
+    return best;
   }
 
   // Debug method to see all symbols in all scopes

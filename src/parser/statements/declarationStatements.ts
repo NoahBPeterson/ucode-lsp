@@ -464,7 +464,15 @@ export abstract class DeclarationStatements extends ExpressionParser {
 
         let exported = local;
         if (this.match(TokenType.TK_LABEL) && this.previous()!.value === 'as') {
-          const parsedExported = this.parseIdentifierName();
+          let parsedExported: IdentifierNode | null;
+          if (this.check(TokenType.TK_DEFAULT)) {
+            // export { x as default } — alias a local binding to the default export.
+            // Valid in ucode on all versions (oracle-verified). Finding #11.
+            const token = this.advance()!;
+            parsedExported = { type: 'Identifier', start: token.pos, end: token.end, name: 'default' };
+          } else {
+            parsedExported = this.parseIdentifierName();
+          }
           if (!parsedExported) continue;
           exported = parsedExported;
         }

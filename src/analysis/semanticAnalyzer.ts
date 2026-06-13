@@ -104,6 +104,12 @@ export class SemanticAnalyzer extends BaseVisitor {
   // name anywhere is valid (returns null until assigned, never a runtime error). Used to
   // suppress UC1001 for provable implicit globals. Empty under 'use strict'.
   private implicitGlobalNames = new Set<string>();
+  // Identifier reads that resolved to nothing during the pass. Deferred to a finalize
+  // step (resolvePendingUndefinedRefs) so each can be classified — once ALL declarations
+  // (incl. later let/const) are known — as either "used before its declaration" (UC1011)
+  // or a plain "Undefined variable" (UC1001). Single-pass ordering makes this impossible
+  // inline: a `const C` below the use isn't in the table yet when the use is visited.
+  private pendingUndefinedRefs: Array<{ name: string; start: number; end: number }> = [];
   // Names installed on the builtin `global` object via `global.X = …` anywhere in the
   // module. Shared with the type checker so a bare call `X(...)` isn't a false "Undefined
   // function" — `global.X` is a real global binding in BOTH strict and non-strict mode.
@@ -180,6 +186,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.disabledRanges = [];
     this.linesWithSuppressedDiagnostics.clear();
     this.resolvedImports = new Set();
+    this.pendingUndefinedRefs = [];
 
     // Store the AST root for later reference
     if (ast.type === 'Program') {
@@ -199,6 +206,11 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Visit the AST to perform semantic analysis
       this.visit(ast);
+
+      // Now that every declaration is known, classify the deferred unresolved reads as
+      // either "used before its declaration" or "Undefined variable". Must run BEFORE
+      // checkUnusedVariables so a use-before-decl marks its declaration used (no UC1006).
+      this.resolvePendingUndefinedRefs();
 
       // CFG-based reachability analysis (if enabled)
       if (this.options.enableControlFlowAnalysis && this.currentASTRoot) {
@@ -427,14 +439,39 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.implicitGlobalNames.clear();
     if (this.strictMode) return;
     const names = this.implicitGlobalNames;
+
+    // A name declared with `let`/`const` in a loop HEADER (`for (let i…)`, `for (let x in…)`)
+    // is block-scoped to that loop, never a global — even though its `i++` update looks like
+    // a bare assignment. Collect those names so the heuristic below doesn't mark them implicit
+    // globals (which would wrongly suppress the "out of scope" diagnostic when the loop var is
+    // read after the loop). Finding #17.
+    const loopHeaderLocals = new Set<string>();
+    const collectLoopLocals = (n: any): void => {
+      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+      const header = (n.type === 'ForStatement') ? n.init
+        : (n.type === 'ForInStatement' || n.type === 'ForOfStatement') ? n.left : null;
+      if (header?.type === 'VariableDeclaration') {
+        for (const d of header.declarations ?? []) {
+          if (d?.id?.type === 'Identifier' && d.id.name) loopHeaderLocals.add(d.id.name);
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) collectLoopLocals(it); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') collectLoopLocals(v);
+      }
+    };
+    collectLoopLocals(node);
+
     const walk = (n: any): void => {
       if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
       if (n.type === 'AssignmentExpression' && n.left?.type === 'Identifier' && n.left.name) {
-        names.add(n.left.name);
+        if (!loopHeaderLocals.has(n.left.name)) names.add(n.left.name);
       } else if (n.type === 'UnaryExpression' && (n.operator === '++' || n.operator === '--')
           && n.argument?.type === 'Identifier' && n.argument.name) {
         // `x++` / `--x` on an undeclared name also auto-creates the implicit global.
-        names.add(n.argument.name);
+        if (!loopHeaderLocals.has(n.argument.name)) names.add(n.argument.name);
       } else if (n.type === 'ForInStatement' && n.left?.type === 'Identifier' && n.left.name) {
         // A bare `for (x in …)` loop variable (no `let`) is an implicit global that
         // persists after the loop (verified vs the interpreter). Strict mode flags it
@@ -1663,7 +1700,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.functionReturnPropertyLocations.set(node, []);
 
       // Enter function scope
-      this.symbolTable.enterScope();
+      this.symbolTable.enterScope(node.start);
       this.functionScopes.push(this.symbolTable.getCurrentScope());
 
       // Declare parameters (with JSDoc type annotations if present)
@@ -1816,7 +1853,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.functionReturnPropertyLocations.set(node as any, []);
 
       // Enter function scope
-      this.symbolTable.enterScope();
+      this.symbolTable.enterScope(node.start);
       this.functionScopes.push(this.symbolTable.getCurrentScope());
 
       // If the function has a name (named function expression), declare it in the function's own scope
@@ -1889,7 +1926,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.functionReturnPropertyLocations.set(node as any, []);
 
       // Enter function scope for parameters
-      this.symbolTable.enterScope();
+      this.symbolTable.enterScope(node.start);
       this.functionScopes.push(this.symbolTable.getCurrentScope());
 
       // Declare parameters — JSDoc takes priority over callback inference
@@ -1960,7 +1997,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   visitBlockStatement(node: BlockStatementNode): void {
     if (this.options.enableScopeAnalysis) {
       // Enter block scope
-      this.symbolTable.enterScope();
+      this.symbolTable.enterScope(node.start);
       
       // Visit all statements in the block
       for (const statement of node.body) {
@@ -1992,7 +2029,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   visitCatchClause(node: CatchClauseNode): void {
     if (this.options.enableScopeAnalysis) {
       // Enter catch scope
-      this.symbolTable.enterScope();
+      this.symbolTable.enterScope(node.start);
 
       // Declare the catch parameter as an exception object if present
       if (node.param) {
@@ -2059,13 +2096,10 @@ export class SemanticAnalyzer extends BaseVisitor {
         // so it resolves to a real global at runtime — never an "undefined variable".
         const isImplicitGlobal = this.implicitGlobalNames.has(node.name);
         if (!isBuiltin && !isGlobalProperty && !this.processingFunctionCallCallee && !isUnimportedModuleBase && !isImplicitGlobal) {
-          this.addDiagnosticErrorCode(
-            UcodeErrorCode.UNDEFINED_VARIABLE,
-            `Undefined variable: ${node.name}`,
-            node.start,
-            node.end,
-            DiagnosticSeverity.Error,
-          );
+          // Defer: a `let`/`const` declared later in this same/enclosing block isn't in
+          // the table yet (single pass). resolvePendingUndefinedRefs decides UC1001 vs
+          // UC1011 ("used before its declaration") once all declarations are known.
+          this.pendingUndefinedRefs.push({ name: node.name, start: node.start, end: node.end });
         }
       } else {
         // Forward reference to a function used as a VALUE (assignment, callback
@@ -2946,7 +2980,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (this.options.enableScopeAnalysis) {
       // Create a new scope for the for loop to properly handle loop variable declarations
       // This ensures that 'for (let i = 0; ...)' variables don't conflict between different loops
-      this.symbolTable.enterScope();
+      this.symbolTable.enterScope(node.start);
       
       // Visit the loop components in the new scope
       if (node.init) {
@@ -2986,7 +3020,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (this.options.enableScopeAnalysis) {
       // Create a new scope for the for-in loop that will contain the iterator variables
       // This scope encompasses the entire loop body
-      this.symbolTable.enterScope();
+      this.symbolTable.enterScope(node.start);
       
       // Handle iterator variables (left side) - for...in loops can have 1 or 2 variables
       // Single variable: for (let item in array) - item gets the value
@@ -3268,6 +3302,43 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
+  /**
+   * Classify each deferred unresolved read (collected in visitIdentifier) now that every
+   * declaration — including `let`/`const` declared after the use — is known.
+   *
+   * If a same-or-enclosing-block `let`/`const` is declared LATER in source, the read is a
+   * forward reference that ucode never resolves (let/const aren't hoisted; even closures
+   * capture by position) → UC1011 "used before its declaration", and we mark that
+   * declaration used so it doesn't also draw a contradictory UC1006 "never used".
+   * Otherwise the name is genuinely undefined here (out of scope / never declared) → UC1001.
+   */
+  private resolvePendingUndefinedRefs(): void {
+    for (const ref of this.pendingUndefinedRefs) {
+      const decl = this.symbolTable.findInScopeLaterDeclaration(ref.name, ref.start);
+      if (decl) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.VARIABLE_USED_BEFORE_DECLARATION,
+          `'${ref.name}' is used before its declaration. Move its declaration above this use.`,
+          ref.start,
+          ref.end,
+          DiagnosticSeverity.Error,
+        );
+        decl.used = true;
+        decl.usedAt = decl.usedAt || [];
+        decl.usedAt.push(ref.start);
+      } else {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.UNDEFINED_VARIABLE,
+          `Undefined variable: ${ref.name}`,
+          ref.start,
+          ref.end,
+          DiagnosticSeverity.Error,
+        );
+      }
+    }
+    this.pendingUndefinedRefs = [];
+  }
+
   private checkUnusedVariables(): void {
     const unusedVariables = this.symbolTable.getUnusedVariables();
 
@@ -3458,8 +3529,24 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private inferObjectLiteralPropertyTypes(node: ObjectExpressionNode): Map<string, UcodeDataType> | null {
     const propTypes = new Map<string, UcodeDataType>();
     for (const prop of node.properties) {
-      // Skip spread elements — they don't have key/value
-      if (prop.type === 'SpreadElement') continue;
+      // A spread (`{ ...src, y: 2 }`) copies src's properties into this object. Merge the
+      // source's KNOWN property types here, in order, so a later explicit key still wins
+      // (`{ ...src, x: "s" }` → x is string). Purely additive: only known props are added,
+      // so it can never introduce a false "property does not exist". Finding #29 follow-up.
+      if (prop.type === 'SpreadElement') {
+        const arg = (prop as SpreadElementNode).argument;
+        let sourceProps: Map<string, UcodeDataType> | null = null;
+        if (arg.type === 'ObjectExpression') {
+          sourceProps = this.inferObjectLiteralPropertyTypes(arg as ObjectExpressionNode);
+        } else if (arg.type === 'Identifier') {
+          const sym = this.symbolTable.lookup((arg as IdentifierNode).name);
+          sourceProps = sym?.propertyTypes ?? null;
+        }
+        if (sourceProps) {
+          for (const [k, t] of sourceProps) propTypes.set(k, t);
+        }
+        continue;
+      }
       const key = this.resolveObjectLiteralKey(prop);
       if (!key) continue;
       const val = prop.value;
@@ -4138,9 +4225,35 @@ private addDiagnostic(
    *  when the mutation is immediately followed by a loop/function/program exit
    *  (the remove-and-break idiom). An UNCONDITIONAL growth in a loop with NO exit
    *  anywhere is a PROVABLE infinite loop → reported as an error, not a warning. */
+  /** Collect points where the loop body REBINDS `name` to a fresh value
+   *  (`name = …`, not a mutator call or compound op). Each rebind makes the name
+   *  point at a different object, so a later mutator on that name no longer touches
+   *  the iteratee captured at loop entry. `conditional` = nested in an if/loop/etc,
+   *  so it may not run every iteration. (UC4005, finding #58.) */
+  private collectIterateeRebinds(loopBody: AstNode, name: string): Array<{ start: number; conditional: boolean }> {
+    const rebinds: Array<{ start: number; conditional: boolean }> = [];
+    const walk = (node: any, conditional: boolean): void => {
+      if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+      if (node.type === 'AssignmentExpression' && node.operator === '='
+          && node.left?.type === 'Identifier' && node.left.name === name) {
+        rebinds.push({ start: node.start, conditional });
+      }
+      const childConditional = conditional || SemanticAnalyzer.CONDITIONAL_CONTAINERS.has(node.type);
+      for (const k of Object.keys(node)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = node[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it, childConditional); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, childConditional);
+      }
+    };
+    walk(loopBody, false);
+    return rebinds;
+  }
+
   private checkIterateeMutation(loopBody: AstNode, itereeName: string | null): void {
     if (!itereeName || !loopBody) return;
     const bodyHasExit = this.bodyContainsLoopExit(loopBody);
+    const rebinds = this.collectIterateeRebinds(loopBody, itereeName);
     const walk = (node: any, enclosingBlock: AstNode, conditional: boolean): void => {
       if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
       const block = node.type === 'BlockStatement' ? node : enclosingBlock;
@@ -4149,9 +4262,16 @@ private addDiagnostic(
           && SemanticAnalyzer.ARRAY_MUTATORS.has(node.callee.name)
           && node.arguments?.[0]?.type === 'Identifier' && node.arguments[0].name === itereeName) {
         if (!this.blockExitsLoop(enclosingBlock)) {
+          // A rebind of the iteratee name BEFORE this call means the call operates
+          // on a different array object than the one being iterated (finding #58).
+          // Unconditional rebind → the iteratee is provably untouched, skip entirely.
+          // Conditional rebind → can't prove same-object, so don't escalate to Error.
+          const priorRebinds = rebinds.filter(r => r.start < node.start);
+          if (priorRebinds.some(r => !r.conditional)) return;
+          const conditionallyRebound = priorRebinds.length > 0;
           const fn = node.callee.name;
           const grows = fn === 'push' || fn === 'unshift';
-          const provablyInfinite = grows && !conditional && !bodyHasExit;
+          const provablyInfinite = grows && !conditional && !bodyHasExit && !conditionallyRebound;
           const message = provablyInfinite
             ? `'${fn}()' grows '${itereeName}' every iteration and the loop has no exit — infinite loop.`
             : grows

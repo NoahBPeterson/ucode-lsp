@@ -67,6 +67,16 @@ export abstract class PrimaryExpressions extends ParseRules {
         end: token.end,
         name: 'from'
       };
+    } else if (this.check(TokenType.TK_DEFAULT)) {
+      // 'default' names the module's default export: import { default as X } from '…'
+      // (valid in ucode on all versions — oracle-verified). Finding #11.
+      const token = this.advance()!;
+      return {
+        type: 'Identifier',
+        start: token.pos,
+        end: token.end,
+        name: 'default'
+      };
     } else if (this.check(TokenType.TK_STRING)) {
       const token = this.advance()!;
       // Convert string literal to identifier for import specifier

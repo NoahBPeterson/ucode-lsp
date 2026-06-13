@@ -18,7 +18,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [08](08-disable-comment-ux.md) | `// ucode-lsp disable` only downgrades severity, no next-line/file/rule form, self-flags when unused | UX | medium |
 | [09](../done/09-in-operator-over-map-filter-keys.md) | ✅ **FIXED 0.6.213** — `'x' in map/filter/keys(param)` → false "'in' requires object or array" (ucode's `in` is null-safe over anything) | false-pos | medium |
 | [10](../done/10-render-builtin-variadic-arity.md) | ✅ **FIXED 0.6.214** — `render()` modeled as max-2-args; ucode's `render(fn, ...args)` is variadic | false-pos | low-med |
-| [11](11-default-keyword-in-brace-specifiers.md) | `import { default as X }` / `export { x as default }` rejected (valid in ucode) | false-pos (parse) | medium |
+| [11](../done/11-default-keyword-in-brace-specifiers.md) | ✅ **FIXED 0.6.230** — `import { default as X }` / `export { x as default }` rejected (valid ucode on all versions, oracle-verified) | false-pos (parse) | medium |
 | [12](12-uc1008-builtin-shadow-noise.md) | UC1008 warns on shadowing builtins for everyday names (`type`/`index`/`length`/…) | noise | low |
 | [13](13-nullable-argument-message-clarity.md) | nullable-argument message says "expects string or object" when the cause is nullability | message clarity | low |
 | [14](14-nullish-assign-member-typed-as-array.md) | `(obj.k ||= {})[key]=v` mis-infers `obj.k` as array → `keys()` false-errors | false-pos | low |
@@ -29,7 +29,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | # | Finding | Kind | Severity |
 |---|---|---|---|
 | [16](../done/16-const-reassignment-never-flagged.md) | ✅ **FIXED 0.6.202** — Reassigning a `const` is never flagged — the validator is dead code (hybrid-validator import commented out) | false-neg | high |
-| [17](17-use-before-declaration-contradictory.md) | Using a `let`/`const` before its declaration emits contradictory UC1001 "undefined" + UC1006 "unused" for the same var | false-pos | medium |
+| [17](../done/17-use-before-declaration-contradictory.md) | ✅ **FIXED 0.6.231** — use-before-declaration of a `let`/`const` now emits a single accurate **UC1011 "used before its declaration"** (was contradictory UC1001+UC1006); scope-discriminated so out-of-scope/loop-escape reads stay UC1001 | false-pos | medium |
 | [18](18-call-non-function-misleading-message.md) | Calling a defined non-function variable reports "Undefined function: X" (X is defined, just not callable) | message | low |
 | [19](19-nested-object-member-completion.md) | Member completion past the first hop (`o.a.b.`) returns the parent's keys, not the nested object's members | completion | medium |
 | [20](20-optional-chaining-completion.md) | `obj?.` completion falls back to the global builtin list instead of the receiver's members | completion | medium |
@@ -41,7 +41,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [26](26-bare-hex-prefix-no-digits.md) | Bare `0x` with no digits accepted — real ucode error missed | false-neg | low |
 | [27](27-invalid-escape-sequences-not-validated.md) | Invalid string/template escapes (`\u41`, `\u{41}`, `\x4`, `\777`) silently accepted | false-neg | low-med |
 | [28](28-invalid-digit-number-misleading-error.md) | Invalid-digit literals (`0o9`, `0xG`) produce a misleading cascade error | message | low |
-| [29](29-spread-not-counted-as-use.md) | Spreading a variable (`...a`) is not counted as a use → false UC1006 (root cause: missing `SpreadElement` dispatch in visitor.ts) | false-pos | medium |
+| [29](../done/29-spread-not-counted-as-use.md) | ✅ **FIXED 0.6.230** — Spreading a variable (`...a`) is not counted as a use → false UC1006 (root cause: missing `SpreadElement` dispatch in visitor.ts) | false-pos | medium |
 | [30](30-uc-lc-coercible-argument-error.md) | `uc()`/`lc()` flag a coercible non-string argument as an **error**, but ucode coerces it | false-pos | low-med |
 
 ## Findings 31–60 (builtins, modules, feature providers, format/regex, control-flow)
@@ -75,7 +75,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [55](55-regex-slash-star-misparsed.md) | `/*/` misparsed as a block-comment start → wrong "Unterminated comment" | lexer | low |
 | [56](56-bad-regex-flag-cascade.md) | An unsupported regex flag discards the token → cascading false arg-count error | cascade | low |
 | [57](57-while-true-not-never-returns.md) | `while(true)` not treated as non-terminating — code after isn't dead, fn isn't never-returns (`for(;;)` is) | false-neg | low-med |
-| [58](58-uc4005-reassigned-iteratee-false-positive.md) | UC4005 reports a false "infinite loop" **Error** when the iteratee is reassigned in-loop | false-pos | medium |
+| [58](../done/58-uc4005-reassigned-iteratee-false-positive.md) | ✅ **FIXED 0.6.230** — UC4005 reports a false "infinite loop" **Error** when the iteratee is reassigned in-loop | false-pos | medium |
 | [59](59-uc4005-aliased-iteratee-false-negative.md) | UC4005 misses mutation of the iteratee through an alias | false-neg | low |
 | [60](60-loop-update-flagged-unreachable.md) | A `for`-update after an unconditional `break` is flagged "Unreachable code" | UX | low |
 
@@ -98,7 +98,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [73](73-parse-failed-dependency-misreported.md) | Importing from a file that fails to parse → misleading "does not export X" | message | low-med |
 | [74](74-self-import-not-detected.md) | Self-import not detected as a circular dependency | false-neg | low |
 | [75](75-circular-import-not-detected.md) | Circular imports (a↔b) not detected | false-neg | low |
-| [76](76-in-operator-scalar-rhs-error.md) | `x in <string\|number\|null>` raised as a hard **error**; ucode returns `false` | false-pos | medium |
+| [76](../done/76-in-operator-scalar-rhs-error.md) | ✅ **FIXED 0.6.230** — `x in <scalar/null>` message corrected (kept Error — it's provably always-false; unknown/`object\|null` already exempt) | message | medium |
 | [77](77-bitwise-double-operand-warning.md) | Bitwise op on a `double` operand warns, but `x \| 0` is a valid idiom | false-pos | low |
 | [78](78-strict-equality-scalar-mismatch.md) | Strict `===`/`!==` between provably-different scalar types not flagged | false-neg | low |
 | [79](79-modulo-by-zero-not-flagged.md) | `n % 0` always yields NaN but is not flagged | false-neg | low |

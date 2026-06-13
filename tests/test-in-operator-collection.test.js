@@ -17,7 +17,7 @@ afterAll(() => { try { server.shutdown(); } catch {} });
 
 const uri = () => `/tmp/in-coll-${n++}.uc`;
 const errs = async (code) => (await server.getDiagnostics(code, uri()) || []).filter((x) => x.severity === 1).map((x) => x.message);
-const inErr = async (code) => (await errs(code)).some((m) => /'in' operator requires|possibly 'null'/.test(m));
+const inErr = async (code) => (await errs(code)).some((m) => /'in' operator requires|'in' over a .* is always false|possibly 'null'/.test(m));
 
 // ── The corpus repro: in over a collection-returning builtin on an unknown arg ─
 test("'x' in map(unknown, …) is clean", async () => {
@@ -58,8 +58,8 @@ test("'x' in a known object is clean", async () => {
 
 // ── A right side that can NEVER be a collection is still flagged (always false) ─
 test("'x' in an integer is still flagged", async () => {
-  expect((await errs("if ('a' in 5) print('y');\n")).some((m) => /'in' operator requires/.test(m))).toBe(true);
+  expect((await errs("if ('a' in 5) print('y');\n")).some((m) => /always false/.test(m))).toBe(true);
 });
 test("'x' in a string variable is still flagged", async () => {
-  expect((await errs("let s = \"x\";\nif ('a' in s) print('y');\n")).some((m) => /'in' operator requires/.test(m))).toBe(true);
+  expect((await errs("let s = \"x\";\nif ('a' in s) print('y');\n")).some((m) => /always false/.test(m))).toBe(true);
 });
