@@ -83,6 +83,22 @@ export const VERSION_MODULE_FUNCTIONS: Record<string, UcodeTargetVersion> = {
   'ubus.guard': '24.10',
 };
 
+/**
+ * METHODS on builtin object handles → the release they were introduced in, keyed
+ * `"objectType.method"` (e.g. `"fs.file.ioctl"`, `"uci.cursor.list_append"`). These
+ * live on the type RETURNED by a constructor (fs.open(), cursor(), …); when that
+ * constructor predates the method, this is the only place the version gap is caught
+ * (the module-function gating can't see methods on a local handle variable).
+ * Source-verified from the function-list tables at each pinned hash.
+ */
+export const VERSION_OBJECT_METHODS: Record<string, UcodeTargetVersion> = {
+  // fs.file.ioctl added in 24.10 (fs.open() existed in 23.05, so otherwise silent).
+  'fs.file.ioctl': '24.10',
+  // uci.cursor list mutators added in 24.10 (cursor() existed in 23.05).
+  'uci.cursor.list_append': '24.10',
+  'uci.cursor.list_remove': '24.10',
+};
+
 export interface VersionGatedFeature {
   /** Stable id (also the diagnostic's `data.feature`). */
   id: string;

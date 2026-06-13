@@ -54,8 +54,15 @@ disable the version checks (reflect the language as it currently is).
 | `uloop.guard` | `24.10` | absent on 23.05/22.03 |
 | `ubus.open_channel`, `ubus.guard` | `24.10` | absent on 23.05/22.03 |
 
-Module functions are gated at both the named-import (`import { mkdtemp } from 'fs'`)
-and namespace-member (`fs.mkdtemp()`) sites via `VERSION_MODULE_FUNCTIONS`.
+| `fs.file.ioctl()` (handle method) | `24.10` | absent on 23.05/22.03 |
+| `uci.cursor.list_append()` / `list_remove()` (handle methods) | `24.10` | absent on 23.05/22.03 |
+
+Module functions are gated at the named-import (`import { mkdtemp } from 'fs'`) and
+namespace-member (`fs.mkdtemp()`) sites via `VERSION_MODULE_FUNCTIONS`. Methods on
+returned object handles (`f.ioctl()`, `c.list_append()`) are gated via
+`VERSION_OBJECT_METHODS`, keyed `objectType.method` and checked in the object-handle
+member path — these matter when the handle-creating function (e.g. `fs.open()`,
+`cursor()`) predates the method, so nothing else would catch them.
 
 ### Known 24.10 → 25.12 differences intentionally NOT gated
 
@@ -66,11 +73,12 @@ are lower value (source-verified, listed for completeness):
 - `struct` `X`/`Z` format chars — new in the pack/unpack format mini-language.
 - `nl80211` listener `.request()` — a method on the object returned by `listener()`;
   the top-level `request()` already existed, so gating the name would false-positive.
-- 23.05→24.10 OBJECT-method / non-module-function additions: `fs.ioctl` (file-handle
-  method), `ubus` channel/request methods (`request`/`defer`/`await`/`get_fd`/…),
-  `uci` cursor methods (`list_append`/`list_remove`), `zlib`/`struct` stream/buffer
-  object methods. These aren't reachable by the import/namespace hooks (they live on
-  returned object types), so they're not gated.
+- `ubus` channel/request object methods (`request`/`defer`/`await`/`get_fd`/…) and
+  `zlib`/`struct` stream/buffer object methods — NOT separately gated because their
+  handle-creating constructor IS gated (`ubus.open_channel()`, `zlib.deflater()`,
+  `struct.buffer()`), so the usage already flags at the constructor line. (Contrast
+  `fs.file.ioctl` / `uci.cursor.list_*`, whose constructors `fs.open()`/`cursor()`
+  predate the methods — those ARE gated via `VERSION_OBJECT_METHODS`.)
 
 Optional chaining (`?.`) was reworked internally in 24.10 (commit a616fee) but the
 syntax already parsed on 23.05 (oracle-verified), so it is NOT a divergence.

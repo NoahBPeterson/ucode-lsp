@@ -15,7 +15,7 @@ const os = require('os');
 const { UcodeLexer } = require(path.resolve('src/lexer/ucodeLexer'));
 const { UcodeParser } = require(path.resolve('src/parser/ucodeParser'));
 const { SemanticAnalyzer } = require(path.resolve('src/analysis/semanticAnalyzer'));
-const { VERSION_MODULES, VERSION_MODULE_FUNCTIONS } = require(path.resolve('src/analysis/ucodeVersions'));
+const { VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS } = require(path.resolve('src/analysis/ucodeVersions'));
 const { TextDocument } = require('vscode-languageserver-textdocument');
 
 // Pinned ucode hashes per OpenWrt release (PKG_SOURCE_VERSION from each branch's
@@ -166,6 +166,22 @@ describe('source cross-check: registry introducedIn vs ucode source at pinned ha
     }
   });
 
+  test.if(ok)('every gated OBJECT METHOD is absent at its predecessor release and present at introducedIn', () => {
+    for (const [key, intro] of Object.entries(VERSION_OBJECT_METHODS)) {
+      const prev = PREDECESSOR[intro];
+      if (!prev) continue;
+      const parts = key.split('.');          // e.g. fs.file.ioctl → mod=fs, method=ioctl
+      const mod = parts[0], method = parts[parts.length - 1];
+      const file = MODULE_FILE[mod];
+      expect(file, `no MODULE_FILE mapping for '${mod}'`).toBeDefined();
+      const atPrev = gitShow(HASH[prev], file) || '';
+      const atIntro = gitShow(HASH[intro], file) || '';
+      const registered = (src) => new RegExp(`\\{\\s*"${method}"`).test(src);
+      expect(registered(atPrev), `${key} should be ABSENT in ${file} at ${prev}`).toBe(false);
+      expect(registered(atIntro), `${key} should be PRESENT in ${file} at ${intro}`).toBe(true);
+    }
+  });
+
   if (!ok) test.skip('vendored ucode/.git absent — source cross-check skipped', () => {});
 });
 
@@ -192,6 +208,30 @@ describe('UC6005 gating for 23.05 → 24.10 additions', () => {
       expect(f6005(code, '22.03')).toBe(true);
     });
   }
+});
+
+describe('UC6005 object-method gating (handle methods added in 24.10)', () => {
+  function f6005(code, tv) {
+    const doc = TextDocument.create('file:///t.uc', 'ucode', 1, code);
+    const { ast } = new UcodeParser(new UcodeLexer(code, { rawMode: true }).tokenize(), code).parse();
+    return new SemanticAnalyzer(doc, { targetVersion: tv }).analyze(ast).diagnostics.some(d => d.code === 'UC6005');
+  }
+  const cases = {
+    'fs.file.ioctl': "import { open } from 'fs';\nlet f = open('/dev/x');\nf.ioctl(1, 2);\n",
+    'uci.cursor.list_append': "import { cursor } from 'uci';\nlet c = cursor();\nc.list_append('s', 'o', 'v');\n",
+    'uci.cursor.list_remove': "import { cursor } from 'uci';\nlet c = cursor();\nc.list_remove('s', 'o', 'v');\n",
+  };
+  for (const [name, code] of Object.entries(cases)) {
+    test(`${name}: flagged on 23.05/22.03, clean on 24.10+`, () => {
+      expect(f6005(code, 'main')).toBe(false);
+      expect(f6005(code, '24.10')).toBe(false);
+      expect(f6005(code, '23.05')).toBe(true);
+      expect(f6005(code, '22.03')).toBe(true);
+    });
+  }
+  test('a pre-existing handle method (fs.file.read) is NOT flagged on 23.05', () => {
+    expect(f6005("import { open } from 'fs';\nlet f = open('/x');\nf.read('line');\n", '23.05')).toBe(false);
+  });
 });
 
 describe('cross-check vs per-version oracle binaries', () => {

@@ -26,7 +26,7 @@ import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType } from './fsMo
 import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
-import { UcodeTargetVersion, VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
+import { UcodeTargetVersion, VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
 import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
 import { JsDocCommentNode } from '../ast/nodes';
 import { Either, Option } from 'effect';
@@ -2222,6 +2222,15 @@ export class SemanticAnalyzer extends BaseVisitor {
     // (e.g. `socket` is both a module and an object type) is still validated.
     const handleType = extractModuleType(symbol.dataType);
     if (handleType && isKnownObjectType(handleType.moduleName) && !isKnownModule(handleType.moduleName)) {
+      // Version-gated: a method on an object handle (e.g. `f.ioctl()` on an fs.file,
+      // `c.list_append()` on a uci.cursor) that was added after the configured
+      // target's ucode → UC6005. The handle-creating function (fs.open/cursor) may
+      // predate the method, so this is the only place these get caught.
+      const objIntro = VERSION_OBJECT_METHODS[`${handleType.moduleName}.${methodName}`];
+      if (objIntro) {
+        this.flagVersionMin(objIntro, `\`${handleType.moduleName}.${methodName}()\` requires {INTRO}'s ucode`,
+          `it isn't available on the target`, node.property.start, node.property.end);
+      }
       return;
     }
 
