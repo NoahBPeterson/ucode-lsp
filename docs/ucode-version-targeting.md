@@ -45,14 +45,21 @@ disable the version checks (reflect the language as it currently is).
 |---------|-----------|----------------|
 | `export function f(){}` **without** a trailing `;` | `main` (2026-02-11) | 25.12/24.10/23.05/22.03 require the `;` |
 | the `io` module (`import … from 'io'`) | `25.12` (lib/io.c, 2025-11-29) | absent on 24.10/23.05/22.03 |
+| `fs.mkdtemp`, `fs.dup2` | `25.12` (2025-11-07) | absent on 24.10/23.05/22.03 |
+| `socket.open`, `socket.pair` | `25.12` (2025-08-07) | absent on 24.10/23.05/22.03 |
 
-### Known 24.10 → 25.12 additions not yet gated
+Module functions are gated at both the named-import (`import { mkdtemp } from 'fs'`)
+and namespace-member (`fs.mkdtemp()`) sites via `VERSION_MODULE_FUNCTIONS`.
 
-Source-verified from the function-list tables at each release's pinned hash (these
-load as shared `.so` plugins, so the binary oracles can't witness them). Candidates
-for future `VERSION_MODULE_FUNCTIONS`-style gating:
-`fs.mkdtemp`, `fs.dup2`, `socket.open`, `socket.pair`, `nl80211` listener `.request()`,
-`math.rand(min,max)` (2-arg form), `struct` `X`/`Z` format chars.
+### Known 24.10 → 25.12 differences intentionally NOT gated
+
+Signature/format-level or method-on-object changes that need bespoke detection and
+are lower value (source-verified, listed for completeness):
+
+- `math.rand(min, max)` — the 2-arg range form is new; 1-arg `rand()` existed. (Arity gate.)
+- `struct` `X`/`Z` format chars — new in the pack/unpack format mini-language.
+- `nl80211` listener `.request()` — a method on the object returned by `listener()`;
+  the top-level `request()` already existed, so gating the name would false-positive.
 
 ## Verifying against per-release oracles
 

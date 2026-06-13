@@ -53,6 +53,25 @@ export const VERSION_MODULES: Record<string, UcodeTargetVersion> = {
   io: '25.12',
 };
 
+/**
+ * Builtin MODULE FUNCTIONS → the release they were introduced in, keyed
+ * `"module.function"`. Importing or calling the function on an older target is
+ * flagged. Source-verified from the function-list tables at each pinned hash.
+ *
+ * Only function-EXISTENCE additions belong here. Signature/format-level changes
+ * (e.g. `math.rand`'s 2-arg form, `struct`'s X/Z format chars) and methods on
+ * returned objects (e.g. nl80211 listener `.request()`, where the top-level
+ * `request` already existed) need bespoke gating and are intentionally omitted.
+ */
+export const VERSION_MODULE_FUNCTIONS: Record<string, UcodeTargetVersion> = {
+  // Added 2025-11-07, after the 24.10 snapshot.
+  'fs.mkdtemp': '25.12',
+  'fs.dup2': '25.12',
+  // Added 2025-08-07, after the 24.10 snapshot.
+  'socket.open': '25.12',
+  'socket.pair': '25.12',
+};
+
 export interface VersionGatedFeature {
   /** Stable id (also the diagnostic's `data.feature`). */
   id: string;

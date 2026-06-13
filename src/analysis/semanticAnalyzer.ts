@@ -26,7 +26,7 @@ import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType } from './fsMo
 import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
-import { UcodeTargetVersion, VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
+import { UcodeTargetVersion, VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
 import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
 import { JsDocCommentNode } from '../ast/nodes';
 import { Either, Option } from 'effect';
@@ -1066,6 +1066,13 @@ export class SemanticAnalyzer extends BaseVisitor {
       const reg = MODULE_REGISTRIES[source];
       if (reg && reg.getFunctionNames().includes(importedName)) {
         dataType = UcodeType.FUNCTION as UcodeDataType;
+        // Version-gated: the function exists on the LSP's (newest) model but was
+        // added after the configured target's ucode → UC6005 on the specifier.
+        const fnIntro = VERSION_MODULE_FUNCTIONS[`${source}.${importedName}`];
+        if (fnIntro) {
+          this.flagVersionMin(fnIntro, `\`${source}.${importedName}\` requires {INTRO}'s ucode`,
+            `it isn't available on the target`, specifier.imported.start, specifier.imported.end);
+        }
       }
       // Object-handle exports (e.g. fs `stdin`/`stdout`/`stderr` → `fs.file`) are typed
       // as their object type — using the same ModuleType wrapper form as a local
@@ -2222,6 +2229,14 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (!moduleName) {
       // console.log('DEBUG: no module name found, returning');
       return;
+    }
+
+    // Version-gated: `module.method()` where the method was added after the
+    // configured target's ucode (e.g. `fs.mkdtemp()` on a 24.10 target) → UC6005.
+    const memberIntro = VERSION_MODULE_FUNCTIONS[`${moduleName}.${methodName}`];
+    if (memberIntro) {
+      this.flagVersionMin(memberIntro, `\`${moduleName}.${methodName}\` requires {INTRO}'s ucode`,
+        `it isn't available on the target`, node.property.start, node.property.end);
     }
 
     if (moduleName === 'fs') {

@@ -82,6 +82,31 @@ describe('UC6005 module-availability gating (io module)', () => {
   });
 });
 
+describe('UC6005 module-function gating (fs.mkdtemp/dup2, socket.open/pair)', () => {
+  function f6005(code, tv) {
+    const doc = TextDocument.create('file:///t.uc', 'ucode', 1, code);
+    const { ast } = new UcodeParser(new UcodeLexer(code, { rawMode: true }).tokenize(), code).parse();
+    return new SemanticAnalyzer(doc, { targetVersion: tv }).analyze(ast).diagnostics.some(d => d.code === 'UC6005');
+  }
+  const cases = {
+    'named import fs.mkdtemp': "import { mkdtemp } from 'fs';\nmkdtemp('/tmp/x');\n",
+    'namespace fs.dup2': "import * as fs from 'fs';\nfs.dup2(1, 2);\n",
+    'named import socket.open': "import { open } from 'socket';\nopen();\n",
+    'namespace socket.pair': "import * as socket from 'socket';\nsocket.pair();\n",
+  };
+  for (const [name, code] of Object.entries(cases)) {
+    test(`${name}: flagged on 24.10, clean on 25.12/main`, () => {
+      expect(f6005(code, 'main')).toBe(false);
+      expect(f6005(code, '25.12')).toBe(false);
+      expect(f6005(code, '24.10')).toBe(true);
+    });
+  }
+  test('a function that existed on 24.10 (fs.open) is NOT flagged', () => {
+    const code = "import * as fs from 'fs';\nfs.open('/x');\n";
+    expect(f6005(code, '24.10')).toBe(false);
+  });
+});
+
 describe('cross-check vs per-version oracle binaries', () => {
   const haveOracles = TARGETS.every(t => oracleAvailable(ORACLE[t]));
   test.if(haveOracles)('LSP flags UC6005 for a target iff that version rejects the code', () => {
