@@ -3,7 +3,9 @@ const path = require('path');
 const { createLSPTestServer } = require('./lsp-test-helpers');
 
 // Two upstream syntax updates:
-//   - `export function f() {}` no longer requires a trailing semicolon (552ca3c)
+//   - `export function f() {}` no longer requires a trailing semicolon (552ca3c) —
+//     the PARSER accepts it. It's valid only on ucode newer than 25.12, so the
+//     default (latest-stable) target flags it UC6005 (see test-target-version-gating).
 //   - `function f;` forward declarations (d9e24e4) — enable use-before-definition
 //     and mutual recursion. A forward declaration never completed by a real
 //     definition (and not exported) is flagged, since it would otherwise mask the
@@ -21,11 +23,16 @@ describe('Function forward declarations + optional export semicolon', function()
 
   const codes = (diags) => diags.map(d => d.code);
 
-  it('`export function f() {}` without a semicolon is accepted', async function() {
+  it('`export function f() {}` without a semicolon PARSES (no syntax error)', async function() {
     const d = await getDiagnostics('export function f() { return 1; }\n', path.join(__dirname, '..', 'test-fd-exp.uc'));
-    assert.ok(!codes(d).some(c => /semicolon/i.test(String(c)) || c === undefined),
-      `unexpected diagnostics: ${JSON.stringify(d.map(x => x.message))}`);
-    assert.deepStrictEqual(d, [], `expected no diagnostics, got: ${JSON.stringify(d.map(x => x.message))}`);
+    // The parser accepts it — no hard syntax/parse error (UC6001-UC6004) or
+    // code-less diagnostic.
+    assert.ok(!codes(d).some(c => c === undefined || /^UC600[1-4]$/.test(String(c))),
+      `unexpected parse error: ${JSON.stringify(d.map(x => x.message))}`);
+    // On the default target (latest stable, which predates the no-`;` feature) it's
+    // a UC6005 portability warning; targeting `main` clears it (covered by
+    // test-target-version-gating.test.js).
+    assert.deepStrictEqual(codes(d), ['UC6005'], `expected only UC6005, got: ${JSON.stringify(d.map(x => x.message))}`);
   });
 
   it('forward declaration + later definition + call: no diagnostics', async function() {

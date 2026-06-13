@@ -63,7 +63,7 @@ import { provideDocumentLinks } from './documentLinks';
 import { computeImportInsertEdit } from './importEdit';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalyzer, SemanticAnalysisResult, SymbolType } from './analysis';
-import { UCODE_TARGET_VERSIONS, UcodeTargetVersion } from './analysis/ucodeVersions';
+import { UCODE_TARGET_VERSIONS, UcodeTargetVersion, DEFAULT_TARGET_VERSION } from './analysis/ucodeVersions';
 import { UcodeParser } from './parser';
 import { UcodeLexer, TokenType } from './lexer';
 import { FileResolver } from './analysis/fileResolver';
@@ -134,11 +134,11 @@ async function refreshInlayHintSetting(): Promise<void> {
 // Cached `ucode.targetVersion` — which OpenWrt release's ucode the diagnostics
 // target. Drives version-gated diagnostics (see analysis/ucodeVersions.ts). The
 // analyzer runs synchronously, so we keep the latest value and re-pull on change.
-let ucodeTargetVersion: UcodeTargetVersion = 'main';
+let ucodeTargetVersion: UcodeTargetVersion = DEFAULT_TARGET_VERSION;
 
 async function refreshTargetVersion(): Promise<boolean> {
     const prev = ucodeTargetVersion;
-    let next: UcodeTargetVersion = 'main';
+    let next: UcodeTargetVersion = DEFAULT_TARGET_VERSION;
     if (hasConfigurationCapability) {
         try {
             const cfg = await connection.workspace.getConfiguration({ section: 'ucode' });

@@ -6,17 +6,19 @@ specific OpenWrt release and flag syntax that release's ucode would reject.
 
 ## The setting
 
-`ucode.targetVersion` (enum, default `main`):
+`ucode.targetVersion` (enum, default `25.12`):
 
 | value | ucode snapshot | OpenWrt |
 |-------|----------------|---------|
-| `main` *(default)* | newest | main / snapshot |
+| `main` | newest | main / snapshot |
+| `25.12` *(default)* | 2026-01-16 | OpenWrt 25.12 (latest release) |
 | `24.10` | 2025-07-18 | OpenWrt 24.10 |
 | `23.05` | 2024-07-11 | OpenWrt 23.05 |
 | `22.03` | 2022-12-02 | OpenWrt 22.03 |
 
-Default is `main` — the LSP reflects the language as it currently is. Set an older
-release to catch syntax that won't compile on your deploy target.
+Default is `25.12` — the latest stable release, what most code is deployed against.
+Choose an older release to catch syntax that won't compile there, or `main` to
+disable the version checks (reflect the language as it currently is).
 
 ## How it works
 
@@ -41,7 +43,7 @@ release to catch syntax that won't compile on your deploy target.
 
 | feature | introduced | older releases |
 |---------|-----------|----------------|
-| `export function f(){}` **without** a trailing `;` | `main` (2026-02-11) | 24.10/23.05/22.03 require the `;` |
+| `export function f(){}` **without** a trailing `;` | `main` (2026-02-11) | 25.12/24.10/23.05/22.03 require the `;` |
 
 ## Verifying against per-release oracles
 
@@ -49,7 +51,7 @@ Don't trust the system `ucode` binary for syntax — it's an arbitrary (often ol
 build. Build the exact ucode each release pins:
 
 ```sh
-scripts/build-ucode-oracles.sh   # installs ucode_main / ucode24_10 / ucode23_05 / ucode22_03
+scripts/build-ucode-oracles.sh   # installs ucode_main / ucode25_12 / ucode24_10 / ucode23_05 / ucode22_03
 ```
 
 Then `tests/test-target-version-gating.test.js` cross-checks the LSP's UC6005 gating

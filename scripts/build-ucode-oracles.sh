@@ -19,6 +19,7 @@ JSONC="$(brew --prefix json-c 2>/dev/null || echo /usr/local)"
 # name<TAB>git-hash (PKG_SOURCE_VERSION per OpenWrt release branch)
 ORACLES=(
   "_main 3ec4e5c238353067e4b58fb9bb9938d85d59e7c2"   # main / snapshot  (2026-06-03)
+  "25_12 85922056ef7abeace3cca3ab28bc1ac2d88e31b1"   # openwrt-25.12    (2026-01-16)
   "24_10 3f64c8089bf3ea4847c96b91df09fbfcaec19e1d"   # openwrt-24.10    (2025-07-18)
   "23_05 1a8a0bcf725520820802ad433db22d8f64fbed6c"   # openwrt-23.05    (2024-07-11)
   "22_03 46d93c9cc5da6fce581df86159bd0fc4357de41c"   # openwrt-22.03    (2022-12-02)

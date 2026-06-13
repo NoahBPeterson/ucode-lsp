@@ -17,8 +17,8 @@ const { UcodeParser } = require(path.resolve('src/parser/ucodeParser'));
 const { SemanticAnalyzer } = require(path.resolve('src/analysis/semanticAnalyzer'));
 const { TextDocument } = require('vscode-languageserver-textdocument');
 
-const TARGETS = ['main', '24.10', '23.05', '22.03'];
-const ORACLE = { 'main': 'ucode_main', '24.10': 'ucode24_10', '23.05': 'ucode23_05', '22.03': 'ucode22_03' };
+const TARGETS = ['main', '25.12', '24.10', '23.05', '22.03'];
+const ORACLE = { 'main': 'ucode_main', '25.12': 'ucode25_12', '24.10': 'ucode24_10', '23.05': 'ucode23_05', '22.03': 'ucode22_03' };
 
 const NOSEMI = 'export function f() { return 7; }\n';
 const SEMI = 'export function f() { return 7; };\n';
@@ -43,15 +43,17 @@ function oracleAccepts(bin, moduleSrc) {
 }
 
 describe('UC6005 export-function-without-semicolon gating', () => {
-  test('flagged only when target is older than main', () => {
+  test('flagged on every release older than main (incl. 25.12), not on main', () => {
     expect(flags6005(NOSEMI, 'main')).toBe(false);
-    for (const t of ['24.10', '23.05', '22.03']) expect(flags6005(NOSEMI, t)).toBe(true);
+    for (const t of ['25.12', '24.10', '23.05', '22.03']) expect(flags6005(NOSEMI, t)).toBe(true);
   });
   test('never flagged when the trailing ; is present', () => {
     for (const t of TARGETS) expect(flags6005(SEMI, t)).toBe(false);
   });
-  test('unset target defaults to main (not flagged)', () => {
-    expect(flags6005(NOSEMI, undefined)).toBe(false);
+  test('unset target defaults to 25.12 (latest release) → flagged', () => {
+    // DEFAULT_TARGET_VERSION is the latest stable (25.12), which predates the
+    // no-semicolon feature, so the no-`;` form is flagged by default.
+    expect(flags6005(NOSEMI, undefined)).toBe(true);
   });
   test('message names the target release and the setting', () => {
     const doc = TextDocument.create('file:///t.uc', 'ucode', 1, NOSEMI);

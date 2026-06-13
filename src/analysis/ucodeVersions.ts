@@ -17,14 +17,19 @@
  */
 
 /** Supported ucode targets, OLDEST → NEWEST. Index is the version ordering. */
-export const UCODE_TARGET_VERSIONS = ['22.03', '23.05', '24.10', 'main'] as const;
+export const UCODE_TARGET_VERSIONS = ['22.03', '23.05', '24.10', '25.12', 'main'] as const;
 export type UcodeTargetVersion = typeof UCODE_TARGET_VERSIONS[number];
+
+/** The default target when `ucode.targetVersion` is unset: the latest OpenWrt
+ *  release (not bleeding-edge `main`). */
+export const DEFAULT_TARGET_VERSION: UcodeTargetVersion = '25.12';
 
 /** OpenWrt release → the ucode git snapshot date it pins (for diagnostics/help). */
 export const UCODE_SNAPSHOT_DATES: Record<UcodeTargetVersion, string> = {
   '22.03': '2022-12-02',
   '23.05': '2024-07-11',
   '24.10': '2025-07-18',
+  '25.12': '2026-01-16',
   'main': 'newest',
 };
 
@@ -49,10 +54,11 @@ export interface VersionGatedFeature {
  * per-release oracles. Keep this the single source of truth.
  */
 export const VERSION_FEATURES = {
-  /** `export function f(){}` without a trailing `;`. Valid on main; on 24.10 and
+  /** `export function f(){}` without a trailing `;`. Valid on main; on 25.12 and
    *  earlier the `;` is required (`Syntax error: Unexpected token, Expecting ';'`).
    *  Introduced 2026-02-11 ("compiler: allow export function declarations without
-   *  trailing semicolon"), after the 24.10 snapshot. */
+   *  trailing semicolon"), after the 25.12 snapshot (2026-01-16). Confirmed err on
+   *  the ucode25_12/ucode24_10 oracles, ok on ucode_main. */
   exportFunctionNoSemicolon: {
     id: 'export-function-no-semicolon',
     introducedIn: 'main',

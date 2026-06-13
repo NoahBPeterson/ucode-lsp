@@ -115,27 +115,27 @@ test('13 deleting a file with MULTIPLE diagnostics clears all of them', async ()
 
 // ── Cross-file invalidation ──────────────────────────────────────────────────
 test('14 a CLOSED importer gets an error when its dependency drops the export', async () => {
-  const lib = writeFile('dep_lib.uc', 'export function depFn() { return 1; }\n');
+  const lib = writeFile('dep_lib.uc', 'export function depFn() { return 1; };\n');
   const imp = writeFile('dep_importer.uc', "import { depFn } from './dep_lib.uc';\ndepFn();\n");
   server.notifyWatchedFileChange(uriOf(lib), CREATED);
   server.notifyWatchedFileChange(uriOf(imp), CREATED);
   await waitClean(uriOf(imp)); // importer is fine to start
-  fs.writeFileSync(lib, 'export function other() { return 1; }\n'); // depFn gone
+  fs.writeFileSync(lib, 'export function other() { return 1; };\n'); // depFn gone
   server.notifyWatchedFileChange(uriOf(lib), CHANGED);
   expect((await waitErr(uriOf(imp))).length).toBeGreaterThan(0);
 });
 test('15 a CLOSED importer clears its error when the dependency restores the export', async () => {
-  const lib = writeFile('dep_lib2.uc', 'export function other() { return 1; }\n'); // missing depFn2
+  const lib = writeFile('dep_lib2.uc', 'export function other() { return 1; };\n'); // missing depFn2
   const imp = writeFile('dep_importer2.uc', "import { depFn2 } from './dep_lib2.uc';\ndepFn2();\n");
   server.notifyWatchedFileChange(uriOf(lib), CREATED);
   server.notifyWatchedFileChange(uriOf(imp), CREATED);
   await waitErr(uriOf(imp)); // missing export -> error
-  fs.writeFileSync(lib, 'export function depFn2() { return 1; }\n'); // restore
+  fs.writeFileSync(lib, 'export function depFn2() { return 1; };\n'); // restore
   server.notifyWatchedFileChange(uriOf(lib), CHANGED);
   expect((await waitClean(uriOf(imp))).length).toBe(0);
 });
 test('16 deleting a dependency surfaces an error in its closed importer', async () => {
-  const lib = writeFile('gone_lib.uc', 'export function goneFn() { return 1; }\n');
+  const lib = writeFile('gone_lib.uc', 'export function goneFn() { return 1; };\n');
   const imp = writeFile('gone_importer.uc', "import { goneFn } from './gone_lib.uc';\ngoneFn();\n");
   server.notifyWatchedFileChange(uriOf(lib), CREATED);
   server.notifyWatchedFileChange(uriOf(imp), CREATED);
@@ -148,22 +148,22 @@ test('16 deleting a dependency surfaces an error in its closed importer', async 
   expect((await waitErr(uriOf(imp))).length).toBeGreaterThan(0);
 });
 test('17 transitive: changing C invalidates a closed A that imports B that imports C', async () => {
-  const c = writeFile('chain_c.uc', 'export function cFn() { return 1; }\n');
-  const b = writeFile('chain_b.uc', "import { cFn } from './chain_c.uc';\nexport function bFn() { return cFn(); }\n");
+  const c = writeFile('chain_c.uc', 'export function cFn() { return 1; };\n');
+  const b = writeFile('chain_b.uc', "import { cFn } from './chain_c.uc';\nexport function bFn() { return cFn(); };\n");
   const a = writeFile('chain_a.uc', "import { bFn } from './chain_b.uc';\nbFn();\n");
   for (const f of [c, b, a]) server.notifyWatchedFileChange(uriOf(f), CREATED);
   await waitClean(uriOf(b));
-  fs.writeFileSync(c, 'export function notCFn() { return 1; }\n'); // cFn gone -> B's import breaks
+  fs.writeFileSync(c, 'export function notCFn() { return 1; };\n'); // cFn gone -> B's import breaks
   server.notifyWatchedFileChange(uriOf(c), CHANGED);
   expect((await waitErr(uriOf(b))).length).toBeGreaterThan(0);
 });
 test('18 an OPEN importer is re-analyzed when its dependency changes', async () => {
-  const lib = writeFile('open_lib.uc', 'export function openFn() { return 1; }\n');
+  const lib = writeFile('open_lib.uc', 'export function openFn() { return 1; };\n');
   const imp = writeFile('open_importer.uc', "import { openFn } from './open_lib.uc';\nopenFn();\n");
   server.notifyWatchedFileChange(uriOf(lib), CREATED);
   // open the importer (so it's a live document, not just on disk)
   await server.getDiagnostics("import { openFn } from './open_lib.uc';\nopenFn();\n", imp);
-  fs.writeFileSync(lib, 'export function renamed() { return 1; }\n');
+  fs.writeFileSync(lib, 'export function renamed() { return 1; };\n');
   server.notifyWatchedFileChange(uriOf(lib), CHANGED);
   expect((await waitErr(uriOf(imp))).length).toBeGreaterThan(0);
 });

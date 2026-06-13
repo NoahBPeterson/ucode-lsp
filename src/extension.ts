@@ -74,13 +74,14 @@ function showFunctionReferences(
 // persist it to the `ucode.targetVersion` setting. Invoked from the UC6005 quick fix.
 async function selectTargetVersion(): Promise<void> {
     const items: vscode.QuickPickItem[] = [
-        { label: 'main', description: 'OpenWrt main / snapshot — newest ucode (default)' },
+        { label: 'main', description: 'OpenWrt main / snapshot — newest ucode (disables version checks)' },
+        { label: '25.12', description: 'OpenWrt 25.12 (ucode 2026-01-16) — default, latest release' },
         { label: '24.10', description: 'OpenWrt 24.10 (ucode 2025-07-18)' },
         { label: '23.05', description: 'OpenWrt 23.05 (ucode 2024-07-11)' },
         { label: '22.03', description: 'OpenWrt 22.03 (ucode 2022-12-02)' },
     ];
     const cfg = vscode.workspace.getConfiguration('ucode');
-    const current = cfg.get<string>('targetVersion', 'main');
+    const current = cfg.get<string>('targetVersion', '25.12');
     const pick = await vscode.window.showQuickPick(items, {
         title: 'ucode: target OpenWrt release',
         placeHolder: `Current: ${current}. Diagnostics will target this release's ucode.`,

@@ -26,7 +26,7 @@ import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType } from './fsMo
 import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
-import { UcodeTargetVersion, VersionGatedFeature, VERSION_FEATURES, targetLacksFeature } from './ucodeVersions';
+import { UcodeTargetVersion, VersionGatedFeature, VERSION_FEATURES, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
 import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
 import { JsDocCommentNode } from '../ast/nodes';
 import { Either, Option } from 'effect';
@@ -133,7 +133,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   private get targetVersion(): UcodeTargetVersion {
-    return this.options.targetVersion ?? 'main';
+    return this.options.targetVersion ?? DEFAULT_TARGET_VERSION;
   }
 
   /**
