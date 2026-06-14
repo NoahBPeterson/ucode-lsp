@@ -31,11 +31,11 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [16](../done/16-const-reassignment-never-flagged.md) | ✅ **FIXED 0.6.202** — Reassigning a `const` is never flagged — the validator is dead code (hybrid-validator import commented out) | false-neg | high |
 | [17](../done/17-use-before-declaration-contradictory.md) | ✅ **FIXED 0.6.231** — use-before-declaration of a `let`/`const` now emits a single accurate **UC1011 "used before its declaration"** (was contradictory UC1001+UC1006); scope-discriminated so out-of-scope/loop-escape reads stay UC1001 | false-pos | medium |
 | [18](18-call-non-function-misleading-message.md) | Calling a defined non-function variable reports "Undefined function: X" (X is defined, just not callable) | message | low |
-| [19](19-nested-object-member-completion.md) | Member completion past the first hop (`o.a.b.`) returns the parent's keys, not the nested object's members | completion | medium |
-| [20](20-optional-chaining-completion.md) | `obj?.` completion falls back to the global builtin list instead of the receiver's members | completion | medium |
+| [19](../done/19-nested-object-member-completion.md) | ✅ **FIXED 0.6.237** — nested-object member completion at any depth (`o.inner.`, `o.a.b.`) + aliases (`let i = o.inner; i.`), by descending the object-literal AST | completion | medium |
+| [20](../done/20-optional-chaining-completion.md) | ✅ **FIXED 0.6.237** — `obj?.` is now a member-access trigger (TK_QDOT treated like TK_DOT), offering the receiver's members | completion | medium |
 | [21](21-completion-inside-strings-comments.md) | Completion fires inside string literals and comments | completion | low-med |
 | [22](22-this-member-completion.md) | `this.` completion inside an object method returns global builtins, not the object's properties | completion | low-med |
-| [23](23-nl80211-rtnl-const-namespace-completion.md) | `nl80211.const.` / `rtnl.const.` completion is empty — constants unreachable at their only valid path | completion | medium |
+| [23](../done/23-nl80211-rtnl-const-namespace-completion.md) | ✅ **FIXED 0.6.237** — `nl80211.const.` / `rtnl.const.` now list the module's constants (the chain `['const']` on the module namespace) | completion | medium |
 | [24](24-nl80211-rtnl-constants-as-import-names.md) | nl80211/rtnl constants offered as top-level `import { }` names and import without error (not exported) | false-neg | medium |
 | [25](25-hex-float-literals-rejected.md) | Hex float literals (`0xFF.5`) rejected — valid ucode | false-pos | low |
 | [26](26-bare-hex-prefix-no-digits.md) | Bare `0x` with no digits accepted — real ucode error missed | false-neg | low |
@@ -84,7 +84,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | # | Finding | Kind | Severity |
 |---|---|---|---|
 | [61](../done/61-jsdoc-returns-ignored.md) | ✅ **FIXED 0.6.233–234** — `@returns {T}` types the function return, reconciled SOUNDLY: it may FILL an `unknown` body or restate/widen, but NEVER narrow away a real possibility (`string\|null`→`string` is flagged, not silently honoured). An uncovered `return` is flagged per-statement (UC7005), no-return on the tag, each with a quick fix that sets `@returns` to the true inferred type/union. (Also fixed: a trailing `//` comment on the JSDoc line no longer severs attachment.) | inference gap | medium |
-| [62](62-jsdoc-type-tag-unsupported.md) | ⛔ **DECLINED 0.6.234** — `@type {T}` on a variable is an unverified assertion the checker would then trust; for an opaque variable `unknown` is the safe default (suppresses checks), so `@type` only trades that safety away — a footgun with no floor. Intentionally not implemented. | inference gap | medium |
+| [62](../rejected/62-jsdoc-type-tag-unsupported.md) | ⛔ **DECLINED 0.6.234** — `@type {T}` on a variable is an unverified assertion the checker would then trust; for an opaque variable `unknown` is the safe default (suppresses checks), so `@type` only trades that safety away — a footgun with no floor. Intentionally not implemented. | inference gap | medium |
 | [63](63-jsdoc-prefix-nullable.md) | JSDoc prefix-nullable `?T` rejected (only postfix `T?` works) | false-pos | low |
 | [64](64-jsdoc-object-shape-param-dropped.md) | Object-shape `@param {{a: string}}` silently dropped — no type, no warning | inference gap | low-med |
 | [65](65-jsdoc-missing-braces-double-error.md) | `@param string x` (missing braces) → two misleading diagnostics | message | low |
@@ -123,7 +123,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [93](93-add-import-no-merge.md) | Add-import doesn't merge into an existing import from the same module | code-action | low |
 | [94](94-add-jsdoc-unreachable-for-arrows.md) | "Add JSDoc" (UC7003) never fires for arrow/fn-expr/object-method definitions | dead coverage | low-med |
 | [95](95-add-jsdoc-not-offered-partial.md) | "Add JSDoc" not offered for a function with partial existing JSDoc | missing fix | low |
-| [96](96-module-path-completion-broken-with-braces.md) | Module-path completion broken for `import { … } from '…'` (the common form) | completion | medium |
+| [96](../done/96-module-path-completion-broken-with-braces.md) | ✅ **FIXED 0.6.237** — named-import module-path completion (`import { open } from 'f|'`) now offers modules; the backward token scan no longer stops at the specifier `}` | completion | medium |
 | [97](97-require-path-completion-missing.md) | `require('…')` path completion not implemented | completion | low |
 | [98](98-let-const-name-offers-builtins.md) | `let`/`const`/`for`-init name position offers builtins (rename-on-commit hazard) | completion | low-med |
 | [99](99-object-key-position-floods-builtins.md) | Object-literal key position floods with builtins/constants | completion | low |

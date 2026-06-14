@@ -278,13 +278,22 @@ export function handleCompletion(
                 }
             }
             
-            // Check if this is a variable with generic object properties
+            // Check if this is a variable with generic object properties (the analyzer's
+            // typed propertyTypes — best detail/kind for a direct `o.`).
             const variableCompletions = getVariableCompletions(objectName, analysisResult, document.uri, offset);
             if (variableCompletions.length > 0) {
                 connection.console.log(`Returning ${variableCompletions.length} variable completions for ${objectName}`);
                 return variableCompletions;
             }
-            
+
+            // Fallback: an object-literal-backed variable the typed path missed — notably an
+            // alias like `let i = o.inner; i.`, where i carries no propertyTypes. Resolve it
+            // to the object literal and list its keys. (#19)
+            const literalAliasCompletions = objectLiteralChainCompletions(objectName, propertyChain, analysisResult, offset);
+            if (literalAliasCompletions.length > 0) {
+                return literalAliasCompletions;
+            }
+
             // For member expressions, return empty array - never show builtin functions
             connection.console.log(`No specific completions for object: ${objectName}`);
             return [];
@@ -334,10 +343,14 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
 
     let dotTokenIndex = -1;
 
-    // Find the most recent DOT token before or at the cursor
+    // `.` and `?.` are both member-access triggers: `o?.` must complete o's members exactly
+    // like `o.` does (optional chaining is just null-safe access). (#20)
+    const isDot = (t: number) => t === TokenType.TK_DOT || t === TokenType.TK_QDOT;
+
+    // Find the most recent DOT/QDOT token before or at the cursor
     for (let i = tokens.length - 1; i >= 0; i--) {
         const token = tokens[i];
-        if (token.type === TokenType.TK_DOT && token.pos <= offset) {
+        if (isDot(token.type) && token.pos <= offset) {
             dotTokenIndex = i;
             break;
         }
@@ -368,14 +381,14 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
             // Check if this label is properly connected to the next dot
             if (currentTokenIndex + 1 < tokens.length) {
                 const nextToken = tokens[currentTokenIndex + 1];
-                if (nextToken.type === TokenType.TK_DOT && token.end === nextToken.pos) {
+                if (isDot(nextToken.type) && token.end === nextToken.pos) {
                     // This label is connected to a dot, add it to the chain
                     propertyChain.unshift(token.value as string);
 
                     // Look for another dot before this label
                     if (currentTokenIndex > 0) {
                         const prevToken = tokens[currentTokenIndex - 1];
-                        if (prevToken.type === TokenType.TK_DOT && prevToken.end === token.pos) {
+                        if (isDot(prevToken.type) && prevToken.end === token.pos) {
                             // There's another dot before this label, continue the chain
                             currentTokenIndex -= 2; // Skip the dot and continue
                             continue;
@@ -406,7 +419,7 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
                 const funcName = tokens[j].value as string;
                 let moduleName: string | undefined;
                 // Check for module prefix: LABEL DOT LABEL(...)
-                if (j >= 2 && tokens[j - 1].type === TokenType.TK_DOT && tokens[j - 2].type === TokenType.TK_LABEL) {
+                if (j >= 2 && isDot(tokens[j - 1].type) && tokens[j - 2].type === TokenType.TK_LABEL) {
                     moduleName = tokens[j - 2].value as string;
                 }
                 const objType = resolveReturnObjectType(funcName, moduleName);
@@ -906,6 +919,21 @@ function getPropertyChainCompletions(objectName: string, propertyChain: string[]
         return [];
     }
 
+    // Nested object-literal members at ANY depth: descend the declaration's object-literal AST
+    // through the property chain and list the landing object's keys (`o.inner.` → x,y,
+    // `o.a.b.` → z). (#19)
+    const nestedLiteralCompletions = objectLiteralChainCompletions(objectName, propertyChain, analysisResult, offset);
+    if (nestedLiteralCompletions.length > 0) return nestedLiteralCompletions;
+
+    // `nl80211.const.` / `rtnl.const.` → the constants live under a nested `const` object (the
+    // ONLY valid access path; lib/{nl80211,rtnl}.c add them under "const", not the module
+    // scope). objectName is the module namespace, the chain is exactly ['const']. (#23)
+    if (propertyChain.length === 1 && propertyChain[0] === 'const') {
+        const modName = extractModuleType(symbol.dataType)?.moduleName ?? symbol.importedFrom;
+        if (modName === 'nl80211') return nl80211ConstantItems();
+        if (modName === 'rtnl') return rtnlConstantItems();
+    }
+
     // Pattern: <module-namespace>.<objectExport>.  (e.g. `fs.stdin.`) → the handle's
     // methods. The namespace symbol carries moduleName='fs'; the member is an object
     // export typed as fs.file, so offer that object type's methods.
@@ -1132,6 +1160,60 @@ function resolveDefaultExportObject(
     return null;
 }
 
+/** Resolve an AST node to the ObjectExpression it ultimately denotes, following variable
+ *  bindings (`let i = o`) and non-computed member access (`o.inner`) through object literals.
+ *  Returns null if it doesn't resolve to an object literal. (#19) */
+function resolveToObjectLiteral(node: any, analysisResult: SemanticAnalysisResult | undefined, offset: number | undefined, visited = new Set<string>()): any | null {
+    if (!node || typeof node !== 'object') return null;
+    if (node.type === 'ObjectExpression') return node;
+    if (node.type === 'Identifier') {
+        if (visited.has(node.name)) return null;
+        visited.add(node.name);
+        const sym = analysisResult ? lookupSymbol(node.name, analysisResult, offset) : undefined;
+        return sym ? resolveToObjectLiteral((sym as any).initNode, analysisResult, offset, visited) : null;
+    }
+    if (node.type === 'MemberExpression' && !node.computed && node.property?.type === 'Identifier') {
+        const objLit = resolveToObjectLiteral(node.object, analysisResult, offset, visited);
+        if (!objLit) return null;
+        const prop = (objLit.properties || []).find((p: any) => p?.type === 'Property' && extractDefaultExportPropertyName(p) === node.property.name);
+        return prop ? resolveToObjectLiteral(prop.value, analysisResult, offset, visited) : null;
+    }
+    return null;
+}
+
+/** Walk a property chain (`['inner','deep']`) down through nested object literals starting at
+ *  `rootLit`, resolving each step's value (which may itself be a binding/member). Returns the
+ *  ObjectExpression the chain lands on, or null. (#19) */
+function objectLiteralAtChain(rootLit: any, chain: string[], analysisResult: SemanticAnalysisResult | undefined, offset: number | undefined): any | null {
+    let current = rootLit;
+    for (const key of chain) {
+        if (!current || current.type !== 'ObjectExpression') return null;
+        const prop = (current.properties || []).find((p: any) => p?.type === 'Property' && extractDefaultExportPropertyName(p) === key);
+        if (!prop) return null;
+        current = resolveToObjectLiteral(prop.value, analysisResult, offset);
+    }
+    return current && current.type === 'ObjectExpression' ? current : null;
+}
+
+/** Completions for `objectName` + property chain when `objectName` is backed by an object
+ *  literal (directly, or via an alias / member). Lists the keys of the object the chain lands
+ *  on, at any depth. Empty when it isn't object-literal-backed. (#19) */
+function objectLiteralChainCompletions(objectName: string, propertyChain: string[] | undefined, analysisResult: SemanticAnalysisResult | undefined, offset: number | undefined): CompletionItem[] {
+    const sym = analysisResult ? lookupSymbol(objectName, analysisResult, offset) : undefined;
+    if (!sym) return [];
+    const rootLit = resolveToObjectLiteral((sym as any).initNode, analysisResult, offset);
+    if (!rootLit) return [];
+    const target = objectLiteralAtChain(rootLit, propertyChain ?? [], analysisResult, offset);
+    if (!target) return [];
+    return extractPropertiesFromObjectExpression(target).map(p => ({
+        label: p.name,
+        kind: CompletionItemKind.Property,
+        detail: p.type,
+        insertText: p.name,
+        sortText: '0_' + p.name,
+    }));
+}
+
 function extractPropertiesFromObjectExpression(objectExpression: any): { name: string; type: string }[] {
     const properties: { name: string; type: string }[] = [];
     if (!objectExpression?.properties) {
@@ -1218,6 +1300,34 @@ function getCompletionKindForProperty(type: string): CompletionItemKind {
         default:
             return CompletionItemKind.Property;
     }
+}
+
+/** The nl80211 constants as completion items (they live under the module's `const` object). */
+function nl80211ConstantItems(): CompletionItem[] {
+    const items: CompletionItem[] = [];
+    for (const name of nl80211TypeRegistry.getConstantNames()) {
+        const sig = nl80211TypeRegistry.getConstant(name);
+        if (sig) items.push({
+            label: name, kind: CompletionItemKind.Constant, detail: `nl80211 constant: ${sig.type}`,
+            documentation: { kind: MarkupKind.Markdown, value: nl80211TypeRegistry.getConstantDocumentation(name) },
+            insertText: name,
+        });
+    }
+    return items;
+}
+
+/** The rtnl constants as completion items (they live under the module's `const` object). */
+function rtnlConstantItems(): CompletionItem[] {
+    const items: CompletionItem[] = [];
+    for (const name of rtnlTypeRegistry.getConstantNames()) {
+        const sig = rtnlTypeRegistry.getConstant(name);
+        if (sig) items.push({
+            label: name, kind: CompletionItemKind.Constant, detail: `rtnl constant: ${sig.type}`,
+            documentation: { kind: MarkupKind.Markdown, value: rtnlTypeRegistry.getConstantDocumentation(name) },
+            insertText: name,
+        });
+    }
+    return items;
 }
 
 function getNl80211ConstObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
@@ -1353,9 +1463,11 @@ function detectImportCompletionContext(offset: number, tokens: any[], text: stri
             break; // Found import, we can stop looking further back
         }
         
-        // If we hit another statement-ending token before finding import, stop
-        if (token.type === TokenType.TK_SCOL || token.type === TokenType.TK_RBRACE || 
-            token.type === TokenType.TK_NEWLINE) {
+        // If we hit another statement-ending token before finding import, stop.
+        // NOT TK_RBRACE: the `}` of a `{ … }` specifier list sits between `import` and
+        // `from`, so breaking on it hid the import context for the named-import form
+        // (`import { open } from 'fs'`) — the most common one. (#96)
+        if (token.type === TokenType.TK_SCOL || token.type === TokenType.TK_NEWLINE) {
             break;
         }
     }
