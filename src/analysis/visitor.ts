@@ -17,6 +17,23 @@ import {
   SpreadElementNode
 } from '../ast/nodes';
 
+/**
+ * Thrown by a recursive AST walker when nesting exceeds MAX_ANALYSIS_DEPTH, BEFORE the native
+ * JS stack overflows. Lets every traversal entry point degrade gracefully (one "too deeply
+ * nested" warning) instead of crashing — see SemanticAnalyzer.reportTraversalOverflow. (#117)
+ */
+export class AnalysisDepthExceeded extends Error {
+  constructor(public readonly limit: number) {
+    super(`Expression nesting exceeds ${limit} levels`);
+    this.name = 'AnalysisDepthExceeded';
+  }
+}
+
+/** Max AST nesting any recursive walker will descend before bailing. Chosen well below the
+ *  observed native stack-overflow point (~2000 in the original env, ~3050 here) for safety
+ *  across Node versions, and far above any realistic ucode nesting depth. (#117) */
+export const MAX_ANALYSIS_DEPTH = 1000;
+
 export interface VisitorMethods {
   visitProgram?(node: ProgramNode): void;
   visitLiteral?(node: LiteralNode): void;
@@ -62,7 +79,20 @@ export interface VisitorMethods {
 }
 
 export class BaseVisitor implements VisitorMethods {
+  private _visitDepth = 0;
+
   visit(node: AstNode): void {
+    this._visitDepth++;
+    try {
+      // Bail predictably before the native stack overflows on a deeply-nested AST (#117).
+      if (this._visitDepth > MAX_ANALYSIS_DEPTH) throw new AnalysisDepthExceeded(MAX_ANALYSIS_DEPTH);
+      this.dispatch(node);
+    } finally {
+      this._visitDepth--; // unwinds cleanly even when a deep child throws
+    }
+  }
+
+  private dispatch(node: AstNode): void {
     switch (node.type) {
       case 'Program':
         this.visitProgram(node as ProgramNode);

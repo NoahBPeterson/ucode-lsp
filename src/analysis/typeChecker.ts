@@ -16,6 +16,7 @@ import {
   DeleteExpressionNode, SpreadElementNode, TemplateLiteralNode,
   ImportDeclarationNode, LabeledStatementNode
 } from '../ast/nodes';
+import { AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
 
 /**
  * Represents a type guard that narrows a variable's type
@@ -602,8 +603,22 @@ export class TypeChecker {
     }
   }
 
+  private _checkDepth = 0;
+
   checkNode(node: AstNode): CheckResult {
     if (!node) return UcodeType.UNKNOWN;
+    // Depth guard: checkNode recurses on its own stack (independent of the visitor), so a
+    // deeply-nested expression can overflow HERE. Bail predictably before that. (#117)
+    this._checkDepth++;
+    try {
+      if (this._checkDepth > MAX_ANALYSIS_DEPTH) throw new AnalysisDepthExceeded(MAX_ANALYSIS_DEPTH);
+      return this.checkNodeInner(node);
+    } finally {
+      this._checkDepth--;
+    }
+  }
+
+  private checkNodeInner(node: AstNode): CheckResult {
     const result = this.dispatchCheck(node);
     // Single source of truth: cache the rich result for post-analysis reads
     // (hover, completion, semanticAnalyzer) via getTypeOf. Replaces the old

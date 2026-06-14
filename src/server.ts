@@ -455,7 +455,31 @@ function shouldReduceDiagnosticSeverity(textDocument: TextDocument, diagnostic: 
     return false;
 }
 
+/** True for a native stack overflow (deeply-nested input) or our analyzer's depth-guard bail.
+ *  Used to degrade gracefully instead of crashing the server. (#117) */
+function isStackOverflow(e: unknown): boolean {
+    return (e instanceof RangeError && /call stack|Maximum call stack/i.test(e.message))
+        || (e instanceof Error && e.name === 'AnalysisDepthExceeded');
+}
+
 async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<void> {
+  try {
+    await validateAndAnalyzeDocumentInner(textDocument);
+  } catch (e) {
+    // Final containment net: no document — however pathological — may kill the server. A
+    // deeply-nested expression that overflows a traversal we don't individually guard lands
+    // here; surface one honest warning instead of crashing the process. (#117)
+    if (!isStackOverflow(e)) throw e;
+    connection.sendDiagnostics({ uri: textDocument.uri, diagnostics: [{
+        severity: DiagnosticSeverity.Warning,
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+        message: 'This file is too deeply nested for the ucode language server to analyze fully. The code may still be valid; analysis was skipped to avoid a crash.',
+        source: 'ucode-semantic',
+    }] });
+  }
+}
+
+async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Promise<void> {
     const text = textDocument.getText();
     const lexer = new UcodeLexer(text, { rawMode: true });
     const tokens = lexer.tokenize();
@@ -503,9 +527,16 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
 
         // Precompute offset-anchored inlay hints for the whole document and cache
         // them with this version + text, so the inlayHint handler can serve (and
-        // shift) them without re-walking the AST per request.
-        const rawHints = computeRawInlayHints(parseResult.ast, analysisResult.symbolTable, allBuiltinFunctions);
-        inlayCache.set(textDocument.uri, {version: textDocument.version, text, raw: rawHints});
+        // shift) them without re-walking the AST per request. This is a full-AST walk
+        // OUTSIDE the analyzer's containment, so on a deeply-nested expression it can
+        // overflow the stack — skip the hints rather than crash. (#117)
+        try {
+            const rawHints = computeRawInlayHints(parseResult.ast, analysisResult.symbolTable, allBuiltinFunctions);
+            inlayCache.set(textDocument.uri, {version: textDocument.version, text, raw: rawHints});
+        } catch (e) {
+            inlayCache.delete(textDocument.uri);
+            if (!isStackOverflow(e)) throw e;
+        }
 
         // Semantic analysis diagnostics are already filtered by the SemanticAnalyzer itself
         diagnostics.push(...analysisResult.diagnostics);

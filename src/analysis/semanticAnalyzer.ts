@@ -13,7 +13,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode, ExpressionStatementNode, DeleteExpressionNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
-import { BaseVisitor } from './visitor';
+import { BaseVisitor, AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
@@ -244,12 +244,16 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.checkUnnecessaryDisableComments();
 
     } catch (error) {
-      this.addDiagnostic(
-        `Semantic analysis error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        ast.start,
-        ast.end,
-        DiagnosticSeverity.Error
-      );
+      // A deep-nesting overflow degrades to one honest "too deeply nested" warning; any other
+      // error keeps the generic "Semantic analysis error" report. (#117)
+      if (!this.reportTraversalOverflow(error, ast)) {
+        this.addDiagnostic(
+          `Semantic analysis error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          ast.start,
+          ast.end,
+          DiagnosticSeverity.Error
+        );
+      }
     }
 
     // Phase B (B5): build the per-function flow engines now that the main pass
@@ -261,12 +265,18 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Diagnostics emitted DURING the main pass are still computed without the
     // engine (it didn't exist yet) — the filter only ever SUPPRESSES false
     // positives, so the engine can refine but never invent a diagnostic.
-    if (this.currentASTRoot) {
-      this.typeChecker.buildFlowEngines(this.currentASTRoot);
+    // These two traversals run OUTSIDE the main try/catch above and each recurse on the AST,
+    // so on a deeply-nested expression they were the path by which a RangeError escaped and
+    // killed the server. Contain them too. (#117)
+    try {
+      if (this.currentASTRoot) {
+        this.typeChecker.buildFlowEngines(this.currentASTRoot);
+      }
+      // Post-process diagnostics to apply flow-sensitive narrowing
+      this.diagnostics = this.filterDiagnosticsWithFlowSensitiveAnalysis(this.diagnostics);
+    } catch (error) {
+      if (!this.reportTraversalOverflow(error, ast)) throw error;
     }
-
-    // Post-process diagnostics to apply flow-sensitive narrowing
-    this.diagnostics = this.filterDiagnosticsWithFlowSensitiveAnalysis(this.diagnostics);
 
     const result: SemanticAnalysisResult = {
       diagnostics: this.diagnostics,
@@ -4180,6 +4190,26 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
       this.diagnostics.push(diagnostic);
     }
+  }
+
+  /**
+   * If `error` is a depth-guard bail (AnalysisDepthExceeded) or a native stack overflow
+   * (RangeError "Maximum call stack size exceeded"), emit ONE honest "too deeply nested"
+   * warning and return true. Otherwise return false (the caller handles/rethrows it). This is
+   * the containment net that turns the #117 server-crash into a graceful degradation: the code
+   * is valid, only deep semantic analysis is skipped. */
+  private reportTraversalOverflow(error: unknown, ast: AstNode): boolean {
+    const isOverflow = error instanceof AnalysisDepthExceeded
+      || (error instanceof RangeError && /call stack|Maximum call stack/i.test(error.message));
+    if (!isOverflow) return false;
+    this.addDiagnostic(
+      `Expression is too deeply nested for full analysis (over ${MAX_ANALYSIS_DEPTH} levels). ` +
+      `The code is valid; only deep semantic analysis is skipped here.`,
+      ast.start,
+      ast.end,
+      DiagnosticSeverity.Warning,
+    );
+    return true;
   }
 
 private addDiagnostic(
