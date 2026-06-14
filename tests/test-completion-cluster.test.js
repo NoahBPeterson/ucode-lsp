@@ -47,6 +47,19 @@ test('rtnl rt.const. lists the constants', async () => {
   expect(c).toContain('RTM_NEWLINK');
 });
 
+// ── #20 follow-up: reserved words are valid property names after `.` AND `?.` ──
+// (lexer must lex `const`/`if`/… after `?.` as a label, like it already did after `.`)
+const parseErrs = async (code) => ((await s.getDiagnostics(code, `/tmp/cc-pe-${n++}.uc`)) || []).filter((d) => d.source === 'ucode-parser');
+test('a keyword property name after ?. parses (o?.const)', async () => {
+  expect(await parseErrs('let o = { const: 1 };\nlet a = o?.const;\nprint(a);\n')).toEqual([]);
+  expect(await parseErrs('let o = { const: { x: 1 } };\nlet a = o?.const.x;\nprint(a);\n')).toEqual([]);
+});
+test('o?.const. completes the nested members (was: 91 builtins, due to the parse break)', async () => {
+  const c = await at('let o = { const: { x: 1, y: 2 } };\no?.const.\n', 1, 9);
+  expect(c).toContain('x'); expect(c).toContain('y');
+  expect(c).not.toContain('print');
+});
+
 // ── #96 module-path completion for the named-import form ──
 test("import { open } from 'f|' offers modules, not builtins", async () => {
   const c = await at("import { open } from 'fs';\n", 0, 22); // cursor inside the path string

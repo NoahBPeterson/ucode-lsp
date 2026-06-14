@@ -831,10 +831,13 @@ export class UcodeLexer {
     }
 
     private updateNoKeywordFlag(tokenType: TokenType): void {
-        // After TK_DOT, the next identifier should be treated as TK_LABEL (member access)
-        if (tokenType === TokenType.TK_DOT) {
+        // After TK_DOT or TK_QDOT, the next identifier is a property name and must be treated
+        // as TK_LABEL — so a reserved word like `const`/`if` can be a member name (valid ucode:
+        // `o.const`, `o?.const`). TK_QDOT was missing, so `o?.const` lexed `const` as a keyword
+        // and the parser rejected it ("Expected property name after '?.'"). (#20 follow-up)
+        if (tokenType === TokenType.TK_DOT || tokenType === TokenType.TK_QDOT) {
             this.noKeyword = true;
-        } 
+        }
         // Reset flag after consuming one identifier following a dot
         else if (tokenType === TokenType.TK_LABEL && this.noKeyword) {
             this.noKeyword = false;
