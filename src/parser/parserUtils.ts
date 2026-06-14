@@ -28,19 +28,26 @@ export class ParserUtils {
   }
 
   protected findLeadingJsDoc(nodeStartPos: number): JsDocCommentNode | undefined {
-    // Reverse scan to find the comment whose end is closest to nodeStartPos
+    // Reverse scan for the JSDoc immediately preceding the node. Plain `//`/`/* */`
+    // comments between the JSDoc and the node (or trailing on the JSDoc's own line) are
+    // TRANSPARENT — they don't sever the attachment — but any real code in the gap does.
+    let gapEnd = nodeStartPos;
     for (let i = this.comments.length - 1; i >= 0; i--) {
       const c = this.comments[i]!;
-      if (c.end > nodeStartPos) continue;  // Comment ends after node start
-      if (c.end < nodeStartPos - 500) break; // Too far away
-      const val = String(c.value);
-      if (!val.startsWith('*')) break; // Only JSDoc (/** ... */) has value starting with '*'
-      // Check that only whitespace exists between comment end and node start
+      if (c.end > gapEnd) continue;          // comment lies after the running boundary
+      if (c.end < nodeStartPos - 500) break; // too far away
+      // Only whitespace may sit between this comment and the running boundary; non-comment
+      // code (e.g. an intervening statement) means the JSDoc isn't this node's.
       if (this.sourceText) {
-        const between = this.sourceText.substring(c.end, nodeStartPos);
-        if (between.trim().length > 0) break; // Non-whitespace between comment and node
+        const between = this.sourceText.substring(c.end, gapEnd);
+        if (between.trim().length > 0) break;
       }
-      return { type: 'JsDocComment', value: val, start: c.pos, end: c.end };
+      const val = String(c.value);
+      if (val.startsWith('*')) { // /** ... */ — the leading JSDoc
+        return { type: 'JsDocComment', value: val, start: c.pos, end: c.end };
+      }
+      // A plain comment is transparent: keep scanning earlier, past it.
+      gapEnd = c.pos;
     }
     return undefined;
   }

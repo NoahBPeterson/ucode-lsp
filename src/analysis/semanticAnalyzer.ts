@@ -596,6 +596,11 @@ export class SemanticAnalyzer extends BaseVisitor {
       for (const declarator of node.declarations) {
         this.visitVariableDeclarator(declarator, node.kind);
       }
+      // NOTE: `@type {T}` on a variable is deliberately NOT supported. It's an unverified
+      // assertion the checker would then trust; for an opaque variable the safe default is
+      // `unknown` (which suppresses checks), so @type can only trade that safety away — a
+      // footgun with no floor. (See docs/auto-docs/62-jsdoc-type-tag-unsupported.md.) `@returns`
+      // survives the same test because it types a reusable function contract across call sites.
     } else {
       super.visitVariableDeclaration(node);
     }
@@ -1396,6 +1401,117 @@ export class SemanticAnalyzer extends BaseVisitor {
     return resolvedUri || source;
   }
 
+  /** Resolve a `@returns`/`@type` type expression to a UcodeDataType, emitting UC7001 on
+   *  the JSDoc when unrecognized (mirrors @param). Returns null if it can't be resolved. */
+  private resolveJsDocDeclaredType(typeExpr: string, jsDocNode: JsDocCommentNode, tagLabel: string): UcodeDataType | null {
+    const resolved = resolveTypeExpression(typeExpr);
+    if (resolved !== null) return resolved;
+    if (this.typedefRegistry.get(typeExpr)) return UcodeType.OBJECT as UcodeDataType;
+    this.addDiagnosticErrorCode(
+      UcodeErrorCode.JSDOC_UNKNOWN_TYPE,
+      `Unknown type '${typeExpr}' in @${tagLabel} annotation`,
+      jsDocNode.start, jsDocNode.end - 1,
+      DiagnosticSeverity.Warning,
+    );
+    return null;
+  }
+
+  /** Readable base-type name(s) for a diagnostic message (e.g. "string", "integer|null"). */
+  private jsdocTypeDisplay(t: UcodeDataType): string {
+    return getUnionTypes(t).map(s => String(singleTypeToBase(s))).join('|');
+  }
+
+  /** Absolute source range of the `{…}` type expression in a JSDoc `@returns`/`@return` tag,
+   *  so a quick fix can replace it. Returns null if no braced type is present. */
+  private jsdocReturnTypeExprRange(jsDocNode: JsDocCommentNode): { start: number; end: number } | null {
+    const src = this.textDocument.getText().substring(jsDocNode.start, jsDocNode.end);
+    const m = /@returns?\b/.exec(src);
+    if (!m) return null;
+    const open = src.indexOf('{', m.index);
+    if (open < 0) return null;
+    const close = src.indexOf('}', open);
+    if (close < 0) return null;
+    return { start: jsDocNode.start + open, end: jsDocNode.start + close + 1 };
+  }
+
+  /** Quick-fix payload for a UC7005 `@returns` mismatch: where the `{…}` is and what to set
+   *  it to (the true inferred return type). The code-action provider reads `ucReturnsFix`. */
+  private jsdocReturnFixData(jsDocNode: JsDocCommentNode, inferred: UcodeDataType): unknown {
+    const range = this.jsdocReturnTypeExprRange(jsDocNode);
+    if (!range) return undefined;
+    return { ucReturnsFix: { exprStart: range.start, exprEnd: range.end, suggested: this.jsdocTypeDisplay(inferred) } };
+  }
+
+  /** Does the declared JSDoc type COVER every concrete possibility of the inferred type?
+   *  This is the soundness gate: a JSDoc annotation isn't runtime-checked, so it may FILL an
+   *  `unknown` or restate/widen an inferred type, but it must NOT be narrower than what the
+   *  code provably produces (e.g. `@returns {string}` over a `string|null` body silently
+   *  drops the null — unsound). `unknown` on the actual side is "fillable" (covered);
+   *  integer/double are unified (ucode coerces); `null` is NOT special — the annotation must
+   *  explicitly include it to cover a nullable value. Returns false = annotation too narrow. */
+  private jsdocAnnotationCovers(declared: UcodeDataType, actual: UcodeDataType): boolean {
+    const unify = (b: any) => (b === UcodeType.DOUBLE ? UcodeType.INTEGER : b);
+    const declaredBases = new Set(getUnionTypes(declared).map(s => unify(singleTypeToBase(s))));
+    const actualBases = getUnionTypes(actual).map(s => unify(singleTypeToBase(s)));
+    return actualBases.every(b => b === UcodeType.UNKNOWN || declaredBases.has(b));
+  }
+
+  /**
+   * Reconcile a function's `@returns {T}` against the body. Returns the type to assign to
+   * the function symbol's `returnType`, emitting per-return diagnostics on contradiction.
+   *
+   *  - no `@returns`            → keep the body-inferred type.
+   *  - body opaque / compatible → apply T (fill an unknown / narrow a union). Finding #61 cases 1-2.
+   *  - a `return` provably disjoint from T → flag THAT return statement; keep the body type.
+   *  - zero returns (body is null) and T is concrete & non-null → flag the `@returns` tag
+   *    (there's no return statement to point at) — "no return; returns null".
+   */
+  private reconcileJsDocReturn(
+    jsDocNode: JsDocCommentNode | undefined,
+    returnEntries: { node: ReturnStatementNode; type: UcodeDataType }[],
+    inferredReturnType: UcodeDataType,
+  ): UcodeDataType {
+    if (!jsDocNode) return inferredReturnType;
+    const parsed = parseJsDocComment(jsDocNode.value);
+    const tag = parsed.tags.find(t => t.tag === 'returns');
+    if (!tag) return inferredReturnType;
+    const declared = this.resolveJsDocDeclaredType(tag.typeExpression, jsDocNode, 'returns');
+    if (declared === null) return inferredReturnType;
+
+    if (returnEntries.length === 0) {
+      // No return statement → the function returns null. The annotation is honoured only if
+      // it actually covers null (e.g. `@returns {string|null}`); otherwise it's too narrow.
+      if (this.jsdocAnnotationCovers(declared, UcodeType.NULL as UcodeDataType)) return declared;
+      this.addDiagnosticErrorCode(
+        UcodeErrorCode.JSDOC_TYPE_CONTRADICTS,
+        `@returns {${this.jsdocTypeDisplay(declared)}} but the function has no return statement (returns null)`,
+        jsDocNode.start, jsDocNode.end - 1,
+        DiagnosticSeverity.Warning,
+        this.jsdocReturnFixData(jsDocNode, inferredReturnType),
+      );
+      return inferredReturnType;
+    }
+
+    // A return is flagged when the annotation does NOT cover its type — i.e. the annotation
+    // is narrower than (or disjoint from) what that return provably produces. No silent
+    // narrowing: `@returns {string}` over a `return getenv(...)` (string|null) flags the null.
+    const offending = returnEntries.filter(e => !this.jsdocAnnotationCovers(declared, e.type));
+    if (offending.length === 0) return declared; // annotation covers the whole body → fill/restate/widen
+    // Quick fix suggests the FULL inferred return type (the union of all returns), so
+    // `@returns {string}` over `if(x) return "a"; return 5;` → `@returns {string|integer}`.
+    const fixData = this.jsdocReturnFixData(jsDocNode, inferredReturnType);
+    for (const e of offending) {
+      this.addDiagnosticErrorCode(
+        UcodeErrorCode.JSDOC_TYPE_CONTRADICTS,
+        `This returns '${this.jsdocTypeDisplay(e.type)}', which @returns {${this.jsdocTypeDisplay(declared)}} does not cover`,
+        e.node.start, e.node.end,
+        DiagnosticSeverity.Warning,
+        fixData,
+      );
+    }
+    return inferredReturnType; // keep the body type; don't poison call sites with the unsound annotation
+  }
+
   private applyJsDocToParams(
     jsDocNode: JsDocCommentNode | undefined,
     params: IdentifierNode[]
@@ -1725,12 +1841,15 @@ export class SemanticAnalyzer extends BaseVisitor {
       const returnEntries = this.functionReturnTypes.get(node) || [];
       const returnTypes = returnEntries.map(e => e.type);
       const inferredReturnType = this.typeChecker.getCommonReturnType(returnTypes);
+      // Reconcile against a `@returns {T}` annotation: T fills/narrows an opaque body, but a
+      // return that provably contradicts T is flagged per-statement (the body type wins). (#61)
+      const reconciledReturnType = this.reconcileJsDocReturn(node.leadingJsDoc, returnEntries, inferredReturnType);
 
       // Update the function's symbol with the now-known return type.
       const symbol = this.symbolTable.lookup(name);
       if (symbol) {
         symbol.dataType = UcodeType.FUNCTION;  // Functions should always have type 'function'
-        symbol.returnType = inferredReturnType; // Store the actual return type separately
+        symbol.returnType = reconciledReturnType; // Store the actual return type separately
 
         // Capture the parameter signature for call-site argument checking — but
         // ONLY from a real definition, never a forward declaration (`function f;`
@@ -4005,9 +4124,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private addDiagnosticErrorCode(
     errorCode: UcodeErrorCode,
     message: string,
-    start: number, 
-    end: number, 
-    severity: DiagnosticSeverity
+    start: number,
+    end: number,
+    severity: DiagnosticSeverity,
+    data?: unknown
   ): void {
     // Check if diagnostic should be converted to lower severity by disable comment
     if (this.shouldReduceSeverity(start, end)) {
@@ -4053,6 +4173,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // Add error code if available
       if (errorCode) {
         diagnostic.code = errorCode;
+      }
+      if (data !== undefined) {
+        (diagnostic as { data?: unknown }).data = data;
       }
 
       this.diagnostics.push(diagnostic);

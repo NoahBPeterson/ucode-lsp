@@ -83,8 +83,8 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 
 | # | Finding | Kind | Severity |
 |---|---|---|---|
-| [61](61-jsdoc-returns-ignored.md) | `@returns`/`@return` is completely ignored for the function's return type | inference gap | medium |
-| [62](62-jsdoc-type-tag-unsupported.md) | `@type {T}` on a `let`/`const` is entirely unsupported | inference gap | medium |
+| [61](../done/61-jsdoc-returns-ignored.md) | ✅ **FIXED 0.6.233–234** — `@returns {T}` types the function return, reconciled SOUNDLY: it may FILL an `unknown` body or restate/widen, but NEVER narrow away a real possibility (`string\|null`→`string` is flagged, not silently honoured). An uncovered `return` is flagged per-statement (UC7005), no-return on the tag, each with a quick fix that sets `@returns` to the true inferred type/union. (Also fixed: a trailing `//` comment on the JSDoc line no longer severs attachment.) | inference gap | medium |
+| [62](62-jsdoc-type-tag-unsupported.md) | ⛔ **DECLINED 0.6.234** — `@type {T}` on a variable is an unverified assertion the checker would then trust; for an opaque variable `unknown` is the safe default (suppresses checks), so `@type` only trades that safety away — a footgun with no floor. Intentionally not implemented. | inference gap | medium |
 | [63](63-jsdoc-prefix-nullable.md) | JSDoc prefix-nullable `?T` rejected (only postfix `T?` works) | false-pos | low |
 | [64](64-jsdoc-object-shape-param-dropped.md) | Object-shape `@param {{a: string}}` silently dropped — no type, no warning | inference gap | low-med |
 | [65](65-jsdoc-missing-braces-double-error.md) | `@param string x` (missing braces) → two misleading diagnostics | message | low |

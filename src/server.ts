@@ -901,6 +901,22 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 });
             }
 
+            // UC7005: an `@returns {T}` annotation that doesn't match the body. Offer to set
+            // the type expression to the TRUE inferred return type (the full union of returns;
+            // `null` when there's no return). AST-based: replaces the `{…}` span the analyzer
+            // located in the JSDoc, never line-string parsing.
+            if (diagnostic.code === 'UC7005' && (diagnostic as any).data?.ucReturnsFix) {
+                const fix = (diagnostic as any).data.ucReturnsFix;
+                const range = { start: document.positionAt(fix.exprStart), end: document.positionAt(fix.exprEnd) };
+                codeActions.push({
+                    title: `Change @returns to '{${fix.suggested}}'`,
+                    kind: CodeActionKind.QuickFix,
+                    diagnostics: [diagnostic],
+                    isPreferred: true,
+                    edit: { changes: { [params.textDocument.uri]: [TextEdit.replace(range, `{${fix.suggested}}`)] } },
+                });
+            }
+
             // Quick-fix for the UC2009 type()-string mismatch: replace the wrong
             // type string (e.g. "number", "integer", "boolean") with the correct
             // ucode type name(s) ("int"/"double", "int", "bool").
