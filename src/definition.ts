@@ -4,7 +4,7 @@ import {
     Range
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { UcodeLexer, TokenType } from './lexer';
+import { UcodeLexer, TokenType, isMemberAccessDot } from './lexer';
 import { SemanticAnalysisResult, Symbol, SymbolType } from './analysis';
 import { FileResolver } from './analysis/fileResolver';
 import { isKnownObjectType, OBJECT_REGISTRIES } from './analysis/moduleDispatch';
@@ -52,7 +52,7 @@ export function handleDefinition(
             // of the member's real (often cross-file) definition.
             const dotToken = tokenIndex >= 2 ? tokens[tokenIndex - 1] : undefined;
             const objToken = tokenIndex >= 2 ? tokens[tokenIndex - 2] : undefined;
-            const isMemberProperty = dotToken?.type === TokenType.TK_DOT
+            const isMemberProperty = isMemberAccessDot(dotToken?.type)
                 && objToken?.type === TokenType.TK_LABEL && typeof objToken.value === 'string';
 
             if (isMemberProperty) {
@@ -148,7 +148,7 @@ function resolveMemberDefinition(
     if (!objSymbol && tokenIndex >= 4) {
         const dot2 = tokens[tokenIndex - 3];
         const baseToken = tokens[tokenIndex - 4];
-        if (dot2?.type === TokenType.TK_DOT
+        if (isMemberAccessDot(dot2?.type)
             && baseToken?.type === TokenType.TK_LABEL
             && typeof baseToken.value === 'string') {
             const baseSym = analysisResult.symbolTable.lookupAtPosition(baseToken.value, offset)

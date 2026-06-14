@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
 import { discoverAvailableModules, getModuleMembers, DiscoveredModule, ModuleMember } from './moduleDiscovery';
-import { UcodeLexer, TokenType, Token } from './lexer';
+import { UcodeLexer, TokenType, isMemberAccessDot, Token } from './lexer';
 import { UcodeParser } from './parser';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
@@ -343,14 +343,10 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
 
     let dotTokenIndex = -1;
 
-    // `.` and `?.` are both member-access triggers: `o?.` must complete o's members exactly
-    // like `o.` does (optional chaining is just null-safe access). (#20)
-    const isDot = (t: number) => t === TokenType.TK_DOT || t === TokenType.TK_QDOT;
-
     // Find the most recent DOT/QDOT token before or at the cursor
     for (let i = tokens.length - 1; i >= 0; i--) {
         const token = tokens[i];
-        if (isDot(token.type) && token.pos <= offset) {
+        if (isMemberAccessDot(token.type) && token.pos <= offset) {
             dotTokenIndex = i;
             break;
         }
@@ -381,14 +377,14 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
             // Check if this label is properly connected to the next dot
             if (currentTokenIndex + 1 < tokens.length) {
                 const nextToken = tokens[currentTokenIndex + 1];
-                if (isDot(nextToken.type) && token.end === nextToken.pos) {
+                if (isMemberAccessDot(nextToken.type) && token.end === nextToken.pos) {
                     // This label is connected to a dot, add it to the chain
                     propertyChain.unshift(token.value as string);
 
                     // Look for another dot before this label
                     if (currentTokenIndex > 0) {
                         const prevToken = tokens[currentTokenIndex - 1];
-                        if (isDot(prevToken.type) && prevToken.end === token.pos) {
+                        if (isMemberAccessDot(prevToken.type) && prevToken.end === token.pos) {
                             // There's another dot before this label, continue the chain
                             currentTokenIndex -= 2; // Skip the dot and continue
                             continue;
@@ -419,7 +415,7 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
                 const funcName = tokens[j].value as string;
                 let moduleName: string | undefined;
                 // Check for module prefix: LABEL DOT LABEL(...)
-                if (j >= 2 && isDot(tokens[j - 1].type) && tokens[j - 2].type === TokenType.TK_LABEL) {
+                if (j >= 2 && isMemberAccessDot(tokens[j - 1].type) && tokens[j - 2].type === TokenType.TK_LABEL) {
                     moduleName = tokens[j - 2].value as string;
                 }
                 const objType = resolveReturnObjectType(funcName, moduleName);

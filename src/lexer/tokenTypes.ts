@@ -260,3 +260,9 @@ export function isWhitespace(char: string): boolean {
 export function isLineBreak(char: string): boolean {
     return char === '\n' || char === '\r';
 }
+/** A member-access operator: `.` or `?.`. Optional chaining is just null-safe member access,
+ *  so every member-detection site (hover, definition, completion, method-call validation)
+ *  must treat them alike — a `.`-only check silently breaks all those features on `a?.b`. */
+export function isMemberAccessDot(type: TokenType | undefined): boolean {
+    return type === TokenType.TK_DOT || type === TokenType.TK_QDOT;
+}

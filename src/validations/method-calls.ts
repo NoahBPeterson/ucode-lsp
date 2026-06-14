@@ -3,7 +3,7 @@ import {
     DiagnosticSeverity
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { TokenType, Token } from '../lexer';
+import { TokenType, Token, isMemberAccessDot } from '../lexer';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateMethodCalls(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {
@@ -26,7 +26,7 @@ export function validateMethodCalls(textDocument: TextDocument, tokens: Token[],
         const parenToken = tokens[i + 2];
 
         if (dotToken && methodToken && parenToken &&
-            dotToken.type === TokenType.TK_DOT &&
+            isMemberAccessDot(dotToken.type) &&
             methodToken.type === TokenType.TK_LABEL &&
             parenToken.type === TokenType.TK_LPAREN &&
             typeof methodToken.value === 'string' &&

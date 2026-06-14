@@ -3,7 +3,7 @@ import {
     Hover,
     MarkupKind
 } from 'vscode-languageserver/node';
-import { UcodeLexer, TokenType, isKeyword, Token } from './lexer';
+import { UcodeLexer, TokenType, isKeyword, isMemberAccessDot, Token } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
 import { typeToString, UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType } from './analysis/symbolTable';
@@ -60,7 +60,7 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
     }
 
     const dotToken = tokens[hoverTokenIndex - 1];
-    if (dotToken.type !== TokenType.TK_DOT || dotToken.end !== hoverToken.pos) {
+    if (!isMemberAccessDot(dotToken.type) || dotToken.end !== hoverToken.pos) {
         return undefined;
     }
 
@@ -105,7 +105,7 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
         if (j >= 0 && tokens[j].type === TokenType.TK_LABEL) {
             const funcName = tokens[j].value as string;
             let moduleName: string | undefined;
-            if (j >= 2 && tokens[j - 1].type === TokenType.TK_DOT && tokens[j - 2].type === TokenType.TK_LABEL) {
+            if (j >= 2 && isMemberAccessDot(tokens[j - 1].type) && tokens[j - 2].type === TokenType.TK_LABEL) {
                 moduleName = tokens[j - 2].value as string;
             }
             const objType = resolveReturnObjectType(funcName, moduleName);
@@ -190,7 +190,7 @@ function isLikelyAssignmentTarget(tokens: Token[], tokenIndex: number): boolean 
 
         // Allow member access patterns: x.foo =, x[0] =
         if (
-            nextToken.type === TokenType.TK_DOT ||
+            isMemberAccessDot(nextToken.type) ||
             nextToken.type === TokenType.TK_LBRACK ||
             nextToken.type === TokenType.TK_RBRACK ||
             nextToken.type === TokenType.TK_LABEL  // identifier after dot
@@ -1114,7 +1114,7 @@ export function handleHover(
             // LABEL.LABEL pattern doesn't match — must NOT fall back to a same-named
             // global builtin (e.g. the `signal` builtin). Show a minimal property hover.
             const tokIdx = tokens.findIndex((t: any) => t.pos <= offset && offset < t.end);
-            if (tokIdx > 0 && tokens[tokIdx - 1]?.type === TokenType.TK_DOT) {
+            if (tokIdx > 0 && isMemberAccessDot(tokens[tokIdx - 1]?.type)) {
                 return {
                     contents: { kind: MarkupKind.Markdown, value: `**${word}**: \`unknown\`` },
                     range: { start: document.positionAt(token.pos), end: document.positionAt(token.end) }
@@ -1267,7 +1267,7 @@ function detectMemberExpression(offset: number, tokens: any[]): { objectName: st
         const nextToken = tokens[currentTokenIndex + 1];
         const afterNextToken = tokens[currentTokenIndex + 2];
 
-        if (nextToken.type === TokenType.TK_DOT &&
+        if (isMemberAccessDot(nextToken.type) &&
             afterNextToken.type === TokenType.TK_LABEL &&
             currentToken.type === TokenType.TK_LABEL) {
             return {
@@ -1283,7 +1283,7 @@ function detectMemberExpression(offset: number, tokens: any[]): { objectName: st
         const prevToken = tokens[currentTokenIndex - 1];
         const beforePrevToken = tokens[currentTokenIndex - 2];
 
-        if (prevToken.type === TokenType.TK_DOT &&
+        if (isMemberAccessDot(prevToken.type) &&
             beforePrevToken.type === TokenType.TK_LABEL &&
             currentToken.type === TokenType.TK_LABEL) {
             // Walk further back through additional LABEL.DOT pairs so chained
@@ -1295,7 +1295,7 @@ function detectMemberExpression(offset: number, tokens: any[]): { objectName: st
             while (i >= 1) {
                 const dot = tokens[i];
                 const label = tokens[i - 1];
-                if (dot?.type === TokenType.TK_DOT && label?.type === TokenType.TK_LABEL) {
+                if (isMemberAccessDot(dot?.type) && label?.type === TokenType.TK_LABEL) {
                     chain.unshift(label.value as string);
                     i -= 2;
                 } else {
