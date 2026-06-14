@@ -73,6 +73,39 @@ import { setOpenDocumentContent, clearOpenDocumentContent } from './analysis/ope
 
 const connection = createConnection(ProposedFeatures.all);
 
+// #117 — every feature-provider handler runs its OWN recursive AST walk (folding, document
+// links, code lens, signature help, hover, …) and is otherwise unguarded, so a deeply-nested
+// document overflows the stack INSIDE the handler and surfaces as an LSP -32603 error on every
+// request. Patch each request-registration method here, once, so any handler that overflows
+// returns an empty result (the safe "nothing here" answer) instead of failing the request.
+{
+    const ARRAY_RESULT = ['onCompletion', 'onCodeAction', 'onCodeLens', 'onReferences',
+        'onFoldingRanges', 'onDocumentLinks', 'onDocumentHighlight', 'onDocumentSymbol',
+        'onWorkspaceSymbol'];
+    const NULL_RESULT = ['onHover', 'onDefinition', 'onSignatureHelp', 'onPrepareRename',
+        'onRenameRequest'];
+    const wrapRegistration = (name: string, fallback: unknown) => {
+        const orig = (connection as any)[name];
+        if (typeof orig !== 'function') return;
+        (connection as any)[name] = (handler: (...a: any[]) => any) =>
+            orig.call(connection, (...args: any[]) => {
+                const onErr = (e: unknown) => {
+                    if (isStackOverflow(e)) {
+                        connection.console.warn(`ucode-lsp: ${name} skipped — document too deeply nested to analyze`);
+                        return fallback;
+                    }
+                    throw e;
+                };
+                try {
+                    const r = handler(...args);
+                    return r instanceof Promise ? r.catch(onErr) : r;
+                } catch (e) { return onErr(e); }
+            });
+    };
+    for (const n of ARRAY_RESULT) wrapRegistration(n, []);
+    for (const n of NULL_RESULT) wrapRegistration(n, null);
+}
+
 const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 
 // Analysis cache for storing semantic analysis results with timestamps and tokens.

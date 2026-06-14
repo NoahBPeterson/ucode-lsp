@@ -51,3 +51,21 @@ Message is now honest ("The code is valid; only deep semantic analysis is skippe
 Verified: 3000 / 8000 / 20000 / 100000-term `+` chains, plus 6–8k-deep parens, array
 literals, ternaries, and unary `!` — all degrade gracefully, server stays responsive, and
 ordinary shallow code is completely unaffected. Tests: `test-deep-expression-depth-guard.test.js`.
+
+## Follow-up (0.6.236): the feature-provider handlers were still unguarded
+
+0.6.235 contained the diagnostics path but missed that EVERY feature-provider request handler
+(`foldingRange`, `documentLink`, `codeLens`, `signatureHelp`, `hover`, `definition`,
+`documentSymbol`, `completion`, …) runs its OWN recursive AST walk. On a deeply-nested open
+document each overflowed inside the handler and returned an LSP `-32603 Maximum call stack
+size exceeded` for every request (visible as a storm of "Request X failed" in the editor), and
+`FileResolver.findExports` (cross-file export resolution) overflowed as "Error loading module
+exports". Fixed:
+
+- `server.ts` patches every request-registration method once (right after `createConnection`)
+  so any handler that overflows returns an empty result (`[]` / `null`) instead of failing.
+- `FileResolver.findExports` gained a depth cap (exports are top-level; it no longer recurses
+  into pathologically deep expression subtrees).
+- The "too deeply nested" warning now anchors on the actual deep top-level statement (found
+  iteratively, so it can't itself overflow) instead of the whole-program range — it no longer
+  appears to point at an innocent later line such as a trailing `print(...)`.

@@ -55,3 +55,25 @@ test('ordinary shallow expressions get no depth warning', async () => {
 test('a moderately deep but reasonable chain (200 terms) is analyzed normally', async () => {
   expect(hasDeep(await diags(chain(200)))).toBe(false);
 });
+
+// ── the warning anchors on the deep statement, not an innocent later line ──
+test('the warning lands on the deeply-nested statement', async () => {
+  // line 0 is the deep `let x = …`; line 1 is `print(x)`.
+  const ds = await diags(chain(3000));
+  const w = ds.find((d) => /too deeply nested/i.test(d.message));
+  expect(w).toBeTruthy();
+  expect(w.range.start.line).toBe(0);
+});
+
+// ── feature-provider handlers each do their OWN recursive walk; a deep doc must not make
+//    them fail the request (they returned LSP -32603 before). They degrade to empty. ──
+test('foldingRanges / codeLens / hover do not error on a deep document', async () => {
+  const path = `/tmp/depthguard-handlers-${n++}.uc`;
+  await diags(chain(8000)); // open a deep doc (this also exercises the diagnostics path)
+  // NB: getDiagnostics uses a fresh path each call, so re-open at the fixed path for the providers
+  await s.getDiagnostics(chain(8000), path);
+  await expect(s.getFoldingRanges(path)).resolves.toBeDefined();
+  await expect(s.getCodeLens(path)).resolves.toBeDefined();
+  // server is still responsive
+  expect(Array.isArray(await s.getDiagnostics('let a = 1; print(a);\n', `/tmp/depthguard-alive-${n++}.uc`))).toBe(true);
+});

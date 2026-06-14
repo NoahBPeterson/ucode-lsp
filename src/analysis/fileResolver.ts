@@ -5,6 +5,7 @@ import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
 import { UcodeType, UcodeDataType, SingleType, createUnionType, isUnionType, isObjectType, isArrayType, type ParamInfo } from './symbolTable';
 import { parseJsDocComment, resolveTypeExpression } from './jsdocParser';
 import { getOpenDocumentContent } from './openDocuments';
+import { MAX_ANALYSIS_DEPTH } from './visitor';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -571,7 +572,11 @@ export class FileResolver {
     /**
      * Find all exports in an AST node
      */
-    private findExports(node: AstNode, exports: ModuleExport[], topLevelFunctionNames?: Set<string>): void {
+    private findExports(node: AstNode, exports: ModuleExport[], topLevelFunctionNames?: Set<string>, depth = 0): void {
+        // Exports are top-level, but this recurses into every child (incl. deep expression
+        // subtrees). Cap the depth so a pathologically-nested module can't overflow the stack
+        // here (the "Error loading module exports" RangeError). (#117)
+        if (depth > MAX_ANALYSIS_DEPTH) return;
         if (node.type === 'ExportDefaultDeclaration') {
             const exportNode = node as ExportDefaultDeclarationNode;
             const decl = exportNode.declaration;
@@ -629,7 +634,7 @@ export class FileResolver {
 
         // Recursively search child nodes
         this.visitChildren(node, (child) => {
-            this.findExports(child, exports, topLevelFunctionNames);
+            this.findExports(child, exports, topLevelFunctionNames, depth + 1);
         });
     }
 

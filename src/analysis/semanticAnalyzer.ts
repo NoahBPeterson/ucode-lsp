@@ -4202,14 +4202,55 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const isOverflow = error instanceof AnalysisDepthExceeded
       || (error instanceof RangeError && /call stack|Maximum call stack/i.test(error.message));
     if (!isOverflow) return false;
+    // Anchor the warning on the actual deeply-nested top-level statement, not the whole
+    // program range (which would mislead onto an innocent last line). (#117)
+    const where = this.deepestTopLevelStatement(ast);
     this.addDiagnostic(
-      `Expression is too deeply nested for full analysis (over ${MAX_ANALYSIS_DEPTH} levels). ` +
+      `This statement is too deeply nested for full analysis (over ${MAX_ANALYSIS_DEPTH} levels of nesting). ` +
       `The code is valid; only deep semantic analysis is skipped here.`,
-      ast.start,
-      ast.end,
+      where.start,
+      where.end,
       DiagnosticSeverity.Warning,
     );
     return true;
+  }
+
+  /** Among the program's top-level statements, the one with the greatest nesting depth — so
+   *  the "too deeply nested" warning lands on the offending statement. Measured ITERATIVELY
+   *  (explicit stack) so finding it can't itself overflow. Falls back to `ast`. (#117) */
+  private deepestTopLevelStatement(ast: AstNode): AstNode {
+    const body = (ast as { body?: AstNode[] }).body;
+    if (!Array.isArray(body) || body.length === 0) return ast;
+    let worst = ast, worstDepth = -1;
+    for (const stmt of body) {
+      const d = this.iterativeMaxDepth(stmt);
+      if (d > worstDepth) { worstDepth = d; worst = stmt; }
+    }
+    return worst;
+  }
+
+  private iterativeMaxDepth(root: AstNode): number {
+    let max = 0, iterations = 0;
+    const stack: Array<{ node: AstNode; depth: number }> = [{ node: root, depth: 1 }];
+    while (stack.length > 0) {
+      if (++iterations > 500000) break; // safety cap; we only need a rough "which is deepest"
+      const { node, depth } = stack.pop()!;
+      if (depth > max) max = depth;
+      for (const key of Object.keys(node)) {
+        if (key === 'leadingJsDoc') continue;
+        const value = (node as unknown as Record<string, unknown>)[key];
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            if (item && typeof item === 'object' && typeof (item as AstNode).type === 'string') {
+              stack.push({ node: item as AstNode, depth: depth + 1 });
+            }
+          }
+        } else if (value && typeof value === 'object' && typeof (value as AstNode).type === 'string') {
+          stack.push({ node: value as AstNode, depth: depth + 1 });
+        }
+      }
+    }
+    return max;
   }
 
 private addDiagnostic(
