@@ -31,7 +31,7 @@ describe('Cross-file user-function argument checking', function () {
   });
 
   it('flags too many / too few args cross-file', async () => {
-    assert.match((await argDiags(`import { greet } from './lib.uc';\ngreet("hi", 5, 9);`))[0].message, /takes 2 arguments but 3/);
+    assert.match((await argDiags(`import { greet } from './lib.uc';\ngreet("hi", 5, 9);`))[0].message, /expects at most 2 arguments, got 3/);
     assert.match((await argDiags(`import { greet } from './lib.uc';\ngreet("hi");`))[0].message, /expects argument 'count'/);
   });
 

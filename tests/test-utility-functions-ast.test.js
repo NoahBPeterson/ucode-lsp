@@ -154,7 +154,7 @@ async function runTests() {
             name: 'wildcard() with an array as the second argument',
             code: 'wildcard("*.uc", []);',
             expectedErrors: 1,
-            errorMessage: "Function 'wildcard' expects string for argument 2, but got array"
+            errorMessage: "Function 'wildcard' expects string for argument 2, got array"
         },
 
         // regexp() tests
@@ -172,13 +172,13 @@ async function runTests() {
             name: 'regexp() with a number as the first argument',
             code: 'regexp(456);',
             expectedErrors: 1,
-            errorMessage: "Function 'regexp' expects string for argument 1, but got integer"
+            errorMessage: "Function 'regexp' expects string for argument 1, got integer"
         },
         {
             name: 'regexp() with an object as the second argument',
             code: 'regexp("[a-z]", {});',
             expectedErrors: 1,
-            errorMessage: "Function 'regexp' expects string for argument 2, but got object"
+            errorMessage: "Function 'regexp' expects string for argument 2, got object"
         },
         {
             name: 'regexp() with valid flag "i"',
@@ -400,13 +400,13 @@ async function runTests() {
             name: 'wildcard() with non-string pattern',
             code: 'wildcard("file.txt", 123);',
             expectedErrors: 1,
-            errorMessage: "expects string for argument 2, but got integer"
+            errorMessage: "expects string for argument 2, got integer"
         },
         {
             name: 'wildcard() with insufficient arguments',
             code: 'wildcard("file.txt");',
             expectedErrors: 1,
-            errorMessage: "expects at least 2 argument(s), got 1"
+            errorMessage: "expects at least 2 arguments, got 1"
         },
         {
             name: 'wildcard() with any type first argument (number)',

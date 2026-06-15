@@ -173,7 +173,7 @@ export class BuiltinValidator {
   private checkArgumentCount(node: CallExpressionNode, funcName: string, minArgs: number): boolean {
     if (node.arguments.length < minArgs) {
       this.errors.push({
-        message: `Function '${funcName}' expects at least ${minArgs} argument(s), got ${node.arguments.length}`,
+        message: `Function '${funcName}' expects at least ${minArgs} argument${minArgs === 1 ? '' : 's'}, got ${node.arguments.length}`,
         start: node.start,
         end: node.end,
         severity: 'error',
@@ -280,7 +280,7 @@ export class BuiltinValidator {
       if (!hasAllowedType && !argTypes.includes(UcodeType.UNKNOWN)) {
         // None of the types in the union are allowed — definitely wrong, always error
         const message = customErrorMessage ||
-          `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
+          `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()}`;
 
         this.errors.push({ message, start: diagStart, end: diagEnd, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
         return false;
@@ -372,7 +372,7 @@ export class BuiltinValidator {
       if (!effectiveAllowed.includes(argType as UcodeType)) {
         // Definitely wrong — always error
         const message = customErrorMessage ||
-          `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
+          `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()}`;
 
         this.errors.push({ message, start: diagStart, end: diagEnd, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
         return false;
@@ -524,7 +524,7 @@ export class BuiltinValidator {
           if (literal.literalType === 'string') {
             const value = literal.value as string;
             this.pushTypeMismatch(
-              `Function 'match' expects regex for argument 2, but got string.\nDid you mean: /${value}/`,
+              `Function 'match' expects regex for argument 2, got string.\nDid you mean: /${value}/`,
               regexArg.start, regexArg.end
             );
             return true;
@@ -686,7 +686,7 @@ export class BuiltinValidator {
     if (bad.length > 0 && bad.length === argTypes.length) {
       // ALL types are bad — definitely wrong
       this.errors.push({
-        message: `Function 'exists' expects object for argument 1, but got ${argType.toLowerCase()}`,
+        message: `Function 'exists' expects object for argument 1, got ${argType.toLowerCase()}`,
         start: arg.start, end: arg.end, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
       });
     } else if (bad.length > 0) {
@@ -694,7 +694,7 @@ export class BuiltinValidator {
       const hasObject = argTypes.includes(UcodeType.OBJECT);
       if (!hasObject && !argTypes.includes(UcodeType.UNKNOWN)) {
         this.errors.push({
-          message: `Function 'exists' expects object for argument 1, but got ${argType.toLowerCase()}`,
+          message: `Function 'exists' expects object for argument 1, got ${argType.toLowerCase()}`,
           start: arg.start, end: arg.end, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
         });
       }
@@ -1360,7 +1360,7 @@ export class BuiltinValidator {
     // Count mismatch check
     if (specCount > argCount) {
       this.warnings.push({
-        message: `${funcName}(): format string has ${specCount} specifier(s) but only ${argCount} argument(s) provided`,
+        message: `${funcName}(): format string has ${specCount} specifier${specCount === 1 ? '' : 's'} but only ${argCount} argument${argCount === 1 ? '' : 's'} provided`,
         start: formatArg.start,
         end: formatArg.end,
         severity: 'warning',
@@ -1371,7 +1371,7 @@ export class BuiltinValidator {
       const firstExtra = dataArgs[specCount]!;
       const lastExtra = dataArgs[argCount - 1]!;
       this.warnings.push({
-        message: `${funcName}(): format string has ${specCount} specifier(s) but ${argCount} argument(s) provided (extra arguments are ignored)`,
+        message: `${funcName}(): format string has ${specCount} specifier${specCount === 1 ? '' : 's'} but ${argCount} argument${argCount === 1 ? '' : 's'} provided (extra arguments are ignored)`,
         start: firstExtra.start,
         end: lastExtra.end,
         severity: 'warning',

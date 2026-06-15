@@ -2193,7 +2193,7 @@ export class TypeChecker {
     // Too many arguments — only meaningful when non-variadic (no `...rest`), and
     // ucode has no `arguments` object so the extra args are provably dead.
     if (!variadic && argCount > positional.length) {
-      emit(`Function '${fnName}' takes ${positional.length} argument${positional.length === 1 ? '' : 's'} but ${argCount} were provided; the extra argument${argCount - positional.length === 1 ? ' is' : 's are'} ignored.`);
+      emit(`Function '${fnName}' expects at most ${positional.length} argument${positional.length === 1 ? '' : 's'}, got ${argCount} (extra arguments are ignored)`);
     }
 
     // Too few arguments — only for missing params with a declared, NON-optional

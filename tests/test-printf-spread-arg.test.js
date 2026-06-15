@@ -32,5 +32,5 @@ test('a genuine count mismatch (no spread) is still reported', async () => {
   const c = `function f() {\n    return sprintf("%s %s %s", "a");\n}\n`;
   const d = await uc2006(c, 'real-mismatch');
   expect(d).not.toBeNull();
-  expect(d.message).toContain('3 specifier(s) but only 1');
+  expect(d.message).toContain('3 specifiers but only 1');
 });

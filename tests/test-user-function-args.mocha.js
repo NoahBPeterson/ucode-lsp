@@ -59,7 +59,7 @@ describe('User-function call argument checking', function () {
   it('flags too many arguments to a non-variadic function', async () => {
     const ds = await argDiags(`${D}foo("x", "y");`);
     assert.strictEqual(ds.length, 1);
-    assert.match(ds[0].message, /takes 1 argument but 2 were provided/);
+    assert.match(ds[0].message, /expects at most 1 argument, got 2 \(extra arguments are ignored\)/);
   });
 
   it('does NOT flag extra arguments to a variadic (...rest) function', async () => {
@@ -101,7 +101,7 @@ describe('User-function call argument checking', function () {
   });
 
   it('flags too-many through an alias', async () => {
-    assert.match((await argDiags(`${D}let f = foo;\nf("a","b");`))[0].message, /takes 1 argument but 2/);
+    assert.match((await argDiags(`${D}let f = foo;\nf("a","b");`))[0].message, /expects at most 1 argument, got 2/);
   });
 
   it('does NOT carry a signature when aliasing an un-annotated function', async () => {
