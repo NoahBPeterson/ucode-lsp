@@ -1,3 +1,5 @@
+> 🟡 **PARTIAL** (2026-06-15 triage). Done: `parseReturnTypeString` consolidated into `typeChecker.parseReturnTypePublic()` (semanticAnalyzer.ts:2600 comment). Still open: `inferFsType` (semanticAnalyzer.ts:3495), `createFsObjectDataType` factory (semanticAnalyzer.ts:4014), and the PBR `propertyFunctionReturnTypes` mechanism (typeChecker.ts:1853) all remain.
+
 # Architectural Debt
 
 ## Resolved (0.6.26-0.6.28)

@@ -1,3 +1,5 @@
+> 🟡 **PARTIAL** (2026-06-15 triage). §0 perf BUILT (shebangPeekCache/isUcodeSourceFileAsync/scanDirectoryRecursively in shebang.ts:57,87 + server.ts:221,234) — but the `workspace.exclude` setting is NOT present in src/. §3 fixed: `let m; m=require("fs"); m.nonexistent()` fires UC3001. §2 still open: `require("fs").nonexistent()` and `o.fs=require("fs"); o.fs.nonexistent()` produce no error (inline-chain module type unresolved).
+
 # Planned: type-inference follow-ups
 
 Captured 2026-06-08. `require("builtin")` is now generically typed as that module

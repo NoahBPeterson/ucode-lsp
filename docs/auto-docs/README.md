@@ -61,7 +61,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [41](41-rtnl-constants-out-of-sync.md) | rtnl constant set badly out of sync — 154 real missing **+** 81 phantom accepted | false-pos/neg | low-med |
 | [42](42-references-plain-object-method.md) | Find-references / highlight on a plain object method misses all call sites | feature | medium |
 | [43](43-function-hover-omits-parameters.md) | Hover on a user function omits the parameter list | hover content | low-med |
-| [44](44-function-return-type-not-inferred-for-hover.md) | User-function hover always `Returns: unknown` — return type never inferred | hover/inference | low-med |
+| [44](../done/44-function-return-type-not-inferred-for-hover.md) | ✅ **FIXED** (verified 2026-06-15) — user-function hover now renders the inferred `Returns: <type>` | hover/inference | low-med |
 | [45](45-type-guard-quickfix-indentation.md) | Type-guard quick-fix uses a hardcoded tab, mismatching surrounding indent | code-action | low |
 | [46](46-definition-zero-width-range.md) | Go-to-definition returns a zero-width range for locals (highlights nothing) | feature | low |
 | [47](47-document-symbols-gaps.md) | Document symbols omit params and factory-returned object methods | feature | low |
@@ -139,7 +139,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [109](109-cascading-diagnostics-broken-declaration.md) | A broken declaration emits a parse error AND a cascading "unused variable" | cascade | low |
 | [110](110-sort-comparator-second-param-unknown.md) | `sort` comparator's 2nd param typed `unknown` (should be element type) | inference | low |
 | [111](111-filter-result-element-type-widened.md) | `filter` result element type widened (`array<integer\|double>`) | inference | low |
-| [112](112-loadstring-return-doc-wrong.md) | `loadstring` hover documents the wrong return (a function, not the result) | hover | low |
+| [112](../done/112-loadstring-return-doc-wrong.md) | ✅ **FIXED 0.6.191** (verified 2026-06-15) — `loadstring`/`loadfile` hover return now `function \| null` | hover | low |
 | [113](113-union-with-unknown-not-collapsed.md) | `unknown \| T` union not collapsed to `unknown` (leaks into hover) | hover/type | low |
 | [114](114-literal-hover-missing.md) | Hover on a number/string/bool/null literal returns nothing | hover | low |
 | [115](115-exponent-literal-typed-integer.md) | Exponent-notation literals (`1e5`) typed `integer` instead of `double` | inference | low-med |
@@ -207,7 +207,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [172](172-keyword-completion-wrong-set.md) | Keyword completion offers bogus `throw`, omits real keywords | completion | low-med |
 | [173](173-two-level-member-no-hover.md) | Two-level nested member access yields no hover/type | hover | low |
 | [174](174-member-completion-ternary-logical-result.md) | Member completion fails on `o \|\| {}` / ternary / `??` results | completion | low-med |
-| [175](175-signature-help-object-literal-arg.md) | Signature help fails inside an object-literal arg value | feature | low |
+| [175](../done/175-signature-help-object-literal-arg.md) | ✅ **FIXED** (verified 2026-06-15) — signature help works inside an object-literal arg value | feature | low |
 | [176](176-forin-object-array-no-member-completion.md) | `for (let v in array<object>)` var gets no member completion | completion | low |
 | [177](177-regex-vs-regexp-type-name.md) | `regex` vs `regexp` type-name inconsistency | naming | low |
 | [178](178-replace-callback-params-untyped.md) | `replace(s, regex, fn)` callback params untyped | inference | low |

@@ -1,3 +1,5 @@
+> ✅ **SHIPPED 0.6.248** (verified 2026-06-15 triage). `src/analysis/ucodeVersions.ts` implements VERSION_FEATURES / VERSION_MODULES / VERSION_MODULE_FUNCTIONS / VERSION_OBJECT_METHODS; `semanticAnalyzer.ts:150` `flagVersionFeature` (UC6005). 38/38 tests in `tests/test-target-version-gating.test.js` pass.
+
 # ucode version targeting
 
 ucode has no semver — OpenWrt pins a dated git snapshot of ucode per release. A few
