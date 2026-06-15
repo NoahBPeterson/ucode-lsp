@@ -344,11 +344,26 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
     let dotTokenIndex = -1;
 
     // Find the most recent DOT/QDOT token before or at the cursor
+    // Prefer the dot the cursor sits immediately AFTER (end === offset) — the just-typed `.`.
+    // This disambiguates a malformed `nl.const..x`: with the cursor right after the FIRST dot
+    // (`nl.const.|.x`) we resolve to that dot, not the adjacent second dot (whose predecessor
+    // is another dot, so no chain builds → the global-list fallback).
     for (let i = tokens.length - 1; i >= 0; i--) {
         const token = tokens[i];
-        if (isMemberAccessDot(token.type) && token.pos <= offset) {
+        if (isMemberAccessDot(token.type) && token.end === offset) {
             dotTokenIndex = i;
             break;
+        }
+    }
+    // Fall back to a dot the cursor is within (pos ≤ offset ≤ end) for callers that place the
+    // cursor AT the dot rather than just after it.
+    if (dotTokenIndex < 0) {
+        for (let i = tokens.length - 1; i >= 0; i--) {
+            const token = tokens[i];
+            if (isMemberAccessDot(token.type) && token.pos <= offset && offset <= token.end) {
+                dotTokenIndex = i;
+                break;
+            }
         }
     }
 

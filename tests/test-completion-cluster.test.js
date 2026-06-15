@@ -60,6 +60,17 @@ test('o?.const. completes the nested members (was: 91 builtins, due to the parse
   expect(c).not.toContain('print');
 });
 
+// ── robustness: cursor right after the first dot of a malformed `..` resolves to that dot ──
+test('cursor between the two dots of a?.b..c completes a.b members, not globals', async () => {
+  // `o.const..x` — cursor right after the first dot (offset of the second dot). The prefix up
+  // to the cursor is `o.const.`, so it must complete const's members, not fall back to globals.
+  const code = 'let o = { inner: { x: 1, y: 2 } };\nlet z = o.inner..foo;\n';
+  // `let z = o.inner.` — o(8) . inner(10-14) .(15) -> first dot end = 16
+  const c = await at(code, 1, 16);
+  expect(c).toContain('x'); expect(c).toContain('y');
+  expect(c).not.toContain('print');
+});
+
 // ── #96 module-path completion for the named-import form ──
 test("import { open } from 'f|' offers modules, not builtins", async () => {
   const c = await at("import { open } from 'fs';\n", 0, 22); // cursor inside the path string
