@@ -4,7 +4,8 @@
  */
 
 import { TokenType } from '../../lexer';
-import { 
+import { UcodeErrorCode } from '../../analysis/errorConstants';
+import {
   AstNode, BlockStatementNode, ExpressionStatementNode, EmptyStatementNode
 } from '../../ast/nodes';
 import { Precedence } from '../types';
@@ -51,9 +52,10 @@ export abstract class BasicStatements extends ControlFlowStatements {
       
       if (!isOptionalSemicolon) {
         // Record error but continue parsing
-        this.errorAt("Expected ';' after expression", 
-                     this.previous()?.end || start, 
-                     this.previous()?.end || start);
+        this.errorAt("Expected ';' after expression",
+                     this.previous()?.end || start,
+                     this.previous()?.end || start,
+                     UcodeErrorCode.MISSING_SEMICOLON);
         // Reset panic mode for missing semicolon to allow subsequent errors
         this.panicMode = false;
       }

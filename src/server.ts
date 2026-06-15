@@ -64,6 +64,7 @@ import { computeImportInsertEdit } from './importEdit';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalyzer, SemanticAnalysisResult, SymbolType } from './analysis';
 import { UCODE_TARGET_VERSIONS, UcodeTargetVersion, DEFAULT_TARGET_VERSION } from './analysis/ucodeVersions';
+import { UcodeErrorCode } from './analysis/errorConstants';
 import { UcodeParser } from './parser';
 import { UcodeLexer, TokenType } from './lexer';
 import { FileResolver } from './analysis/fileResolver';
@@ -528,7 +529,10 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Prom
                 end: textDocument.positionAt(err.end),
             },
             message: err.message,
-            source: 'ucode-parser'
+            source: 'ucode-parser',
+            // Every parser diagnostic carries a stable code (#103); UC6001 is the
+            // umbrella fallback if an emission site didn't set a more specific one.
+            code: err.code ?? UcodeErrorCode.SYNTAX_ERROR,
         };
         
         // Convert to lower severity if there's a disable comment

@@ -27,6 +27,7 @@ export enum UcodeErrorCode {
   FORMAT_TYPE_MISMATCH = 'UC2007',
   NAN_ARITHMETIC = 'UC2008',
   IMPOSSIBLE_COMPARISON = 'UC2009',
+  NOT_CALLABLE = 'UC2010',
 
   // Import/Export errors (3000-3999)
   INVALID_IMPORT = 'UC3001',

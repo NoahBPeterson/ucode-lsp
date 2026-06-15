@@ -886,7 +886,8 @@ export class TypeChecker {
             message: `Bitwise operation on unexpected types: ${leftBase} ${node.operator} ${rightBase}. Consider using boolean or integer types for clarity.`,
             start: node.start,
             end: node.end,
-            severity: 'warning'
+            severity: 'warning',
+            code: UcodeErrorCode.INVALID_OPERATION,
           });
         }
 
@@ -1459,7 +1460,8 @@ export class TypeChecker {
         message: `'in' over a ${this.getTypeDescription(rightTypeData)} is always false — 'in' tests object keys or array elements`,
         start: node.right.start,
         end: node.right.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
       });
     }
 
@@ -1833,7 +1835,8 @@ export class TypeChecker {
         message: `Undefined function: ${funcName}`,
         start: node.start,
         end: node.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.UNDEFINED_FUNCTION,
       });
       return UcodeType.UNKNOWN;
     }
@@ -1915,7 +1918,8 @@ export class TypeChecker {
           message: `Cannot call ${calleeType} as function`,
           start: node.start,
           end: node.end,
-          severity: 'error'
+          severity: 'error',
+          code: UcodeErrorCode.NOT_CALLABLE,
         });
         return UcodeType.UNKNOWN;
       }
@@ -2027,14 +2031,16 @@ export class TypeChecker {
         message: `Function '${signature.name}' expects at least ${minParams} arguments, got ${argCount}`,
         start: node.start,
         end: node.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.INVALID_PARAMETER_COUNT,
       });
     } else if (argCount > maxParams) {
       this.errors.push({
         message: `Function '${signature.name}' expects at most ${maxParams} arguments, got ${argCount}`,
         start: node.start,
         end: node.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.INVALID_PARAMETER_COUNT,
       });
     }
 
@@ -2592,7 +2598,8 @@ export class TypeChecker {
           message: `Method '${methodName}' does not exist on ${detectedObjectType}`,
           start: node.start,
           end: node.end,
-          severity: 'error'
+          severity: 'error',
+          code: UcodeErrorCode.METHOD_NOT_FOUND,
         });
         return UcodeType.UNKNOWN;
       }
@@ -2641,7 +2648,8 @@ export class TypeChecker {
             message: `Property '${propertyName}' does not exist on rtnl constants object. Available constants: ${rtnlTypeRegistry.getConstantNames().join(', ')}`,
             start: node.property.start,
             end: node.property.end,
-            severity: 'error'
+            severity: 'error',
+            code: UcodeErrorCode.PROPERTY_NOT_FOUND,
           });
           return UcodeType.UNKNOWN;
         }
@@ -2670,7 +2678,8 @@ export class TypeChecker {
             message: `Property '${propertyName}' does not exist on nl80211 constants object. Available constants: ${nl80211TypeRegistry.getConstantNames().join(', ')}`,
             start: node.property.start,
             end: node.property.end,
-            severity: 'error'
+            severity: 'error',
+            code: UcodeErrorCode.PROPERTY_NOT_FOUND,
           });
           return UcodeType.UNKNOWN;
         }
@@ -2901,7 +2910,8 @@ export class TypeChecker {
           message: `Property '${propertyName}' does not exist on array type. Arrays in ucode have no properties or methods. Use builtin functions instead (e.g., length(array), filter(array, callback)).`,
           start: node.property.start,
           end: node.property.end,
-          severity: 'error'
+          severity: 'error',
+          code: UcodeErrorCode.PROPERTY_NOT_FOUND,
         });
         return UcodeType.UNKNOWN;
       }
@@ -2950,7 +2960,8 @@ export class TypeChecker {
         message: `Property '${propertyName}' does not exist on string type. Strings in ucode have no member variables or functions.${hint ? ' ' + hint : ''}`,
         start: node.property.start,
         end: node.property.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.PROPERTY_NOT_FOUND,
       });
 
       return UcodeType.UNKNOWN;
@@ -2967,7 +2978,8 @@ export class TypeChecker {
         message: `Property '${propertyName}' does not exist on ${narrowedBase} type. ucode ${narrowedBase}s are not objects.${hint ? ' ' + hint : ''}`,
         start: node.property.start,
         end: node.property.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.PROPERTY_NOT_FOUND,
       });
       return UcodeType.UNKNOWN;
     }
@@ -2981,7 +2993,8 @@ export class TypeChecker {
         message: `Property '${propertyName}' does not exist on regex type. Regular expressions in ucode have no properties or methods. Use builtin functions instead (e.g., match(string, regex), replace(string, regex, replacement)).`,
         start: node.property.start,
         end: node.property.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.PROPERTY_NOT_FOUND,
       });
       return UcodeType.UNKNOWN;
     }

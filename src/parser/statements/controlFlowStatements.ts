@@ -4,8 +4,9 @@
  */
 
 import { TokenType } from '../../lexer';
-import { 
-  AstNode, IfStatementNode, WhileStatementNode, ForStatementNode, 
+import { UcodeErrorCode } from '../../analysis/errorConstants';
+import {
+  AstNode, IfStatementNode, WhileStatementNode, ForStatementNode,
   ForInStatementNode, ReturnStatementNode, BreakStatementNode, 
   ContinueStatementNode, TryStatementNode, CatchClauseNode, 
   SwitchStatementNode, SwitchCaseNode, BlockStatementNode,
@@ -201,7 +202,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
         init = this.parseVariableDeclaration();
       } else {
         init = this.parseExpression();
-        this.consume(TokenType.TK_SCOL, "Expected ';' after for loop initializer");
+        this.consume(TokenType.TK_SCOL, "Expected ';' after for loop initializer", UcodeErrorCode.MISSING_SEMICOLON);
       }
     } else {
       this.advance();
@@ -211,7 +212,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     if (!this.check(TokenType.TK_SCOL)) {
       test = this.parseExpression();
     }
-    this.consume(TokenType.TK_SCOL, "Expected ';' after for loop condition");
+    this.consume(TokenType.TK_SCOL, "Expected ';' after for loop condition", UcodeErrorCode.MISSING_SEMICOLON);
 
     let update: AstNode | null = null;
     if (!this.check(TokenType.TK_RPAREN)) {
@@ -249,7 +250,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     if (this.check(TokenType.TK_RBRACE) || this.isAtEnd()) {
       this.match(TokenType.TK_SCOL); // optional before block close / EOF
     } else {
-      this.consume(TokenType.TK_SCOL, "Expected ';' after return value");
+      this.consume(TokenType.TK_SCOL, "Expected ';' after return value", UcodeErrorCode.MISSING_SEMICOLON);
     }
     
     return {
@@ -268,7 +269,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
       label = this.parseIdentifierName();
     }
     
-    this.consume(TokenType.TK_SCOL, "Expected ';' after 'break'");
+    this.consume(TokenType.TK_SCOL, "Expected ';' after 'break'", UcodeErrorCode.MISSING_SEMICOLON);
     
     return {
       type: 'BreakStatement',
@@ -286,7 +287,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
       label = this.parseIdentifierName();
     }
     
-    this.consume(TokenType.TK_SCOL, "Expected ';' after 'continue'");
+    this.consume(TokenType.TK_SCOL, "Expected ';' after 'continue'", UcodeErrorCode.MISSING_SEMICOLON);
     
     return {
       type: 'ContinueStatement',

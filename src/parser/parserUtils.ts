@@ -5,6 +5,7 @@
 import { Token, TokenType } from '../lexer';
 import { ParseWarning, RecoveryMode, STATEMENT_SYNC_TOKENS, EXPRESSION_SYNC_TOKENS, ParseError } from './types';
 import { JsDocCommentNode } from '../ast/nodes';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export class ParserUtils {
   protected tokens: Token[];
@@ -136,38 +137,42 @@ export class ParserUtils {
     return false;
   }
 
-  protected consume(type: TokenType, message: string): Token | null {
+  protected consume(type: TokenType, message: string, code?: string): Token | null {
     if (this.check(type)) {
       return this.advance();
     }
 
-    this.error(message);
+    this.error(message, code);
     return null;
   }
 
-  protected error(message: string): void {
+  // Every parser diagnostic carries a stable code (#103). The default umbrella is
+  // UC6001 (SYNTAX_ERROR); call sites pass a more specific code where one fits
+  // (e.g. UC6003 for a missing semicolon).
+  protected error(message: string, code: string = UcodeErrorCode.SYNTAX_ERROR): void {
     const token = this.peek();
     if (token) {
-      this.errorAt(message, token.pos, token.end);
+      this.errorAt(message, token.pos, token.end, code);
     } else {
       this.errors.push({
         message,
         start: this.tokens[this.tokens.length - 1]?.end || 0,
         end: this.tokens[this.tokens.length - 1]?.end || 0,
-        severity: 'error'
+        severity: 'error',
+        code,
       });
     }
   }
 
-  protected errorAt(message: string, pos: number, end: number): void {
+  protected errorAt(message: string, pos: number, end: number, code: string = UcodeErrorCode.SYNTAX_ERROR): void {
     if (this.panicMode) return;
-    
+
     this.panicMode = true;
-    this.errors.push({ message, start: pos, end, severity: 'error' });
+    this.errors.push({ message, start: pos, end, severity: 'error', code });
   }
 
-  protected warningAt(message: string, pos: number, end: number): void {
-    this.warnings.push({ message, start: pos, end, severity: 'warning' });
+  protected warningAt(message: string, pos: number, end: number, code: string = UcodeErrorCode.SYNTAX_ERROR): void {
+    this.warnings.push({ message, start: pos, end, severity: 'warning', code });
   }
 
   protected synchronize(mode: RecoveryMode): void {

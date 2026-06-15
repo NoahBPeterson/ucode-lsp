@@ -4,8 +4,9 @@
  */
 
 import { TokenType } from '../../lexer';
-import { 
-  AstNode, VariableDeclarationNode, VariableDeclaratorNode, 
+import { UcodeErrorCode } from '../../analysis/errorConstants';
+import {
+  AstNode, VariableDeclarationNode, VariableDeclaratorNode,
   FunctionDeclarationNode, FunctionExpressionNode, IdentifierNode, BlockStatementNode,
   ImportDeclarationNode, ImportSpecifierNode, ImportDefaultSpecifierNode,
   ImportNamespaceSpecifierNode, LiteralNode, ExportNamedDeclarationNode,
@@ -326,7 +327,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
       literalType: 'string'
     };
 
-    this.consume(TokenType.TK_SCOL, "Expected ';' after import statement");
+    this.consume(TokenType.TK_SCOL, "Expected ';' after import statement", UcodeErrorCode.MISSING_SEMICOLON);
 
     return {
       type: 'ImportDeclaration',
@@ -405,7 +406,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
       // Parse as expression
       const expr = this.parseExpression();
       if (expr) {
-        this.consume(TokenType.TK_SCOL, "Expected ';' after export default expression");
+        this.consume(TokenType.TK_SCOL, "Expected ';' after export default expression", UcodeErrorCode.MISSING_SEMICOLON);
       }
       return expr;
     }
@@ -442,7 +443,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
       literalType: 'string'
     };
 
-    this.consume(TokenType.TK_SCOL, "Expected ';' after export * declaration");
+    this.consume(TokenType.TK_SCOL, "Expected ';' after export * declaration", UcodeErrorCode.MISSING_SEMICOLON);
 
     return {
       type: 'ExportAllDeclaration',
@@ -507,7 +508,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
       };
     }
 
-    this.consume(TokenType.TK_SCOL, "Expected ';' after export declaration");
+    this.consume(TokenType.TK_SCOL, "Expected ';' after export declaration", UcodeErrorCode.MISSING_SEMICOLON);
 
     return {
       type: 'ExportNamedDeclaration',

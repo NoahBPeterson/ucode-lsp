@@ -126,7 +126,7 @@ export class BuiltinValidator {
 
   /** Push a definite type mismatch diagnostic — always an error */
   private pushTypeMismatch(message: string, start: number, end: number): void {
-    this.errors.push({ message, start, end, severity: 'error' });
+    this.errors.push({ message, start, end, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
   }
 
   /**
@@ -176,7 +176,8 @@ export class BuiltinValidator {
         message: `Function '${funcName}' expects at least ${minArgs} argument(s), got ${node.arguments.length}`,
         start: node.start,
         end: node.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.INVALID_PARAMETER_COUNT,
       });
       return false;
     }
@@ -281,7 +282,7 @@ export class BuiltinValidator {
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
 
-        this.errors.push({ message, start: diagStart, end: diagEnd, severity: 'error' });
+        this.errors.push({ message, start: diagStart, end: diagEnd, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
         return false;
       } else if (disallowedTypes.length > 0) {
         // Some types are allowed, some are not - WARNING (error in strict mode)
@@ -373,7 +374,7 @@ export class BuiltinValidator {
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, but got ${argType.toLowerCase()}`;
 
-        this.errors.push({ message, start: diagStart, end: diagEnd, severity: 'error' });
+        this.errors.push({ message, start: diagStart, end: diagEnd, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
         return false;
       }
     }
@@ -612,7 +613,8 @@ export class BuiltinValidator {
         message: `loadstring() expects 1-2 arguments, got ${node.arguments.length}`,
         start: node.start,
         end: node.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.INVALID_PARAMETER_COUNT,
       });
       return true;
     }
@@ -685,7 +687,7 @@ export class BuiltinValidator {
       // ALL types are bad — definitely wrong
       this.errors.push({
         message: `Function 'exists' expects object for argument 1, but got ${argType.toLowerCase()}`,
-        start: arg.start, end: arg.end, severity: 'error'
+        start: arg.start, end: arg.end, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
       });
     } else if (bad.length > 0) {
       // Mix of valid and invalid — warning only if not all exempt
@@ -693,7 +695,7 @@ export class BuiltinValidator {
       if (!hasObject && !argTypes.includes(UcodeType.UNKNOWN)) {
         this.errors.push({
           message: `Function 'exists' expects object for argument 1, but got ${argType.toLowerCase()}`,
-          start: arg.start, end: arg.end, severity: 'error'
+          start: arg.start, end: arg.end, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
         });
       }
     }
@@ -709,7 +711,8 @@ export class BuiltinValidator {
         message: `Empty assert() will always fail - consider adding a condition`,
         start: node.start,
         end: node.end,
-        severity: 'warning'
+        severity: 'warning',
+        code: UcodeErrorCode.INVALID_OPERATION,
       });
     } else {
       // Check if the first argument is known to be falsy
@@ -719,7 +722,8 @@ export class BuiltinValidator {
           message: `assert() with falsy value will always fail - consider adding a condition`,
           start: firstArg.start,
           end: firstArg.end,
-          severity: 'warning'
+          severity: 'warning',
+          code: UcodeErrorCode.INVALID_OPERATION,
         });
       }
     }
@@ -755,7 +759,8 @@ export class BuiltinValidator {
                 message: `Unrecognized flag characters: ${uniqueInvalid.map(c => `'${c}'`).join(', ')}`,
                 start: flagsArg.start,
                 end: flagsArg.end,
-                severity: 'error'
+                severity: 'error',
+                code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
               });
             }
           }
@@ -803,9 +808,9 @@ export class BuiltinValidator {
           const start = Math.min(valueEnd, Math.max(valueStart, valueStart + relStart));
           const end   = Math.min(valueEnd, Math.max(start, valueStart + (relEnd ?? relStart + 1)));
           if (sev === 'warning')
-            this.warnings.push({ message: msg, start, end, severity: sev });
+            this.warnings.push({ message: msg, start, end, severity: sev, code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
           else if (sev === 'error')
-            this.errors.push({ message: msg, start, end, severity: sev });
+            this.errors.push({ message: msg, start, end, severity: sev, code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
         };
 
         const POSIX_CLASSES = new Set([
@@ -1086,7 +1091,8 @@ export class BuiltinValidator {
             message: `Wildcard pattern '${pattern}' contains no wildcard characters. Consider adding '*', '?' or a bracket expression '[...]' if you intended a pattern.`,
             start: patternArg.start,
             end: patternArg.end,
-            severity: 'warning'
+            severity: 'warning',
+            code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
           });
         }
       }
@@ -1183,7 +1189,8 @@ export class BuiltinValidator {
           message: `Function 'render' (template form) expects at most 2 arguments, got ${node.arguments.length}`,
           start: node.start,
           end: node.end,
-          severity: 'error'
+          severity: 'error',
+          code: UcodeErrorCode.INVALID_PARAMETER_COUNT,
         });
       }
       return true;
@@ -1217,13 +1224,13 @@ export class BuiltinValidator {
             signalValue = literal.value as string | number;
             if (signalType === UcodeType.INTEGER) {
                 if (typeof literal.value === 'number' && (literal.value < 1 || literal.value > 31)) {
-                    this.errors.push({ message: `Signal number must be between 1 and 31, got ${literal.value}`, start: signalArg.start, end: signalArg.end, severity: 'error' });
+                    this.errors.push({ message: `Signal number must be between 1 and 31, got ${literal.value}`, start: signalArg.start, end: signalArg.end, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
                 }
             } else if (signalType === UcodeType.STRING) {
                 if (typeof literal.value === 'string') {
                     let sigStr = literal.value.toUpperCase().replace(/^SIG/, '');
                     if (!VALID_SIGNAL_NAMES.has(sigStr) && !UNHANDLABLE_SIGNALS.has(sigStr)) {
-                        this.errors.push({ message: `Invalid signal name "${literal.value}"`, start: signalArg.start, end: signalArg.end, severity: 'error' });
+                        this.errors.push({ message: `Invalid signal name "${literal.value}"`, start: signalArg.start, end: signalArg.end, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
                     }
                 }
             } else if (signalType === UcodeType.DOUBLE) {
@@ -1244,7 +1251,7 @@ export class BuiltinValidator {
         if (handlerType === UcodeType.STRING && handlerArg.type === 'Literal') {
           const literal = handlerArg as LiteralNode;
           if (typeof literal.value === 'string' && literal.value !== 'ignore' && literal.value !== 'default') {
-            this.warnings.push({ message: `Invalid signal handler string "${literal.value}". Did you mean 'ignore' or 'default'?`, start: handlerArg.start, end: handlerArg.end, severity: 'warning' });
+            this.warnings.push({ message: `Invalid signal handler string "${literal.value}". Did you mean 'ignore' or 'default'?`, start: handlerArg.start, end: handlerArg.end, severity: 'warning', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
           }
         } else {
             this.validateArgumentType(handlerArg, 'signal', 2, [UcodeType.FUNCTION, UcodeType.STRING]);
@@ -1253,7 +1260,7 @@ export class BuiltinValidator {
         if (signalValue && signalArg) {
             let sigStr = String(signalValue).toUpperCase().replace(/^SIG/, '');
             if (UNHANDLABLE_SIGNALS.has(sigStr)) {
-                this.warnings.push({ message: `Signal '${sigStr}' cannot be caught or ignored.`, start: signalArg.start, end: signalArg.end, severity: 'warning' });
+                this.warnings.push({ message: `Signal '${sigStr}' cannot be caught or ignored.`, start: signalArg.start, end: signalArg.end, severity: 'warning', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
             }
         }
       }
@@ -1496,7 +1503,8 @@ export class BuiltinValidator {
         message: `require() expects 1 argument, got ${node.arguments.length}`,
         start: node.start,
         end: node.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.INVALID_PARAMETER_COUNT,
       });
       return true;
     }
@@ -1513,7 +1521,8 @@ export class BuiltinValidator {
         message: `include() expects 1-2 arguments, got ${node.arguments.length}`,
         start: node.start,
         end: node.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.INVALID_PARAMETER_COUNT,
       });
       return true;
     }
@@ -1559,7 +1568,8 @@ export class BuiltinValidator {
         message: `loadfile() expects 1-2 arguments, got ${node.arguments.length}`,
         start: node.start,
         end: node.end,
-        severity: 'error'
+        severity: 'error',
+        code: UcodeErrorCode.INVALID_PARAMETER_COUNT,
       });
       return true;
     }
@@ -1600,7 +1610,7 @@ export class BuiltinValidator {
         if (vt !== UcodeType.UNKNOWN && vt !== UcodeType.BOOLEAN) {
           this.warnings.push({
             message: `${fnName}() ParseConfig option '${keyName}' expects a boolean, got ${vt} (ucode coerces it via truthiness)`,
-            start: value.start, end: value.end, severity: 'warning'
+            start: value.start, end: value.end, severity: 'warning', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
           });
         }
       } else if (PARSE_CONFIG_ARRAY_KEYS.has(keyName)) {
@@ -1608,13 +1618,13 @@ export class BuiltinValidator {
         if (vt !== UcodeType.UNKNOWN && vt !== UcodeType.ARRAY) {
           this.warnings.push({
             message: `${fnName}() ParseConfig option '${keyName}' expects an array of strings, got ${vt} (non-array values are ignored)`,
-            start: value.start, end: value.end, severity: 'warning'
+            start: value.start, end: value.end, severity: 'warning', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
           });
         }
       } else {
         this.warnings.push({
           message: `Unknown ParseConfig option '${keyName}' (ignored by ${fnName}())`,
-          start: key.start, end: key.end, severity: 'warning'
+          start: key.start, end: key.end, severity: 'warning', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
         });
       }
     }
@@ -1663,7 +1673,8 @@ export class BuiltinValidator {
           message: `Invalid garbage collection command "${literalCommand.value}". Did you mean 'collect', or 'start', 'stop', or 'count'?`,
           start: node.arguments[0].start,
           end: node.arguments[0].end,
-          severity: 'error' 
+          severity: 'error',
+          code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
         });
       }
       if (argCount >= 2 && node.arguments[1]) {
@@ -1689,11 +1700,12 @@ export class BuiltinValidator {
           }
           if (error)
             this.errors.push(
-            { 
+            {
               message: message,
               start: node.arguments[1].start,
               end: node.arguments[1].end,
-              severity: 'error'
+              severity: 'error',
+              code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
             });
         } else if ((node.arguments[1] as AstNode).type === "Identifier") {
           // ToDo- Advanced type inference

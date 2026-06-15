@@ -13,6 +13,7 @@ import type { Diagnostic } from 'vscode-languageserver/node';
 import { UcodeLexer } from './lexer';
 import { UcodeParser } from './parser';
 import { SemanticAnalyzer } from './analysis';
+import { UcodeErrorCode } from './analysis/errorConstants';
 
 // Read the version from package.json at build time so `--version` never drifts
 // from the published version. Bundled by webpack into dist/cli.js.
@@ -254,6 +255,7 @@ function analyzeFile(filePath: string): Diagnostic[] {
         },
         message: err.message,
         source: 'ucode-parser',
+        code: err.code ?? UcodeErrorCode.SYNTAX_ERROR,
     }));
 
     if (parseResult.ast) {
