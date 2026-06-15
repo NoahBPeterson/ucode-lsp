@@ -70,6 +70,27 @@ function firstDocLine(doc: string): string {
     return line.replace(/\*\*/g, '').trim();
 }
 
+/**
+ * A compact `name(p1, p2, ...)` signature for a builtin's completion `detail` (#102),
+ * derived from the SAME doc source signature-help parses. Returns null when the doc
+ * carries no parameter signal — so paramless/constant builtins (e.g. NL80211_* in the
+ * builtin map) keep their generic detail rather than getting a misleading `name()`.
+ *
+ *  1. A leading `**name(...)**` line (the author's canonical form, may mark optionals
+ *     with `?`) wins — it's the most precise.
+ *  2. Else the first `**Parameters:**` block's names → `name(a, b, ...)`.
+ */
+export function compactBuiltinSignature(name: string, doc: string): string | null {
+    const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const lead = firstDocLine(doc).match(new RegExp(`^${esc}\\s*(\\([^)]*\\))`));
+    if (lead) return `${name}${lead[1]}`;
+
+    const sets = builtinParamNameSets(doc);
+    if (sets.length === 0) return null;            // no Parameters block at all → no signal
+    const params = sets.find(s => s.length > 0) ?? [];
+    return `${name}(${params.join(', ')})`;
+}
+
 function hasRestParam(paramLabels: string[]): boolean {
     return paramLabels.length > 0 && /^\.\.\./.test(paramLabels[paramLabels.length - 1]!);
 }

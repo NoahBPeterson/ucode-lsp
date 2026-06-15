@@ -128,8 +128,8 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [98](98-let-const-name-offers-builtins.md) | `let`/`const`/`for`-init name position offers builtins (rename-on-commit hazard) | completion | low-med |
 | [99](99-object-key-position-floods-builtins.md) | Object-literal key position floods with builtins/constants | completion | low |
 | [100](100-global-constants-outrank-locals.md) | Ambient globals ranked above user locals in completion ordering | completion | low |
-| [101](101-completion-item-kind-wrong-for-constants.md) | `NaN`/`Infinity`/`REQUIRE_SEARCH_PATH` have wrong CompletionItemKind | completion | low |
-| [102](102-builtin-completion-detail-no-signature.md) | Builtin completion items carry no signature in `detail` | completion | low |
+| [101](../done/101-completion-item-kind-wrong-for-constants.md) | ✅ **FIXED 0.6.248** — `NaN`/`Infinity`/`REQUIRE_SEARCH_PATH` now complete as Constant (kind 21) | completion | low |
+| [102](../done/102-builtin-completion-detail-no-signature.md) | ✅ **FIXED 0.6.248** — builtin completion `detail` now carries a compact signature (e.g. `printf(format, ...args)`) | completion | low |
 | [103](../done/103-missing-diagnostic-codes-systemic.md) | ✅ **FIXED 0.6.245** — every diagnostic now carries a stable `code` (typeChecker/builtin/parser sites wired through; minted `UC2010` NOT_CALLABLE) | quality | medium |
 | [104](104-dead-registry-codes.md) | Many `UC####` registry codes (and the whole `src/validations/` dir) are dead — *partially addressed 0.6.245*: UC5003/UC5004/UC6003/UC2002 are now live (#103) | dead code | low |
 | [105](../done/105-function-redeclaration-unreachable.md) | ✅ **FIXED 0.6.220** — strict-mode function redeclaration now emits UC1007 (was unreachable; non-strict = last wins) | false-neg | medium |

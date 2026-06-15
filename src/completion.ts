@@ -13,6 +13,7 @@ import { discoverAvailableModules, getModuleMembers, DiscoveredModule, ModuleMem
 import { UcodeLexer, TokenType, isMemberAccessDot, Token } from './lexer';
 import { UcodeParser } from './parser';
 import { allBuiltinFunctions } from './builtins';
+import { compactBuiltinSignature } from './signatureHelp';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
 import { extractModuleType, typeToString } from './analysis/symbolTable';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
@@ -22,6 +23,10 @@ import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType,
 import { FileResolver } from './analysis/fileResolver';
 
 const defaultExportPropertiesCache = new Map<string, { content: string; properties: { name: string; type: string }[] }>();
+
+// Ambient globals that are constants but declared as VARIABLE symbols (symbolTable.ts).
+// Mapped to CompletionItemKind.Constant for the correct editor icon (#101).
+const AMBIENT_CONSTANT_NAMES = new Set(['NaN', 'Infinity', 'REQUIRE_SEARCH_PATH']);
 
 // Shared resolver for cross-file completions. getModuleExports() parses each
 // imported file's AST once and caches it (exportCache), so member completion
@@ -688,10 +693,14 @@ function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, conne
     
     // Add built-in functions (including fs functions)
     for (const [functionName, documentation] of allBuiltinFunctions.entries()) {
+        // #102: surface a compact signature in `detail` (e.g. `printf(format, ...args)`)
+        // from the same doc signature-help parses; fall back to generic when the doc
+        // carries no parameter signal (paramless/constant entries).
+        const sig = compactBuiltinSignature(functionName, documentation);
         completions.push({
             label: functionName,
             kind: CompletionItemKind.Function,
-            detail: 'built-in function',
+            detail: sig ?? 'built-in function',
             documentation: {
                 kind: MarkupKind.Markdown,
                 value: documentation
@@ -775,6 +784,15 @@ function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, conne
                     break;
             }
             
+            // #101: the ambient numeric/path constants are declared as VARIABLE symbols
+            // (no CONSTANT SymbolType exists), so map them to the Constant kind here for
+            // the right editor icon. Display-only — deliberately NOT via symbol.isConstant,
+            // which would (unverifiably) make `NaN = 5` a UC1010 const-reassignment error.
+            if (AMBIENT_CONSTANT_NAMES.has(varName)) {
+                kind = CompletionItemKind.Constant;
+                detail = 'constant';
+            }
+
             completions.push({
                 label: varName,
                 kind: kind,
