@@ -71,6 +71,16 @@ test('cursor between the two dots of a?.b..c completes a.b members, not globals'
   expect(c).not.toContain('print');
 });
 
+test('cursor after a malformed double-dot offers nothing (not globals)', async () => {
+  // `o..|` — a property name belongs after the dot, but the chain is broken; suppress entirely.
+  const c = await at('let o = { a: 1 };\nlet y = o..\n', 1, 11);
+  expect(c.length).toBe(0);
+});
+test('global completion at a normal position is NOT over-suppressed', async () => {
+  const c = await at('let x = pr\n', 0, 10);
+  expect(c).toContain('print');
+});
+
 // ── #96 module-path completion for the named-import form ──
 test("import { open } from 'f|' offers modules, not builtins", async () => {
   const c = await at("import { open } from 'fs';\n", 0, 22); // cursor inside the path string

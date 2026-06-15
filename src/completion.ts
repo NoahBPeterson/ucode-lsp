@@ -298,7 +298,15 @@ export function handleCompletion(
             connection.console.log(`No specific completions for object: ${objectName}`);
             return [];
         }
-        
+
+        // Cursor sits immediately after a member-access dot but the receiver couldn't be
+        // resolved (a malformed chain like `a..` / `nl.const..`). This is still a member
+        // position — a property name belongs here, never the global builtins — so suppress
+        // completion rather than falling through to the global list.
+        if (isAfterMemberAccessDot(offset, tokens)) {
+            return [];
+        }
+
         // Don't offer completions while the user is NAMING a function
         // (`function lo|`). The name is brand new; any suggestion (e.g.
         // `localtime` fuzzy-matching `lo`) can be committed by typing `(` —
@@ -334,6 +342,16 @@ function isFunctionNameContext(offset: number, tokens: any[]): boolean {
     if (cur.type === TokenType.TK_FUNC) return true;
     // `function lo|` — typing the name; the keyword is the previous token.
     if (cur.type === TokenType.TK_LABEL && prev && prev.type === TokenType.TK_FUNC) return true;
+    return false;
+}
+
+/** True when a member-access dot (`.` / `?.`) ends exactly at the cursor — i.e. a property
+ *  name belongs at the cursor. Used to suppress the global-builtin fallback when the receiver
+ *  chain can't be resolved (malformed `a..`), so we never offer builtins where a member goes. */
+function isAfterMemberAccessDot(offset: number, tokens: any[]): boolean {
+    for (const t of tokens) {
+        if (t.end === offset && isMemberAccessDot(t.type)) return true;
+    }
     return false;
 }
 
