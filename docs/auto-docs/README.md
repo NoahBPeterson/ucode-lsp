@@ -133,7 +133,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [103](../done/103-missing-diagnostic-codes-systemic.md) | ✅ **FIXED 0.6.245** — every diagnostic now carries a stable `code` (typeChecker/builtin/parser sites wired through; minted `UC2010` NOT_CALLABLE) | quality | medium |
 | [104](104-dead-registry-codes.md) | Many `UC####` registry codes (and the whole `src/validations/` dir) are dead — *partially addressed 0.6.245*: UC5003/UC5004/UC6003/UC2002 are now live (#103) | dead code | low |
 | [105](../done/105-function-redeclaration-unreachable.md) | ✅ **FIXED 0.6.220** — strict-mode function redeclaration now emits UC1007 (was unreachable; non-strict = last wins) | false-neg | medium |
-| [106](106-severity-gated-on-strict-mode.md) | UC2008/UC2009 severity flips with `'use strict'` though the bug is strict-independent | inconsistency | low |
+| [106](../done/106-severity-gated-on-strict-mode.md) | ✅ **FIXED 0.6.247** — UC2008/UC2009 now a fixed Error in both modes (deterministic bug); also unifies the in-over-scalar sibling | inconsistency | low |
 | [107](../done/107-argument-validation-inconsistent.md) | ✅ **FIXED 0.6.246** — argument-validation unified: one `, got` wording, proper pluralization, consistent too-many shape, code on every variant | inconsistency | low |
 | [108](108-is-unknown-mislabels-nullable.md) | "is unknown" mislabels a value that has a known nullable type | message | low |
 | [109](109-cascading-diagnostics-broken-declaration.md) | A broken declaration emits a parse error AND a cascading "unused variable" | cascade | low |

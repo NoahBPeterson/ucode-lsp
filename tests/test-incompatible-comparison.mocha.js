@@ -90,8 +90,8 @@ describe('Impossible non-numeric comparison (UC2009)', function () {
     assert.strictEqual((await uc2009(`let a = [1]; let r = a == null;`)).length, 0);
   });
 
-  it('is an ERROR in strict mode, a warning otherwise', async () => {
+  it('is an Error regardless of strict mode (#106 — deterministic bug)', async () => {
     assert.strictEqual((await uc2009(`'use strict';\nlet x=1; let r = type(x) == "number";`))[0].severity, 1);
-    assert.strictEqual((await uc2009(`let x=1; let r = type(x) == "number";`))[0].severity, 2);
+    assert.strictEqual((await uc2009(`let x=1; let r = type(x) == "number";`))[0].severity, 1);
   });
 });

@@ -36,9 +36,9 @@ describe('Impossible index()/rindex() comparison (UC2009)', function () {
     assert.strictEqual((await uc2009(`let s="x"; let r = rindex(s,'m') != -2;`)).length, 1);
   });
 
-  it('is an ERROR in strict mode, a warning otherwise', async () => {
+  it('is an Error regardless of strict mode (#106 — deterministic bug)', async () => {
     assert.strictEqual((await uc2009(`'use strict';\nlet s="x"; let r = index(s,'m') != -2;`))[0].severity, 1);
-    assert.strictEqual((await uc2009(`let s="x"; let r = index(s,'m') != -2;`))[0].severity, 2);
+    assert.strictEqual((await uc2009(`let s="x"; let r = index(s,'m') != -2;`))[0].severity, 1);
   });
 
   // ── No false positives on legitimate idioms ─────────────────────────────

@@ -1240,8 +1240,10 @@ export class TypeChecker {
       end: node.end,
       code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
     };
-    if (this.strictMode) this.errors.push({ ...base, severity: 'error' });
-    else this.warnings.push({ ...base, severity: 'warning' });
+    // Fixed Error, independent of `'use strict'` (#106): an always-true/false
+    // comparison is a deterministic bug regardless of the pragma — strict mode
+    // only changes undeclared-variable access, never comparison semantics.
+    this.errors.push({ ...base, severity: 'error' });
   }
 
   private isTypeCall(n: AstNode): boolean {
@@ -1288,8 +1290,8 @@ export class TypeChecker {
       code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
       ...(fixes ? { data: { typeStringFix: fixes, litStart: litNode.start, litEnd: litNode.end } } : {}),
     };
-    if (this.strictMode) this.errors.push({ ...base, severity: 'error' });
-    else this.warnings.push({ ...base, severity: 'warning' });
+    // Fixed Error, independent of `'use strict'` (#106) — see checkConstantComparison.
+    this.errors.push({ ...base, severity: 'error' });
   }
 
   /** A numeric / string / boolean literal (NOT null, NOT regexp) — a scalar that
@@ -1340,8 +1342,8 @@ export class TypeChecker {
       end: node.end,
       code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
     };
-    if (this.strictMode) this.errors.push({ ...base, severity: 'error' });
-    else this.warnings.push({ ...base, severity: 'warning' });
+    // Fixed Error, independent of `'use strict'` (#106) — see checkConstantComparison.
+    this.errors.push({ ...base, severity: 'error' });
   }
 
   /**
@@ -1381,8 +1383,9 @@ export class TypeChecker {
    * NaN), as is `+` with a string operand (that's concatenation). For unary
    * operators, pass rightType = null.
    *
-   * Severity follows strict mode: a warning normally, an error under
-   * `'use strict';` (the same escalation builtinValidation uses).
+   * Always an Error, independent of `'use strict'` (#106): the NaN result is a
+   * deterministic bug in both modes — strict only governs undeclared-variable
+   * access, not arithmetic.
    */
   private checkNaNArithmetic(node: AstNode, operator: string, leftType: UcodeType, rightType: UcodeType | null): void {
     if (operator === '+' && (leftType === UcodeType.STRING || rightType === UcodeType.STRING)) {
@@ -1400,11 +1403,9 @@ export class TypeChecker {
       end: node.end,
       code: UcodeErrorCode.NAN_ARITHMETIC,
     };
-    if (this.strictMode) {
-      this.errors.push({ ...base, severity: 'error' });
-    } else {
-      this.warnings.push({ ...base, severity: 'warning' });
-    }
+    // Fixed Error, independent of `'use strict'` (#106): `5 + {}` produces NaN in
+    // both modes — strict only changes undeclared-variable access, not arithmetic.
+    this.errors.push({ ...base, severity: 'error' });
   }
 
   private checkInOperator(node: BinaryExpressionNode, _leftType: UcodeType, rightType: UcodeType): CheckResult {

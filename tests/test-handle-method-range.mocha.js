@@ -70,8 +70,8 @@ describe('Impossible handle-method comparison (UC2009)', function () {
     assert.strictEqual((await uc2009(`function getit(x) { return x; } let r = getit(1).tell() < 0;`)).length, 0);
   });
 
-  it('is an ERROR in strict mode, a warning otherwise', async () => {
+  it('is an Error regardless of strict mode (#106 — deterministic bug)', async () => {
     assert.strictEqual((await uc2009(`'use strict';\n${FS}let f = fs.open('/x','w'); let r = f.tell() < 0;`))[0].severity, 1);
-    assert.strictEqual((await uc2009(`${FS}let f = fs.open('/x','w'); let r = f.tell() < 0;`))[0].severity, 2);
+    assert.strictEqual((await uc2009(`${FS}let f = fs.open('/x','w'); let r = f.tell() < 0;`))[0].severity, 1);
   });
 });
