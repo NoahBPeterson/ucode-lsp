@@ -119,7 +119,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | # | Finding | Kind | Severity |
 |---|---|---|---|
 | [91](../done/91-type-guard-quickfix-outside-function.md) | ✅ **FIXED 0.6.215** — "Add type guard" inserted the guard OUTSIDE the function for expression-body arrow / fn-expr / object-method / callback params → invalid ucode; now placed inside the function body (block insert or expr-body→block rewrite) | broken fix | high |
-| [92](92-uc3006-named-import-fix-leaves-call-broken.md) | UC3006 named-import fix (preferred) leaves the `module.method()` call broken | broken fix | medium |
+| [92](../done/92-uc3006-named-import-fix-leaves-call-broken.md) | ✅ **FIXED 0.6.243** — UC3006 add-import fix for `module.method()`: the namespace import (works as-is) is now preferred, and the named-import variant ALSO rewrites the call (`fs.open(`→`open(`) so neither leaves `module` unbound | broken fix | medium |
 | [93](93-add-import-no-merge.md) | Add-import doesn't merge into an existing import from the same module | code-action | low |
 | [94](94-add-jsdoc-unreachable-for-arrows.md) | "Add JSDoc" (UC7003) never fires for arrow/fn-expr/object-method definitions | dead coverage | low-med |
 | [95](95-add-jsdoc-not-offered-partial.md) | "Add JSDoc" not offered for a function with partial existing JSDoc | missing fix | low |

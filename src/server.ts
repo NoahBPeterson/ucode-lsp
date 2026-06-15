@@ -2873,19 +2873,32 @@ function generateAddImportQuickFix(
     const m = /^\s*\.\s*([A-Za-z_]\w*)/.exec(tail);
     const methodName = m ? m[1] : null;
 
-    const mkAction = (importText: string, preferred: boolean): CodeAction => {
+    const mkAction = (title: string, importText: string, preferred: boolean, extraEdits: TextEdit[] = []): CodeAction => {
         const edit = computeImportInsertEdit(ast, document, importText);
         return {
-            title: `Add ${importText}`,
+            title,
             kind: CodeActionKind.QuickFix,
             diagnostics: [diagnostic],
             isPreferred: preferred,
-            edit: { changes: { [uri]: [edit] } },
+            edit: { changes: { [uri]: [edit, ...extraEdits] } },
         };
     };
     const actions: CodeAction[] = [];
-    if (methodName) actions.push(mkAction(`import { ${methodName} } from '${moduleName}';`, true));
-    actions.push(mkAction(`import * as ${moduleName} from '${moduleName}';`, !methodName));
+    const nsImport = `import * as ${moduleName} from '${moduleName}';`;
+    if (methodName) {
+        // `module.method(...)` form. The namespace import makes `module.method()` work as-is
+        // (and covers every other `module.x` use), so it's the safe default. (#92)
+        actions.push(mkAction(`Add ${nsImport}`, nsImport, true));
+        // Named-import alternative: ALSO rewrite this call `module.method(` → `method(`, so it
+        // doesn't reference an unbound `module` (the old preferred fix left the call broken).
+        const methodNameStart = tailStart + m![0].length - methodName.length;
+        const dropReceiver = TextEdit.del({ start: diagnostic.range.start, end: document.positionAt(methodNameStart) });
+        actions.push(mkAction(
+            `Add import { ${methodName} } from '${moduleName}' and use ${methodName}()`,
+            `import { ${methodName} } from '${moduleName}';`, false, [dropReceiver]));
+    } else {
+        actions.push(mkAction(`Add ${nsImport}`, nsImport, true));
+    }
     return actions;
 }
 

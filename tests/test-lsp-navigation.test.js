@@ -159,8 +159,12 @@ test('UC3006 (module used without importing) offers add-import quick fixes', asy
   expect(d).toBeTruthy();
   const acts = await server.getCodeActions(FILE, [d], d.range.start.line, d.range.start.character);
   const titles = (acts || []).map(a => a.title);
-  expect(titles).toContain("Add import { open } from 'fs';");
+  // #92: the namespace import (works as-is) is preferred; the named-import variant also
+  // rewrites the call so neither leaves `fs` unbound.
   expect(titles).toContain("Add import * as fs from 'fs';");
+  expect(titles).toContain("Add import { open } from 'fs' and use open()");
+  const preferred = (acts || []).find(a => a.isPreferred);
+  expect(preferred && preferred.title).toBe("Add import * as fs from 'fs';");
 });
 
 // ── Completion on function-local module/handle variables ────────────────────
