@@ -164,7 +164,15 @@ export function handleCompletion(
                 return createModuleNameCompletions();
             }
         }
-        
+
+        // Suppress completion inside a string literal or a (non-JSDoc) comment — a `.` in
+        // prose / a path / a URL must NOT pop the builtin list. Placed AFTER the import-path
+        // and JSDoc-comment contexts above (which legitimately complete inside a string /
+        // comment), so only ordinary string & comment interiors are suppressed. (#21)
+        if (isInsideStringOrComment(offset, tokens, lexer.comments)) {
+            return [];
+        }
+
         // Check if we're in a member expression context (e.g., "fs." or "obj.prop.")
         const memberContext = detectMemberCompletionContext(offset, tokens);
         if (memberContext) {
@@ -345,6 +353,20 @@ function isFunctionNameContext(offset: number, tokens: any[]): boolean {
     return false;
 }
 
+/** True when the cursor sits inside a string-literal token or a comment — completion must be
+ *  suppressed there (a `.` in prose / a path / a URL should not pop the builtin list). String
+ *  delimiters and comment boundaries are exclusive, so the cursor just outside still completes
+ *  normally. JSDoc-tag and import-path contexts are handled earlier and bypass this. (#21) */
+function isInsideStringOrComment(offset: number, tokens: any[], comments: any[]): boolean {
+    for (const t of tokens) {
+        if (t.type === TokenType.TK_STRING && offset > t.pos && offset < t.end) return true;
+    }
+    for (const c of (comments || [])) {
+        if (typeof c?.pos === 'number' && typeof c?.end === 'number' && offset > c.pos && offset < c.end) return true;
+    }
+    return false;
+}
+
 /** True when a member-access dot (`.` / `?.`) ends exactly at the cursor — i.e. a property
  *  name belongs at the cursor. Used to suppress the global-builtin fallback when the receiver
  *  chain can't be resolved (malformed `a..`), so we never offer builtins where a member goes. */
@@ -434,6 +456,17 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
                 // No token after this label, stop here
                 break;
             }
+        } else if (token.type === TokenType.TK_THIS) {
+            // `this` as the receiver (`this.` / `this.a.`): treat it as the root object named
+            // 'this'. The enclosing object's members live on the `this` symbol's propertyTypes
+            // (declared by the analyzer for object methods), resolved downstream. (#22)
+            if (currentTokenIndex + 1 < tokens.length) {
+                const nextToken = tokens[currentTokenIndex + 1];
+                if (isMemberAccessDot(nextToken.type) && token.end === nextToken.pos) {
+                    propertyChain.unshift('this');
+                }
+            }
+            break;
         } else if (token.type === TokenType.TK_RPAREN) {
             // Call expression: walk backward through matched parens to find the function name
             let parenDepth = 1;
