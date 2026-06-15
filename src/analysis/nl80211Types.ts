@@ -287,8 +287,8 @@ export const nl80211Module: ModuleDefinition = {
   functions,
   constants: nl80211Constants,
   importValidation: {
-    isValid: (name: string) => functions.has(name) || nl80211Constants.has(name) || name === 'const',
-    getValidImports: () => [...Array.from(functions.keys()), ...Array.from(nl80211Constants.keys()), 'const'],
+    isValid: (name: string) => functions.has(name) || name === 'const',
+    getValidImports: () => [...Array.from(functions.keys()), 'const'],
   },
   documentation: `## NL80211 Module
 
@@ -358,8 +358,8 @@ export const nl80211TypeRegistry = {
     if (!constant) return '';
     return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
   },
-  isValidImport: (name: string) => functions.has(name) || nl80211Constants.has(name),
-  getValidImports: () => [...Array.from(functions.keys()), ...Array.from(nl80211Constants.keys()), 'const'],
-  isValidNl80211Import: (name: string) => functions.has(name) || nl80211Constants.has(name) || name === 'const',
+  isValidImport: (name: string) => functions.has(name) || name === 'const',
+  getValidImports: () => [...Array.from(functions.keys()), 'const'],
+  isValidNl80211Import: (name: string) => functions.has(name) || name === 'const',
 };
 

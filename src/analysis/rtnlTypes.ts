@@ -456,8 +456,8 @@ let routes = rtnl.request(rtnl.RTM_GETROUTE, rtnl.NLM_F_DUMP);
 
 *Hover over individual function and constant names for detailed information.*`,
   importValidation: {
-    isValid: (name: string) => functions.has(name) || rtnlConstants.has(name) || name === 'const',
-    getValidImports: () => [...Array.from(functions.keys()), ...Array.from(rtnlConstants.keys()), 'const'],
+    isValid: (name: string) => functions.has(name) || name === 'const',
+    getValidImports: () => [...Array.from(functions.keys()), 'const'],
   },
 };
 
@@ -484,7 +484,7 @@ export const rtnlTypeRegistry = {
     if (!constant) return '';
     return `**${constant.name}** = \`${constant.value}\`\n\n*${constant.type}*\n\n${constant.description}`;
   },
-  isValidImport: (name: string) => functions.has(name) || rtnlConstants.has(name) || name === 'const',
-  getValidImports: () => [...Array.from(functions.keys()), ...Array.from(rtnlConstants.keys()), 'const'],
-  isValidRtnlImport: (name: string) => functions.has(name) || rtnlConstants.has(name) || name === 'const',
+  isValidImport: (name: string) => functions.has(name) || name === 'const',
+  getValidImports: () => [...Array.from(functions.keys()), 'const'],
+  isValidRtnlImport: (name: string) => functions.has(name) || name === 'const',
 };

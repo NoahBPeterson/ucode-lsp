@@ -119,17 +119,22 @@ testNl80211Validation('Return type handling', () => {
 testNl80211Validation('Import validation', () => {
     const validImports = nl80211TypeRegistry.getValidImports();
     const isRequestValid = nl80211TypeRegistry.isValidImport('request');
+    // #24: constants are NOT top-level exports (they live under the `const` object), so a bare
+    // constant name is NOT a valid import; `const` itself is.
     const isConstantValid = nl80211TypeRegistry.isValidImport('NLM_F_ACK');
+    const isConstNamespaceValid = nl80211TypeRegistry.isValidImport('const');
     const isInvalidValid = nl80211TypeRegistry.isValidImport('nonexistent');
-    
+
     console.log(`  Valid imports count: ${validImports.length}`);
     console.log(`  'request' is valid: ${isRequestValid}`);
-    console.log(`  'NLM_F_ACK' is valid: ${isConstantValid}`);
+    console.log(`  'NLM_F_ACK' is valid (should be false): ${isConstantValid}`);
+    console.log(`  'const' is valid: ${isConstNamespaceValid}`);
     console.log(`  'nonexistent' is valid: ${isInvalidValid}`);
-    
-    return validImports.length > 0 && 
-           isRequestValid === true && 
-           isConstantValid === true && 
+
+    return validImports.length > 0 &&
+           isRequestValid === true &&
+           isConstantValid === false &&
+           isConstNamespaceValid === true &&
            isInvalidValid === false;
 });
 

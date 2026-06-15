@@ -66,24 +66,25 @@ describe('Alphanumeric Trigger Completion Test', function() {
     }
   });
 
-  it('should trigger completions for nl80211 constants', async function() {
-    const testContent = `import { NLM } from 'nl80211';`;
+  it('import { } from nl80211 offers the top-level exports (functions, not constants)', async function() {
+    // #24: nl80211 constants live under the nested `const` object (nl80211.const.X) and are
+    // NOT top-level exports, so `import { NLM_F_ACK }` is invalid — completion must offer the
+    // module functions, not the constants.
+    const testContent = `import {  } from 'nl80211';`;
     const testFilePath = path.join(__dirname, '..', 'test-alpha-nlm.uc');
 
-    const completions = await getCompletions(testContent, testFilePath, 0, 12); // Position after 'NLM'
-    
-    console.log('NL80211 constants (NLM) - completions received:', completions?.length || 0);
+    const completions = await getCompletions(testContent, testFilePath, 0, 8); // inside the braces
+
     if (completions) {
       const labels = completions.map(item => item.label);
       const nlmConstants = labels.filter(label => label.startsWith('NLM_'));
-      console.log('NLM constants found:', nlmConstants.slice(0, 10));
-      
+
       assert(completions.length > 0, 'Should find nl80211 completions');
-      assert(nlmConstants.length > 0, 'Should include NLM_ constants');
-      assert(labels.includes('request'), 'Should also include functions');
-      assert(labels.includes('error'), 'Should include error function');
+      assert(labels.includes('request'), 'Should include the request function');
+      assert(labels.includes('error'), 'Should include the error function');
+      assert.strictEqual(nlmConstants.length, 0, 'Must NOT offer NLM_ constants (not top-level exports)');
     } else {
-      assert.fail('Should receive completions for nl80211 constants');
+      assert.fail('Should receive completions for nl80211 imports');
     }
   });
 

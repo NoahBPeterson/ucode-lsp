@@ -1708,7 +1708,15 @@ function createParseConfigCompletions(alreadyPresent: string[]): CompletionItem[
  */
 function createDestructuredImportCompletions(moduleName: string, alreadyImported: string[] = []): CompletionItem[] {
     try {
-        const members: ModuleMember[] = getModuleMembers(moduleName);
+        let members: ModuleMember[] = getModuleMembers(moduleName);
+        // Only offer names that are actually top-level exports. For nl80211/rtnl this drops the
+        // constants — they live under the nested `const` object, not the module scope, so
+        // `import { NLM_F_ACK } from 'nl80211'` is invalid (#23/#24). socket/io/etc. keep their
+        // constants (legitimately top-level). isValidImport is the single source of truth.
+        const reg = isKnownModule(moduleName) ? MODULE_REGISTRIES[moduleName as keyof typeof MODULE_REGISTRIES] : undefined;
+        if (reg) {
+            members = members.filter(m => reg.isValidImport(m.name));
+        }
         if (members.length === 0) {
             return [];
         }

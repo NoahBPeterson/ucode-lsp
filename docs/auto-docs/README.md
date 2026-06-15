@@ -36,7 +36,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [21](21-completion-inside-strings-comments.md) | Completion fires inside string literals and comments | completion | low-med |
 | [22](22-this-member-completion.md) | `this.` completion inside an object method returns global builtins, not the object's properties | completion | low-med |
 | [23](../done/23-nl80211-rtnl-const-namespace-completion.md) | ✅ **FIXED 0.6.237** — `nl80211.const.` / `rtnl.const.` now list the module's constants (the chain `['const']` on the module namespace) | completion | medium |
-| [24](24-nl80211-rtnl-constants-as-import-names.md) | nl80211/rtnl constants offered as top-level `import { }` names and import without error (not exported) | false-neg | medium |
+| [24](../done/24-nl80211-rtnl-constants-as-import-names.md) | ✅ **FIXED 0.6.240** — nl80211/rtnl constants are no longer offered as `import { }` names nor accepted (they live under the `const` object, not the module scope — C-source verified; socket/io/etc. keep their genuinely top-level constants). Importing one now flags UC3005. | false-neg | medium |
 | [25](25-hex-float-literals-rejected.md) | Hex float literals (`0xFF.5`) rejected — valid ucode | false-pos | low |
 | [26](26-bare-hex-prefix-no-digits.md) | Bare `0x` with no digits accepted — real ucode error missed | false-neg | low |
 | [27](27-invalid-escape-sequences-not-validated.md) | Invalid string/template escapes (`\u41`, `\u{41}`, `\x4`, `\777`) silently accepted | false-neg | low-med |
