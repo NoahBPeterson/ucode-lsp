@@ -371,7 +371,9 @@ export class TypeChecker {
       { name: 'uniq', parameters: [UcodeType.ARRAY], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), nullMeansWrongType: true },
       { name: 'b64enc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true },
       { name: 'b64dec', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
-      { name: 'hexenc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true },
+      // hexenc stringifies ANY value (lib.c uc_hexenc → ucv_to_stringbuf), unlike b64enc which
+      // genuinely requires a string — so a non-string is a coercion (warn + fix), not an error (#35).
+      { name: 'hexenc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, coercesArgToString: true },
       { name: 'hexdec', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), minParams: 1, maxParams: 2 },
       { name: 'hex', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.INTEGER, UcodeType.DOUBLE]) },
       { name: 'uchr', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },

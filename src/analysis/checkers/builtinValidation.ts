@@ -293,15 +293,23 @@ export class BuiltinValidator {
     return true;
   }
 
-  private validateNumericArgument(arg: CallExpressionNode['arguments'][0] | undefined, funcName: string, argPosition: number): boolean {
+  private validateNumericArgument(arg: CallExpressionNode['arguments'][0] | undefined, funcName: string, argPosition: number, softSeverity: boolean = false): boolean {
     if (!arg) {
       return true; // No argument, no error
     }
 
     const argType = this.getNodeType(arg);
 
+    // `softSeverity`: the builtin COERCES the arg to a number and never throws (e.g.
+    // localtime/gmtime via ucv_to_integer — a non-numeric value silently becomes 0), so flag it
+    // as a strict-gated warning, not a hard error (#34). Default (false) is the hard error used
+    // by builtins that genuinely reject non-numeric args.
+    const flag = (msg: string, s: number, e: number) => softSeverity
+      ? this.pushWarnOrStrictError(msg, s, e, UcodeErrorCode.INVALID_PARAMETER_TYPE)
+      : this.pushTypeMismatch(msg, s, e);
+
     if (!isNumericConvertibleType(argType)) {
-      this.pushTypeMismatch(
+      flag(
         `Argument ${argPosition} of ${funcName}() cannot be a ${argType.toLowerCase()}. It must be a value convertible to a number.`,
         arg.start, arg.end
       );
@@ -311,7 +319,7 @@ export class BuiltinValidator {
     if (argType === UcodeType.STRING && arg.type === 'Literal') {
       const literal = arg as LiteralNode;
       if (typeof literal.value === 'string' && !isNumberLikeString(literal.value)) {
-        this.pushTypeMismatch(
+        flag(
           `String "${literal.value}" cannot be converted to a number for ${funcName}() argument ${argPosition}.`,
           arg.start, arg.end
         );
@@ -1246,14 +1254,15 @@ export class BuiltinValidator {
   }
 
   validateLocaltimeFunction(node: CallExpressionNode): boolean {
-    // 0 or 1 arguments, no check needed
-    this.validateArgumentType(node.arguments[0], 'localtime', 1, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+    // Optional epoch arg, coerced to integer via ucv_to_integer (a numeric string like "123"
+    // works; a non-numeric value silently becomes 0 = 1970). So accept numeric/numeric-strings
+    // and only WARN (error under 'use strict') on a statically non-numeric value (#34).
+    this.validateNumericArgument(node.arguments[0], 'localtime', 1, /*softSeverity*/ true);
     return true;
   }
 
   validateGmtimeFunction(node: CallExpressionNode): boolean {
-    // 0 or 1 arguments, no check needed
-    this.validateArgumentType(node.arguments[0], 'gmtime', 1, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+    this.validateNumericArgument(node.arguments[0], 'gmtime', 1, /*softSeverity*/ true);
     return true;
   }
 

@@ -51,8 +51,8 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [31](31-splice-min-arity.md) | `splice(array)` 1-arg falsely flagged — wrong min arity (real min is 1) | false-pos | low |
 | [32](../done/32-match-subject-coerced.md) | ✅ **FIXED 0.6.251** — `match` subject coerces (warn + coerce fix); string pattern → error + "convert to regex literal" fix | false-pos | low-med |
 | [33](33-exists-non-object-arg.md) | `exists(non-object, k)` rejected — it returns `false`, never errors | false-pos | low |
-| [34](34-localtime-gmtime-string-epoch.md) | `localtime`/`gmtime` reject a string epoch — the arg is coerced to int | false-pos | low |
-| [35](35-hexenc-coerces-argument.md) | `hexenc(non-string)` rejected — `hexenc` stringifies any input (≠ `b64enc`) | false-pos | low |
+| [34](../done/34-localtime-gmtime-string-epoch.md) | ✅ **FIXED 0.6.252** — `localtime`/`gmtime` accept a numeric-string epoch; non-numeric → strict-gated warning | false-pos | low |
+| [35](../done/35-hexenc-coerces-argument.md) | ✅ **FIXED 0.6.252** — `hexenc` non-string → coerce warning + fix (`b64enc` stays strict) | false-pos | low |
 | [36](36-graceful-null-builtins-error-severity.md) | `uniq`/`iptoarr`/`arrtoip`/`b64dec` flag type mismatch as **error**; they return null gracefully | false-pos | low-med |
 | [37](37-stale-hover-return-docs.md) | Stale hover docs show wrong returns for `min`/`max`/`clock`/`sourcepath`/`gc` | hover content | low |
 | [38](38-fs-ioc-dir-constants-missing.md) | fs module missing the four `IOC_DIR_*` constants → false UC3005 | false-pos | low |
