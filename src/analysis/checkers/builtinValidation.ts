@@ -179,6 +179,20 @@ const UNHANDLABLE_SIGNALS = new Set(['KILL', 'STOP']);
 const PARSE_CONFIG_BOOLEAN_KEYS = new Set(['lstrip_blocks', 'trim_blocks', 'strict_declarations', 'raw_mode']);
 const PARSE_CONFIG_ARRAY_KEYS = new Set(['module_search_path', 'force_dynlink_list']);
 
+/** Whether an argument node must be parenthesized when wrapped as `"" + (node)` — true for
+ *  operators that bind looser than `+`. Mirrors TypeChecker.needsParensForAddition (#30/#32). */
+function coerceArgNeedsParens(node: AstNode): boolean {
+  switch (node.type) {
+    case 'BinaryExpression':
+    case 'LogicalExpression':
+    case 'ConditionalExpression':
+    case 'AssignmentExpression':
+      return true;
+    default:
+      return false;
+  }
+}
+
 function isNumberLikeString(s: string): boolean {
   const trimmed = s.trim();
   if (trimmed === '') return false;
@@ -213,6 +227,15 @@ export class BuiltinValidator {
   /** Push a definite type mismatch diagnostic — always an error */
   private pushTypeMismatch(message: string, start: number, end: number): void {
     this.errors.push({ message, start, end, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
+  }
+
+  /** Push a strict-gated diagnostic: warning in non-strict, error under `'use strict'`. */
+  private pushWarnOrStrictError(message: string, start: number, end: number, code: string, data?: unknown): void {
+    if (this.strictMode) {
+      this.errors.push({ message, start, end, severity: 'error', code, data });
+    } else {
+      this.warnings.push({ message, start, end, severity: 'warning', code, data });
+    }
   }
 
   /**
@@ -312,7 +335,11 @@ export class BuiltinValidator {
     // Contrast `index(x,y) != -1` → `null != -1` is `true` = "found", a logic bug —
     // so index/match/etc. must NOT pass this. When true, the truthiness/comparison
     // suppression applies even under `'use strict'`.
-    safeInTestContext: boolean = false
+    safeInTestContext: boolean = false,
+    // `coercesToString`: this builtin stringifies a wrong-typed argument (total coercion, e.g.
+    // `match`'s subject). A DEFINITE non-string, non-null arg is then a strict-gated warning +
+    // a "coerce to string" quick-fix, not the hard definite-mismatch error (#32, mirrors #30).
+    coercesToString: boolean = false
   ): boolean {
     if (!arg) {
       return true; // Argument presence should be checked before this call
@@ -456,6 +483,26 @@ export class BuiltinValidator {
     } else {
       // Single known type - check if it's allowed
       if (!effectiveAllowed.includes(argType as UcodeType)) {
+        // A string-coercing builtin (match subject): a DEFINITE non-string, non-null arg is
+        // stringified at runtime → strict-gated WARNING + "coerce to string" quick-fix, not a
+        // hard error (#32). null is excluded (it's the "possibly null" concern, not coercion).
+        if (coercesToString && argType !== UcodeType.NULL) {
+          const message = `Function '${funcName}' expects a string; ${argType.toLowerCase()} will be coerced to a string. Pass a string to be explicit (e.g. \`"" + value\`).`;
+          const diagData = {
+            functionName: funcName,
+            argumentIndex: argPosition - 1,
+            expectedType: 'string',
+            actualType: argType,
+            variableName: this.getVariableName(arg),
+            coerceToString: true,
+            argNeedsParens: coerceArgNeedsParens(arg),
+            // A definite single non-string is NOT narrowable by a type guard — only the
+            // coerce fix applies. (Defense in depth alongside the quick-fix layer's own gate.)
+            narrowable: false,
+          };
+          this.pushWarnOrStrictError(message, arg.start, arg.end, 'incompatible-function-argument', diagData);
+          return false;
+        }
         // Definitely wrong — always error
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()}`;
@@ -600,7 +647,9 @@ export class BuiltinValidator {
       this.narrowedReturnType = UcodeType.NULL;
     }
 
-    this.validateArgumentType(node.arguments[0], 'match', 1, [UcodeType.STRING]); // Include UcodeType.OBJECT when it includes tostring()
+    // arg 1 (subject) is coerced to a string by ucode (`match(123,/2/)` → `["2"]`), so a
+    // non-string is a strict-gated warning + coerce quick-fix, not a hard error (#32).
+    this.validateArgumentType(node.arguments[0], 'match', 1, [UcodeType.STRING], undefined, undefined, /*safeInTestContext*/ false, /*coercesToString*/ true);
 
     // Custom check for argument 2: suggest regex conversion if a string literal is passed
     if (regexArg) {
@@ -608,11 +657,19 @@ export class BuiltinValidator {
         if (regexArg.type === 'Literal') {
           const literal = regexArg as any;
           if (literal.literalType === 'string') {
-            const value = literal.value as string;
-            this.pushTypeMismatch(
-              `Function 'match' expects regex for argument 2, got string.\nDid you mean: /${value}/`,
-              regexArg.start, regexArg.end
-            );
+            // ucode does NOT compile a string as a regex — `match(s, "[0-9]")` silently returns
+            // null (never matches). So this stays a hard error, with a "convert to regex literal"
+            // quick-fix. The fix is built from the SOURCE text (in server.ts) so escapes like \d/\b
+            // survive exactly as written — we deliberately DON'T put a specific /…/ in the message,
+            // because this layer only has the DECODED value (the lexer turns `"a\b"` into `"ab"`),
+            // which diverges from the source. The quick-fix title shows the correct regex. (#32)
+            this.errors.push({
+              message: `Function 'match' expects a regex for argument 2, got a string — ucode does not treat a string as a regex (it returns null). Convert it to a regex literal (the quick-fix does this).`,
+              start: regexArg.start, end: regexArg.end,
+              severity: 'error',
+              code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
+              data: { convertStringToRegex: true },
+            });
             return true;
           }
         }

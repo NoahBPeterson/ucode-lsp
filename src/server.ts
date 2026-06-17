@@ -860,6 +860,25 @@ function generateCoerceToStringQuickFix(diagnostic: any, document: TextDocument,
     }];
 }
 
+/** Convert a string-literal `match` pattern to the regex literal the author meant (#32). Built
+ *  from the SOURCE text between the quotes so escapes (`\d`, `\b`, …) survive exactly as written —
+ *  the decoded value would corrupt them (`"a\b"` decodes to a+backspace). The `/` delimiter is
+ *  escaped (only where not already escaped). */
+function generateStringToRegexQuickFix(diagnostic: any, document: TextDocument, uri: string): CodeAction[] {
+    const src = document.getText(diagnostic.range); // includes the surrounding quote chars
+    if (src.length < 2) return [];
+    const inner = src.slice(1, -1);                 // strip the opening/closing quote
+    if (inner.length === 0) return [];              // `match(s, "")` → `//` is a comment; skip
+    const regexLiteral = `/${inner.replace(/(?<!\\)\//g, '\\/')}/`;
+    return [{
+        title: `Convert to regex literal ${regexLiteral}`,
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        isPreferred: true,
+        edit: { changes: { [uri]: [TextEdit.replace(diagnostic.range, regexLiteral)] } },
+    }];
+}
+
 function generateNullAccessQuickFixes(diagnostic: any, document: any, uri: string, ast: any): CodeAction[] {
     const data = diagnostic.data?.nullAccess;
     if (!data) return [];
@@ -952,10 +971,16 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 codeActions.push(...typeNarrowingActions);
             }
 
-            // A string-coercing builtin (uc/lc) got a non-string arg → offer to make the
-            // coercion explicit: wrap the argument in `"" + …`. (#30)
+            // A string-coercing builtin (uc/lc, or match's subject) got a non-string arg → offer
+            // to make the coercion explicit: wrap the argument in `"" + …`. (#30/#32)
             if (diagnostic.code === 'incompatible-function-argument' && diagnostic.data?.coerceToString) {
                 codeActions.push(...generateCoerceToStringQuickFix(diagnostic, document, params.textDocument.uri));
+            }
+
+            // match(s, "…") with a string pattern → offer to convert it to the regex literal the
+            // author almost certainly meant (ucode never treats a string as a regex). (#32)
+            if (diagnostic.data?.convertStringToRegex) {
+                codeActions.push(...generateStringToRegexQuickFix(diagnostic, document, params.textDocument.uri));
             }
 
             // Add import() type quick fix for UC7001 (unknown type in @param)
@@ -3165,9 +3190,22 @@ function generateTypeNarrowingQuickFixes(
         return actions;
     }
 
-    // A DEFINITE type mismatch can't be rescued by a type guard (a literal `1` for a
-    // string param → `type(1)=="string"` is always false). Offer nothing.
-    if (data.narrowable === false && !nullish) {
+    // A coercion diagnostic (uc/lc/match subject) is not a narrowing problem — the value is
+    // valid, just stringified; its own "Coerce to string" fix is offered elsewhere. Never a guard.
+    if (data.coerceToString) {
+        return actions;
+    }
+
+    // A type guard can only rescue the call when the actual type is a UNION (narrow to the valid
+    // arm) or UNKNOWN (assert the type). A single concrete wrong type — boolean, integer, array —
+    // cannot be narrowed to a *different* type (`type(true) == "string"` is always false), so a
+    // guard would just create dead code. Honor an explicit `narrowable`; when a producer didn't
+    // set it, derive it from the actual type (a union string contains ' | '; unknown qualifies).
+    // Null is its own case (`nullish`), handled by the null-guard / optional-chaining fixes below.
+    const narrowable = data.narrowable !== undefined
+        ? data.narrowable
+        : (typeof data.actualType === 'string' && (data.actualType.includes(' | ') || data.actualType === 'unknown'));
+    if (!narrowable && !nullish) {
         return actions;
     }
 

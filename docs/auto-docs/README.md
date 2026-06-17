@@ -49,7 +49,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | # | Finding | Kind | Severity |
 |---|---|---|---|
 | [31](31-splice-min-arity.md) | `splice(array)` 1-arg falsely flagged — wrong min arity (real min is 1) | false-pos | low |
-| [32](32-match-subject-coerced.md) | `match(non-string, regex)` rejected — the subject is coerced | false-pos | low-med |
+| [32](../done/32-match-subject-coerced.md) | ✅ **FIXED 0.6.251** — `match` subject coerces (warn + coerce fix); string pattern → error + "convert to regex literal" fix | false-pos | low-med |
 | [33](33-exists-non-object-arg.md) | `exists(non-object, k)` rejected — it returns `false`, never errors | false-pos | low |
 | [34](34-localtime-gmtime-string-epoch.md) | `localtime`/`gmtime` reject a string epoch — the arg is coerced to int | false-pos | low |
 | [35](35-hexenc-coerces-argument.md) | `hexenc(non-string)` rejected — `hexenc` stringifies any input (≠ `b64enc`) | false-pos | low |
