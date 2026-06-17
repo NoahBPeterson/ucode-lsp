@@ -842,6 +842,24 @@ function findEnclosingExpressionStatement(ast: any, offset: number): any {
  *      assignment LHS (`?.` is invalid there).
  *   2. Null guard — wrap the statement in `if (receiver) …`. Only for a bare-identifier
  *      receiver (a direct call like `cursor()` would be evaluated twice) inside a statement. */
+/** Quick-fix for a non-string argument to a string-coercing builtin (uc/lc, #30): wrap the
+ *  argument in an explicit `"" + …` coercion. The diagnostic range IS the argument node's span,
+ *  and argNeedsParens was decided from the arg's AST node type — so this is AST-based, not a
+ *  line-text reparse. */
+function generateCoerceToStringQuickFix(diagnostic: any, document: TextDocument, uri: string): CodeAction[] {
+    const data = diagnostic.data;
+    if (!data?.coerceToString) return [];
+    const argText = document.getText(diagnostic.range);
+    const wrapped = data.argNeedsParens ? `"" + (${argText})` : `"" + ${argText}`;
+    return [{
+        title: 'Coerce to string ("" + value)',
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        isPreferred: true,
+        edit: { changes: { [uri]: [TextEdit.replace(diagnostic.range, wrapped)] } },
+    }];
+}
+
 function generateNullAccessQuickFixes(diagnostic: any, document: any, uri: string, ast: any): CodeAction[] {
     const data = diagnostic.data?.nullAccess;
     if (!data) return [];
@@ -932,6 +950,12 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                     diagnostic, document, params.textDocument.uri, ast, cacheEntry?.result?.symbolTable
                 );
                 codeActions.push(...typeNarrowingActions);
+            }
+
+            // A string-coercing builtin (uc/lc) got a non-string arg → offer to make the
+            // coercion explicit: wrap the argument in `"" + …`. (#30)
+            if (diagnostic.code === 'incompatible-function-argument' && diagnostic.data?.coerceToString) {
+                codeActions.push(...generateCoerceToStringQuickFix(diagnostic, document, params.textDocument.uri));
             }
 
             // Add import() type quick fix for UC7001 (unknown type in @param)

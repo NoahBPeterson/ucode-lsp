@@ -97,6 +97,11 @@ export interface FunctionSignature {
   /** Indices of parameters that must match for null narrowing (default: all required params).
    *  e.g., join(sep, arr) only cares about arg index 1 (the array). */
   narrowingArgs?: number[];
+  /** When true, a wrong-typed argument is COERCED to the parameter type at runtime (the builtin
+   *  is total — e.g. `uc`/`lc` stringify anything), so a type mismatch is not a hard error: it's
+   *  a strict-gated warning (warn → error under `'use strict'`) plus a "coerce" quick-fix, never
+   *  an always-error. Only `string`-coercing builtins use this today. */
+  coercesArgToString?: boolean;
 }
 
 export interface TypeCheckResult {
@@ -334,8 +339,8 @@ export class TypeChecker {
       { name: 'rtrim', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0], minParams: 1, maxParams: 2 },
       { name: 'chr', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
       { name: 'ord', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]) },
-      { name: 'uc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true },
-      { name: 'lc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true },
+      { name: 'uc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, coercesArgToString: true },
+      { name: 'lc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, coercesArgToString: true },
       { name: 'type', parameters: [UcodeType.UNKNOWN], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
       { name: 'keys', parameters: [UcodeType.OBJECT], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), nullMeansWrongType: true },
       { name: 'values', parameters: [UcodeType.OBJECT], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]), nullMeansWrongType: true },
@@ -2047,7 +2052,7 @@ export class TypeChecker {
 
     // Check argument types (shared with user-function calls). Builtins flag an
     // unknown-typed actual arg (their C signatures are hard constraints).
-    this.checkArgumentTypes(node, signature.parameters, signature.name, { flagUnknownActual: true, softSeverity: false });
+    this.checkArgumentTypes(node, signature.parameters, signature.name, { flagUnknownActual: true, softSeverity: false, coercesArgToString: !!signature.coercesArgToString });
 
     // Narrow return type based on argument types when nullMeansWrongType is set
     let returnType = signature.returnType;
@@ -2069,7 +2074,21 @@ export class TypeChecker {
    * in non-strict mode; user functions don't (ucode permits the call) — they
    * warn, escalating to an error only under `'use strict'`.
    */
-  private checkArgumentTypes(node: CallExpressionNode, expectedTypes: UcodeType[], fnName: string, opts: { flagUnknownActual: boolean; softSeverity: boolean }): void {
+  /** Whether an argument node must be parenthesized when wrapped as `"" + (node)` — true for
+   *  operators that bind looser than `+` (so `"" + a ? b : c` / `"" + a - b` don't misparse). */
+  private static needsParensForAddition(node: AstNode): boolean {
+    switch (node.type) {
+      case 'BinaryExpression':
+      case 'LogicalExpression':
+      case 'ConditionalExpression':
+      case 'AssignmentExpression':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private checkArgumentTypes(node: CallExpressionNode, expectedTypes: UcodeType[], fnName: string, opts: { flagUnknownActual: boolean; softSeverity: boolean; coercesArgToString?: boolean }): void {
     const argCount = node.arguments.length;
     for (let i = 0; i < Math.min(argCount, expectedTypes.length); i++) {
       const expectedType = expectedTypes[i];
@@ -2121,8 +2140,19 @@ export class TypeChecker {
         const hasCompatibleType = actualTypes.some(t => t === UcodeType.UNKNOWN || incompatibleTypes.indexOf(t) === -1);
         const isPartiallyCompatible = hasCompatibleType && incompatibleTypes.length > 0;
 
+        // A string-coercing builtin (`uc`/`lc`): a DEFINITELY non-string, non-null arg is
+        // stringified at runtime (totally valid ucode), so it's a strict-gated WARNING + a
+        // "coerce" quick-fix, not the hard definite-mismatch error other builtins get (#30).
+        // Excluded: a partial/union mismatch (e.g. `string|null`) and any type that includes
+        // `null` — null-ness is a distinct concern (the value may be missing), so it keeps the
+        // existing "possibly null" nullable handling, where a guard (not coercion) is the nudge.
+        const includesNull = actualTypes.some(t => dataTypeToBase(t) === UcodeType.NULL);
+        const coerces = !!opts.coercesArgToString && expectedType === UcodeType.STRING && !isPartiallyCompatible && !includesNull;
+
         const incompatibilityDesc = this.typeNarrowing.getIncompatibilityDescription(actualTypeData, expectedType);
-        const message = incompatibilityDesc
+        const message = coerces
+          ? `Function '${fnName}' expects a string; ${this.getTypeDescription(actualTypeData)} will be coerced to a string. Pass a string to be explicit (e.g. \`"" + value\`).`
+          : incompatibilityDesc
           ? `Function '${fnName}': ${incompatibilityDesc}. Use a guard or assertion.`
           : `Function '${fnName}' expects ${expectedType} for argument ${i + 1}, got ${this.getTypeDescription(actualTypeData)}`;
         const diagData = {
@@ -2136,13 +2166,17 @@ export class TypeChecker {
           // arm, or unknown). A DEFINITE mismatch (a literal `1` for a string param,
           // any single provably-wrong type) is not narrowable — `type(1)=="string"`
           // is always false — so the quick-fix layer must not offer a guard there.
-          narrowable: hasCompatibleType
+          narrowable: hasCompatibleType,
+          // String-coercion quick-fix marker (#30): wrap the arg in `"" + …`. argNeedsParens
+          // is computed from the arg's AST node type so the fix stays AST-based.
+          ...(coerces ? { coerceToString: true, argNeedsParens: TypeChecker.needsParensForAddition(arg) } : {})
         };
 
-        // Warning when: partially compatible (union/unknown w/ some valid types),
-        // OR the caller uses soft severity (user functions). Either way, strict
-        // mode escalates to an error. Builtins keep their definite-mismatch error.
-        const asWarning = (opts.softSeverity || isPartiallyCompatible) && !this.strictMode;
+        // Warning when: a coercing builtin (uc/lc — valid, just stringified), partially
+        // compatible (union/unknown w/ some valid types), OR the caller uses soft severity
+        // (user functions). Either way, strict mode escalates to an error. Other builtins
+        // keep their definite-mismatch error.
+        const asWarning = (coerces || opts.softSeverity || isPartiallyCompatible) && !this.strictMode;
         if (asWarning) {
           this.warnings.push({
             message, start: arg.start, end: arg.end,

@@ -42,7 +42,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [27](27-invalid-escape-sequences-not-validated.md) | Invalid string/template escapes (`\u41`, `\u{41}`, `\x4`, `\777`) silently accepted | false-neg | low-med |
 | [28](28-invalid-digit-number-misleading-error.md) | Invalid-digit literals (`0o9`, `0xG`) produce a misleading cascade error | message | low |
 | [29](../done/29-spread-not-counted-as-use.md) | ✅ **FIXED 0.6.230** — Spreading a variable (`...a`) is not counted as a use → false UC1006 (root cause: missing `SpreadElement` dispatch in visitor.ts) | false-pos | medium |
-| [30](30-uc-lc-coercible-argument-error.md) | `uc()`/`lc()` flag a coercible non-string argument as an **error**, but ucode coerces it | false-pos | low-med |
+| [30](../done/30-uc-lc-coercible-argument-error.md) | ✅ **FIXED 0.6.250** — `uc`/`lc` non-string → warning (error under strict) + "Coerce to string" quick-fix | false-pos | low-med |
 
 ## Findings 31–60 (builtins, modules, feature providers, format/regex, control-flow)
 
