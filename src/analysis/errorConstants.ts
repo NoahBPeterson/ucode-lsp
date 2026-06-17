@@ -28,6 +28,8 @@ export enum UcodeErrorCode {
   NAN_ARITHMETIC = 'UC2008',
   IMPOSSIBLE_COMPARISON = 'UC2009',
   NOT_CALLABLE = 'UC2010',
+  INVALID_FORMAT_SPECIFIER = 'UC2011', // a printf `%`-sequence ucode doesn't support (prints literally): `%*`, `%lld`, `%a`, …
+  USELESS_CALL = 'UC2012',             // a call ucode runs but that provably has no effect (e.g. zero-arg printf())
 
   // Import/Export errors (3000-3999)
   INVALID_IMPORT = 'UC3001',

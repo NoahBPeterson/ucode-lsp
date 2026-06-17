@@ -66,14 +66,14 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [46](46-definition-zero-width-range.md) | Go-to-definition returns a zero-width range for locals (highlights nothing) | feature | low |
 | [47](47-document-symbols-gaps.md) | Document symbols omit params and factory-returned object methods | feature | low |
 | [48](48-folding-misses-case-clauses.md) | Folding ranges miss individual `case`/`default` clause bodies | feature | low |
-| [49](49-printf-positional-args.md) | printf positional args (`%N$`) unrecognized → false UC2006 | false-pos | medium |
-| [50](50-printf-star-width-invented.md) | printf `%*d` dynamic width invented (not a ucode feature) → false UC2006 | false-pos | low-med |
-| [51](51-printf-nonexistent-conversions.md) | printf accepts non-existent conversions `%a %A %n %p` as arg-consuming | false-pos/neg | low-med |
-| [52](52-printf-length-modifiers-false-negative.md) | printf length modifiers (`%lld`, `%zd`) silently accepted — not valid ucode | false-neg | low |
-| [53](53-printf-numeric-string-overstrict.md) | UC2007 flags a numeric-string arg to `%d`, but ucode coerces it | false-pos | low |
+| [49](../done/49-printf-positional-args.md) | ✅ **FIXED 0.6.249** — printf positional args (`%N$`) recognized + gap/unused-arg detection | false-pos | medium |
+| [50](../done/50-printf-star-width-invented.md) | ✅ **FIXED 0.6.249** — `%*d` → targeted UC2011 (no fabricated specifier) | false-pos | low-med |
+| [51](../done/51-printf-nonexistent-conversions.md) | ✅ **FIXED 0.6.249** — `%a %A %n %p` → UC2011 "not a ucode conversion" | false-pos/neg | low-med |
+| [52](../done/52-printf-length-modifiers-false-negative.md) | ✅ **FIXED 0.6.249** — `%lld`/`%zd` → UC2011 (full sequence quoted) | false-neg | low |
+| [53](../done/53-printf-numeric-string-overstrict.md) | ✅ **FIXED 0.6.249** — numeric string ok; non-numeric string *literal* still flagged | false-pos | low |
 | [54](54-regex-body-not-validated.md) | Invalid regex literal bodies (`/foo.*(/`, `/[z-a]/`) never validated | false-neg | low-med |
 | [55](55-regex-slash-star-misparsed.md) | `/*/` misparsed as a block-comment start → wrong "Unterminated comment" | lexer | low |
-| [56](56-bad-regex-flag-cascade.md) | An unsupported regex flag discards the token → cascading false arg-count error | cascade | low |
+| [56](../done/56-bad-regex-flag-cascade.md) | ✅ **FIXED 0.6.249** — unsupported regex flag no longer drops the token (lexer side-channel); no arg-count cascade | cascade | low |
 | [57](57-while-true-not-never-returns.md) | `while(true)` not treated as non-terminating — code after isn't dead, fn isn't never-returns (`for(;;)` is) | false-neg | low-med |
 | [58](../done/58-uc4005-reassigned-iteratee-false-positive.md) | ✅ **FIXED 0.6.230** — UC4005 reports a false "infinite loop" **Error** when the iteratee is reassigned in-loop | false-pos | medium |
 | [59](59-uc4005-aliased-iteratee-false-negative.md) | UC4005 misses mutation of the iteratee through an alias | false-neg | low |
@@ -110,7 +110,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [85](85-signature-help-unclosed-call-eof.md) | Signature help disappears for an unclosed call at EOF with a trailing comma | feature | low |
 | [86](86-inlay-hints-local-object-method.md) | Inlay hints: no param hints for local object-literal / `this` method calls | feature | low |
 | [87](87-document-highlight-no-read-write-kind.md) | Document highlight marks every occurrence as `Text` — no read/write kind | feature | low |
-| [88](88-printf-sprintf-zero-args.md) | `printf()` / `sprintf()` with zero arguments falsely flagged | false-pos | low |
+| [88](../done/88-printf-sprintf-zero-args.md) | ✅ **FIXED 0.6.249** — zero-arg `printf()`/`sprintf()` → UC2012 "no effect" warning (was a hard error) | false-pos | low |
 | [89](89-in-object-non-string-key.md) | `<non-string> in object` is always false (keys are strings) but not flagged | false-neg | low |
 | [90](90-unused-import-generic-message.md) | Unused import → generic "variable never used", no remove-import quick fix | message/feature | low |
 

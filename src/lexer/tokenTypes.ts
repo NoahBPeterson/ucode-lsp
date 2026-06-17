@@ -119,6 +119,16 @@ export interface Token {
     column?: number;
 }
 
+/** A non-fatal lexer diagnostic surfaced via a side-channel (lexer.errors), so the offending
+ *  token can still be emitted normally. Used for e.g. an unsupported regex flag, where dropping
+ *  the regex token would corrupt the surrounding call's argument list (#56). */
+export interface LexerError {
+    message: string;
+    start: number;
+    end: number;
+    code?: string;
+}
+
 export interface LexerState {
     source: string;
     position: number;

@@ -1168,6 +1168,22 @@ export function handleHover(
         // Handle regex literals
         if (token && token.type === TokenType.TK_REGEXP) {
             const regexInfo = regexTypeRegistry.extractPattern(token.value);
+            const flags = regexInfo.flags ?? '';
+            // Cursor over the trailing flag characters → explain what each flag does, rather than
+            // the generic pattern doc.
+            const flagsStart = token.end - flags.length;
+            if (flags && offset >= flagsStart && offset <= token.end) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: regexTypeRegistry.getRegexFlagsDocumentation(flags)
+                    },
+                    range: {
+                        start: document.positionAt(flagsStart),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
             if (regexInfo.pattern) {
                 return {
                     contents: {

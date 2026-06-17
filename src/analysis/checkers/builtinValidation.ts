@@ -16,64 +16,150 @@ export interface FormatSpecifier {
   width: string;
   precision: string;
   fullMatch: string;
+  argIndex?: number;   // 1-based argument index for a positional `%N$` conversion (#49)
+}
+
+/** A `%`-sequence that LOOKS like an intended conversion but isn't one in ucode (a C-ism the
+ *  ucode parser silently prints literally and consumes no argument for). We can prove these
+ *  statically from the format literal, so we flag them even though ucode doesn't error. (#50/#51/#52) */
+export interface InvalidFormatSpecifier {
+  char: string;                              // the offending conversion char (e.g. 'a', 'l', '*')
+  text: string;                              // the full intended specifier as written (e.g. '%lld', '%*d', '%a')
+  kind: 'star' | 'length' | 'conversion';
+  position: number;
+  endPosition: number;
+}
+
+// ucode's numeric conversions coerce their argument (ucv_to_integer/_double). A string is
+// therefore accepted at runtime — a numeric string becomes its value (`"42"`→42), a non-numeric
+// one becomes 0. The string case is handled specially in formatArgMismatches (#53): a known
+// numeric string is fine; a statically non-numeric string literal silently becomes 0 (a footgun)
+// and is still flagged. The base type list keeps STRING out so the per-arg logic decides.
+const FORMAT_NUMERIC_TYPES = [UcodeType.INTEGER, UcodeType.DOUBLE, UcodeType.BOOLEAN];
+
+// The conversions that numerically coerce their argument (so a numeric string is valid).
+function isNumericFormatConversion(conv: string): boolean {
+  return 'diouxXeEfFgG'.includes(conv);
+}
+
+/** The accepted argument types for a ucode printf conversion char, or null if the char is NOT
+ *  a ucode conversion. ucode's real set (lib.c `uc_printf_common`) is `d i u o x X e E f F g G
+ *  c s J %` — there is NO `a A n p`, NO `*` dynamic width, and NO `h/l/z/j/t` length modifiers.
+ *  A non-conversion char makes the `%…` literal text that consumes no argument. */
+function formatConversionTypes(conv: string): UcodeType[] | null {
+  switch (conv) {
+    case 'd': case 'i': case 'u': case 'o': case 'x': case 'X':
+    case 'e': case 'E': case 'f': case 'F': case 'g': case 'G':
+      return FORMAT_NUMERIC_TYPES;
+    case 'c': return [UcodeType.INTEGER, UcodeType.STRING];
+    case 's': return [];   // any type (auto-cast to string)
+    case 'J': return [];   // any type (JSON encode)
+    default: return null;  // not a ucode conversion
+  }
 }
 
 /**
- * Parse printf-style format specifiers from a format string.
- * Returns an array of specifiers that consume arguments (excludes %%).
+ * Parse ucode printf-style format specifiers from a format string, mirroring the C parser in
+ * `uc_printf_common` exactly (lib.c). Grammar:
+ *
+ *   % [N$ positional] [flags #0-space+] [width 1-9 digits] [.precision] conversion
+ *
+ * A `%` whose conversion char isn't a real ucode conversion (`default: continue` in C) is
+ * literal text consuming no argument — it is NOT returned as a specifier. `%%` IS returned
+ * (with empty expectedTypes) so hover can describe it. Positional `%N$d` sets `argIndex`.
+ * Returns specifiers in source order.
  */
-export function parseFormatSpecifiers(format: string): FormatSpecifier[] {
-  const specifiers: FormatSpecifier[] = [];
-  // Match format specifiers: % [flags] [width] [.precision] [length] conversion
-  // Flags: -, +, space, 0, #
-  // Width/precision: digits or *
-  // Length: h, hh, l, ll, z, j, t
-  const formatRegex = /%([#0\- +]*)(\*|\d*)?(?:\.(\*|\d*))?(?:hh?|ll?|[zjt])?([diouxXeEfFgGaAcspJn%])/g;
-  let match;
-  while ((match = formatRegex.exec(format)) !== null) {
-    const conversion = match[4]!;
-    const fullMatch = match[0];
-    const flags = match[1] || '';
-    const width = match[2] || '';
-    const precision = match[3] || '';
-    const endPosition = match.index + fullMatch.length;
+export interface ScannedFormat {
+  specifiers: FormatSpecifier[];
+  invalid: InvalidFormatSpecifier[];
+}
 
-    if (conversion === '%') {
-      // Include %% in results for hover (literal percent), but mark with empty expectedTypes
-      specifiers.push({ specifier: '%', expectedTypes: [], position: match.index, endPosition, flags: '', width: '', precision: '', fullMatch });
+/** Back-compat wrapper: just the valid specifiers (used by hover). */
+export function parseFormatSpecifiers(format: string): FormatSpecifier[] {
+  return scanFormat(format).specifiers;
+}
+
+export function scanFormat(format: string): ScannedFormat {
+  const specifiers: FormatSpecifier[] = [];
+  const invalid: InvalidFormatSpecifier[] = [];
+  const n = format.length;
+  const isDigit = (c: string | undefined) => c !== undefined && c >= '0' && c <= '9';
+  let i = 0;
+
+  while (i < n) {
+    if (format[i] !== '%') { i++; continue; }
+    const start = i;            // at '%'
+    let p = i + 1;
+    let argIndex: number | undefined;
+    let flags = '', width = '', precision = '';
+
+    // A leading 1-9 digit run is either a positional index (if `$` follows) or the width.
+    if (format[p] !== undefined && format[p]! >= '1' && format[p]! <= '9') {
+      let digits = '';
+      while (isDigit(format[p])) digits += format[p++];
+      if (format[p] === '$') {
+        argIndex = parseInt(digits, 10);
+        p++;
+        // flags + width may follow a positional prefix
+        while (p < n && '#0- +'.includes(format[p]!)) flags += format[p++];
+        if (format[p] !== undefined && format[p]! >= '1' && format[p]! <= '9') {
+          while (isDigit(format[p])) width += format[p++];
+        }
+      } else {
+        width = digits;          // it was the width; flags cannot follow (C jumps to precision)
+      }
+    } else {
+      while (p < n && '#0- +'.includes(format[p]!)) flags += format[p++];
+      if (format[p] !== undefined && format[p]! >= '1' && format[p]! <= '9') {
+        while (isDigit(format[p])) width += format[p++];
+      }
+    }
+
+    // .precision — `.` then an optional `-` (negative precision is parsed but ignored) then digits
+    if (format[p] === '.') {
+      p++;
+      if (format[p] === '-') { p++; while (isDigit(format[p])) p++; }
+      else { while (isDigit(format[p])) precision += format[p++]; }
+    }
+
+    const conv = format[p];
+    if (conv === undefined) { i = p; continue; }        // bare `%` at end of string → nothing
+    const endPosition = p + 1;
+    const fullMatch = format.slice(start, endPosition);
+
+    if (conv === '%') {
+      specifiers.push({ specifier: '%', expectedTypes: [], position: start, endPosition, flags: '', width: '', precision: '', fullMatch });
+      i = endPosition;
       continue;
     }
 
-    let expectedTypes: UcodeType[] = [];
-    switch (conversion) {
-      case 'd': case 'i': case 'u': case 'o': case 'x': case 'X':
-        expectedTypes = [UcodeType.INTEGER, UcodeType.DOUBLE, UcodeType.BOOLEAN];
-        break;
-      case 'e': case 'E': case 'f': case 'F': case 'g': case 'G': case 'a': case 'A':
-        expectedTypes = [UcodeType.INTEGER, UcodeType.DOUBLE, UcodeType.BOOLEAN];
-        break;
-      case 'c':
-        expectedTypes = [UcodeType.INTEGER, UcodeType.STRING];
-        break;
-      case 's':
-        expectedTypes = []; // ucode auto-casts all types to string — skip type check
-        break;
-      case 'J': case 'n': case 'p':
-        expectedTypes = []; // any type is valid
-        break;
+    const expectedTypes = formatConversionTypes(conv);
+    if (expectedTypes === null) {
+      // Not a ucode conversion → literal text, no argument consumed (the C `default: continue`).
+      // If the breaking char looks like an INTENDED specifier (a letter, or `*`), record it as
+      // invalid so the caller can flag the C-ism; otherwise it's ordinary literal `%` text
+      // (e.g. "5%/sec", "100% done") — stay silent. Re-scan from the char after the `%`.
+      if (/[a-zA-Z*]/.test(conv)) {
+        const kind: InvalidFormatSpecifier['kind'] =
+          conv === '*' ? 'star' : 'lhzjt'.includes(conv) ? 'length' : 'conversion';
+        // ucode's parser stops at the first invalid char, but the user typed a fuller construct
+        // (`%lld`, `%*d`, `%.*f`). For star/length, extend past the remaining spec-body chars and
+        // a trailing conversion letter so the diagnostic can quote the whole intended sequence.
+        let textEnd = endPosition;
+        if (kind !== 'conversion') {
+          while (textEnd < n && /[-#+ 0-9.*lhzjt]/.test(format[textEnd]!)) textEnd++;
+          if (textEnd < n && /[a-zA-Z]/.test(format[textEnd]!)) textEnd++;
+        }
+        invalid.push({ char: conv, text: format.slice(start, textEnd), kind, position: start, endPosition });
+      }
+      i = start + 1;
+      continue;
     }
 
-    // If width or precision uses *, that consumes an extra argument (integer)
-    if (match[2] === '*') {
-      specifiers.push({ specifier: '*', expectedTypes: [UcodeType.INTEGER], position: match.index, endPosition, flags, width, precision, fullMatch });
-    }
-    if (match[3] === '*') {
-      specifiers.push({ specifier: '*', expectedTypes: [UcodeType.INTEGER], position: match.index, endPosition, flags, width, precision, fullMatch });
-    }
-
-    specifiers.push({ specifier: conversion, expectedTypes, position: match.index, endPosition, flags, width, precision, fullMatch });
+    specifiers.push({ specifier: conv, expectedTypes, position: start, endPosition, flags, width, precision, fullMatch, ...(argIndex !== undefined ? { argIndex } : {}) });
+    i = endPosition;
   }
-  return specifiers;
+  return { specifiers, invalid };
 }
 
 const VALID_SIGNAL_NAMES = new Set([
@@ -1326,16 +1412,46 @@ export class BuiltinValidator {
   }
 
   validatePrintfFunction(node: CallExpressionNode): boolean {
-    if (!this.checkArgumentCount(node, 'printf', 1)) return true;
+    // printf() with no args is NOT an error in ucode (it runs, empty output) — so it's not the
+    // hard arity error it used to be. But it provably has no effect, and printf is a static target
+    // we know more about than a user function, so we flag it as a useless call (#88).
+    if (node.arguments.length === 0) { this.warnUselessFormatCall(node, 'printf', 'produces no output'); return true; }
     this.validateArgumentType(node.arguments[0], 'printf', 1, [UcodeType.STRING]);
     this.validateFormatString(node, 'printf');
     return true;
   }
 
   validateSprintfFunction(node: CallExpressionNode): boolean {
-    if (!this.checkArgumentCount(node, 'sprintf', 1)) return true;
+    // sprintf() with no args is valid in ucode (returns "") — not a hard error, but provably
+    // useless. Flag as a no-effect call (#88).
+    if (node.arguments.length === 0) { this.warnUselessFormatCall(node, 'sprintf', 'returns an empty string'); return true; }
     this.validateArgumentType(node.arguments[0], 'sprintf', 1, [UcodeType.STRING]);
     this.validateFormatString(node, 'sprintf');
+    return true;
+  }
+
+  /** A zero-argument printf()/sprintf() — valid in ucode but provably useless (#88). */
+  private warnUselessFormatCall(node: CallExpressionNode, funcName: string, effect: string): void {
+    this.warnings.push({
+      message: `${funcName}() with no arguments has no effect (it ${effect}). Did you forget the format string?`,
+      start: node.start,
+      end: node.end,
+      severity: 'warning',
+      code: UcodeErrorCode.USELESS_CALL
+    });
+  }
+
+  /** Whether a printf argument mismatches its conversion specifier. ucode coerces numeric
+   *  conversions, so a string is accepted UNLESS it's a statically non-numeric string literal
+   *  (which silently becomes 0 — a real footgun worth flagging). %s/%J accept any type. (#53) */
+  private formatArgMismatches(spec: FormatSpecifier, arg: AstNode, argType: UcodeType): boolean {
+    if (spec.expectedTypes.length === 0) return false;                 // %s / %J — any type
+    if (spec.expectedTypes.includes(argType)) return false;
+    if (argType === UcodeType.STRING && isNumericFormatConversion(spec.specifier)) {
+      return arg.type === 'Literal'
+        && typeof (arg as LiteralNode).value === 'string'
+        && !isNumberLikeString((arg as LiteralNode).value as string);
+    }
     return true;
   }
 
@@ -1345,7 +1461,7 @@ export class BuiltinValidator {
     const literal = formatArg as LiteralNode;
     if (typeof literal.value !== 'string') return;
 
-    const allSpecifiers = parseFormatSpecifiers(literal.value);
+    const { specifiers: allSpecifiers, invalid } = scanFormat(literal.value);
     const specifiers = allSpecifiers.filter(s => s.specifier !== '%'); // exclude %% (literal percent)
     const dataArgs = node.arguments.slice(1); // arguments after the format string
 
@@ -1354,8 +1470,76 @@ export class BuiltinValidator {
     // checked statically — bail out of both checks entirely.
     if (dataArgs.some(arg => arg.type === 'SpreadElement')) return;
 
+    // Unsupported C-isms (`%*d`, `%lld`, `%a`, …): provably not ucode conversions — ucode prints
+    // them literally and consumes no argument. ucode itself emits nothing, but the format literal
+    // is a static target so we flag them (#50/#51/#52). Anchor on the whole literal to sidestep
+    // escape-induced offset drift inside the string.
+    for (const inv of invalid) {
+      const message =
+        inv.kind === 'star'
+          ? `${funcName}(): ucode does not support '*' dynamic width/precision — '${inv.text}' prints literally and consumes no argument`
+          : inv.kind === 'length'
+          ? `${funcName}(): ucode has no printf length modifiers (l/h/z/j/t) — '${inv.text}' prints literally and consumes no argument`
+          : `${funcName}(): '${inv.text}' is not a ucode format conversion — it prints literally and consumes no argument`;
+      this.warnings.push({ message, start: formatArg.start, end: formatArg.end, severity: 'warning', code: UcodeErrorCode.INVALID_FORMAT_SPECIFIER });
+    }
+
     const specCount = specifiers.length;
     const argCount = dataArgs.length;
+
+    // Positional formats (`%2$s %1$s`) reference arguments by index, so the sequential
+    // spec↔arg mapping doesn't apply (#49). Require only that every referenced index is
+    // supplied (too-few); a positional format may legitimately skip or reuse indices, so
+    // don't flag "extra". Type-check each positional spec against the argument it names.
+    const positionalSpecs = specifiers.filter(s => s.argIndex !== undefined);
+    if (positionalSpecs.length > 0) {
+      const maxIdx = Math.max(...positionalSpecs.map(s => s.argIndex!));
+      if (argCount < maxIdx) {
+        this.warnings.push({
+          message: `${funcName}(): format references argument ${maxIdx} but only ${argCount} argument${argCount === 1 ? ' is' : 's are'} provided`,
+          start: formatArg.start,
+          end: formatArg.end,
+          severity: 'warning',
+          code: UcodeErrorCode.FORMAT_ARG_COUNT_MISMATCH
+        });
+      }
+      // Any supplied argument not referenced by a positional index (a gap like `%1$s %3$s`
+      // skipping 2, or trailing extras) is silently ignored at runtime (#49 strictness). Only
+      // when enough args were supplied (argCount >= maxIdx) — otherwise the too-few warning above
+      // already covers the same off-by-one, and flagging the leftover arg too is double-reporting.
+      if (argCount >= maxIdx) {
+        const referenced = new Set(positionalSpecs.map(s => s.argIndex!));
+        for (let idx = 1; idx <= argCount; idx++) {
+          if (referenced.has(idx)) continue;
+          const arg = dataArgs[idx - 1]!;
+          this.warnings.push({
+            message: `${funcName}(): argument ${idx} is not referenced by the format string (ignored)`,
+            start: arg.start,
+            end: arg.end,
+            severity: 'warning',
+            code: UcodeErrorCode.FORMAT_ARG_COUNT_MISMATCH
+          });
+        }
+      }
+      for (const spec of positionalSpecs) {
+        if (spec.expectedTypes.length === 0) continue;
+        const arg = dataArgs[spec.argIndex! - 1];
+        if (!arg) continue;
+        const argType = this.getNodeType(arg);
+        if (argType === UcodeType.UNKNOWN || argType.includes(' | ')) continue;
+        if (this.formatArgMismatches(spec, arg, argType as UcodeType)) {
+          const expectedStr = spec.expectedTypes.map(t => t.toLowerCase()).join(' or ');
+          this.warnings.push({
+            message: `${funcName}(): argument ${spec.argIndex} has type '${argType.toLowerCase()}' but format specifier '%${spec.argIndex}$${spec.specifier}' expects ${expectedStr}`,
+            start: arg.start,
+            end: arg.end,
+            severity: 'warning',
+            code: UcodeErrorCode.FORMAT_TYPE_MISMATCH
+          });
+        }
+      }
+      return;
+    }
 
     // Count mismatch check
     if (specCount > argCount) {
@@ -1366,8 +1550,11 @@ export class BuiltinValidator {
         severity: 'warning',
         code: UcodeErrorCode.FORMAT_ARG_COUNT_MISMATCH
       });
-    } else if (specCount < argCount) {
-      // Extra arguments are silently ignored — lower severity warning
+    } else if (specCount < argCount && invalid.length === 0) {
+      // Extra arguments are silently ignored — lower severity warning. Suppressed when the format
+      // has an invalid C-ism: that diagnostic already explains why an argument goes unconsumed, so
+      // a second "extra arguments" note would be redundant noise. A genuine too-few (above) still
+      // fires regardless, since it's a real shortfall independent of the bogus specifier.
       const firstExtra = dataArgs[specCount]!;
       const lastExtra = dataArgs[argCount - 1]!;
       this.warnings.push({
@@ -1390,7 +1577,7 @@ export class BuiltinValidator {
       const argType = this.getNodeType(arg);
       if (argType === UcodeType.UNKNOWN || argType.includes(' | ')) continue; // Don't flag unknowns or unions
 
-      if (!spec.expectedTypes.includes(argType as UcodeType)) {
+      if (this.formatArgMismatches(spec, arg, argType as UcodeType)) {
         const expectedStr = spec.expectedTypes.map(t => t.toLowerCase()).join(' or ');
         this.warnings.push({
           message: `${funcName}(): argument ${i + 2} has type '${argType.toLowerCase()}' but format specifier '%${spec.specifier}' expects ${expectedStr}`,

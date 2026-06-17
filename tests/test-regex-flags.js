@@ -75,21 +75,25 @@ function testRegexFlagParsing(testName, code, shouldError, expectedFlags, expect
         const lexer = new UcodeLexer(code, { rawMode: true });
         const tokens = lexer.tokenize();
         
-        // Check for error cases first
+        // Check for error cases first. #56: an unsupported flag is reported via the lexer's
+        // side-channel (lexer.errors), NOT a TK_ERROR token — the regex token must still be
+        // emitted so the enclosing call's argument list stays intact.
         if (shouldError) {
-            const errorToken = tokens.find(token => token.type === TokenType.TK_ERROR);
-            if (errorToken) {
-                console.log(`  Error token value: ${errorToken.value}`);
-                if (expectedError && errorToken.value === expectedError) {
-                    console.log(`  Result: ✅ PASS - Expected error occurred`);
+            const lexErr = lexer.errors.find(e => e.message === expectedError) || lexer.errors[0];
+            if (lexErr) {
+                console.log(`  Lexer error: ${lexErr.message}`);
+                // The regex token must STILL be present (the argument survives).
+                const stillHasRegex = tokens.some(t => t.type === TokenType.TK_REGEXP);
+                if (expectedError && lexErr.message === expectedError && stillHasRegex) {
+                    console.log(`  Result: ✅ PASS - Expected error occurred AND regex token preserved`);
                     return true;
                 } else {
-                    console.log(`  Expected error: ${expectedError}`);
-                    console.log(`  Result: ❌ FAIL - Wrong error message`);
+                    console.log(`  Expected error: ${expectedError}; regex preserved: ${stillHasRegex}`);
+                    console.log(`  Result: ❌ FAIL - Wrong error message or regex token dropped`);
                     return false;
                 }
             } else {
-                console.log(`  Result: ❌ FAIL - Expected error but found none`);
+                console.log(`  Result: ❌ FAIL - Expected lexer error but found none`);
                 return false;
             }
         }

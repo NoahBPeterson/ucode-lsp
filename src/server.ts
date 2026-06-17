@@ -521,7 +521,9 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Prom
     parser.setComments(lexer.comments);
     const parseResult = parser.parse();
 
-    let diagnostics: Diagnostic[] = parseResult.errors.map(err => {
+    // Lexer side-channel errors (e.g. unsupported regex flag, #56) are surfaced here alongside
+    // parser errors — the lexer emits a valid token for them so the AST/arg-count stays intact.
+    let diagnostics: Diagnostic[] = [...lexer.errors, ...parseResult.errors].map(err => {
         const diagnostic: Diagnostic = {
             severity: DiagnosticSeverity.Error,
             range: {

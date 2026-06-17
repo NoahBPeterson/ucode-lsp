@@ -3,10 +3,11 @@
  * Based on the original C implementation from the ucode project
  */
 
-import { TokenType, Token, Keywords, Operators, 
-         isKeyword, isIdentifierStart, isIdentifierPart, isDigit, 
-         isHexDigit, isWhitespace, isLineBreak, 
+import { TokenType, Token, LexerError, Keywords, Operators,
+         isKeyword, isIdentifierStart, isIdentifierPart, isDigit,
+         isHexDigit, isWhitespace, isLineBreak,
          isBinaryDigit} from './tokenTypes';
+import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export enum LexState {
     UC_LEX_IDENTIFY_BLOCK,
@@ -37,7 +38,6 @@ export class UcodeLexer {
     private noKeyword: boolean = false;
     private lastOffset: number = 0;
     private buffer: string = '';
-    private errors: string[] = [];
     private templates: number[] = []; // Stack of brace depth counters for template placeholders
     private eofEmitted: boolean = false; // Track if EOF has been emitted
 
@@ -53,6 +53,9 @@ export class UcodeLexer {
     }
 
     public comments: Token[] = [];
+    // Non-fatal lexer diagnostics (e.g. unsupported regex flag) surfaced without dropping the
+    // token — the consumer (server.ts / cli.ts) merges these into the document's diagnostics (#56).
+    public errors: LexerError[] = [];
 
     public tokenize(): Token[] {
         const tokens: Token[] = [];
@@ -509,21 +512,24 @@ export class UcodeLexer {
             if (ch === '/' && !inCharClass) {
                 value += this.nextChar(); // consume closing /
 
-                // Handle regex flags (ucode supports: g, i, s)
+                // Handle regex flags (ucode supports: g, i, s). An unsupported flag is a real
+                // error, but we must NOT drop the regex token — doing so deletes the argument from
+                // the enclosing call, cascading into spurious arg-count errors (e.g. printf "1
+                // specifier but 0 arguments", match "expects at least 2 arguments") (#56). So we
+                // consume every trailing flag, record each unsupported one in the side-channel,
+                // and still emit a valid TK_REGEXP so the argument survives.
                 const supportedFlags = new Set(['g', 'i', 's']);
                 while (this.pos < this.source.length && /[a-zA-Z]/.test(this.peekChar())) {
                     const flag = this.peekChar();
-                    if (supportedFlags.has(flag)) {
-                        value += this.nextChar();
-                    } else {
-                        // Found unsupported flag - generate error
-                        const errorPos = this.pos;
-                        this.nextChar(); // consume the invalid flag
-                        return this.emitToken(
-                            TokenType.TK_ERROR,
-                            `Unsupported regex flag '${flag}'. Supported flags are: g, i, s`,
-                            errorPos
-                        );
+                    const flagPos = this.pos;
+                    value += this.nextChar(); // consume the flag regardless of validity
+                    if (!supportedFlags.has(flag)) {
+                        this.errors.push({
+                            message: `Unsupported regex flag '${flag}'. Supported flags are: g, i, s`,
+                            start: flagPos,
+                            end: this.pos,
+                            code: UcodeErrorCode.SYNTAX_ERROR,
+                        });
                     }
                 }
 
@@ -867,7 +873,4 @@ export class UcodeLexer {
         return token;
     }
 
-    public getErrors(): string[] {
-        return this.errors;
-    }
 }

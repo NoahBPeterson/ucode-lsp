@@ -247,7 +247,8 @@ function analyzeFile(filePath: string): Diagnostic[] {
     parser.setComments(lexer.comments);
     const parseResult = parser.parse();
 
-    const diagnostics: Diagnostic[] = parseResult.errors.map(err => ({
+    // Lexer side-channel errors (#56) surface alongside parser errors.
+    const diagnostics: Diagnostic[] = [...lexer.errors, ...parseResult.errors].map(err => ({
         severity: DiagnosticSeverity.Error,
         range: {
             start: textDocument.positionAt(err.start),
