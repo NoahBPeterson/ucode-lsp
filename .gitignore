@@ -12,3 +12,4 @@ ucode_gotchas.md
 .vscode/settings.json
 BUILTIN_FUNCTIONS_VALIDATION.md
 fuzz-tests/*
+coverage-reports/*

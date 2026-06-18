@@ -46,3 +46,8 @@ mwan4/**
 pbr/**
 scripts/**
 tsconfig.tsbuildinfo
+unetacl/**
+packages/**
+utest/**
+firewall4/**
+luci/**
