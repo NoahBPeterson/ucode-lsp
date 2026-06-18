@@ -31,7 +31,9 @@ coverage/**
 ucode-upstream.json
 scripts/coverage/**
 coverage-reports/**
-!dist/*.js
+!dist/server.js
+!dist/extension.js
+dist/cli.js
 !icons/**
 !README.md
 **/*.md
