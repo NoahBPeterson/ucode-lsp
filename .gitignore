@@ -13,3 +13,5 @@ ucode_gotchas.md
 BUILTIN_FUNCTIONS_VALIDATION.md
 fuzz-tests/*
 coverage-reports/*
+# Top-level spot-check / demo scripts (throwaway, per-finding — keep them local, don't commit)
+/*.uc
