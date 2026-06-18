@@ -193,6 +193,9 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.currentASTRoot = ast as ProgramNode;
       // Pass the AST to TypeChecker for direct analysis
       this.typeChecker.setAST(this.currentASTRoot);
+      // Source text lets builtin validators read the RAW slice of a node (e.g. a string
+      // literal's exact characters), which the decoded `.value` can't reproduce (#32 message).
+      this.typeChecker.setSource(this.textDocument.getText());
       // Detect 'use strict'; directive
       this.strictMode = this.detectStrictMode(this.currentASTRoot);
     }
@@ -2803,8 +2806,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       
       // Now check assignment type compatibility after symbols are created
       this.typeChecker.withAssignmentTarget(() => this.typeChecker.checkNode(node.left));
-      this.typeChecker.checkNode(node.right);
-      
+      // Capture the RHS type here — checkNode applies per-call builtin return narrowing
+      // (e.g. max() -> null, uniq([1]) -> array<integer>) that the static return-type
+      // inference below does not. Reused for the reassignment dataType so a builtin call's
+      // narrowed return survives on reassignment, matching the declaration path. (Issue 2)
+      const rhsCheckedType = this.typeChecker.checkNode(node.right);
+
       const result = this.typeChecker.getResult();
       
       // Add type errors to diagnostics
@@ -2832,14 +2839,25 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           const methodReturnType = this.inferMethodReturnType(node.right);
           const functionReturnType = this.inferFunctionCallReturnType(node.right);
           let dataType: UcodeDataType;
-          
-          if (methodReturnType) {
+
+          // A builtin call carries a per-call narrowed return type (e.g. max() -> null,
+          // uniq([1]) -> array<integer>) that inferFunctionCallReturnType discards in favor
+          // of the builtin's STATIC return type (max -> integer). Prefer the narrowed
+          // checkNode result when it resolved to a concrete type, mirroring how the
+          // declaration path upgrades only on a non-UNKNOWN result. (Issue 2)
+          const isBuiltinCall = node.right.type === 'CallExpression'
+            && (node.right as CallExpressionNode).callee.type === 'Identifier'
+            && allBuiltinFunctions.has(((node.right as CallExpressionNode).callee as IdentifierNode).name);
+
+          if (isBuiltinCall && rhsCheckedType !== undefined && rhsCheckedType !== null && rhsCheckedType !== UcodeType.UNKNOWN) {
+            dataType = rhsCheckedType;
+          } else if (methodReturnType) {
             dataType = methodReturnType;
           } else if (functionReturnType) {
             dataType = functionReturnType;
           } else {
             // checkNode returns the rich type directly (preserves unions).
-            dataType = this.typeChecker.checkNode(node.right);
+            dataType = rhsCheckedType;
           }
           
           if (symbol && symbol.type === SymbolType.VARIABLE) {
@@ -2848,6 +2866,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // (e.g., unknown from `let cpus;`) for positions before this assignment.
             symbol.currentType = dataType;
             symbol.currentTypeEffectiveFrom = node.end;
+            this.recordTypeHistory(symbol, node.end, dataType);
             // Force global declaration for module object types (cross-scope visibility)
             const mt = extractModuleType(dataType);
             if (mt && isKnownObjectType(mt.moduleName)) {
@@ -2863,6 +2882,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // Parameters: preserve declared type (unknown), track reassigned type via SSA
             symbol.currentType = dataType;
             symbol.currentTypeEffectiveFrom = node.end;
+            this.recordTypeHistory(symbol, node.end, dataType);
           } else {
             // SSA: If this is a literal type, preserve original but track current type
             const isLiteralVariable = symbol && symbol.initialLiteralType !== undefined;
@@ -2870,6 +2890,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               // Update current type but preserve original literal type
               symbol.currentType = dataType;
               symbol.currentTypeEffectiveFrom = node.end;
+              this.recordTypeHistory(symbol, node.end, dataType);
             } else {
               // Regular variable, update normally
               symbol.currentType = undefined;
@@ -2897,6 +2918,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
 
     // Base traversal already happened at the beginning of this method
+  }
+
+  /** Append an entry to a variable's per-assignment type history (for position-aware hover). */
+  private recordTypeHistory(symbol: SymbolEntry, from: number, type: UcodeDataType): void {
+    (symbol.typeHistory ??= []).push({ from, type });
   }
 
   visitUnaryExpression(node: UnaryExpressionNode): void {

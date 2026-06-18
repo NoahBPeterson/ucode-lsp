@@ -193,6 +193,18 @@ function coerceArgNeedsParens(node: AstNode): boolean {
   }
 }
 
+/** Turn a string LITERAL's raw source (with surrounding quotes) into the regex literal the author
+ *  likely meant: strip the quotes and escape any un-escaped `/`. Source-based so escapes like
+ *  `\d`/`\b` survive (the decoded value would corrupt them). Returns null if there's nothing to
+ *  convert (e.g. `""` → `//` is a comment). Shared by the match diagnostic message and its
+ *  quick-fix so the two always agree. (#32) */
+export function stringSourceToRegexLiteral(quoted: string): string | null {
+  if (quoted.length < 2) return null;
+  const inner = quoted.slice(1, -1); // drop the opening/closing quote
+  if (inner.length === 0) return null;
+  return `/${inner.replace(/(?<!\\)\//g, '\\/')}/`;
+}
+
 function isNumberLikeString(s: string): boolean {
   const trimmed = s.trim();
   if (trimmed === '') return false;
@@ -208,6 +220,11 @@ function isNumericConvertibleType(type: UcodeType): boolean {
     UcodeType.NULL, UcodeType.BOOLEAN, UcodeType.INTEGER,
     UcodeType.DOUBLE, UcodeType.STRING, UcodeType.UNKNOWN
   ];
+  // A union is convertible iff EVERY member is — checked per-member, not against the whole
+  // union string (so `unknown | double` is accepted, not rejected as one opaque string). (#144)
+  if (typeof type === 'string' && type.includes(' | ')) {
+    return type.split(' | ').every(t => allowedTypes.includes(t.trim() as UcodeType));
+  }
   return allowedTypes.includes(type);
 }
 
@@ -217,8 +234,13 @@ export class BuiltinValidator {
   public narrowedReturnType: UcodeDataType | null = null;
   public inTruthinessContext = false;
   private strictMode = false;
+  private sourceText = '';
 
   constructor() {}
+
+  /** The document's raw source — lets a validator read a node's exact source slice (the decoded
+   *  literal `.value` can't reproduce escapes). Empty string when unavailable. */
+  setSource(src: string): void { this.sourceText = src; }
 
   setStrictMode(strict: boolean): void {
     this.strictMode = strict;
@@ -666,13 +688,14 @@ export class BuiltinValidator {
           const literal = regexArg as any;
           if (literal.literalType === 'string') {
             // ucode does NOT compile a string as a regex — `match(s, "[0-9]")` silently returns
-            // null (never matches). So this stays a hard error, with a "convert to regex literal"
-            // quick-fix. The fix is built from the SOURCE text (in server.ts) so escapes like \d/\b
-            // survive exactly as written — we deliberately DON'T put a specific /…/ in the message,
-            // because this layer only has the DECODED value (the lexer turns `"a\b"` into `"ab"`),
-            // which diverges from the source. The quick-fix title shows the correct regex. (#32)
+            // null (never matches). Hard error, with a "convert to regex literal" quick-fix. Both
+            // the suggestion shown here and the fix are built from the SOURCE slice (not the
+            // decoded `.value`, which loses escapes — `"a\b"` decodes to `"ab"`), so they agree. (#32)
+            const suggestion = this.sourceText
+              ? stringSourceToRegexLiteral(this.sourceText.slice(regexArg.start, regexArg.end))
+              : null;
             this.errors.push({
-              message: `Function 'match' expects a regex for argument 2, got a string — ucode does not treat a string as a regex (it returns null). Convert it to a regex literal (the quick-fix does this).`,
+              message: `Function 'match' expects a regex for argument 2, got a string.${suggestion ? ` Did you mean ${suggestion} ?` : ' Use a regex literal.'}`,
               start: regexArg.start, end: regexArg.end,
               severity: 'error',
               code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
@@ -1273,7 +1296,7 @@ export class BuiltinValidator {
   }
 
   validateTypelocalFunction(node: CallExpressionNode): boolean {
-    this.checkArgumentCount(node, 'type', 1);
+    if (node.arguments.length === 0) { this.warnUselessCall(node, 'type', 'returns null'); this.narrowedReturnType = UcodeType.NULL; return true; }
     // type(null) returns null; type(non-null) returns string.
     // Narrow to string when arg is known non-null.
     if (node.arguments[0] && this.getNodeType) {
@@ -1451,19 +1474,33 @@ export class BuiltinValidator {
 
   validateSleepFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'sleep', 1)) return true;
-    this.validateNumericArgument(node.arguments[0], 'sleep', 1);
+    // sleep coerces its arg to a number (ucv_to_integer) and never throws, so a non-numeric
+    // value is a strict-gated warning (it sleeps 0 ms), not a hard error (#144). A numeric union
+    // like `unknown | double` is now accepted by the union-aware convertibility check.
+    this.validateNumericArgument(node.arguments[0], 'sleep', 1, /*softSeverity*/ true);
     return true;
   }
 
   validateMinFunction(node: CallExpressionNode): boolean {
-    if (!this.checkArgumentCount(node, 'min', 1)) return true;
+    // min() with no args is valid in ucode but useless: it returns null — so the result type is
+    // null too (not the default `integer`), keeping the type and the "returns null" warning
+    // consistent (#146).
+    if (node.arguments.length === 0) {
+      this.warnUselessCall(node, 'min', 'returns null');
+      this.narrowedReturnType = UcodeType.NULL;
+      return true;
+    }
     // min() accepts all types and compares using ucode's comparison rules
     // Examples: min(5, 2.1, "abc", 0.3) -> 0.3, min("def", "abc") -> "abc"
     return true;
   }
 
   validateMaxFunction(node: CallExpressionNode): boolean {
-    if (!this.checkArgumentCount(node, 'max', 1)) return true;
+    if (node.arguments.length === 0) {
+      this.warnUselessCall(node, 'max', 'returns null');
+      this.narrowedReturnType = UcodeType.NULL;
+      return true;
+    }
     // max() accepts all types and compares using ucode's comparison rules
     // Examples: max(5, 2.1, "abc", 0.3) -> 5, max("def", "abc", "ghi") -> "ghi"
     return true;
@@ -1481,7 +1518,7 @@ export class BuiltinValidator {
     // printf() with no args is NOT an error in ucode (it runs, empty output) — so it's not the
     // hard arity error it used to be. But it provably has no effect, and printf is a static target
     // we know more about than a user function, so we flag it as a useless call (#88).
-    if (node.arguments.length === 0) { this.warnUselessFormatCall(node, 'printf', 'produces no output'); return true; }
+    if (node.arguments.length === 0) { this.warnUselessCall(node, 'printf', 'produces no output'); return true; }
     this.validateArgumentType(node.arguments[0], 'printf', 1, [UcodeType.STRING]);
     this.validateFormatString(node, 'printf');
     return true;
@@ -1490,16 +1527,17 @@ export class BuiltinValidator {
   validateSprintfFunction(node: CallExpressionNode): boolean {
     // sprintf() with no args is valid in ucode (returns "") — not a hard error, but provably
     // useless. Flag as a no-effect call (#88).
-    if (node.arguments.length === 0) { this.warnUselessFormatCall(node, 'sprintf', 'returns an empty string'); return true; }
+    if (node.arguments.length === 0) { this.warnUselessCall(node, 'sprintf', 'returns an empty string'); return true; }
     this.validateArgumentType(node.arguments[0], 'sprintf', 1, [UcodeType.STRING]);
     this.validateFormatString(node, 'sprintf');
     return true;
   }
 
-  /** A zero-argument printf()/sprintf() — valid in ucode but provably useless (#88). */
-  private warnUselessFormatCall(node: CallExpressionNode, funcName: string, effect: string): void {
+  /** A call ucode runs but that provably has no effect — e.g. a zero-argument printf/min/splice
+   *  (valid, but pointless). Surfaced as a UC2012 warning, never a hard error (#88/#146/#31). */
+  private warnUselessCall(node: CallExpressionNode, funcName: string, effect: string): void {
     this.warnings.push({
-      message: `${funcName}() with no arguments has no effect (it ${effect}). Did you forget the format string?`,
+      message: `${funcName}() with no arguments has no effect (it ${effect}).`,
       start: node.start,
       end: node.end,
       severity: 'warning',
@@ -1717,25 +1755,43 @@ export class BuiltinValidator {
   }
 
   validateChrFunction(node: CallExpressionNode): boolean {
-    if (this.checkArgumentCount(node, 'chr', 1) && node.arguments[0]) {
-      for (let i = 0; i < node.arguments.length; i++) {
-        const arg = node.arguments[i];
-        if (arg) {
-          this.validateNumericArgument(arg, 'chr', i);
-        }
+    // chr() with no args returns "" in ucode (valid, useless) (#146).
+    if (node.arguments.length === 0) { this.warnUselessCall(node, 'chr', 'returns an empty string'); return true; }
+    for (let i = 0; i < node.arguments.length; i++) {
+      const arg = node.arguments[i];
+      if (arg) {
+        this.validateNumericArgument(arg, 'chr', i);
       }
     }
     return true;
   }
 
   validateOrdFunction(node: CallExpressionNode): boolean {
-    if (!this.checkArgumentCount(node, 'ord', 1)) return true;
+    if (node.arguments.length === 0) { this.warnUselessCall(node, 'ord', 'returns null'); this.narrowedReturnType = UcodeType.NULL; return true; }
 
-    if (node.arguments.length >= 1 && node.arguments[0]) {
-      this.narrowForArgType(node.arguments[0], [UcodeType.STRING], UcodeType.INTEGER);
-      this.validateArgumentType(node.arguments[0], 'ord', 1, [UcodeType.STRING]);
+    const arg0 = node.arguments[0];
+    if (arg0) {
+      this.narrowForArgType(arg0, [UcodeType.STRING], UcodeType.INTEGER);
+      this.validateArgumentType(arg0, 'ord', 1, [UcodeType.STRING]);
       if (node.arguments.length >= 2 && node.arguments[1]) {
         this.validateArgumentType(node.arguments[1], 'ord', 2, [UcodeType.INTEGER, UcodeType.DOUBLE]);
+      }
+
+      // ord() returns null beyond the wrong-type case: an EMPTY string (str[0] is out
+      // of bounds) and an out-of-bounds POSITION argument both yield null. narrowForArgType
+      // collapses a string arg to plain INTEGER, dropping that null — widen it back to
+      // `integer | null` unless we can prove the access is in bounds: a single, non-empty
+      // string literal with no position argument (`ord("A")` → always str[0]). (soundness)
+      if (this.narrowedReturnType === UcodeType.INTEGER) {
+        const provablyInBounds =
+          node.arguments.length === 1 &&
+          arg0.type === 'Literal' &&
+          (arg0 as LiteralNode).literalType === 'string' &&
+          typeof (arg0 as LiteralNode).value === 'string' &&
+          ((arg0 as LiteralNode).value as string).length >= 1;
+        if (!provablyInBounds) {
+          this.narrowedReturnType = createUnionType([UcodeType.INTEGER, UcodeType.NULL]) as UcodeType;
+        }
       }
     }
 
@@ -1743,10 +1799,8 @@ export class BuiltinValidator {
   }
 
   validateUchrFunction(node: CallExpressionNode): boolean {
-    this.checkArgumentCount(node, 'uchr', 1);
-    if (node.arguments[0]) {
-      this.validateArgumentType(node.arguments[0], 'uchr', 1, [UcodeType.STRING, UcodeType.INTEGER, UcodeType.DOUBLE]);
-    }
+    if (node.arguments.length === 0) { this.warnUselessCall(node, 'uchr', 'returns an empty string'); return true; }
+    this.validateArgumentType(node.arguments[0], 'uchr', 1, [UcodeType.STRING, UcodeType.INTEGER, UcodeType.DOUBLE]);
     return true;
   }
 
@@ -2076,14 +2130,18 @@ export class BuiltinValidator {
   }
 
   validateSpliceFunction(node: CallExpressionNode): boolean {
-    if (!this.checkArgumentCount(node, 'splice', 2)) return true;
+    // splice's real minimum arity is 1, not 2: `splice(arr)` removes ALL elements (verified vs
+    // lib.c uc_splice, which handles the 1-arg form). `splice()` with no args returns null and
+    // does nothing — valid but useless (#31).
+    if (node.arguments.length === 0) { this.warnUselessCall(node, 'splice', 'returns null and modifies nothing'); this.narrowedReturnType = UcodeType.NULL; return true; }
 
     // First parameter must be array
     this.narrowForArgType(node.arguments[0], [UcodeType.ARRAY], UcodeType.ARRAY);
     this.preserveArrayElementType(node.arguments[0]);
     this.validateArgumentType(node.arguments[0], 'splice', 1, [UcodeType.ARRAY]);
-    
-    // Second parameter (start index) must be number
+
+    // Second parameter (start index) must be number — optional (the 1-arg form clears the array);
+    // validateArgumentType is a no-op when the arg is absent, so `splice(arr)` is clean.
     this.validateArgumentType(node.arguments[1], 'splice', 2, [UcodeType.INTEGER, UcodeType.DOUBLE]);
     
     // Third parameter (delete count) is optional but must be number if present

@@ -48,7 +48,7 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 
 | # | Finding | Kind | Severity |
 |---|---|---|---|
-| [31](31-splice-min-arity.md) | `splice(array)` 1-arg falsely flagged — wrong min arity (real min is 1) | false-pos | low |
+| [31](../done/31-splice-min-arity.md) | ✅ **FIXED 0.6.253** — `splice` min arity is 1 (`splice(arr)` clears it); `splice()` → UC2012 warn + `null`; `splice(5)` → error | false-pos | low |
 | [32](../done/32-match-subject-coerced.md) | ✅ **FIXED 0.6.251** — `match` subject coerces (warn + coerce fix); string pattern → error + "convert to regex literal" fix | false-pos | low-med |
 | [33](33-exists-non-object-arg.md) | `exists(non-object, k)` rejected — it returns `false`, never errors | false-pos | low |
 | [34](../done/34-localtime-gmtime-string-epoch.md) | ✅ **FIXED 0.6.252** — `localtime`/`gmtime` accept a numeric-string epoch; non-numeric → strict-gated warning | false-pos | low |
@@ -176,9 +176,9 @@ Findings **01–15** are diagnostic/parser/type false-positives and the lexer cr
 | [141](141-json-rejects-file-handle.md) | `json()` rejects an fs.file/proc handle arg | false-pos | low-med |
 | [142](142-uc2003-strict-escalation.md) | Excess args escalated to **error** under `'use strict'` (UC2003) | false-pos | low-med |
 | [143](143-length-or-default-not-narrowed-strict.md) | `length(x \|\| [])` flagged "may be unknown" under strict | false-pos | low |
-| [144](144-numeric-builtin-union-arg.md) | Numeric builtins reject a union arg with all-numeric members (`sleep`) | false-pos | low-med |
+| [144](../done/144-numeric-builtin-union-arg.md) | ✅ **FIXED 0.6.253** — numeric builtins accept an all-numeric union (per-member check); non-numeric `sleep` arg → strict-gated warn | false-pos | low-med |
 | [145](145-fs-proc-property-as-method.md) | Property read on fs.proc reported as "Method does not exist" | message | low |
-| [146](146-builtins-reject-zero-args.md) | `min/max/chr/ord/type/uchr` falsely reject zero-arg calls | false-pos | low |
+| [146](../done/146-builtins-reject-zero-args.md) | ✅ **FIXED 0.6.253** — zero-arg `min/max/chr/ord/type/uchr/splice` allowed → UC2012 warn + precise `null`/`""` narrowing | false-pos | low |
 | [147](147-trace-hover-doc-wrong.md) | `trace()` hover doc wrong (integer level; throws on string) | hover | low |
 | [148](148-exists-second-arg-coerced.md) | `exists(obj, non-string key)` 2nd arg falsely required string | false-pos | low |
 | [149](149-proto-doc-wrong.md) | `proto(o, p)` doc says returns prototype; returns the object | hover | low |

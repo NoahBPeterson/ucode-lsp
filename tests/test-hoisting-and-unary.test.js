@@ -286,9 +286,8 @@ let m = match(str, "^hello$");
             d.message.includes('match') && d.message.includes('regex')
         );
         expect(matchErrors.length).toBeGreaterThan(0);
-        // The message guides toward a regex literal; the exact /…/ is shown by the quick-fix
-        // (built from source text), not embedded in the message (this layer only has the decoded value).
-        expect(matchErrors[0].message).toContain('regex literal');
+        // The message shows the source-faithful regex suggestion (same one the quick-fix applies).
+        expect(matchErrors[0].message).toContain('Did you mean /^hello$/');
     });
 
     test('match(str, /pattern/) should not produce a regex suggestion error', () => {

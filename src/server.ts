@@ -65,6 +65,7 @@ import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalyzer, SemanticAnalysisResult, SymbolType } from './analysis';
 import { UCODE_TARGET_VERSIONS, UcodeTargetVersion, DEFAULT_TARGET_VERSION } from './analysis/ucodeVersions';
 import { UcodeErrorCode } from './analysis/errorConstants';
+import { stringSourceToRegexLiteral } from './analysis/checkers/builtinValidation';
 import { UcodeParser } from './parser';
 import { UcodeLexer, TokenType } from './lexer';
 import { FileResolver } from './analysis/fileResolver';
@@ -866,10 +867,10 @@ function generateCoerceToStringQuickFix(diagnostic: any, document: TextDocument,
  *  escaped (only where not already escaped). */
 function generateStringToRegexQuickFix(diagnostic: any, document: TextDocument, uri: string): CodeAction[] {
     const src = document.getText(diagnostic.range); // includes the surrounding quote chars
-    if (src.length < 2) return [];
-    const inner = src.slice(1, -1);                 // strip the opening/closing quote
-    if (inner.length === 0) return [];              // `match(s, "")` → `//` is a comment; skip
-    const regexLiteral = `/${inner.replace(/(?<!\\)\//g, '\\/')}/`;
+    // Same source→regex conversion the diagnostic message used (shared helper), so the title and
+    // the message always show the identical regex literal.
+    const regexLiteral = stringSourceToRegexLiteral(src);
+    if (!regexLiteral) return [];
     return [{
         title: `Convert to regex literal ${regexLiteral}`,
         kind: CodeActionKind.QuickFix,

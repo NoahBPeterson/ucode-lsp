@@ -222,6 +222,30 @@ function resolveVariableTypeForHover(
         }
     }
 
+    // Position-aware SSA: pick the type as of THIS line from the per-assignment history, so a
+    // reassigned variable shows the right type on each line (not just the final one). Each entry's
+    // `from` is the assignment's end offset (type in effect after it).
+    const history = symbol.typeHistory;
+    if (history && history.length > 0) {
+        if (isAssignmentTarget) {
+            // Hovering the LHS of `a = …`: show the type it BECOMES — the entry effective just
+            // after this position (the smallest `from` greater than the offset).
+            let best: { from: number; type: UcodeDataType } | undefined;
+            for (const e of history) {
+                if (e.from > offset && (!best || e.from < best.from)) best = e;
+            }
+            if (best) return best.type;
+        } else {
+            // A read: the type in effect at this point (largest `from` ≤ offset). A read inside an
+            // assignment's RHS (offset < that assignment's end) correctly resolves to the prior type.
+            let best: { from: number; type: UcodeDataType } | undefined;
+            for (const e of history) {
+                if (e.from <= offset && (!best || e.from > best.from)) best = e;
+            }
+            if (best) return best.type;
+        }
+    }
+
     if (symbol.currentType) {
         if (isAssignmentTarget) {
             return symbol.currentType;

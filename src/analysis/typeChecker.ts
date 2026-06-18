@@ -3420,6 +3420,12 @@ export class TypeChecker {
     this.builtinValidator.setStrictMode(this.strictMode);
   }
 
+  /** Provide the document's raw source so builtin validators can read a node's exact source
+   *  slice (the decoded literal `.value` loses escapes — needed for match's regex suggestion). */
+  setSource(src: string): void {
+    this.builtinValidator.setSource(src);
+  }
+
   private detectStrictMode(ast: ProgramNode): boolean {
     if (!ast.body || ast.body.length === 0) return false;
     // Check first statement for 'use strict'; directive

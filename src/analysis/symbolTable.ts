@@ -333,6 +333,11 @@ export interface Symbol {
     initialLiteralType?: UcodeDataType | undefined; // Initial literal type, if declared with a literal
     currentType?: UcodeDataType | undefined; // Current type after assignments (for SSA)
     currentTypeEffectiveFrom?: number | undefined; // Source offset where currentType becomes active
+    // Per-assignment type history (for position-aware hover on a reassigned variable). Each entry's
+    // `from` is the assignment's end offset (the type is in effect AFTER that point). `currentType`
+    // only holds the LAST assignment, which makes mid-sequence hover show the final type; this keeps
+    // the whole timeline so hover can report the type as of each line.
+    typeHistory?: Array<{ from: number; type: UcodeDataType }>;
     neverReturns?: boolean; // True if function always terminates (die/exit/throw on all paths)
     scopeEnd?: number; // End offset of the scope this symbol was declared in (set when scope exits)
     scopeStart?: number; // Start offset of the block scope this symbol was declared in (set at declare)
