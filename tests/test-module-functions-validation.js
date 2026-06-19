@@ -57,12 +57,13 @@ describe('Module Functions Validation Tests', function() {
       assert(errors[0].message.includes('require') && errors[0].message.includes('got array'), 'Should mention require and array');
     });
 
-    it('should require exactly one parameter', async () => {
-      const errors = await getValidationErrors(`
+    it('should flag a useless zero-argument call (error under \'use strict\')', async () => {
+      // require() returns null with no args (valid-but-useless) — a strict-gated useless-call diagnostic.
+      const errors = await getValidationErrors(`'use strict';
         print(require());
       `);
-      assert.strictEqual(errors.length, 1, 'Should have error for no parameters');
-      assert.match(errors[0].message, /require\(\) expects 1 argument, got 0/);
+      assert.strictEqual(errors.length, 1, 'Should have error for no parameters under strict');
+      assert.match(errors[0].message, /require\(\) with no arguments/);
     });
 
     it('should reject multiple parameters', async () => {
@@ -117,11 +118,11 @@ describe('Module Functions Validation Tests', function() {
     });
 
     it('should require at least one parameter', async () => {
-      const errors = await getValidationErrors(`
+      const errors = await getValidationErrors(`'use strict';
         print(loadfile());
       `);
-      assert.strictEqual(errors.length, 1, 'Should have error for no parameters');
-      assert.match(errors[0].message, /loadfile\(\) expects 1-2 arguments, got 0/);
+      assert.strictEqual(errors.length, 1, 'Should have error for no parameters under strict');
+      assert.match(errors[0].message, /loadfile\(\) with no arguments/);
     });
 
     it('should accept an optional ParseConfig options object', async () => {
@@ -151,11 +152,11 @@ describe('Module Functions Validation Tests', function() {
     });
 
     it('should require at least one parameter', async () => {
-      const errors = await getValidationErrors(`
+      const errors = await getValidationErrors(`'use strict';
         print(loadstring());
       `);
-      assert.strictEqual(errors.length, 1, 'Should have error for no parameters');
-      assert.match(errors[0].message, /loadstring\(\) expects 1-2 arguments, got 0/);
+      assert.strictEqual(errors.length, 1, 'Should have error for no parameters under strict');
+      assert.match(errors[0].message, /loadstring\(\) with no arguments/);
     });
 
     it('should accept an optional ParseConfig options object', async () => {

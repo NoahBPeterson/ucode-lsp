@@ -2030,6 +2030,17 @@ export class TypeChecker {
     }
 
     const argCount = node.arguments.length;
+
+    // A zero-arg call to a builtin ucode accepts with no args (e.g. uc/lc/join/hexenc, which are
+    // signature-only — not in validateSpecialBuiltins) is valid-but-useless, not an arity error.
+    // Handle it like the special-builtin path: strict-gated UC2012 + exact return-type narrowing,
+    // skipping the UC2003 error and the coercion arg-check (there are no args to check).
+    if (argCount === 0 && this.builtinValidator.applyZeroArgUselessResult(node, signature.name)) {
+      const narrowed = this.builtinValidator.narrowedReturnType;
+      this.builtinValidator.narrowedReturnType = null;
+      if (narrowed !== null) return narrowed;
+    }
+
     const minParams = signature.minParams ?? signature.parameters.length;
     const maxParams = signature.maxParams ?? (signature.variadic ? Infinity : signature.parameters.length);
 

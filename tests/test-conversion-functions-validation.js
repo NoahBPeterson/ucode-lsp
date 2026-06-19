@@ -63,11 +63,12 @@ describe('Conversion Functions Validation Tests', function() {
       assert.strictEqual(errors.length, 0, 'Should not have error — C accepts any type, returns NaN for objects');
     });
 
-    it('should require at least one parameter', async () => {
-      const errors = await getValidationErrors(`
+    it('should flag a useless zero-argument call (error under \'use strict\')', async () => {
+      // int() returns 0 with no args (valid-but-useless) — a strict-gated useless-call diagnostic.
+      const errors = await getValidationErrors(`'use strict';
         print(int());
       `);
-      assert.strictEqual(errors.length, 1, 'Should have error for no parameters');
+      assert.strictEqual(errors.length, 1, 'Should have error for no parameters under strict');
       assert(errors[0].message.includes('int'), 'Error should mention int');
     });
 
@@ -94,12 +95,13 @@ describe('Conversion Functions Validation Tests', function() {
       assert.strictEqual(errors.length, 0, 'Should not have error for string parameter');
     });
 
-    it('should require one parameter', async () => {
-      const errors = await getValidationErrors(`
+    it('should flag a useless zero-argument call (error under \'use strict\')', async () => {
+      // hex() returns NaN with no args (valid-but-useless) — a strict-gated useless-call diagnostic.
+      const errors = await getValidationErrors(`'use strict';
         print(hex());
       `);
-      assert.strictEqual(errors.length, 1, 'Should have error for no parameters');
-      assert(errors[0].message.includes('hex') && errors[0].message.includes('0'), 'Error should mention hex and 0');
+      assert.strictEqual(errors.length, 1, 'Should have error for no parameters under strict');
+      assert(errors[0].message.includes('hex'), 'Error should mention hex');
     });
   });
 

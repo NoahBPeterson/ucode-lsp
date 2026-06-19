@@ -64,15 +64,16 @@ describe('Number Conversion Function Validation', function() {
       assert(hexdecErrors[0].message.includes('hexdec') && hexdecErrors[0].message.includes('got double'), 'Should mention hexdec and double');
     });
 
-    it('should require at least one parameter', async function() {
-      const errors = await getValidationErrors(`
+    it('should flag a useless zero-argument call (error under \'use strict\')', async function() {
+      // hexdec() returns null with no args (valid-but-useless) — a strict-gated useless-call diagnostic.
+      const errors = await getValidationErrors(`'use strict';
         let result1 = hexdec();
         let result2 = hexdec("FF", "extra");
       `);
       const hexdecErrors = errors.filter(e => e.message.includes('hexdec'));
-      assert.strictEqual(hexdecErrors.length, 1, 'Should have errors for not having at least one parameter');
-      assert.match(hexdecErrors[0].message, /expects at least 1 argument/);
-      // Note: The second error is about too many arguments, but current implementation only checks minimum
+      assert.strictEqual(hexdecErrors.length, 1, 'Should have an error for the zero-argument call under strict');
+      assert.match(hexdecErrors[0].message, /with no arguments/);
+      // Note: the 2-arg call isn't flagged — the validator only checks the minimum.
     });
 
     it('should reject array parameters', async function() {
@@ -123,14 +124,15 @@ describe('Number Conversion Function Validation', function() {
       assert(b64encErrors[0].message.includes('b64enc') && b64encErrors[0].message.includes('got double'), 'Should mention b64enc and double');
     });
 
-    it('should require at least one parameter', async function() {
-      const errors = await getValidationErrors(`
+    it('should flag a useless zero-argument call (error under \'use strict\')', async function() {
+      // b64enc() returns null with no args (valid-but-useless) — a strict-gated useless-call diagnostic.
+      const errors = await getValidationErrors(`'use strict';
         let result1 = b64enc();
         let result2 = b64enc("data", "extra");
       `);
       const b64encErrors = errors.filter(e => e.message.includes('b64enc'));
-      assert.strictEqual(b64encErrors.length, 1, 'Should have errors for wrong parameter count');
-      assert.match(b64encErrors[0].message, /expects at least 1 argument/);
+      assert.strictEqual(b64encErrors.length, 1, 'Should have an error for the zero-argument call under strict');
+      assert.match(b64encErrors[0].message, /with no arguments/);
     });
 
     it('should reject object parameters', async function() {
@@ -181,14 +183,15 @@ describe('Number Conversion Function Validation', function() {
       assert(b64decErrors[0].message.includes('b64dec') && b64decErrors[0].message.includes('got double'), 'Should mention b64dec and double');
     });
 
-    it('should require at least one parameter', async function() {
-      const errors = await getValidationErrors(`
+    it('should flag a useless zero-argument call (error under \'use strict\')', async function() {
+      // b64dec() returns null with no args (valid-but-useless) — a strict-gated useless-call diagnostic.
+      const errors = await getValidationErrors(`'use strict';
         let result1 = b64dec();
         let result2 = b64dec("SGVsbG8=", "extra");
       `);
       const b64decErrors = errors.filter(e => e.message.includes('b64dec'));
-      assert.strictEqual(b64decErrors.length, 1, 'Should have errors for wrong parameter count');
-      assert.match(b64decErrors[0].message, /expects at least 1 argument/);
+      assert.strictEqual(b64decErrors.length, 1, 'Should have an error for the zero-argument call under strict');
+      assert.match(b64decErrors[0].message, /with no arguments/);
     });
 
     it('should reject boolean parameters', async function() {

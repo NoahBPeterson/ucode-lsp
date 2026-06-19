@@ -394,7 +394,9 @@ print(m);
   });
 
   test('require rejects zero arguments', async () => {
-    const errors = await getErrors(`
+    // require() returns null with no args (valid-but-useless) — a strict-gated useless-call
+    // diagnostic: error under 'use strict', warning otherwise. Assert the strict error here.
+    const errors = await getErrors(`'use strict';
 let m = require();
 print(m);
 `);

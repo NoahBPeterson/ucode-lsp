@@ -56,12 +56,13 @@ describe('#146 — zero-arg builtins warn UC2012 (useless call)', () => {
     });
   }
 
-  // A useless call is valid ucode — it must stay a WARNING even under 'use strict', never an error.
-  test('UC2012 stays a warning under \'use strict\'', async () => {
+  // A useless call is valid ucode (no runtime error), so it's a strict-gated UC2012: a warning
+  // normally, escalating to an error under 'use strict' (the zero-arg builtin-audit decision).
+  test('UC2012 escalates to an error under \'use strict\'', async () => {
     for (const [fn] of ZERO_ARG) {
-      const w = await diagsFor(`'use strict';\n${fn}();\n`, 'UC2012');
-      expect(w.length).toBe(1);
-      expect(w[0].severity).toBe(SEV.WARNING);
+      const e = await diagsFor(`'use strict';\n${fn}();\n`, 'UC2012');
+      expect(e.length).toBe(1);
+      expect(e[0].severity).toBe(SEV.ERROR);
     }
   });
 

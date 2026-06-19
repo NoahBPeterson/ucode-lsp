@@ -166,12 +166,20 @@ for (const ucType of CONCRETE_TYPES) {
 
 // int() with optional base parameter
 {
+    // A string literal with a literal base is decidable: "ff" is valid in base 16 → integer.
     const r = analyze(`let a = int("ff", 16);`);
-    check('int(string, int) -> integer | double', getType(r, 'a'), 'integer | double');
+    check('int("ff", 16) literal -> integer', getType(r, 'a'), 'integer');
 }
 {
+    // A base-10 string LITERAL is decidable: "123" parses to an integer (verified vs the
+    // interpreter), so int() narrows to `integer` rather than the general `integer | double`.
     const r = analyze(`let a = int("123");`);
-    check('int(string) -> integer | double', getType(r, 'a'), 'integer | double');
+    check('int("123") literal -> integer', getType(r, 'a'), 'integer');
+}
+{
+    // A non-numeric string literal yields NaN (a double).
+    const r = analyze(`let a = int("abc");`);
+    check('int("abc") literal -> double', getType(r, 'a'), 'double');
 }
 {
     const r = analyze(`let a = int(42);`);

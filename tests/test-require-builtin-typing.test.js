@@ -62,7 +62,9 @@ test('10 require(variable) (non-literal arg) is not resolved to a module', async
   expect(t).not.toMatch(/module/);
 });
 test('11 require() arg validation still fires (zero args)', async () => {
-  expect((await errs('function f(){ let x = require(); }\n')).some((e) => /require\(\)/.test(e.message))).toBe(true);
+  // Zero-arg require() returns null (valid-but-useless): a strict-gated useless-call diagnostic
+  // (error under 'use strict'). Assert the strict error so this stays an error-level check.
+  expect((await errs("'use strict';\nfunction f(){ let x = require(); }\n")).some((e) => /require\(\)/.test(e.message))).toBe(true);
 });
 
 // ── File-path require is intentionally NOT builtin-typed (TODO) ───────────────

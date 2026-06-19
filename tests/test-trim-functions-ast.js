@@ -240,14 +240,12 @@ rtrim();
 `;
       
       const diagnostics = await getDiagnostics(testContent, '/tmp/test-trim-argument-count.uc');
-      
-      const argumentErrors = diagnostics.filter(d => 
-        d.severity === 1 && 
-        (d.message.includes("expects") && (d.message.includes("argument") || d.message.includes("parameter")))
-      );
-      
-      assert(argumentErrors.length >= 2, // At least 2 errors expected
-        `Should show errors for wrong argument counts. Found ${argumentErrors.length} errors: ${argumentErrors.map(e => e.message).join(', ')}`);
+
+      // trim()/rtrim() with no args are valid ucode but useless → UC2012 useless-call diagnostics
+      // (warnings here, escalating to errors under 'use strict'), not arity errors.
+      const uselessCalls = diagnostics.filter(d => /with no arguments has no effect/.test(d.message));
+      assert(uselessCalls.length >= 2,
+        `trim()/rtrim() with no args should each be a useless-call diagnostic. Found: ${diagnostics.map(e => e.message).join(', ')}`);
     });
   });
 

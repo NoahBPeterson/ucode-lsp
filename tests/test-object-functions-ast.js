@@ -214,14 +214,20 @@ exists(obj);
 `;
       
       const diagnostics = await getDiagnostics(testContent, '/tmp/test-argument-count.uc');
-      
-      const argumentErrors = diagnostics.filter(d => 
-        d.severity === 1 && 
+
+      // exists(obj) is a genuine min-arity violation (needs 2 args) → still a hard error.
+      const argumentErrors = diagnostics.filter(d =>
+        d.severity === 1 &&
         (d.message.includes("expects") && (d.message.includes("argument") || d.message.includes("parameter")))
       );
-      
-      assert(argumentErrors.length >= 2, // At least 2 errors expected (keys() with no args, exists() with 1 arg)
-        `Should show errors for wrong argument counts. Found ${argumentErrors.length} errors: ${argumentErrors.map(e => e.message).join(', ')}`);
+      assert(argumentErrors.some(e => e.message.includes('exists')),
+        `exists(obj) should error (min 2 args). Found: ${argumentErrors.map(e => e.message).join(', ')}`);
+
+      // keys() with no args is valid ucode but useless → a UC2012 useless-call diagnostic
+      // (a warning here, escalating to an error under 'use strict'), not an arity error.
+      const uselessKeys = diagnostics.filter(d => /keys\(\) with no arguments/.test(d.message));
+      assert.strictEqual(uselessKeys.length, 1,
+        `keys() with no args should be a useless-call diagnostic. Found: ${diagnostics.map(e => e.message).join(', ')}`);
     });
   });
 

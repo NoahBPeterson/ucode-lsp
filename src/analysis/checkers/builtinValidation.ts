@@ -179,6 +179,70 @@ const UNHANDLABLE_SIGNALS = new Set(['KILL', 'STOP']);
 const PARSE_CONFIG_BOOLEAN_KEYS = new Set(['lstrip_blocks', 'trim_blocks', 'strict_declarations', 'raw_mode']);
 const PARSE_CONFIG_ARRAY_KEYS = new Set(['module_search_path', 'force_dynlink_list']);
 
+/**
+ * Builtins that ACCEPT a zero-argument call in ucode (no runtime error) but for which the
+ * zero-arg call has no useful effect — it deterministically returns the value below. Verified
+ * against ucode/lib.c (the `uc_<name>` implementations) with all args NULL.
+ *
+ * Such a call is valid-but-pointless: it's surfaced as a strict-gated "useless call" diagnostic
+ * (warning, error under 'use strict') and the call's return type is narrowed to the exact
+ * zero-arg result (mostly `null`), rather than the function's general signature return type.
+ *
+ * NOT included (these THROW a runtime exception on zero args, so the call is genuinely invalid
+ * and stays a hard error): json, include, system, render, trace, die, exit, assert.
+ * NOT included (already correctly typed / not useless on zero args): time, clock, getenv, warn,
+ * print, gc, sourcepath, localtime, gmtime — they return current state, not a dead value.
+ */
+const ZERO_ARG_USELESS_RESULT: Record<string, { type: UcodeType; effect: string }> = {
+  // --- deterministically return null ---
+  filter: { type: UcodeType.NULL, effect: 'returns null' },
+  index: { type: UcodeType.NULL, effect: 'returns null' },
+  rindex: { type: UcodeType.NULL, effect: 'returns null' },
+  join: { type: UcodeType.NULL, effect: 'returns null' },
+  keys: { type: UcodeType.NULL, effect: 'returns null' },
+  length: { type: UcodeType.NULL, effect: 'returns null' },
+  ltrim: { type: UcodeType.NULL, effect: 'returns null' },
+  rtrim: { type: UcodeType.NULL, effect: 'returns null' },
+  trim: { type: UcodeType.NULL, effect: 'returns null' },
+  map: { type: UcodeType.NULL, effect: 'returns null' },
+  pop: { type: UcodeType.NULL, effect: 'returns null' },
+  push: { type: UcodeType.NULL, effect: 'returns null' },
+  shift: { type: UcodeType.NULL, effect: 'returns null' },
+  unshift: { type: UcodeType.NULL, effect: 'returns null' },
+  reverse: { type: UcodeType.NULL, effect: 'returns null' },
+  sort: { type: UcodeType.NULL, effect: 'returns null' },
+  slice: { type: UcodeType.NULL, effect: 'returns null' },
+  split: { type: UcodeType.NULL, effect: 'returns null' },
+  substr: { type: UcodeType.NULL, effect: 'returns null' },
+  values: { type: UcodeType.NULL, effect: 'returns null' },
+  match: { type: UcodeType.NULL, effect: 'returns null' },
+  replace: { type: UcodeType.NULL, effect: 'returns null' },
+  uniq: { type: UcodeType.NULL, effect: 'returns null' },
+  iptoarr: { type: UcodeType.NULL, effect: 'returns null' },
+  arrtoip: { type: UcodeType.NULL, effect: 'returns null' },
+  b64enc: { type: UcodeType.NULL, effect: 'returns null' },
+  b64dec: { type: UcodeType.NULL, effect: 'returns null' },
+  hexdec: { type: UcodeType.NULL, effect: 'returns null' },
+  hexenc: { type: UcodeType.NULL, effect: 'returns null' },
+  proto: { type: UcodeType.NULL, effect: 'returns null' },
+  wildcard: { type: UcodeType.NULL, effect: 'returns null' },
+  timelocal: { type: UcodeType.NULL, effect: 'returns null' },
+  timegm: { type: UcodeType.NULL, effect: 'returns null' },
+  call: { type: UcodeType.NULL, effect: 'returns null' },
+  signal: { type: UcodeType.NULL, effect: 'returns null' },
+  require: { type: UcodeType.NULL, effect: 'returns null' },
+  loadfile: { type: UcodeType.NULL, effect: 'returns null' },
+  // --- deterministically return a non-null dead value ---
+  int: { type: UcodeType.INTEGER, effect: 'returns 0' },
+  hex: { type: UcodeType.DOUBLE, effect: 'returns NaN' },
+  uc: { type: UcodeType.STRING, effect: 'returns "NULL"' },
+  lc: { type: UcodeType.STRING, effect: 'returns "null"' },
+  exists: { type: UcodeType.BOOLEAN, effect: 'returns false' },
+  sleep: { type: UcodeType.BOOLEAN, effect: 'returns false' },
+  regexp: { type: UcodeType.REGEX, effect: 'returns the regex /null/' },
+  loadstring: { type: UcodeType.FUNCTION, effect: 'compiles the literal "null"' },
+};
+
 /** Whether an argument node must be parenthesized when wrapped as `"" + (node)` — true for
  *  operators that bind looser than `+`. Mirrors TypeChecker.needsParensForAddition (#30/#32). */
 function coerceArgNeedsParens(node: AstNode): boolean {
@@ -213,6 +277,35 @@ function isNumberLikeString(s: string): boolean {
   // Supports decimal, hex (0x), binary (0b), and octal (0, 0o)
   const numberLikeRegex = /^[+-]?(\d*\.?\d+([eE][+-]?\d+)?|0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO]?[0-7]+)$/;
   return numberLikeRegex.test(trimmed);
+}
+
+/** The base int() will parse a string literal in: 10 for the 1-arg form, the integer-literal 2nd
+ *  argument (2–36) for `int(s, base)`, or null when the base isn't a statically-known literal in
+ *  range (so the result can't be decided and stays `integer | double`). */
+function intCallBase(node: CallExpressionNode): number | null {
+  if (node.arguments.length === 1) return 10;
+  if (node.arguments.length === 2) {
+    const b = node.arguments[1];
+    if (b && b.type === 'Literal' && (b as LiteralNode).literalType === 'number') {
+      const v = (b as LiteralNode).value;
+      if (typeof v === 'number' && Number.isInteger(v) && v >= 2 && v <= 36) return v;
+    }
+  }
+  return null;
+}
+
+/** Whether int() parses `value` in `base` to an integer (vs NaN/double). Mirrors the interpreter:
+ *  skip leading whitespace + an optional sign, then require at least one valid digit in the base
+ *  (case-insensitive; a leading `0` — e.g. "0xff" — is itself a valid digit, so it's covered). */
+function intStringParsesToInteger(value: string, base: number): boolean {
+  const c = value.replace(/^\s+/, '').replace(/^[+-]/, '')[0];
+  if (!c) return false;
+  const code = c.toLowerCase().charCodeAt(0);
+  let digit: number;
+  if (code >= 48 && code <= 57) digit = code - 48;          // 0-9
+  else if (code >= 97 && code <= 122) digit = code - 97 + 10; // a-z
+  else return false;
+  return digit < base;
 }
 
 function isNumericConvertibleType(type: UcodeType): boolean {
@@ -301,7 +394,28 @@ export class BuiltinValidator {
     }
   }
 
+  /**
+   * If `funcName` is called with ZERO arguments and is a builtin that ucode accepts with no
+   * args (returning a dead value, see ZERO_ARG_USELESS_RESULT), emit the strict-gated useless-call
+   * diagnostic and narrow the return type to the exact zero-arg result. Returns true if handled
+   * (the caller should stop validating). Does nothing / returns false otherwise.
+   */
+  public applyZeroArgUselessResult(node: CallExpressionNode, funcName: string): boolean {
+    if (node.arguments.length !== 0) return false;
+    const entry = ZERO_ARG_USELESS_RESULT[funcName];
+    if (!entry) return false;
+    this.warnUselessCall(node, funcName, entry.effect);
+    this.narrowedReturnType = entry.type;
+    return true;
+  }
+
   private checkArgumentCount(node: CallExpressionNode, funcName: string, minArgs: number): boolean {
+    // A zero-arg call to a builtin ucode accepts with no args is valid-but-useless, not an arity
+    // error: warn (error under 'use strict') and narrow the return type. Return false so the
+    // caller short-circuits (it does `if (!checkArgumentCount(...)) return true;`).
+    if (this.applyZeroArgUselessResult(node, funcName)) {
+      return false;
+    }
     if (node.arguments.length < minArgs) {
       this.errors.push({
         message: `Function '${funcName}' expects at least ${minArgs} argument${minArgs === 1 ? '' : 's'}, got ${node.arguments.length}`,
@@ -782,6 +896,7 @@ export class BuiltinValidator {
   validateLoadstringFunction(node: CallExpressionNode): boolean {
     // loadstring(code[, options]) — the optional 2nd arg is a ParseConfig object
     // (raw_mode, strict_declarations, …); C uc_loadstring forwards it to uc_load_common.
+    if (this.applyZeroArgUselessResult(node, 'loadstring')) return true;
     if (node.arguments.length < 1 || node.arguments.length > 2) {
       this.errors.push({
         message: `loadstring() expects 1-2 arguments, got ${node.arguments.length}`,
@@ -1533,16 +1648,16 @@ export class BuiltinValidator {
     return true;
   }
 
-  /** A call ucode runs but that provably has no effect — e.g. a zero-argument printf/min/splice
-   *  (valid, but pointless). Surfaced as a UC2012 warning, never a hard error (#88/#146/#31). */
+  /** A call ucode runs but that provably has no effect — e.g. a zero-argument printf/min/splice/
+   *  split/keys (valid, but pointless). Strict-gated UC2012: a warning normally, an error under
+   *  'use strict' (#88/#146/#31 + the zero-arg builtin audit). */
   private warnUselessCall(node: CallExpressionNode, funcName: string, effect: string): void {
-    this.warnings.push({
-      message: `${funcName}() with no arguments has no effect (it ${effect}).`,
-      start: node.start,
-      end: node.end,
-      severity: 'warning',
-      code: UcodeErrorCode.USELESS_CALL
-    });
+    this.pushWarnOrStrictError(
+      `${funcName}() with no arguments has no effect (it ${effect}).`,
+      node.start,
+      node.end,
+      UcodeErrorCode.USELESS_CALL
+    );
   }
 
   /** Whether a printf argument mismatches its conversion specifier. ucode coerces numeric
@@ -1729,10 +1844,65 @@ export class BuiltinValidator {
         this.narrowedReturnType = UcodeType.INTEGER;
       } else if (alwaysNaN.includes(argType as UcodeType)) {
         this.narrowedReturnType = UcodeType.DOUBLE;
+      } else if (argType === UcodeType.STRING) {
+        // A string LITERAL's content is decidable: int() skips leading whitespace + an optional
+        // sign, then needs at least one valid digit in the base — "42"/"10abc"/"0x1f"→integer,
+        // "ff"(base 16)→integer, while no valid leading digit ("abc"/""/"zz" base 16)→NaN (double).
+        // Verified vs the interpreter. The base is 10 for the 1-arg form, or a literal 2nd arg
+        // (2–36); a non-literal string or a non-literal/out-of-range base stays `integer | double`.
+        const arg0 = node.arguments[0];
+        if (arg0.type === 'Literal' && (arg0 as LiteralNode).literalType === 'string') {
+          const lit = arg0 as LiteralNode;
+          const value = String(lit.value);
+          const base = intCallBase(node);
+          if (base !== null) {
+            this.narrowedReturnType = intStringParsesToInteger(value, base) ? UcodeType.INTEGER : UcodeType.DOUBLE;
+            // The "ignored trailing input" warning (UC2013) is only emitted for the base-10 form,
+            // where the consumed prefix is a plain decimal run we can underline precisely.
+            if (base === 10) {
+              this.warnIntStringLiteralDrop(lit, value, /^\s*[+-]?\d+/.exec(value));
+            }
+          }
+        }
       }
-      // string and unknown: keep full integer | double union
+      // non-literal string and unknown: keep full integer | double union
     }
     return true;
+  }
+
+  /**
+   * Warn (UC2013) when int()'s string literal carries content that its numeric parse silently
+   * drops: the trailing part after the leading number (int("10abc") → 10, "abc" ignored;
+   * int("4.9") → 4, ".9" ignored), or the whole string when there's no leading number at all
+   * (int("abc") → NaN). Underlines exactly the ignored portion when the literal has no escapes
+   * (so value offsets map 1:1 to source), else the whole literal. `leading` is the matched
+   * consumed prefix (or null when nothing parses).
+   */
+  private warnIntStringLiteralDrop(lit: LiteralNode, value: string, leading: RegExpExecArray | null): void {
+    // map a value-index range to source offsets only when the literal is escape-free — i.e. the
+    // source content (node span minus the two quote chars) has the same length as the decoded
+    // value, so each value index maps 1:1 to a source offset. Otherwise underline the whole node.
+    const escapeFree = (lit.end - lit.start - 2) === value.length;
+    const contentStart = lit.start + 1; // just past the opening quote
+
+    if (leading) {
+      const consumed = leading[0].length;
+      const rest = value.slice(consumed);
+      if (rest.trim() === '') return; // only trailing whitespace is dropped — harmless
+      const trimmedEnd = consumed + rest.replace(/\s+$/, '').length;
+      const start = escapeFree ? contentStart + consumed : lit.start;
+      const end = escapeFree ? contentStart + trimmedEnd : lit.end;
+      this.warnings.push({
+        message: `int() parses only the leading number "${leading[0].trim()}"; the rest of this string is ignored and is NOT included in the result.`,
+        start, end, severity: 'warning', code: UcodeErrorCode.IGNORED_NUMERIC_INPUT,
+      });
+    } else {
+      if (value.trim() === '') return; // empty/blank string → NaN, nothing to underline
+      this.warnings.push({
+        message: `int() finds no leading number in this string, so the whole value is ignored and it returns NaN.`,
+        start: lit.start, end: lit.end, severity: 'warning', code: UcodeErrorCode.IGNORED_NUMERIC_INPUT,
+      });
+    }
   }
 
   validateHexFunction(node: CallExpressionNode): boolean {
@@ -1805,6 +1975,7 @@ export class BuiltinValidator {
   }
 
   validateRequireFunction(node: CallExpressionNode): boolean {
+    if (this.applyZeroArgUselessResult(node, 'require')) return true;
     if (node.arguments.length !== 1) {
       this.errors.push({
         message: `require() expects 1 argument, got ${node.arguments.length}`,
@@ -1870,6 +2041,7 @@ export class BuiltinValidator {
   validateLoadfileFunction(node: CallExpressionNode): boolean {
     // loadfile(path[, options]) — the optional 2nd arg is a ParseConfig object
     // (raw_mode, strict_declarations, …); C uc_loadfile forwards it to uc_load_common.
+    if (this.applyZeroArgUselessResult(node, 'loadfile')) return true;
     if (node.arguments.length < 1 || node.arguments.length > 2) {
       this.errors.push({
         message: `loadfile() expects 1-2 arguments, got ${node.arguments.length}`,
