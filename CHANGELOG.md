@@ -1,5 +1,133 @@
 # Changelog
 
+## 0.6.183 – 0.6.254 (2026-06-08 → 2026-06-19)
+
+A large accuracy-and-completeness pass: OpenWrt version-aware diagnostics, a
+deep null-safety tier, a wave of false-positive eliminations for real-world
+ucode idioms (implicit globals, builtin shadowing, template/raw-mode lexing),
+a completion-and-quick-fix overhaul, and crash hardening. Every diagnostic now
+carries a stable `UC####` code. Highlights below, grouped by area; exact version
+tags in parentheses.
+
+### New features
+
+- **Target-version-aware diagnostics** — a new `ucode.targetVersion` setting
+  gates module, function, and method availability to a chosen OpenWrt release
+  (0.6.222, `UC6005`). Added the **OpenWrt 25.12** target and default to the
+  latest stable release (0.6.223). Version gates were source-cross-checked
+  across the 22.03 → 23.05 → 24.10 → 25.12 line: the `io` module import
+  (0.6.224); `fs.mkdtemp`/`dup2` and `socket.open`/`pair` (0.6.225); 24.10 vs
+  25.12 reconciliation (0.6.226); 23.05 → 24.10 module/function additions
+  (0.6.227); object-handle methods added in 24.10 such as `fs.file.ioctl` and
+  `uci.cursor.list_*` (0.6.228); and 22.03 → 23.05 additions (0.6.229).
+- **Stable diagnostic codes** — every diagnostic now emits a stable `UC####`
+  code (0.6.245), with unified argument-validation wording across checkers
+  (0.6.246).
+- **Quick fixes for null member access** — optional-chaining and null-guard fixes
+  for possibly-null member access (0.6.210); a `uc()`/`lc()` coerce fix on a
+  non-string argument (0.6.250); and the `UC3006` add-import fix no longer leaves
+  the call broken behind it (0.6.243).
+
+### Null safety
+
+- A new possibly-null member-access tier: flag member access on a provably-null
+  value (0.6.205, Tier 1), warn on possibly-null `T | null` access (0.6.208,
+  Tier 2), and escalate Tier 2 to an **error** under `'use strict';` (0.6.209).
+- An uninitialized `let` is now typed as `null` rather than `unknown` (0.6.204),
+  and most-recent type wins for member access so reassignment-to-null is caught
+  (0.6.206), with a write-aware message for property assignment on a null value
+  (0.6.207).
+- `object | array` union member access is recognized as valid (0.6.211) and
+  treated as "possibly array" — a warning, an error under strict, never silent
+  (0.6.212).
+
+### Type-inference fixes
+
+- Return types are inferred for function-valued variables, e.g. `let f = () => …`
+  and `let f = function(){…}` (0.6.193), and such variables now argument-check
+  their call sites against `@param` JSDoc (0.6.216).
+- `for…in` element type is union-aware: `array<T> | null` yields `T`, not
+  `unknown` (0.6.189); the subject is narrowed inside `while`/`for` loop bodies
+  (0.6.219).
+- `require("builtin")` is generically typed as that module (0.6.185);
+  `REQUIRE_SEARCH_PATH` is typed `array<string>` (0.6.187).
+- `render()` is modeled as an overloaded builtin — string-template vs function
+  form (0.6.214).
+- `@param` JSDoc on an object-literal property function is now applied (0.6.190);
+  `@returns` is reconciled against the inferred return type with a quick fix, and
+  a JSDoc adjacency bug was fixed (0.6.234).
+
+### False-positive eliminations
+
+- **Implicit globals** — provable implicit globals are no longer flagged `UC1001`
+  in non-strict mode (0.6.183), plus four more non-strict downgrades so
+  strict-only ucode errors stop firing in non-strict code (0.6.184).
+- **Builtin shadowing** — a `let`/`const` (0.6.199), a function declaration
+  (0.6.198), or an import (0.6.197) may shadow a builtin; the local wins
+  resolution and hover.
+- **Global-property functions** — `global.X = fn` is callable bare as `X()` with
+  no false "Undefined function" (0.6.194), with hover for `global.X` property
+  names (0.6.195).
+- **Raw-mode lexing** — the raw-mode lexer no longer treats `}}`/`{{`/`%}` as
+  template tags (0.6.196).
+- `return expr` without a `;` before `}` is no longer a false `UC6004` (0.6.188);
+  the comma operator is accepted in `if`/`while`/`switch` conditions (0.6.203);
+  `in` is null-safe over anything (0.6.213). A broader false-positive cluster
+  plus use-before-declaration, object-spread property types, and `default`-
+  specifier grammar were fixed (0.6.232).
+- `loadfile`/`loadstring` accept the optional `ParseConfig` options argument with
+  autocomplete (0.6.191) and validate its property values (0.6.192).
+
+### True positives caught
+
+- `const` reassignment is now flagged (0.6.202, `UC1010`) — previously silent.
+- Three more silent false-negatives caught: function redeclaration,
+  `delete arr[i]`, and a bad export (0.6.220).
+- Module surfaces corrected: `import * as socket` resolves the socket **module**
+  (0.6.200), the `ubus` namespace exposes its connection functions (0.6.201), and
+  import/export resolution was made faithful to ucode semantics (0.6.221).
+
+### Completion
+
+- Completion cluster (0.6.237): nested members, optional chaining, the `const`
+  namespace, and named-import paths. The member-completion path now resolves the
+  dot before the cursor (0.6.241), treats `?.` like `.` across all
+  member-detection sites (0.6.239), and lexes reserved words after `?.` as
+  property names, e.g. `o?.const` (0.6.238).
+- `nl80211`/`rtnl` constants are no longer offered as top-level imports (0.6.240).
+- Completion is suppressed in strings and comments and after a malformed
+  member-access dot, with `this.` member completion added (0.6.242, 0.6.244).
+- Completion polish: constant item kind and builtin signature detail (0.6.248).
+
+### Builtin argument validation
+
+- Rewrote the `printf`/`sprintf` format validator (0.6.249, 7 findings).
+- `match()` argument validation — subject coerces, a string pattern errors
+  (0.6.251); `localtime`/`gmtime` numeric coercion and `hexenc` string coercion
+  (0.6.252); a builtin arity/coercion pass with zero-arg null narrowing and
+  reassignment flow-typing (0.6.253); a zero-arg builtin audit plus `int()`
+  literal/base narrowing (0.6.254, `UC2013`).
+- `UC2008`/`UC2009` now report as an `Error` in both modes, not strict-gated
+  (0.6.247).
+
+### Stability
+
+- Deep expression nesting no longer crashes the server (0.6.235), and the
+  feature-provider handlers are contained against a real editor crash (0.6.236).
+- The type-guard quick-fix machinery was rewritten to be AST-node-driven, fixing
+  comment/literal edge cases (0.6.218).
+
+### Performance
+
+- Workspace-scan perf: an async, non-blocking directory walk plus an
+  mtime-cached shebang peek so re-walks reuse the verdict (0.6.186).
+
+### Internal / packaging
+
+- Scoped `bun test` discovery to `tests/`; trimmed the VSIX (dropped
+  `dist/cli.js` and excluded vendored trees); stopped committing demo/spot-check
+  `.uc` files and `coverage-reports/`.
+
 ## 0.6.32 – 0.6.58 (2026-05-21 → 2026-05-25)
 
 A large batch of type-inference accuracy fixes, new IDE features (member
