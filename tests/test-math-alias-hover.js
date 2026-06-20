@@ -27,37 +27,37 @@ testResult('Original abs function documentation', hasAbsDoc,
 
 // Test 2: Verify sin function documentation exists
 const sinDoc = mathTypeRegistry.getFunctionDocumentation('sin');
-const hasSinDoc = sinDoc && sinDoc.includes('sin(x: number): number') && sinDoc.includes('sine');
+const hasSinDoc = sinDoc && sinDoc.includes('sin(x: number): double') && sinDoc.includes('sine');
 testResult('Original sin function documentation', hasSinDoc,
   `Has documentation: ${!!sinDoc}`);
 
 // Test 3: Verify cos function documentation exists
 const cosDoc = mathTypeRegistry.getFunctionDocumentation('cos');
-const hasCosDoc = cosDoc && cosDoc.includes('cos(x: number): number') && cosDoc.includes('cosine');
+const hasCosDoc = cosDoc && cosDoc.includes('cos(x: number): double') && cosDoc.includes('cosine');
 testResult('Original cos function documentation', hasCosDoc,
   `Has documentation: ${!!cosDoc}`);
 
 // Test 4: Verify pow function documentation exists
 const powDoc = mathTypeRegistry.getFunctionDocumentation('pow');
-const hasPowDoc = powDoc && powDoc.includes('pow(x: number, y: number): number') && powDoc.includes('power');
+const hasPowDoc = powDoc && powDoc.includes('pow(x: number, y: number): double') && powDoc.includes('power');
 testResult('Original pow function documentation', hasPowDoc,
   `Has documentation: ${!!powDoc}`);
 
 // Test 5: Verify sqrt function documentation exists
 const sqrtDoc = mathTypeRegistry.getFunctionDocumentation('sqrt');
-const hasSqrtDoc = sqrtDoc && sqrtDoc.includes('sqrt(x: number): number') && sqrtDoc.includes('square root');
+const hasSqrtDoc = sqrtDoc && sqrtDoc.includes('sqrt(x: number): double') && sqrtDoc.includes('square root');
 testResult('Original sqrt function documentation', hasSqrtDoc,
   `Has documentation: ${!!sqrtDoc}`);
 
 // Test 6: Verify exp function documentation exists
 const expDoc = mathTypeRegistry.getFunctionDocumentation('exp');
-const hasExpDoc = expDoc && expDoc.includes('exp(x: number): number') && expDoc.includes('base of natural logarithms');
+const hasExpDoc = expDoc && expDoc.includes('exp(x: number): double') && expDoc.includes('base of natural logarithms');
 testResult('Original exp function documentation', hasExpDoc,
   `Has documentation: ${!!expDoc}`);
 
 // Test 7: Verify log function documentation exists
 const logDoc = mathTypeRegistry.getFunctionDocumentation('log');
-const hasLogDoc = logDoc && logDoc.includes('log(x: number): number') && logDoc.includes('natural logarithm');
+const hasLogDoc = logDoc && logDoc.includes('log(x: number): double') && logDoc.includes('natural logarithm');
 testResult('Original log function documentation', hasLogDoc,
   `Has documentation: ${!!logDoc}`);
 
@@ -81,7 +81,7 @@ testResult('Original isnan function documentation', hasIsnanDoc,
 
 // Test 11: Verify atan2 function documentation exists
 const atan2Doc = mathTypeRegistry.getFunctionDocumentation('atan2');
-const hasAtan2Doc = atan2Doc && atan2Doc.includes('atan2(y: number, x: number): number') && atan2Doc.includes('arc tangent');
+const hasAtan2Doc = atan2Doc && atan2Doc.includes('atan2(y: number, x: number): double') && atan2Doc.includes('arc tangent');
 testResult('Original atan2 function documentation', hasAtan2Doc,
   `Has documentation: ${!!atan2Doc}`);
 

@@ -30,7 +30,7 @@ import { digestModule } from './digestTypes';
 import { mathModule } from './mathTypes';
 import { resolvModule } from './resolvTypes';
 import { structModule, structInstanceObjectType, structBufferObjectType } from './structTypes';
-import { fsModule, statvfsObjectType } from './fsModuleTypes';
+import { fsModule, statvfsObjectType, statObjectType, statDevObjectType, statPermObjectType } from './fsModuleTypes';
 import { exceptionObjectType } from './exceptionTypes';
 import { logModule } from './logTypes';
 import { rtnlModule, rtnlListenerObjectType } from './rtnlTypes';
@@ -70,6 +70,9 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'fs.dir': createObjectTypeRegistry(fsDirObjectType),
   'fs.proc': createObjectTypeRegistry(fsProcObjectType),
   'fs.statvfs': createObjectTypeRegistry(statvfsObjectType),
+  'fs.stat': createObjectTypeRegistry(statObjectType),
+  'fs.stat.dev': createObjectTypeRegistry(statDevObjectType),
+  'fs.stat.perm': createObjectTypeRegistry(statPermObjectType),
   'io.handle': createObjectTypeRegistry(ioHandleObjectType),
   'uloop.timer': createObjectTypeRegistry(uloopTimerObjectType),
   'uloop.handle': createObjectTypeRegistry(uloopHandleObjectType),

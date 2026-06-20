@@ -54,7 +54,7 @@ const functions = new Map<string, FunctionSignature>([
   ["pipe", {
     name: "pipe",
     parameters: [],
-    returnType: "array | null",
+    returnType: "array<io.handle> | null",
     description: "Creates a pipe and returns an array of two io.handle objects [read_handle, write_handle], or null on error"
   }],
 ]);

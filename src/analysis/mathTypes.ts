@@ -22,7 +22,7 @@ const functions = new Map<string, FunctionSignature>([
       { name: "y", type: "number", optional: false },
       { name: "x", type: "number", optional: false }
     ],
-    returnType: "number",
+    returnType: "double",
     description: "Calculates the principal value of the arc tangent of y/x, using the signs of the two arguments to determine the quadrant of the result. Returns the result in radians (range [-π, π])."
   }],
   ["cos", {
@@ -30,7 +30,7 @@ const functions = new Map<string, FunctionSignature>([
     parameters: [
       { name: "x", type: "number", optional: false }
     ],
-    returnType: "number",
+    returnType: "double",
     description: "Calculates the cosine of x, where x is given in radians. Returns NaN if x cannot be converted to a number."
   }],
   ["exp", {
@@ -38,7 +38,7 @@ const functions = new Map<string, FunctionSignature>([
     parameters: [
       { name: "x", type: "number", optional: false }
     ],
-    returnType: "number",
+    returnType: "double",
     description: "Calculates the value of e (the base of natural logarithms) raised to the power of x. Returns NaN if x cannot be converted to a number."
   }],
   ["log", {
@@ -46,7 +46,7 @@ const functions = new Map<string, FunctionSignature>([
     parameters: [
       { name: "x", type: "number", optional: false }
     ],
-    returnType: "number",
+    returnType: "double",
     description: "Calculates the natural logarithm of x. Returns NaN if x cannot be converted to a number, or if x is negative."
   }],
   ["sin", {
@@ -54,7 +54,7 @@ const functions = new Map<string, FunctionSignature>([
     parameters: [
       { name: "x", type: "number", optional: false }
     ],
-    returnType: "number",
+    returnType: "double",
     description: "Calculates the sine of x, where x is given in radians. Returns NaN if x cannot be converted to a number."
   }],
   ["sqrt", {
@@ -62,7 +62,7 @@ const functions = new Map<string, FunctionSignature>([
     parameters: [
       { name: "x", type: "number", optional: false }
     ],
-    returnType: "number",
+    returnType: "double",
     description: "Calculates the nonnegative square root of x. Returns NaN if x cannot be converted to a number or if x is negative."
   }],
   ["pow", {
@@ -71,7 +71,7 @@ const functions = new Map<string, FunctionSignature>([
       { name: "x", type: "number", optional: false },
       { name: "y", type: "number", optional: false }
     ],
-    returnType: "number",
+    returnType: "double",
     description: "Calculates the value of x raised to the power of y. Returns NaN if either x or y cannot be converted to a number."
   }],
   ["rand", {

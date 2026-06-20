@@ -10,7 +10,7 @@ import { typeToString, UcodeDataType, UcodeType, isObjectType, getObjectTypeName
 import { exceptionTypeRegistry, exceptionObjectType } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { Option } from 'effect';
-import { MODULE_REGISTRIES, isKnownModule, isKnownObjectType, getModuleMemberDocumentation, getImportedSymbolDocumentation, getObjectMethodDocumentation, resolveReturnObjectType, type KnownObjectType } from './analysis/moduleDispatch';
+import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, getModuleMemberDocumentation, getImportedSymbolDocumentation, getObjectMethodDocumentation, resolveReturnObjectType, type KnownObjectType } from './analysis/moduleDispatch';
 import { parseFormatSpecifiers } from './analysis/checkers/builtinValidation';
 import { FileResolver } from './analysis/fileResolver';
 
@@ -263,6 +263,32 @@ function resolveVariableTypeForHover(
 /**
  * Detect known object type from a symbol's dataType.
  */
+/** Extract a known object type name from a method/property returnType string,
+ *  e.g. "fs.stat.dev" or "fs.stat.dev | null" → "fs.stat.dev". */
+function knownObjectTypeFromReturn(returnType: string): KnownObjectType | null {
+    for (const part of returnType.split('|').map(s => s.trim())) {
+        if (isKnownObjectType(part)) return part;
+    }
+    return null;
+}
+
+/** Walk a member chain through the object-type registry: from a base object type,
+ *  follow each intermediate property/method to the object type it yields. Returns
+ *  the object type that OWNS the final property, or null if any hop isn't a known
+ *  object type. Resolves builtin handle shapes (e.g. `info.dev.major` on a stat
+ *  result: fs.stat → dev → fs.stat.dev → major). */
+function resolveChainOwnerObjectType(base: KnownObjectType, middle: string[]): KnownObjectType | null {
+    let cur: KnownObjectType = base;
+    for (const step of middle) {
+        const m = OBJECT_REGISTRIES[cur].getMethod(step);
+        if (Option.isNone(m)) return null;
+        const next = knownObjectTypeFromReturn(m.value.returnType);
+        if (!next) return null;
+        cur = next;
+    }
+    return cur;
+}
+
 function detectObjectTypeFromDataType(dataType: UcodeDataType): KnownObjectType | null {
     // Check ObjectType directly (the canonical path)
     if (isObjectType(dataType)) {
@@ -302,6 +328,18 @@ function getUnifiedMemberHover(
     if (chain && chain.length >= 3) {
         const baseSym = analysisResult.symbolTable.lookup(chain[0]!);
         if (baseSym) {
+            // Builtin handle shapes: walk the chain through the object-type registry
+            // (`info.dev.major` on a stat result: fs.stat → fs.stat.dev → major).
+            // Takes precedence only when the base is a known handle type.
+            const baseObjType = detectObjectTypeFromDataType(baseSym.dataType);
+            if (baseObjType) {
+                const owner = resolveChainOwnerObjectType(baseObjType, chain.slice(1, -1));
+                if (owner) {
+                    const doc = getObjectMethodDocumentation(owner, chain[chain.length - 1]!);
+                    if (Option.isSome(doc)) return appendBuiltinNote(doc.value);
+                }
+            }
+
             const aName = chain[chain.length - 2]!;
             const bName = chain[chain.length - 1]!;
             const inner = baseSym.nestedPropertyTypes?.get(aName);

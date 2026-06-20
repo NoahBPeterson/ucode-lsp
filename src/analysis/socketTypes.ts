@@ -170,7 +170,7 @@ const functions = new Map<string, FunctionSignature>([
       { name: "type", type: "number", optional: true, defaultValue: "SOCK_STREAM" },
       { name: "protocol", type: "number", optional: true, defaultValue: 0 }
     ],
-    returnType: "array | null",
+    returnType: "array<socket> | null",
     description: "Creates a pair of connected sockets. Returns an array of two socket instances or null on failure."
   }],
   ["open", {

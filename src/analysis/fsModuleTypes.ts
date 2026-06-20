@@ -111,7 +111,7 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     parameters: [
       { name: "path", type: "string", optional: false }
     ],
-    returnType: "object | null",
+    returnType: "fs.stat | null",
     description: "Gets file status information (follows symbolic links)"
   }],
   ["lstat", {
@@ -119,7 +119,7 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     parameters: [
       { name: "path", type: "string", optional: false }
     ],
-    returnType: "object | null", 
+    returnType: "fs.stat | null",
     description: "Gets file status information (does not follow symbolic links)"
   }],
   ["mkdir", {
@@ -264,11 +264,11 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
     name: "writefile",
     parameters: [
       { name: "path", type: "string", optional: false },
-      { name: "content", type: "string", optional: false },
-      { name: "mode", type: "number", optional: true, defaultValue: 0o644 }
+      { name: "data", type: "any", optional: false },
+      { name: "size", type: "integer", optional: true }
     ],
     returnType: "integer | null",
-    description: "Writes content to a file. Returns number of bytes written on success, null on failure"
+    description: "Writes data to a file. Any non-string data value is stringified. The optional third argument is a byte-count limit (how many bytes of the stringified data to write), not a permission mode. Returns the number of bytes written on success, null on failure."
   }],
   ["realpath", {
     name: "realpath",
@@ -485,3 +485,55 @@ export const statvfsObjectType: ObjectTypeDefinition = {
   formatPropertyDoc: (_name: string, prop: PropertyDefinition) =>
     `**(fs.statvfs property) ${prop.name}**: \`${prop.type}\`\n\n${prop.description}`,
 };
+
+// stat()/lstat() result object shape — fixed, from uc_fs_stat_common (lib/fs.c).
+// Nested `dev` and `perm` are their own object shapes.
+export const statDevProperties: Map<string, StatvfsPropertySignature> = new Map([
+  ["major", { name: "major", type: "integer", description: "Major device number" }],
+  ["minor", { name: "minor", type: "integer", description: "Minor device number" }],
+]);
+
+export const statPermProperties: Map<string, StatvfsPropertySignature> = new Map([
+  ["setuid", { name: "setuid", type: "boolean", description: "Set-user-ID bit (S_ISUID)" }],
+  ["setgid", { name: "setgid", type: "boolean", description: "Set-group-ID bit (S_ISGID)" }],
+  ["sticky", { name: "sticky", type: "boolean", description: "Sticky bit (S_ISVTX)" }],
+  ["user_read", { name: "user_read", type: "boolean", description: "Owner read permission (S_IRUSR)" }],
+  ["user_write", { name: "user_write", type: "boolean", description: "Owner write permission (S_IWUSR)" }],
+  ["user_exec", { name: "user_exec", type: "boolean", description: "Owner execute permission (S_IXUSR)" }],
+  ["group_read", { name: "group_read", type: "boolean", description: "Group read permission (S_IRGRP)" }],
+  ["group_write", { name: "group_write", type: "boolean", description: "Group write permission (S_IWGRP)" }],
+  ["group_exec", { name: "group_exec", type: "boolean", description: "Group execute permission (S_IXGRP)" }],
+  ["other_read", { name: "other_read", type: "boolean", description: "Other read permission (S_IROTH)" }],
+  ["other_write", { name: "other_write", type: "boolean", description: "Other write permission (S_IWOTH)" }],
+  ["other_exec", { name: "other_exec", type: "boolean", description: "Other execute permission (S_IXOTH)" }],
+]);
+
+export const statProperties: Map<string, StatvfsPropertySignature> = new Map([
+  ["dev", { name: "dev", type: "fs.stat.dev", description: "Device the inode resides on ({major, minor})" }],
+  ["perm", { name: "perm", type: "fs.stat.perm", description: "Permission bits, broken out as booleans" }],
+  ["inode", { name: "inode", type: "integer", description: "Inode number" }],
+  ["mode", { name: "mode", type: "integer", description: "Permission mode bits (st_mode without the file-type bits)" }],
+  ["nlink", { name: "nlink", type: "integer", description: "Number of hard links" }],
+  ["uid", { name: "uid", type: "integer", description: "Owner user ID" }],
+  ["gid", { name: "gid", type: "integer", description: "Owner group ID" }],
+  ["size", { name: "size", type: "integer", description: "File size in bytes" }],
+  ["blksize", { name: "blksize", type: "integer", description: "Preferred I/O block size" }],
+  ["blocks", { name: "blocks", type: "integer", description: "Number of 512-byte blocks allocated" }],
+  ["atime", { name: "atime", type: "integer", description: "Last access time (Unix epoch seconds)" }],
+  ["mtime", { name: "mtime", type: "integer", description: "Last modification time (Unix epoch seconds)" }],
+  ["ctime", { name: "ctime", type: "integer", description: "Last status-change time (Unix epoch seconds)" }],
+  ["type", { name: "type", type: "string", description: 'File type: "file", "directory", "char", "block", "fifo", "link", "socket", or "unknown"' }],
+]);
+
+const makeStatObjectType = (typeName: string, props: Map<string, StatvfsPropertySignature>): ObjectTypeDefinition => ({
+  typeName,
+  isPropertyBased: true,
+  methods: new Map(),
+  properties: props as ReadonlyMap<string, PropertyDefinition>,
+  formatPropertyDoc: (_name: string, prop: PropertyDefinition) =>
+    `**(${typeName} property) ${prop.name}**: \`${prop.type}\`\n\n${prop.description}`,
+});
+
+export const statObjectType: ObjectTypeDefinition = makeStatObjectType('fs.stat', statProperties);
+export const statDevObjectType: ObjectTypeDefinition = makeStatObjectType('fs.stat.dev', statDevProperties);
+export const statPermObjectType: ObjectTypeDefinition = makeStatObjectType('fs.stat.perm', statPermProperties);

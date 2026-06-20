@@ -350,7 +350,11 @@ export class TypeChecker {
       { name: 'unshift', parameters: [UcodeType.ARRAY], returnType: UcodeType.UNKNOWN, variadic: true },
       { name: 'filter', parameters: [UcodeType.ARRAY, UcodeType.FUNCTION], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]) },
       { name: 'index', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0] },
-      { name: 'rindex', parameters: [UcodeType.STRING, UcodeType.UNKNOWN], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0] },
+      // index() and rindex() share the same C impl (uc_index) and both accept a string OR
+      // array haystack; the `parameters` model can't express a `string | array` union, so use
+      // UNKNOWN for arg 1 exactly like `index` above (was STRING-only — a latent wrong base
+      // masked only by validateRindexFunction). (auto-docs #179)
+      { name: 'rindex', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0] },
       { name: 'require', parameters: [UcodeType.STRING], returnType: UcodeType.UNKNOWN },
       { name: 'include', parameters: [UcodeType.STRING], returnType: UcodeType.UNKNOWN },
       { name: 'json', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
@@ -1839,6 +1843,29 @@ export class TypeChecker {
         return UcodeType.UNKNOWN;
       }
 
+      // If the name DID resolve to a symbol but none of the callable paths above
+      // matched, it's a defined value that simply isn't callable (`let n = 5; n()`).
+      // "Undefined function" is wrong here — it IS defined — so report the real
+      // problem (its type) like the literal-call path does (`1()`). (auto-docs #18)
+      if (symbol) {
+        // Respect flow-narrowing of the callee: inside `if (type(a) == "function") { a() }`
+        // the declared type may be non-callable (e.g. null) while the narrowed type here is
+        // a function. Use the narrowed type for both the callable check and the message.
+        const calleeType = this.getNarrowedTypeAtPosition(funcName, node.start) ?? symbol.dataType;
+        if (this.typeCouldBeCallable(calleeType)) {
+          return UcodeType.UNKNOWN;
+        }
+        const typeName = this.getTypeDescription(calleeType);
+        this.errors.push({
+          message: `'${funcName}' is not a function (it is of type ${typeName})`,
+          start: node.start,
+          end: node.end,
+          severity: 'error',
+          code: UcodeErrorCode.NOT_CALLABLE,
+        });
+        return UcodeType.UNKNOWN;
+      }
+
       this.errors.push({
         message: `Undefined function: ${funcName}`,
         start: node.start,
@@ -2557,6 +2584,34 @@ export class TypeChecker {
       }
     }
 
+    // Chained / indexed / call receiver whose type is a known object handle:
+    // `info.dev.major` (member-of-member), `sox[0].recv()` (indexed element), or
+    // `fs.open().read()` (call result). The identifier path below only resolves a
+    // bare-identifier receiver; here the receiver is itself an expression, so compute
+    // its type quietly (no double-emitted diagnostics) and resolve the member against
+    // the object-type registry. Property-based shapes (fs.stat.dev/perm, fs.statvfs)
+    // resolve through getMethod too. Resolve-only — don't emit "method does not exist"
+    // for a chained receiver (conservative; avoids false positives on dynamic shapes).
+    if (!node.computed
+        && node.object.type !== 'Identifier'
+        && node.object.type !== 'ThisExpression') {
+      const recvType = this.checkNodeQuietly(node.object);
+      // Tier-2 possibly-null warning for a chained/indexed/call receiver too
+      // (e.g. `cursor().foreach()` on `uci.cursor | null`), mirroring the
+      // identifier-receiver path — the resolution below returns early for handles.
+      this.warnPossiblyNullMember(node, recvType);
+      const detected = this.detectObjectType(recvType);
+      if (detected) {
+        const propName = this.getStaticPropertyName(node.property);
+        if (propName) {
+          const m = OBJECT_REGISTRIES[detected].getMethod(propName);
+          if (Option.isSome(m)) {
+            return this.parseReturnType(m.value.returnType);
+          }
+        }
+      }
+    }
+
     // Handle `this.property` — look up `this` in symbol table (declared by semantic analyzer)
     if (node.object.type === 'ThisExpression') {
       const thisSym = this.symbolTable.lookup('this');
@@ -2813,15 +2868,16 @@ export class TypeChecker {
         // Fall back to ArrayType element type (element | null since index may be out of bounds)
         if (isArrayType(symbol.dataType as UcodeDataType)) {
           const elemType = getArrayElementType(symbol.dataType as UcodeDataType);
-          const elemBase = this.dataTypeToUcodeType(elemType);
           // An index proven in bounds (literal under a `length` guard, or the
           // induction var of a `for (i=0; i<length(arr); …)` loop) can't miss →
           // drop the null.
           if (this.computedAccessInBounds(node.object, node.property, node.start)) {
             return elemType;
           }
-          // Return the rich `element | null` union directly.
-          return createUnionType([elemBase, UcodeType.NULL]);
+          // Return the rich `element | null` union directly, preserving a handle
+          // element type (e.g. `array<socket>[i]` → `socket | null`) so a chained
+          // `arr[i].method()` still resolves — collapsing to the base would drop it.
+          return createUnionType([...((isUnionType(elemType) ? getUnionTypes(elemType) : [elemType]) as SingleType[]), UcodeType.NULL]);
         }
       }
     }
@@ -2838,8 +2894,8 @@ export class TypeChecker {
       const arrMember = getUnionTypes(objectType).find(m => isArrayType(m) || singleTypeToBase(m) === UcodeType.ARRAY);
       if (arrMember) {
         const elemType = isArrayType(arrMember) ? getArrayElementType(arrMember) : UcodeType.UNKNOWN;
-        const elemBase = this.dataTypeToUcodeType(elemType);
-        return createUnionType([elemBase, UcodeType.NULL]);
+        // Preserve the rich element type (handle moduleName) in the union.
+        return createUnionType([...((isUnionType(elemType) ? getUnionTypes(elemType) : [elemType]) as SingleType[]), UcodeType.NULL]);
       }
     }
 
@@ -2849,14 +2905,14 @@ export class TypeChecker {
       const objFullType = this.getTypeOf(node.object);
       if (objFullType && isArrayType(objFullType)) {
         const elemType = getArrayElementType(objFullType);
-        const elemBase = this.dataTypeToUcodeType(elemType);
         // Index proven in bounds (literal under a `length` guard, or a `for`
         // induction var) → no null.
         if (this.computedAccessInBounds(node.object, node.property, node.start)) {
           return elemType;
         }
-        // Return the rich `element | null` union directly.
-        return createUnionType([elemBase, UcodeType.NULL]);
+        // Return the rich `element | null` union directly, preserving a handle
+        // element type so `f()[i].method()` resolves.
+        return createUnionType([...((isUnionType(elemType) ? getUnionTypes(elemType) : [elemType]) as SingleType[]), UcodeType.NULL]);
       }
     }
 
@@ -3834,6 +3890,19 @@ export class TypeChecker {
       const sc = this.getStringContractArg(test);
       if (sc && this.getArgVariableName(sc.arg) === variableName) {
         guards.push({ variableName, narrowToType: UcodeType.STRING, isNegative: false });
+      }
+    }
+    // Truthiness of a plain assignment used AS the condition: `while ((line = fh.read('line')))`
+    // or `if ((m = match(s, re)))`. A truthy condition means the assigned value — and thus the
+    // target — is non-null in the branch. This is THE canonical read-line / match idiom over a
+    // `T | null` producer (e.g. fs handle read()), so it must narrow the target. Plain `=` only;
+    // `||=`/`??=`/etc. have different truthiness semantics.
+    if (test.type === 'AssignmentExpression') {
+      const asn = test as AssignmentExpressionNode;
+      if (asn.operator === '='
+          && (asn.left.type === 'Identifier' || asn.left.type === 'MemberExpression')
+          && this.getDottedPath(asn.left) === variableName) {
+        guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
       }
     }
   }

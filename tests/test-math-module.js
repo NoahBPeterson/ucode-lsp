@@ -44,7 +44,7 @@ testResult('Function signature formatting', absSignature === expectedAbsSignatur
 
 // Test 3: Function documentation generation
 const sinDoc = mathTypeRegistry.getFunctionDocumentation('sin');
-const hasSinDoc = sinDoc && sinDoc.includes('sin(x: number): number') && sinDoc.includes('radians');
+const hasSinDoc = sinDoc && sinDoc.includes('sin(x: number): double') && sinDoc.includes('radians');
 testResult('Function documentation generation', hasSinDoc,
   `Has documentation: ${!!sinDoc}`);
 
@@ -63,7 +63,7 @@ testResult('Function identification', isSinFunction && isNotMathFunction,
 
 // Test 6: Return type handling
 const cosFunc = mathTypeRegistry.getFunction('cos');
-const cosReturnType = cosFunc && cosFunc.returnType === 'number';
+const cosReturnType = cosFunc && cosFunc.returnType === 'double';
 testResult('Return type handling', cosReturnType,
   `cos() return type: ${cosFunc ? cosFunc.returnType : 'N/A'}`);
 

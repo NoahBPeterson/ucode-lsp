@@ -29,8 +29,8 @@ function testFsUnionTypes() {
   const testCases = [
     { name: 'chmod', expected: 'boolean | null' },
     { name: 'chown', expected: 'boolean | null' },  // Assuming this also got fixed
-    { name: 'mkdir', expected: 'boolean' },        // This one should still be just boolean
-    { name: 'stat', expected: 'object | null' },   // This one should be object | null
+    { name: 'mkdir', expected: 'boolean | null' },   // returns null on error
+    { name: 'stat', expected: 'fs.stat | null' },    // fixed-shape stat result object (auto-docs #126)
   ];
   
   let passed = 0;

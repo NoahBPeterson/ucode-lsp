@@ -252,14 +252,14 @@ const timerMethods = new Map<string, FunctionSignature>([
   ['remaining', {
     name: 'remaining',
     parameters: [],
-    returnType: 'integer',
-    description: 'Returns the number of milliseconds until the timer expires, or -1 if the timer is not armed.'
+    returnType: 'integer | null',
+    description: 'Returns the number of milliseconds until the timer expires, or -1 if the timer is not armed. Returns null on a stale/invalid handle.'
   }],
   ['cancel', {
     name: 'cancel',
     parameters: [],
-    returnType: 'boolean',
-    description: 'Cancels the uloop timer, disarming it and removing it from the event loop. Returns true on success.'
+    returnType: 'boolean | null',
+    description: 'Cancels the uloop timer, disarming it and removing it from the event loop. Returns true on success, null on a stale/invalid handle.'
   }]
 ]);
 
@@ -288,8 +288,8 @@ const processMethods = new Map<string, FunctionSignature>([
   ['pid', {
     name: 'pid',
     parameters: [],
-    returnType: 'integer',
-    description: 'Returns the process ID (PID) of the operating system process launched by process().'
+    returnType: 'integer | null',
+    description: 'Returns the process ID (PID) of the operating system process launched by process(). Returns null on a stale/invalid handle.'
   }],
   ['delete', {
     name: 'delete',
@@ -330,14 +330,14 @@ const intervalMethods = new Map<string, FunctionSignature>([
   ['remaining', {
     name: 'remaining',
     parameters: [],
-    returnType: 'integer',
-    description: 'Returns the milliseconds until the next expiration of the interval, or -1 if not armed.'
+    returnType: 'integer | null',
+    description: 'Returns the milliseconds until the next expiration of the interval, or -1 if not armed. Returns null on a stale/invalid handle.'
   }],
   ['expirations', {
     name: 'expirations',
     parameters: [],
-    returnType: 'integer',
-    description: 'Returns the number of times the interval timer has expired (fired) since instantiation.'
+    returnType: 'integer | null',
+    description: 'Returns the number of times the interval timer has expired (fired) since instantiation. Returns null on a stale/invalid handle.'
   }],
   ['cancel', {
     name: 'cancel',
@@ -351,8 +351,8 @@ const signalMethods = new Map<string, FunctionSignature>([
   ['signo', {
     name: 'signo',
     parameters: [],
-    returnType: 'integer',
-    description: 'Returns the signal number that this uloop signal handler is configured to respond to.'
+    returnType: 'integer | null',
+    description: 'Returns the signal number that this uloop signal handler is configured to respond to. Returns null on a stale/invalid handle.'
   }],
   ['delete', {
     name: 'delete',

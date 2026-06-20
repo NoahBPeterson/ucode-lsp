@@ -483,7 +483,12 @@ export class BuiltinValidator {
     // `coercesToString`: this builtin stringifies a wrong-typed argument (total coercion, e.g.
     // `match`'s subject). A DEFINITE non-string, non-null arg is then a strict-gated warning +
     // a "coerce to string" quick-fix, not the hard definite-mismatch error (#32, mirrors #30).
-    coercesToString: boolean = false
+    coercesToString: boolean = false,
+    // `gracefulNull`: this builtin returns `null` (no throw) on a wrong-typed argument — it is
+    // total over all inputs, like `length()`. A definite type mismatch is then a WARNING in both
+    // modes (it is not a crash, and strict mode does not change the runtime coercion), never a
+    // hard error. Used by uniq/iptoarr/arrtoip/b64dec. (auto-docs #36)
+    gracefulNull: boolean = false
   ): boolean {
     if (!arg) {
       return true; // Argument presence should be checked before this call
@@ -535,7 +540,15 @@ export class BuiltinValidator {
       );
 
       if (!hasAllowedType && !argTypes.includes(UcodeType.UNKNOWN)) {
-        // None of the types in the union are allowed — definitely wrong, always error
+        // None of the types in the union are allowed — definitely wrong.
+        if (gracefulNull) {
+          // Total builtin: the wrong type returns null, not a crash → warning, not error.
+          this.warnings.push({
+            message: `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()} — it will return null`,
+            start: diagStart, end: diagEnd, severity: 'warning', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
+          });
+          return false;
+        }
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()}`;
 
@@ -645,6 +658,15 @@ export class BuiltinValidator {
             narrowable: false,
           };
           this.pushWarnOrStrictError(message, arg.start, arg.end, 'incompatible-function-argument', diagData);
+          return false;
+        }
+        // A total builtin (uniq/iptoarr/arrtoip/b64dec): a wrong type returns null, not a
+        // crash → warning in both modes, not a hard error (#36).
+        if (gracefulNull) {
+          this.warnings.push({
+            message: `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()} — it will return null`,
+            start: diagStart, end: diagEnd, severity: 'warning', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
+          });
           return false;
         }
         // Definitely wrong — always error
@@ -956,38 +978,13 @@ export class BuiltinValidator {
 
   validateExistsFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'exists', 2)) return true;
-    // exists() is an introspection function — tolerates null/unknown even in strict mode.
-    // exists(null, "key") safely returns false.  Still error on definitely wrong types
-    // like exists(42, "key").
-    this.validateExistsArg(node.arguments[0]);
-    this.validateArgumentType(node.arguments[1], 'exists', 2, [UcodeType.STRING]);
+    // exists() never throws — a non-object first argument returns `false` and the key
+    // is coerced to a string — so a type mismatch is a WARNING (graceful-null), not a
+    // hard error: checking membership on a non-object is a likely bug worth surfacing
+    // even though it's defined behavior. (auto-docs #33/#148, downgraded per request)
+    this.validateArgumentType(node.arguments[0], 'exists', 1, [UcodeType.OBJECT], undefined, undefined, false, false, true);
+    this.validateArgumentType(node.arguments[1], 'exists', 2, [UcodeType.STRING], undefined, undefined, false, false, true);
     return true;
-  }
-
-  /** Validate exists() first arg: allow object, null, unknown; error on other types */
-  private validateExistsArg(arg: CallExpressionNode['arguments'][0] | undefined): void {
-    if (!arg) return;
-    const argType = this.getNodeType(arg);
-    const argTypes = argType.split(' | ').map(t => t.trim());
-    // Accept object, null, unknown — reject everything else
-    const exempt = [UcodeType.OBJECT as string, UcodeType.NULL as string, UcodeType.UNKNOWN as string];
-    const bad = argTypes.filter(t => !exempt.includes(t));
-    if (bad.length > 0 && bad.length === argTypes.length) {
-      // ALL types are bad — definitely wrong
-      this.errors.push({
-        message: `Function 'exists' expects object for argument 1, got ${argType.toLowerCase()}`,
-        start: arg.start, end: arg.end, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
-      });
-    } else if (bad.length > 0) {
-      // Mix of valid and invalid — warning only if not all exempt
-      const hasObject = argTypes.includes(UcodeType.OBJECT);
-      if (!hasObject && !argTypes.includes(UcodeType.UNKNOWN)) {
-        this.errors.push({
-          message: `Function 'exists' expects object for argument 1, got ${argType.toLowerCase()}`,
-          start: arg.start, end: arg.end, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
-        });
-      }
-    }
   }
 
   validateAssertFunction(node: CallExpressionNode): boolean {
@@ -1625,7 +1622,7 @@ export class BuiltinValidator {
     if (!this.checkArgumentCount(node, 'uniq', 1)) return true;
     this.narrowForArgType(node.arguments[0], [UcodeType.ARRAY], UcodeType.ARRAY);
     this.preserveArrayElementType(node.arguments[0]);
-    this.validateArgumentType(node.arguments[0], 'uniq', 1, [UcodeType.ARRAY]);
+    this.validateArgumentType(node.arguments[0], 'uniq', 1, [UcodeType.ARRAY], undefined, undefined, false, false, true);
     return true;
   }
 
@@ -1816,14 +1813,14 @@ export class BuiltinValidator {
     if (this.narrowedReturnType === UcodeType.ARRAY) {
       this.narrowedReturnType = createArrayType(UcodeType.INTEGER);
     }
-    this.validateArgumentType(node.arguments[0], 'iptoarr', 1, [UcodeType.STRING]);
+    this.validateArgumentType(node.arguments[0], 'iptoarr', 1, [UcodeType.STRING], undefined, undefined, false, false, true);
     return true;
   }
 
   validateArrtoipFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'arrtoip', 1)) return true;
     this.narrowForArgType(node.arguments[0], [UcodeType.ARRAY], UcodeType.STRING);
-    this.validateArgumentType(node.arguments[0], 'arrtoip', 1, [UcodeType.ARRAY]);
+    this.validateArgumentType(node.arguments[0], 'arrtoip', 1, [UcodeType.ARRAY], undefined, undefined, false, false, true);
     return true;
   }
 
@@ -2033,7 +2030,7 @@ export class BuiltinValidator {
   validateB64decFunction(node: CallExpressionNode): boolean {
     if (this.checkArgumentCount(node, 'b64dec', 1) && node.arguments[0]) {
       this.narrowForArgType(node.arguments[0], [UcodeType.STRING], UcodeType.STRING);
-      this.validateArgumentType(node.arguments[0], 'b64dec', 1, [UcodeType.STRING]);
+      this.validateArgumentType(node.arguments[0], 'b64dec', 1, [UcodeType.STRING], undefined, undefined, false, false, true);
     }
     return true;
   }
@@ -2514,8 +2511,9 @@ export class BuiltinValidator {
     if (!this.checkArgumentCount(node, 'proto', 1)) return true;
 
     if (node.arguments.length === 1) {
-      // 1-arg form: proto(obj) — query prototype, returns object | null
-      this.validateArgumentType(node.arguments[0], 'proto', 1, [UcodeType.OBJECT, UcodeType.ARRAY]);
+      // 1-arg form: proto(x) — query prototype, returns object | null. This form
+      // tolerates ANY value: a non-object/array argument simply returns null (no
+      // throw), so the argument is not type-restricted. (auto-docs #150)
     } else {
       // 2-arg form: proto(obj, proto_obj) — set prototype, returns first arg
       // C source: returns the first argument directly (ucv_get)

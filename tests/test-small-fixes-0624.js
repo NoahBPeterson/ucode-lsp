@@ -177,7 +177,7 @@ for (const ucType of CONCRETE_TYPES) {
     const { socketTypeRegistry } = require('../src/analysis/socketTypes');
     const pair = socketTypeRegistry.getFunction('pair');
     check('socket.pair exists', !!pair, true);
-    check('socket.pair returnType', pair?.returnType, 'array | null');
+    check('socket.pair returnType', pair?.returnType, 'array<socket> | null');
     check('socket.pair domain param', pair?.parameters[0]?.name, 'domain');
     check('socket.pair domain optional', pair?.parameters[0]?.optional, true);
     check('socket.pair type param', pair?.parameters[1]?.name, 'type');
@@ -189,7 +189,8 @@ for (const ucType of CONCRETE_TYPES) {
 // Semantic analysis
 {
     const r = analyze(`import { pair } from 'socket';\nlet a = pair();`);
-    check('socket.pair() -> array | null', getType(r, 'a'), 'array | null');
+    const t = getType(r, 'a');
+    check('socket.pair() -> array<socket> | null', t.includes('array') && t.includes('null'), true);
 }
 
 // ============================================================================

@@ -149,38 +149,40 @@ exists(obj, "missing");
         `exists() with valid parameters should not produce errors. Found: ${existsErrors.map(e => e.message).join(', ')}`);
     });
 
-    it('should show error for exists() with invalid first parameter', async function() {
+    // exists() is total: a non-object first argument returns false (no throw), and the
+    // key argument is coerced to a string. Neither is a hard error. (auto-docs #33, #148)
+    it('should NOT show error for exists() with a non-object first parameter', async function() {
       const testContent = `
 let str = "hello";
 exists(str, "key");
 `;
-      
+
       const diagnostics = await getDiagnostics(testContent, '/tmp/test-exists-string.uc');
-      
-      const existsErrors = diagnostics.filter(d => 
-        d.severity === 1 && 
-        d.message.includes("exists") &&
-        d.message.includes("object")
+
+      const existsErrors = diagnostics.filter(d =>
+        d.severity === 1 &&
+        d.message.includes("exists")
       );
-      
-      assert(existsErrors.length > 0, 'exists() with non-object first parameter should produce error');
+
+      assert.strictEqual(existsErrors.length, 0,
+        `exists() with a non-object first argument returns false, not an error. Found: ${existsErrors.map(e => e.message).join(', ')}`);
     });
 
-    it('should show error for exists() with invalid second parameter', async function() {
+    it('should NOT show error for exists() with a non-string second parameter', async function() {
       const testContent = `
 let obj = { test: true };
 exists(obj, 123);
 `;
-      
+
       const diagnostics = await getDiagnostics(testContent, '/tmp/test-exists-number-key.uc');
-      
-      const existsErrors = diagnostics.filter(d => 
-        d.severity === 1 && 
-        d.message.includes("exists") &&
-        d.message.includes("string")
+
+      const existsErrors = diagnostics.filter(d =>
+        d.severity === 1 &&
+        d.message.includes("exists")
       );
-      
-      assert(existsErrors.length > 0, 'exists() with non-string second parameter should produce error');
+
+      assert.strictEqual(existsErrors.length, 0,
+        `exists() coerces its key argument to a string, so a non-string key is not an error. Found: ${existsErrors.map(e => e.message).join(', ')}`);
     });
   });
 

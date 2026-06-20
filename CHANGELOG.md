@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.6.255 (2026-06-19)
+
+Return-type correctness pass (triage cluster **C3**) plus the remaining
+builtin-argument over-strictness fixes (cluster **C2**). All changes are
+type/signature corrections to functions that already exist; the version-gating
+registry (`ucodeVersions.ts`) already gates the availability of the
+version-new ones (`socket.pair`/`io.pipe`→25.12, `zlib` streaming→24.10,
+`uloop.interval`/`signal`→23.05), so these refinements only take effect where
+those functions are available — they remain target-version-appropriate.
+
+### Builtin/module return types now model `| null` and lost shapes (C3)
+
+- **fs handle reads** — `fs.file`/`fs.proc`/`fs.dir` `read(...)` are `string | null`;
+  the `null` is the error signal and, for `dir.read()`, the end-of-directory
+  terminator, so the canonical `while ((line = fh.read('line')))` idiom now type-checks
+  correctly (auto-docs #124). The scalar handle methods
+  (`tell`/`seek`/`truncate`/`lock`/`isatty`/`flush`/`fileno`/`write`) carry their
+  `| null` error path too (#129).
+- **stat() / lstat()** return a fixed-shape `fs.stat` object instead of a bare
+  `object` — `st.size`/`st.mtime` are `integer`, `st.type` is `string`, and the nested
+  `st.dev`/`st.perm` shapes are modeled; unknown fields are flagged (#126).
+- **math transcendentals** `pow`/`sqrt`/`sin`/`cos`/`exp`/`log`/`atan2` return `double`,
+  not `integer` (#162).
+- **writefile()** signature corrected: `writefile(path, data: any, size?: integer)` — the
+  third argument is a byte-count limit, not a permission mode, and any data value is
+  stringified (#125).
+- `zlib` stream `write()` is `boolean | null` (#164); several `uloop` object methods
+  (`timer.remaining`/`cancel`, `process.pid`, `interval.remaining`/`expirations`,
+  `signal.signo`) carry `| null` on the stale-handle path (#165);
+  `socket.pair()` is `array<socket> | null` and `io.pipe()` is `array<io.handle> | null`,
+  so indexing the result resolves the handle methods (#166).
+- Stale hover doc-strings corrected: `min`/`max` return `any` (not `number`), and
+  `sourcepath` returns `string | null` (#37).
+
+### Builtin argument over-strictness — valid calls no longer hard-error (C2)
+
+- **exists()** never throws (non-object arg 1 returns `false`; the key is coerced to a
+  string), so a type mismatch is downgraded from a hard error to a **warning** rather than
+  removed entirely — checking membership on a non-object is still worth surfacing
+  (auto-docs #33, #148).
+- **proto(x)** query form (1 argument) tolerates any value (returns null) — no longer
+  requires object/array (#150).
+- `uniq`/`iptoarr`/`arrtoip`/`b64dec` return `null` on a wrong-typed argument rather
+  than throwing, so a type mismatch is now a **warning**, not an error (#36).
+- `rindex`'s base signature accepts a string **or** array haystack, matching `index`
+  and its shared C implementation (#179).
+- Calling a defined-but-non-callable value reports `'x' is not a function (it is of
+  type …)` instead of the misleading `Undefined function: x`, and respects flow-narrowing
+  of the callee (e.g. inside `type(x) == "function"`) (#18).
+
+### Chained / indexed member resolution (enables the C3 shapes above)
+
+- A member whose receiver is itself an expression now resolves against the object-type
+  registry: nested `info.dev.major`/`info.perm.user_exec` on a `stat()` result, indexed
+  `pair()[0].recv()` / `io.pipe()[0].read()`, and call chains like `open().read()`. Array
+  index access also preserves the rich element type (`array<socket>[i]` → `socket | null`
+  rather than `object | null`), so handle methods resolve on indexed elements — and the
+  Tier-2 possibly-null warning still fires on a chained nullable receiver
+  (e.g. `cursor().foreach()`).
+- Hover walks the same chain: hovering a nested property *name* (`major` in
+  `info.dev.major`, `user_exec` in `info.perm.user_exec`) shows the property's type, not
+  `unknown`.
+
 ## 0.6.183 – 0.6.254 (2026-06-08 → 2026-06-19)
 
 A large accuracy-and-completeness pass: OpenWrt version-aware diagnostics, a

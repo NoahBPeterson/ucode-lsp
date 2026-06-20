@@ -12,7 +12,7 @@ const deflateMethods = new Map<string, FunctionSignature>([
   ['write', { name: 'write', parameters: [
       { name: 'data', type: 'string', optional: false },
       { name: 'flush', type: 'boolean', optional: true },
-    ], returnType: 'boolean', description: 'Feed a chunk of data into the deflate stream. Pass flush=true on the final chunk. Returns true on success.' }],
+    ], returnType: 'boolean | null', description: 'Feed a chunk of data into the deflate stream. Pass flush=true on the final chunk. Returns true on success, or null on error.' }],
   ['read', { name: 'read', parameters: [], returnType: 'string | null', description: 'Read the compressed output produced so far, or null if none is available.' }],
   ['error', { name: 'error', parameters: [], returnType: 'string | null', description: 'Return the last error message for the stream, or null if there was none.' }],
 ]);
@@ -30,7 +30,7 @@ const inflateMethods = new Map<string, FunctionSignature>([
   ['write', { name: 'write', parameters: [
       { name: 'data', type: 'string', optional: false },
       { name: 'flush', type: 'boolean', optional: true },
-    ], returnType: 'boolean', description: 'Feed a chunk of compressed data into the inflate stream. Pass flush=true on the final chunk. Returns true on success.' }],
+    ], returnType: 'boolean | null', description: 'Feed a chunk of compressed data into the inflate stream. Pass flush=true on the final chunk. Returns true on success, or null on error.' }],
   ['read', { name: 'read', parameters: [], returnType: 'string | null', description: 'Read the decompressed output produced so far, or null if none is available.' }],
   ['error', { name: 'error', parameters: [], returnType: 'string | null', description: 'Return the last error message for the stream, or null if there was none.' }],
 ]);

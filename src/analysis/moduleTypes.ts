@@ -18,6 +18,7 @@ export type KnownModule = typeof KNOWN_MODULES[number];
 
 export type KnownObjectType =
   | 'fs.file' | 'fs.dir' | 'fs.proc' | 'fs.statvfs'
+  | 'fs.stat' | 'fs.stat.dev' | 'fs.stat.perm'
   | 'io.handle'
   | 'uloop.timer' | 'uloop.handle' | 'uloop.process'
   | 'uloop.task' | 'uloop.interval' | 'uloop.signal' | 'uloop.pipe'

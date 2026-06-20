@@ -19,13 +19,13 @@ const procMethods = new Map<string, FunctionSignature>([
   ['read', {
     name: 'read',
     parameters: [{ name: 'amount', type: 'number | string', optional: false }],
-    returnType: 'string',
+    returnType: 'string | null',
     description: 'Read data from the process handle. Parameter can be: a number (bytes to read), "line" (read until newline), "all" (read until EOF), or a single character (read until that character). Returns a string containing the read data, empty string on EOF, or null on error.'
   }],
   ['write', {
     name: 'write',
     parameters: [{ name: 'data', type: 'any', optional: false }],
-    returnType: 'integer',
+    returnType: 'integer | null',
     description: 'Write data to the process handle'
   }],
   ['close', {
@@ -37,13 +37,13 @@ const procMethods = new Map<string, FunctionSignature>([
   ['flush', {
     name: 'flush',
     parameters: [],
-    returnType: 'boolean',
+    returnType: 'boolean | null',
     description: 'Flush buffered data'
   }],
   ['fileno', {
     name: 'fileno',
     parameters: [],
-    returnType: 'integer',
+    returnType: 'integer | null',
     description: 'Get the underlying file descriptor number'
   }],
   ['error', {
@@ -59,31 +59,31 @@ const dirMethods = new Map<string, FunctionSignature>([
   ['read', {
     name: 'read',
     parameters: [],
-    returnType: 'string',
-    description: 'Read the next directory entry'
+    returnType: 'string | null',
+    description: 'Read the next directory entry. Returns null at end-of-directory or on error.'
   }],
   ['tell', {
     name: 'tell',
     parameters: [],
-    returnType: 'integer',
+    returnType: 'integer | null',
     description: 'Get current read position'
   }],
   ['seek', {
     name: 'seek',
     parameters: [{ name: 'position', type: 'integer', optional: false }],
-    returnType: 'boolean',
+    returnType: 'boolean | null',
     description: 'Set read position'
   }],
   ['close', {
     name: 'close',
     parameters: [],
-    returnType: 'boolean',
+    returnType: 'boolean | null',
     description: 'Close the directory handle'
   }],
   ['fileno', {
     name: 'fileno',
     parameters: [],
-    returnType: 'integer',
+    returnType: 'integer | null',
     description: 'Get the underlying file descriptor number'
   }],
   ['error', {
@@ -99,13 +99,13 @@ const fileMethods = new Map<string, FunctionSignature>([
   ['read', {
     name: 'read',
     parameters: [{ name: 'amount', type: 'number | string', optional: false }],
-    returnType: 'string',
+    returnType: 'string | null',
     description: 'Read data from the file handle. Parameter can be: a number (bytes to read), "line" (read until newline), "all" (read until EOF), or a single character (read until that character). Returns a string containing the read data, empty string on EOF, or null on error.'
   }],
   ['write', {
     name: 'write',
     parameters: [{ name: 'data', type: 'any', optional: false }],
-    returnType: 'integer',
+    returnType: 'integer | null',
     description: 'Write data to the file handle'
   }],
   ['seek', {
@@ -114,13 +114,13 @@ const fileMethods = new Map<string, FunctionSignature>([
       { name: 'offset', type: 'integer', optional: true },
       { name: 'whence', type: 'integer', optional: true }
     ],
-    returnType: 'boolean',
+    returnType: 'boolean | null',
     description: 'Set file read position'
   }],
   ['tell', {
     name: 'tell',
     parameters: [],
-    returnType: 'integer',
+    returnType: 'integer | null',
     description: 'Get current file position'
   }],
   ['close', {
@@ -132,31 +132,31 @@ const fileMethods = new Map<string, FunctionSignature>([
   ['flush', {
     name: 'flush',
     parameters: [],
-    returnType: 'boolean',
+    returnType: 'boolean | null',
     description: 'Flush buffered data'
   }],
   ['fileno', {
     name: 'fileno',
     parameters: [],
-    returnType: 'integer',
+    returnType: 'integer | null',
     description: 'Get the underlying file descriptor number'
   }],
   ['isatty', {
     name: 'isatty',
     parameters: [],
-    returnType: 'boolean',
+    returnType: 'boolean | null',
     description: 'Check if the file handle refers to a TTY device'
   }],
   ['truncate', {
     name: 'truncate',
     parameters: [{ name: 'offset', type: 'integer', optional: true }],
-    returnType: 'boolean',
+    returnType: 'boolean | null',
     description: 'Truncate file to given size'
   }],
   ['lock', {
     name: 'lock',
     parameters: [{ name: 'operation', type: 'string', optional: false }],
-    returnType: 'boolean',
+    returnType: 'boolean | null',
     description: 'Lock or unlock the file'
   }],
   ['error', {
