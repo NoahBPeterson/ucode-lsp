@@ -76,8 +76,19 @@ describe('template parsing produces no parse-error storm', () => {
     expect(parseErrors("{%+ 'use strict'; +%}x").length).toBeGreaterThan(0);
     expect(parseErrors('{{ a +}}').length).toBeGreaterThan(0);
   });
-  test('the OPEN modifier {%+ / {{+ is still valid (only the close is rejected)', () => {
-    expect(parseErrors("{%+ let a = 1; %}{{+ a }}").length).toBe(0);
+  test('the OPEN modifier {%+ (statement, force-preserve whitespace) is valid', () => {
+    expect(parseErrors("{%+ let a = 1; %}").length).toBe(0);
+  });
+  test('{{+ is UNARY PLUS on the expression, NOT a modifier (matches ucode lexer.c)', () => {
+    // ucode only treats `+` as an OPEN modifier after `{%`; after `{{` the `+` is a
+    // unary-plus operator. `{{+ "5" + 1 }}` evaluates to 6 (numeric), `{{ "5" + 1 }}`
+    // to "51" (concat). So the lexer must PRESERVE the leading `+` after `{{`.
+    expect(parseErrors('{{+ "5" + 1 }}').length).toBe(0);
+    const lx = new UcodeLexer('{{+ "5" + 1 }}', { rawMode: false });
+    const code = lx.tokenize().filter((t) => t.type !== 'TK_TEXT').map((t) => t.value);
+    expect(code).toContain('+');                 // the unary plus survived
+    const plusCount = code.filter((v) => v === '+').length;
+    expect(plusCount).toBe(2);                    // leading unary `+` AND the `+ 1`
   });
 });
 

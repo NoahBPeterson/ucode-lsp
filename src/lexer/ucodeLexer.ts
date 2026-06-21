@@ -150,12 +150,18 @@ export class UcodeLexer {
         }
     }
 
-    /** Consume an optional whitespace-trim modifier (`-` or `+`) immediately after an
-     *  opening tag (`{%-`, `{%+`, `{{-`, `{#-`). It only controls rendered-output
-     *  whitespace — irrelevant to diagnostics and types — so we discard it. */
-    private consumeTagOpenModifier(): void {
+    /** Consume an optional whitespace-trim OPEN modifier, matching ucode's lexer.c
+     *  exactly. The modifier only controls rendered-output whitespace (irrelevant to
+     *  diagnostics/types), so we discard it — but WHICH char is a modifier depends on
+     *  the tag kind:
+     *    - `-` is a modifier for every tag (`{%-`, `{{-`, `{#-`): strip preceding ws.
+     *    - `+` is a modifier ONLY for statement tags (`{%+`): force-preserve preceding
+     *      ws (overrides the lstrip_blocks config). After `{{` / `{#`, ucode does NOT
+     *      treat `+` as a modifier — for `{{+ expr }}` the `+` is UNARY PLUS on the
+     *      expression, so we must leave it for the tokenizer. */
+    private consumeTagOpenModifier(allowPlus: boolean): void {
         const m = this.peekChar();
-        if (m === '-' || m === '+') {
+        if (m === '-' || (allowPlus && m === '+')) {
             this.nextChar();
         }
     }
@@ -163,7 +169,7 @@ export class UcodeLexer {
     private blockExpressionEmitTag(): Token | null {
         this.nextChar(); // consume '{'
         this.nextChar(); // consume '{'
-        this.consumeTagOpenModifier();
+        this.consumeTagOpenModifier(false); // `{{+` is unary plus, not a modifier
         this.state = LexState.UC_LEX_IDENTIFY_TOKEN;
         this.templateBlockKind = 'expression';
         return this.emitToken(TokenType.TK_LEXP);
@@ -172,7 +178,7 @@ export class UcodeLexer {
     private blockStatementEmitTag(): Token | null {
         this.nextChar(); // consume '{'
         this.nextChar(); // consume '%'
-        this.consumeTagOpenModifier();
+        this.consumeTagOpenModifier(true); // `{%+` force-preserves whitespace
         this.state = LexState.UC_LEX_IDENTIFY_TOKEN;
         this.templateBlockKind = 'statement';
         return this.emitToken(TokenType.TK_LSTM);
