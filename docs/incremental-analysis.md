@@ -68,6 +68,32 @@ fw4.uc (3378 lines, 103 units = 89 pure + 11 thisSafe + 3 impure), edit inside o
 **~12–13× on the analysis itself; ~5× end-to-end** for the common typing case. (`this.x=`
 bodies became skippable via thisSafe replay — that's what unlocked fw4's big methods.)
 
-**Future work (remaining e2e overhead):** incrementalize the O(file) per-analysis work that
-isn't body type-checking — the inlay-hint precompute and the include-scope host check — which
-are the ~110ms floor + the occasional spike (the include index has a 10s TTL rebuild).
+## Where the remaining floor actually is (measured)
+
+A profile of the incremental fast path on fw4.uc (100/103 bodies skipped) breaks down as:
+
+| component | cost | notes |
+|---|---|---|
+| parse (full re-parse) | ~8 ms | parser isn't structured for incremental; cheap enough |
+| incremental analysis | ~44–52 ms | scope/CFG/usage visit (whole file) + type-check of the *non-skipped* code |
+| inlay-hint precompute | ~7 ms | full-AST walk, but cheap |
+| include-scope index (warm) | ~7 ms for 87 files | cached behind a 10s TTL; only a Map.get on the hot path |
+
+The earlier "~110ms floor / inlay + include-index are the next lever" note was **wrong** — both
+are ~7 ms. The real residual is inside the ~44 ms analysis: of that, ~10 ms is the parse + the
+whole-file scope/visit (everything-off floor) and **~29 ms is type-checking the code that isn't
+in a skippable unit** — top-level declarations and the impure bodies.
+
+**Why that 29 ms is hard to remove soundly:** function bodies are *leaves* — their internal
+types never escape except via the return value (cached) and `this`-writes (cached), so skipping
+their type-check is sound. Top-level statements are NOT leaves: `let X = foo();` *defines the
+environment*, so marking it "clean" (checkNode → UNKNOWN inside the range) would poison `X`'s
+type for every downstream reader. Skipping top-level type-checking would require separately
+caching+replaying each declaration's derived type AND its diagnostics — a much larger machine
+whose soundness surface would erode the property that makes this design defensible (incremental
+≡ full, verified byte-for-byte). Given the win is ~29 ms → maybe ~15 ms (e2e ~52 → ~38 ms) on
+top of an already-13× speedup, it isn't worth that risk today. The whole-file scope/visit floor
+(~10 ms) is what keeps cross-function shadowing correct and is deliberately not skipped.
+
+So the perf work is considered complete at ~13× analysis / ~5× e2e; the path to sub-50 ms e2e
+is top-level-statement incrementalization, documented here as a deliberate non-goal for now.
