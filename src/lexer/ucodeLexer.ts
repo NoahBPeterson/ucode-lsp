@@ -110,8 +110,14 @@ export class UcodeLexer {
         // enters this state at all, but template mode must not crash here either.)
         while (true) {
             if (this.pos >= this.source.length) {
+                // End of input: flush any pending template text, then hand off to the
+                // EOF state to emit TK_EOF. When the file ends ON a tag there is no
+                // trailing text and emitBuffer returns null — DON'T return that null
+                // (tokenize() stops on null, which would drop the EOF). Emit the EOF
+                // token directly instead.
+                const text = this.emitBuffer(TokenType.TK_TEXT);
                 this.state = LexState.UC_LEX_EOF;
-                return this.emitBuffer(TokenType.TK_TEXT);
+                return text !== null ? text : this.nextToken();
             }
 
             const ch = this.peekChar();
@@ -119,21 +125,18 @@ export class UcodeLexer {
             if (ch === '{') {
                 const next = this.peekChar(1);
 
-                if (next === '{') {
-                    // Expression block
+                if (next === '{' || next === '%' || next === '#') {
                     const text = this.emitBuffer(TokenType.TK_TEXT);
-                    this.state = LexState.UC_LEX_BLOCK_EXPRESSION_EMIT_TAG;
-                    return text;
-                } else if (next === '%') {
-                    // Statement block
-                    const text = this.emitBuffer(TokenType.TK_TEXT);
-                    this.state = LexState.UC_LEX_BLOCK_STATEMENT_EMIT_TAG;
-                    return text;
-                } else if (next === '#') {
-                    // Comment block
-                    const text = this.emitBuffer(TokenType.TK_TEXT);
-                    this.state = LexState.UC_LEX_BLOCK_COMMENT;
-                    return text;
+                    this.state = next === '{'
+                        ? LexState.UC_LEX_BLOCK_EXPRESSION_EMIT_TAG
+                        : next === '%'
+                            ? LexState.UC_LEX_BLOCK_STATEMENT_EMIT_TAG
+                            : LexState.UC_LEX_BLOCK_COMMENT;
+                    // Empty text — the file starts with a tag, or two tags abut —
+                    // makes emitBuffer return null. Returning null would stop
+                    // tokenize() (template files beginning with `{%` lexed to 0
+                    // tokens); instead emit the tag/comment token now.
+                    return text !== null ? text : this.nextToken();
                 }
             }
 
@@ -142,9 +145,20 @@ export class UcodeLexer {
         }
     }
 
+    /** Consume an optional whitespace-trim modifier (`-` or `+`) immediately after an
+     *  opening tag (`{%-`, `{%+`, `{{-`, `{#-`). It only controls rendered-output
+     *  whitespace — irrelevant to diagnostics and types — so we discard it. */
+    private consumeTagOpenModifier(): void {
+        const m = this.peekChar();
+        if (m === '-' || m === '+') {
+            this.nextChar();
+        }
+    }
+
     private blockExpressionEmitTag(): Token | null {
         this.nextChar(); // consume '{'
         this.nextChar(); // consume '{'
+        this.consumeTagOpenModifier();
         this.state = LexState.UC_LEX_IDENTIFY_TOKEN;
         return this.emitToken(TokenType.TK_LEXP);
     }
@@ -152,6 +166,7 @@ export class UcodeLexer {
     private blockStatementEmitTag(): Token | null {
         this.nextChar(); // consume '{'
         this.nextChar(); // consume '%'
+        this.consumeTagOpenModifier();
         this.state = LexState.UC_LEX_IDENTIFY_TOKEN;
         return this.emitToken(TokenType.TK_LSTM);
     }
@@ -173,7 +188,10 @@ export class UcodeLexer {
         }
         
         this.state = LexState.UC_LEX_IDENTIFY_BLOCK;
-        return this.blockComment();
+        // Continue lexing after the comment (back to template text/tags). The old
+        // `return this.blockComment()` re-entered the comment scanner and consumed
+        // the next two characters as a phantom `{#`.
+        return this.nextToken();
     }
 
     private identifyToken(): Token | null {
@@ -198,6 +216,21 @@ export class UcodeLexer {
         // rest of the file — auto-docs/01: false "Expected '}'"/"Unexpected token", every
         // later diagnostic dropped, and a stack-overflow crash on large trailing text.
         if (!this.rawMode) {
+            // Whitespace-trim CLOSE markers `-%}` / `-}}` (ucode strips on `-`; we also
+            // tolerate `+` defensively). The modifier only affects rendered whitespace,
+            // so consume it and emit the ordinary close token. This MUST run before the
+            // `-`/`+` operator handling further below, or `-%}` would lex as subtraction.
+            if ((ch === '-' || ch === '+')
+                && this.peekChar(2) === '}'
+                && (this.peekChar(1) === '%' || this.peekChar(1) === '}')) {
+                const isExpression = this.peekChar(1) === '}';
+                this.nextChar(); // modifier
+                this.nextChar(); // '%' or '}'
+                this.nextChar(); // '}'
+                this.state = LexState.UC_LEX_IDENTIFY_BLOCK;
+                return this.emitToken(isExpression ? TokenType.TK_REXP : TokenType.TK_RSTM);
+            }
+
             if (ch === '}' && this.peekChar(1) === '}') {
                 this.nextChar();
                 this.nextChar();
