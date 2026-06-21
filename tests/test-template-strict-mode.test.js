@@ -50,8 +50,11 @@ describe('detectStrictMode for templates (matches oracle directive placement)', 
   test('leading {{ }} output before the directive → not strict', () => {
     expect(analyze("{{ 1 }}{% 'use strict'; %}").strict).toBe(false);
   });
-  test('whitespace/newlines before the {% block are fine → strict', () => {
-    expect(analyze("\n  {% 'use strict'; %}{{ x }}").strict).toBe(true);
+  test('leading whitespace before the {% block → NOT strict (whitespace is print()ed text)', () => {
+    expect(analyze("\n  {% 'use strict'; %}{{ x }}").strict).toBe(false);
+  });
+  test('leading {# comment #} block before the directive → strict (comment emits no statement)', () => {
+    expect(analyze("{# header #}{% 'use strict'; %}{{ x }}").strict).toBe(true);
   });
   test('raw script directive still detected (unaffected by template guard)', () => {
     expect(analyze("'use strict';\nlet x = 1;").strict).toBe(true);

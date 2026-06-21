@@ -4558,7 +4558,9 @@ private addDiagnostic(
 
   private detectStrictMode(ast: ProgramNode): boolean {
     if (!ast.body || ast.body.length === 0) return false;
-    const first = ast.body[0];
+    // Skip leading empty statements — an empty `{% %}` block (bridged to `;`) emits no real
+    // statement, so a following `{% 'use strict'; %}` still leads (oracle-verified).
+    const first = ast.body.find((s) => s && s.type !== 'EmptyStatement');
     if (first?.type === 'ExpressionStatement') {
       const expr = (first as any).expression;
       if (expr?.type === 'Literal' && expr.value === 'use strict') {
@@ -4570,7 +4572,21 @@ private addDiagnostic(
         // scripts are unaffected (the first-statement AST check already ignores leading comments).
         const src = this.textDocument.getText();
         if (detectTemplateMode(src)) {
-          const lead = src.replace(/^#![^\n]*\n?/, '').replace(/^\s+/, '');
+          // The `{% %}` block carrying the directive must lead the file. Allowed before it:
+          // a shebang line and `{# … #}` comment blocks ONLY (they emit no statement) — verified
+          // vs the oracle. Anything else, INCLUDING whitespace, compiles to a print() statement
+          // that precedes the directive and makes it inert. So: drop the shebang, consume
+          // back-to-back leading comment blocks (no gaps), then require `{%` immediately.
+          let lead = src.replace(/^#![^\n]*\n?/, '');
+          while (lead.startsWith('{#')) {
+            const end = lead.indexOf('#}');
+            if (end < 0) break;
+            lead = lead.slice(end + 2);
+          }
+          // The `{%+` no-strip modifier emits the (empty) leading text as a print() before the
+          // block's code, so the directive is no longer first → inert (oracle-verified). `{%-`
+          // and a plain `{%` strip/elide it, so they stay strict.
+          if (lead.startsWith('{%+')) return false;
           if (!lead.startsWith('{%')) return false;
         }
         return true;
