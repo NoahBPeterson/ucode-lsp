@@ -13,6 +13,7 @@ import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode,
          SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode, ExpressionStatementNode, DeleteExpressionNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, TypeCheckResult } from './types';
+import { detectTemplateMode } from '../lexer/templateMode';
 import { BaseVisitor, AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -4561,6 +4562,17 @@ private addDiagnostic(
     if (first?.type === 'ExpressionStatement') {
       const expr = (first as any).expression;
       if (expr?.type === 'Literal' && expr.value === 'use strict') {
+        // In a TEMPLATE, `'use strict'` is only a directive when its `{% %}` block leads the
+        // file — any preceding text or `{{ }}` compiles to a print() statement, making the
+        // directive non-first and inert (verified vs the oracle). Our template bridge DROPS
+        // leading text, so the directive can look first in the AST when it isn't; guard by
+        // requiring the source to start (after shebang/whitespace) with the `{%` block. Raw
+        // scripts are unaffected (the first-statement AST check already ignores leading comments).
+        const src = this.textDocument.getText();
+        if (detectTemplateMode(src)) {
+          const lead = src.replace(/^#![^\n]*\n?/, '').replace(/^\s+/, '');
+          if (!lead.startsWith('{%')) return false;
+        }
         return true;
       }
     }

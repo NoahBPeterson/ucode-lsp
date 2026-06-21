@@ -37,6 +37,21 @@ fixpoint: `available(C) = ⋃ (siteKeys ∪ available(includer))`. Without this 
 falsely flag `fw4` in `zone-match.uc` (included with only `{egress, rule}` but inheriting
 `fw4` from `zone-verdict`).
 
+## `'use strict'` in templates
+
+Oracle-verified (`ucode/utpl`): a template honors `'use strict'` **only when its `{% 'use
+strict'; … %}` block leads the file** — any preceding text or `{{ }}` compiles to a `print()`
+statement, so the directive is no longer the first STATEMENT and is silently inert (the same
+directive-must-be-first rule as raw ucode). Under strict, an undeclared (non-injected) read is
+a hard `Reference error`; non-strict it is `null`. Injected render-scope names are valid in
+strict too (so the not-strict-gated injected-scope suppression is correct).
+
+Handling: `detectStrictMode` is template-aware. Because the bridge drops leading text, the
+directive can look first in the bridged AST when it isn't — so for a template we additionally
+require the source to start (after shebang/whitespace) with the `{%` block. Raw scripts are
+unaffected (leading comments are already non-statements). Tested with oracle parity
+(`test-template-strict-mode`).
+
 **Result on firewall4:** every template reachable from an in-workspace `include()` is now
 clean (ruleset 239→0, zone-verdict 48→0, and the rest), host findings 0. Two templates
 (`mangle-rule.uc`, `zone-notrack.uc`) are not `include()`d anywhere in the vendored tree —
