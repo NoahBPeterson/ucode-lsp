@@ -607,7 +607,11 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Prom
                 freeVarCache.set(target, result);
                 return result;
             };
-            for (const d of checkIncludeScopes(parseResult.ast, includerPath, getTargetFreeVars, (n) => allBuiltinFunctions.has(n))) {
+            // The includer's own transitive injected scope leaks into the children it includes,
+            // so pass it as "provided" (else we'd falsely flag a leaked var like fw4). (phase 4b)
+            const selfEntry = getWorkspaceIncludeScopeIndex().get(includerPath);
+            const includerScope = selfEntry ? { names: selfEntry.injectedNames, complete: selfEntry.complete } : undefined;
+            for (const d of checkIncludeScopes(parseResult.ast, includerPath, getTargetFreeVars, (n) => allBuiltinFunctions.has(n), includerScope)) {
                 diagnostics.push({
                     severity: DiagnosticSeverity.Warning,
                     range: { start: textDocument.positionAt(d.start), end: textDocument.positionAt(d.end) },

@@ -104,6 +104,31 @@ d('oracle parity: include() scope semantics', () => {
     expect(ourMissing('{% include("child.uc", { a:1, b:2, c:3 }); %}', `${r.dir}/parent.uc`, { [`${r.dir}/child.uc`]: child })).toEqual([]);
   });
 
+  test('injected scope leaks transitively into a nested include (oracle) — index agrees', () => {
+    // grand injects fw4; parent includes child WITHOUT fw4; strict child still reads it.
+    const child = "{% 'use strict'; printf('%s', fw4.tag); %}";
+    const r = runOracle({
+      'grand.uc': '{% include("parent.uc", { fw4: { tag: "T" } }); %}',
+      'parent.uc': '{% include("child.uc", { other: 1 }); %}',
+      'child.uc': child,
+    }, 'grand.uc');
+    expect(r.ok).toBe(true);
+    expect(r.out).toBe('T');
+    // our transitive index makes fw4 available in child despite the omitting parent site
+    const idx = buildIncludeScopeIndex([
+      { path: `${r.dir}/grand.uc`, ast: parse('{% include("parent.uc", { fw4 }); %}') },
+      { path: `${r.dir}/parent.uc`, ast: parse('{% include("child.uc", { other }); %}') },
+    ]);
+    expect(idx.get(`${r.dir}/child.uc`).injectedNames.has('fw4')).toBe(true);
+    // so host enforcement at the parent site does NOT flag fw4 as missing
+    const includerScope = { names: idx.get(`${r.dir}/parent.uc`).injectedNames, complete: idx.get(`${r.dir}/parent.uc`).complete };
+    const missing = checkIncludeScopes(
+      parse('{% include("child.uc", { other }); %}'), `${r.dir}/parent.uc`,
+      (t) => (t === `${r.dir}/child.uc` ? computeFreeVariables(parse(child)) : null), isAmbient, includerScope,
+    ).flatMap((x) => x.missing);
+    expect(missing).toEqual([]);
+  });
+
   test('real firewall4 zone-verdict scope satisfies the template (no missing)', () => {
     const idx = buildIncludeScopeIndex([{
       path: '/w/templates/ruleset.uc',

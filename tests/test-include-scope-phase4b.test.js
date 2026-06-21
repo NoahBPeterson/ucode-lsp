@@ -85,10 +85,26 @@ describe('buildIncludeScopeIndex', () => {
     expect([...idx.get('/w/c.uc').injectedNames].sort()).toEqual(['a', 'b', 'c']);
     expect(idx.get('/w/c.uc').sites.length).toBe(2);
   });
-  test('a dynamic scope marks the entry anyDynamic', () => {
+  test('a dynamic scope marks the entry incomplete', () => {
     const idx = idxOf([{ path: '/w/p.uc', src: '{% include("c.uc", { a, ...rest }); %}' }]);
-    expect(idx.get('/w/c.uc').anyDynamic).toBe(true);
+    expect(idx.get('/w/c.uc').complete).toBe(false);
     expect([...idx.get('/w/c.uc').injectedNames]).toEqual(['a']);
+  });
+  test('transitive: injected scope leaks down nested includes (oracle-verified)', () => {
+    const idx = idxOf([
+      { path: '/w/grand.uc', src: '{% include("parent.uc", { fw4 }); %}' },
+      { path: '/w/parent.uc', src: '{% include("child.uc", { other }); %}' },
+    ]);
+    // child receives `other` (its site) AND `fw4` (leaked from parent's scope)
+    expect([...idx.get('/w/child.uc').injectedNames].sort()).toEqual(['fw4', 'other']);
+    expect(idx.get('/w/child.uc').complete).toBe(true);
+  });
+  test('a recursive (self) include reaches a fixpoint', () => {
+    const idx = idxOf([
+      { path: '/w/r.uc', src: '{% include("zv.uc", { fw4, zone }); %}' },
+      { path: '/w/zv.uc', src: '{% include("zv.uc", { fw4, zone, extra }); %}' },
+    ]);
+    expect([...idx.get('/w/zv.uc').injectedNames].sort()).toEqual(['extra', 'fw4', 'zone']);
   });
   test('bare include (no scope) creates no entry', () => {
     const idx = idxOf([{ path: '/w/p.uc', src: '{% include("c.uc"); %}' }]);
@@ -149,13 +165,13 @@ describe('analyzer suppression via setInjectedScope', () => {
 // ───────────────────────────── host enforcement (checkIncludeScopes) ─────────────────────────────
 describe('checkIncludeScopes (host-side enforcement)', () => {
   const isAmbient = (n) => ['length', 'printf', 'print', 'type', 'exists', 'include', 'require'].includes(n);
-  const run = (includerSrc, targets) => {
+  const run = (includerSrc, targets, includerScope) => {
     const includerAst = parse(includerSrc);
     const getFree = (resolved) => {
       const t = targets[resolved];
       return t === undefined ? null : computeFreeVariables(parse(t));
     };
-    return checkIncludeScopes(includerAst, '/w/p.uc', getFree, isAmbient);
+    return checkIncludeScopes(includerAst, '/w/p.uc', getFree, isAmbient, includerScope);
   };
 
   test('a missing scope key is flagged at the include site', () => {
@@ -192,6 +208,22 @@ describe('checkIncludeScopes (host-side enforcement)', () => {
     });
     expect(d.length).toBe(1);
     expect(d[0].missing).toEqual(['missing']);
+  });
+  test('a var leaked from the includer’s own scope is NOT flagged (transitive, oracle-verified)', () => {
+    // includer has fw4 in its transitive scope; the site omits it, but it leaks into the child.
+    const d = run('{% include("c.uc", { zone }); %}', { '/w/c.uc': '{{ fw4.set(zone) }}' },
+      { names: new Set(['fw4', 'rule', 'egress']), complete: true });
+    expect(d).toEqual([]);
+  });
+  test('an incomplete includer scope disables enforcement (cannot prove missing)', () => {
+    const d = run('{% include("c.uc", { zone }); %}', { '/w/c.uc': '{{ anything }}' },
+      { names: new Set(['zone']), complete: false });
+    expect(d).toEqual([]);
+  });
+  test('still flags a var provided by neither the site nor the leaked scope', () => {
+    const d = run('{% include("c.uc", { zone }); %}', { '/w/c.uc': '{{ zone }} {{ fw4 }} {{ typo }}' },
+      { names: new Set(['fw4']), complete: true });
+    expect(d[0].missing).toEqual(['typo']);
   });
 });
 

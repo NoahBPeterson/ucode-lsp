@@ -151,41 +151,83 @@ export interface ResolvedIncludeSite {
   end: number;
 }
 
-/** What a target file receives from all of its (known) includers. */
+/** What a target file receives, TRANSITIVELY, from its include chain. */
 export interface IncludeScopeEntry {
-  /** Union of scope keys across every site that includes this file. */
+  /** All names available in this file from include() injection — the site keys of every
+   *  includer UNION each includer's own (transitive) injected scope. Verified vs the oracle:
+   *  injected scope vars leak down into nested includes even when the inner site omits them. */
   injectedNames: Set<string>;
-  /** True if ANY including site has a dynamic scope (key set not exhaustive). */
-  anyDynamic: boolean;
+  /** True when `injectedNames` is exhaustive — i.e. NO site along any chain reaching this
+   *  file has a dynamic (spread/computed/non-literal) scope. When false, the real set may be
+   *  larger, so callers must NOT flag a name as "missing". */
+  complete: boolean;
+  /** The direct include sites that target this file (for host-site diagnostics). */
   sites: ResolvedIncludeSite[];
 }
 
 /**
- * Build the reverse index: resolved-target-path → what scope its includers inject.
- * `entries` is the set of workspace files (path + parsed AST; template files must be
- * template-parsed so their in-tag include() calls are present).
+ * Build the reverse index: resolved-target-path → its transitive injected scope.
+ *
+ * ucode's injected scope leaks down the include chain (oracle: a strict grandchild sees a
+ * var its parent's include omitted), so `available(file)` is a fixpoint over the include
+ * graph: `available(C) = ⋃ over each site (P → C, keys K) of (K ∪ available(P))`. Self- and
+ * mutually-recursive includes (firewall4's zone-verdict includes itself) converge because the
+ * union is monotone and finite. `complete` is false once any contributing chain is dynamic.
+ *
+ * `entries` are the workspace files (path + parsed AST; template files must be template-parsed
+ * so their in-tag include() calls are present).
  */
 export function buildIncludeScopeIndex(entries: Array<{ path: string; ast: AstNode | null }>): Map<string, IncludeScopeEntry> {
-  const index = new Map<string, IncludeScopeEntry>();
+  // 1. Collect every scope-bearing site as (includer → target).
+  const sites: Array<{ includer: string; target: string; keys: string[]; dynamic: boolean; start: number; end: number }> = [];
   for (const { path, ast } of entries) {
     for (const site of extractIncludeSites(ast)) {
       if (!site.hasScope) continue; // bare include(path) injects nothing
-      const target = resolveIncludePath(site.path, path);
-      let entry = index.get(target);
-      if (!entry) {
-        entry = { injectedNames: new Set(), anyDynamic: false, sites: [] };
-        index.set(target, entry);
-      }
-      for (const k of site.scopeKeys) entry.injectedNames.add(k);
-      entry.anyDynamic = entry.anyDynamic || site.hasDynamicScope;
-      entry.sites.push({
-        includerPath: path,
+      sites.push({
+        includer: path,
+        target: resolveIncludePath(site.path, path),
         keys: site.scopeKeys,
-        hasDynamicScope: site.hasDynamicScope,
+        dynamic: site.hasDynamicScope,
         start: site.start,
         end: site.end,
       });
     }
+  }
+
+  // 2. Fixpoint over the include graph.
+  const available = new Map<string, Set<string>>();
+  const complete = new Map<string, boolean>();
+  for (const s of sites) {
+    if (!available.has(s.target)) { available.set(s.target, new Set()); complete.set(s.target, true); }
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const s of sites) {
+      const av = available.get(s.target)!;
+      const before = av.size;
+      for (const k of s.keys) av.add(k);
+      const incAv = available.get(s.includer); // an includer with no entry is a root (received nothing)
+      if (incAv) for (const k of incAv) av.add(k);
+      if (av.size !== before) changed = true;
+      // This contribution is exhaustive iff the site is static AND the includer's own scope is.
+      const incComplete = complete.has(s.includer) ? complete.get(s.includer)! : true;
+      if ((s.dynamic || !incComplete) && complete.get(s.target) !== false) {
+        complete.set(s.target, false);
+        changed = true;
+      }
+    }
+  }
+
+  // 3. Assemble the index.
+  const index = new Map<string, IncludeScopeEntry>();
+  for (const s of sites) {
+    let entry = index.get(s.target);
+    if (!entry) {
+      entry = { injectedNames: available.get(s.target) ?? new Set(), complete: complete.get(s.target) ?? true, sites: [] };
+      index.set(s.target, entry);
+    }
+    entry.sites.push({ includerPath: s.includer, keys: s.keys, hasDynamicScope: s.dynamic, start: s.start, end: s.end });
   }
   return index;
 }
@@ -282,14 +324,22 @@ export function checkIncludeScopes(
   includerPath: string,
   getTargetFreeVars: (resolvedPath: string) => Set<string> | null,
   isAmbient: (name: string) => boolean,
+  /** The includer's OWN transitive injected scope (from the index). Those names leak into
+   *  the child, so they count as provided. `complete: false` ⇒ the includer's scope is not
+   *  fully known (a dynamic chain), so we cannot prove anything missing — skip enforcement. */
+  includerScope?: { names: ReadonlySet<string>; complete: boolean },
 ): IncludeScopeDiagnostic[] {
   const out: IncludeScopeDiagnostic[] = [];
+  // If the includer's own scope is incomplete, leaked names are unknown → don't flag.
+  if (includerScope && !includerScope.complete) return out;
   for (const site of extractIncludeSites(includerAst)) {
     if (!site.hasScope || site.hasDynamicScope) continue;
     const target = resolveIncludePath(site.path, includerPath);
     const frees = getTargetFreeVars(target);
     if (!frees) continue;
+    // Provided = keys passed here ∪ names that leak in from the includer's own scope.
     const provided = new Set(site.scopeKeys);
+    if (includerScope) for (const n of includerScope.names) provided.add(n);
     const missing = [...frees].filter(n => !provided.has(n) && !isAmbient(n)).sort();
     if (missing.length > 0) {
       const names = missing.map(m => `'${m}'`).join(', ');

@@ -25,8 +25,19 @@ expressions at the include site (e.g. `fw4` = `require("fw4")` → the fw4 modul
 
 Oracle-verified semantics (`ucode/utpl`): scope keys become the included file's globals
 (builtins stay ambient); a non-provided var is `null` in non-strict, a `Reference error` in
-strict; the scope does NOT leak the includer's other locals (enforcement is sound); path
-resolves relative to the includer's directory.
+strict; the scope does NOT leak the includer's own LOCALS (enforcement is sound); path
+resolves relative to the includer's directory. **Injected scope DOES leak transitively** into
+nested includes (a strict grandchild sees a var its parent's site omitted), so the index is a
+fixpoint: `available(C) = ⋃ (siteKeys ∪ available(includer))`. Without this the model would
+falsely flag `fw4` in `zone-match.uc` (included with only `{egress, rule}` but inheriting
+`fw4` from `zone-verdict`).
+
+**Result on firewall4:** every template reachable from an in-workspace `include()` is now
+clean (ruleset 239→0, zone-verdict 48→0, and the rest), host findings 0. Two templates
+(`mangle-rule.uc`, `zone-notrack.uc`) are not `include()`d anywhere in the vendored tree —
+the open-world case (dynamic/external render). Per the "no blanket auto-suppress" decision,
+their frees stay flagged (we can't see a scope to verify against); they'd resolve if their
+render site were in the workspace.
 
 ## Detection — the canonical rule (from `ucode/main.c`)
 
