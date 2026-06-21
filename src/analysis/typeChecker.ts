@@ -3518,6 +3518,7 @@ export class TypeChecker {
    */
   setAST(ast: ProgramNode): void {
     this.currentAST = ast;
+    this.guardCache.clear(); // structural guard cache is per-AST; reset when the AST changes
     this.strictMode = this.detectStrictMode(ast);
     this.builtinValidator.setStrictMode(this.strictMode);
   }
@@ -3870,14 +3871,27 @@ export class TypeChecker {
   /**
    * Collect all guards that apply to the variable at the specified position
    */
+  // Cache for getGuardsForPosition, keyed by `${variableName}\0${position}`. collectGuards
+  // walks the WHOLE AST and is purely structural (a function of ast + variableName + position;
+  // the AST is immutable within an analysis), so the result is memoizable. It was called ~15k
+  // times on fw4.uc (once per narrowing query, ~7k member accesses) → O(n²). Cleared per
+  // analysis in setAST. Also stores the `transitiveTypeAliases` side-effect output.
+  private guardCache = new Map<string, { guards: TypeGuardInfo[]; aliases: string[] }>();
+
   private getGuardsForPosition(ast: AstNode | null, variableName: string, position: number): TypeGuardInfo[] {
     if (!ast) {
       return [];
     }
-
+    const key = variableName + ' ' + position;
+    const cached = this.guardCache.get(key);
+    if (cached) {
+      this.transitiveTypeAliases = cached.aliases;
+      return cached.guards;
+    }
     this.transitiveTypeAliases = [];
     const guards: TypeGuardInfo[] = [];
     this.collectGuards(ast, variableName, position, guards);
+    this.guardCache.set(key, { guards, aliases: this.transitiveTypeAliases });
     return guards;
   }
 

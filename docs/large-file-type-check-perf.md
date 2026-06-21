@@ -48,7 +48,25 @@ re-analyzes at most ~once per its analysis time instead of fighting every keystr
 files stay at 50ms. This reduces *frequency* of the 540ms block during typing; it does not
 make a single analysis faster.
 
-## Root fix (planned — not started)
+## Fix #1 — guard-collection cache (LANDED, 0.7.2)
+
+`legacyNarrowedTypeAtPosition` calls `getGuardsForPosition` → `collectGuards`, which walks the
+AST and is a **pure function of (AST, variable, position)** (no symbol/SSA reads — verified).
+It was called ~15k times per analysis. Added a per-analysis `guardCache` keyed by
+`variable + position` (cleared in `setAST`; also caches the `transitiveTypeAliases` side
+effect). Interleaved A/B (median of 10, 3 fresh-process rounds):
+
+| | ms/analysis (fw4.uc) |
+|---|---|
+| before | 535 / 533 / 540 |
+| after  | 364 / 370 / 367 |
+
+**~32% faster**, sound (the SSA-dependent narrowing application still runs fresh per call;
+only the structural guard lookup is memoized), full suite 2179/0. After this, guard
+collection drops from ~340ms to ~44ms; the remaining ~367ms is distributed across member/call
+checks with no single O(n²) left.
+
+## Root fix (further work — not started)
 
 Make member-expression type checking near-linear:
 - Memoize per-analysis member-access results (same `obj.prop` chain re-checked many times).
