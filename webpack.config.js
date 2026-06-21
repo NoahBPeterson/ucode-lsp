@@ -22,7 +22,14 @@ const extensionConfig = {
                 exclude: /node_modules/,
                 use: [
                     {
-                        loader: 'ts-loader'
+                        // esbuild strips types ~3× faster than ts-loader (it's native Go).
+                        // It does NOT type-check — that's the separate `tsc --noEmit` gate's
+                        // job — and the codebase is `isolatedModules`-clean, so per-file
+                        // transpilation is safe. terser still minifies in production
+                        // (we don't register EsbuildPlugin as the minimizer), which keeps
+                        // the bundle smaller than esbuild's own minifier.
+                        loader: 'esbuild-loader',
+                        options: { loader: 'ts', target: 'es2022' }
                     }
                 ]
             }
@@ -53,7 +60,14 @@ const cliConfig = {
                 exclude: /node_modules/,
                 use: [
                     {
-                        loader: 'ts-loader'
+                        // esbuild strips types ~3× faster than ts-loader (it's native Go).
+                        // It does NOT type-check — that's the separate `tsc --noEmit` gate's
+                        // job — and the codebase is `isolatedModules`-clean, so per-file
+                        // transpilation is safe. terser still minifies in production
+                        // (we don't register EsbuildPlugin as the minimizer), which keeps
+                        // the bundle smaller than esbuild's own minifier.
+                        loader: 'esbuild-loader',
+                        options: { loader: 'ts', target: 'es2022' }
                     }
                 ]
             }
@@ -84,7 +98,14 @@ const serverConfig = {
                 exclude: /node_modules/,
                 use: [
                     {
-                        loader: 'ts-loader'
+                        // esbuild strips types ~3× faster than ts-loader (it's native Go).
+                        // It does NOT type-check — that's the separate `tsc --noEmit` gate's
+                        // job — and the codebase is `isolatedModules`-clean, so per-file
+                        // transpilation is safe. terser still minifies in production
+                        // (we don't register EsbuildPlugin as the minimizer), which keeps
+                        // the bundle smaller than esbuild's own minifier.
+                        loader: 'esbuild-loader',
+                        options: { loader: 'ts', target: 'es2022' }
                     }
                 ]
             }
