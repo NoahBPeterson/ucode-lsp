@@ -69,6 +69,8 @@ import { stringSourceToRegexLiteral } from './analysis/checkers/builtinValidatio
 import { UcodeParser } from './parser';
 import { UcodeLexer, TokenType, detectTemplateMode, bridgeTemplateTokens } from './lexer';
 import { buildIncludeScopeIndex, checkIncludeScopes, computeFreeVariables, type IncludeScopeEntry } from './analysis/includeScope';
+import { planClean, buildCache } from './analysis/incrementalAnalysis';
+import { type IncrementalCacheEntry } from './analysis/incrementalCache';
 import { isKnownModule } from './analysis/moduleDispatch';
 import { FileResolver } from './analysis/fileResolver';
 import { MODULE_REGISTRIES } from './analysis/moduleDispatch';
@@ -135,6 +137,13 @@ const ANALYSIS_DEBOUNCE_MS = 50;
 // ~once per its analysis time instead of fighting every keystroke. Fast files stay at 50ms.
 const ADAPTIVE_DEBOUNCE_CAP_MS = 750;
 const lastAnalysisMs = new Map<string, number>();
+
+// Function-level incremental analysis: per-document cache + the set of documents whose last
+// analysis SKIPPED some body type-checking (so their cached types are degraded inside unchanged
+// bodies). A cursor-context request (hover/completion/…) on a degraded document triggers one
+// full re-analysis first (ensureFullAnalysis), so those features never see degraded types.
+const incrementalCacheByUri = new Map<string, IncrementalCacheEntry>();
+const degradedUris = new Set<string>();
 function debounceForDocument(uri: string): number {
   const last = lastAnalysisMs.get(uri) ?? 0;
   return Math.min(ADAPTIVE_DEBOUNCE_CAP_MS, Math.max(ANALYSIS_DEBOUNCE_MS, last));
@@ -511,10 +520,10 @@ function isStackOverflow(e: unknown): boolean {
         || (e instanceof Error && e.name === 'AnalysisDepthExceeded');
 }
 
-async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<void> {
+async function validateAndAnalyzeDocument(textDocument: TextDocument, forceFull = false): Promise<void> {
   try {
     const started = Date.now();
-    await validateAndAnalyzeDocumentInner(textDocument);
+    await validateAndAnalyzeDocumentInner(textDocument, forceFull);
     // Remember how long THIS file took so the next edit's debounce can adapt (see
     // debounceForDocument) — a 540ms file shouldn't re-analyze on every keystroke.
     lastAnalysisMs.set(textDocument.uri, Date.now() - started);
@@ -532,7 +541,17 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
   }
 }
 
-async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Promise<void> {
+// If the document's last analysis skipped body type-checking (degraded types inside unchanged
+// bodies), run one FULL analysis so cursor-context features (hover/completion/definition/…)
+// see complete types. No-op when not degraded. Called at the top of those handlers.
+async function ensureFullAnalysis(uri: string): Promise<void> {
+    if (!degradedUris.has(uri)) return;
+    const doc = documents.get(uri);
+    if (!doc) { degradedUris.delete(uri); return; }
+    await validateAndAnalyzeDocument(doc, true); // forceFull clears the degraded flag
+}
+
+async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, forceFull = false): Promise<void> {
     const text = textDocument.getText();
     // Template files (`{% %}`/`{{ }}`) lex in template mode and have their framing
     // tokens bridged to statement separators so the ordinary parser can consume them;
@@ -589,10 +608,26 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Prom
             const scope = getWorkspaceIncludeScopeIndex().get(selfPath);
             if (scope) analyzer.setInjectedScope(scope.injectedNames, scope.injectedTypes);
         } catch { /* index/path failure must never break analysis */ }
+        // Function-level incremental analysis: skip type checking inside unchanged pure bodies
+        // (sound — verified by tests/test-incremental-analysis.test.js). forceFull disables it
+        // so cursor-context requests get full types. Best-effort: never break analysis.
+        let cleanCount = 0;
+        try {
+            if (!forceFull) {
+                const clean = planClean(incrementalCacheByUri.get(textDocument.uri), text, parseResult.ast as any, textDocument);
+                cleanCount = clean.size;
+                if (cleanCount > 0) analyzer.setCleanBodies(clean);
+            }
+        } catch { cleanCount = 0; }
         const analysisResult = analyzer.analyze(parseResult.ast);
         const newImports = analysisResult.resolvedImports ?? new Set<string>();
         updateImportDeps(textDocument.uri, newImports);
         analysisCache.set(textDocument.uri, {result: analysisResult, tokens, timestamp: Date.now(), imports: newImports, comments: lexer.comments});
+        // Update the incremental cache + degraded-set for next time.
+        try {
+            incrementalCacheByUri.set(textDocument.uri, buildCache(incrementalCacheByUri.get(textDocument.uri), text, parseResult.ast as any, textDocument, analysisResult.diagnostics, analysisResult.symbolTable));
+            if (cleanCount > 0) degradedUris.add(textDocument.uri); else degradedUris.delete(textDocument.uri);
+        } catch { degradedUris.delete(textDocument.uri); }
 
         // Precompute offset-anchored inlay hints for the whole document and cache
         // them with this version + text, so the inlayHint handler can serve (and
@@ -773,7 +808,8 @@ connection.onDidChangeWatchedFiles(async (params: DidChangeWatchedFilesParams) =
     }
 });
 
-connection.onHover((params) => {
+connection.onHover(async (params) => {
+    await ensureFullAnalysis(params.textDocument.uri); // full types inside unchanged bodies
     const cacheEntry = analysisCache.get(params.textDocument.uri);
     if (!cacheEntry?.result) {
         return null;
@@ -783,6 +819,7 @@ connection.onHover((params) => {
 });
 
 connection.onCompletion(async (params) => {
+    await ensureFullAnalysis(params.textDocument.uri); // full types inside unchanged bodies
     let cacheEntry = analysisCache.get(params.textDocument.uri);
     let analysisResult = cacheEntry?.result;
 
@@ -1500,7 +1537,8 @@ connection.onCodeLensResolve((lens: CodeLens): CodeLens => {
     return lens;
 });
 
-connection.onDefinition((params) => {
+connection.onDefinition(async (params) => {
+    await ensureFullAnalysis(params.textDocument.uri); // full types inside unchanged bodies
     // Convert cache format for definition handler
     const legacyCache = new Map<string, SemanticAnalysisResult>();
     for (const [uri, entry] of analysisCache.entries()) {
@@ -1819,7 +1857,8 @@ function resolveMemberParamsAt(uri: string, fnStart: number): Array<{ name: stri
     return out;
 }
 
-connection.onSignatureHelp((params: SignatureHelpParams): SignatureHelp | null => {
+connection.onSignatureHelp(async (params: SignatureHelpParams): Promise<SignatureHelp | null> => {
+    await ensureFullAnalysis(params.textDocument.uri); // full types inside unchanged bodies
     const entry = analysisCache.get(params.textDocument.uri);
     const document = documents.get(params.textDocument.uri);
     if (!entry || !document) return null;

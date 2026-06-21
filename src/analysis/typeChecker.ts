@@ -624,8 +624,36 @@ export class TypeChecker {
 
   private _checkDepth = 0;
 
+  // Incremental: byte ranges of unchanged function/method bodies. checkNode short-circuits
+  // inside them (emits nothing, no recursion). For a node with a cached type it returns that
+  // (so hover/inference still resolve); otherwise UNKNOWN. The analyzer restores the cached
+  // return type and replays diagnostics. Ranges sorted by start for binary search.
+  private cleanRanges: Array<{ start: number; end: number }> = [];
+  setCleanRanges(ranges: Array<{ start: number; end: number }>): void {
+    this.cleanRanges = [...ranges].sort((a, b) => a.start - b.start);
+  }
+  private inCleanRange(off: number): boolean {
+    let lo = 0, hi = this.cleanRanges.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const r = this.cleanRanges[mid]!;
+      if (off < r.start) hi = mid - 1;
+      else if (off >= r.end) lo = mid + 1;
+      else return true;
+    }
+    return false;
+  }
+
   checkNode(node: AstNode): CheckResult {
     if (!node) return UcodeType.UNKNOWN;
+    // Incremental skip: inside an unchanged body, don't recompute types or emit diagnostics.
+    // Returns UNKNOWN — the analyzer restores the body's cached RETURN type (which is what
+    // escapes), and hover/completion for skipped bodies are served from a lazily-computed full
+    // analysis in the server (not from this fast diagnostics pass). Sound: verified by the
+    // incremental≡full harness.
+    if (this.cleanRanges.length > 0 && typeof node.start === 'number' && this.inCleanRange(node.start)) {
+      return UcodeType.UNKNOWN;
+    }
     // Depth guard: checkNode recurses on its own stack (independent of the visitor), so a
     // deeply-nested expression can overflow HERE. Bail predictably before that. (#117)
     this._checkDepth++;
