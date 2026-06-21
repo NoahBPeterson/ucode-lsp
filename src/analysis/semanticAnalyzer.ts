@@ -109,6 +109,9 @@ export class SemanticAnalyzer extends BaseVisitor {
   // the included file — in strict mode too — so reading them is never "undefined". Set by the
   // server from the cross-file include index (includeScope.ts); empty when not included.
   private injectedScopeNames = new Set<string>();
+  // Per-name inferred type (parseable type string) for injected names, from the include
+  // site's scope value expressions. Parsed + handed to the type checker in visitProgram.
+  private injectedScopeTypeStrings: Map<string, string> | undefined;
   // Identifier reads that resolved to nothing during the pass. Deferred to a finalize
   // step (resolvePendingUndefinedRefs) so each can be classified — once ALL declarations
   // (incl. later let/const) are known — as either "used before its declaration" (UC1011)
@@ -315,8 +318,9 @@ export class SemanticAnalyzer extends BaseVisitor {
    * include index). Names become valid globals in this file — UC1001 is suppressed for them
    * and they take their injected type (if known). Call before `analyze`.
    */
-  setInjectedScope(names: Set<string>): void {
+  setInjectedScope(names: Set<string>, types?: Map<string, string>): void {
     this.injectedScopeNames = names;
+    this.injectedScopeTypeStrings = types;
   }
 
   visitProgram(node: ProgramNode): void {
@@ -339,6 +343,15 @@ export class SemanticAnalyzer extends BaseVisitor {
     // the workspace — share with the type checker so a bare call to one isn't flagged
     // "Undefined function". (Set externally via setInjectedScope before analyze.)
     this.typeChecker.setInjectedScopeNames(this.injectedScopeNames);
+    // Parse the injected names' inferred type strings into data types so a bare read of an
+    // injected name resolves to its type (member access / type()). (phase 4b typing)
+    if (this.injectedScopeTypeStrings && this.injectedScopeTypeStrings.size > 0) {
+      const parsed = new Map<string, UcodeDataType>();
+      for (const [name, typeStr] of this.injectedScopeTypeStrings) {
+        if (typeStr && typeStr !== 'unknown') parsed.set(name, this.typeChecker.parseReturnTypePublic(typeStr));
+      }
+      this.typeChecker.setInjectedScopeTypes(parsed);
+    }
     // Global scope analysis
     super.visitProgram(node);
     // Flag forward declarations that are never completed by a real definition

@@ -19,9 +19,14 @@ storm is gone end-to-end.
 | 4 | **Render-scope enforcement** (NOT blanket auto-suppress). `include(path, {scope})` co-locates a literal path + literal scope object (firewall4 does this for every template, top-level included), so the contract is statically knowable. Built: `extractIncludeSites` → `resolveIncludePath` (relative to includer dir, per oracle) → cross-file `buildIncludeScopeIndex` (target → injected keys). The analyzer suppresses UC1001 for injected names (`setInjectedScope`, strict too); `checkIncludeScopes` flags at the include SITE any template free var the scope fails to provide (`computeFreeVariables` − scope − builtins). Wired into `server.ts` (cached index + per-file inject + host diagnostics). | ✅ done |
 | 5 | **Tests**: 67 phase-4b tests incl. **live `ucode/utpl` oracle parity** (scope visibility, missing→strict-error, path resolution, parent-local isolation, real firewall4 zone-verdict). | ✅ done |
 
-**Follow-up (polish, not enforcement):** *type* the injected names from the scope value
-expressions at the include site (e.g. `fw4` = `require("fw4")` → the fw4 module type, so
-`fw4.set()` type-checks/completes). Needs cross-file value-type inference; deferred.
+**Typing (done):** injected names take the TYPE of their scope value at the include site —
+literals (`{ direction: "input" }` → string; `42` → integer; `1.5` → double; `true` → boolean;
+`null`; `{…}` → object; `[…]` → array; `()=>…` → function), `require("builtinmod")` → that
+module type, and bare identifiers resolve transitively to the includer's injected type.
+Computed in the index fixpoint (conflicting types across includers → untyped); applied via
+`typeChecker.setInjectedScopeTypes` so `type(x)` / member access on an injected name resolve.
+Each kind is oracle-checked against ucode's runtime `type()`. (User-module `require("fw4")`
+stays untyped — that needs user-module shape inference, a separate feature.)
 
 Oracle-verified semantics (`ucode/utpl`): scope keys become the included file's globals
 (builtins stay ambient); a non-provided var is `null` in non-strict, a `Reference error` in

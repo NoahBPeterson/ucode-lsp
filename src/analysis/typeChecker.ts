@@ -293,6 +293,11 @@ export class TypeChecker {
   // Render-scope names injected by an include(path, {…}) — callable bare (not strict-gated).
   private injectedScopeNames: ReadonlySet<string> = new Set();
   setInjectedScopeNames(names: ReadonlySet<string>): void { this.injectedScopeNames = names; }
+  // Types for those injected names, inferred cross-file from the scope VALUE expressions at
+  // the include site (e.g. `{ direction: "input" }` → string). Used to type a bare read of an
+  // injected name so member access / type() resolve. (phase 4b typing)
+  private injectedScopeTypes: ReadonlyMap<string, UcodeDataType> = new Map();
+  setInjectedScopeTypes(types: ReadonlyMap<string, UcodeDataType>): void { this.injectedScopeTypes = types; }
   private transitiveTypeAliases: string[] = [];
   /** Optional FileResolver used to read literal values from imported files when
    *  constant-folding `ns.A.B` member chains into property-key strings. */
@@ -793,9 +798,14 @@ export class TypeChecker {
     } else {
       // Check if it's a builtin function
       const isBuiltin = allBuiltinFunctions.has(node.name);
-      // Return FUNCTION type for builtin functions, UNKNOWN for truly undefined variables
-      // Note: The SemanticAnalyzer will handle "Undefined variable" diagnostics
-      return isBuiltin ? UcodeType.FUNCTION : UcodeType.UNKNOWN;
+      if (isBuiltin) return UcodeType.FUNCTION;
+      // An include() render-scope injected name carrying a cross-file-inferred type
+      // (from the scope value expression at the include site) — resolve to that type so
+      // `type(x)` / member access on it work. (phase 4b typing)
+      const injected = this.injectedScopeTypes.get(node.name);
+      if (injected !== undefined) return injected;
+      // UNKNOWN for truly undefined variables (the SemanticAnalyzer reports UC1001).
+      return UcodeType.UNKNOWN;
     }
   }
 

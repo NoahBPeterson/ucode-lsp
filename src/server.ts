@@ -69,6 +69,7 @@ import { stringSourceToRegexLiteral } from './analysis/checkers/builtinValidatio
 import { UcodeParser } from './parser';
 import { UcodeLexer, TokenType, detectTemplateMode, bridgeTemplateTokens } from './lexer';
 import { buildIncludeScopeIndex, checkIncludeScopes, computeFreeVariables, type IncludeScopeEntry } from './analysis/includeScope';
+import { isKnownModule } from './analysis/moduleDispatch';
 import { FileResolver } from './analysis/fileResolver';
 import { MODULE_REGISTRIES } from './analysis/moduleDispatch';
 import { Option } from 'effect';
@@ -570,7 +571,7 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Prom
         try {
             const selfPath = path.resolve(uriToFilePath(textDocument.uri));
             const scope = getWorkspaceIncludeScopeIndex().get(selfPath);
-            if (scope) analyzer.setInjectedScope(scope.injectedNames);
+            if (scope) analyzer.setInjectedScope(scope.injectedNames, scope.injectedTypes);
         } catch { /* index/path failure must never break analysis */ }
         const analysisResult = analyzer.analyze(parseResult.ast);
         const newImports = analysisResult.resolvedImports ?? new Set<string>();
@@ -1257,7 +1258,11 @@ function getWorkspaceIncludeScopeIndex(): Map<string, IncludeScopeEntry> {
         const wf = getWorkspaceFile(filePath);
         if (wf?.ast) entries.push({ path: path.resolve(filePath), ast: wf.ast });
     }
-    const index = buildIncludeScopeIndex(entries);
+    // resolveRequireType: a scope value `require("mod")` injects that module's type when mod
+    // is a builtin module (e.g. fs/uci/math); user-module requires stay unknown.
+    const index = buildIncludeScopeIndex(entries, {
+        resolveRequireType: (mod) => (isKnownModule(mod) ? mod : null),
+    });
     includeScopeIndexCache = { index, at: now };
     return index;
 }

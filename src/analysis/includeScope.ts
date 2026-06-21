@@ -20,11 +20,20 @@
 
 import { AstNode } from '../ast/nodes';
 
+/** How a scope value's type is determined. */
+export type ScopeValueInfo =
+  | { kind: 'type'; type: string }       // literal / object / array / function — concrete type
+  | { kind: 'ident'; name: string }      // bare identifier — resolve to includer's type for it
+  | { kind: 'require'; module: string }  // require("x") — module type if builtin
+  | { kind: 'unknown' };
+
 export interface IncludeSite {
   /** The literal path argument, verbatim (e.g. "rule.uc", "templates/ruleset.uc"). */
   path: string;
   /** Names the scope object provides to the included file (statically known keys). */
   scopeKeys: string[];
+  /** Per-key info for inferring the injected name's TYPE (from the scope value expression). */
+  scopeValues: Record<string, ScopeValueInfo>;
   /** True when a 2nd (scope) argument is present at all. A bare `include(path)` injects nothing. */
   hasScope: boolean;
   /** True when the scope object has a spread (`...x`) or computed (`[k]:`) member, so
@@ -42,6 +51,34 @@ function propertyKeyName(key: any): string | null {
   if (key.type === 'Identifier' && typeof key.name === 'string') return key.name;
   if (key.type === 'Literal' && key.value != null) return String(key.value);
   return null;
+}
+
+/** Classify a scope value expression into a type, an identifier reference, or a require(). */
+function classifyScopeValue(node: any): ScopeValueInfo {
+  if (!node || typeof node !== 'object') return { kind: 'unknown' };
+  switch (node.type) {
+    case 'Literal': {
+      const v = node.value;
+      if (v === null) return { kind: 'type', type: 'null' };
+      if (typeof v === 'string') return { kind: 'type', type: 'string' };
+      if (typeof v === 'boolean') return { kind: 'type', type: 'boolean' };
+      if (typeof v === 'number') return { kind: 'type', type: Number.isInteger(v) ? 'integer' : 'double' };
+      return { kind: 'unknown' };
+    }
+    case 'ObjectExpression': return { kind: 'type', type: 'object' };
+    case 'ArrayExpression': return { kind: 'type', type: 'array' };
+    case 'ArrowFunctionExpression':
+    case 'FunctionExpression': return { kind: 'type', type: 'function' };
+    case 'Identifier': return node.name ? { kind: 'ident', name: node.name } : { kind: 'unknown' };
+    case 'CallExpression': {
+      if (node.callee?.type === 'Identifier' && node.callee.name === 'require'
+          && node.arguments?.[0]?.type === 'Literal' && typeof node.arguments[0].value === 'string') {
+        return { kind: 'require', module: node.arguments[0].value };
+      }
+      return { kind: 'unknown' };
+    }
+    default: return { kind: 'unknown' };
+  }
 }
 
 /**
@@ -63,6 +100,7 @@ export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSit
       if (pathArg?.type === 'Literal' && typeof pathArg.value === 'string') {
         const scopeArg = n.arguments[1];
         const scopeKeys: string[] = [];
+        const scopeValues: Record<string, ScopeValueInfo> = {};
         let hasScope = false;
         let hasDynamicScope = false;
 
@@ -73,8 +111,12 @@ export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSit
             if (p?.type === 'Property') {
               if (p.computed) { hasDynamicScope = true; continue; }
               const name = propertyKeyName(p.key);
-              if (name !== null) scopeKeys.push(name);
-              else hasDynamicScope = true;
+              if (name !== null) {
+                scopeKeys.push(name);
+                scopeValues[name] = classifyScopeValue(p.value);
+              } else {
+                hasDynamicScope = true;
+              }
             }
           }
         } else if (scopeArg) {
@@ -87,6 +129,7 @@ export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSit
         sites.push({
           path: pathArg.value,
           scopeKeys,
+          scopeValues,
           hasScope,
           hasDynamicScope,
           start: n.start,
@@ -161,6 +204,10 @@ export interface IncludeScopeEntry {
    *  file has a dynamic (spread/computed/non-literal) scope. When false, the real set may be
    *  larger, so callers must NOT flag a name as "missing". */
   complete: boolean;
+  /** Inferred type (a parseable type string) for injected names whose scope VALUE has a
+   *  determinable, agreed type across all includers. Names with an unknown/conflicting value
+   *  type are absent (the consumer treats them as `unknown`). */
+  injectedTypes: Map<string, string>;
   /** The direct include sites that target this file (for host-site diagnostics). */
   sites: ResolvedIncludeSite[];
 }
@@ -177,9 +224,14 @@ export interface IncludeScopeEntry {
  * `entries` are the workspace files (path + parsed AST; template files must be template-parsed
  * so their in-tag include() calls are present).
  */
-export function buildIncludeScopeIndex(entries: Array<{ path: string; ast: AstNode | null }>): Map<string, IncludeScopeEntry> {
+export function buildIncludeScopeIndex(
+  entries: Array<{ path: string; ast: AstNode | null }>,
+  opts?: { resolveRequireType?: (module: string) => string | null },
+): Map<string, IncludeScopeEntry> {
+  const resolveRequireType = opts?.resolveRequireType ?? (() => null);
+
   // 1. Collect every scope-bearing site as (includer → target).
-  const sites: Array<{ includer: string; target: string; keys: string[]; dynamic: boolean; start: number; end: number }> = [];
+  const sites: Array<{ includer: string; target: string; keys: string[]; values: Record<string, ScopeValueInfo>; dynamic: boolean; start: number; end: number }> = [];
   for (const { path, ast } of entries) {
     for (const site of extractIncludeSites(ast)) {
       if (!site.hasScope) continue; // bare include(path) injects nothing
@@ -187,6 +239,7 @@ export function buildIncludeScopeIndex(entries: Array<{ path: string; ast: AstNo
         includer: path,
         target: resolveIncludePath(site.path, path),
         keys: site.scopeKeys,
+        values: site.scopeValues,
         dynamic: site.hasDynamicScope,
         start: site.start,
         end: site.end,
@@ -194,27 +247,59 @@ export function buildIncludeScopeIndex(entries: Array<{ path: string; ast: AstNo
     }
   }
 
-  // 2. Fixpoint over the include graph.
+  // 2. Fixpoint over the include graph (names + completeness + injected TYPES, which depend
+  //    on includer types for `ident` values, so they share the same iteration).
   const available = new Map<string, Set<string>>();
   const complete = new Map<string, boolean>();
+  const typeOf = new Map<string, Map<string, string>>(); // file → name → agreed concrete type
+  const conflict = new Set<string>();                     // "file\0name" with conflicting concretes
   for (const s of sites) {
-    if (!available.has(s.target)) { available.set(s.target, new Set()); complete.set(s.target, true); }
+    if (!available.has(s.target)) { available.set(s.target, new Set()); complete.set(s.target, true); typeOf.set(s.target, new Map()); }
   }
+  const valueType = (includer: string, info: ScopeValueInfo | undefined): string => {
+    if (!info) return 'unknown';
+    if (info.kind === 'type') return info.type;
+    if (info.kind === 'require') return resolveRequireType(info.module) ?? 'unknown';
+    if (info.kind === 'ident') return typeOf.get(includer)?.get(info.name) ?? 'unknown';
+    return 'unknown';
+  };
+  const contributeType = (target: string, name: string, t: string): boolean => {
+    if (t === 'unknown') return false;
+    const ck = `${target}\0${name}`;
+    if (conflict.has(ck)) return false;
+    const tmap = typeOf.get(target)!;
+    const prev = tmap.get(name);
+    if (prev === undefined) { tmap.set(name, t); return true; }
+    if (prev !== t) { conflict.add(ck); tmap.delete(name); return true; }
+    return false;
+  };
+
   let changed = true;
   while (changed) {
     changed = false;
     for (const s of sites) {
+      // names
       const av = available.get(s.target)!;
       const before = av.size;
       for (const k of s.keys) av.add(k);
       const incAv = available.get(s.includer); // an includer with no entry is a root (received nothing)
       if (incAv) for (const k of incAv) av.add(k);
       if (av.size !== before) changed = true;
-      // This contribution is exhaustive iff the site is static AND the includer's own scope is.
+      // completeness — exhaustive iff the site is static AND the includer's own scope is.
       const incComplete = complete.has(s.includer) ? complete.get(s.includer)! : true;
       if ((s.dynamic || !incComplete) && complete.get(s.target) !== false) {
         complete.set(s.target, false);
         changed = true;
+      }
+      // types from this site's own keys (a site key shadows an inherited type)
+      for (const k of s.keys) {
+        if (contributeType(s.target, k, valueType(s.includer, s.values[k]))) changed = true;
+      }
+      // types inherited from the includer's own injected scope (leaked names keep their type)
+      const incT = typeOf.get(s.includer);
+      if (incT) for (const [name, t] of incT) {
+        if (s.keys.includes(name)) continue; // site key already handled, takes precedence
+        if (contributeType(s.target, name, t)) changed = true;
       }
     }
   }
@@ -224,7 +309,12 @@ export function buildIncludeScopeIndex(entries: Array<{ path: string; ast: AstNo
   for (const s of sites) {
     let entry = index.get(s.target);
     if (!entry) {
-      entry = { injectedNames: available.get(s.target) ?? new Set(), complete: complete.get(s.target) ?? true, sites: [] };
+      entry = {
+        injectedNames: available.get(s.target) ?? new Set(),
+        complete: complete.get(s.target) ?? true,
+        injectedTypes: typeOf.get(s.target) ?? new Map(),
+        sites: [],
+      };
       index.set(s.target, entry);
     }
     entry.sites.push({ includerPath: s.includer, keys: s.keys, hasDynamicScope: s.dynamic, start: s.start, end: s.end });
