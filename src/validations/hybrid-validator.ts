@@ -161,4 +161,4 @@ export function createValidationConfig(phase: 'lexer' | 'ast-basic' | 'ast-full'
     }
 }
 
-export { HybridValidationConfig };
+export type { HybridValidationConfig };

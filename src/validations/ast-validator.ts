@@ -273,4 +273,4 @@ function visitChildren(node: AstNode, visitor: (node: AstNode) => void): void {
 }
 
 // Export validation options for external configuration
-export { ValidationOptions };
+export type { ValidationOptions };

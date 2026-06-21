@@ -22,7 +22,12 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["vscode", "bun"],
     "allowSyntheticDefaultImports": true,
-    "noErrorTruncation": true
+    "noErrorTruncation": true,
+    "strictPropertyInitialization": true,
+    "isolatedModules": true,
+    "noUncheckedSideEffectImports": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "out"]
