@@ -128,6 +128,16 @@ describe('unterminated template blocks (ucode: "Unterminated template block")', 
     expect(parseErrors('{% let a = 1; %}{{ a }}').length).toBe(0);
     expect(parseErrors('{# c #}{% x = 1; %}').length).toBe(0);
   });
+});
+
+describe('empty tags: expression must have an expression; statement/comment may be empty', () => {
+  // ucode: `{{ }}` → "Expecting expression"; `{% %}` and `{# #}` render fine.
+  test('{{ }} empty expression tag is rejected', () => expect(parseErrors('{{ }}').length).toBeGreaterThan(0));
+  test('{{}} (no space) is rejected', () => expect(parseErrors('{{}}').length).toBeGreaterThan(0));
+  test('{{- -}} (empty with trim modifiers) is rejected', () => expect(parseErrors('{{- -}}').length).toBeGreaterThan(0));
+  test('{% %} empty statement block is allowed', () => expect(parseErrors('{% %}').length).toBe(0));
+  test('{# #} empty comment is allowed', () => expect(parseErrors('{# #}').length).toBe(0));
+  test('{{ expr }} with content is clean', () => expect(parseErrors('{{ a }}').length).toBe(0));
   test('the produced AST actually contains the in-tag code', () => {
     const { result } = parseTemplate('{% let answer = 42; %}');
     const kinds = (result.ast.body || []).map((n) => n.type);

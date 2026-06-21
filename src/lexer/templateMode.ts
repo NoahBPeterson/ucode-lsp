@@ -94,7 +94,18 @@ const FRAME_TO_SEMICOLON = new Set<TokenType>([
  */
 export function bridgeTemplateTokens(tokens: Token[]): Token[] {
     const out: Token[] = [];
+    let prev: Token | undefined;
     for (const t of tokens) {
+        // An expression tag with NO expression (`{{ }}`) is a syntax error in ucode
+        // ("Expecting expression"). A statement block MAY be empty (`{% %}` is fine), so
+        // only the expression case is flagged: the `{{` opener (TK_LEXP) immediately
+        // followed by the `}}` closer (TK_REXP), with nothing between.
+        if (t.type === TokenType.TK_REXP && prev?.type === TokenType.TK_LEXP) {
+            out.push({ ...t, type: TokenType.TK_ERROR, value: 'Expecting expression' });
+            prev = t;
+            continue;
+        }
+        prev = t;
         if (FRAME_DROP.has(t.type)) continue;
         if (FRAME_TO_SEMICOLON.has(t.type)) {
             out.push({ ...t, type: TokenType.TK_SCOL, value: ';' });
