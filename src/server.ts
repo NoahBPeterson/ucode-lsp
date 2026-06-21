@@ -747,15 +747,22 @@ async function invalidateDependents(changedUri: string): Promise<void> {
             queue.push(dep);
             const openDoc = documents.get(dep);
             if (openDoc) {
-                await validateAndAnalyzeDocument(openDoc);
+                // forceFull: the dependent's OWN text is unchanged, so its incremental
+                // cache would skip its (structurally-identical) function bodies and
+                // replay diagnostics computed against the CHANGED import's OLD exports
+                // — a stale cross-file result. The semantic fingerprint is intra-file
+                // only and can't see that an imported return type moved, so we must
+                // re-type-check the dependent in full. (regression: cross-file body skip)
+                await validateAndAnalyzeDocument(openDoc, true);
             } else {
                 // Closed dependent: re-analyze from disk so its workspace-wide
                 // diagnostics stay fresh — an export it relied on may have changed
-                // (e.g. now-missing import) — and the result is re-published.
+                // (e.g. now-missing import) — and the result is re-published. forceFull
+                // for the same stale-cross-file-cache reason as the open path above.
                 try {
                     const depPath = uriToFilePath(dep);
                     const content = await fs.promises.readFile(depPath, 'utf8');
-                    await validateAndAnalyzeDocument(TextDocument.create(dep, 'ucode', 1, content));
+                    await validateAndAnalyzeDocument(TextDocument.create(dep, 'ucode', 1, content), true);
                 } catch {
                     // File gone/unreadable: drop caches and clear its problems.
                     purgeImportDeps(dep);

@@ -40,6 +40,41 @@ the whole body" is not: fw4's object-method scoping makes a sibling's locals vis
 skipping a body's *declarations* would drop cross-sibling shadow warnings. Keeping scope
 preserves them.
 
+### Cross-file invalidation (the second axis)
+
+The four mechanisms above are all INTRA-file — they keep a single file's incremental result
+equal to its full result. They do NOT cover a file whose diagnostics depend on an IMPORTED
+file: the semantic fingerprint hashes only the file's OWN unit signatures, so when an imported
+return type/shape changes, a dependent's own signatures are unchanged and its (structurally
+identical) bodies would be SKIPPED — replaying diagnostics computed against the import's stale
+exports. This is a real hazard precisely where cross-file type inference flows (a directly
+imported function used inside a pure/thisSafe body).
+
+The fix lives in the server, not in `runIncremental`: `invalidateDependents()` re-analyzes each
+dependent of a changed file with `forceFull = true`, so the dependent drops its cache and
+re-type-checks. Dependents are walked transitively via `reverseDeps`, so the whole import
+closure is refreshed. Cost: one full pass per dependent when an import changes — rare relative
+to keystrokes, and only actual dependents pay. (Regression: before this, editing an imported
+file left an open dependent's in-body diagnostics stale until the dependent was re-opened.)
+
+## Test suites (soundness is continuously enforced)
+
+- `tests/test-incremental-analysis.test.js` — the original harness (11): incremental ≡ full
+  across edit sequences incl. fw4.uc and the 3 cross-method dependency cases.
+- `tests/test-incremental-soundness-samefile.test.js` — broad same-file matrix (84): every body
+  shape (top-level fn, object method, this.x= thisSafe, global-writing impure, arrow lambda,
+  fn-expression, factory, nested object, return-{} module shape, IIFE, recursion) × edit kind
+  (whitespace, comment, logic, error in/out, return-type change, returned-shape change,
+  this-write-type change, signature change, add/remove/reorder unit) × cross-body semantic
+  dependency. Asserts inc ≡ full at every step, and skip-engagement where expected. (Also
+  documents which shapes are sound-but-not-skip-optimized: arrow-let/fn-expr-let/nested-object/
+  factory-method-in-a-function aren't extracted as units — editing them changes the fingerprint
+  and falls to a correct full pass.)
+- `tests/test-incremental-cross-file.js` — real-server cross-file invalidation (22, mocha):
+  import nullability flips through a body, export add/remove, transitive/fan-in re-check, dep
+  delete, dep syntax-error recovery, importer own-edit composition, round-trips. Reverting the
+  `forceFull` fix fails 15 of these. Run: `npx mocha tests/test-incremental-cross-file.js`.
+
 ## Pieces
 
 - `incrementalCache.ts` — unit extraction (top-level functions + object-literal methods,
