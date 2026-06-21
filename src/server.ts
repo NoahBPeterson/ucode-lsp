@@ -128,6 +128,17 @@ const reverseDeps = new Map<string, Set<string>>(); // importedUri → set of im
 // Debounce timers for document analysis - prevents re-analysis on every keystroke
 const analysisTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const ANALYSIS_DEBOUNCE_MS = 50;
+// Analysis is synchronous CPU work; a large file (e.g. fw4.uc ~540ms) blocks the event loop
+// for its whole duration. A fixed 50ms debounce then runs that 540ms block on every brief
+// pause, making the editor feel frozen. So debounce ADAPTIVELY: at least 50ms, but never more
+// often than the file's own last analysis cost (capped), so a slow file re-analyzes at most
+// ~once per its analysis time instead of fighting every keystroke. Fast files stay at 50ms.
+const ADAPTIVE_DEBOUNCE_CAP_MS = 750;
+const lastAnalysisMs = new Map<string, number>();
+function debounceForDocument(uri: string): number {
+  const last = lastAnalysisMs.get(uri) ?? 0;
+  return Math.min(ADAPTIVE_DEBOUNCE_CAP_MS, Math.max(ANALYSIS_DEBOUNCE_MS, last));
+}
 
 // (uri → version) that onDidOpen just analyzed synchronously. vscode-languageserver
 // fires onDidChangeContent on open too (the initial content counts as a change),
@@ -430,6 +441,7 @@ documents.onDidClose((e: TextDocumentChangeEvent<TextDocument>) => {
     // Drop the open-buffer override so cross-file resolution falls back to disk.
     clearOpenDocumentContent(e.document.uri);
     openAnalyzedVersion.delete(e.document.uri);
+    lastAnalysisMs.delete(e.document.uri);
     // Inlay hints only matter for open documents (no cross-file role like
     // analysisCache), so drop the cache to avoid leaking entries for closed files.
     inlayCache.delete(e.document.uri);
@@ -461,7 +473,7 @@ documents.onDidChangeContent(async (change: TextDocumentChangeEvent<TextDocument
         analysisTimers.delete(uri);
         await validateAndAnalyzeDocument(change.document);
         await invalidateDependents(change.document.uri);
-    }, ANALYSIS_DEBOUNCE_MS));
+    }, debounceForDocument(uri)));
 });
 
 documents.onDidOpen(async (change: TextDocumentChangeEvent<TextDocument>) => {
@@ -501,7 +513,11 @@ function isStackOverflow(e: unknown): boolean {
 
 async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<void> {
   try {
+    const started = Date.now();
     await validateAndAnalyzeDocumentInner(textDocument);
+    // Remember how long THIS file took so the next edit's debounce can adapt (see
+    // debounceForDocument) — a 540ms file shouldn't re-analyze on every keystroke.
+    lastAnalysisMs.set(textDocument.uri, Date.now() - started);
   } catch (e) {
     // Final containment net: no document — however pathological — may kill the server. A
     // deeply-nested expression that overflows a traversal we don't individually guard lands
