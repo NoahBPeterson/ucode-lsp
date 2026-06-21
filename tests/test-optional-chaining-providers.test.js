@@ -10,7 +10,9 @@ beforeAll(async () => { s = createLSPTestServer(); await s.initialize(); });
 afterAll(() => { try { s.shutdown(); } catch {} });
 const hoverText = async (code, line, ch) => {
   const h = await s.getHover(code, `/tmp/ocp-${n++}.uc`, line, ch);
-  return JSON.stringify(h?.contents ?? h ?? null);
+  // Normalize the per-file "Defined in `ocp-N.uc`" suffix: object members now carry their
+  // definition location, which legitimately differs by filename across the two probes.
+  return JSON.stringify(h?.contents ?? h ?? null).replace(/Defined in `[^`]*`/g, 'Defined in `FILE`');
 };
 
 test('hover on a property accessed via ?. matches plain . ', async () => {

@@ -61,17 +61,45 @@ let external = lib.make(5);`;
     expect(await hoverType(code, 'r = this', 1, 0)).toMatch(/`unknown`/);
   });
 
-  test('forward reference (method defined later) is not resolved (define-before-use)', async () => {
-    // `use` calls this.later() before `later` is defined in the object → unknown.
+  test('forward reference (method defined later) IS resolved (ucode supports it)', async () => {
+    // `use` calls this.later() before `later` is defined; ucode resolves `this` at call
+    // time (after the whole object is built), strict and non-strict, so we do too.
     const code = `let api = {
 	use: function() { let r = this.later(); return r; },
 	later: function() { return { x: 1 }; }
 };`;
-    expect(await hoverType(code, 'r = this', 1, 0)).toMatch(/`unknown`/);
+    expect(await hoverType(code, 'r = this', 1, 0)).toMatch(/`object`/);
+  });
+
+  test('forward reference also resolves under \'use strict\'', async () => {
+    const code = `let api = {
+	use: function() { 'use strict'; let r = this.tag(); return r; },
+	tag: function() { return "x"; }
+};`;
+    expect(await hoverType(code, 'r = this', 1, 0)).toMatch(/`string`/);
   });
 
   test('no regression: a non-method object property is unaffected', async () => {
     const code = `let conf = { host: "localhost", port: 80 };\nlet h = conf.host;`;
     expect(await hoverType(code, 'h = conf', 1, 0)).toMatch(/`string`/);
+  });
+});
+
+describe('go-to-definition on object-literal members', () => {
+  async function defLine(code, needle, plus) {
+    const p = at(code, needle, 1, plus);
+    const d = await server.getDefinition(code, uri(), p.line, p.character);
+    return d && d.range ? d.range.start.line : null;
+  }
+
+  test('obj.method() jumps to the property (the make: key)', async () => {
+    const code = `let factory = {\n\tmake: function(id) { return { id: id }; }\n};\nlet built = factory.make(7);`;
+    // cursor mid-word in `make` on the call line (line 3, 0-based)
+    expect(await defLine(code, 'factory.make', 9)).toBe(1); // line 2 (0-based 1) = make: key
+  });
+
+  test('this.method() jumps to the sibling property', async () => {
+    const code = `let widget = {\n\tpinv: function(v) { return { v: v }; },\n\tpwk: function(v) { let rv = this.pinv(v); return rv; }\n};`;
+    expect(await defLine(code, 'this.pinv', 7)).toBe(1); // line 2 (0-based 1) = pinv: key
   });
 });

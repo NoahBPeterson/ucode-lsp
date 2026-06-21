@@ -52,12 +52,17 @@ export function handleDefinition(
             // of the member's real (often cross-file) definition.
             const dotToken = tokenIndex >= 2 ? tokens[tokenIndex - 1] : undefined;
             const objToken = tokenIndex >= 2 ? tokens[tokenIndex - 2] : undefined;
+            // The member base is a plain identifier (`obj.member`) OR `this` (`this.member`).
+            // `this` lexes as TK_THIS, not TK_LABEL, so handle it explicitly — its symbol
+            // (declared per method) carries the object-literal's property locations/types.
+            const objIsThis = objToken?.type === TokenType.TK_THIS;
             const isMemberProperty = isMemberAccessDot(dotToken?.type)
-                && objToken?.type === TokenType.TK_LABEL && typeof objToken.value === 'string';
+                && (objIsThis || (objToken?.type === TokenType.TK_LABEL && typeof objToken.value === 'string'));
 
             if (isMemberProperty) {
+                const objName = objIsThis ? 'this' : (objToken!.value as string);
                 const memberDef = resolveMemberDefinition(
-                    symbolName, objToken!.value as string, tokens, tokenIndex, offset,
+                    symbolName, objName, tokens, tokenIndex, offset,
                     analysisResult, document, documents, fileResolver);
                 if (memberDef) return memberDef;
                 // Member resolution missed — fall through to the bare-name lookup

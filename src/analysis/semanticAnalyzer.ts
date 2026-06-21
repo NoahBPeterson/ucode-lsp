@@ -1041,6 +1041,11 @@ export class SemanticAnalyzer extends BaseVisitor {
             // return type is stamped — record them so `obj.method()` resolves.
             const fnReturns = this.inferObjectLiteralFunctionReturnTypes(node.init as ObjectExpressionNode);
             if (fnReturns) sym.propertyReturnTypes = fnReturns;
+            // Property locations so go-to-definition on `obj.member` lands on the property.
+            if (!sym.propertyDefinitionLocations) {
+              const locs = this.inferObjectLiteralPropertyLocations(node.init as ObjectExpressionNode);
+              if (locs) sym.propertyDefinitionLocations = locs;
+            }
           }
         }
       }
@@ -1999,6 +2004,13 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (propTypes) {
       this.thisPropertyStack.push(propTypes);
       this.thisObjectNodeStack.push(node);
+      // Pre-compute each method's return type BEFORE visiting any body, so a method can
+      // resolve a sibling defined LATER in the object (`this.later()` from `early()`).
+      // ucode supports this — `this` is resolved at call time, after the whole object is
+      // built (verified vs the interpreter, strict and non-strict). The pre-pass is
+      // best-effort (literal/object/array returns resolve; param/local/this-chain returns
+      // stay unknown and are filled by the accurate per-method type once it's visited).
+      (node as any)._precomputedMethodReturns = this.precomputeObjectMethodReturnTypes(node);
     }
     super.visitObjectExpression(node);
     if (propTypes) {
@@ -2016,17 +2028,90 @@ export class SemanticAnalyzer extends BaseVisitor {
    */
   private inferObjectLiteralFunctionReturnTypes(node: ObjectExpressionNode): Map<string, UcodeDataType> | null {
     const out = new Map<string, UcodeDataType>();
+    const pre: Map<string, UcodeDataType> | undefined = (node as any)._precomputedMethodReturns;
     for (const prop of node.properties) {
       if (prop.type === 'SpreadElement') continue;
       const key = this.resolveObjectLiteralKey(prop);
       if (!key) continue;
       const val = prop.value;
       if (val.type !== 'FunctionExpression' && val.type !== 'ArrowFunctionExpression') continue;
-      const rt = (val as any)._inferredReturnType;
+      // Prefer the accurate type stamped by the real visit (params/locals in scope); fall
+      // back to the pre-pass type for siblings not yet visited (forward references).
+      let rt = (val as any)._inferredReturnType;
+      if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) rt = pre?.get(key);
       if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) continue;
       out.set(key, rt as UcodeDataType);
     }
     return out.size > 0 ? out : null;
+  }
+
+  /**
+   * Source location of each property KEY in an object literal, so go-to-definition on
+   * `obj.member` / `this.member` lands on the property. Recorded for every property (not
+   * just functions) on the local symbol (and on `this`).
+   */
+  private inferObjectLiteralPropertyLocations(node: ObjectExpressionNode): Map<string, { uri: string; start: number; end: number }> | null {
+    const out = new Map<string, { uri: string; start: number; end: number }>();
+    const uri = this.textDocument.uri;
+    for (const prop of node.properties) {
+      if (prop.type === 'SpreadElement') continue;
+      const key = this.resolveObjectLiteralKey(prop);
+      if (!key) continue;
+      const keyNode = (prop as any).key;
+      const start = keyNode?.start ?? (prop as any).start;
+      const end = keyNode?.end ?? start;
+      if (typeof start !== 'number') continue;
+      out.set(key, { uri, start, end: typeof end === 'number' ? end : start });
+    }
+    return out.size > 0 ? out : null;
+  }
+
+  /**
+   * Best-effort return type of every function-valued property, computed WITHOUT visiting
+   * bodies (params/locals/`this` are not in scope yet), so a method can resolve a sibling
+   * defined later. Literal/object/array returns resolve here; param/local/this-chain
+   * returns come back unknown and are filled in later by the accurate per-method type.
+   */
+  private precomputeObjectMethodReturnTypes(node: ObjectExpressionNode): Map<string, UcodeDataType> {
+    const out = new Map<string, UcodeDataType>();
+    for (const prop of node.properties) {
+      if (prop.type === 'SpreadElement') continue;
+      const key = this.resolveObjectLiteralKey(prop);
+      if (!key) continue;
+      const val = prop.value as any;
+      if (val.type !== 'FunctionExpression' && val.type !== 'ArrowFunctionExpression') continue;
+      const rt = this.collectReturnTypesQuiet(val);
+      if (rt !== UcodeType.UNKNOWN) out.set(key, rt);
+    }
+    return out;
+  }
+
+  /** Return type of one function node via checkNodeQuietly over its `return` expressions
+   *  (no diagnostics; nested functions are not descended into). */
+  private collectReturnTypesQuiet(fnNode: any): UcodeDataType {
+    // Expression-body arrow: the body IS the returned value.
+    if (fnNode.type === 'ArrowFunctionExpression' && fnNode.body && fnNode.body.type !== 'BlockStatement') {
+      return this.typeChecker.checkNodeQuietly(fnNode.body) as UcodeDataType;
+    }
+    const types: UcodeDataType[] = [];
+    const walk = (n: any): void => {
+      if (!n || typeof n !== 'object') return;
+      // Don't descend into nested functions — their returns aren't this function's.
+      if (n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression' || n.type === 'FunctionDeclaration') return;
+      if (n.type === 'ReturnStatement') {
+        types.push(n.argument ? (this.typeChecker.checkNodeQuietly(n.argument) as UcodeDataType) : (UcodeType.NULL as UcodeDataType));
+        return;
+      }
+      for (const k in n) {
+        if (k === 'parent') continue;
+        const v = (n as any)[k];
+        if (Array.isArray(v)) v.forEach(walk);
+        else if (v && typeof v === 'object' && v.type) walk(v);
+      }
+    };
+    if (fnNode.body) walk(fnNode.body);
+    if (types.length === 0) return UcodeType.UNKNOWN as UcodeDataType;
+    return this.typeChecker.getCommonReturnType(types);
   }
 
   visitFunctionExpression(node: FunctionExpressionNode): void {
@@ -2084,6 +2169,8 @@ export class SemanticAnalyzer extends BaseVisitor {
           if (objNode) {
             const fnReturns = this.inferObjectLiteralFunctionReturnTypes(objNode);
             if (fnReturns) thisSym.propertyReturnTypes = fnReturns;
+            const locs = this.inferObjectLiteralPropertyLocations(objNode);
+            if (locs) thisSym.propertyDefinitionLocations = locs;
           }
         }
       }
