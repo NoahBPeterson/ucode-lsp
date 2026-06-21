@@ -30,6 +30,15 @@ describe('detectTemplateMode', () => {
     expect(detectTemplateMode("let o = { a: 1 }; return o.a % 2;")).toBe(false);
     expect(detectTemplateMode("import { x } from 'fs';\nx();")).toBe(false);
   });
+  test('a tag-looking sequence inside a STRING is not a template (regression)', () => {
+    expect(detectTemplateMode('let t = "Hello {{name}}"; proto(o);')).toBe(false);
+    expect(detectTemplateMode("let s = 'a {% b %} c';")).toBe(false);
+    expect(detectTemplateMode('let s = `x {# y #} z`;')).toBe(false);
+  });
+  test('a tag-looking sequence inside a COMMENT is not a template (regression)', () => {
+    expect(detectTemplateMode('// render {{x}}\nlet a = 1;')).toBe(false);
+    expect(detectTemplateMode('/* {% if %} */ let a = 1;')).toBe(false);
+  });
   test('shebang honors ucode CLI semantics', () => {
     expect(detectTemplateMode('#!/usr/bin/utpl\n{% x %}')).toBe(true);
     expect(detectTemplateMode('#!/usr/bin/ucode -T\nfoo')).toBe(true);

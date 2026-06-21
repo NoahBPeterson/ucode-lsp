@@ -25,7 +25,46 @@ export function detectTemplateMode(text: string): boolean {
         if (/\butpl\b/.test(shebang) || /-\w*T/.test(shebang)) return true;
         if (/-\w*R/.test(shebang)) return false;
     }
-    return /\{[%{#]/.test(text);
+    // A template tag (`{%` / `{{` / `{#`) marks a template — but ONLY when it's real syntax,
+    // not text inside a string or comment. A raw script like `let t = "Hello {{name}}"` or
+    // `// see {{x}}` must NOT be misread as a template. Strip strings/comments first, then look
+    // for a tag. (Mode is truly invocation-determined in ucode; this is the best file-only signal.)
+    return /\{[%{#]/.test(stripStringsAndComments(text));
+}
+
+/** Blank out string literals (", ', `) and comments (// …, /* … *​/) so a template-tag scan
+ *  doesn't trip on tag-looking text inside them. Length-preserving (replaces with spaces) so
+ *  the result is cheap and offset-stable. Not a full lexer — a deliberately simple pre-filter. */
+function stripStringsAndComments(text: string): string {
+    let out = '';
+    let i = 0;
+    const n = text.length;
+    while (i < n) {
+        const c = text[i];
+        const c2 = text[i + 1];
+        if (c === '/' && c2 === '/') { // line comment
+            while (i < n && text[i] !== '\n') { out += ' '; i++; }
+            continue;
+        }
+        if (c === '/' && c2 === '*') { // block comment
+            out += '  '; i += 2;
+            while (i < n && !(text[i] === '*' && text[i + 1] === '/')) { out += text[i] === '\n' ? '\n' : ' '; i++; }
+            if (i < n) { out += '  '; i += 2; }
+            continue;
+        }
+        if (c === '"' || c === "'" || c === '`') { // string literal
+            const quote = c;
+            out += ' '; i++;
+            while (i < n && text[i] !== quote) {
+                if (text[i] === '\\') { out += '  '; i += 2; continue; }
+                out += text[i] === '\n' ? '\n' : ' '; i++;
+            }
+            if (i < n) { out += ' '; i++; }
+            continue;
+        }
+        out += c; i++;
+    }
+    return out;
 }
 
 // Template framing that carries no executable code:

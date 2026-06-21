@@ -2767,6 +2767,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     this.visit(node.right);
     this.pendingFunctionExprName = null;
     if (this.options.enableTypeChecking) {
+      // Property-type writes are DEFERRED until after the RHS is type-checked below, so a
+      // self-referential reassignment `obj.p = f(obj.p)` type-checks `f(obj.p)` against the
+      // OLD type of `obj.p`, not the new one. Without this, `rv.days = keys(rv.days)` saw
+      // rv.days as keys()'s array result and falsely flagged "keys expects object, got array".
+      const deferredPropertyWrites: Array<() => void> = [];
       // Track assignments to object properties (e.g., obj.foo = "bar", this.prop = val)
       if (node.left.type === 'MemberExpression') {
         const memberNode = node.left as MemberExpressionNode;
@@ -2786,7 +2791,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                   targetSymbol.propertyTypes = new Map<string, UcodeDataType>();
                 }
 
-                targetSymbol.propertyTypes.set(propertyName, propertyType);
+                deferredPropertyWrites.push(() => targetSymbol.propertyTypes!.set(propertyName, propertyType));
               }
             }
 
@@ -2800,14 +2805,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                 if (!thisSym.propertyTypes) {
                   thisSym.propertyTypes = new Map<string, UcodeDataType>();
                 }
-                thisSym.propertyTypes.set(propertyName, propertyType);
+                deferredPropertyWrites.push(() => thisSym.propertyTypes!.set(propertyName, propertyType));
 
                 // Also update the thisPropertyStack so sibling methods
                 // in the same object literal can see the property
                 if (this.thisPropertyStack.length > 0) {
                   const topProps = this.thisPropertyStack[this.thisPropertyStack.length - 1];
                   if (topProps) {
-                    topProps.set(propertyName, propertyType);
+                    deferredPropertyWrites.push(() => topProps.set(propertyName, propertyType));
                   }
                 }
               }
@@ -2844,6 +2849,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // inference below does not. Reused for the reassignment dataType so a builtin call's
       // narrowed return survives on reassignment, matching the declaration path. (Issue 2)
       const rhsCheckedType = this.typeChecker.checkNode(node.right);
+
+      // RHS fully checked against the OLD property types — now record the new ones.
+      for (const write of deferredPropertyWrites) write();
 
       const result = this.typeChecker.getResult();
       

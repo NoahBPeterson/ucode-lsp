@@ -366,8 +366,13 @@ function isInsideStringOrComment(offset: number, tokens: any[], comments: any[])
     for (const t of tokens) {
         if (t.type === TokenType.TK_STRING && offset > t.pos && offset < t.end) return true;
     }
+    // Comments suppress completion on their boundaries too, not just the strict interior:
+    // the cursor at a comment's start (`offset === pos`) or end (`offset === end` — for a line
+    // comment that's the trailing newline; for a block comment, just past `*/`) is still "in"
+    // the comment as far as completion goes. Strict bounds leaked the builtin list there
+    // (e.g. the `*/` end of the icmp-table block comments in fw4.uc). (bug #3)
     for (const c of (comments || [])) {
-        if (typeof c?.pos === 'number' && typeof c?.end === 'number' && offset > c.pos && offset < c.end) return true;
+        if (typeof c?.pos === 'number' && typeof c?.end === 'number' && offset >= c.pos && offset <= c.end) return true;
     }
     return false;
 }
