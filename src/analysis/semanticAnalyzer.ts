@@ -92,6 +92,46 @@ export class SemanticAnalyzer extends BaseVisitor {
   private currentASTRoot: ProgramNode | null = null;
   private thisPropertyStack: Map<string, UcodeDataType>[] = []; // Track `this` context for object method property types
   private thisObjectNodeStack: ObjectExpressionNode[] = []; // Parallel to thisPropertyStack: the object node, so `this.method()` return types resolve from sibling function properties (define-before-use)
+
+  // ── Function-level incremental analysis ──────────────────────────────────────────────
+  // Bodies the caller determined are UNCHANGED and whose environment fingerprint is unchanged.
+  // Keyed by the body BlockStatement's start offset. The SCOPE visit of these bodies still
+  // runs fully (so declarations, usage, and cross-sibling shadowing stay correct), but the
+  // TypeChecker short-circuits inside them (see typeChecker.setCleanRanges), skipping the
+  // expensive type computation. The cached type-checker diagnostics are replayed and the
+  // cached return type restored. See docs/incremental-analysis.md + the harness.
+  // Per clean body: its end offset, cached return type, and the FULL set of diagnostics that
+  // fell inside it last time (re-anchored to current positions by the caller). The scope
+  // visit re-emits scope diagnostics fresh; we add back only the cached ones it didn't
+  // re-emit (the type-checker diagnostics, which were short-circuited).
+  private cleanBodies: Map<number, { bodyEnd: number; returnType: unknown; diagnostics: Diagnostic[]; thisWrites: Array<[string, unknown]> }> = new Map();
+
+  /** Provide the set of unchanged function/method bodies whose type checking can be skipped.
+   *  The type checker short-circuits inside their ranges; the analyzer restores the cached
+   *  return type and dedup-merges the cached diagnostics with the fresh scope ones. Hover/
+   *  completion inside a skipped body are served by the server from a lazily-computed full
+   *  analysis, not from this fast pass. */
+  setCleanBodies(m: Map<number, { bodyEnd: number; returnType: unknown; diagnostics: Diagnostic[]; thisWrites: Array<[string, unknown]> }>): void {
+    this.cleanBodies = m;
+    const ranges = [...m.entries()].map(([start, v]) => ({ start, end: v.bodyEnd }));
+    this.typeChecker.setCleanRanges(ranges);
+  }
+
+  /** After a clean body's scope visit, add back the cached diagnostics the fresh visit did NOT
+   *  re-emit (the type-checker ones, suppressed by the short-circuit). Dedup by position+code+
+   *  message so the fresh scope diagnostics aren't duplicated. `before` = diagnostics length
+   *  captured just before visiting this body. */
+  private replayCleanBodyTypeDiagnostics(clean: { diagnostics: Diagnostic[] }, before: number): void {
+    const fresh = new Set<string>();
+    for (let i = before; i < this.diagnostics.length; i++) {
+      const d = this.diagnostics[i]!;
+      fresh.add(`${d.range.start.line}:${d.range.start.character}:${d.code}:${d.message}`);
+    }
+    for (const d of clean.diagnostics) {
+      const key = `${d.range.start.line}:${d.range.start.character}:${d.code}:${d.message}`;
+      if (!fresh.has(key)) this.diagnostics.push(d);
+    }
+  }
   private truthinessDepth = 0; // Track when we're inside a truthiness context (if test, !, ternary test)
   private callbackElementType: UcodeDataType | null = null; // Element type to pass to callback parameters (filter/map/sort)
   private typedefRegistry: Map<string, ParsedTypedef> = new Map(); // File-level @typedef definitions
@@ -1889,13 +1929,19 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (restSym) restSym.isRestParam = true;
       }
 
-      // Visit the function body to find all return statements.
+      // Visit the function body to find all return statements. For an unchanged incremental
+      // unit, type checking inside the body is short-circuited (see typeChecker clean ranges),
+      // but the SCOPE visit still runs so declarations/usage/shadowing stay correct.
+      const fnClean = this.cleanBodies.get(node.body.start);
+      const fnDiagBefore = fnClean ? this.diagnostics.length : 0;
       this.visit(node.body);
 
-      // Infer the final return type from all collected return types.
+      // Infer the final return type — but if the body was type-skipped, the collected return
+      // types are UNKNOWN (checkNode short-circuited), so use the cached return type.
       const returnEntries = this.functionReturnTypes.get(node) || [];
       const returnTypes = returnEntries.map(e => e.type);
-      const inferredReturnType = this.typeChecker.getCommonReturnType(returnTypes);
+      const inferredReturnType = fnClean ? (fnClean.returnType as UcodeDataType ?? this.typeChecker.getCommonReturnType(returnTypes)) : this.typeChecker.getCommonReturnType(returnTypes);
+      if (fnClean) this.replayCleanBodyTypeDiagnostics(fnClean, fnDiagBefore);
       // Reconcile against a `@returns {T}` annotation: T fills/narrows an opaque body, but a
       // return that provably contradicts T is flagged per-statement (the body type wins). (#61)
       const reconciledReturnType = this.reconcileJsDocReturn(node.leadingJsDoc, returnEntries, inferredReturnType);
@@ -2175,14 +2221,38 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
 
-      // Visit the function body
+      // Visit the function body (scope always runs; type checking inside is short-circuited
+      // for unchanged incremental units).
+      const feClean = this.cleanBodies.get(node.body.start);
+      const feDiagBefore = feClean ? this.diagnostics.length : 0;
+      // Snapshot the enclosing object's property map so we can capture (and, for a skipped
+      // body, restore) the `this.<prop> = …` types this method writes.
+      const feThisMap = this.thisPropertyStack.length > 0 ? this.thisPropertyStack[this.thisPropertyStack.length - 1]! : null;
+      const feThisBefore = feThisMap ? new Map(feThisMap) : null;
       this.visit(node.body);
+      // A skipped thisSafe body recorded its `this.x=` with UNKNOWN (type checking was
+      // short-circuited) — restore the cached real types so sibling methods see them.
+      if (feClean && feThisMap && feClean.thisWrites.length > 0) {
+        const thisSym = this.symbolTable.lookup('this');
+        for (const [k, v] of feClean.thisWrites) {
+          feThisMap.set(k, v as UcodeDataType);
+          if (thisSym?.propertyTypes) thisSym.propertyTypes.set(k, v as UcodeDataType);
+        }
+      }
+      // Capture this method's this-property writes (post-restore, so they're the real types)
+      // for the incremental cache.
+      if (feThisMap && feThisBefore) {
+        const writes: Array<[string, unknown]> = [];
+        for (const [k, v] of feThisMap) if (!feThisBefore.has(k) || feThisBefore.get(k) !== v) writes.push([k, v]);
+        (node as any)._thisWrites = writes;
+      }
 
       // Infer the return type (common type of all returns) and stash it on the node —
       // an anonymous function expression has no symbol of its own, so the binding site
       // (variable declarator / assignment) reads `_inferredReturnType` off the node.
       const fnReturnTypes = (this.functionReturnTypes.get(node as any) || []).map(e => e.type);
-      (node as any)._inferredReturnType = this.typeChecker.getCommonReturnType(fnReturnTypes);
+      (node as any)._inferredReturnType = feClean ? (feClean.returnType as UcodeDataType ?? this.typeChecker.getCommonReturnType(fnReturnTypes)) : this.typeChecker.getCommonReturnType(fnReturnTypes);
+      if (feClean) this.replayCleanBodyTypeDiagnostics(feClean, feDiagBefore);
 
       // Stash the param signature (read while still in scope) for the binding site.
       (node as any)._inferredParams = this.buildFunctionExprParamInfos(node);

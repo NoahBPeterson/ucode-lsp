@@ -69,6 +69,8 @@ import { stringSourceToRegexLiteral } from './analysis/checkers/builtinValidatio
 import { UcodeParser } from './parser';
 import { UcodeLexer, TokenType, detectTemplateMode, bridgeTemplateTokens } from './lexer';
 import { buildIncludeScopeIndex, checkIncludeScopes, computeFreeVariables, type IncludeScopeEntry } from './analysis/includeScope';
+import { runIncremental } from './analysis/incrementalAnalysis';
+import { type IncrementalCacheEntry } from './analysis/incrementalCache';
 import { isKnownModule } from './analysis/moduleDispatch';
 import { FileResolver } from './analysis/fileResolver';
 import { MODULE_REGISTRIES } from './analysis/moduleDispatch';
@@ -135,6 +137,13 @@ const ANALYSIS_DEBOUNCE_MS = 50;
 // ~once per its analysis time instead of fighting every keystroke. Fast files stay at 50ms.
 const ADAPTIVE_DEBOUNCE_CAP_MS = 750;
 const lastAnalysisMs = new Map<string, number>();
+
+// Function-level incremental analysis: per-document cache + the set of documents whose last
+// analysis SKIPPED some body type-checking (so their cached types are degraded inside unchanged
+// bodies). A cursor-context request (hover/completion/…) on a degraded document triggers one
+// full re-analysis first (ensureFullAnalysis), so those features never see degraded types.
+const incrementalCacheByUri = new Map<string, IncrementalCacheEntry>();
+const degradedUris = new Set<string>();
 function debounceForDocument(uri: string): number {
   const last = lastAnalysisMs.get(uri) ?? 0;
   return Math.min(ADAPTIVE_DEBOUNCE_CAP_MS, Math.max(ANALYSIS_DEBOUNCE_MS, last));
@@ -511,10 +520,10 @@ function isStackOverflow(e: unknown): boolean {
         || (e instanceof Error && e.name === 'AnalysisDepthExceeded');
 }
 
-async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<void> {
+async function validateAndAnalyzeDocument(textDocument: TextDocument, forceFull = false): Promise<void> {
   try {
     const started = Date.now();
-    await validateAndAnalyzeDocumentInner(textDocument);
+    await validateAndAnalyzeDocumentInner(textDocument, forceFull);
     // Remember how long THIS file took so the next edit's debounce can adapt (see
     // debounceForDocument) — a 540ms file shouldn't re-analyze on every keystroke.
     lastAnalysisMs.set(textDocument.uri, Date.now() - started);
@@ -532,7 +541,17 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
   }
 }
 
-async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Promise<void> {
+// If the document's last analysis skipped body type-checking (degraded types inside unchanged
+// bodies), run one FULL analysis so cursor-context features (hover/completion/definition/…)
+// see complete types. No-op when not degraded. Called at the top of those handlers.
+async function ensureFullAnalysis(uri: string): Promise<void> {
+    if (!degradedUris.has(uri)) return;
+    const doc = documents.get(uri);
+    if (!doc) { degradedUris.delete(uri); return; }
+    await validateAndAnalyzeDocument(doc, true); // forceFull clears the degraded flag
+}
+
+async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, forceFull = false): Promise<void> {
     const text = textDocument.getText();
     // Template files (`{% %}`/`{{ }}`) lex in template mode and have their framing
     // tokens bridged to statement separators so the ordinary parser can consume them;
@@ -573,23 +592,44 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Prom
     });
 
     if (parseResult.ast) {
-        const analyzer = new SemanticAnalyzer(textDocument, {
-            enableTypeChecking: true,
-            enableScopeAnalysis: true,
-            enableControlFlowAnalysis: true,
-            enableUnusedVariableDetection: true,
-            enableShadowingWarnings: true,
-            workspaceRoot: workspaceFolders.length > 0 ? workspaceFolders[0] : process.cwd(),
-            targetVersion: ucodeTargetVersion,
-        });
-        // Template render scope: if some file include()s THIS file with a scope object, those
-        // keys are injected globals here — suppress UC1001 for them. (phase 4b)
+        // One analysis pass with a given skip set; reused by runIncremental (which may invoke
+        // it twice: incremental, then a sound full fall-back if a signature/shape changed).
+        const runAnalysis = (cleanBodies: Map<number, any>) => {
+            const analyzer = new SemanticAnalyzer(textDocument, {
+                enableTypeChecking: true,
+                enableScopeAnalysis: true,
+                enableControlFlowAnalysis: true,
+                enableUnusedVariableDetection: true,
+                enableShadowingWarnings: true,
+                workspaceRoot: workspaceFolders.length > 0 ? workspaceFolders[0] : process.cwd(),
+                targetVersion: ucodeTargetVersion,
+            });
+            // Template render scope: if some file include()s THIS file with a scope object,
+            // those keys are injected globals here — suppress UC1001 for them. (phase 4b)
+            try {
+                const selfPath = path.resolve(uriToFilePath(textDocument.uri));
+                const scope = getWorkspaceIncludeScopeIndex().get(selfPath);
+                if (scope) analyzer.setInjectedScope(scope.injectedNames, scope.injectedTypes);
+            } catch { /* index/path failure must never break analysis */ }
+            if (cleanBodies.size > 0) analyzer.setCleanBodies(cleanBodies);
+            return analyzer.analyze(parseResult.ast!);
+        };
+        // Function-level incremental analysis (sound — verified by
+        // tests/test-incremental-analysis.test.js). forceFull disables it so cursor-context
+        // requests get full types. Best-effort: any failure falls back to a plain full run.
+        let analysisResult: SemanticAnalysisResult;
+        let cleanCount = 0;
         try {
-            const selfPath = path.resolve(uriToFilePath(textDocument.uri));
-            const scope = getWorkspaceIncludeScopeIndex().get(selfPath);
-            if (scope) analyzer.setInjectedScope(scope.injectedNames, scope.injectedTypes);
-        } catch { /* index/path failure must never break analysis */ }
-        const analysisResult = analyzer.analyze(parseResult.ast);
+            const prev = forceFull ? undefined : incrementalCacheByUri.get(textDocument.uri);
+            const inc = runIncremental(textDocument, parseResult.ast as any, prev, runAnalysis);
+            analysisResult = inc.result;
+            cleanCount = inc.skipped;
+            incrementalCacheByUri.set(textDocument.uri, inc.cache);
+        } catch {
+            analysisResult = runAnalysis(new Map());
+            incrementalCacheByUri.delete(textDocument.uri);
+        }
+        if (cleanCount > 0) degradedUris.add(textDocument.uri); else degradedUris.delete(textDocument.uri);
         const newImports = analysisResult.resolvedImports ?? new Set<string>();
         updateImportDeps(textDocument.uri, newImports);
         analysisCache.set(textDocument.uri, {result: analysisResult, tokens, timestamp: Date.now(), imports: newImports, comments: lexer.comments});
@@ -773,7 +813,8 @@ connection.onDidChangeWatchedFiles(async (params: DidChangeWatchedFilesParams) =
     }
 });
 
-connection.onHover((params) => {
+connection.onHover(async (params) => {
+    await ensureFullAnalysis(params.textDocument.uri); // full types inside unchanged bodies
     const cacheEntry = analysisCache.get(params.textDocument.uri);
     if (!cacheEntry?.result) {
         return null;
@@ -783,6 +824,7 @@ connection.onHover((params) => {
 });
 
 connection.onCompletion(async (params) => {
+    await ensureFullAnalysis(params.textDocument.uri); // full types inside unchanged bodies
     let cacheEntry = analysisCache.get(params.textDocument.uri);
     let analysisResult = cacheEntry?.result;
 
@@ -1500,7 +1542,8 @@ connection.onCodeLensResolve((lens: CodeLens): CodeLens => {
     return lens;
 });
 
-connection.onDefinition((params) => {
+connection.onDefinition(async (params) => {
+    await ensureFullAnalysis(params.textDocument.uri); // full types inside unchanged bodies
     // Convert cache format for definition handler
     const legacyCache = new Map<string, SemanticAnalysisResult>();
     for (const [uri, entry] of analysisCache.entries()) {
@@ -1819,7 +1862,8 @@ function resolveMemberParamsAt(uri: string, fnStart: number): Array<{ name: stri
     return out;
 }
 
-connection.onSignatureHelp((params: SignatureHelpParams): SignatureHelp | null => {
+connection.onSignatureHelp(async (params: SignatureHelpParams): Promise<SignatureHelp | null> => {
+    await ensureFullAnalysis(params.textDocument.uri); // full types inside unchanged bodies
     const entry = analysisCache.get(params.textDocument.uri);
     const document = documents.get(params.textDocument.uri);
     if (!entry || !document) return null;
