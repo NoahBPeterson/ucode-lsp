@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.7.0 (2026-06-21)
+
+**ucode template mode (`{% %}` / `{{ }}` / `{# #}`) is now supported end-to-end.**
+ucode's native default is *template* mode (the `utpl` binary / `ucode -T`), and OpenWrt
+ships flagship codebases — firewall4's ruleset generator, luci, snort3 — entirely as ucode
+templates. Previously the LSP forced raw mode on every file and produced hundreds of false
+diagnostics per template (a UC6004 syntax-error storm plus a UC1001 storm on every
+interpolated variable). Templates now lex, parse, and type-check, and the diagnostics that
+fire match the ucode interpreter (oracle-verified against 22.03 / 23.05 / 24.10 / 25.12 /
+main). This is the headline of the release and the reason for the minor-version bump.
+
+### Template front-end (lexer + parser + mode detection)
+
+- **Mode detection** (`detectTemplateMode`): replicates ucode's invocation-determined rule
+  from what the file carries — shebang (`utpl` / `ucode -T` ⇒ template; `-R` ⇒ raw), else a
+  leading/embedded `{%` / `{{` / `{#` tag (scanned after blanking strings & comments, so a
+  tag-looking sequence inside a string no longer flips the file to template mode).
+- **Lexer**: tokenizes templates (was bailing to 0 tokens when a file started with a tag),
+  handles the whitespace-trim OPEN modifiers `{%-` / `{%+` / `{{-` / `{#-` and CLOSE
+  modifiers `-%}` / `-}}`, and preserves EOF when a file ends on a tag.
+- **Parser**: a token bridge maps template framing to statement boundaries so the existing
+  parser consumes templates (`{{a}}{{b}}` → `a; b;`); the alt-colon block form
+  (`{% if (x): %}…{% elif %}…{% else %}…{% endif %}`, `for`/`endfor`, `while`/`endwhile`) is
+  handled.
+
+### Render-scope enforcement & typing (the UC1001 storm)
+
+- `include(path, { scope })` co-locates a literal path and a literal scope object, so the
+  render contract is statically knowable. The cross-file include index resolves each include
+  (path relative to the includer, per the oracle), and the analyzer **suppresses UC1001 for
+  injected render-scope names** (in strict too) while still flagging a free variable the
+  scope fails to provide — reported at the include SITE.
+- Injected names take the **type** of their scope value (literals, `require("mod")` module
+  types, and bare identifiers resolved transitively), so `type(x)` / member access on an
+  injected name resolves. The index is a **fixpoint**: injected scope leaks transitively into
+  nested includes (oracle-confirmed), so a strict grandchild sees a var its parent's site
+  omitted.
+
+### `'use strict'` in templates
+
+- A template honors `'use strict'` only when its `{% 'use strict'; … %}` block is the first
+  statement — leading text / `{{ }}` / even leading whitespace compiles to a `print()` and
+  makes the directive inert (the same directive-must-be-first rule as raw ucode). Comments
+  and a shebang don't displace it. `detectStrictMode` is template-aware to match.
+
+### ucode-parity hardening (no false negatives — what ucode rejects, we reject)
+
+- **UC1001 severity tracks strict mode**: a read of an undefined variable is an **Error**
+  under `'use strict'` (a guaranteed `Reference error`) and a **Warning** otherwise
+  (non-strict reads evaluate to `null` — a typo/render-scope heuristic, not a crash). It is
+  still always reported. Calls of an undefined name (UC1002) and member access throw even in
+  non-strict, so those stay Errors.
+- **Invalid close modifiers `+%}` / `+}}` are rejected** — `+` is open-only in every release.
+- **Nested blocks are rejected** (`{%`/`{{` inside a block → "Template blocks may not be
+  nested"), greedy on adjacency exactly like ucode (`{ a: 1 }` and `{ { } }` stay valid).
+- **Unterminated blocks are rejected** (`{{ … <EOF>`, `{# … <EOF>` → "Unterminated template
+  block"), preserving ucode's asymmetry that a statement block may run to EOF.
+- **`{{+` is unary plus**, not a trim modifier (only `{%+` is) — `{{+ "5" + 1 }}` is `6`,
+  `{{ "5" + 1 }}` is `"51"`.
+- **Empty expression tag `{{ }}` is rejected** ("Expecting expression"), while `{% %}` and
+  `{# #}` may be empty.
+
+Runnable, oracle-verified examples live in `demos/template-strict/`. The one remaining open
+item is template-text **syntax highlighting** (a `//` in template text is literal output, not
+a comment) — the static TextMate grammar can't make that mode-aware, so the fix is an LSP
+semantic-tokens provider, scoped in `docs/semantic-tokens-template-highlighting.md`.
+
+### Build
+
+- Bundling switched from `ts-loader` to `esbuild-loader` (~2.7× faster, smaller output).
+- Enabled the no-cost strict `tsconfig` flags (`moduleResolution` stays `node`).
+
 ## 0.6.255 (2026-06-19)
 
 Return-type correctness pass (triage cluster **C3**) plus the remaining

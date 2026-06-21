@@ -1,8 +1,21 @@
 # ucode template-mode (`{% %}` / `{{ }}`) bring-up
 
-Status: **Phases 1–3 DONE (templates parse with zero syntax errors); phases 4–5
-planned.** Investigated 2026-06-08, bring-up started 2026-06-20. Corpus: `firewall4/`,
-`luci/`, `snort3/` template `.uc`.
+Status: **DIAGNOSTICS COMPLETE (phases 1–5 + a ucode-parity hardening pass).** Shipped in
+**0.7.0**. The one remaining open item is template-text **syntax highlighting** (the
+`//`-in-template-text miscolor), which needs an LSP semantic-tokens provider — tracked
+separately in `docs/semantic-tokens-template-highlighting.md`. Investigated 2026-06-08,
+bring-up 2026-06-20, parity hardening + done 2026-06-21. Corpus: `firewall4/`, `luci/`,
+`snort3/` template `.uc`.
+
+**Parity hardening (2026-06-21, all oracle-verified across 22.03→main):** strict-aware
+UC1001 severity (Error under `'use strict'`, Warning otherwise — non-strict undefined reads
+are null, not crashes); reject invalid close modifiers `+%}`/`+}}`; reject nested blocks
+("Template blocks may not be nested", greedy on adjacency); reject unterminated expression/
+comment blocks ("Unterminated template block", while a statement block may run to EOF);
+`{{+` is unary plus, not a modifier (only `{%+` is); reject empty `{{ }}` ("Expecting
+expression", while `{% %}`/`{# #}` may be empty). A 20-case edge sweep (strings/regex
+containing close-tags, orphan/unterminated control flow, functions, ternaries) is at parity.
+Runnable, oracle-verified examples: `demos/template-strict/`.
 
 Measured result of phases 1–3 on the firewall4 corpus: `ruleset.uc` 239 diagnostics →
 0 parse errors (144 remaining are all UC1001 on render-scope free vars = phase 4);
