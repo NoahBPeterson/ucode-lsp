@@ -91,6 +91,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private fileResolver: FileResolver;
   private currentASTRoot: ProgramNode | null = null;
   private thisPropertyStack: Map<string, UcodeDataType>[] = []; // Track `this` context for object method property types
+  private thisObjectNodeStack: ObjectExpressionNode[] = []; // Parallel to thisPropertyStack: the object node, so `this.method()` return types resolve from sibling function properties (define-before-use)
   private truthinessDepth = 0; // Track when we're inside a truthiness context (if test, !, ternary test)
   private callbackElementType: UcodeDataType | null = null; // Element type to pass to callback parameters (filter/map/sort)
   private typedefRegistry: Map<string, ParsedTypedef> = new Map(); // File-level @typedef definitions
@@ -1036,6 +1037,10 @@ export class SemanticAnalyzer extends BaseVisitor {
               const scopeRoot = this.currentFunctionNode ?? this.currentASTRoot;
               if (scopeRoot) this.inferMapValueShape(sym, scopeRoot as AstNode);
             }
+            // The whole init was visited above (line ~877), so every function property's
+            // return type is stamped — record them so `obj.method()` resolves.
+            const fnReturns = this.inferObjectLiteralFunctionReturnTypes(node.init as ObjectExpressionNode);
+            if (fnReturns) sym.propertyReturnTypes = fnReturns;
           }
         }
       }
@@ -1993,11 +1998,35 @@ export class SemanticAnalyzer extends BaseVisitor {
     const propTypes = this.inferObjectLiteralPropertyTypes(node);
     if (propTypes) {
       this.thisPropertyStack.push(propTypes);
+      this.thisObjectNodeStack.push(node);
     }
     super.visitObjectExpression(node);
     if (propTypes) {
       this.thisPropertyStack.pop();
+      this.thisObjectNodeStack.pop();
     }
+  }
+
+  /**
+   * Rich return types of an object literal's function-valued properties, so calls like
+   * `obj.method()` / `this.method()` resolve instead of going `unknown`. Reads each
+   * function property's `_inferredReturnType` (stamped by visitFunctionExpression once its
+   * body is visited), so a sibling method only resolves if it was defined BEFORE the use
+   * site (define-before-use); a forward reference is left unresolved rather than guessed.
+   */
+  private inferObjectLiteralFunctionReturnTypes(node: ObjectExpressionNode): Map<string, UcodeDataType> | null {
+    const out = new Map<string, UcodeDataType>();
+    for (const prop of node.properties) {
+      if (prop.type === 'SpreadElement') continue;
+      const key = this.resolveObjectLiteralKey(prop);
+      if (!key) continue;
+      const val = prop.value;
+      if (val.type !== 'FunctionExpression' && val.type !== 'ArrowFunctionExpression') continue;
+      const rt = (val as any)._inferredReturnType;
+      if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) continue;
+      out.set(key, rt as UcodeDataType);
+    }
+    return out.size > 0 ? out : null;
   }
 
   visitFunctionExpression(node: FunctionExpressionNode): void {
@@ -2049,6 +2078,13 @@ export class SemanticAnalyzer extends BaseVisitor {
         const thisSym = this.symbolTable.lookup('this');
         if (thisSym) {
           thisSym.propertyTypes = new Map(thisProps);
+          // Resolve `this.method()` return types from sibling function properties already
+          // visited (define-before-use). The enclosing object node is on the parallel stack.
+          const objNode = this.thisObjectNodeStack[this.thisObjectNodeStack.length - 1];
+          if (objNode) {
+            const fnReturns = this.inferObjectLiteralFunctionReturnTypes(objNode);
+            if (fnReturns) thisSym.propertyReturnTypes = fnReturns;
+          }
         }
       }
 
@@ -3610,6 +3646,18 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const memberNode = callNode.callee as MemberExpressionNode;
     if (memberNode.property.type !== 'Identifier') return null;
     const methodName = (memberNode.property as IdentifierNode).name;
+
+    // Case 0: local object-literal method — `obj.method()` / `this.method()` resolve to the
+    // method's inferred return type (recorded on the receiver symbol's propertyReturnTypes;
+    // define-before-use). Handles `this`, which the Identifier-only cases below miss.
+    if (!memberNode.computed
+        && (memberNode.object.type === 'Identifier' || memberNode.object.type === 'ThisExpression')) {
+      const recvSym = memberNode.object.type === 'ThisExpression'
+        ? this.symbolTable.lookup('this')
+        : this.symbolTable.lookup((memberNode.object as IdentifierNode).name);
+      const rt = recvSym?.propertyReturnTypes?.get(methodName);
+      if (rt !== undefined && rt !== UcodeType.UNKNOWN) return rt;
+    }
 
     // Case 1: obj.method() where obj is an Identifier in the symbol table
     if (memberNode.object.type === 'Identifier') {

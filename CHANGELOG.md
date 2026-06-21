@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.1 (2026-06-21)
+
+### Object-literal method calls resolve their return type
+
+`obj.method()` and `this.method()` on a local object literal now infer the method's
+return type instead of `unknown`. Motivated by fw4.uc's `parse_weekdays`, where
+`let rv = this.parse_invert(val)` was typed `unknown`, which then poisoned everything
+derived from `rv`. A function-valued property's inferred return type is recorded on the
+receiver symbol (and on `this` at method entry) and read during call-return inference.
+
+- Resolution is **define-before-use**: a sibling method resolves only if it is defined
+  earlier in the object than the call site (a forward reference is left `unknown` rather
+  than guessed). `this.method()` is fully supported; external `obj.method()` resolves
+  after the object's declaration.
+- A method returning a bare parameter stays `unknown` (no over-claiming).
+
+Known still-open items on this function (next iterations): go-to-definition on a sibling
+`this.method` / `obj.method`, and flow-sensitive member typing (a member's type should
+reflect the most recent assignment *at the read position*, not a single type for all
+positions).
+
 ## 0.7.0 (2026-06-21)
 
 **ucode template mode (`{% %}` / `{{ }}` / `{# #}`) is now supported end-to-end.**

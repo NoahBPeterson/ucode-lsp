@@ -326,6 +326,7 @@ export interface Symbol {
     returnPropertyTypes?: Map<string, UcodeDataType>; // Property types of objects returned by this function
     valuePropertyTypes?: Map<string, UcodeDataType>; // For a dictionary-like object (Record<string,T>): the inferred shape of its VALUES, derived from computed assignments `O[k] = {…}` (directly or one setter hop). Copied to `propertyTypes` of `let v = O[k]` bindings.
     propertyFunctionReturnTypes?: Map<string, string>; // Return type hints for function-typed properties (e.g., "uci_ctx" -> "uci.cursor")
+    propertyReturnTypes?: Map<string, UcodeDataType>; // Rich return types of function-valued properties on a LOCAL object literal, so `obj.method()` / `this.method()` resolve (define-before-use). Distinct from the string-hint map above (used for imported/factory shapes).
     propertyDefinitionLocations?: Map<string, { uri: string; start: number; end: number }>; // Cross-file source location of each member (e.g. factory-returned methods) for go-to-definition
     returnPropertyDefinitionLocations?: Map<string, { uri: string; start: number; end: number }>; // For a factory FUNCTION: source location of each member of its returned object. Copied to `propertyDefinitionLocations` of `let v = factory()` bindings so go-to-def on `v.member` lands in the factory's source.
     closedPropertyShape?: boolean; // True when propertyTypes is the COMPLETE set of members (object/typedef shapes) — enables "unknown member" diagnostics. NOT set for factory returns (intersection-merged, possibly incomplete).

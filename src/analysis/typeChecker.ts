@@ -1898,6 +1898,19 @@ export class TypeChecker {
     // Handle member expression calls (e.g., fs.open, obj.method)
     if (node.callee.type === 'MemberExpression') {
       const memberCallee = node.callee as MemberExpressionNode;
+      // Local object-literal method calls: `obj.method()` and `this.method()` resolve to the
+      // method's inferred return type (recorded on the receiver symbol's propertyReturnTypes).
+      // Checked before the string-hint map below so rich types (object, unions) are preserved.
+      if (!memberCallee.computed && memberCallee.property.type === 'Identifier'
+          && (memberCallee.object.type === 'Identifier' || memberCallee.object.type === 'ThisExpression')) {
+        const recvSym = memberCallee.object.type === 'ThisExpression'
+          ? this.symbolTable.lookup('this')
+          : this.symbolTable.lookup((memberCallee.object as IdentifierNode).name);
+        const rt = recvSym?.propertyReturnTypes?.get((memberCallee.property as IdentifierNode).name);
+        if (rt !== undefined) {
+          return rt as UcodeType;
+        }
+      }
       // Check propertyFunctionReturnTypes for factory-returned method calls
       if (memberCallee.object.type === 'Identifier' && memberCallee.property.type === 'Identifier') {
         const objName = (memberCallee.object as IdentifierNode).name;
