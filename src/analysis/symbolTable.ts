@@ -228,6 +228,39 @@ export const singleTypeToString: (t: SingleType) => string = Match.type<SingleTy
   })
 );
 
+/**
+ * Flow-sensitive member-type lookup. Returns the type of `symbol.propName` as of source
+ * position `readPos` — the most-recent assignment AT OR BEFORE that position. Falls back to
+ * the flat `propertyTypes` (most-recent overall) when there's no history or no qualifying
+ * write (e.g. an object-literal property, which is set once at declaration with no history).
+ *
+ * This is what makes `(rv.days ||= {})[day]=true; … rv.days = keys(rv.days)` read as `object`
+ * before the `keys()` reassignment and `array<string>` after it, instead of one type for all.
+ */
+export function propertyTypeAt(
+  symbol: { propertyTypes?: Map<string, UcodeDataType>; propertyTypeHistory?: Map<string, Array<{ pos: number; type: UcodeDataType }>> } | null | undefined,
+  propName: string,
+  readPos: number,
+): UcodeDataType | undefined {
+  if (!symbol) return undefined;
+  const hist = symbol.propertyTypeHistory?.get(propName);
+  if (hist && hist.length) {
+    let best: { pos: number; type: UcodeDataType } | undefined;
+    let earliest: { pos: number; type: UcodeDataType } | undefined;
+    for (const e of hist) {
+      if (e.pos <= readPos && (!best || e.pos > best.pos)) best = e;
+      if (!earliest || e.pos < earliest.pos) earliest = e;
+    }
+    if (best) return best.type;
+    // The read precedes every recorded write — this happens when hovering the very write
+    // that establishes the property (the assignment target itself, whose recorded position
+    // is its END). Use the earliest write's type so a bucket target like `(rv.days ||= {})`
+    // reads `object`, not the final reassigned type.
+    if (earliest) return earliest.type;
+  }
+  return symbol.propertyTypes?.get(propName);
+}
+
 export function typeToString(type: UcodeDataType): string {
   if (isUnionType(type)) {
     return type.types.map(singleTypeToString).join(' | ');
@@ -321,7 +354,8 @@ export interface Symbol {
     uri: string;
     range: { start: number; end: number };
   };
-    propertyTypes?: Map<string, UcodeDataType>; // Known property types for object-like symbols (e.g., global)
+    propertyTypes?: Map<string, UcodeDataType>; // Known property types for object-like symbols (e.g., global). Flat = most-recent write (kept for `.has` and position-less consumers).
+    propertyTypeHistory?: Map<string, Array<{ pos: number; type: UcodeDataType }>>; // Per-property assignment history (source position → type) so member reads are flow-sensitive: `obj.p` reflects the most-recent write AT OR BEFORE the read position, not the single final type.
     nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>; // Nested property types (propName → sub-property types)
     returnPropertyTypes?: Map<string, UcodeDataType>; // Property types of objects returned by this function
     valuePropertyTypes?: Map<string, UcodeDataType>; // For a dictionary-like object (Record<string,T>): the inferred shape of its VALUES, derived from computed assignments `O[k] = {…}` (directly or one setter hop). Copied to `propertyTypes` of `let v = O[k]` bindings.

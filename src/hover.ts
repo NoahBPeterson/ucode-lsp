@@ -6,7 +6,7 @@ import {
 import { UcodeLexer, TokenType, isKeyword, isMemberAccessDot, Token } from './lexer';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
-import { typeToString, UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType } from './analysis/symbolTable';
+import { typeToString, UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt } from './analysis/symbolTable';
 import { exceptionTypeRegistry, exceptionObjectType } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { Option } from 'effect';
@@ -639,11 +639,25 @@ export function handleHover(
     try {
         // Use cached tokens when available to avoid re-lexing the entire document
         let tokens: any[];
+        let comments: any[] = [];
         if (cachedTokens && cachedTokens.length > 0) {
             tokens = cachedTokens;
+            const cl = new UcodeLexer(text, { rawMode: true });
+            cl.tokenize();
+            comments = (cl as any).comments || [];
         } else {
             const lexer = new UcodeLexer(text, { rawMode: true });
             tokens = lexer.tokenize();
+            comments = (lexer as any).comments || [];
+        }
+
+        // Suppress hover inside a comment — the cursor is on prose, not code, so a word there
+        // must not resolve to a symbol (which surfaced the enclosing `function(val)`). Mirrors
+        // completion's `isInsideStringOrComment`; inclusive bounds (start and end included).
+        for (const c of comments) {
+            if (typeof c?.pos === 'number' && typeof c?.end === 'number' && offset >= c.pos && offset <= c.end) {
+                return undefined;
+            }
         }
         
         // First check if we're hovering over a member expression (e.g., "rtnl.request")
@@ -674,7 +688,10 @@ export function handleHover(
                     symbol = analysisResult.symbolTable.lookup(objectName);
                 }
                 if (symbol && symbol.propertyTypes && symbol.propertyTypes.has(memberName)) {
-                    const propertyType = symbol.propertyTypes.get(memberName)!;
+                    // Flow-sensitive: show the most-recent write at/before the hovered position,
+                    // so `rv.days` reads `object` before `rv.days = keys(rv.days)` and
+                    // `array<string>` after — not one type for every occurrence.
+                    const propertyType = propertyTypeAt(symbol, memberName, offset) ?? symbol.propertyTypes.get(memberName)!;
                     const typeString = typeToString(propertyType);
                     const scopeLabel = objectName === 'global'
                         ? `Global property on \`${objectName}\``

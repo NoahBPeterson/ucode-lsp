@@ -42,7 +42,7 @@ interface TypeGuardInfo {
   // (e.g., length(x) <= 0) doesn't imply x is null — x could just be empty.
   isNullPropagation?: boolean;
 }
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, Symbol as UcodeSymbol } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, propertyTypeAt, Symbol as UcodeSymbol } from './symbolTable';
 import { FlowTypeEngine, makeAssignmentTransfer, FlowEnvironment, EdgeGuardFn } from './flowTypeEngine';
 import { CFGBuilder } from './cfg/cfgBuilder';
 import type { CheckResult } from './checkResult';
@@ -2658,7 +2658,8 @@ export class TypeChecker {
           }
         }
         if (propertyName && thisSym.propertyTypes.has(propertyName)) {
-          const propType = thisSym.propertyTypes.get(propertyName)!;
+          // Flow-sensitive: the most-recent write at/before this read position.
+          const propType = propertyTypeAt(thisSym, propertyName, node.start) ?? thisSym.propertyTypes.get(propertyName)!;
           return this.dataTypeToUcodeType(propType);
         }
       }
@@ -2704,8 +2705,10 @@ export class TypeChecker {
           // must see x as null here — not the dead {a:1} shape — so it falls through to the
           // null-receiver check below instead of returning the defunct property type.
           if (this.dataTypeToUcodeType(effectiveSymbolType(symbol, node.object.start)) !== UcodeType.NULL) {
-            // Return the rich property type directly.
-            return symbol.propertyTypes.get(propertyName)!;
+            // Return the rich property type directly — flow-sensitive to the read position
+            // (most-recent write at/before it), so `rv.days` reads `object` before the
+            // `rv.days = keys(rv.days)` reassignment and `array<string>` after.
+            return propertyTypeAt(symbol, propertyName, node.start) ?? symbol.propertyTypes.get(propertyName)!;
           }
         }
       }

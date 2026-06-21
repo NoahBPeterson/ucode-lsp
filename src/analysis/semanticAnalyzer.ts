@@ -2915,7 +2915,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                   targetSymbol.propertyTypes = new Map<string, UcodeDataType>();
                 }
 
-                deferredPropertyWrites.push(() => targetSymbol.propertyTypes!.set(propertyName, propertyType));
+                deferredPropertyWrites.push(() => this.recordPropertyWrite(targetSymbol, propertyName, propertyType, node.end));
               }
             }
 
@@ -2929,7 +2929,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                 if (!thisSym.propertyTypes) {
                   thisSym.propertyTypes = new Map<string, UcodeDataType>();
                 }
-                deferredPropertyWrites.push(() => thisSym.propertyTypes!.set(propertyName, propertyType));
+                deferredPropertyWrites.push(() => this.recordPropertyWrite(thisSym, propertyName, propertyType, node.end));
 
                 // Also update the thisPropertyStack so sibling methods
                 // in the same object literal can see the property
@@ -3861,6 +3861,21 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (functionReturnType) return functionReturnType;
 
     return inferredType as UcodeDataType;
+  }
+
+  /**
+   * Record a member-property write: updates the flat `propertyTypes` (most-recent) AND appends
+   * to `propertyTypeHistory` keyed by source position, so later reads are flow-sensitive. `pos`
+   * is the END of the assignment expression, so a read WITHIN the RHS (`rv.days = keys(rv.days)`)
+   * still sees the prior type, and only reads after the statement see the new one.
+   */
+  private recordPropertyWrite(symbol: SymbolEntry, propName: string, type: UcodeDataType, pos: number): void {
+    if (!symbol.propertyTypes) symbol.propertyTypes = new Map<string, UcodeDataType>();
+    symbol.propertyTypes.set(propName, type);
+    if (!symbol.propertyTypeHistory) symbol.propertyTypeHistory = new Map();
+    let hist = symbol.propertyTypeHistory.get(propName);
+    if (!hist) { hist = []; symbol.propertyTypeHistory.set(propName, hist); }
+    hist.push({ pos, type });
   }
 
   private inferObjectLiteralPropertyTypes(node: ObjectExpressionNode): Map<string, UcodeDataType> | null {
