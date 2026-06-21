@@ -16,8 +16,17 @@ storm is gone end-to-end.
 | 1 | **Lexer**: stop bailing to 0 tokens on a leading/abutting empty `TK_TEXT`; preserve `TK_EOF` when a file ends on a tag; handle whitespace-trim markers `{%-`/`{%+`/`{{-`/`{#-` and `-%}`/`-}}`; fix the `blockComment` phantom-recursion. | ✅ done |
 | 2 | **Parser**: bridge framing tokens to statement boundaries (`bridgeTemplateTokens`: text/`{%` dropped, `%}`/`}}`/`{{` → `;`), so the existing parser consumes templates — `{{a}}{{b}}` → `a; b;`, `{% if(x): %}…{% endif %}` → `if (x): … endif`. Extended the alt-colon form to `if`/`elif`/`else`/`endif` and `while`/`endwhile` (`for`/`endfor` already worked). | ✅ done |
 | 3 | **Mode detection** (`detectTemplateMode`, see below) wired into the editor diagnostic path + the cross-file/workspace parse path in `server.ts`. (The provider cursor-context sites — hover/completion/definition — still lex raw; harmless to diagnostics, revisit if needed.) | ✅ done |
-| 4 | **Scope**: a template's free variables are render-context inputs (firewall4 injects `fw4`/`rule`/`zone`/…), so they must not fire UC1001. This is the ONLY remaining noise (144/32 above). Same family as the C8 injected-globals cluster — **decision pending: auto-suppress all template free vars vs. declare via directive/config.** | planned |
-| 5 | **Tests**: the in-tree 18-file template corpus → zero false diagnostics. | partial (lexer + parse unit tests landed; corpus-wide assertion awaits phase 4) |
+| 4 | **Render-scope enforcement** (NOT blanket auto-suppress). `include(path, {scope})` co-locates a literal path + literal scope object (firewall4 does this for every template, top-level included), so the contract is statically knowable. Built: `extractIncludeSites` → `resolveIncludePath` (relative to includer dir, per oracle) → cross-file `buildIncludeScopeIndex` (target → injected keys). The analyzer suppresses UC1001 for injected names (`setInjectedScope`, strict too); `checkIncludeScopes` flags at the include SITE any template free var the scope fails to provide (`computeFreeVariables` − scope − builtins). Wired into `server.ts` (cached index + per-file inject + host diagnostics). | ✅ done |
+| 5 | **Tests**: 67 phase-4b tests incl. **live `ucode/utpl` oracle parity** (scope visibility, missing→strict-error, path resolution, parent-local isolation, real firewall4 zone-verdict). | ✅ done |
+
+**Follow-up (polish, not enforcement):** *type* the injected names from the scope value
+expressions at the include site (e.g. `fw4` = `require("fw4")` → the fw4 module type, so
+`fw4.set()` type-checks/completes). Needs cross-file value-type inference; deferred.
+
+Oracle-verified semantics (`ucode/utpl`): scope keys become the included file's globals
+(builtins stay ambient); a non-provided var is `null` in non-strict, a `Reference error` in
+strict; the scope does NOT leak the includer's other locals (enforcement is sound); path
+resolves relative to the includer's directory.
 
 ## Detection — the canonical rule (from `ucode/main.c`)
 

@@ -290,6 +290,9 @@ export class TypeChecker {
   setImplicitGlobalNames(names: ReadonlySet<string>): void { this.implicitGlobalNames = names; }
   private globalPropertyNames: ReadonlySet<string> = new Set();
   setGlobalPropertyNames(names: ReadonlySet<string>): void { this.globalPropertyNames = names; }
+  // Render-scope names injected by an include(path, {…}) — callable bare (not strict-gated).
+  private injectedScopeNames: ReadonlySet<string> = new Set();
+  setInjectedScopeNames(names: ReadonlySet<string>): void { this.injectedScopeNames = names; }
   private transitiveTypeAliases: string[] = [];
   /** Optional FileResolver used to read literal values from imported files when
    *  constant-folding `ns.A.B` member chains into property-key strings. */
@@ -1840,6 +1843,12 @@ export class TypeChecker {
       // real global binding, callable bare as `X(...)` — in strict mode too (unlike the
       // non-strict implicit globals above), so this suppression is not strict-gated.
       if (this.globalPropertyNames.has(funcName)) {
+        return UcodeType.UNKNOWN;
+      }
+
+      // A render-scope name injected by an include(path, {…}) is a real global binding,
+      // callable bare — valid in strict mode too (verified vs the oracle). Not strict-gated.
+      if (this.injectedScopeNames.has(funcName)) {
         return UcodeType.UNKNOWN;
       }
 

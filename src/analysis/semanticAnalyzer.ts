@@ -104,6 +104,11 @@ export class SemanticAnalyzer extends BaseVisitor {
   // name anywhere is valid (returns null until assigned, never a runtime error). Used to
   // suppress UC1001 for provable implicit globals. Empty under 'use strict'.
   private implicitGlobalNames = new Set<string>();
+  // Names injected into THIS file by an `include(path, { … })` somewhere in the workspace
+  // (ucode template render-scope). Verified vs the oracle: the scope keys become globals in
+  // the included file — in strict mode too — so reading them is never "undefined". Set by the
+  // server from the cross-file include index (includeScope.ts); empty when not included.
+  private injectedScopeNames = new Set<string>();
   // Identifier reads that resolved to nothing during the pass. Deferred to a finalize
   // step (resolvePendingUndefinedRefs) so each can be classified — once ALL declarations
   // (incl. later let/const) are known — as either "used before its declaration" (UC1011)
@@ -305,6 +310,15 @@ export class SemanticAnalyzer extends BaseVisitor {
     return result;
   }
 
+  /**
+   * Provide the render-scope a template receives from its includers (from the cross-file
+   * include index). Names become valid globals in this file — UC1001 is suppressed for them
+   * and they take their injected type (if known). Call before `analyze`.
+   */
+  setInjectedScope(names: Set<string>): void {
+    this.injectedScopeNames = names;
+  }
+
   visitProgram(node: ProgramNode): void {
     // Hoist top-level function declarations so forward references resolve
     this.hoistFunctionDeclarations(node);
@@ -321,6 +335,10 @@ export class SemanticAnalyzer extends BaseVisitor {
     // the call check did not). Legal in strict mode too, so not strict-gated.
     this.collectGlobalPropertyNames(node);
     this.typeChecker.setGlobalPropertyNames(this.globalPropertyNames);
+    // Render-scope names injected into this file by an `include(path, {…})` elsewhere in
+    // the workspace — share with the type checker so a bare call to one isn't flagged
+    // "Undefined function". (Set externally via setInjectedScope before analyze.)
+    this.typeChecker.setInjectedScopeNames(this.injectedScopeNames);
     // Global scope analysis
     super.visitProgram(node);
     // Flag forward declarations that are never completed by a real definition
@@ -2227,7 +2245,9 @@ export class SemanticAnalyzer extends BaseVisitor {
         // A provable implicit global: bare-assigned somewhere in this (non-strict) module,
         // so it resolves to a real global at runtime — never an "undefined variable".
         const isImplicitGlobal = this.implicitGlobalNames.has(node.name);
-        if (!isBuiltin && !isGlobalProperty && !this.processingFunctionCallCallee && !isUnimportedModuleBase && !isImplicitGlobal) {
+        // A name injected by an include() render-scope is a real global here (strict too).
+        const isInjectedScope = this.injectedScopeNames.has(node.name);
+        if (!isBuiltin && !isGlobalProperty && !this.processingFunctionCallCallee && !isUnimportedModuleBase && !isImplicitGlobal && !isInjectedScope) {
           // Defer: a `let`/`const` declared later in this same/enclosing block isn't in
           // the table yet (single pass). resolvePendingUndefinedRefs decides UC1001 vs
           // UC1011 ("used before its declaration") once all declarations are known.

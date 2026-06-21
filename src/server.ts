@@ -68,6 +68,7 @@ import { UcodeErrorCode } from './analysis/errorConstants';
 import { stringSourceToRegexLiteral } from './analysis/checkers/builtinValidation';
 import { UcodeParser } from './parser';
 import { UcodeLexer, TokenType, detectTemplateMode, bridgeTemplateTokens } from './lexer';
+import { buildIncludeScopeIndex, checkIncludeScopes, computeFreeVariables, type IncludeScopeEntry } from './analysis/includeScope';
 import { FileResolver } from './analysis/fileResolver';
 import { MODULE_REGISTRIES } from './analysis/moduleDispatch';
 import { Option } from 'effect';
@@ -564,6 +565,13 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Prom
             workspaceRoot: workspaceFolders.length > 0 ? workspaceFolders[0] : process.cwd(),
             targetVersion: ucodeTargetVersion,
         });
+        // Template render scope: if some file include()s THIS file with a scope object, those
+        // keys are injected globals here — suppress UC1001 for them. (phase 4b)
+        try {
+            const selfPath = path.resolve(uriToFilePath(textDocument.uri));
+            const scope = getWorkspaceIncludeScopeIndex().get(selfPath);
+            if (scope) analyzer.setInjectedScope(scope.injectedNames);
+        } catch { /* index/path failure must never break analysis */ }
         const analysisResult = analyzer.analyze(parseResult.ast);
         const newImports = analysisResult.resolvedImports ?? new Set<string>();
         updateImportDeps(textDocument.uri, newImports);
@@ -584,6 +592,31 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Prom
 
         // Semantic analysis diagnostics are already filtered by the SemanticAnalyzer itself
         diagnostics.push(...analysisResult.diagnostics);
+
+        // Host-side render-scope enforcement: for each include("tmpl", { … }) in THIS file,
+        // flag a template free variable the scope fails to provide (sound — verified vs the
+        // oracle). Best-effort + contained; never let it break the main diagnostics. (phase 4b)
+        try {
+            const includerPath = path.resolve(uriToFilePath(textDocument.uri));
+            const freeVarCache = new Map<string, Set<string> | null>();
+            const getTargetFreeVars = (target: string): Set<string> | null => {
+                if (freeVarCache.has(target)) return freeVarCache.get(target)!;
+                let result: Set<string> | null = null;
+                const wf = getWorkspaceFile(target);
+                if (wf?.ast) result = computeFreeVariables(wf.ast);
+                freeVarCache.set(target, result);
+                return result;
+            };
+            for (const d of checkIncludeScopes(parseResult.ast, includerPath, getTargetFreeVars, (n) => allBuiltinFunctions.has(n))) {
+                diagnostics.push({
+                    severity: DiagnosticSeverity.Warning,
+                    range: { start: textDocument.positionAt(d.start), end: textDocument.positionAt(d.end) },
+                    message: d.message,
+                    source: 'ucode-semantic',
+                    code: UcodeErrorCode.UNDEFINED_VARIABLE,
+                });
+            }
+        } catch { /* enforcement is best-effort; never break primary diagnostics */ }
     } else {
         purgeImportDeps(textDocument.uri);
         analysisCache.delete(textDocument.uri);
@@ -1207,7 +1240,25 @@ function getWorkspaceExportIndex(): ExportIndexEntry[] {
     return entries;
 }
 
-function invalidateExportIndex(): void { exportIndexCache = null; }
+// Cross-file include() render-scope index (template phase 4b): resolved-target-path →
+// the scope its includers inject. Built from the workspace ASTs (template-parsed via
+// getWorkspaceFile), cached like the export index and cleared by invalidateExportIndex.
+let includeScopeIndexCache: { index: Map<string, IncludeScopeEntry>; at: number } | null = null;
+
+function getWorkspaceIncludeScopeIndex(): Map<string, IncludeScopeEntry> {
+    const now = Date.now();
+    if (includeScopeIndexCache && now - includeScopeIndexCache.at < WS_FILE_TTL_MS) return includeScopeIndexCache.index;
+    const entries: Array<{ path: string; ast: any }> = [];
+    for (const filePath of listWorkspaceUcodeFiles()) {
+        const wf = getWorkspaceFile(filePath);
+        if (wf?.ast) entries.push({ path: path.resolve(filePath), ast: wf.ast });
+    }
+    const index = buildIncludeScopeIndex(entries);
+    includeScopeIndexCache = { index, at: now };
+    return index;
+}
+
+function invalidateExportIndex(): void { exportIndexCache = null; includeScopeIndexCache = null; }
 
 function getWorkspaceFile(filePath: string): WorkspaceFileEntry | null {
     const uri = filePathToUri(filePath);

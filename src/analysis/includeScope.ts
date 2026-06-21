@@ -106,3 +106,200 @@ export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSit
   walk(ast);
   return sites;
 }
+
+/** Normalize a POSIX-ish path: collapse `.` and `..` segments. Keeps it dependency-free
+ *  and identical under node and bun. Leading `/` is preserved. */
+function normalizePath(p: string): string {
+  const isAbs = p.startsWith('/');
+  const out: string[] = [];
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    if (seg === '..') {
+      if (out.length && out[out.length - 1] !== '..') out.pop();
+      else if (!isAbs) out.push('..');
+    } else {
+      out.push(seg);
+    }
+  }
+  return (isAbs ? '/' : '') + out.join('/');
+}
+
+function dirOf(p: string): string {
+  const i = p.lastIndexOf('/');
+  return i < 0 ? '' : p.slice(0, i);
+}
+
+/**
+ * Resolve an `include()` path the way ucode does: **relative to the including file's
+ * directory** (verified vs the oracle — `include("sub/leaf.uc")` resolves against the
+ * includer's dir, not cwd or a search path). An absolute path is normalized as-is.
+ * Returns a normalized path suitable for keying the cross-file index.
+ */
+export function resolveIncludePath(rawPath: string, includerPath: string): string {
+  if (rawPath.startsWith('/')) return normalizePath(rawPath);
+  return normalizePath(`${dirOf(includerPath)}/${rawPath}`);
+}
+
+/** One resolved include site, from the includer's perspective. */
+export interface ResolvedIncludeSite {
+  includerPath: string;
+  /** Statically-known scope keys provided to the target at this site. */
+  keys: string[];
+  /** Scope is non-exhaustive (spread/computed/non-literal) — don't flag "missing key". */
+  hasDynamicScope: boolean;
+  start: number;
+  end: number;
+}
+
+/** What a target file receives from all of its (known) includers. */
+export interface IncludeScopeEntry {
+  /** Union of scope keys across every site that includes this file. */
+  injectedNames: Set<string>;
+  /** True if ANY including site has a dynamic scope (key set not exhaustive). */
+  anyDynamic: boolean;
+  sites: ResolvedIncludeSite[];
+}
+
+/**
+ * Build the reverse index: resolved-target-path → what scope its includers inject.
+ * `entries` is the set of workspace files (path + parsed AST; template files must be
+ * template-parsed so their in-tag include() calls are present).
+ */
+export function buildIncludeScopeIndex(entries: Array<{ path: string; ast: AstNode | null }>): Map<string, IncludeScopeEntry> {
+  const index = new Map<string, IncludeScopeEntry>();
+  for (const { path, ast } of entries) {
+    for (const site of extractIncludeSites(ast)) {
+      if (!site.hasScope) continue; // bare include(path) injects nothing
+      const target = resolveIncludePath(site.path, path);
+      let entry = index.get(target);
+      if (!entry) {
+        entry = { injectedNames: new Set(), anyDynamic: false, sites: [] };
+        index.set(target, entry);
+      }
+      for (const k of site.scopeKeys) entry.injectedNames.add(k);
+      entry.anyDynamic = entry.anyDynamic || site.hasDynamicScope;
+      entry.sites.push({
+        includerPath: path,
+        keys: site.scopeKeys,
+        hasDynamicScope: site.hasDynamicScope,
+        start: site.start,
+        end: site.end,
+      });
+    }
+  }
+  return index;
+}
+
+// Node types that introduce a binding whose name must NOT count as a free variable.
+const DECLARES_VIA_ID = new Set(['VariableDeclarator', 'FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+
+/**
+ * Identifiers READ in `ast` but never declared anywhere in it (let/const/param/function/
+ * import/for-loop var). Over-approximates the declared set (file-wide, not scope-precise),
+ * which can only UNDER-report frees — safe for "missing scope key" enforcement (no false
+ * positives). Used to check a template's needs against the scope its includer provides.
+ */
+export function computeFreeVariables(ast: AstNode | null | undefined): Set<string> {
+  const declared = new Set<string>();
+  const read = new Set<string>();
+
+  const addId = (n: any) => { if (n?.type === 'Identifier' && n.name) declared.add(n.name); };
+
+  const collectDecls = (n: any): void => {
+    if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+    if (n.type === 'VariableDeclarator') addId(n.id);
+    if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') {
+      addId(n.id);
+      for (const p of n.params ?? []) {
+        if (p?.type === 'Identifier') addId(p);
+        else if (p?.type === 'RestElement' && p.argument?.type === 'Identifier') addId(p.argument);
+        else addId(p?.id);
+      }
+    }
+    if (n.type === 'ImportDeclaration') {
+      for (const s of n.specifiers ?? []) addId(s?.local ?? s?.id);
+    }
+    if (n.type === 'ForInStatement' && n.left?.type === 'Identifier') addId(n.left);
+    for (const k of Object.keys(n)) {
+      if (k === 'leadingJsDoc') continue;
+      const v = n[k];
+      if (Array.isArray(v)) { for (const it of v) collectDecls(it); }
+      else if (v && typeof v === 'object' && typeof v.type === 'string') collectDecls(v);
+    }
+  };
+
+  const collectReads = (n: any): void => {
+    if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+    if (n.type === 'Identifier' && n.name) {
+      // Only count value-position reads: skip declaration ids, the `.prop` of a member,
+      // and object-literal property keys (handled by their parents below).
+      read.add(n.name);
+    }
+    for (const k of Object.keys(n)) {
+      if (k === 'leadingJsDoc') continue;
+      // Skip non-read identifier positions.
+      if (n.type === 'MemberExpression' && k === 'property' && !n.computed) continue;
+      if (n.type === 'Property' && k === 'key' && !n.computed) continue;
+      if (DECLARES_VIA_ID.has(n.type) && k === 'id') continue;
+      if ((n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') && k === 'params') continue;
+      if (n.type === 'ForInStatement' && k === 'left') continue;
+      const v = n[k];
+      if (Array.isArray(v)) { for (const it of v) collectReads(it); }
+      else if (v && typeof v === 'object' && typeof v.type === 'string') collectReads(v);
+    }
+  };
+
+  collectDecls(ast);
+  collectReads(ast);
+
+  const free = new Set<string>();
+  for (const name of read) if (!declared.has(name)) free.add(name);
+  return free;
+}
+
+/** A host-site "scope does not provide" finding, ranged at the `include(...)` call. */
+export interface IncludeScopeDiagnostic {
+  start: number;
+  end: number;
+  message: string;
+  missing: string[];
+}
+
+/**
+ * Host-side enforcement: for each `include("tmpl", { … })` in `includerAst`, check that the
+ * scope provides every free variable the target template needs. A free var that's neither in
+ * the scope nor ambient (builtin / always-global) is genuinely undefined at render (verified
+ * vs the oracle: strict → Reference error; non-strict → null) → flag it at the include site.
+ *
+ * Decoupled from I/O: `getTargetFreeVars(resolvedPath)` returns the target's free variables
+ * (or null if it can't be resolved/parsed — then we can't enforce, so skip), and `isAmbient`
+ * reports builtins / always-globals. Sites with a dynamic (spread/computed/non-literal) or
+ * absent scope are skipped — the key set isn't exhaustive, so a "missing" claim wouldn't be
+ * sound.
+ */
+export function checkIncludeScopes(
+  includerAst: AstNode | null | undefined,
+  includerPath: string,
+  getTargetFreeVars: (resolvedPath: string) => Set<string> | null,
+  isAmbient: (name: string) => boolean,
+): IncludeScopeDiagnostic[] {
+  const out: IncludeScopeDiagnostic[] = [];
+  for (const site of extractIncludeSites(includerAst)) {
+    if (!site.hasScope || site.hasDynamicScope) continue;
+    const target = resolveIncludePath(site.path, includerPath);
+    const frees = getTargetFreeVars(target);
+    if (!frees) continue;
+    const provided = new Set(site.scopeKeys);
+    const missing = [...frees].filter(n => !provided.has(n) && !isAmbient(n)).sort();
+    if (missing.length > 0) {
+      const names = missing.map(m => `'${m}'`).join(', ');
+      out.push({
+        start: site.start,
+        end: site.end,
+        missing,
+        message: `Template "${site.path}" uses ${missing.length > 1 ? 'variables' : 'variable'} ${names}, but the include scope here does not provide ${missing.length > 1 ? 'them' : 'it'}.`,
+      });
+    }
+  }
+  return out;
+}
