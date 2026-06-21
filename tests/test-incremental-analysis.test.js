@@ -14,7 +14,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { UcodeLexer, detectTemplateMode, bridgeTemplateTokens } from '../src/lexer/index.ts';
 import { UcodeParser } from '../src/parser/ucodeParser.ts';
 import { SemanticAnalyzer } from '../src/analysis/semanticAnalyzer.ts';
-import { planClean, buildCache } from '../src/analysis/incrementalAnalysis.ts';
+import { runIncremental } from '../src/analysis/incrementalAnalysis.ts';
 
 function parse(text) {
   const isT = detectTemplateMode(text);
@@ -27,12 +27,14 @@ const OPTS = { enableScopeAnalysis: true, enableTypeChecking: true, enableContro
 function step(text, prevCache) {
   const doc = TextDocument.create('file:///t.uc', 'ucode', 1, text);
   const ast = parse(text);
-  const clean = prevCache ? planClean(prevCache, text, ast, doc) : new Map();
-  const an = new SemanticAnalyzer(doc, OPTS);
-  an.setCleanBodies(clean);
-  const res = an.analyze(ast);
-  const cache = buildCache(prevCache, text, ast, doc, res.diagnostics, res.symbolTable);
-  return { diagnostics: res.diagnostics, cache, skipped: clean.size };
+  const run = (cleanBodies) => {
+    const an = new SemanticAnalyzer(doc, OPTS);
+    an.setCleanBodies(cleanBodies);
+    const res = an.analyze(ast);
+    return { diagnostics: res.diagnostics, symbolTable: res.symbolTable };
+  };
+  const r = runIncremental(doc, ast, prevCache, run);
+  return { diagnostics: r.result.diagnostics, cache: r.cache, skipped: r.skipped };
 }
 
 // Normalize diagnostics to a stable, position+message comparable form.
@@ -122,6 +124,25 @@ describe('incremental analysis ≡ full analysis (soundness)', () => {
     const v1 = OBJ('\t\treturn nope;', '\t\treturn y;');       // nope undefined in helper
     const v2 = OBJ('\t\treturn nope;', '\t\treturn y + 1;');   // edit other, helper unchanged
     runSequence([v1, v2]);
+  });
+
+  // ── Cross-method semantic-dependency cases (the hard soundness ones) ──────────────────
+  test('changing a this-property TYPE updates a sibling that reads it', () => {
+    const mk = (rhs) => `let o = {\n\tset: function() { this.val = ${rhs}; return 1; },\n\tget: function() { return this.val.x; }\n};\nlet r = o.get();`;
+    // this.val = 5 → get reads .x on integer (error); = { x: 9 } → no error. Sibling `get` is
+    // structurally unchanged across the edit, so it would be skipped — must NOT be stale.
+    runSequence([mk('5'), mk('{ x: 9 }'), mk('5')]);
+  });
+
+  test('changing a method RETURN type updates a caller that uses it', () => {
+    const mk = (rhs) => `let o = {\n\tmake: function() { return ${rhs}; },\n\tuse: function() { let v = this.make(); return v.y; }\n};\nlet r = o.use();`;
+    // make() returns 7 → use reads .y on integer; returns { y: 1 } → ok.
+    runSequence([mk('7'), mk('{ y: 1 }'), mk('7')]);
+  });
+
+  test('changing a top-level function return type updates a caller body', () => {
+    const mk = (rhs) => `function make() { return ${rhs}; }\nlet o = {\n\tuse: function() { let v = make(); return v.z; }\n};\nlet r = o.use();`;
+    runSequence([mk('3'), mk('{ z: 1 }'), mk('3')]);
   });
 });
 

@@ -104,14 +104,14 @@ export class SemanticAnalyzer extends BaseVisitor {
   // fell inside it last time (re-anchored to current positions by the caller). The scope
   // visit re-emits scope diagnostics fresh; we add back only the cached ones it didn't
   // re-emit (the type-checker diagnostics, which were short-circuited).
-  private cleanBodies: Map<number, { bodyEnd: number; returnType: unknown; diagnostics: Diagnostic[] }> = new Map();
+  private cleanBodies: Map<number, { bodyEnd: number; returnType: unknown; diagnostics: Diagnostic[]; thisWrites: Array<[string, unknown]> }> = new Map();
 
   /** Provide the set of unchanged function/method bodies whose type checking can be skipped.
    *  The type checker short-circuits inside their ranges; the analyzer restores the cached
    *  return type and dedup-merges the cached diagnostics with the fresh scope ones. Hover/
    *  completion inside a skipped body are served by the server from a lazily-computed full
    *  analysis, not from this fast pass. */
-  setCleanBodies(m: Map<number, { bodyEnd: number; returnType: unknown; diagnostics: Diagnostic[] }>): void {
+  setCleanBodies(m: Map<number, { bodyEnd: number; returnType: unknown; diagnostics: Diagnostic[]; thisWrites: Array<[string, unknown]> }>): void {
     this.cleanBodies = m;
     const ranges = [...m.entries()].map(([start, v]) => ({ start, end: v.bodyEnd }));
     this.typeChecker.setCleanRanges(ranges);
@@ -2225,7 +2225,27 @@ export class SemanticAnalyzer extends BaseVisitor {
       // for unchanged incremental units).
       const feClean = this.cleanBodies.get(node.body.start);
       const feDiagBefore = feClean ? this.diagnostics.length : 0;
+      // Snapshot the enclosing object's property map so we can capture (and, for a skipped
+      // body, restore) the `this.<prop> = …` types this method writes.
+      const feThisMap = this.thisPropertyStack.length > 0 ? this.thisPropertyStack[this.thisPropertyStack.length - 1]! : null;
+      const feThisBefore = feThisMap ? new Map(feThisMap) : null;
       this.visit(node.body);
+      // A skipped thisSafe body recorded its `this.x=` with UNKNOWN (type checking was
+      // short-circuited) — restore the cached real types so sibling methods see them.
+      if (feClean && feThisMap && feClean.thisWrites.length > 0) {
+        const thisSym = this.symbolTable.lookup('this');
+        for (const [k, v] of feClean.thisWrites) {
+          feThisMap.set(k, v as UcodeDataType);
+          if (thisSym?.propertyTypes) thisSym.propertyTypes.set(k, v as UcodeDataType);
+        }
+      }
+      // Capture this method's this-property writes (post-restore, so they're the real types)
+      // for the incremental cache.
+      if (feThisMap && feThisBefore) {
+        const writes: Array<[string, unknown]> = [];
+        for (const [k, v] of feThisMap) if (!feThisBefore.has(k) || feThisBefore.get(k) !== v) writes.push([k, v]);
+        (node as any)._thisWrites = writes;
+      }
 
       // Infer the return type (common type of all returns) and stash it on the node —
       // an anonymous function expression has no symbol of its own, so the binding site

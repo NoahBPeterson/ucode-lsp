@@ -69,7 +69,7 @@ import { stringSourceToRegexLiteral } from './analysis/checkers/builtinValidatio
 import { UcodeParser } from './parser';
 import { UcodeLexer, TokenType, detectTemplateMode, bridgeTemplateTokens } from './lexer';
 import { buildIncludeScopeIndex, checkIncludeScopes, computeFreeVariables, type IncludeScopeEntry } from './analysis/includeScope';
-import { planClean, buildCache } from './analysis/incrementalAnalysis';
+import { runIncremental } from './analysis/incrementalAnalysis';
 import { type IncrementalCacheEntry } from './analysis/incrementalCache';
 import { isKnownModule } from './analysis/moduleDispatch';
 import { FileResolver } from './analysis/fileResolver';
@@ -592,42 +592,47 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
     });
 
     if (parseResult.ast) {
-        const analyzer = new SemanticAnalyzer(textDocument, {
-            enableTypeChecking: true,
-            enableScopeAnalysis: true,
-            enableControlFlowAnalysis: true,
-            enableUnusedVariableDetection: true,
-            enableShadowingWarnings: true,
-            workspaceRoot: workspaceFolders.length > 0 ? workspaceFolders[0] : process.cwd(),
-            targetVersion: ucodeTargetVersion,
-        });
-        // Template render scope: if some file include()s THIS file with a scope object, those
-        // keys are injected globals here — suppress UC1001 for them. (phase 4b)
-        try {
-            const selfPath = path.resolve(uriToFilePath(textDocument.uri));
-            const scope = getWorkspaceIncludeScopeIndex().get(selfPath);
-            if (scope) analyzer.setInjectedScope(scope.injectedNames, scope.injectedTypes);
-        } catch { /* index/path failure must never break analysis */ }
-        // Function-level incremental analysis: skip type checking inside unchanged pure bodies
-        // (sound — verified by tests/test-incremental-analysis.test.js). forceFull disables it
-        // so cursor-context requests get full types. Best-effort: never break analysis.
+        // One analysis pass with a given skip set; reused by runIncremental (which may invoke
+        // it twice: incremental, then a sound full fall-back if a signature/shape changed).
+        const runAnalysis = (cleanBodies: Map<number, any>) => {
+            const analyzer = new SemanticAnalyzer(textDocument, {
+                enableTypeChecking: true,
+                enableScopeAnalysis: true,
+                enableControlFlowAnalysis: true,
+                enableUnusedVariableDetection: true,
+                enableShadowingWarnings: true,
+                workspaceRoot: workspaceFolders.length > 0 ? workspaceFolders[0] : process.cwd(),
+                targetVersion: ucodeTargetVersion,
+            });
+            // Template render scope: if some file include()s THIS file with a scope object,
+            // those keys are injected globals here — suppress UC1001 for them. (phase 4b)
+            try {
+                const selfPath = path.resolve(uriToFilePath(textDocument.uri));
+                const scope = getWorkspaceIncludeScopeIndex().get(selfPath);
+                if (scope) analyzer.setInjectedScope(scope.injectedNames, scope.injectedTypes);
+            } catch { /* index/path failure must never break analysis */ }
+            if (cleanBodies.size > 0) analyzer.setCleanBodies(cleanBodies);
+            return analyzer.analyze(parseResult.ast!);
+        };
+        // Function-level incremental analysis (sound — verified by
+        // tests/test-incremental-analysis.test.js). forceFull disables it so cursor-context
+        // requests get full types. Best-effort: any failure falls back to a plain full run.
+        let analysisResult: SemanticAnalysisResult;
         let cleanCount = 0;
         try {
-            if (!forceFull) {
-                const clean = planClean(incrementalCacheByUri.get(textDocument.uri), text, parseResult.ast as any, textDocument);
-                cleanCount = clean.size;
-                if (cleanCount > 0) analyzer.setCleanBodies(clean);
-            }
-        } catch { cleanCount = 0; }
-        const analysisResult = analyzer.analyze(parseResult.ast);
+            const prev = forceFull ? undefined : incrementalCacheByUri.get(textDocument.uri);
+            const inc = runIncremental(textDocument, parseResult.ast as any, prev, runAnalysis);
+            analysisResult = inc.result;
+            cleanCount = inc.skipped;
+            incrementalCacheByUri.set(textDocument.uri, inc.cache);
+        } catch {
+            analysisResult = runAnalysis(new Map());
+            incrementalCacheByUri.delete(textDocument.uri);
+        }
+        if (cleanCount > 0) degradedUris.add(textDocument.uri); else degradedUris.delete(textDocument.uri);
         const newImports = analysisResult.resolvedImports ?? new Set<string>();
         updateImportDeps(textDocument.uri, newImports);
         analysisCache.set(textDocument.uri, {result: analysisResult, tokens, timestamp: Date.now(), imports: newImports, comments: lexer.comments});
-        // Update the incremental cache + degraded-set for next time.
-        try {
-            incrementalCacheByUri.set(textDocument.uri, buildCache(incrementalCacheByUri.get(textDocument.uri), text, parseResult.ast as any, textDocument, analysisResult.diagnostics, analysisResult.symbolTable));
-            if (cleanCount > 0) degradedUris.add(textDocument.uri); else degradedUris.delete(textDocument.uri);
-        } catch { degradedUris.delete(textDocument.uri); }
 
         // Precompute offset-anchored inlay hints for the whole document and cache
         // them with this version + text, so the inlayHint handler can serve (and

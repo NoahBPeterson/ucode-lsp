@@ -41,13 +41,18 @@ export interface RelDiagnostic {
 
 export interface UnitState {
   bodyHash: string;
-  pure: boolean;                // only pure bodies (no outward writes) are type-skippable
+  cls: BodyClass;               // pure | thisSafe | impure — only the first two are skippable
   returnType: unknown;          // cached inferred return type (UcodeDataType)
   relDiagnostics: RelDiagnostic[]; // ALL diagnostics inside the body, offsets relative to bodyStart
+  thisWrites: Array<[string, unknown]>; // for a thisSafe body: the `this.<prop> = …` types it sets, replayed on skip so siblings see real types
+  sig: string;                  // this unit's externally-visible signature (return type + return shape + this-writes); feeds the semantic fingerprint
 }
 
 export interface IncrementalCacheEntry {
-  fingerprint: string;
+  fingerprint: string;     // STRUCTURAL: file with body interiors blanked (out-of-body changes)
+  semanticSig: string;     // DERIVED: every unit's return type + this-property writes. If this
+                           // changed, a skipped body that reads a sibling's return/this-shape
+                           // could be stale → the run must fall back to a full re-analysis.
   units: Map<string, UnitState>;
 }
 
@@ -135,8 +140,23 @@ export function freeVarsOf(u: UnitRange): string[] {
 /** A body is PURE (skippable) iff it performs no write whose target escapes the function:
  *  no `this.x=`, no assignment/update/delete to a name not declared within the function, and
  *  no member-write to a non-local object. Conservative: any uncertainty ⇒ impure. */
+/** Body classification for incremental skipping:
+ *   'pure'     — no outward writes; skippable, no replay needed.
+ *   'thisSafe' — the ONLY outward writes are `this.<member> = …`; skippable IF we replay the
+ *                cached `this`-property writes (so siblings still see real types).
+ *   'impure'   — writes a global / outer object / implicit global; re-analyzed in full.
+ */
+export type BodyClass = 'pure' | 'thisSafe' | 'impure';
+
 export function isPureBody(u: UnitRange): boolean {
+  return classifyBody(u) === 'pure';
+}
+
+export function classifyBody(u: UnitRange): BodyClass {
   const fn = u.fnNode as any;
+  // Only methods (which have a `this`) can be thisSafe; a top-level function writing `this`
+  // is meaningless, so treat any non-local write there as impure.
+  const allowThis = u.kind === 'method';
   const local = new Set<string>();
   // params of THIS function
   for (const p of fn.params ?? []) if (p?.type === 'Identifier') local.add(p.name);
@@ -160,25 +180,26 @@ export function isPureBody(u: UnitRange): boolean {
   };
   collectLocals(fn.body);
 
-  // root identifier of an assignment/delete target; null ⇒ not a plain local (impure)
+  // root of an assignment/delete target: a name, the marker 'this', or null (other → impure)
   const rootName = (t: any): string | null => {
     if (!t || typeof t !== 'object') return null;
     if (t.type === 'Identifier') return t.name;
+    if (t.type === 'ThisExpression') return ' this';
     if (t.type === 'MemberExpression') return rootName(t.object);
-    return null; // ThisExpression, CallExpression, etc.
+    return null; // CallExpression base, etc.
   };
 
-  let pure = true;
+  let cls: BodyClass = 'pure';
+  const note = (root: string | null) => {
+    if (root !== null && local.has(root)) return;        // local write → fine
+    if (root === ' this' && allowThis) { if (cls === 'pure') cls = 'thisSafe'; return; }
+    cls = 'impure';
+  };
   const walk = (n: any): void => {
-    if (!pure || !n || typeof n !== 'object' || typeof n.type !== 'string') return;
-    if (n.type === 'AssignmentExpression' || n.type === 'UpdateExpression') {
-      const root = rootName(n.type === 'AssignmentExpression' ? n.left : n.argument);
-      if (root === null || !local.has(root)) { pure = false; return; }
-    }
-    if (n.type === 'DeleteExpression') {
-      const root = rootName(n.argument);
-      if (root === null || !local.has(root)) { pure = false; return; }
-    }
+    if (cls === 'impure' || !n || typeof n !== 'object' || typeof n.type !== 'string') return;
+    if (n.type === 'AssignmentExpression') note(rootName(n.left));
+    else if (n.type === 'UpdateExpression') note(rootName(n.argument));
+    else if (n.type === 'DeleteExpression') note(rootName(n.argument));
     for (const k of Object.keys(n)) {
       if (k === 'parent' || k === 'leadingJsDoc') continue;
       const v = n[k];
@@ -187,5 +208,5 @@ export function isPureBody(u: UnitRange): boolean {
     }
   };
   walk(fn.body);
-  return pure;
+  return cls;
 }
