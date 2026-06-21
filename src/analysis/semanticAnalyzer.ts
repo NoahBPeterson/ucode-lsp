@@ -3524,12 +3524,17 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         decl.usedAt = decl.usedAt || [];
         decl.usedAt.push(ref.start);
       } else {
+        // A read of an undeclared variable is a hard `Reference error` ONLY under
+        // 'use strict'; in non-strict ucode it silently evaluates to null (verified
+        // vs the interpreter). So flag it as an Error under strict and a Warning
+        // otherwise — the non-strict case is a typo/render-scope heuristic, not a
+        // guaranteed crash.
         this.addDiagnosticErrorCode(
           UcodeErrorCode.UNDEFINED_VARIABLE,
           `Undefined variable: ${ref.name}`,
           ref.start,
           ref.end,
-          DiagnosticSeverity.Error,
+          this.strictMode ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning,
         );
       }
     }

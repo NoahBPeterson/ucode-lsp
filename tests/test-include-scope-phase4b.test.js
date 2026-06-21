@@ -22,7 +22,11 @@ function analyzeErrors(src, injectedNames) {
   const doc = { getText: () => src, positionAt: (o) => ({ line: 0, character: o }), offsetAt: (p) => p.character, uri: 'file:///t.uc', languageId: 'ucode', version: 1 };
   const an = new SemanticAnalyzer(doc, { enableScopeAnalysis: true, enableTypeChecking: true });
   if (injectedNames) an.setInjectedScope(new Set(injectedNames));
-  return an.analyze(parse(src)).diagnostics.filter((d) => d.severity === 1).map((d) => d.message);
+  // Errors (1) AND warnings (2): an undefined-variable read is an Error under
+  // 'use strict' but a Warning in non-strict (it reads as null at runtime). These
+  // template fixtures are non-strict, so the suppression-logic checks below must
+  // see the warning-severity diagnostics too.
+  return an.analyze(parse(src)).diagnostics.filter((d) => d.severity <= 2).map((d) => d.message);
 }
 const undefinedVars = (msgs) => msgs.filter((m) => /Undefined variable|Undefined function/.test(m));
 

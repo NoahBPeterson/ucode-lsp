@@ -108,7 +108,11 @@ test('31 default-importing stdin is still rejected (builtins have no default)', 
   expect((await errs(`import stdin from "fs";\n`)).some((m) => /default/i.test(m))).toBe(true);
 });
 test('32 bare `stdin` without import is an undefined variable', async () => {
-  expect((await errs(`stdin.fileno();\n`)).some((m) => /Undefined variable: stdin/.test(m))).toBe(true);
+  // Severity-agnostic: an undefined read is an Error under strict and a Warning in
+  // non-strict (this fixture is non-strict, so it is a Warning), but either way the
+  // diagnostic must fire.
+  const d = (await server.getDiagnostics(`stdin.fileno();\n`, uri())) || [];
+  expect(d.some((x) => /Undefined variable: stdin/.test(x.message || ''))).toBe(true);
 });
 
 // ── I. Mixed function + handle imports ───────────────────────────────────────

@@ -13,7 +13,7 @@ storm is gone end-to-end.
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | **Lexer**: stop bailing to 0 tokens on a leading/abutting empty `TK_TEXT`; preserve `TK_EOF` when a file ends on a tag; handle whitespace-trim markers `{%-`/`{%+`/`{{-`/`{#-` and `-%}`/`-}}`; fix the `blockComment` phantom-recursion. | ✅ done |
+| 1 | **Lexer**: stop bailing to 0 tokens on a leading/abutting empty `TK_TEXT`; preserve `TK_EOF` when a file ends on a tag; handle whitespace-trim markers `{%-`/`{%+`/`{{-`/`{#-` and the CLOSE markers `-%}`/`-}}` (`+` is open-only — `+%}`/`+}}` are rejected as syntax errors, matching ucode); reject nested blocks (`{%`/`{{` inside a block → "Template blocks may not be nested", greedy on adjacency like ucode); fix the `blockComment` phantom-recursion. | ✅ done |
 | 2 | **Parser**: bridge framing tokens to statement boundaries (`bridgeTemplateTokens`: text/`{%` dropped, `%}`/`}}`/`{{` → `;`), so the existing parser consumes templates — `{{a}}{{b}}` → `a; b;`, `{% if(x): %}…{% endif %}` → `if (x): … endif`. Extended the alt-colon form to `if`/`elif`/`else`/`endif` and `while`/`endwhile` (`for`/`endfor` already worked). | ✅ done |
 | 3 | **Mode detection** (`detectTemplateMode`, see below) wired into the editor diagnostic path + the cross-file/workspace parse path in `server.ts`. (The provider cursor-context sites — hover/completion/definition — still lex raw; harmless to diagnostics, revisit if needed.) | ✅ done |
 | 4 | **Render-scope enforcement** (NOT blanket auto-suppress). `include(path, {scope})` co-locates a literal path + literal scope object (firewall4 does this for every template, top-level included), so the contract is statically knowable. Built: `extractIncludeSites` → `resolveIncludePath` (relative to includer dir, per oracle) → cross-file `buildIncludeScopeIndex` (target → injected keys). The analyzer suppresses UC1001 for injected names (`setInjectedScope`, strict too); `checkIncludeScopes` flags at the include SITE any template free var the scope fails to provide (`computeFreeVariables` − scope − builtins). Wired into `server.ts` (cached index + per-file inject + host diagnostics). | ✅ done |
@@ -51,6 +51,13 @@ directive can look first in the bridged AST when it isn't — so for a template 
 require the source to start (after shebang/whitespace) with the `{%` block. Raw scripts are
 unaffected (leading comments are already non-statements). Tested with oracle parity
 (`test-template-strict-mode`).
+
+**Severity follows strict mode** (`test-undefined-var-severity`): a read of an undeclared
+variable (UC1001) is an **Error under `'use strict'`** (a guaranteed runtime `Reference
+error`) and a **Warning otherwise** (non-strict reads evaluate to `null` — a typo/render-scope
+heuristic, not a crash). It is still always *reported* (no false negative). A *call* of an
+undefined name (UC1002) or a member-access on it throws even in non-strict, so those stay
+Errors. See `demos/template-strict/` for runnable, oracle-verified examples.
 
 **Result on firewall4:** every template reachable from an in-workspace `include()` is now
 clean (ruleset 239→0, zone-verdict 48→0, and the rest), host findings 0. Two templates
@@ -108,7 +115,9 @@ delete flowtable inet fw4 ft
 ```
 
 Syntax in use: `{% stmt %}`, `{{ expr }}`, `{# comment #}`, whitespace-trim variants
-`{%+`/`-%}`/`{%-`/`+%}`, and the block-control form `if (…): … endif` / `for (…): … endfor`.
+(OPEN modifiers `{%-`/`{%+`/`{{-`/`{{+`/`{#-`; CLOSE modifier `-%}`/`-}}` only — `+` is
+open-only, so `+%}`/`+}}` are syntax errors in every release), and the block-control form
+`if (…): … endif` / `for (…): … endfor`.
 
 The LSP is **completely broken** on these files. Measured with the real validator:
 

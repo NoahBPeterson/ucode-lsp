@@ -86,17 +86,23 @@ test('17 bare require of an UNKNOWN module is not treated as a module (no false 
 });
 
 // ── Real-world: the uvol UBI backend (fuzz-tests/ubi.uc) ─────────────────────
-test('18 ubi.uc: every error except the host-injected `backend` is gone', async () => {
-  const code = fs.readFileSync(`${__dirname}/../fuzz-tests/ubi.uc`, 'utf8');
-  const e = await errs(code);
-  const nonBackend = e.filter((x) => !/backend/.test(x.message || ''));
+// ubi.uc is non-strict, so an undefined read is a Warning (not an Error) — it
+// evaluates to null at runtime. These checks are therefore severity-agnostic and
+// scoped to undefined-variable/function diagnostics: the only name we still can't
+// resolve is the host-injected `backend` (pending runtime introspection).
+const undefDiags = async (code, path) =>
+  ((await server.getDiagnostics(code, path)) || []).filter((x) => /Undefined (variable|function)/.test(x.message || ''));
+test('18 ubi.uc: every undefined-var diagnostic except host-injected `backend` is gone', async () => {
+  const path = `${__dirname}/../fuzz-tests/ubi.uc`;
+  const u = await undefDiags(fs.readFileSync(path, 'utf8'), path);
+  const nonBackend = u.filter((x) => !/backend/.test(x.message || ''));
   expect(nonBackend.map((x) => `L${x.range.start.line + 1} ${x.message.slice(0, 50)}`)).toEqual([]);
 });
-test('19 ubi.uc: the remaining errors are all `backend` (pending introspection)', async () => {
-  const code = fs.readFileSync(`${__dirname}/../fuzz-tests/ubi.uc`, 'utf8');
-  const e = await errs(code);
-  expect(e.length).toBeGreaterThan(0);
-  expect(e.every((x) => /backend/.test(x.message || ''))).toBe(true);
+test('19 ubi.uc: the remaining undefined-var diagnostics are all `backend` (pending introspection)', async () => {
+  const path = `${__dirname}/../fuzz-tests/ubi.uc`;
+  const u = await undefDiags(fs.readFileSync(path, 'utf8'), path);
+  expect(u.length).toBeGreaterThan(0);
+  expect(u.every((x) => /backend/.test(x.message || ''))).toBe(true);
 });
 test('20 ubi.uc: no UC1003, UC3006, or undefined-function diagnostics remain', async () => {
   const code = fs.readFileSync(`${__dirname}/../fuzz-tests/ubi.uc`, 'utf8');

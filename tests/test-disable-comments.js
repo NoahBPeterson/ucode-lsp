@@ -80,14 +80,17 @@ describe('Disable Comments Tests', function() {
     });
 
     it('should report errors on multi-line statements WITHOUT disable comments', function() {
-      // Multi-line statement without disable (lines around 18-22) should have errors
-      const multiLineErrors = diagnostics.filter(d => 
-        d.range.start.line >= 17 && d.range.start.line <= 21 && 
-        d.severity === 1
+      // Multi-line statement without disable (lines around 18-22) should be flagged.
+      // These are bare undefined-variable READS (`error4;`, `error6;`), which are a
+      // Warning in non-strict (null at runtime) rather than an Error — this test
+      // exercises the disable-comment mechanism, so it is severity-agnostic.
+      const multiLineErrors = diagnostics.filter(d =>
+        d.range.start.line >= 17 && d.range.start.line <= 21 &&
+        (d.severity === 1 || d.severity === 2)
       );
-      
-      assert(multiLineErrors.length > 0, 
-        `Should report errors on multi-line statements without disable comments`);
+
+      assert(multiLineErrors.length > 0,
+        `Should report diagnostics on multi-line statements without disable comments`);
     });
 
     it('should report errors on the final test line', function() {

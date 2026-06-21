@@ -41,6 +41,11 @@ export class UcodeLexer {
     private templates: number[] = []; // Stack of brace depth counters for template placeholders
     private eofEmitted: boolean = false; // Track if EOF has been emitted
 
+    // Which template block we are currently lexing inside (null = template text / none).
+    // ucode allows a STATEMENT block (`{%`) to run to EOF unterminated, but an
+    // EXPRESSION block (`{{`) reaching EOF without `}}` is "Unterminated template block".
+    private templateBlockKind: 'statement' | 'expression' | null = null;
+
     private rawMode: boolean = false;
 
     constructor(source: string, config?: ParseConfig) {
@@ -160,6 +165,7 @@ export class UcodeLexer {
         this.nextChar(); // consume '{'
         this.consumeTagOpenModifier();
         this.state = LexState.UC_LEX_IDENTIFY_TOKEN;
+        this.templateBlockKind = 'expression';
         return this.emitToken(TokenType.TK_LEXP);
     }
 
@@ -168,25 +174,34 @@ export class UcodeLexer {
         this.nextChar(); // consume '%'
         this.consumeTagOpenModifier();
         this.state = LexState.UC_LEX_IDENTIFY_TOKEN;
+        this.templateBlockKind = 'statement';
         return this.emitToken(TokenType.TK_LSTM);
     }
 
     private blockComment(): Token | null {
         this.nextChar(); // consume '{'
         this.nextChar(); // consume '#'
-        
+
         // Skip until #}
+        let closed = false;
         while (this.pos < this.source.length) {
             const ch = this.peekChar();
             if (ch === '#' && this.peekChar(1) === '}') {
                 this.nextChar(); // consume '#'
                 this.nextChar(); // consume '}'
+                closed = true;
                 break;
             }
             this.nextChar();
             this.updatePosition(ch);
         }
-        
+
+        // A `{# … <EOF>` comment with no `#}` is "Unterminated template block" in ucode.
+        if (!closed) {
+            this.state = LexState.UC_LEX_EOF;
+            return this.emitToken(TokenType.TK_ERROR, 'Unterminated template block');
+        }
+
         this.state = LexState.UC_LEX_IDENTIFY_BLOCK;
         // Continue lexing after the comment (back to template text/tags). The old
         // `return this.blockComment()` re-entered the comment scanner and consumed
@@ -204,6 +219,13 @@ export class UcodeLexer {
 
         if (this.pos >= this.source.length) {
             this.state = LexState.UC_LEX_EOF;
+            // Premature EOF inside an EXPRESSION block (`{{ … <EOF>`) is an error in
+            // ucode ("Unterminated template block"). A STATEMENT block (`{% … <EOF>`)
+            // running to EOF is allowed, so it falls through to a normal TK_EOF.
+            if (this.templateBlockKind === 'expression') {
+                this.templateBlockKind = null;
+                return this.emitToken(TokenType.TK_ERROR, 'Unterminated template block');
+            }
             return this.emitToken(TokenType.TK_EOF);
         }
 
@@ -216,11 +238,14 @@ export class UcodeLexer {
         // rest of the file — auto-docs/01: false "Expected '}'"/"Unexpected token", every
         // later diagnostic dropped, and a stack-overflow crash on large trailing text.
         if (!this.rawMode) {
-            // Whitespace-trim CLOSE markers `-%}` / `-}}` (ucode strips on `-`; we also
-            // tolerate `+` defensively). The modifier only affects rendered whitespace,
-            // so consume it and emit the ordinary close token. This MUST run before the
-            // `-`/`+` operator handling further below, or `-%}` would lex as subtraction.
-            if ((ch === '-' || ch === '+')
+            // Whitespace-trim CLOSE markers `-%}` / `-}}`. ucode strips ONLY on `-`;
+            // `+` is an OPEN-only modifier, so `+%}` / `+}}` are syntax errors in every
+            // release. We deliberately do NOT accept `+` here — letting the `+` fall
+            // through to operator lexing so the parser raises a syntax error, matching
+            // ucode (accepting what ucode rejects is a false negative, never harmless).
+            // This MUST run before the `-`/`+` operator handling below, or `-%}` would
+            // lex as subtraction.
+            if (ch === '-'
                 && this.peekChar(2) === '}'
                 && (this.peekChar(1) === '%' || this.peekChar(1) === '}')) {
                 const isExpression = this.peekChar(1) === '}';
@@ -228,6 +253,7 @@ export class UcodeLexer {
                 this.nextChar(); // '%' or '}'
                 this.nextChar(); // '}'
                 this.state = LexState.UC_LEX_IDENTIFY_BLOCK;
+                this.templateBlockKind = null;
                 return this.emitToken(isExpression ? TokenType.TK_REXP : TokenType.TK_RSTM);
             }
 
@@ -235,6 +261,7 @@ export class UcodeLexer {
                 this.nextChar();
                 this.nextChar();
                 this.state = LexState.UC_LEX_IDENTIFY_BLOCK;
+                this.templateBlockKind = null;
                 return this.emitToken(TokenType.TK_REXP);
             }
 
@@ -242,7 +269,23 @@ export class UcodeLexer {
                 this.nextChar();
                 this.nextChar();
                 this.state = LexState.UC_LEX_IDENTIFY_BLOCK;
+                this.templateBlockKind = null;
                 return this.emitToken(TokenType.TK_RSTM);
+            }
+
+            // Disallow nested template blocks (ucode lexer.c:
+            // "Template blocks may not be nested"). In template mode, reaching
+            // identifyToken means we are INSIDE a {%…%} / {{…}} block; an abutting
+            // `{%` or `{{` is a nested open tag, which ucode rejects outright. Match
+            // ucode's greedy tokenizer: only ADJACENT `{{` / `{%` nests — `{ {` with
+            // a space is two ordinary braces (a nested object literal), and a lone
+            // `{` is a normal object literal. (`{#` inside a block is a separate
+            // "Unexpected character" error, handled by the default path below.)
+            if (ch === '{' && (this.peekChar(1) === '{' || this.peekChar(1) === '%')) {
+                const startPos = this.pos;
+                this.nextChar(); // '{'
+                this.nextChar(); // '{' or '%'
+                return this.emitToken(TokenType.TK_ERROR, 'Template blocks may not be nested', startPos);
             }
         }
 

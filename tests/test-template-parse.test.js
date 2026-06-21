@@ -65,6 +65,58 @@ describe('template parsing produces no parse-error storm', () => {
   test('whitespace-trim markers parse cleanly', () => {
     expect(parseErrors('{%- if (a): -%}T{%- endif -%}').length).toBe(0);
   });
+  test('valid close trims (-%} / -}}) and plain closes are clean', () => {
+    expect(parseErrors('{%- let a = 1; -%}{{- a -}}').length).toBe(0);
+    expect(parseErrors('{% let a = 1; %}{{ a }}').length).toBe(0);
+  });
+  test('INVALID close modifiers +%} / +}} are rejected (ucode rejects them too)', () => {
+    // `+` is an OPEN-only modifier; on close it is a syntax error in every ucode
+    // release. Accepting what ucode rejects would be a false negative, so the
+    // lexer must NOT tolerate it (regression for the bogus "{%+ defeats strict").
+    expect(parseErrors("{%+ 'use strict'; +%}x").length).toBeGreaterThan(0);
+    expect(parseErrors('{{ a +}}').length).toBeGreaterThan(0);
+  });
+  test('the OPEN modifier {%+ / {{+ is still valid (only the close is rejected)', () => {
+    expect(parseErrors("{%+ let a = 1; %}{{+ a }}").length).toBe(0);
+  });
+});
+
+describe('nested template blocks are rejected (ucode: "Template blocks may not be nested")', () => {
+  const nestErr = (src) => parseTemplate(src).result.errors.map((e) => e.message);
+  const hasNesting = (src) => nestErr(src).some((m) => /Template blocks may not be nested/.test(m));
+
+  test('a {% block inside a {% block', () => expect(hasNesting('{% {% x %} %}')).toBe(true));
+  test('a {{ block inside a {{ block', () => expect(hasNesting('{{ {{ x }} }}')).toBe(true));
+  test('a {{ expr inside a {% statement', () => expect(hasNesting('{% let a = {{ b }}; %}')).toBe(true));
+  test('a {% inside a {% across alt-colon control flow', () => expect(hasNesting('{% if (x): {% y %} endif %}')).toBe(true));
+  test('adjacent {{ reads as a nested tag, not a nested object', () => expect(hasNesting('{% x = {{ c: 3 }}; %}')).toBe(true));
+
+  // The ucode tokenizer is greedy, so ONLY adjacent `{{` / `{%` nest. These valid
+  // forms must stay clean (no false positives on real object literals).
+  test('a single-brace object literal is clean', () => expect(parseErrors('{% x = { a: 1 }; %}').length).toBe(0));
+  test('a space-separated nested object `{ { } }` is clean', () => expect(parseErrors('{% x = { b: { c: 2 } }; %}').length).toBe(0));
+  test('raw-mode code with adjacent braces is unaffected', () => expect(parseErrors('let o = { p: { q: 1 } };').length).toBe(0));
+});
+
+describe('unterminated template blocks (ucode: "Unterminated template block")', () => {
+  const msgs = (src) => parseTemplate(src).result.errors.map((e) => e.message);
+  const unterminated = (src) => msgs(src).some((m) => /Unterminated template block/.test(m));
+
+  // ucode allows a STATEMENT block to run to EOF, but an EXPRESSION or COMMENT block
+  // reaching EOF without its close is an error (verified vs the oracle, all versions).
+  test('{{ expression with no }} at EOF → error', () => expect(unterminated('{{ 1 + 2')).toBe(true));
+  test('text then {{ with no }} at EOF → error', () => expect(unterminated('hello {{ 1')).toBe(true));
+  test('{# comment with no #} at EOF → error', () => expect(unterminated('{# unterminated')).toBe(true));
+
+  test('{% statement with no %} at EOF → ALLOWED (clean), matching ucode', () =>
+    expect(parseErrors('{% let x = 1; print(x)').length).toBe(0));
+  test('text then {% with no %} at EOF → ALLOWED (clean)', () =>
+    expect(parseErrors('hello {% print(1)').length).toBe(0));
+
+  test('properly closed blocks are clean', () => {
+    expect(parseErrors('{% let a = 1; %}{{ a }}').length).toBe(0);
+    expect(parseErrors('{# c #}{% x = 1; %}').length).toBe(0);
+  });
   test('the produced AST actually contains the in-tag code', () => {
     const { result } = parseTemplate('{% let answer = 42; %}');
     const kinds = (result.ast.body || []).map((n) => n.type);
