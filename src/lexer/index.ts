@@ -4,3 +4,4 @@
 
 export * from './tokenTypes';
 export * from './ucodeLexer';
+export * from './templateMode';

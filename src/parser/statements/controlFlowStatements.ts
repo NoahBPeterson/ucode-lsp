@@ -62,6 +62,11 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
 
     this.consume(TokenType.TK_RPAREN, "Expected ')' after if condition");
 
+    // Alternative colon-block syntax: `if (x): … elif (y): … else … endif` (template form).
+    if (this.check(TokenType.TK_COLON)) {
+      return this.parseColonIfStatement(start, test);
+    }
+
     const consequent = this.parseStatement();
     if (!consequent) return null;
 
@@ -80,6 +85,58 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     };
   }
 
+  /** Parse the body of a colon-block branch — statements up to (but not consuming) any
+   *  of the `stops` tokens (e.g. `elif`/`else`/`endif`). Used by the alternative
+   *  `if (x): … endif` template syntax, where the consequent/else bodies are bounded by
+   *  block-control keywords rather than braces. */
+  private parseColonBranchBody(stops: TokenType[]): BlockStatementNode {
+    const start = this.peek()?.pos || 0;
+    const statements: AstNode[] = [];
+    while (!stops.some(s => this.check(s)) && !this.isAtEnd()) {
+      const stmt = this.parseStatement();
+      if (stmt) {
+        statements.push(stmt);
+      } else {
+        this.advance();
+      }
+    }
+    return {
+      type: 'BlockStatement',
+      start,
+      end: this.previous()?.end ?? start,
+      body: statements
+    } as BlockStatementNode;
+  }
+
+  /** `if (test): … [elif (c): …]* [else …] endif`. The whole chain shares ONE `endif`:
+   *  an `elif` recurses (consuming the shared `endif`), so this caller must not consume
+   *  it again on that path. */
+  private parseColonIfStatement(start: number, test: AstNode): IfStatementNode {
+    this.consume(TokenType.TK_COLON, "Expected ':' for if block");
+    const consequent = this.parseColonBranchBody([TokenType.TK_ELIF, TokenType.TK_ELSE, TokenType.TK_ENDIF]);
+
+    let alternate: AstNode | null = null;
+
+    if (this.check(TokenType.TK_ELIF)) {
+      const elifStart = this.peek()!.pos;
+      this.advance(); // 'elif'
+      this.consume(TokenType.TK_LPAREN, "Expected '(' after 'elif'");
+      const elifTest = this.parseExpression(Precedence.COMMA);
+      this.consume(TokenType.TK_RPAREN, "Expected ')' after elif condition");
+      // Recurse — the nested if consumes the shared `endif`.
+      alternate = elifTest ? this.parseColonIfStatement(elifStart, elifTest) : null;
+      return { type: 'IfStatement', start, end: this.previous()!.end, test, consequent, alternate };
+    }
+
+    if (this.match(TokenType.TK_ELSE)) {
+      if (this.check(TokenType.TK_COLON)) this.advance(); // optional `else:`
+      alternate = this.parseColonBranchBody([TokenType.TK_ENDIF]);
+    }
+
+    this.consume(TokenType.TK_ENDIF, "Expected 'endif' to close if block");
+    return { type: 'IfStatement', start, end: this.previous()!.end, test, consequent, alternate };
+  }
+
   protected parseWhileStatement(): WhileStatementNode | null {
     const start = this.previous()!.pos;
 
@@ -91,7 +148,10 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
 
     this.consume(TokenType.TK_RPAREN, "Expected ')' after while condition");
 
-    const body = this.parseStatement();
+    // Alternative colon-block syntax: `while (x): … endwhile` (template form).
+    const body = this.check(TokenType.TK_COLON)
+      ? this.parseColonEndBlock(TokenType.TK_ENDWHILE, "endwhile")
+      : this.parseStatement();
     if (!body) return null;
 
     return {

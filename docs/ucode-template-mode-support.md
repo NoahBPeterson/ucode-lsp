@@ -1,17 +1,23 @@
 # ucode template-mode (`{% %}` / `{{ }}`) bring-up
 
-Status: **Phase 1 (lexer) DONE; phases 2–5 planned.** Investigated 2026-06-08,
-bring-up started 2026-06-20. Corpus: `firewall4/`, `luci/`, `snort3/` template `.uc`.
+Status: **Phases 1–3 DONE (templates parse with zero syntax errors); phases 4–5
+planned.** Investigated 2026-06-08, bring-up started 2026-06-20. Corpus: `firewall4/`,
+`luci/`, `snort3/` template `.uc`.
+
+Measured result of phases 1–3 on the firewall4 corpus: `ruleset.uc` 239 diagnostics →
+0 parse errors (144 remaining are all UC1001 on render-scope free vars = phase 4);
+`zone-verdict.uc` 48 → 0 parse errors (32 remaining UC1001). The UC6004 syntax-error
+storm is gone end-to-end.
 
 ## Implementation plan (phased)
 
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | **Lexer**: stop bailing to 0 tokens on a leading/abutting empty `TK_TEXT`; preserve `TK_EOF` when a file ends on a tag; handle whitespace-trim markers `{%-`/`{%+`/`{{-`/`{#-` and `-%}`/`-}}`; fix the `blockComment` phantom-recursion. | ✅ done |
-| 2 | **Parser**: a `parseTemplateProgram()` that interleaves `TK_TEXT` chunks with `{% stmt %}` (reuse `parseStatement`) and `{{ expr }}` (reuse `parseExpression`). Alt-colon block syntax (`if(): … endif`) already parses. | planned |
-| 3 | **Mode detection** (see below) + thread through the ~16 `rawMode: true` call sites. | planned |
-| 4 | **Scope**: a template's free variables are render-context inputs (firewall4 injects `fw4`/`rule`/`zone`/…), so they must not fire UC1001. (Same family as the C8 injected-globals cluster — decision pending: auto-suppress vs. declared via directive/config.) | planned |
-| 5 | **Tests**: the in-tree 18-file template corpus → zero false diagnostics. | planned (lexer unit tests landed in phase 1) |
+| 2 | **Parser**: bridge framing tokens to statement boundaries (`bridgeTemplateTokens`: text/`{%` dropped, `%}`/`}}`/`{{` → `;`), so the existing parser consumes templates — `{{a}}{{b}}` → `a; b;`, `{% if(x): %}…{% endif %}` → `if (x): … endif`. Extended the alt-colon form to `if`/`elif`/`else`/`endif` and `while`/`endwhile` (`for`/`endfor` already worked). | ✅ done |
+| 3 | **Mode detection** (`detectTemplateMode`, see below) wired into the editor diagnostic path + the cross-file/workspace parse path in `server.ts`. (The provider cursor-context sites — hover/completion/definition — still lex raw; harmless to diagnostics, revisit if needed.) | ✅ done |
+| 4 | **Scope**: a template's free variables are render-context inputs (firewall4 injects `fw4`/`rule`/`zone`/…), so they must not fire UC1001. This is the ONLY remaining noise (144/32 above). Same family as the C8 injected-globals cluster — **decision pending: auto-suppress all template free vars vs. declare via directive/config.** | planned |
+| 5 | **Tests**: the in-tree 18-file template corpus → zero false diagnostics. | partial (lexer + parse unit tests landed; corpus-wide assertion awaits phase 4) |
 
 ## Detection — the canonical rule (from `ucode/main.c`)
 

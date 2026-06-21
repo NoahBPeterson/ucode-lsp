@@ -67,7 +67,7 @@ import { UCODE_TARGET_VERSIONS, UcodeTargetVersion, DEFAULT_TARGET_VERSION } fro
 import { UcodeErrorCode } from './analysis/errorConstants';
 import { stringSourceToRegexLiteral } from './analysis/checkers/builtinValidation';
 import { UcodeParser } from './parser';
-import { UcodeLexer, TokenType } from './lexer';
+import { UcodeLexer, TokenType, detectTemplateMode, bridgeTemplateTokens } from './lexer';
 import { FileResolver } from './analysis/fileResolver';
 import { MODULE_REGISTRIES } from './analysis/moduleDispatch';
 import { Option } from 'effect';
@@ -516,8 +516,12 @@ async function validateAndAnalyzeDocument(textDocument: TextDocument): Promise<v
 
 async function validateAndAnalyzeDocumentInner(textDocument: TextDocument): Promise<void> {
     const text = textDocument.getText();
-    const lexer = new UcodeLexer(text, { rawMode: true });
-    const tokens = lexer.tokenize();
+    // Template files (`{% %}`/`{{ }}`) lex in template mode and have their framing
+    // tokens bridged to statement separators so the ordinary parser can consume them;
+    // raw scripts are unchanged. (ucode template-mode bring-up, phase 3.)
+    const isTemplate = detectTemplateMode(text);
+    const lexer = new UcodeLexer(text, { rawMode: !isTemplate });
+    const tokens = isTemplate ? bridgeTemplateTokens(lexer.tokenize()) : lexer.tokenize();
     const parser = new UcodeParser(tokens, text);
     parser.setComments(lexer.comments);
     const parseResult = parser.parse();
@@ -1209,8 +1213,9 @@ function getWorkspaceFile(filePath: string): WorkspaceFileEntry | null {
     const uri = filePathToUri(filePath);
     const parseEntry = (content: string, doc: TextDocument, key: Partial<WorkspaceFileEntry>): WorkspaceFileEntry | null => {
         try {
-            const lexer = new UcodeLexer(content, { rawMode: true });
-            const tokens = lexer.tokenize();
+            const isTemplate = detectTemplateMode(content);
+            const lexer = new UcodeLexer(content, { rawMode: !isTemplate });
+            const tokens = isTemplate ? bridgeTemplateTokens(lexer.tokenize()) : lexer.tokenize();
             const parser = new UcodeParser(tokens, content);
             parser.setComments(lexer.comments);
             const ast = parser.parse().ast;
