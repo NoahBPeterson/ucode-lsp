@@ -15,3 +15,5 @@ fuzz-tests/*
 coverage-reports/*
 # Top-level spot-check / demo scripts (throwaway, per-finding — keep them local, don't commit)
 /*.uc
+# Demo / sample dirs are never committed (local aids only)
+/demos/
