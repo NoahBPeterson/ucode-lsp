@@ -4583,10 +4583,6 @@ private addDiagnostic(
             if (end < 0) break;
             lead = lead.slice(end + 2);
           }
-          // The `{%+` no-strip modifier emits the (empty) leading text as a print() before the
-          // block's code, so the directive is no longer first → inert (oracle-verified). `{%-`
-          // and a plain `{%` strip/elide it, so they stay strict.
-          if (lead.startsWith('{%+')) return false;
           if (!lead.startsWith('{%')) return false;
         }
         return true;
