@@ -52,6 +52,9 @@ function createLSPTestServer(options = {}) {
       getCodeActions: global.__sharedLSPServer.getCodeActions,
       getCodeLens: global.__sharedLSPServer.getCodeLens,
       resolveCodeLens: global.__sharedLSPServer.resolveCodeLens,
+      openOrChangeDocument: global.__sharedLSPServer.openOrChangeDocument,
+      closeDocument: global.__sharedLSPServer.closeDocument,
+      waitForDiagnostics: global.__sharedLSPServer.waitForDiagnostics,
     };
   }
 
@@ -638,6 +641,16 @@ function createLSPTestServer(options = {}) {
     serverProcess.stdin.write(createLSPMessage({ jsonrpc: '2.0', method, params }));
   }
 
+  // Close an open document (textDocument/didClose) so the server drops it from its
+  // open-buffer registry (exercises openDocuments.clearOpenDocumentContent).
+  function closeDocument(uri) {
+    lastDiagnosticsByUri.delete(uri);
+    serverProcess.stdin.write(createLSPMessage({
+      jsonrpc: '2.0', method: 'textDocument/didClose',
+      params: { textDocument: { uri } },
+    }));
+  }
+
   function waitForDiagnostics(uri, predicate, timeoutMs = 3000) {
     return new Promise((resolve, reject) => {
       const existing = lastDiagnosticsByUri.get(uri);
@@ -675,6 +688,7 @@ function createLSPTestServer(options = {}) {
     getCodeLens,
     resolveCodeLens,
     openOrChangeDocument,
+    closeDocument,
     waitForDiagnostics
   };
 }
