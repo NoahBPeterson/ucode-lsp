@@ -5,7 +5,7 @@
 
 import type { FunctionSignature } from './moduleTypes';
 import type { ObjectTypeDefinition } from './registryFactory';
-import { UcodeType, UcodeDataType, extractModuleType } from './symbolTable';
+import { UcodeType, UcodeDataType } from './symbolTable';
 
 export enum FsObjectType {
   FS_PROC = 'fs.proc',
@@ -200,84 +200,6 @@ export const fsFileObjectType: ObjectTypeDefinition = {
     `**fs.file.${sig.name}()**: \`${sig.returnType}\`\n\n${sig.description}`,
 };
 
-// Map of all fs object type methods for backwards-compat
-const objectMethodMaps: Record<string, Map<string, FunctionSignature>> = {
-  [FsObjectType.FS_PROC]: procMethods,
-  [FsObjectType.FS_DIR]: dirMethods,
-  [FsObjectType.FS_FILE]: fileMethods,
-};
-
-// Legacy interface preserved for external consumers
-export interface FsMethodSignature {
-  name: string;
-  parameters: UcodeType[];
-  returnType: UcodeType;
-  variadic?: boolean;
-  minParams?: number;
-  maxParams?: number;
-  description?: string;
-}
-
-export interface FsTypeDefinition {
-  type: FsObjectType;
-  methods: Map<string, FsMethodSignature>;
-}
-
-// Backwards compatibility — singleton registry
-export const fsTypeRegistry = {
-  getFsType: (_typeName: string) => {
-    return undefined as FsTypeDefinition | undefined;
-  },
-  isFsType: (_typeName: string) => _typeName in objectMethodMaps,
-  getFsMethod: (typeName: string, methodName: string) => {
-    // Return in legacy FsMethodSignature format for backwards compat
-    const methods = objectMethodMaps[typeName];
-    const sig = methods?.get(methodName);
-    if (!sig) return undefined;
-    // Convert FunctionSignature back to FsMethodSignature format
-    return {
-      name: sig.name,
-      parameters: sig.parameters.map(p => {
-        // Reverse mapping from string type to UcodeType
-        const typeMap: Record<string, UcodeType> = {
-          'string': UcodeType.STRING,
-          'integer': UcodeType.INTEGER,
-          'boolean': UcodeType.BOOLEAN,
-          'number': UcodeType.INTEGER,
-          'any': UcodeType.UNKNOWN,
-          'number | string': UcodeType.UNKNOWN,
-        };
-        return typeMap[p.type] ?? UcodeType.UNKNOWN;
-      }),
-      returnType: (() => {
-        const typeMap: Record<string, UcodeType> = {
-          'string': UcodeType.STRING,
-          'integer': UcodeType.INTEGER,
-          'boolean': UcodeType.BOOLEAN,
-          'any': UcodeType.UNKNOWN,
-        };
-        return typeMap[sig.returnType] ?? UcodeType.UNKNOWN;
-      })(),
-      description: sig.description,
-    } as FsMethodSignature;
-  },
-  getAllFsTypes: () => [FsObjectType.FS_PROC, FsObjectType.FS_DIR, FsObjectType.FS_FILE] as FsObjectType[],
-  getMethodsForType: (typeName: string) => {
-    const methods = objectMethodMaps[typeName];
-    return methods ? Array.from(methods.keys()) : [];
-  },
-  isVariableOfFsType: (dataType: UcodeDataType): FsObjectType | null => {
-    if (typeof dataType === 'string') return null;
-    const moduleType = extractModuleType(dataType);
-    if (moduleType) {
-      const moduleName = moduleType.moduleName;
-      if (moduleName in objectMethodMaps) {
-        return moduleName as FsObjectType;
-      }
-    }
-    return null;
-  },
-};
 
 // Helper functions for type checking
 export function createFsObjectDataType(fsType: FsObjectType): UcodeDataType {
