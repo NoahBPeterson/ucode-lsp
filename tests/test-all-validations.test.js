@@ -16,46 +16,13 @@ const execAsync = promisify(exec);
 
 const TESTS_DIR = 'tests';
 
-// Files the glob finds but must NOT run. Both categories are PRE-EXISTING (none were
-// in the old curated list). They are fix-or-delete candidates: repair one and simply
-// remove it here to enroll it. Keep this list SMALL — it is the only opt-out.
-const QUARANTINE = new Set([
-    // (a) Currently FAILING / crashing when run — would turn CI red. Triaged 2026-06-22.
-    'test-array-element-types.js',
-    'test-exception-types.js',
-    'test-hover-debug.js',
-    'test-hover-direct.js',
-    'test-import-parsing.js',
-    'test-nl80211-import-validation.js',
-    'test-rest-parameters.js',
-    'test-rtnl-module-completion.js',
-    'test-rtnl-union-types.js',
-    'test-stray-slash-parser-error.js',
-    'test-uloop-delete-methods.js',
-    'test-uloop-type-inference.js',
-    // (b) Scratch/debug scripts that make NO assertions (emit no "N/N tests passed"
-    //     marker) — they execute analyzer code but assert nothing, so they are not
-    //     real suites. Promote one by giving it real assertions, then remove it here.
-    'test-assignment-type-inference.js',
-    'test-catch-parseInt-fix.js',
-    'test-debug-module.js',
-    'test-equality-narrowing.js',
-    'test-export-parsing.js',
-    'test-final-comprehensive.js',
-    'test-fs-completion-integration.js',
-    'test-fs-member-expression-errors.js',
-    'test-hover-fs-types.js',
-    'test-multiple-semicolon-errors.js',
-    'test-multiple-semicolon-simple.js',
-    'test-normal-regex.js',
-    'test-parser-error-location.js',
-    'test-simple-assignment-debug.js',
-    'test-stray-slash-context.js',
-    'test-stray-slash-fix.js',
-    'test-stray-slash-simple.js',
-    'test-type-inference.js',
-    'test-union-types.js',
-]);
+// Files the glob finds but must NOT run. Empty by design: a quarantined file is
+// untested code. The 31 pre-existing entries here were triaged 2026-06-22 — 30 deleted
+// (scratch console.log scripts or redundant with passing tests) and 1 fixed
+// (test-array-element-types.js had stale `array | null` expectations). The fs-flow gap
+// two of them probed is now characterized by tests/test-fs-flow-reassignment.test.js +
+// docs/flow-reassignment-union-call-gap.md. Keep this empty: fix or delete, never quarantine.
+const QUARANTINE = new Set([]);
 
 // Auto-discover suites: tests/test-*.js, EXCLUDING
 //   - *.test.js   → discovered & run directly by `bun test` (incl. THIS bridge file),

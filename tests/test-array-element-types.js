@@ -97,7 +97,7 @@ function parse_array(val) {
     const paramOffset = code.indexOf('val)');
     const sym = result.symbolTable.lookupAtPosition('val', paramOffset);
     check('param declared type preserved', typeToString(sym.dataType), 'unknown');
-    check('param currentType after reassign', sym.currentType ? typeToString(sym.currentType) : 'none', 'array | null');
+    check('param currentType after reassign', sym.currentType ? typeToString(sym.currentType) : 'none', 'array<string> | null');
 }
 
 // Test 8: Parameter hover should show unknown at declaration, reassigned type after assignment
@@ -140,7 +140,7 @@ function parse_array(val) {
     } else {
         effectiveTypeAtReturn = sym.dataType;
     }
-    check('hover after reassign shows array | null', typeToString(effectiveTypeAtReturn), 'array | null');
+    check('hover after reassign shows array | null', typeToString(effectiveTypeAtReturn), 'array<string> | null');
 }
 
 // Test 9: Parameter with no reassignment stays unknown
