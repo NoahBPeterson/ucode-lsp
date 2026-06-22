@@ -11,6 +11,7 @@ import { test, expect } from 'bun:test';
 import { execSync, exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
+import path from 'path';
 
 const execAsync = promisify(exec);
 
@@ -24,16 +25,26 @@ const TESTS_DIR = 'tests';
 // docs/flow-reassignment-union-call-gap.md. Keep this empty: fix or delete, never quarantine.
 const QUARANTINE = new Set([]);
 
-// Auto-discover suites: tests/test-*.js, EXCLUDING
+// Auto-discover suites by walking tests/ RECURSIVELY (suites now live in feature
+// subdirs: tests/<category>/test-*.js). EXCLUDING:
 //   - *.test.js   → discovered & run directly by `bun test` (incl. THIS bridge file),
 //                   so re-running them here would double-run and recurse.
 //   - *-shared.js → imported helper modules, not standalone suites.
-//   - QUARANTINE  → known-broken / scratch (see above).
-const testFiles = fs.readdirSync(TESTS_DIR)
-    .filter((f) => /^test-.*\.js$/.test(f) && !/\.test\.js$/.test(f) && !/-shared\.js$/.test(f))
-    .filter((f) => !QUARANTINE.has(f))
-    .sort()
-    .map((f) => `${TESTS_DIR}/${f}`);
+//   - fixtures/, scratch/, module_tests/, u1905/, node_modules/ → no runnable suites
+//     (sample .uc inputs and non-run debug scripts).
+//   - QUARANTINE  → empty by design (a quarantined file is untested code).
+const SKIP_DIRS = new Set(['fixtures', 'scratch', 'module_tests', 'u1905', 'node_modules']);
+function discoverSuites(dir) {
+    const out = [];
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) out.push(...discoverSuites(p)); }
+        else if (/^test-.*\.js$/.test(e.name) && !/\.test\.js$/.test(e.name) && !/-shared\.js$/.test(e.name)
+                 && !QUARANTINE.has(e.name)) out.push(p);
+    }
+    return out;
+}
+const testFiles = discoverSuites(TESTS_DIR).sort();
 
 // Classify a suite as MOCHA (describe/it — run via the shared mocha invocation) vs a
 // standalone BUN script (run via `bun <file>`): a mocha suite uses describe() and does
