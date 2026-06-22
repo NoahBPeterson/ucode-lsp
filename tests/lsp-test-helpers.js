@@ -54,6 +54,7 @@ function createLSPTestServer(options = {}) {
       resolveCodeLens: global.__sharedLSPServer.resolveCodeLens,
       openOrChangeDocument: global.__sharedLSPServer.openOrChangeDocument,
       closeDocument: global.__sharedLSPServer.closeDocument,
+      requestInlayHints: global.__sharedLSPServer.requestInlayHints,
       waitForDiagnostics: global.__sharedLSPServer.waitForDiagnostics,
     };
   }
@@ -611,6 +612,24 @@ function createLSPTestServer(options = {}) {
     sendPositionRequest('textDocument/signatureHelp', content, file, line, character);
   const getInlayHints = (content, file, rangeStart, rangeEnd) =>
     sendPositionRequest('textDocument/inlayHint', content, file, 0, 0, { range: { start: rangeStart, end: rangeEnd } });
+  // Request inlay hints for an ALREADY-OPEN document WITHOUT a didOpen (so the doc's
+  // current version is whatever the last didChange set). Used to hit the stale-cache
+  // shiftRawHints path: didChange to vN+1, then request before the debounced re-analysis
+  // refreshes the inlay cache (which is still at vN).
+  function requestInlayHints(uri, rangeStart, rangeEnd) {
+    return new Promise((resolve, reject) => {
+      const id = requestId++;
+      const reqKey = idKey(id);
+      const req = { jsonrpc: '2.0', id, method: 'textDocument/inlayHint',
+        params: { textDocument: { uri }, range: { start: rangeStart, end: rangeEnd } } };
+      const timeout = setTimeout(() => {
+        if (pendingRequests.has(reqKey)) { pendingRequests.delete(reqKey); inflightStartedAt.delete(reqKey); reject(new Error('Timeout waiting for inlayHint response')); }
+      }, 2000);
+      pendingRequests.set(reqKey, { resolve, reject, timeout });
+      inflightStartedAt.set(reqKey, Date.now());
+      serverProcess.stdin.write(createLSPMessage(req));
+    });
+  }
   const getFoldingRanges = (content, file) =>
     sendPositionRequest('textDocument/foldingRange', content, file, 0, 0);
   const getDocumentLinks = (content, file) =>
@@ -689,6 +708,7 @@ function createLSPTestServer(options = {}) {
     resolveCodeLens,
     openOrChangeDocument,
     closeDocument,
+    requestInlayHints,
     waitForDiagnostics
   };
 }
