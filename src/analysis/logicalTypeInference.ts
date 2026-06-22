@@ -7,7 +7,7 @@
  * - Both preserve the exact type of the returned operand
  */
 
-import { UcodeType, UcodeDataType, SingleType, createUnionType, getUnionTypes, singleTypeToBase } from './symbolTable';
+import { UcodeType, type UcodeDataType, type SingleType, createUnionType, getUnionTypes, singleTypeToBase } from './symbolTable';
 
 export class LogicalTypeInference {
 

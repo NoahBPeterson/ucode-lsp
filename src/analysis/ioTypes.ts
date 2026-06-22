@@ -6,7 +6,7 @@
 import type { FunctionSignature } from './moduleTypes';
 import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
 
-import { UcodeType, UcodeDataType, extractModuleType } from './symbolTable';
+import { UcodeType, type UcodeDataType, extractModuleType } from './symbolTable';
 
 export enum IoObjectType {
   IO_HANDLE = 'io.handle'

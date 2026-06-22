@@ -3,7 +3,7 @@
  * Manages variable scoping and symbol resolution
  */
 
-import { AstNode, IdentifierNode } from '../ast/nodes';
+import { type AstNode, type IdentifierNode } from '../ast/nodes';
 import { Match } from 'effect';
 
 export enum SymbolType {

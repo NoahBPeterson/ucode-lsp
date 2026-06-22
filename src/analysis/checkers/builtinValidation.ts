@@ -2,9 +2,9 @@
  * Built-in function validation for ucode semantic analysis
  */
 
-import { AstNode, CallExpressionNode, LiteralNode } from '../../ast/nodes';
-import { UcodeType, UcodeDataType, createUnionType, createArrayType, isArrayType, getArrayElementType } from '../symbolTable';
-import { TypeError, TypeWarning } from '../types';
+import { type AstNode, type CallExpressionNode, type LiteralNode } from '../../ast/nodes';
+import { UcodeType, type UcodeDataType, createUnionType, createArrayType, isArrayType, getArrayElementType } from '../symbolTable';
+import { type TypeError, type TypeWarning } from '../types';
 import { UcodeErrorCode } from '../errorConstants';
 
 export interface FormatSpecifier {

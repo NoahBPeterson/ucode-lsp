@@ -2,9 +2,9 @@
  * Parser utility methods
  */
 
-import { Token, TokenType } from '../lexer';
-import { ParseWarning, RecoveryMode, STATEMENT_SYNC_TOKENS, EXPRESSION_SYNC_TOKENS, ParseError } from './types';
-import { JsDocCommentNode } from '../ast/nodes';
+import { type Token, TokenType } from '../lexer';
+import { type ParseWarning, RecoveryMode, STATEMENT_SYNC_TOKENS, EXPRESSION_SYNC_TOKENS, type ParseError } from './types';
+import { type JsDocCommentNode } from '../ast/nodes';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export class ParserUtils {

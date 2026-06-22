@@ -5,7 +5,7 @@
 
 import type { FunctionSignature } from './moduleTypes';
 import type { ObjectTypeDefinition } from './registryFactory';
-import { UcodeType, UcodeDataType } from './symbolTable';
+import { UcodeType, type UcodeDataType } from './symbolTable';
 
 export enum FsObjectType {
   FS_PROC = 'fs.proc',

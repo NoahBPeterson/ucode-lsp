@@ -3,7 +3,7 @@
  * Based on the original C implementation from the ucode project
  */
 
-import { TokenType, Token, LexerError, Keywords, Operators,
+import { TokenType, type Token, type LexerError, Keywords, Operators,
          isKeyword, isIdentifierStart, isIdentifierPart, isDigit,
          isHexDigit, isWhitespace, isLineBreak,
          isBinaryDigit} from './tokenTypes';

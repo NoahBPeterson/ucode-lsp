@@ -4,17 +4,17 @@
  */
 
 import {
-  AstNode, LiteralNode, IdentifierNode, BinaryExpressionNode, UnaryExpressionNode,
-  CallExpressionNode, MemberExpressionNode, AssignmentExpressionNode, ArrayExpressionNode,
-  ObjectExpressionNode, ConditionalExpressionNode, ArrowFunctionExpressionNode,
-  FunctionExpressionNode, IfStatementNode, ProgramNode, BlockStatementNode,
-  ExpressionStatementNode, FunctionDeclarationNode, VariableDeclarationNode,
-  VariableDeclaratorNode, ExportDefaultDeclarationNode, ReturnStatementNode,
-  PropertyNode, SwitchStatementNode, SwitchCaseNode, ForInStatementNode,
-  ExportNamedDeclarationNode, ForStatementNode, WhileStatementNode,
-  ThrowStatementNode, TryStatementNode, CatchClauseNode, LogicalExpressionNode,
-  DeleteExpressionNode, SpreadElementNode, TemplateLiteralNode,
-  ImportDeclarationNode, LabeledStatementNode
+  type AstNode, type LiteralNode, type IdentifierNode, type BinaryExpressionNode, type UnaryExpressionNode,
+  type CallExpressionNode, type MemberExpressionNode, type AssignmentExpressionNode, type ArrayExpressionNode,
+  type ObjectExpressionNode, type ConditionalExpressionNode, type ArrowFunctionExpressionNode,
+  type FunctionExpressionNode, type IfStatementNode, type ProgramNode, type BlockStatementNode,
+  type ExpressionStatementNode, type FunctionDeclarationNode, type VariableDeclarationNode,
+  type VariableDeclaratorNode, type ExportDefaultDeclarationNode, type ReturnStatementNode,
+  type PropertyNode, type SwitchStatementNode, type SwitchCaseNode, type ForInStatementNode,
+  type ExportNamedDeclarationNode, type ForStatementNode, type WhileStatementNode,
+  type ThrowStatementNode, type TryStatementNode, type CatchClauseNode, type LogicalExpressionNode,
+  type DeleteExpressionNode, type SpreadElementNode, type TemplateLiteralNode,
+  type ImportDeclarationNode, type LabeledStatementNode
 } from '../ast/nodes';
 import { AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
 
@@ -42,8 +42,8 @@ interface TypeGuardInfo {
   // (e.g., length(x) <= 0) doesn't imply x is null — x could just be empty.
   isNullPropagation?: boolean;
 }
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, propertyTypeAt, Symbol as UcodeSymbol } from './symbolTable';
-import { FlowTypeEngine, makeAssignmentTransfer, FlowEnvironment, EdgeGuardFn } from './flowTypeEngine';
+import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, type SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, propertyTypeAt, type Symbol as UcodeSymbol } from './symbolTable';
+import { FlowTypeEngine, makeAssignmentTransfer, type FlowEnvironment, type EdgeGuardFn } from './flowTypeEngine';
 import { CFGBuilder } from './cfg/cfgBuilder';
 import type { CheckResult } from './checkResult';
 import { logicalTypeInference } from './logicalTypeInference';

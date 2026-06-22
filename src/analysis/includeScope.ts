@@ -18,7 +18,7 @@
  * know the key set is incomplete and must not treat it as exhaustive.
  */
 
-import { AstNode } from '../ast/nodes';
+import { type AstNode } from '../ast/nodes';
 
 /** How a scope value's type is determined. */
 export type ScopeValueInfo =

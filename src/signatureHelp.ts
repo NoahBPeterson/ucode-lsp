@@ -5,7 +5,7 @@
 // parameter list; builtins parse the parameter names out of their markdown doc.
 
 import {
-    SignatureHelp, SignatureInformation, ParameterInformation, MarkupKind,
+    type SignatureHelp, SignatureInformation, ParameterInformation, MarkupKind,
 } from 'vscode-languageserver/node';
 import { extractModuleType } from './analysis/symbolTable';
 import { isKnownModule, isKnownObjectType, MODULE_REGISTRIES, OBJECT_REGISTRIES } from './analysis/moduleDispatch';

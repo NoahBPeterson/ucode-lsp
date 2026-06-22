@@ -5,9 +5,9 @@
 
 import { TokenType } from '../../lexer';
 import {
-  AstNode, IdentifierNode, ArrayExpressionNode, ObjectExpressionNode,
-  PropertyNode, MemberExpressionNode, LiteralNode, SpreadElementNode,
-  FunctionExpressionNode, ArrowFunctionExpressionNode
+  type AstNode, type IdentifierNode, type ArrayExpressionNode, type ObjectExpressionNode,
+  type PropertyNode, type MemberExpressionNode, type LiteralNode, type SpreadElementNode,
+  type FunctionExpressionNode, type ArrowFunctionExpressionNode
 } from '../../ast/nodes';
 import { PrimaryExpressions } from './primaryExpressions';
 

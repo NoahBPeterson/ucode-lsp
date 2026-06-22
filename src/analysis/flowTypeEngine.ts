@@ -15,9 +15,9 @@
  *   B4: shadow-validate vs current narrowing. B5: flip consumers. B6: delete dups.
  */
 
-import { BasicBlock, ControlFlowGraph } from './cfg/types';
-import { AstNode } from '../ast/nodes';
-import { UcodeType, UcodeDataType, createUnionType, getUnionTypes } from './symbolTable';
+import { type BasicBlock, type ControlFlowGraph } from './cfg/types';
+import { type AstNode } from '../ast/nodes';
+import { UcodeType, type UcodeDataType, createUnionType, getUnionTypes } from './symbolTable';
 
 /** An lvalue key is an identifier name or a constant member path ("parts[5]",
  *  "o.name") — the same key space getDottedPath produces. */

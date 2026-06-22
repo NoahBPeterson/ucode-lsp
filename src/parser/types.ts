@@ -2,7 +2,7 @@
  * Parser types and interfaces for ucode AST generation
  */
 
-import { AstNode } from '../ast/nodes';
+import { type AstNode } from '../ast/nodes';
 
 export interface ParseResult {
   ast: AstNode | null;

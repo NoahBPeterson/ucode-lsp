@@ -21,7 +21,7 @@
 // Correctness is continuously checked by tests/test-incremental-analysis.test.js, which
 // asserts incremental diagnostics ≡ full-analysis diagnostics across many edit sequences.
 
-import { ProgramNode, AstNode, FunctionDeclarationNode, VariableDeclarationNode, ObjectExpressionNode, PropertyNode, FunctionExpressionNode } from '../ast/nodes';
+import { type ProgramNode, type AstNode, type FunctionDeclarationNode, type VariableDeclarationNode, type ObjectExpressionNode, type PropertyNode, type FunctionExpressionNode } from '../ast/nodes';
 
 export interface UnitRange {
   key: string;                 // stable identity within the file (name#ordinal)

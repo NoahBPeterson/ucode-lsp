@@ -10,7 +10,7 @@ import {
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { UcodeLexer } from '../lexer';
 import { UcodeParser } from '../parser';
-import { AstNode } from '../ast';
+import { type AstNode } from '../ast';
 import { SemanticAnalyzer } from '../analysis';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 

@@ -3,16 +3,16 @@
  * Combines symbol table, type checking, and other semantic analyses
  */
 
-import { AstNode, ProgramNode, VariableDeclarationNode, VariableDeclaratorNode, 
-         FunctionDeclarationNode, FunctionExpressionNode, IdentifierNode, CallExpressionNode,
-         BlockStatementNode, ReturnStatementNode, BreakStatementNode, 
-         ContinueStatementNode, AssignmentExpressionNode, BinaryExpressionNode, UnaryExpressionNode, LogicalExpressionNode, ImportDeclarationNode,
-         ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
-         PropertyNode, MemberExpressionNode, TryStatementNode, CatchClauseNode,
-         ExportNamedDeclarationNode, ExportDefaultDeclarationNode, ArrowFunctionExpressionNode,
-         SpreadElementNode, TemplateLiteralNode, SwitchStatementNode, LiteralNode, IfStatementNode, ObjectExpressionNode, ConditionalExpressionNode, ExpressionStatementNode, DeleteExpressionNode } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
-import { TypeChecker, TypeCheckResult } from './types';
+import { type AstNode, type ProgramNode, type VariableDeclarationNode, type VariableDeclaratorNode, 
+         type FunctionDeclarationNode, type FunctionExpressionNode, type IdentifierNode, type CallExpressionNode,
+         type BlockStatementNode, type ReturnStatementNode, type BreakStatementNode, 
+         type ContinueStatementNode, type AssignmentExpressionNode, type BinaryExpressionNode, type UnaryExpressionNode, type LogicalExpressionNode, type ImportDeclarationNode,
+         type ImportSpecifierNode, type ImportDefaultSpecifierNode, type ImportNamespaceSpecifierNode,
+         type PropertyNode, type MemberExpressionNode, type TryStatementNode, type CatchClauseNode,
+         type ExportNamedDeclarationNode, type ExportDefaultDeclarationNode, type ArrowFunctionExpressionNode,
+         type SpreadElementNode, type TemplateLiteralNode, type SwitchStatementNode, type LiteralNode, type IfStatementNode, type ObjectExpressionNode, type ConditionalExpressionNode, type ExpressionStatementNode, type DeleteExpressionNode } from '../ast/nodes';
+import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
+import { TypeChecker, type TypeCheckResult } from './types';
 import { detectTemplateMode } from '../lexer/templateMode';
 import { BaseVisitor, AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
@@ -27,9 +27,9 @@ import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType, fsReturnIsNul
 import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
-import { UcodeTargetVersion, VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
+import { type UcodeTargetVersion, type VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
 import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
-import { JsDocCommentNode } from '../ast/nodes';
+import { type JsDocCommentNode } from '../ast/nodes';
 import { Either, Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, validateImport } from './moduleDispatch';
 

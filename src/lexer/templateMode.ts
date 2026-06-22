@@ -8,7 +8,7 @@
  * decision from what the file itself carries.
  */
 
-import { Token, TokenType } from './tokenTypes';
+import { type Token, TokenType } from './tokenTypes';
 
 /**
  * Decide whether `text` should be lexed/parsed as a ucode template.

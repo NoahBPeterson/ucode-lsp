@@ -4,9 +4,9 @@
  */
 
 import { 
-  AstNode, UnaryExpressionNode, BinaryExpressionNode, 
-  AssignmentExpressionNode, ArrowFunctionExpressionNode,
-  IdentifierNode, BlockStatementNode
+  type AstNode, type UnaryExpressionNode, type BinaryExpressionNode, 
+  type AssignmentExpressionNode, type ArrowFunctionExpressionNode,
+  type IdentifierNode, type BlockStatementNode
 } from '../../ast/nodes';
 import { TokenType } from '../../lexer';
 import { Precedence } from '../types';

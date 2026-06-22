@@ -5,8 +5,8 @@
 
 import { TokenType } from '../../lexer';
 import { 
-  AstNode, CallExpressionNode, ConditionalExpressionNode, 
-  DeleteExpressionNode, SpreadElementNode 
+  type AstNode, type CallExpressionNode, type ConditionalExpressionNode, 
+  type DeleteExpressionNode, type SpreadElementNode 
 } from '../../ast/nodes';
 import { Precedence } from '../types';
 import { OperatorExpressions } from './operatorExpressions';

@@ -3,7 +3,7 @@
  * Parses @param and @returns tags from JSDoc comments and resolves type expressions
  */
 
-import { UcodeType, UcodeDataType, SingleType, createUnionType, createArrayType, isObjectType, isArrayType } from './symbolTable';
+import { UcodeType, type UcodeDataType, type SingleType, createUnionType, createArrayType, isObjectType, isArrayType } from './symbolTable';
 import { isKnownModule, isKnownObjectType } from './moduleDispatch';
 
 export interface JsDocTag {

@@ -1,8 +1,8 @@
 import { UcodeLexer } from '../lexer';
 import { UcodeParser } from '../parser';
-import { FunctionDeclarationNode, AstNode, ExportDefaultDeclarationNode, ExportNamedDeclarationNode, IdentifierNode } from '../ast/nodes';
+import { type FunctionDeclarationNode, type AstNode, type ExportDefaultDeclarationNode, type ExportNamedDeclarationNode, type IdentifierNode } from '../ast/nodes';
 import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
-import { UcodeType, UcodeDataType, SingleType, createUnionType, isUnionType, isObjectType, isArrayType, type ParamInfo } from './symbolTable';
+import { UcodeType, type UcodeDataType, type SingleType, createUnionType, isUnionType, isObjectType, isArrayType, type ParamInfo } from './symbolTable';
 import { parseJsDocComment, resolveTypeExpression } from './jsdocParser';
 import { getOpenDocumentContent } from './openDocuments';
 import { MAX_ANALYSIS_DEPTH } from './visitor';

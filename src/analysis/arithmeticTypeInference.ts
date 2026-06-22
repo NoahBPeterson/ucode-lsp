@@ -11,8 +11,8 @@
 
 import {
   UcodeType,
-  UcodeDataType,
-  SingleType,
+  type UcodeDataType,
+  type SingleType,
   createUnionType,
   getUnionTypes,
   singleTypeToBase,

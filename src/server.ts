@@ -2,47 +2,47 @@ import {
     createConnection,
     TextDocuments,
     ProposedFeatures,
-    InitializeParams,
+    type InitializeParams,
     DidChangeConfigurationNotification,
     TextDocumentSyncKind,
-    InitializeResult,
-    WorkspaceFoldersChangeEvent,
-    DidChangeWatchedFilesParams,
-    TextDocumentChangeEvent,
+    type InitializeResult,
+    type WorkspaceFoldersChangeEvent,
+    type DidChangeWatchedFilesParams,
+    type TextDocumentChangeEvent,
     Diagnostic,
     DiagnosticSeverity,
     FileChangeType,
     DidChangeWatchedFilesNotification,
-    CodeActionParams,
+    type CodeActionParams,
     CodeAction,
     CodeActionKind,
     TextEdit,
     CodeLens,
-    CodeLensParams,
+    type CodeLensParams,
     Command,
     Location,
-    ReferenceParams,
+    type ReferenceParams,
     Range,
     DocumentSymbol,
-    DocumentSymbolParams,
-    RenameParams,
-    PrepareRenameParams,
+    type DocumentSymbolParams,
+    type RenameParams,
+    type PrepareRenameParams,
     WorkspaceEdit,
     DocumentHighlight,
     DocumentHighlightKind,
-    DocumentHighlightParams,
-    SignatureHelp,
-    SignatureHelpParams,
+    type DocumentHighlightParams,
+    type SignatureHelp,
+    type SignatureHelpParams,
     SymbolInformation,
-    WorkspaceSymbolParams,
+    type WorkspaceSymbolParams,
     InlayHint,
-    InlayHintParams,
+    type InlayHintParams,
     FoldingRange,
     DocumentLink,
     CompletionItem,
     CompletionItemKind,
     MarkupKind,
-    FoldingRangeParams,
+    type FoldingRangeParams,
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -57,13 +57,13 @@ import { handleCompletion, handleCompletionResolve } from './completion';
 import { handleDefinition } from './definition';
 import { buildDocumentSymbols } from './documentSymbols';
 import { provideSignatureHelp, resolveMemberCallParameterTypes } from './signatureHelp';
-import { computeRawInlayHints, shiftRawHints, materializeRawHints, RawInlayHint } from './inlayHints';
+import { computeRawInlayHints, shiftRawHints, materializeRawHints, type RawInlayHint } from './inlayHints';
 import { provideFoldingRanges } from './foldingRanges';
 import { provideDocumentLinks } from './documentLinks';
 import { computeImportInsertEdit } from './importEdit';
 import { allBuiltinFunctions } from './builtins';
-import { SemanticAnalyzer, SemanticAnalysisResult, SymbolType } from './analysis';
-import { UCODE_TARGET_VERSIONS, UcodeTargetVersion, DEFAULT_TARGET_VERSION } from './analysis/ucodeVersions';
+import { SemanticAnalyzer, type SemanticAnalysisResult, SymbolType } from './analysis';
+import { UCODE_TARGET_VERSIONS, type UcodeTargetVersion, DEFAULT_TARGET_VERSION } from './analysis/ucodeVersions';
 import { UcodeErrorCode } from './analysis/errorConstants';
 import { stringSourceToRegexLiteral } from './analysis/checkers/builtinValidation';
 import { UcodeParser } from './parser';

@@ -3,7 +3,7 @@ import {
     DiagnosticSeverity
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { TokenType, Token } from '../lexer';
+import { TokenType, type Token } from '../lexer';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export function validateConstReassignments(textDocument: TextDocument, tokens: Token[], diagnostics: Diagnostic[]): void {

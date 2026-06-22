@@ -6,11 +6,11 @@
 import { TokenType } from '../../lexer';
 import { UcodeErrorCode } from '../../analysis/errorConstants';
 import {
-  AstNode, IfStatementNode, WhileStatementNode, ForStatementNode,
-  ForInStatementNode, ReturnStatementNode, BreakStatementNode, 
-  ContinueStatementNode, TryStatementNode, CatchClauseNode, 
-  SwitchStatementNode, SwitchCaseNode, BlockStatementNode,
-  IdentifierNode, VariableDeclarationNode, VariableDeclaratorNode
+  type AstNode, type IfStatementNode, type WhileStatementNode, type ForStatementNode,
+  type ForInStatementNode, type ReturnStatementNode, type BreakStatementNode, 
+  type ContinueStatementNode, type TryStatementNode, type CatchClauseNode, 
+  type SwitchStatementNode, type SwitchCaseNode, type BlockStatementNode,
+  type IdentifierNode, type VariableDeclarationNode, type VariableDeclaratorNode
 } from '../../ast/nodes';
 import { DeclarationStatements } from './declarationStatements';
 import { Precedence } from '../types';

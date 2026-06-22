@@ -1,6 +1,6 @@
 import {
-    TextDocumentPositionParams,
-    CompletionParams,
+    type TextDocumentPositionParams,
+    type CompletionParams,
     CompletionItem,
     CompletionItemKind,
     MarkupKind,
@@ -9,12 +9,12 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
-import { discoverAvailableModules, getModuleMembers, DiscoveredModule, ModuleMember } from './moduleDiscovery';
-import { UcodeLexer, TokenType, isMemberAccessDot, Token } from './lexer';
+import { discoverAvailableModules, getModuleMembers, type DiscoveredModule, type ModuleMember } from './moduleDiscovery';
+import { UcodeLexer, TokenType, isMemberAccessDot, type Token } from './lexer';
 import { UcodeParser } from './parser';
 import { allBuiltinFunctions } from './builtins';
 import { compactBuiltinSignature } from './signatureHelp';
-import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
+import { type SemanticAnalysisResult, SymbolType, type Symbol as UcodeSymbol } from './analysis';
 import { extractModuleType, typeToString } from './analysis/symbolTable';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { rtnlTypeRegistry } from './analysis/rtnlTypes';

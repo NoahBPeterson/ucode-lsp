@@ -8,7 +8,7 @@
  * - JSON format (for programmatic inspection)
  */
 
-import { ControlFlowGraph, BasicBlock, Edge } from './types';
+import { type ControlFlowGraph, type BasicBlock, type Edge } from './types';
 
 /**
  * Generates a text-based representation of a CFG.

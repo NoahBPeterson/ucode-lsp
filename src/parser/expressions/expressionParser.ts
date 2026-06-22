@@ -3,7 +3,7 @@
  */
 
 import { TokenType } from '../../lexer';
-import { AstNode } from '../../ast/nodes';
+import { type AstNode } from '../../ast/nodes';
 import { Precedence, RecoveryMode } from '../types';
 import { CallExpressions } from './callExpressions';
 

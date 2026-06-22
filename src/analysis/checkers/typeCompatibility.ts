@@ -2,7 +2,7 @@
  * Type compatibility checker for ucode
  */
 
-import { UcodeType, UcodeDataType, createUnionType, getUnionTypes } from '../symbolTable';
+import { UcodeType, type UcodeDataType, createUnionType, getUnionTypes } from '../symbolTable';
 
 export class TypeCompatibilityChecker {
   

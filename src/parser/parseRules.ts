@@ -3,7 +3,7 @@
  */
 
 import { TokenType } from '../lexer';
-import { Precedence, ParseRule } from './types';
+import { Precedence, type ParseRule } from './types';
 import { ParserUtils } from './parserUtils';
 
 export abstract class ParseRules extends ParserUtils {

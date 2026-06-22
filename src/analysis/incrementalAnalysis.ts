@@ -12,10 +12,10 @@
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { Diagnostic } from 'vscode-languageserver/node';
-import { ProgramNode } from '../ast/nodes';
+import { type ProgramNode } from '../ast/nodes';
 import {
   extractUnits, computeFingerprint, bodyHashOf, classifyBody, hashString,
-  IncrementalCacheEntry, UnitState, UnitRange,
+  type IncrementalCacheEntry, type UnitState, type UnitRange,
 } from './incrementalCache';
 
 export type CleanBody = { bodyEnd: number; returnType: unknown; diagnostics: Diagnostic[]; thisWrites: Array<[string, unknown]> };

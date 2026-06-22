@@ -4,7 +4,7 @@
  */
 
 import { TokenType } from '../../lexer';
-import { AstNode, IdentifierNode, LiteralNode, ThisExpressionNode, FunctionExpressionNode, BlockStatementNode, TemplateLiteralNode, TemplateElementNode, SpreadElementNode } from '../../ast/nodes';
+import { type AstNode, type IdentifierNode, type LiteralNode, type ThisExpressionNode, type FunctionExpressionNode, type BlockStatementNode, type TemplateLiteralNode, type TemplateElementNode, type SpreadElementNode } from '../../ast/nodes';
 import { ParseRules } from '../parseRules';
 import { Precedence } from '../types';
 

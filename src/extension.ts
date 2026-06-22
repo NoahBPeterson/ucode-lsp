@@ -3,8 +3,8 @@ import * as cp from 'child_process';
 import * as path from 'path';
 import {
     LanguageClient,
-    LanguageClientOptions,
-    ServerOptions,
+    type LanguageClientOptions,
+    type ServerOptions,
     TransportKind
 } from 'vscode-languageclient/node';
 

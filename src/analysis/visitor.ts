@@ -4,17 +4,17 @@
  */
 
 import {
-  AstNode, ProgramNode, LiteralNode, IdentifierNode, BinaryExpressionNode,
-  UnaryExpressionNode, CallExpressionNode, MemberExpressionNode, AssignmentExpressionNode,
-  ArrayExpressionNode, ObjectExpressionNode, PropertyNode, BlockStatementNode,
-  ExpressionStatementNode, VariableDeclarationNode, VariableDeclaratorNode,
-  IfStatementNode, ForStatementNode, WhileStatementNode, FunctionDeclarationNode, FunctionExpressionNode,
-  ReturnStatementNode, BreakStatementNode, ContinueStatementNode, TryStatementNode,
-  CatchClauseNode, SwitchStatementNode, SwitchCaseNode, ConditionalExpressionNode,
-  ForInStatementNode, EmptyStatementNode, ThisExpressionNode, DeleteExpressionNode,
-  ImportDeclarationNode, ImportSpecifierNode, ImportDefaultSpecifierNode, ImportNamespaceSpecifierNode,
-  ArrowFunctionExpressionNode, ExportNamedDeclarationNode, ExportDefaultDeclarationNode, TemplateLiteralNode,
-  SpreadElementNode
+  type AstNode, type ProgramNode, type LiteralNode, type IdentifierNode, type BinaryExpressionNode,
+  type UnaryExpressionNode, type CallExpressionNode, type MemberExpressionNode, type AssignmentExpressionNode,
+  type ArrayExpressionNode, type ObjectExpressionNode, type PropertyNode, type BlockStatementNode,
+  type ExpressionStatementNode, type VariableDeclarationNode, type VariableDeclaratorNode,
+  type IfStatementNode, type ForStatementNode, type WhileStatementNode, type FunctionDeclarationNode, type FunctionExpressionNode,
+  type ReturnStatementNode, type BreakStatementNode, type ContinueStatementNode, type TryStatementNode,
+  type CatchClauseNode, type SwitchStatementNode, type SwitchCaseNode, type ConditionalExpressionNode,
+  type ForInStatementNode, type EmptyStatementNode, type ThisExpressionNode, type DeleteExpressionNode,
+  type ImportDeclarationNode, type ImportSpecifierNode, type ImportDefaultSpecifierNode, type ImportNamespaceSpecifierNode,
+  type ArrowFunctionExpressionNode, type ExportNamedDeclarationNode, type ExportDefaultDeclarationNode, type TemplateLiteralNode,
+  type SpreadElementNode
 } from '../ast/nodes';
 
 /**

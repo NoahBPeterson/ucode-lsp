@@ -6,7 +6,7 @@
 import type { PropertyDefinition, ObjectTypeDefinition } from './registryFactory';
 
 // Import UcodeDataType and UcodeType for createExceptionObjectDataType
-import { UcodeDataType, UcodeType } from './symbolTable';
+import { type UcodeDataType, UcodeType } from './symbolTable';
 
 const properties = new Map<string, PropertyDefinition>([
   ["message", {

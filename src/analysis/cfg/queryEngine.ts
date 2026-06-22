@@ -10,7 +10,7 @@
  * used to emit unreachable-code diagnostics.
  */
 
-import { ControlFlowGraph, BasicBlock } from './types';
+import { type ControlFlowGraph, type BasicBlock } from './types';
 
 export class CFGQueryEngine {
   /** The CFG to query */

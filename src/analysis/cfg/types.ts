@@ -5,7 +5,7 @@
  * It consists of BasicBlocks (sequences of straight-line code) connected by Edges.
  */
 
-import { AstNode } from '../../ast/nodes';
+import { type AstNode } from '../../ast/nodes';
 
 /**
  * A BasicBlock represents a maximal sequence of statements that execute sequentially

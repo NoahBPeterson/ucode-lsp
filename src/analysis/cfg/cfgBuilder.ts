@@ -7,25 +7,25 @@
  */
 
 import {
-  AstNode,
-  ProgramNode,
-  IfStatementNode,
-  WhileStatementNode,
-  ForStatementNode,
-  ForInStatementNode,
-  SwitchStatementNode,
-  TryStatementNode,
-  ReturnStatementNode,
-  BreakStatementNode,
-  ContinueStatementNode,
-  ThrowStatementNode,
-  BlockStatementNode,
-  ConditionalExpressionNode,
-  LogicalExpressionNode,
-  ExpressionStatementNode,
-  CallExpressionNode,
+  type AstNode,
+  type ProgramNode,
+  type IfStatementNode,
+  type WhileStatementNode,
+  type ForStatementNode,
+  type ForInStatementNode,
+  type SwitchStatementNode,
+  type TryStatementNode,
+  type ReturnStatementNode,
+  type BreakStatementNode,
+  type ContinueStatementNode,
+  type ThrowStatementNode,
+  type BlockStatementNode,
+  type ConditionalExpressionNode,
+  type LogicalExpressionNode,
+  type ExpressionStatementNode,
+  type CallExpressionNode,
 } from '../../ast/nodes';
-import { ControlFlowGraph, BasicBlock, Edge } from './types';
+import { type ControlFlowGraph, type BasicBlock, type Edge } from './types';
 
 /**
  * Context for tracking loop and switch statements during CFG construction.

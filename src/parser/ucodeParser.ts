@@ -3,9 +3,9 @@
  * Combines all parser modules into a single cohesive parser
  */
 
-import { Token } from '../lexer';
-import { AstNode, ProgramNode } from '../ast/nodes';
-import { ParseResult, RecoveryMode } from './types';
+import { type Token } from '../lexer';
+import { type AstNode, type ProgramNode } from '../ast/nodes';
+import { type ParseResult, RecoveryMode } from './types';
 import { StatementParser } from './statements/statementParser';
 
 export class UcodeParser extends StatementParser {

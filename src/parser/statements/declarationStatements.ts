@@ -6,11 +6,11 @@
 import { TokenType } from '../../lexer';
 import { UcodeErrorCode } from '../../analysis/errorConstants';
 import {
-  AstNode, VariableDeclarationNode, VariableDeclaratorNode,
-  FunctionDeclarationNode, FunctionExpressionNode, IdentifierNode, BlockStatementNode,
-  ImportDeclarationNode, ImportSpecifierNode, ImportDefaultSpecifierNode,
-  ImportNamespaceSpecifierNode, LiteralNode, ExportNamedDeclarationNode,
-  ExportDefaultDeclarationNode, ExportAllDeclarationNode, ExportSpecifierNode
+  type AstNode, type VariableDeclarationNode, type VariableDeclaratorNode,
+  type FunctionDeclarationNode, type FunctionExpressionNode, type IdentifierNode, type BlockStatementNode,
+  type ImportDeclarationNode, type ImportSpecifierNode, type ImportDefaultSpecifierNode,
+  type ImportNamespaceSpecifierNode, type LiteralNode, type ExportNamedDeclarationNode,
+  type ExportDefaultDeclarationNode, type ExportAllDeclarationNode, type ExportSpecifierNode
 } from '../../ast/nodes';
 import { ExpressionParser } from '../expressions/expressionParser';
 

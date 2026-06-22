@@ -1,12 +1,12 @@
 import {
-    TextDocumentPositionParams,
+    type TextDocumentPositionParams,
     Hover,
     MarkupKind
 } from 'vscode-languageserver/node';
-import { UcodeLexer, TokenType, isKeyword, isMemberAccessDot, Token } from './lexer';
+import { UcodeLexer, TokenType, isKeyword, isMemberAccessDot, type Token } from './lexer';
 import { allBuiltinFunctions } from './builtins';
-import { SemanticAnalysisResult, SymbolType, Symbol as UcodeSymbol } from './analysis';
-import { typeToString, UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt } from './analysis/symbolTable';
+import { type SemanticAnalysisResult, SymbolType, type Symbol as UcodeSymbol } from './analysis';
+import { typeToString, type UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt } from './analysis/symbolTable';
 import { exceptionTypeRegistry, exceptionObjectType } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { Option } from 'effect';

@@ -3,7 +3,7 @@
  * Handles union type narrowing and flow-sensitive typing
  */
 
-import { UcodeType, UcodeDataType, SingleType, isUnionType, getUnionTypes, createUnionType, singleTypeToBase, isObjectType, isArrayType } from './symbolTable';
+import { UcodeType, type UcodeDataType, type SingleType, isUnionType, getUnionTypes, createUnionType, singleTypeToBase, isObjectType, isArrayType } from './symbolTable';
 
 /** Check if a SingleType matches any entry in a list (by base type for refined types) */
 function singleTypeIn(t: SingleType, list: SingleType[]): boolean {

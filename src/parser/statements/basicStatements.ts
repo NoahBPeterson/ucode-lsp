@@ -6,7 +6,7 @@
 import { TokenType } from '../../lexer';
 import { UcodeErrorCode } from '../../analysis/errorConstants';
 import {
-  AstNode, BlockStatementNode, ExpressionStatementNode, EmptyStatementNode
+  type AstNode, type BlockStatementNode, type ExpressionStatementNode, type EmptyStatementNode
 } from '../../ast/nodes';
 import { Precedence } from '../types';
 import { ControlFlowStatements } from './controlFlowStatements';

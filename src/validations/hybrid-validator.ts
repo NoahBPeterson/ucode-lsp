@@ -8,7 +8,7 @@ import {
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { validateWithLexer } from './lexer';
-import { validateWithAst, ValidationOptions } from './ast-validator';
+import { validateWithAst, type ValidationOptions } from './ast-validator';
 
 interface HybridValidationConfig {
     // Feature flags for gradual migration

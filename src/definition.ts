@@ -1,11 +1,11 @@
 import {
-    DefinitionParams,
-    Definition,
+    type DefinitionParams,
+    type Definition,
     Range
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { UcodeLexer, TokenType, isMemberAccessDot } from './lexer';
-import { SemanticAnalysisResult, Symbol, SymbolType } from './analysis';
+import { type SemanticAnalysisResult, type Symbol, SymbolType } from './analysis';
 import { FileResolver } from './analysis/fileResolver';
 import { isKnownObjectType, OBJECT_REGISTRIES } from './analysis/moduleDispatch';
 import { extractModuleType } from './analysis/symbolTable';
