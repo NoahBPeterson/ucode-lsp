@@ -74,9 +74,9 @@ file left an open dependent's in-body diagnostics stale until the dependent was 
   import nullability flips through a body, export add/remove, transitive/fan-in re-check, dep
   delete, dep syntax-error recovery, importer own-edit composition, round-trips. Reverting the
   `forceFull` fix fails 15 of these. As a server-spawn (mocha) test it runs under `bun test`
-  via the `tests/test-all-validations.test.js` bridge (which is what CI runs) — it must be
-  listed there (both the `testFiles` array and the `mochaFileSet`) or it won't run. Standalone:
-  `npx mocha tests/test-incremental-cross-file.js`.
+  via the `tests/test-all-validations.test.js` bridge (which is what CI runs); that bridge now
+  AUTO-DISCOVERS every `tests/test-*.js` suite (no manual registration), so this file is picked
+  up automatically. Standalone: `npx mocha tests/test-incremental-cross-file.js`.
 
 ## Pieces
 

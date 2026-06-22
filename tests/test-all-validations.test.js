@@ -1,4 +1,12 @@
-// Comprehensive test runner for all validation unit tests
+// Comprehensive test runner for all validation unit tests.
+//
+// DISCOVERY IS AUTOMATIC. This bridge globs every suite under tests/ and runs it
+// (mocha suites in one shared-server invocation; standalone bun scripts via `bun
+// <file>`). `bun test` itself only discovers *.test.js / *.spec.js names, so the
+// hundreds of describe/it (mocha) and standalone bun scripts here would otherwise
+// never run in CI — this file is what pulls them in. A NEW test file is picked up
+// with no registration; to KEEP one out, add it to QUARANTINE below. (Previously
+// this was two hand-maintained lists, which silently orphaned any unlisted file.)
 import { test, expect } from 'bun:test';
 import { execSync, exec } from 'child_process';
 import { promisify } from 'util';
@@ -6,310 +14,75 @@ import fs from 'fs';
 
 const execAsync = promisify(exec);
 
-// List of all test files to run
-const testFiles = [
-    'tests/test-simple-validation.js',
-    'tests/test-array-validations.js',
-    'tests/test-new-validations-unit.js',
-    'tests/test-trim-validations-real.js',
-    'tests/test-encoding-io-functions.js',
-    'tests/test-system-functions.js',
-    'tests/test-utility-functions.js',
-    'tests/test-datetime-functions.js',
-    'tests/test-network-functions.js',
-    'tests/test-conversion-functions.js',
-    'tests/test-module-functions.js',
-    'tests/test-json-utility-functions.js',
-    'tests/test-system-utility-functions.js',
-    'tests/test-union-types-programmatic.js',
-    'tests/test-union-types-logic.js',
-    'tests/test-union-types-enhanced.js',
-    'tests/test-unknown-return-types.js',
-    'tests/test-arrow-function-parsing.js',
-    'tests/test-for-in-bare-fix.js',
-    'tests/test-imported-function-fix.js',
-    'tests/test-object-property-keys-fix.js',
-    'tests/test-namespace-import-validation.js',
-    'tests/test-fs-module-support.js',
-    'tests/test-fs-undefined-diagnostics.js',
-    'tests/test-fs-method-diagnostics.js',
-    'tests/test-fs-types.js',
-    'tests/test-fs-object-completion.js',
-    'tests/test-open-builtin-diagnostics.js',
-    'tests/test-completion-detection.js',
-    'tests/test-completion-simple.js',
-    'tests/test-in-token.js',
-    'tests/test-lexer.js',
-    'tests/test-parser.js',
-    'tests/test-import-simple.js',
-    'tests/test-export-debug.js',
-    'tests/test-for-in-debug.js',
-    'tests/test-refactor.js',
-    'tests/test-new-validations.js',
-    'tests/test-validations-only.js',
-    'tests/test-log-module.js',
-    'tests/test-error-constants.js',
-    'tests/test-log-import-validation.js',
-    'tests/test-log-constant-hover.js',
-    'tests/test-math-module.js',
-    'tests/test-math-import-validation.js',
-    'tests/test-math-alias-hover.js',
-    'tests/test-nl80211-module.js',
-    'tests/test-resolv-module.js',
-    'tests/test-resolv-import-validation.js',
-    'tests/test-socket-import-validation.js',
-    'tests/test-struct-module.js',
-    'tests/test-ubus-module.js',
-    'tests/test-uci-module.js',
-    'tests/test-uloop-module.js',
-    'tests/test-string-method-validation.js',
-    'tests/test-missing-builtins-validation.js',
-    'tests/test-filter-builtin-validation.js',
-    'tests/test-split-regex-validation.js',
-    'tests/test-fuzz-integration.js',
-    'tests/test-zlib-module.js',
-    'tests/test-io-module.js',
-    'tests/test-io-hover.js',
-    'tests/test-clock-function.js',
-    'tests/test-optional-chaining-lexer.js',
-    'tests/test-optional-chaining-statements.js',
-    'tests/test-regex-flags.js',
-    'tests/test-object-spread-parsing.js',
-    'tests/test-trailing-comma.js',
-    'tests/test-comma-operator-parsing.js',
-    'tests/test-comma-operator-lsp.js',
-    'tests/test-rtnl-constants.js',
-    'tests/test-combined-lsp-validations.js',
-    'tests/test-fs-import-validation.js',
-    'tests/test-error-code-integration.js',
-    'tests/test-disable-comments.js',
-    'tests/test-auto-fix-code-actions.js',
-    'tests/test-disable-parser-diagnostics.js',
-    'tests/test-nlresult-specific.js',
-    'tests/test-disable-comments-warnings.js',
-    'tests/test-conversion-functions-validation.js',
-    'tests/test-module-functions-validation.js',
-    'tests/test-number-conversion-validation.js',
-    'tests/test-array-functions-ast.js',
-    'tests/test-object-functions-ast.js',
-    'tests/test-trim-functions-ast.js',
-    'tests/test-substr-functions-ast.js',
-    'tests/test-import-completion.js',
-    'tests/test-module-completions.js',
-    'tests/test-destructured-import-completion.js',
-    'tests/test-multiple-imports-completion.js',
-    'tests/test-trigger-completions.js',
-    'tests/test-exclusion-completions.js',
-    'tests/test-nl80211-fallback.js',
-    'tests/test-alphanumeric-triggers.js',
-    'tests/test-brace-trigger-completion.js',
-    'tests/test-function-name-completion.js',
-    'tests/test-forward-declarations.js',
-    'tests/test-math-digest-new-fns.js',
-    'tests/test-codelens.js',
-    'tests/test-codelens-cross-file-refs.js',
-    'tests/test-completion-sorting.js',
-    'tests/test-object-property-hover-bug.js',
-    'tests/test-unknown-base-member-hover.js',
-    'tests/test-module-member-binding.js',
-    'tests/test-for-in-array-element.js',
-    'tests/test-namespace-import-property-types.js',
-    'tests/test-cross-file-cache-invalidation.js',
-    'tests/test-incremental-cross-file.js',
-    'tests/test-namespace-chained-member.js',
-    'tests/test-import-function-typing.js',
-    'tests/test-computed-key-typing.js',
-    'tests/test-forin-bare-iterator.js',
-    'tests/test-ssa-aliasing.js',
-    'tests/test-string-member-and-dot-error.js',
-    'tests/test-checkresult-refactor.js',
-    'tests/test-variable-hover-consistency-bug.js',
-    'tests/test-semantic-analysis-timing.js',
-    'tests/test-builtin-shadowing.js',
-    'tests/test-default-export-imports.js',
-    'tests/test-module-imports.js',
-    'tests/test-object-method-hover.js',
-    'tests/test-multi-level-completions.js',
-    'tests/test-dot-notation-helpers.js',
-    'tests/test-dot-notation-namespace-imports.js',
-    'tests/test-namespace-import-file-existence.js',
-    'tests/test-dot-notation-default-import.js',
-    'tests/test-global-object-types.js',
-    'tests/test-module-aliasing.js',
-    'tests/test-object-property-hover-lsp.mocha.js',
-    'tests/test-object-literal-prop-hover.mocha.js',
-    'tests/test-type-guard-narrowing-bug.js',
-    'tests/test-call-chain-completions.js',
-    'tests/test-printf-format-diagnostics.js',
-    'tests/test-unreachable-code.js',
-    'tests/test-object-property-inference.js',
-    'tests/test-pbr-cross-file-inference.js',
-    'tests/test-equality-narrowing-hover.mocha.js',
-    'tests/test-quick-fix-type-narrowing.js',
-    'tests/test-split-return-type.js',
-    'tests/test-nested-property-inference.js',
-    'tests/test-this-property-inference.js',
-    'tests/test-type-narrowing-standalone.js',
-    'tests/test-hover-scope-resolution.js',
-    'tests/test-truthiness-suppression.js',
-    'tests/test-callback-element-types.js',
-    'tests/test-jsdoc-inference-quickfix.mocha.js',
-    'tests/test-definition.mocha.js',
-    'tests/test-hover-comprehensive.mocha.js',
-    'tests/test-completion-exports.mocha.js',
-    'tests/test-completion-contexts.mocha.js',
-    'tests/test-open-buffer-resolution.mocha.js',
-    'tests/test-arithmetic-inference.mocha.js',
-    'tests/test-logical-inference.mocha.js',
-    'tests/test-member-expression-narrowing.js',
-    'tests/test-oneliner-guard.js',
-    'tests/test-jsdoc-annotations.js',
-    'tests/test-factory-member-definition.mocha.js',
-    'tests/test-jsdoc-import-discoverability.mocha.js',
-    'tests/test-imported-variable-typing.mocha.js',
-    'tests/test-dict-value-shape.mocha.js',
-    'tests/test-jsism-undefined-base.mocha.js',
-    'tests/test-index-impossible-compare.mocha.js',
-    'tests/test-handle-method-range.mocha.js',
-    'tests/test-incompatible-comparison.mocha.js',
-    'tests/test-user-function-args.mocha.js',
-    'tests/test-cross-file-args.mocha.js',
-    'tests/test-scalar-member-jsism.mocha.js',
-    'tests/test-elseif-narrowing-nullprop.mocha.js',
-    'tests/test-ternary-computed-narrowing.mocha.js',
-    'tests/test-terminating-block-narrowing.mocha.js',
-    'tests/test-declare-then-assign-narrowing.mocha.js',
-    'tests/test-narrowing-consistency-harness.mocha.js',
-    'tests/test-scoped-completions.js',
-    'tests/test-hover-type-narrowing.js',
-    'tests/test-hover-type-consistency.js',
-    'tests/test-builtin-return-narrowing.js',
-    'tests/test-fs-return-type-fixes.js',
-    'tests/test-fs-glob-return-types.js',
-    'tests/test-array-element-types-glob.js',
-    'tests/test-module-return-type-fixes.js',
-    'tests/test-small-fixes-0624.js',
-    'tests/test-hex-int-nan.js',
-    'tests/test-flow-sensitive-hover.js',
-    'tests/test-module-completeness.js',
-    'tests/test-array-property-diagnostic.js',
-    'tests/test-this-property-assignment.js',
-];
+const TESTS_DIR = 'tests';
 
-// Mocha test files (run as a single combined mocha invocation with shared LSP server)
-const mochaFileSet = new Set([
-    'test-dot-notation-default-import.js',
-    'test-string-method-validation.js',
-    'test-missing-builtins-validation.js',
-    'test-filter-builtin-validation.js',
-    'test-split-regex-validation.js',
-    'test-uloop-module.js',
-    'test-comma-operator-lsp.js',
-    'test-rtnl-constants.js',
-    'test-combined-lsp-validations.js',
-    'test-object-functions-ast.js',
-    'test-fs-import-validation.js',
-    'test-error-code-integration.js',
-    'test-disable-comments.js',
-    'test-auto-fix-code-actions.js',
-    'test-disable-parser-diagnostics.js',
-    'test-nlresult-specific.js',
-    'test-type-guard-narrowing-bug.js',
-    'test-disable-comments-warnings.js',
-    'test-conversion-functions-validation.js',
-    'test-module-functions-validation.js',
-    'test-number-conversion-validation.js',
-    'test-trim-functions-ast.js',
-    'test-substr-functions-ast.js',
-    'test-import-completion.js',
-    'test-module-completions.js',
-    'test-destructured-import-completion.js',
-    'test-multiple-imports-completion.js',
-    'test-trigger-completions.js',
-    'test-exclusion-completions.js',
-    'test-nl80211-fallback.js',
-    'test-alphanumeric-triggers.js',
-    'test-brace-trigger-completion.js',
-    'test-function-name-completion.js',
-    'test-forward-declarations.js',
-    'test-math-digest-new-fns.js',
-    'test-codelens.js',
-    'test-codelens-cross-file-refs.js',
-    'test-completion-sorting.js',
-    'test-object-property-hover-bug.js',
-    'test-unknown-base-member-hover.js',
-    'test-module-member-binding.js',
-    'test-for-in-array-element.js',
-    'test-namespace-import-property-types.js',
-    'test-cross-file-cache-invalidation.js',
-    'test-incremental-cross-file.js',
-    'test-namespace-chained-member.js',
-    'test-import-function-typing.js',
-    'test-computed-key-typing.js',
-    'test-forin-bare-iterator.js',
-    'test-ssa-aliasing.js',
-    'test-string-member-and-dot-error.js',
-    'test-checkresult-refactor.js',
-    'test-variable-hover-consistency-bug.js',
-    'test-semantic-analysis-timing.js',
-    'test-builtin-shadowing.js',
-    'test-default-export-imports.js',
-    'test-module-imports.js',
-    'test-rest-parameters-lsp.js',
-    'test-object-method-hover.js',
-    'test-multi-level-completions.js',
-    'test-dot-notation-namespace-imports.js',
-    'test-namespace-import-file-existence.js',
-    'test-global-object-types.js',
-    'test-module-aliasing.js',
-    'test-object-property-hover-lsp.mocha.js',
-    'test-object-literal-prop-hover.mocha.js',
-    'test-call-chain-completions.js',
-    'test-printf-format-diagnostics.js',
-    'test-unreachable-code.js',
-    'test-object-property-inference.js',
-    'test-pbr-cross-file-inference.js',
-    'test-equality-narrowing-hover.mocha.js',
-    'test-quick-fix-type-narrowing.js',
-    'test-nested-property-inference.js',
-    'test-this-property-inference.js',
-    'test-type-narrowing-standalone.js',
-    'test-hover-scope-resolution.js',
-    'test-jsdoc-annotations.js',
-    'test-factory-member-definition.mocha.js',
-    'test-jsdoc-import-discoverability.mocha.js',
-    'test-imported-variable-typing.mocha.js',
-    'test-dict-value-shape.mocha.js',
-    'test-jsism-undefined-base.mocha.js',
-    'test-index-impossible-compare.mocha.js',
-    'test-handle-method-range.mocha.js',
-    'test-incompatible-comparison.mocha.js',
-    'test-user-function-args.mocha.js',
-    'test-cross-file-args.mocha.js',
-    'test-scalar-member-jsism.mocha.js',
-    'test-elseif-narrowing-nullprop.mocha.js',
-    'test-ternary-computed-narrowing.mocha.js',
-    'test-terminating-block-narrowing.mocha.js',
-    'test-declare-then-assign-narrowing.mocha.js',
-    'test-narrowing-consistency-harness.mocha.js',
-    'test-scoped-completions.js',
-    'test-jsdoc-inference-quickfix.mocha.js',
-    'test-definition.mocha.js',
-    'test-hover-comprehensive.mocha.js',
-    'test-completion-exports.mocha.js',
-    'test-completion-contexts.mocha.js',
-    'test-open-buffer-resolution.mocha.js',
-    'test-arithmetic-inference.mocha.js',
-    'test-logical-inference.mocha.js',
+// Files the glob finds but must NOT run. Both categories are PRE-EXISTING (none were
+// in the old curated list). They are fix-or-delete candidates: repair one and simply
+// remove it here to enroll it. Keep this list SMALL — it is the only opt-out.
+const QUARANTINE = new Set([
+    // (a) Currently FAILING / crashing when run — would turn CI red. Triaged 2026-06-22.
+    'test-array-element-types.js',
+    'test-exception-types.js',
+    'test-hover-debug.js',
+    'test-hover-direct.js',
+    'test-import-parsing.js',
+    'test-nl80211-import-validation.js',
+    'test-rest-parameters.js',
+    'test-rtnl-module-completion.js',
+    'test-rtnl-union-types.js',
+    'test-stray-slash-parser-error.js',
+    'test-uloop-delete-methods.js',
+    'test-uloop-type-inference.js',
+    // (b) Scratch/debug scripts that make NO assertions (emit no "N/N tests passed"
+    //     marker) — they execute analyzer code but assert nothing, so they are not
+    //     real suites. Promote one by giving it real assertions, then remove it here.
+    'test-assignment-type-inference.js',
+    'test-catch-parseInt-fix.js',
+    'test-debug-module.js',
+    'test-equality-narrowing.js',
+    'test-export-parsing.js',
+    'test-final-comprehensive.js',
+    'test-fs-completion-integration.js',
+    'test-fs-member-expression-errors.js',
+    'test-hover-fs-types.js',
+    'test-multiple-semicolon-errors.js',
+    'test-multiple-semicolon-simple.js',
+    'test-normal-regex.js',
+    'test-parser-error-location.js',
+    'test-simple-assignment-debug.js',
+    'test-stray-slash-context.js',
+    'test-stray-slash-fix.js',
+    'test-stray-slash-simple.js',
+    'test-type-inference.js',
+    'test-union-types.js',
 ]);
 
-function getBaseName(filePath) {
-    return filePath.substring(filePath.lastIndexOf('/') + 1);
+// Auto-discover suites: tests/test-*.js, EXCLUDING
+//   - *.test.js   → discovered & run directly by `bun test` (incl. THIS bridge file),
+//                   so re-running them here would double-run and recurse.
+//   - *-shared.js → imported helper modules, not standalone suites.
+//   - QUARANTINE  → known-broken / scratch (see above).
+const testFiles = fs.readdirSync(TESTS_DIR)
+    .filter((f) => /^test-.*\.js$/.test(f) && !/\.test\.js$/.test(f) && !/-shared\.js$/.test(f))
+    .filter((f) => !QUARANTINE.has(f))
+    .sort()
+    .map((f) => `${TESTS_DIR}/${f}`);
+
+// Classify a suite as MOCHA (describe/it — run via the shared mocha invocation) vs a
+// standalone BUN script (run via `bun <file>`): a mocha suite uses describe() and does
+// NOT import bun:test. This heuristic was verified to reproduce the previous hand-
+// curated 103-entry mochaFileSet exactly (0 mismatches across all listed files).
+function isMochaFile(fullPath) {
+    const c = fs.readFileSync(fullPath, 'utf8');
+    const usesDescribe = /\bdescribe\s*\(/.test(c);
+    const importsBunTest = /from ['"]bun:test['"]/.test(c) || /require\(['"]bun:test['"]\)/.test(c);
+    return usesDescribe && !importsBunTest;
 }
 
 test('Comprehensive Validation Test Suite', async () => {
     console.log('Running Comprehensive Validation Test Suite\n');
     console.log('='.repeat(60));
+    console.log(`Auto-discovered ${testFiles.length} suites (${QUARANTINE.size} quarantined)`);
 
     let totalSuites = 0;
     let passedSuites = 0;
@@ -349,7 +122,7 @@ test('Comprehensive Validation Test Suite', async () => {
             console.log(`  Test file ${testFile} not found, skipping...`);
             continue;
         }
-        if (mochaFileSet.has(getBaseName(testFile))) {
+        if (isMochaFile(testFile)) {
             mochaTestPaths.push(testFile);
         } else {
             nonMochaTestFiles.push(testFile);
@@ -471,4 +244,4 @@ test('Comprehensive Validation Test Suite', async () => {
     // Assert that all test suites passed
     expect(passedSuites).toBe(totalSuites);
     expect(totalTestCount).toBeGreaterThan(0);
-}, { timeout: 120000 });
+}, { timeout: 180000 });
