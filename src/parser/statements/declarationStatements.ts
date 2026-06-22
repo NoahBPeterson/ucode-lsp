@@ -521,5 +521,5 @@ export abstract class DeclarationStatements extends ExpressionParser {
   }
 
   // Abstract method that must be implemented by subclasses
-  protected abstract parseBlockStatement(openingBrace: any, context: string): BlockStatementNode;
+  protected abstract override parseBlockStatement(openingBrace: any, context: string): BlockStatementNode;
 }

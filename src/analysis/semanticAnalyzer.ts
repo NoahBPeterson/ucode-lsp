@@ -365,7 +365,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.injectedScopeTypeStrings = types;
   }
 
-  visitProgram(node: ProgramNode): void {
+  override visitProgram(node: ProgramNode): void {
     // Hoist top-level function declarations so forward references resolve
     this.hoistFunctionDeclarations(node);
     // Bare `name = require("mod")` (no let) → declare name as a module handle, so
@@ -666,7 +666,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
-  visitVariableDeclaration(node: VariableDeclarationNode): void {
+  override visitVariableDeclaration(node: VariableDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
       // Propagate JSDoc from variable declaration to function init expressions
       if (node.leadingJsDoc && node.declarations.length === 1) {
@@ -692,7 +692,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
-  visitVariableDeclarator(node: VariableDeclaratorNode, kind: string = 'let'): void {
+  override visitVariableDeclarator(node: VariableDeclaratorNode, kind: string = 'let'): void {
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
 
@@ -1094,7 +1094,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
        
-  visitImportDeclaration(node: ImportDeclarationNode): void {
+  override visitImportDeclaration(node: ImportDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
       // Imports must appear at module (top-level) scope. getCurrentScope() is 0 at
       // the module level and >0 inside any function body or block (e.g. an `if {}`),
@@ -1135,7 +1135,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     // validateAndProcessImportSpecifier already declares the imports in the symbol table.
   }
 
-  visitImportSpecifier(_node: ImportSpecifierNode): void {
+  override visitImportSpecifier(_node: ImportSpecifierNode): void {
     // Don't visit the local identifier here - it's already declared in the symbol table
     // by processImportSpecifier. Visiting it would mark it as "used" immediately,
     // preventing unused import warnings.
@@ -1143,7 +1143,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     // for the original name in aliased imports (e.g., import { foo as bar })
   }
 
-  visitProperty(node: PropertyNode): void {
+  override visitProperty(node: PropertyNode): void {
     // Only visit computed property keys (obj[key]), not literal keys (obj.key)
     if (node.computed) {
       this.visit(node.key);
@@ -1853,7 +1853,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     };
   }
 
-  visitFunctionDeclaration(node: FunctionDeclarationNode): void {
+  override visitFunctionDeclaration(node: FunctionDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
 
@@ -2027,7 +2027,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     return paramInfos;
   }
 
-  visitDeleteExpression(node: DeleteExpressionNode): void {
+  override visitDeleteExpression(node: DeleteExpressionNode): void {
     // Validate the operand subtree (member-access checks, undefined vars, …).
     this.visit(node.argument);
     // Then run the delete-specific check (e.g. `delete arr[i]` is a runtime error)
@@ -2044,7 +2044,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
-  visitObjectExpression(node: ObjectExpressionNode): void {
+  override visitObjectExpression(node: ObjectExpressionNode): void {
     // Extract property types for `this` context inside method bodies
     const propTypes = this.inferObjectLiteralPropertyTypes(node);
     if (propTypes) {
@@ -2160,7 +2160,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     return this.typeChecker.getCommonReturnType(types);
   }
 
-  visitFunctionExpression(node: FunctionExpressionNode): void {
+  override visitFunctionExpression(node: FunctionExpressionNode): void {
     // Consume the pending name immediately so nested anonymous functions in the
     // body don't inherit it.
     const exprName = node.id?.name ?? this.pendingFunctionExprName;
@@ -2267,7 +2267,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
-  visitArrowFunctionExpression(node: ArrowFunctionExpressionNode): void {
+  override visitArrowFunctionExpression(node: ArrowFunctionExpressionNode): void {
     // Consume any pending assignment-target name now so nested callbacks in the
     // body don't inherit it.
     const exprName = this.pendingFunctionExprName;
@@ -2351,7 +2351,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
-  visitBlockStatement(node: BlockStatementNode): void {
+  override visitBlockStatement(node: BlockStatementNode): void {
     if (this.options.enableScopeAnalysis) {
       // Enter block scope
       this.symbolTable.enterScope(node.start);
@@ -2368,7 +2368,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
-  visitTryStatement(node: TryStatementNode): void {
+  override visitTryStatement(node: TryStatementNode): void {
     if (this.options.enableScopeAnalysis) {
       // Visit the try block
       this.visit(node.block);
@@ -2383,7 +2383,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
-  visitCatchClause(node: CatchClauseNode): void {
+  override visitCatchClause(node: CatchClauseNode): void {
     if (this.options.enableScopeAnalysis) {
       // Enter catch scope
       this.symbolTable.enterScope(node.start);
@@ -2427,7 +2427,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
-  visitIdentifier(node: IdentifierNode): void {
+  override visitIdentifier(node: IdentifierNode): void {
     if (this.options.enableScopeAnalysis) {
       // Guard against empty or invalid identifier names
       if (!node.name || typeof node.name !== 'string' || node.name.trim() === '') {
@@ -2483,7 +2483,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
-  visitMemberExpression(node: MemberExpressionNode): void {
+  override visitMemberExpression(node: MemberExpressionNode): void {
     // // console.log('DEBUG: visitMemberExpression called for:', (node.object as any).name + '.' + (node.property as any).name);
     if (this.options.enableScopeAnalysis) {
       // Visit the object part (e.g., 'constants' in 'constants.DT_HOSTINFO_FINAL_PATH').
@@ -2851,7 +2851,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return knownModules.has(objectName);
   }
 
-  visitCallExpression(node: CallExpressionNode): void {
+  override visitCallExpression(node: CallExpressionNode): void {
     // Always handle scope analysis for function calls
     if (this.options.enableScopeAnalysis) {
       // Mark function callee as used if it's an identifier
@@ -2910,13 +2910,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // DON'T call super.visitCallExpression() to avoid double traversal
   }
 
-  visitSpreadElement(node: SpreadElementNode): void {
+  override visitSpreadElement(node: SpreadElementNode): void {
     // Visit the spread argument to ensure it's properly analyzed
     this.visit(node.argument);
     // No additional analysis needed for spread elements themselves
   }
 
-  visitTemplateLiteral(node: TemplateLiteralNode): void {
+  override visitTemplateLiteral(node: TemplateLiteralNode): void {
     // Visit all embedded expressions in the template literal
     for (const expression of node.expressions) {
       this.visit(expression);
@@ -2946,7 +2946,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     );
   }
 
-  visitAssignmentExpression(node: AssignmentExpressionNode): void {
+  override visitAssignmentExpression(node: AssignmentExpressionNode): void {
     this.assignmentLeftDepth++;
     this.visit(node.left);
     this.assignmentLeftDepth--;
@@ -3174,7 +3174,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     (symbol.typeHistory ??= []).push({ from, type });
   }
 
-  visitUnaryExpression(node: UnaryExpressionNode): void {
+  override visitUnaryExpression(node: UnaryExpressionNode): void {
     // Track ! operator as truthiness context
     if (node.operator === '!') this.truthinessDepth++;
     super.visitUnaryExpression(node);
@@ -3201,7 +3201,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  visitConditionalExpression(node: ConditionalExpressionNode): void {
+  override visitConditionalExpression(node: ConditionalExpressionNode): void {
     // Ternary test is a truthiness context
     this.truthinessDepth++;
     this.visit(node.test);
@@ -3210,7 +3210,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     this.visit(node.alternate);
   }
 
-  visitBinaryExpression(node: BinaryExpressionNode): void {
+  override visitBinaryExpression(node: BinaryExpressionNode): void {
     // Comparison operators make builtin calls safe — null compares harmlessly
     // (e.g., length(x) > 0 → null > 0 is false, not an error)
     const isComparison = node.operator === '>' || node.operator === '>=' ||
@@ -3244,7 +3244,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  visitReturnStatement(node: ReturnStatementNode): void {
+  override visitReturnStatement(node: ReturnStatementNode): void {
     // Continue with default traversal to ensure argument expression is visited first
     super.visitReturnStatement(node);
 
@@ -3291,7 +3291,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  visitBreakStatement(node: BreakStatementNode): void {
+  override visitBreakStatement(node: BreakStatementNode): void {
     if (this.options.enableControlFlowAnalysis) {
       // Check if break is inside a loop or switch statement
       if (this.loopScopes.length === 0 && this.switchScopes.length === 0) {
@@ -3309,7 +3309,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     super.visitBreakStatement(node);
   }
 
-  visitContinueStatement(node: ContinueStatementNode): void {
+  override visitContinueStatement(node: ContinueStatementNode): void {
     if (this.options.enableControlFlowAnalysis) {
       // Check if continue is inside a loop
       if (this.loopScopes.length === 0) {
@@ -3327,7 +3327,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     super.visitContinueStatement(node);
   }
 
-  visitIfStatement(node: IfStatementNode): void {
+  override visitIfStatement(node: IfStatementNode): void {
     // Visit the test in truthiness context so builtins with unknown args don't warn
     // (e.g., if (!length(args)) is a valid type-check pattern)
     this.truthinessDepth++;
@@ -3360,7 +3360,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   // Override loop visitors to track loop scopes
-  visitWhileStatement(node: any): void {
+  override visitWhileStatement(node: any): void {
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
@@ -3374,7 +3374,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  visitForStatement(node: any): void {
+  override visitForStatement(node: any): void {
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
@@ -3410,7 +3410,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  visitForInStatement(node: any): void {
+  override visitForInStatement(node: any): void {
 
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
@@ -3673,7 +3673,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return this.typeChecker.getTypeOf(node) ?? null;
   }
 
-  visitSwitchStatement(node: SwitchStatementNode): void {
+  override visitSwitchStatement(node: SwitchStatementNode): void {
     if (this.options.enableControlFlowAnalysis) {
       // Track that we're entering a switch statement
       this.switchScopes.push(this.symbolTable.getCurrentScope());
@@ -4392,7 +4392,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  visitExportNamedDeclaration(node: ExportNamedDeclarationNode): void {
+  override visitExportNamedDeclaration(node: ExportNamedDeclarationNode): void {
     // For export function declarations like: export function foo() {}
     if (node.declaration) {
       // Version-gated: `export function NAME(){}` without a trailing `;` only
@@ -4432,7 +4432,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  visitExportDefaultDeclaration(node: ExportDefaultDeclarationNode): void {
+  override visitExportDefaultDeclaration(node: ExportDefaultDeclarationNode): void {
     // For export default declarations like: export default function() {}
     if (node.declaration) {
       // Visit the actual declaration
