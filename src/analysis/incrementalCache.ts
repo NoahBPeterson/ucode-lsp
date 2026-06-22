@@ -22,7 +22,6 @@
 // asserts incremental diagnostics ≡ full-analysis diagnostics across many edit sequences.
 
 import { ProgramNode, AstNode, FunctionDeclarationNode, VariableDeclarationNode, ObjectExpressionNode, PropertyNode, FunctionExpressionNode } from '../ast/nodes';
-import { computeFreeVariables } from './includeScope';
 
 export interface UnitRange {
   key: string;                 // stable identity within the file (name#ordinal)
@@ -131,12 +130,6 @@ export function bodyHashOf(text: string, u: UnitRange): string {
 }
 
 
-/** Names a body references that are declared OUTSIDE the function (globals, sibling funcs,
- *  the function's own name) — the symbols whose "used" flag the body would set. */
-export function freeVarsOf(u: UnitRange): string[] {
-  return [...computeFreeVariables(u.fnNode)];
-}
-
 /** A body is PURE (skippable) iff it performs no write whose target escapes the function:
  *  no `this.x=`, no assignment/update/delete to a name not declared within the function, and
  *  no member-write to a non-local object. Conservative: any uncertainty ⇒ impure. */
@@ -147,10 +140,6 @@ export function freeVarsOf(u: UnitRange): string[] {
  *   'impure'   — writes a global / outer object / implicit global; re-analyzed in full.
  */
 export type BodyClass = 'pure' | 'thisSafe' | 'impure';
-
-export function isPureBody(u: UnitRange): boolean {
-  return classifyBody(u) === 'pure';
-}
 
 export function classifyBody(u: UnitRange): BodyClass {
   const fn = u.fnNode as any;
