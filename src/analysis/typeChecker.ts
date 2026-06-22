@@ -3910,7 +3910,7 @@ export class TypeChecker {
     if (!ast) {
       return [];
     }
-    const key = variableName + ' ' + position;
+    const key = variableName + '' + position;
     const cached = this.guardCache.get(key);
     if (cached) {
       this.transitiveTypeAliases = cached.aliases;
@@ -3982,6 +3982,34 @@ export class TypeChecker {
         guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
       }
     }
+  }
+
+  /** Is `name` assigned (=, compound-assign, ++/--, or re-declared) anywhere in `root`
+   *  with a source offset strictly between `after` and `before`? Conservative scan used
+   *  to invalidate an early-exit null-guard narrowing when an intervening reassignment
+   *  could have changed the variable (so `if (!x) return; x = null; x.foo` still flags). */
+  private isVariableAssignedBetween(root: AstNode | null, name: string, after: number, before: number): boolean {
+    let found = false;
+    const targetsName = (t: any): boolean => t && t.type === 'Identifier' && t.name === name;
+    const walk = (n: any): void => {
+      if (found || !n || typeof n !== 'object' || typeof n.type !== 'string') return;
+      if (typeof n.start === 'number' && n.start > after && n.start < before) {
+        if ((n.type === 'AssignmentExpression' && targetsName(n.left))
+            || (n.type === 'UpdateExpression' && targetsName(n.argument))
+            || (n.type === 'VariableDeclarator' && targetsName(n.id))) {
+          found = true;
+          return;
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'parent' || k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+      }
+    };
+    walk(root);
+    return found;
   }
 
   private collectGuards(node: AstNode | null, variableName: string, position: number, guards: TypeGuardInfo[]): void {
@@ -4265,6 +4293,21 @@ export class TypeChecker {
                   const effType = sym ? this.getEffectiveSymbolDataType(sym, position) : undefined;
                   if (effType && isUnionType(effType) && getUnionTypes(effType).includes(UcodeType.NULL)) {
                     guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+                  } else if (effType && this.dataTypeToUcodeType(effType) === UcodeType.NULL
+                             && !this.isVariableAssignedBetween(node, variableName, sibIf.end, position)) {
+                    // x is typed EXACTLY null (e.g. a module-level `let ctx;` whose only
+                    // non-null assignment lives in another function, so we never merged that
+                    // type in). After `if (!x) <early-exit>`, x is provably non-null on the
+                    // fall-through path, so narrow to UNKNOWN — its real type is unknown to us,
+                    // but it is NOT null here. This suppresses the false provably-null
+                    // member-access error (UC5005).
+                    //
+                    // SOUNDNESS GATE: only when there is NO reassignment of x between the guard
+                    // and the use. `if (!x) return; x = null; x.foo` must still flag — the
+                    // guard is stale there. (The flow engine doesn't reliably track a
+                    // module-level/closure reassignment, so we check the AST directly rather
+                    // than rely on it.)
+                    guards.push({ variableName, narrowToType: UcodeType.UNKNOWN, isNegative: false });
                   }
                 }
               }
