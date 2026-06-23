@@ -48,6 +48,8 @@ const EXPECTED_FUNCTIONS = {
     bpf: ['open_module', 'open_map', 'open_program', 'tc_detach', 'set_debug_handler', 'error'],
     html: ['entityencode', 'entitydecode', 'striptags', 'tokenize'],
     lua: ['create'],
+    uclient: ['new'],
+    udebug: ['init', 'create_ring', 'get_ring', 'trace_ring', 'foreach_packet', 'pcap_file', 'pcap_udp'],
 };
 
 // Verify every module

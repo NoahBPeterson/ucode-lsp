@@ -13,7 +13,8 @@ export const KNOWN_MODULES = [
   'nl80211', 'resolv', 'rtnl', 'socket', 'struct',
   'ubus', 'uci', 'uloop', 'zlib',
   // OpenWrt feed modules (ucode-mod-*), version-gated in ucodeVersions.ts:
-  'bpf', 'html', 'lua'   // 23.05
+  'bpf', 'html', 'lua',     // 23.05
+  'uclient', 'udebug'       // 24.10
 ] as const;
 
 export type KnownModule = typeof KNOWN_MODULES[number];

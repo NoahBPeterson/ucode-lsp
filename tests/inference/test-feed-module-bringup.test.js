@@ -57,3 +57,26 @@ describe('23.05 feed modules: html, bpf, lua', () => {
     expect(has(bad, 'UC5004', '25.12')).toBe(true);
   });
 });
+
+describe('24.10 feed modules: uclient, udebug', () => {
+  test('both are known modules', () => {
+    for (const m of ['uclient', 'udebug']) expect(isKnownModule(m)).toBe(true);
+  });
+  const validImports = {
+    uclient: "import { new as nc } from 'uclient';\n",
+    udebug: "import { create_ring, FORMAT_STRING } from 'udebug';\n",
+  };
+  for (const [m, code] of Object.entries(validImports)) {
+    test(`${m}: named import resolves on 25.12 (no UC3005/UC3002)`, () => {
+      const cs = codes(code, '25.12');
+      expect(cs).not.toContain('UC3005');
+      expect(cs).not.toContain('UC3002');
+    });
+    test(`${m}: version-gated — flagged on 22.03 AND 23.05, clean on 24.10+`, () => {
+      expect(has(code, 'UC6005', '22.03')).toBe(true);
+      expect(has(code, 'UC6005', '23.05')).toBe(true);
+      expect(has(code, 'UC6005', '24.10')).toBe(false);
+      expect(has(code, 'UC6005', '25.12')).toBe(false);
+    });
+  }
+});

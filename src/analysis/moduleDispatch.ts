@@ -45,6 +45,8 @@ import { fsProcObjectType, fsDirObjectType, fsFileObjectType } from './fsTypes';
 import { htmlModule } from './htmlTypes';
 import { luaModule } from './luaTypes';
 import { bpfModule, bpfModuleObjectType, bpfMapObjectType, bpfProgramObjectType, bpfMapIteratorObjectType } from './bpfTypes';
+import { uclientModule } from './uclientTypes';
+import { udebugModule } from './udebugTypes';
 
 // ---- Build MODULE_REGISTRIES using factory ----
 
@@ -67,6 +69,8 @@ export const MODULE_REGISTRIES: Record<KnownModule, ModuleRegistry> = {
   bpf: createModuleRegistry(bpfModule),
   html: createModuleRegistry(htmlModule),
   lua: createModuleRegistry(luaModule),
+  uclient: createModuleRegistry(uclientModule),
+  udebug: createModuleRegistry(udebugModule),
 };
 
 // ---- Build OBJECT_REGISTRIES using factory ----
