@@ -1,38 +1,21 @@
 # Changelog
 
-## 0.7.1 (2026-06-21)
+## 0.7.2 (2026-06-23)
 
-### Object-literal method calls resolve their return type
+Everything since the last release (`v0.6.254`). The headline is end-to-end ucode **template
+mode** support; alongside it, function-level incremental analysis, a builtin/module
+return-type correctness pass, several type-inference and null-safety fixes, and a
+test-infrastructure overhaul.
 
-`obj.method()` and `this.method()` on a local object literal now infer the method's
-return type instead of `unknown`. Motivated by fw4.uc's `parse_weekdays`, where
-`let rv = this.parse_invert(val)` was typed `unknown`, which then poisoned everything
-derived from `rv`. A function-valued property's inferred return type is recorded on the
-receiver symbol (and on `this` at method entry) and read during call-return inference.
+### ucode template mode (`{% %}` / `{{ }}` / `{# #}`) — now supported end-to-end
 
-- Resolution is **define-before-use**: a sibling method resolves only if it is defined
-  earlier in the object than the call site (a forward reference is left `unknown` rather
-  than guessed). `this.method()` is fully supported; external `obj.method()` resolves
-  after the object's declaration.
-- A method returning a bare parameter stays `unknown` (no over-claiming).
-
-Known still-open items on this function (next iterations): go-to-definition on a sibling
-`this.method` / `obj.method`, and flow-sensitive member typing (a member's type should
-reflect the most recent assignment *at the read position*, not a single type for all
-positions).
-
-## 0.7.0 (2026-06-21)
-
-**ucode template mode (`{% %}` / `{{ }}` / `{# #}`) is now supported end-to-end.**
-ucode's native default is *template* mode (the `utpl` binary / `ucode -T`), and OpenWrt
-ships flagship codebases — firewall4's ruleset generator, luci, snort3 — entirely as ucode
+ucode's native default is *template* mode (the `utpl` binary / `ucode -T`), and OpenWrt ships
+flagship codebases — firewall4's ruleset generator, luci, snort3 — entirely as ucode
 templates. Previously the LSP forced raw mode on every file and produced hundreds of false
 diagnostics per template (a UC6004 syntax-error storm plus a UC1001 storm on every
 interpolated variable). Templates now lex, parse, and type-check, and the diagnostics that
 fire match the ucode interpreter (oracle-verified against 22.03 / 23.05 / 24.10 / 25.12 /
-main). This is the headline of the release and the reason for the minor-version bump.
-
-### Template front-end (lexer + parser + mode detection)
+main). This is the reason for the minor-version bump.
 
 - **Mode detection** (`detectTemplateMode`): replicates ucode's invocation-determined rule
   from what the file carries — shebang (`utpl` / `ucode -T` ⇒ template; `-R` ⇒ raw), else a
@@ -45,116 +28,122 @@ main). This is the headline of the release and the reason for the minor-version 
   parser consumes templates (`{{a}}{{b}}` → `a; b;`); the alt-colon block form
   (`{% if (x): %}…{% elif %}…{% else %}…{% endif %}`, `for`/`endfor`, `while`/`endwhile`) is
   handled.
+- **Render-scope enforcement & typing** — `include(path, { scope })` co-locates a literal
+  path and a literal scope object, so the render contract is statically knowable. The
+  cross-file include index resolves each include (path relative to the includer, per the
+  oracle) and **suppresses UC1001 for injected render-scope names** (in strict too), while
+  still flagging a free variable the scope fails to provide — reported at the include SITE.
+  Injected names take the **type** of their scope value (literals, `require("mod")` module
+  types, transitively-resolved identifiers), and the index is a **fixpoint**: injected scope
+  leaks transitively into nested includes, so a strict grandchild sees a var its parent's
+  site omitted.
+- **`'use strict'` in templates** — honored only when the `{% 'use strict'; … %}` block is the
+  first statement; leading text / `{{ }}` / even leading whitespace compiles to a `print()`
+  and makes the directive inert (the same directive-must-be-first rule as raw ucode).
+  `detectStrictMode` is template-aware to match.
+- **Parity hardening (what ucode rejects, we reject)** — UC1001 severity tracks strict mode
+  (Error under `'use strict'`, Warning otherwise, always reported); invalid close modifiers
+  `+%}` / `+}}` rejected; nested blocks rejected; unterminated `{{`/`{#` blocks rejected
+  (a statement block may still run to EOF); `{{+` is unary plus, not a trim modifier; empty
+  `{{ }}` rejected while `{% %}` / `{# #}` may be empty.
 
-### Render-scope enforcement & typing (the UC1001 storm)
+The one remaining open item is template-text **syntax highlighting** (a `//` in template text
+is literal output, not a comment); the static TextMate grammar can't be mode-aware, so the fix
+is an LSP semantic-tokens provider, scoped in `docs/semantic-tokens-template-highlighting.md`.
 
-- `include(path, { scope })` co-locates a literal path and a literal scope object, so the
-  render contract is statically knowable. The cross-file include index resolves each include
-  (path relative to the includer, per the oracle), and the analyzer **suppresses UC1001 for
-  injected render-scope names** (in strict too) while still flagging a free variable the
-  scope fails to provide — reported at the include SITE.
-- Injected names take the **type** of their scope value (literals, `require("mod")` module
-  types, and bare identifiers resolved transitively), so `type(x)` / member access on an
-  injected name resolves. The index is a **fixpoint**: injected scope leaks transitively into
-  nested includes (oracle-confirmed), so a strict grandchild sees a var its parent's site
-  omitted.
+### Function-level incremental analysis
 
-### `'use strict'` in templates
+The analyzer no longer re-type-checks the whole document on every keystroke. It now skips
+function bodies that are unchanged since the previous run, restoring their cached diagnostics
+and types instead of re-deriving them. Skipping is **soundness-gated by a semantic
+fingerprint**: if any unit's externally-visible signature moves (its return type, its
+returned-object shape, or the `this.<prop>` types it writes), the run transparently falls
+back to a full re-analysis, so a skipped reader can never observe a stale sibling.
 
-- A template honors `'use strict'` only when its `{% 'use strict'; … %}` block is the first
-  statement — leading text / `{{ }}` / even leading whitespace compiles to a `print()` and
-  makes the directive inert (the same directive-must-be-first rule as raw ucode). Comments
-  and a shebang don't displace it. `detectStrictMode` is template-aware to match.
+**On performance, honestly:** the concrete, defensible, measured win is **~32% on the
+worst case** — firewall4's ruleset generator (`fw4.uc`), 540ms → 367ms — and that gain comes
+specifically from **caching structural guard collection**, not from the body-skip alone. The
+body-skip avoids redundant type-checking on untouched functions, but the speedup it delivers
+depends entirely on edit locality and file size; it is not captured by any single multiplier,
+and we don't claim one. Large files also get an **adaptive analysis debounce** so typing stays
+responsive.
 
-### ucode-parity hardening (no false negatives — what ucode rejects, we reject)
+- **Cross-file soundness fix:** when an imported module changes, its open *and* closed
+  dependents are now force-re-analyzed in full. Previously a dependent could replay
+  diagnostics against the import's stale exports — a silent false negative. Backed by 106
+  incremental-soundness tests (same-file pure-replay + real-server cross-file).
 
-- **UC1001 severity tracks strict mode**: a read of an undefined variable is an **Error**
-  under `'use strict'` (a guaranteed `Reference error`) and a **Warning** otherwise
-  (non-strict reads evaluate to `null` — a typo/render-scope heuristic, not a crash). It is
-  still always reported. Calls of an undefined name (UC1002) and member access throw even in
-  non-strict, so those stay Errors.
-- **Invalid close modifiers `+%}` / `+}}` are rejected** — `+` is open-only in every release.
-- **Nested blocks are rejected** (`{%`/`{{` inside a block → "Template blocks may not be
-  nested"), greedy on adjacency exactly like ucode (`{ a: 1 }` and `{ { } }` stay valid).
-- **Unterminated blocks are rejected** (`{{ … <EOF>`, `{# … <EOF>` → "Unterminated template
-  block"), preserving ucode's asymmetry that a statement block may run to EOF.
-- **`{{+` is unary plus**, not a trim modifier (only `{%+` is) — `{{+ "5" + 1 }}` is `6`,
-  `{{ "5" + 1 }}` is `"51"`.
-- **Empty expression tag `{{ }}` is rejected** ("Expecting expression"), while `{% %}` and
-  `{# #}` may be empty.
+### Type inference
 
-Runnable, oracle-verified examples live in `demos/template-strict/`. The one remaining open
-item is template-text **syntax highlighting** (a `//` in template text is literal output, not
-a comment) — the static TextMate grammar can't make that mode-aware, so the fix is an LSP
-semantic-tokens provider, scoped in `docs/semantic-tokens-template-highlighting.md`.
+- **Object-literal method calls resolve their return type** — `obj.method()` and
+  `this.method()` on a local object literal now infer the method's return type instead of
+  `unknown` (which previously poisoned everything derived from the result, e.g. fw4.uc's
+  `let rv = this.parse_invert(val)`). A method returning a bare parameter stays `unknown` (no
+  over-claiming).
+- **Method forward-references + go-to-definition** — a `this.method()` / `obj.method()` call
+  now resolves even when the method is defined later in the object, and go-to-definition lands
+  on the sibling method.
+- **Flow-sensitive member-property types** — a member's type reflects the most recent
+  assignment *at the read position*, not one type for all positions; hover is suppressed inside
+  comments.
+- **fs object handles flow on reassignment, with nullability preserved** — `let b; b = open(…)`
+  now types `b` as the handle instead of dropping it to `unknown` (a regression from the 0.6.27
+  inferXType-cascade removal). Separately, the object-handle factories
+  (`open`/`popen`/`mkstemp`/`fdopen`/`opendir`/…) now keep their runtime `| null` instead of
+  collapsing to a bare non-null handle — a latent false negative present since fs typing was
+  first added. So `open(path).read()` with no guard is flagged (UC5006), and a truthiness guard
+  or `?.` clears it; this aligns the fs builtin path with the io module (already
+  `io.handle | null`).
+
+### Builtin & module return-type correctness (triage clusters C3 + C2)
+
+Type/signature corrections to existing functions; the version-gating registry
+(`ucodeVersions.ts`) still gates availability, so these refinements only take effect where the
+function is available.
+
+- **fs handle reads** — `fs.file`/`fs.proc`/`fs.dir` `read(...)` are `string | null`; the
+  `null` is the error signal and, for `dir.read()`, the end-of-directory terminator, so the
+  canonical `while ((line = fh.read('line')))` idiom type-checks correctly. The scalar handle
+  methods (`tell`/`seek`/`truncate`/`lock`/`isatty`/`flush`/`fileno`/`write`) carry their
+  `| null` error path too.
+- **stat() / lstat()** return a fixed-shape `fs.stat` object instead of a bare `object`
+  (`size`/`mtime` integer, `type` string, nested `dev`/`perm` shapes modeled; unknown fields
+  flagged). **math transcendentals** (`pow`/`sqrt`/`sin`/`cos`/`exp`/`log`/`atan2`) return
+  `double`, not `integer`. **writefile()** corrected to `writefile(path, data: any,
+  size?: integer)` (third arg is a byte limit, not a mode). `zlib` stream `write()` is
+  `boolean | null`; several `uloop` object methods carry `| null` on the stale-handle path;
+  `socket.pair()` is `array<socket> | null` and `io.pipe()` is `array<io.handle> | null`.
+- **Argument over-strictness relaxed** — valid calls no longer hard-error: `exists()` never
+  throws (mismatch downgraded to a warning); `proto(x)` query form tolerates any value;
+  `uniq`/`iptoarr`/`arrtoip`/`b64dec` return `null` on a wrong-typed arg (warning, not error);
+  `rindex` accepts a string **or** array haystack. Calling a defined-but-non-callable value
+  reports `'x' is not a function (it is of type …)` and respects flow-narrowing of the callee.
+- **Chained / indexed member resolution** — a member whose receiver is itself an expression
+  resolves against the object-type registry: nested `info.dev.major`, indexed
+  `pair()[0].recv()`, and call chains `open().read()`. Array index access preserves the rich
+  element type (`array<socket>[i]` → `socket | null`), and hover walks the same chain.
+
+### Diagnostics
+
+- **UC5005 false positive fixed** — a variable typed exactly `null` (e.g. a module-level
+  `let ctx;` assigned only from another function) now narrows to non-null after an
+  `if (!ctx) return;` early-exit guard, so a guarded member access is no longer wrongly flagged
+  as a null dereference. Sound-gated: an intervening reassignment to null still flags.
+
+### Test infrastructure & soundness
+
+- The mocha/bun test bridge is now **auto-discovering** (opt-out quarantine instead of
+  hand-maintained registration lists), and the **quarantine is burned down to zero** (31
+  triaged → 30 deleted, 1 fixed).
+- `tests/` reorganized from **456 flat files into 11 feature directories** plus `fixtures/`
+  and `scratch/`.
+- Several **server-driven coverage** passes targeting the lowest-covered files, and removal of
+  dead code (`fsTypeRegistry`, unused incremental helpers).
 
 ### Build
 
-- Bundling switched from `ts-loader` to `esbuild-loader` (~2.7× faster, smaller output).
-- Enabled the no-cost strict `tsconfig` flags (`moduleResolution` stays `node`).
-
-## 0.6.255 (2026-06-19)
-
-Return-type correctness pass (triage cluster **C3**) plus the remaining
-builtin-argument over-strictness fixes (cluster **C2**). All changes are
-type/signature corrections to functions that already exist; the version-gating
-registry (`ucodeVersions.ts`) already gates the availability of the
-version-new ones (`socket.pair`/`io.pipe`→25.12, `zlib` streaming→24.10,
-`uloop.interval`/`signal`→23.05), so these refinements only take effect where
-those functions are available — they remain target-version-appropriate.
-
-### Builtin/module return types now model `| null` and lost shapes (C3)
-
-- **fs handle reads** — `fs.file`/`fs.proc`/`fs.dir` `read(...)` are `string | null`;
-  the `null` is the error signal and, for `dir.read()`, the end-of-directory
-  terminator, so the canonical `while ((line = fh.read('line')))` idiom now type-checks
-  correctly (auto-docs #124). The scalar handle methods
-  (`tell`/`seek`/`truncate`/`lock`/`isatty`/`flush`/`fileno`/`write`) carry their
-  `| null` error path too (#129).
-- **stat() / lstat()** return a fixed-shape `fs.stat` object instead of a bare
-  `object` — `st.size`/`st.mtime` are `integer`, `st.type` is `string`, and the nested
-  `st.dev`/`st.perm` shapes are modeled; unknown fields are flagged (#126).
-- **math transcendentals** `pow`/`sqrt`/`sin`/`cos`/`exp`/`log`/`atan2` return `double`,
-  not `integer` (#162).
-- **writefile()** signature corrected: `writefile(path, data: any, size?: integer)` — the
-  third argument is a byte-count limit, not a permission mode, and any data value is
-  stringified (#125).
-- `zlib` stream `write()` is `boolean | null` (#164); several `uloop` object methods
-  (`timer.remaining`/`cancel`, `process.pid`, `interval.remaining`/`expirations`,
-  `signal.signo`) carry `| null` on the stale-handle path (#165);
-  `socket.pair()` is `array<socket> | null` and `io.pipe()` is `array<io.handle> | null`,
-  so indexing the result resolves the handle methods (#166).
-- Stale hover doc-strings corrected: `min`/`max` return `any` (not `number`), and
-  `sourcepath` returns `string | null` (#37).
-
-### Builtin argument over-strictness — valid calls no longer hard-error (C2)
-
-- **exists()** never throws (non-object arg 1 returns `false`; the key is coerced to a
-  string), so a type mismatch is downgraded from a hard error to a **warning** rather than
-  removed entirely — checking membership on a non-object is still worth surfacing
-  (auto-docs #33, #148).
-- **proto(x)** query form (1 argument) tolerates any value (returns null) — no longer
-  requires object/array (#150).
-- `uniq`/`iptoarr`/`arrtoip`/`b64dec` return `null` on a wrong-typed argument rather
-  than throwing, so a type mismatch is now a **warning**, not an error (#36).
-- `rindex`'s base signature accepts a string **or** array haystack, matching `index`
-  and its shared C implementation (#179).
-- Calling a defined-but-non-callable value reports `'x' is not a function (it is of
-  type …)` instead of the misleading `Undefined function: x`, and respects flow-narrowing
-  of the callee (e.g. inside `type(x) == "function"`) (#18).
-
-### Chained / indexed member resolution (enables the C3 shapes above)
-
-- A member whose receiver is itself an expression now resolves against the object-type
-  registry: nested `info.dev.major`/`info.perm.user_exec` on a `stat()` result, indexed
-  `pair()[0].recv()` / `io.pipe()[0].read()`, and call chains like `open().read()`. Array
-  index access also preserves the rich element type (`array<socket>[i]` → `socket | null`
-  rather than `object | null`), so handle methods resolve on indexed elements — and the
-  Tier-2 possibly-null warning still fires on a chained nullable receiver
-  (e.g. `cursor().foreach()`).
-- Hover walks the same chain: hovering a nested property *name* (`major` in
-  `info.dev.major`, `user_exec` in `info.perm.user_exec`) shows the property's type, not
-  `unknown`.
+- Bundling switched from `ts-loader` to **`esbuild-loader`** (~2.7× faster builds, smaller
+  output), and the no-cost strict `tsconfig` flags were enabled.
 
 ## 0.6.183 – 0.6.254 (2026-06-08 → 2026-06-19)
 
