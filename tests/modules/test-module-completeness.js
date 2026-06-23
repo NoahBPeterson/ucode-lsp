@@ -50,6 +50,8 @@ const EXPECTED_FUNCTIONS = {
     lua: ['create'],
     uclient: ['new'],
     udebug: ['init', 'create_ring', 'get_ring', 'trace_ring', 'foreach_packet', 'pcap_file', 'pcap_udp'],
+    uline: ['new', 'arg_parser', 'getpass'],
+    pkgen: ['generate_key', 'load_key', 'generate_cert', 'cert_info', 'generate_pkcs12', 'error', 'errno'],
 };
 
 // Verify every module

@@ -67,6 +67,10 @@ export const VERSION_MODULES: Record<string, UcodeTargetVersion> = {
   // First feed appearance 25.12 (`ucode-mod-zlib`). NOTE: lib/zlib.c existed since the
   // 23.05 source tree, but no zlib module package was built until 25.12 — feed wins.
   zlib: '25.12',
+  // First feed appearance 25.12 (`ucode-mod-{uline,pkgen}`). External feed packages
+  // (own repos), so feed availability is the only minimum.
+  uline: '25.12',
+  pkgen: '25.12',
   // First feed appearance 24.10 (`ucode-mod-{digest,uclient,udebug}`); absent at 23.05.
   digest: '24.10',
   uclient: '24.10',

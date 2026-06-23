@@ -47,6 +47,8 @@ import { luaModule } from './luaTypes';
 import { bpfModule, bpfModuleObjectType, bpfMapObjectType, bpfProgramObjectType, bpfMapIteratorObjectType } from './bpfTypes';
 import { uclientModule } from './uclientTypes';
 import { udebugModule } from './udebugTypes';
+import { ulineModule, ulineStateObjectType, ulineArgpObjectType } from './ulineTypes';
+import { pkgenModule, mbedtlsPkObjectType, mbedtlsCrtObjectType } from './pkgenTypes';
 
 // ---- Build MODULE_REGISTRIES using factory ----
 
@@ -71,6 +73,8 @@ export const MODULE_REGISTRIES: Record<KnownModule, ModuleRegistry> = {
   lua: createModuleRegistry(luaModule),
   uclient: createModuleRegistry(uclientModule),
   udebug: createModuleRegistry(udebugModule),
+  uline: createModuleRegistry(ulineModule),
+  pkgen: createModuleRegistry(pkgenModule),
 };
 
 // ---- Build OBJECT_REGISTRIES using factory ----
@@ -111,6 +115,10 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'bpf.map': createObjectTypeRegistry(bpfMapObjectType),
   'bpf.program': createObjectTypeRegistry(bpfProgramObjectType),
   'bpf.map.iterator': createObjectTypeRegistry(bpfMapIteratorObjectType),
+  'uline.state': createObjectTypeRegistry(ulineStateObjectType),
+  'uline.argp': createObjectTypeRegistry(ulineArgpObjectType),
+  'mbedtls.pk': createObjectTypeRegistry(mbedtlsPkObjectType),
+  'mbedtls.crt': createObjectTypeRegistry(mbedtlsCrtObjectType),
   'exception': createObjectTypeRegistry(exceptionObjectType),
 };
 

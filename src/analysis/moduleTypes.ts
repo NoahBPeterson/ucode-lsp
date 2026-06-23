@@ -14,7 +14,8 @@ export const KNOWN_MODULES = [
   'ubus', 'uci', 'uloop', 'zlib',
   // OpenWrt feed modules (ucode-mod-*), version-gated in ucodeVersions.ts:
   'bpf', 'html', 'lua',     // 23.05
-  'uclient', 'udebug'       // 24.10
+  'uclient', 'udebug',      // 24.10
+  'uline', 'pkgen'          // 25.12
 ] as const;
 
 export type KnownModule = typeof KNOWN_MODULES[number];
@@ -34,6 +35,8 @@ export type KnownObjectType =
   | 'struct.instance' | 'struct.buffer'
   | 'zlib.deflate' | 'zlib.inflate'
   | 'bpf.module' | 'bpf.map' | 'bpf.program' | 'bpf.map.iterator'
+  | 'uline.state' | 'uline.argp'
+  | 'mbedtls.pk' | 'mbedtls.crt'
   | 'exception';
 
 // ---- Common function signature ----

@@ -80,3 +80,36 @@ describe('24.10 feed modules: uclient, udebug', () => {
     });
   }
 });
+
+describe('25.12 feed modules: uline, pkgen', () => {
+  test('both are known modules', () => {
+    for (const m of ['uline', 'pkgen']) expect(isKnownModule(m)).toBe(true);
+  });
+  const validImports = {
+    uline: "import { getpass } from 'uline';\n",
+    pkgen: "import { generate_key } from 'pkgen';\n",
+  };
+  for (const [m, code] of Object.entries(validImports)) {
+    test(`${m}: named import resolves on 25.12 (no UC3005/UC3002)`, () => {
+      const cs = codes(code, '25.12');
+      expect(cs).not.toContain('UC3005');
+      expect(cs).not.toContain('UC3002');
+    });
+    test(`${m}: version-gated — flagged on 22.03/23.05/24.10, clean on 25.12+`, () => {
+      expect(has(code, 'UC6005', '22.03')).toBe(true);
+      expect(has(code, 'UC6005', '24.10')).toBe(true);
+      expect(has(code, 'UC6005', '25.12')).toBe(false);
+      expect(has(code, 'UC6005', 'main')).toBe(false);
+    });
+  }
+  test('uline handle methods resolve (cli idiom); bogus method flagged', () => {
+    const good = "import * as uline from 'uline';\nlet el = uline.new();\nel.poll_key(10);\nel.hide_prompt();\n";
+    expect(codes(good, '25.12')).not.toContain('UC5004');
+    const bad = "import * as uline from 'uline';\nlet el = uline.new();\nel.no_such();\n";
+    expect(has(bad, 'UC5004', '25.12')).toBe(true);
+  });
+  test('pkgen key handle pem()/der() resolve', () => {
+    const good = "import { generate_key } from 'pkgen';\nlet k = generate_key();\nk.pem();\nk.der();\n";
+    expect(codes(good, '25.12')).not.toContain('UC5004');
+  });
+});
