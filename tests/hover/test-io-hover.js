@@ -118,12 +118,14 @@ let tty = open('/dev/tty', O_RDWR);`;
   return typeToString(sym.dataType) === 'io.handle | null';
 });
 
-testCase('open() without io import: type is fs.file (not io.handle)', () => {
+testCase('open() without io import: type is fs.file | null (not io.handle)', () => {
   const result = analyze(`let f = open('/tmp/test', 'r');`);
   const sym = result.symbolTable.lookup('f');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
-  return typeToString(sym.dataType) === 'fs.file';
+  // Bare builtin open() returns `fs.file | null` (can fail at runtime), matching the
+  // imported-fs path below — null is preserved, not dropped.
+  return typeToString(sym.dataType) === 'fs.file | null';
 });
 
 testCase('open() from fs import: type is fs.file | null (not io.handle)', () => {

@@ -4,12 +4,13 @@
 // test-final-comprehensive.js, test-assignment-type-inference.js) with real assertions
 // against the analyzer (no server spawn — runs natively under `bun test`).
 //
-// It pins both what WORKS and a KNOWN LIMITATION the scratch scripts were probing:
-// reassigning a bare `let` (declared without an initializer) to a CALL that returns a
-// union/nullable type (e.g. open() → fs.file | null) does not propagate that type to
-// later reads — the variable reads back as `unknown`. Direct initialization and literal
-// reassignment both work. See docs/flow-reassignment-union-call-gap.md. When that gap is
-// fixed, flip the two LIMITATION assertions to expect `fs.file | null`.
+// It pins what WORKS, including the case the scratch scripts were probing: reassigning a
+// bare `let` (declared without an initializer) to a CALL that returns an fs object / union
+// type (e.g. open() → fs.file, readlink() → string | null) now propagates that type to
+// later reads, matching the declaration path. Previously the reassignment path dropped it
+// to `unknown` (a false-negative class — downstream nullability went unanalyzed). Fixed by
+// mirroring the declarator's inferFsType / inferImportedFsFunctionReturnType resolution in
+// visitAssignmentExpression. See docs/done/flow-reassignment-union-call-gap.md.
 
 import { test, expect, describe } from 'bun:test';
 import { UcodeLexer } from '../../src/lexer/ucodeLexer.ts';
@@ -26,13 +27,16 @@ function docFor(code) {
     };
 }
 
+function analyze(code) {
+    const tokens = new UcodeLexer(code, { rawMode: true }).tokenize();
+    return new SemanticAnalyzer(docFor(code), { enableScopeAnalysis: true, enableTypeChecking: true })
+        .analyze(new UcodeParser(tokens, code).parse().ast);
+}
+
 // Effective type of `name` at the LAST occurrence of `marker` in `code`, mirroring how
 // hover resolves a read: the flow-narrowed currentType if present, else the declared type.
 function typeAtRead(code, name, marker) {
-    const lexer = new UcodeLexer(code, { rawMode: true });
-    const tokens = lexer.tokenize();
-    const result = new SemanticAnalyzer(docFor(code), { enableScopeAnalysis: true, enableTypeChecking: true })
-        .analyze(new UcodeParser(tokens, code).parse().ast);
+    const result = analyze(code);
     const offset = code.lastIndexOf(marker);
     const sym = result.symbolTable.lookupAtPosition
         ? (result.symbolTable.lookupAtPosition(name, offset) ?? result.symbolTable.lookup(name))
@@ -42,9 +46,11 @@ function typeAtRead(code, name, marker) {
     return t ? typeToString(t) : 'unknown';
 }
 
+const countCode = (code, errCode) => analyze(code).diagnostics.filter(d => d.code === errCode).length;
+
 describe('fs/flow reassignment typing — works', () => {
-    test('direct init from open() → fs.file', () => {
-        expect(typeAtRead('let a = open("/x");\nprint(a);\n', 'a', 'a)')).toBe('fs.file');
+    test('direct init from open() → fs.file | null (open can fail at runtime)', () => {
+        expect(typeAtRead('let a = open("/x");\nprint(a);\n', 'a', 'a)')).toBe('fs.file | null');
     });
     test('bare-let reassigned to int literal flows', () => {
         expect(typeAtRead('let b;\nb = 5;\nprint(b);\n', 'b', 'b)')).toBe('integer');
@@ -60,17 +66,41 @@ describe('fs/flow reassignment typing — works', () => {
     });
 });
 
-describe('fs/flow reassignment typing — KNOWN LIMITATION (union-returning call)', () => {
-    // These pin CURRENT behavior. The assigned value is really `fs.file | null`; ideally the
-    // read would reflect that. Today it reads back `unknown`. When the gap is fixed, change
-    // these expectations. See docs/flow-reassignment-union-call-gap.md.
-    test('bare-let reassigned to open() does NOT yet flow (reads unknown)', () => {
-        expect(typeAtRead('let b;\nb = open("/x");\nprint(b);\n', 'b', 'b)')).toBe('unknown');
+describe('fs/flow reassignment typing — fs / union-returning call (FIXED)', () => {
+    // Reassignment to an fs-returning call now flows the type, matching direct init.
+    // open() can fail at runtime (returns null), so the sound type is `fs.file | null`.
+    test('bare-let reassigned to open() flows → fs.file | null', () => {
+        expect(typeAtRead('let b;\nb = open("/x");\nprint(b);\n', 'b', 'b)')).toBe('fs.file | null');
     });
-    test('init-then-reassign to open() does NOT yet flow (reads unknown)', () => {
-        expect(typeAtRead('let b = 0;\nb = open("/x");\nprint(b);\n', 'b', 'b)')).toBe('unknown');
+    test('init-then-reassign to open() flows → fs.file | null', () => {
+        expect(typeAtRead('let b = 0;\nb = open("/x");\nprint(b);\n', 'b', 'b)')).toBe('fs.file | null');
     });
-    test('assignment inside try{} does NOT yet flow (reads unknown)', () => {
-        expect(typeAtRead('let c;\ntry { c = open("/x"); } catch (e) {}\nprint(c);\n', 'c', 'c)')).toBe('unknown');
+    test('assignment inside try{} flows → fs.file | null', () => {
+        expect(typeAtRead('let c;\ntry { c = open("/x"); } catch (e) {}\nprint(c);\n', 'c', 'c)')).toBe('fs.file | null');
+    });
+    test('imported fs fn returning a UNION flows the union (readlink → string | null)', () => {
+        expect(typeAtRead('import { readlink } from "fs";\nlet d;\nd = readlink("/x");\nprint(d);\n', 'd', 'd)')).toBe('string | null');
+    });
+    test('most-recent wins: literal reassign AFTER an open() reassign', () => {
+        expect(typeAtRead('let b;\nb = open("/x");\nb = 5;\nprint(b);\n', 'b', 'b)')).toBe('integer');
+    });
+});
+
+// The soundness payoff: because the type now carries `| null`, an unguarded member access on
+// an open() handle is flagged (UC5006 possibly-null), and a null guard clears it. Previously
+// the dropped null made this a SILENT false negative. See docs/done/flow-reassignment-union-call-gap.md.
+describe('fs/flow reassignment typing — nullable handle is enforced (UC5006)', () => {
+    const UC5006 = 'UC5006';
+    test('unguarded member access on a direct-init open() handle is flagged', () => {
+        expect(countCode('import { open } from "fs";\nlet a = open("/x");\na.read("line");\n', UC5006)).toBeGreaterThanOrEqual(1);
+    });
+    test('unguarded member access on a REASSIGNED open() handle is flagged', () => {
+        expect(countCode('import { open } from "fs";\nlet b;\nb = open("/x");\nb.read("line");\n', UC5006)).toBeGreaterThanOrEqual(1);
+    });
+    test('a truthiness guard narrows away null → no UC5006', () => {
+        expect(countCode('import { open } from "fs";\nlet a = open("/x");\nif (a) a.read("line");\n', UC5006)).toBe(0);
+    });
+    test('optional chaining on the handle → no UC5006', () => {
+        expect(countCode('import { open } from "fs";\nlet a = open("/x");\na?.read("line");\n', UC5006)).toBe(0);
     });
 });

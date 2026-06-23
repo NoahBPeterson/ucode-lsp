@@ -39,6 +39,21 @@ export function getFsReturnObjectType(funcName: string): FsObjectType | null {
   return null;
 }
 
+/**
+ * Whether an fs function's object-handle return can be null at RUNTIME (so the inferred type
+ * should be `<fs.handle> | null`, not a bare non-null handle). True when the signature's
+ * return type string includes `null` AND `nullMeansWrongType` is not set — i.e. the null is a
+ * genuine runtime outcome (e.g. open() failing because the file doesn't exist), not merely a
+ * "wrong argument type" sentinel that argument-type checking already rules out. Dropping this
+ * null is a false negative: an unguarded `open(path).read()` would go unflagged. See
+ * docs/done/flow-reassignment-union-call-gap.md.
+ */
+export function fsReturnIsNullable(funcName: string): boolean {
+  const sig = fsModuleFunctions.get(funcName);
+  if (!sig) return false;
+  return sig.returnType.includes('null') && !sig.nullMeansWrongType;
+}
+
 export interface FsModuleFunctionSignature {
   name: string;
   parameters: Array<{

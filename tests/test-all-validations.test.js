@@ -22,7 +22,7 @@ const TESTS_DIR = 'tests';
 // (scratch console.log scripts or redundant with passing tests) and 1 fixed
 // (test-array-element-types.js had stale `array | null` expectations). The fs-flow gap
 // two of them probed is now characterized by tests/test-fs-flow-reassignment.test.js +
-// docs/flow-reassignment-union-call-gap.md. Keep this empty: fix or delete, never quarantine.
+// docs/done/flow-reassignment-union-call-gap.md. Keep this empty: fix or delete, never quarantine.
 const QUARANTINE = new Set([]);
 
 // Auto-discover suites by walking tests/ RECURSIVELY (suites now live in feature

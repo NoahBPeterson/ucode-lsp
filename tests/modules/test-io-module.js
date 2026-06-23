@@ -238,14 +238,15 @@ testCase('io.handle inferred from from() imported from io', () => {
 });
 
 testCase('io.handle NOT inferred from open() without io import', () => {
-  // Without io import, open() should resolve to fs.file (builtin)
+  // Without io import, open() resolves to the fs builtin → `fs.file | null` (open can fail
+  // at runtime). The point of this case is the io-vs-fs distinction, not the nullability.
   const code = `let h = open('/tmp/test', 'r');`;
   const result = analyzeCode(code);
   const sym = result.symbolTable.lookup('h');
   if (!sym) { console.log('    Symbol h not found'); return false; }
   const ts = typeToString(sym.dataType);
   console.log(`    h type: ${ts}`);
-  return ts === 'fs.file';
+  return ts === 'fs.file | null';
 });
 
 testCase('io.handle inferred via namespace import io.open()', () => {

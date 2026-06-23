@@ -23,7 +23,7 @@ import { CFGBuilder } from './cfg/cfgBuilder';
 import { CFGQueryEngine } from './cfg/queryEngine';
 import { type ControlFlowGraph } from './cfg/types';
 import { FsObjectType, createFsObjectDataType } from './fsTypes';
-import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType } from './fsModuleTypes';
+import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType, fsReturnIsNullable } from './fsModuleTypes';
 import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
@@ -3075,6 +3075,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           const functionReturnType = this.inferFunctionCallReturnType(node.right);
           let dataType: UcodeDataType;
 
+          // Bare builtin fs functions (open/popen/mkstemp/…) and imported fs functions
+          // (readlink/realpath/…) return fs object/union types the type checker's builtins
+          // don't model, so checkNode reports them UNKNOWN. The DECLARATION path resolves
+          // them via inferFsType/inferImportedFsFunctionReturnType before falling back; the
+          // reassignment path must too, or `let b; b = open(...)` drops the type to unknown
+          // (a false-negative class — downstream nullability on `b` then goes unanalyzed).
+          // See docs/done/flow-reassignment-union-call-gap.md. (Issue 2)
+          const fsReturnType = this.inferFsType(node.right);
+          const importedFsReturnType = !fsReturnType ? this.inferImportedFsFunctionReturnType(node.right) : null;
+
           // A builtin call carries a per-call narrowed return type (e.g. max() -> null,
           // uniq([1]) -> array<integer>) that inferFunctionCallReturnType discards in favor
           // of the builtin's STATIC return type (max -> integer). Prefer the narrowed
@@ -3084,7 +3094,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             && (node.right as CallExpressionNode).callee.type === 'Identifier'
             && allBuiltinFunctions.has(((node.right as CallExpressionNode).callee as IdentifierNode).name);
 
-          if (isBuiltinCall && rhsCheckedType !== undefined && rhsCheckedType !== null && rhsCheckedType !== UcodeType.UNKNOWN) {
+          if (fsReturnType) {
+            dataType = fsReturnType;
+          } else if (importedFsReturnType) {
+            dataType = importedFsReturnType;
+          } else if (isBuiltinCall && rhsCheckedType !== undefined && rhsCheckedType !== null && rhsCheckedType !== UcodeType.UNKNOWN) {
             dataType = rhsCheckedType;
           } else if (methodReturnType) {
             dataType = methodReturnType;
@@ -3758,7 +3772,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  private inferFsType(node: AstNode): FsObjectType | null {
+  /** The inferred data type of a call that returns an fs object handle (open/popen/…), or null
+   *  if the node isn't such a call. The result preserves runtime nullability: a handle whose
+   *  factory can fail at runtime (e.g. open() → "fs.file | null", no nullMeansWrongType) is
+   *  typed `<handle> | null`, not a bare non-null handle — dropping that null is a false
+   *  negative (an unguarded open(path).read() would go unflagged). See
+   *  docs/done/flow-reassignment-union-call-gap.md. */
+  private inferFsType(node: AstNode): UcodeDataType | null {
     // Check if this is a call expression that returns an fs object
     if (node.type !== 'CallExpression') return null;
 
@@ -3773,7 +3793,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom && symbol.importedFrom !== 'fs') {
         return null;
       }
-      return getFsReturnObjectType(funcName);
+      return this.fsObjectDataType(funcName);
     }
 
     // Member expression: fs.open(), fs.statvfs(), etc. — only when `fs` is the
@@ -3786,11 +3806,22 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           memberNode.property.type === 'Identifier') {
         const fsSym = this.symbolTable.lookup('fs');
         if (!fsSym || extractModuleType(fsSym.dataType)?.moduleName !== 'fs') return null;
-        return getFsReturnObjectType((memberNode.property as IdentifierNode).name);
+        return this.fsObjectDataType((memberNode.property as IdentifierNode).name);
       }
     }
 
     return null;
+  }
+
+  /** Build the data type for an fs object-handle factory `funcName`, preserving runtime
+   *  nullability (see inferFsType). Returns null when funcName doesn't return an fs handle. */
+  private fsObjectDataType(funcName: string): UcodeDataType | null {
+    const fsType = getFsReturnObjectType(funcName);
+    if (!fsType) return null;
+    const handle = createFsObjectDataType(fsType);
+    return fsReturnIsNullable(funcName)
+      ? createUnionType([handle as SingleType, UcodeType.NULL])
+      : handle;
   }
 
   private inferMethodReturnType(node: AstNode): UcodeDataType | null {
@@ -4304,9 +4335,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // without import still need inferFsType since they're not in the type checker's builtins.
       const fsType = this.inferFsType(node.init!);
       if (fsType) {
-        const dataType = createFsObjectDataType(fsType);
-        symbol.dataType = dataType;
-        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, dataType);
+        symbol.dataType = fsType;
+        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, fsType);
         this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
         return;
       }
