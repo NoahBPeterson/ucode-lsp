@@ -17,3 +17,4 @@ coverage-reports/*
 /*.uc
 # Demo / sample dirs are never committed (local aids only)
 /demos/
+/zzzz/
