@@ -11,7 +11,9 @@ import { Option } from 'effect';
 export const KNOWN_MODULES = [
   'debug', 'digest', 'fs', 'io', 'log', 'math',
   'nl80211', 'resolv', 'rtnl', 'socket', 'struct',
-  'ubus', 'uci', 'uloop', 'zlib'
+  'ubus', 'uci', 'uloop', 'zlib',
+  // OpenWrt feed modules (ucode-mod-*), version-gated in ucodeVersions.ts:
+  'bpf', 'html', 'lua'   // 23.05
 ] as const;
 
 export type KnownModule = typeof KNOWN_MODULES[number];
@@ -30,6 +32,7 @@ export type KnownObjectType =
   | 'socket'
   | 'struct.instance' | 'struct.buffer'
   | 'zlib.deflate' | 'zlib.inflate'
+  | 'bpf.module' | 'bpf.map' | 'bpf.program' | 'bpf.map.iterator'
   | 'exception';
 
 // ---- Common function signature ----

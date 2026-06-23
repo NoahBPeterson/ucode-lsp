@@ -72,9 +72,13 @@ export const VERSION_MODULES: Record<string, UcodeTargetVersion> = {
   // First feed appearance 24.10 (`ucode-mod-socket`). NOTE: lib/socket.c existed since
   // the 23.05 source tree, but no socket module package was built until 24.10.
   socket: '24.10',
-  // First feed appearance 23.05 (`ucode-mod-{debug,log}`); absent from the 22.03 feed.
+  // First feed appearance 23.05 (`ucode-mod-{debug,log,bpf,html,lua}`); absent from
+  // the 22.03 feed.
   debug: '23.05',
   log: '23.05',
+  bpf: '23.05',
+  html: '23.05',
+  lua: '23.05',
 };
 
 /**

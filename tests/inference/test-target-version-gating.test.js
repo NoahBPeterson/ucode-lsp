@@ -148,9 +148,15 @@ describe('source cross-check: registry introducedIn vs ucode source at pinned ha
   // socket/zlib feed-gate tests above + the 2026-06 container ground-truth recorded in
   // VERSION_MODULES' doc comment). Source is still required to exist BY introducedIn.
   const FEED_GATED_LATER_THAN_SOURCE = new Set(['socket', 'zlib']);
+  // External feed packages (ucode-mod-*) whose source lives in their OWN OpenWrt
+  // package repos, NOT the core ucode tree this cross-check inspects. Their
+  // per-version availability is ground-truthed by container introspection of the
+  // real package feeds (see the module data gathered 2026-06), not by lib/*.c.
+  const EXTERNAL_FEED_MODULES = new Set(['bpf', 'html', 'lua', 'uclient', 'udebug', 'uline', 'pkgen']);
 
-  test.if(ok)('every gated MODULE has source present at introducedIn (and absent at predecessor unless feed-gated)', () => {
+  test.if(ok)('every gated CORE MODULE has source present at introducedIn (and absent at predecessor unless feed-gated)', () => {
     for (const [mod, intro] of Object.entries(VERSION_MODULES)) {
+      if (EXTERNAL_FEED_MODULES.has(mod)) continue; // not in the core ucode tree
       const prev = PREDECESSOR[intro];
       if (!prev) continue; // introducedIn 'main' has no pinned hash to check
       const file = MODULE_FILE[mod];

@@ -44,6 +44,10 @@ const EXPECTED_FUNCTIONS = {
         'done', 'end', 'cancelling', 'running', 'interval', 'signal',
     ],
     zlib: ['deflate', 'inflate', 'deflater', 'inflater'],
+    // OpenWrt feed modules (ucode-mod-*) — names introspection-authoritative.
+    bpf: ['open_module', 'open_map', 'open_program', 'tc_detach', 'set_debug_handler', 'error'],
+    html: ['entityencode', 'entitydecode', 'striptags', 'tokenize'],
+    lua: ['create'],
 };
 
 // Verify every module

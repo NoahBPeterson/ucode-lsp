@@ -42,6 +42,9 @@ import { nl80211Module, nl80211ListenerObjectType } from './nl80211Types';
 import { uciModule, uciCursorObjectType } from './uciTypes';
 import { uloopModule, uloopTimerObjectType, uloopHandleObjectType, uloopProcessObjectType, uloopTaskObjectType, uloopIntervalObjectType, uloopSignalObjectType, uloopPipeObjectType } from './uloopTypes';
 import { fsProcObjectType, fsDirObjectType, fsFileObjectType } from './fsTypes';
+import { htmlModule } from './htmlTypes';
+import { luaModule } from './luaTypes';
+import { bpfModule, bpfModuleObjectType, bpfMapObjectType, bpfProgramObjectType, bpfMapIteratorObjectType } from './bpfTypes';
 
 // ---- Build MODULE_REGISTRIES using factory ----
 
@@ -61,6 +64,9 @@ export const MODULE_REGISTRIES: Record<KnownModule, ModuleRegistry> = {
   uci: createModuleRegistry(uciModule),
   uloop: createModuleRegistry(uloopModule),
   zlib: createModuleRegistry(zlibModule),
+  bpf: createModuleRegistry(bpfModule),
+  html: createModuleRegistry(htmlModule),
+  lua: createModuleRegistry(luaModule),
 };
 
 // ---- Build OBJECT_REGISTRIES using factory ----
@@ -97,6 +103,10 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'struct.buffer': createObjectTypeRegistry(structBufferObjectType),
   'zlib.deflate': createObjectTypeRegistry(zlibDeflateObjectType),
   'zlib.inflate': createObjectTypeRegistry(zlibInflateObjectType),
+  'bpf.module': createObjectTypeRegistry(bpfModuleObjectType),
+  'bpf.map': createObjectTypeRegistry(bpfMapObjectType),
+  'bpf.program': createObjectTypeRegistry(bpfProgramObjectType),
+  'bpf.map.iterator': createObjectTypeRegistry(bpfMapIteratorObjectType),
   'exception': createObjectTypeRegistry(exceptionObjectType),
 };
 
