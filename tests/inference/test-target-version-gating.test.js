@@ -141,14 +141,24 @@ describe('UC6005 module-function gating (fs.mkdtemp/dup2, socket.open/pair)', ()
 describe('source cross-check: registry introducedIn vs ucode source at pinned hashes', () => {
   const ok = haveUcodeGit();
 
-  test.if(ok)('every gated MODULE is absent at its predecessor release and present at introducedIn', () => {
+  // Modules whose gate is FEED availability that lags SOURCE existence: their lib/*.c
+  // exists in the ucode tree earlier than the OpenWrt feed shipped the module package.
+  // For these the gate is deliberately later than source, so the source can't be
+  // "absent at predecessor" — feed availability is verified separately (the dedicated
+  // socket/zlib feed-gate tests above + the 2026-06 container ground-truth recorded in
+  // VERSION_MODULES' doc comment). Source is still required to exist BY introducedIn.
+  const FEED_GATED_LATER_THAN_SOURCE = new Set(['socket', 'zlib']);
+
+  test.if(ok)('every gated MODULE has source present at introducedIn (and absent at predecessor unless feed-gated)', () => {
     for (const [mod, intro] of Object.entries(VERSION_MODULES)) {
       const prev = PREDECESSOR[intro];
       if (!prev) continue; // introducedIn 'main' has no pinned hash to check
       const file = MODULE_FILE[mod];
       expect(file, `no MODULE_FILE mapping for '${mod}'`).toBeDefined();
-      expect(gitShow(HASH[prev], file), `${file} should be ABSENT at ${prev}`).toBeNull();
       expect(gitShow(HASH[intro], file), `${file} should be PRESENT at ${intro}`).not.toBeNull();
+      if (!FEED_GATED_LATER_THAN_SOURCE.has(mod)) {
+        expect(gitShow(HASH[prev], file), `${file} should be ABSENT at ${prev}`).toBeNull();
+      }
     }
   });
 
@@ -196,10 +206,11 @@ describe('UC6005 gating for 23.05 → 24.10 additions', () => {
     'digest module': "import { md5 } from 'digest';\nmd5('x');\n",
     'socket.strerror': "import { strerror } from 'socket';\nstrerror(1);\n",
     'struct.buffer': "import * as struct from 'struct';\nstruct.buffer();\n",
-    'zlib.deflater': "import { deflater } from 'zlib';\ndeflater();\n",
     'uloop.guard (namespace)': "import * as uloop from 'uloop';\nuloop.guard();\n",
     'ubus.open_channel': "import { open_channel } from 'ubus';\nopen_channel();\n",
   };
+  // zlib is now a 25.12-feed module (gated whole), so zlib.deflater is covered by the
+  // module gate and verified in the dedicated zlib test above — not a 24.10 addition.
   for (const [name, code] of Object.entries(cases)) {
     test(`${name}: flagged on 23.05/22.03, clean on 24.10/25.12/main`, () => {
       expect(f6005(code, 'main')).toBe(false);
@@ -241,9 +252,8 @@ describe('UC6005 gating for 22.03 → 23.05 additions', () => {
     const { ast } = new UcodeParser(new UcodeLexer(code, { rawMode: true }).tokenize(), code).parse();
     return new SemanticAnalyzer(doc, { targetVersion: tv }).analyze(ast).diagnostics.filter(d => d.code === 'UC6005').length;
   }
+  // These modules first appear in the 23.05 feed → flagged on 22.03, clean on 23.05+.
   const cases = {
-    'socket module': "import { create } from 'socket';\n",
-    'zlib module': "import { deflate } from 'zlib';\n",
     'log module': "import { openlog } from 'log';\n",
     'debug module': "import { memdump } from 'debug';\n",
     'fs.pipe': "import { pipe } from 'fs';\npipe();\n",
@@ -262,8 +272,27 @@ describe('UC6005 gating for 22.03 → 23.05 additions', () => {
       expect(n6005(code, '22.03')).toBeGreaterThan(0);
     });
   }
+  // Feed-availability gates: socket first ships in the 24.10 feed, zlib in 25.12
+  // (their lib/*.c existed earlier in source, but no module package was built).
+  // Verified against the openwrt/rootfs aarch64 package feeds.
+  test('socket module: flagged on 22.03 AND 23.05, clean on 24.10+', () => {
+    const code = "import { create } from 'socket';\n";
+    expect(n6005(code, '22.03')).toBeGreaterThan(0);
+    expect(n6005(code, '23.05')).toBeGreaterThan(0);
+    expect(n6005(code, '24.10')).toBe(0);
+    expect(n6005(code, '25.12')).toBe(0);
+    expect(n6005(code, 'main')).toBe(0);
+  });
+  test('zlib module: flagged on 22.03/23.05/24.10, clean on 25.12+', () => {
+    const code = "import { deflate } from 'zlib';\n";
+    expect(n6005(code, '22.03')).toBeGreaterThan(0);
+    expect(n6005(code, '23.05')).toBeGreaterThan(0);
+    expect(n6005(code, '24.10')).toBeGreaterThan(0);
+    expect(n6005(code, '25.12')).toBe(0);
+    expect(n6005(code, 'main')).toBe(0);
+  });
   test('no double-flag: a gated-MODULE function (socket.open) on 22.03 yields exactly one UC6005', () => {
-    // socket module is gated (23.05) AND socket.open is gated (25.12); on 22.03 only
+    // socket module is gated (24.10) AND socket.open is gated (25.12); on 22.03 only
     // the module-level diagnostic should fire, not both.
     expect(n6005("import { open } from 'socket';\nopen();\n", '22.03')).toBe(1);
   });

@@ -40,24 +40,41 @@ export function targetLacksFeature(target: UcodeTargetVersion, introduced: Ucode
 
 /**
  * Builtin MODULES → the release they were introduced in. Importing the module on
- * an older target is flagged (it doesn't exist there). Source-verified against the
- * per-release ucode trees (the module's `lib/*.c` is absent at older hashes).
+ * an older target is flagged (it cannot be loaded there).
  *
- * NOTE: module functions load as shared `.so` plugins at runtime, so the per-
- * version oracle *binaries* can't verify module availability — confirm these from
- * the ucode SOURCE at each release's pinned hash (package/utils/ucode/Makefile).
+ * The gate is **feed availability** — the first OpenWrt release whose package feed
+ * ships the `ucode-mod-<name>` package — NOT mere source-tree existence. A module
+ * loads as a shared `.so` plugin at runtime, so what matters for a script targeting
+ * a release is whether that release can actually install/import it. Source existence
+ * is necessary but not sufficient: e.g. `lib/socket.c` and `lib/zlib.c` existed in
+ * the 23.05 ucode tree, but the `ucode-mod-socket` package first shipped in 24.10 and
+ * `ucode-mod-zlib` only in 25.12 — so `import … from "socket"` on 23.05 fails at
+ * runtime ("No module named 'socket'"). Gating on source would be a false negative.
+ *
+ * Ground-truthed (2026-06) against the real per-release package feeds via the
+ * `openwrt/rootfs` aarch64 containers (opkg for 22.03–24.10, apk for 25.12):
+ *   22.03 feed: fs math nl80211 resolv rtnl struct ubus uci uloop
+ *   23.05 feed: + bpf debug html log lua
+ *   24.10 feed: + digest socket uclient udebug
+ *   25.12 feed: + io zlib uline pkgen
+ * The 22.03-floor modules (fs/math/nl80211/resolv/rtnl/struct/ubus/uci/uloop) need
+ * no entry here — they exist on the oldest supported target.
  */
 export const VERSION_MODULES: Record<string, UcodeTargetVersion> = {
-  // lib/io.c introduced 2025-11-29 (commit 559860c), after the 24.10 snapshot
-  // (2025-07-18) and absent from that tree. First shipped in 25.12.
+  // First feed appearance 25.12 (apk `ucode-mod-io`). lib/io.c also only landed
+  // 2025-11-29, after the 24.10 snapshot — source and feed agree here.
   io: '25.12',
-  // lib/digest.c absent at the 23.05 hash; first shipped in 24.10.
+  // First feed appearance 25.12 (`ucode-mod-zlib`). NOTE: lib/zlib.c existed since the
+  // 23.05 source tree, but no zlib module package was built until 25.12 — feed wins.
+  zlib: '25.12',
+  // First feed appearance 24.10 (`ucode-mod-digest`); source also absent at 23.05.
   digest: '24.10',
-  // lib/{debug,log,socket,zlib}.c absent at the 22.03 hash; first shipped in 23.05.
+  // First feed appearance 24.10 (`ucode-mod-socket`). NOTE: lib/socket.c existed since
+  // the 23.05 source tree, but no socket module package was built until 24.10.
+  socket: '24.10',
+  // First feed appearance 23.05 (`ucode-mod-{debug,log}`); absent from the 22.03 feed.
   debug: '23.05',
   log: '23.05',
-  socket: '23.05',
-  zlib: '23.05',
 };
 
 /**
@@ -79,10 +96,11 @@ export const VERSION_MODULE_FUNCTIONS: Record<string, UcodeTargetVersion> = {
   'socket.pair': '25.12',
 
   // --- 23.05 → 24.10 additions (module-level functions; absent at the 23.05 hash) ---
-  'socket.strerror': '24.10',
+  // NOTE: socket.* and zlib.* function gates are covered by the MODULE gates above
+  // (socket → 24.10, zlib → 25.12 by feed availability); a function gate at or below
+  // its module's gate is dead, so socket.strerror / zlib.deflater / zlib.inflater are
+  // intentionally omitted here (the whole module is already unavailable earlier).
   'struct.buffer': '24.10',     // struct.new existed in 23.05; struct.buffer is new
-  'zlib.deflater': '24.10',     // streaming API (deflater/inflater objects)
-  'zlib.inflater': '24.10',
   'uloop.guard': '24.10',
   'ubus.open_channel': '24.10',
   'ubus.guard': '24.10',
