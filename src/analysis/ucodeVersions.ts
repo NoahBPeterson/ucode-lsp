@@ -143,6 +143,24 @@ export const VERSION_OBJECT_METHODS: Record<string, UcodeTargetVersion> = {
   'fs.file.lock': '23.05',
 };
 
+/**
+ * Module symbols (functions/constants/methods) that ucode only compiles on a specific
+ * PLATFORM, keyed `"module.symbol"` → the platform they require. Unlike version gating,
+ * these exist on the newest ucode but are `#ifdef`'d out on other OSes, so importing/using
+ * one is fine on the gated platform (OpenWrt is Linux) but absent on, e.g., a macOS/BSD
+ * build. Surfaced as an INFO diagnostic (UC6006), not an error — it's a portability note.
+ *
+ * Source: ucode `lib/io.c` gates `_IOC_*` (and the io ioctl method) behind
+ * `#if defined(__linux__)` → `#ifdef HAS_IOCTL`. The IOC_DIR_* constants use Linux's
+ * `<sys/ioctl.h>` `_IOC_NONE/_IOC_READ/_IOC_WRITE` encoding, absent on non-Linux.
+ */
+export const PLATFORM_GATED_SYMBOLS: Record<string, 'Linux'> = {
+  'io.IOC_DIR_NONE': 'Linux',
+  'io.IOC_DIR_READ': 'Linux',
+  'io.IOC_DIR_WRITE': 'Linux',
+  'io.IOC_DIR_RW': 'Linux',
+};
+
 export interface VersionGatedFeature {
   /** Stable id (also the diagnostic's `data.feature`). */
   id: string;

@@ -27,7 +27,7 @@ import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType, fsReturnIsNul
 import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
-import { type UcodeTargetVersion, type VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
+import { type UcodeTargetVersion, type VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, PLATFORM_GATED_SYMBOLS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
 import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
 import { type JsDocCommentNode } from '../ast/nodes';
 import { Either, Option } from 'effect';
@@ -201,6 +201,20 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (!targetLacksFeature(this.targetVersion, feature.introducedIn)) return;
     this.flagVersionMin(feature.introducedIn,
       `${feature.label} requires {INTRO}'s ucode`, `To stay compatible, ${feature.remedy}`, start, end);
+  }
+
+  /** Emit UC6006 (Information) when `module.symbol` is compiled only on a specific
+   *  platform — e.g. io's `IOC_DIR_*` constants are `#if defined(__linux__)` in lib/io.c.
+   *  It's a portability note, not an error: they exist on OpenWrt (Linux) but are absent
+   *  from a non-Linux ucode build (macOS/BSD). */
+  private flagPlatformGated(moduleName: string, symbol: string, start: number, end: number): void {
+    const platform = PLATFORM_GATED_SYMBOLS[`${moduleName}.${symbol}`];
+    if (!platform) return;
+    this.addDiagnosticErrorCode(
+      UcodeErrorCode.PLATFORM_GATED_SYMBOL,
+      `\`${moduleName}.${symbol}\` is ${platform}-only — it is compiled into ucode's ${moduleName} module only on ${platform} (e.g. OpenWrt), and is absent from a non-${platform} build (macOS/BSD). Safe for ${platform} targets; guard or avoid for portable code.`,
+      start, end, DiagnosticSeverity.Information,
+    );
   }
 
   /** True when the whole module is itself gated out at the current target (so a
@@ -1215,6 +1229,9 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Set function data type for all known module imported functions
     if (isKnownModule(source) && specifier.type === 'ImportSpecifier') {
       const reg = MODULE_REGISTRIES[source];
+      // Platform-gated symbol (e.g. io's Linux-only IOC_DIR_* constants) → UC6006 INFO.
+      // Applies to functions AND constants, so it's checked before the function branch.
+      this.flagPlatformGated(source, importedName, specifier.imported.start, specifier.imported.end);
       if (reg && reg.getFunctionNames().includes(importedName)) {
         dataType = UcodeType.FUNCTION as UcodeDataType;
         // Version-gated: the function exists on the LSP's (newest) model but was
@@ -2614,6 +2631,15 @@ export class SemanticAnalyzer extends BaseVisitor {
         );
       }
       return;
+    }
+
+    // Platform-gated member (e.g. `io.IOC_DIR_NONE` via a namespace import) → UC6006 INFO.
+    // Emitted BEFORE the method-call-only early-return below, since a constant member
+    // access is not a call. getModuleNameFromSymbol resolves a namespace symbol to its
+    // module (e.g. `io`); the lookup is a no-op for non-gated members.
+    {
+      const nsModule = this.getModuleNameFromSymbol(symbol);
+      if (nsModule) this.flagPlatformGated(nsModule, methodName, node.property.start, node.property.end);
     }
 
     // Only validate method calls

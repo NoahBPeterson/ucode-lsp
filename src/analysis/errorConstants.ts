@@ -63,6 +63,7 @@ export enum UcodeErrorCode {
   MISSING_SEMICOLON = 'UC6003',
   PARSER_ERROR = 'UC6004',
   TARGET_VERSION_UNSUPPORTED = 'UC6005', // syntax valid in newer ucode but not the configured ucode.targetVersion
+  PLATFORM_GATED_SYMBOL = 'UC6006', // module symbol only compiled on a specific platform (e.g. Linux-only io ioctl constants)
 
   // JSDoc annotation errors (7000-7999)
   JSDOC_UNKNOWN_TYPE = 'UC7001',
