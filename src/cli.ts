@@ -14,6 +14,7 @@ import { UcodeLexer } from './lexer';
 import { UcodeParser } from './parser';
 import { SemanticAnalyzer } from './analysis';
 import { UcodeErrorCode } from './analysis/errorConstants';
+import { UCODE_TARGET_VERSIONS, DEFAULT_TARGET_VERSION, type UcodeTargetVersion } from './analysis/ucodeVersions';
 
 // Read the version from package.json at build time so `--version` never drifts
 // from the published version. Bundled by webpack into dist/cli.js.
@@ -29,16 +30,20 @@ Modes:
   --stdio           Start LSP server over stdio (for editors)
 
 Options:
-  --verbose         Show all diagnostics including info and hints
-  --help            Show this help message
-  --help-types      Show the type annotation guide
-  --version         Show version
+  --verbose             Show all diagnostics including info and hints
+  --target-version <v>  Target OpenWrt/ucode release for version-gated checks
+  -t <v>                (alias of --target-version)
+                        One of: ${UCODE_TARGET_VERSIONS.join(', ')} (default: ${DEFAULT_TARGET_VERSION})
+  --help                Show this help message
+  --help-types          Show the type annotation guide
+  --version             Show version
 
 Examples:
-  ucode-lsp                     Check all .uc files in current directory
-  ucode-lsp src/                Check all .uc files in src/
-  ucode-lsp file.uc             Check a specific file
-  ucode-lsp --verbose           Include info-level diagnostics
+  ucode-lsp                       Check all .uc files in current directory
+  ucode-lsp src/                  Check all .uc files in src/
+  ucode-lsp file.uc               Check a specific file
+  ucode-lsp --verbose             Include info-level diagnostics
+  ucode-lsp --target-version 23.05 file.uc   Check against OpenWrt 23.05's ucode
 `;
 
 const HELP_TYPES = `Type Annotations for ucode-lsp
@@ -236,7 +241,7 @@ function severityLabel(s: DiagnosticSeverity): string {
     }
 }
 
-function analyzeFile(filePath: string): Diagnostic[] {
+function analyzeFile(filePath: string, targetVersion: UcodeTargetVersion): Diagnostic[] {
     const content = fs.readFileSync(filePath, 'utf8');
     const uri = 'file://' + encodeURIComponent(path.resolve(filePath)).replace(/%2F/g, '/');
     const textDocument = TextDocument.create(uri, 'ucode', 1, content);
@@ -267,6 +272,7 @@ function analyzeFile(filePath: string): Diagnostic[] {
             enableUnusedVariableDetection: true,
             enableShadowingWarnings: true,
             workspaceRoot: process.cwd(),
+            targetVersion,
         });
         const result = analyzer.analyze(parseResult.ast);
         diagnostics.push(...result.diagnostics);
@@ -275,23 +281,58 @@ function analyzeFile(filePath: string): Diagnostic[] {
     return diagnostics;
 }
 
-function runCheck() {
-    const args = process.argv.slice(2);
+// Extract `--target-version <v>` / `--target-version=<v>` / `-t <v>` from the args,
+// returning the chosen version (default DEFAULT_TARGET_VERSION) and the remaining
+// args with the flag (and its value) removed. Exits on an invalid value.
+function parseTargetVersion(args: string[]): { targetVersion: UcodeTargetVersion; rest: string[] } {
+    let targetVersion: UcodeTargetVersion = DEFAULT_TARGET_VERSION;
+    const rest: string[] = [];
+    const valid = UCODE_TARGET_VERSIONS as readonly string[];
+    const fail = (val: string) => {
+        process.stderr.write(`ucode-lsp: invalid --target-version '${val}'. Valid: ${UCODE_TARGET_VERSIONS.join(', ')}\n`);
+        process.exit(2);
+    };
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === undefined) continue;
+        let val: string | undefined;
+        if (a === '--target-version' || a === '-t') {
+            val = args[++i]; // consume the next token as the value
+        } else if (a.startsWith('--target-version=')) {
+            val = a.slice('--target-version='.length);
+        } else if (a.startsWith('-t=')) {
+            val = a.slice('-t='.length);
+        } else {
+            rest.push(a);
+            continue;
+        }
+        if (val === undefined || !valid.includes(val)) fail(val ?? '');
+        targetVersion = val as UcodeTargetVersion;
+    }
+    return { targetVersion, rest };
+}
 
-    if (args.includes('--help')) {
+function runCheck() {
+    const allArgs = process.argv.slice(2);
+
+    if (allArgs.includes('--help')) {
         process.stderr.write(HELP);
         process.exit(0);
     }
 
-    if (args.includes('--help-types')) {
+    if (allArgs.includes('--help-types')) {
         process.stderr.write(HELP_TYPES);
         process.exit(0);
     }
 
-    if (args.includes('--version')) {
+    if (allArgs.includes('--version')) {
         process.stderr.write(`ucode-lsp v${VERSION}\n`);
         process.exit(0);
     }
+
+    // Pull out --target-version (default 25.12) so it isn't treated as an unknown
+    // flag or a file path; `args` is everything that remains.
+    const { targetVersion, rest: args } = parseTargetVersion(allArgs);
 
     // Check for unknown flags
     for (const arg of args) {
@@ -340,7 +381,7 @@ function runCheck() {
     for (const file of files.sort()) {
         let diagnostics: Diagnostic[];
         try {
-            diagnostics = analyzeFile(file);
+            diagnostics = analyzeFile(file, targetVersion);
         } catch (e: any) {
             process.stderr.write(`ucode-lsp: error analyzing ${file}: ${e.message}\n`);
             continue;
