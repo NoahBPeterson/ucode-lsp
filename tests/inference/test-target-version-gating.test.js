@@ -91,6 +91,31 @@ describe('UC6005 export-function-without-semicolon gating', () => {
   });
 });
 
+describe('UC6005 severity: ERROR under strict, Warning otherwise', () => {
+  // Using a too-new module/function is a guaranteed compile-time failure on the
+  // target, so under 'use strict' it escalates to a hard Error (1); non-strict
+  // keeps it a Warning (2) since the gate is keyed on the configured target.
+  function sev6005(code, tv) {
+    const doc = TextDocument.create('file:///t.uc', 'ucode', 1, code);
+    const { ast } = new UcodeParser(new UcodeLexer(code, { rawMode: true }).tokenize(), code).parse();
+    const d = new SemanticAnalyzer(doc, { targetVersion: tv }).analyze(ast).diagnostics.find(x => x.code === 'UC6005');
+    return d ? d.severity : null;
+  }
+  const MODULE_NONSTRICT = "import { open_module } from 'bpf';\n";          // bpf → 23.05
+  const MODULE_STRICT = "'use strict';\nimport { open_module } from 'bpf';\n";
+  test('module gate: Warning (2) non-strict, Error (1) under strict — on 22.03', () => {
+    expect(sev6005(MODULE_NONSTRICT, '22.03')).toBe(2);
+    expect(sev6005(MODULE_STRICT, '22.03')).toBe(1);
+  });
+  test('syntax gate (export fn no ;): Warning non-strict, Error under strict', () => {
+    expect(sev6005(NOSEMI, '25.12')).toBe(2);
+    expect(sev6005("'use strict';\n" + NOSEMI, '25.12')).toBe(1);
+  });
+  test('not emitted at all when the target is new enough (regardless of strict)', () => {
+    expect(sev6005(MODULE_STRICT, '23.05')).toBe(null);
+  });
+});
+
 describe('UC6005 module-availability gating (io module)', () => {
   // The `io` module (lib/io.c) was introduced after the 24.10 snapshot, first
   // shipping in 25.12. Importing it on an older target is flagged. (Module

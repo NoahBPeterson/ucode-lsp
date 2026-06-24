@@ -1,6 +1,13 @@
 const path = require('path');
 const assert = require('assert');
 const { createLSPTestServer } = require('../lsp-test-helpers');
+// Expected builtin-module count. Must equal KNOWN_MODULES.length in
+// src/analysis/moduleTypes.ts (15 core ucode + 7 OpenWrt feed modules: bpf, html,
+// lua, uclient, udebug, uline, pkgen). The registry↔KNOWN_MODULES consistency is
+// enforced by tests/modules/test-module-completeness.js; this server smoke test
+// just confirms the LSP surfaces them all. Bump here when a module is added.
+// (This is a node-run mocha suite, so it can't require the TS source directly.)
+const EXPECTED_BUILTIN_MODULES = 22;
 
 describe('Module Completions Integration Test', function() {
   this.timeout(15000);
@@ -31,7 +38,7 @@ describe('Module Completions Integration Test', function() {
     const builtinCount = completions.filter(c => c.detail === 'ucode builtin module').length;
     const systemCount = completions.filter(c => c.detail === 'ucode system module').length;
 
-    assert.strictEqual(builtinCount, 15, 'All 15 builtin modules should be present');
+    assert.strictEqual(builtinCount, EXPECTED_BUILTIN_MODULES, `All ${EXPECTED_BUILTIN_MODULES} builtin modules should be present`);
     console.log(`Found ${builtinCount} builtin modules and ${systemCount} system modules`);
   });
 

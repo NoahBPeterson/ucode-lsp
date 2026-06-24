@@ -211,14 +211,21 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   /** Emit UC6005 if the target predates `introducedIn`. `{INTRO}` in `what` is
-   *  replaced with the introducing release; `remedy` ends with the how-to-fix hint. */
+   *  replaced with the introducing release; `remedy` ends with the how-to-fix hint.
+   *
+   *  Severity escalates to ERROR under `'use strict'`, Warning otherwise: using a
+   *  module/function/syntax that doesn't exist on the target is a guaranteed
+   *  compile-time failure there (named imports + module paths resolve at compile
+   *  time), so under strict it's a hard error like the other strict escalations.
+   *  Non-strict keeps it a warning since the gate is keyed on the configured
+   *  `ucode.targetVersion` assumption rather than a defect in the source. */
   private flagVersionMin(introducedIn: UcodeTargetVersion, what: string, remedy: string, start: number, end: number): void {
     if (!targetLacksFeature(this.targetVersion, introducedIn)) return;
     const intro = introducedIn === 'main' ? 'OpenWrt main/snapshot' : `OpenWrt ${introducedIn}`;
     this.addDiagnosticErrorCode(
       UcodeErrorCode.TARGET_VERSION_UNSUPPORTED,
       `${what.replace('{INTRO}', intro)}, but the configured target is OpenWrt ${this.targetVersion}. ${remedy} — or change \`ucode.targetVersion\`.`,
-      start, end, DiagnosticSeverity.Warning,
+      start, end, this.strictMode ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning,
     );
   }
 
