@@ -332,6 +332,30 @@ describe('UC6005 gating for 22.03 → 23.05 additions', () => {
   });
 });
 
+describe('UC6005 fs ST_* mount-flag constants are main-only', () => {
+  // ST_* are #ifdef-per-libc C macros in lib/fs.c, absent on every released OpenWrt
+  // (musl exports none — container-verified) → modeled as main-only. Flagged on all
+  // releases, clean only under `main`. Covers named import AND namespace member access.
+  function n6005(code, tv) {
+    const doc = TextDocument.create('file:///t.uc', 'ucode', 1, code);
+    const { ast } = new UcodeParser(new UcodeLexer(code, { rawMode: true }).tokenize(), code).parse();
+    return new SemanticAnalyzer(doc, { targetVersion: tv }).analyze(ast).diagnostics.filter(d => d.code === 'UC6005').length;
+  }
+  test('named import { ST_RDONLY } from "fs": flagged on every release, clean on main', () => {
+    const code = "import { ST_RDONLY } from 'fs';\n";
+    for (const t of ['22.03', '23.05', '24.10', '25.12']) expect(n6005(code, t)).toBeGreaterThan(0);
+    expect(n6005(code, 'main')).toBe(0);
+  });
+  test('namespace fs.ST_NOSUID member access: flagged on 25.12, clean on main', () => {
+    const code = "import * as fs from 'fs';\nfs.ST_NOSUID;\n";
+    expect(n6005(code, '25.12')).toBeGreaterThan(0);
+    expect(n6005(code, 'main')).toBe(0);
+  });
+  test('a real fs import (open) is NOT flagged on any target', () => {
+    expect(n6005("import { open } from 'fs';\n", '22.03')).toBe(0);
+  });
+});
+
 describe('cross-check vs per-version oracle binaries', () => {
   const haveOracles = TARGETS.every(t => oracleAvailable(ORACLE[t]));
   test.if(haveOracles)('LSP flags UC6005 for a target iff that version rejects the code', () => {

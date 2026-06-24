@@ -1232,15 +1232,17 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Platform-gated symbol (e.g. io's Linux-only IOC_DIR_* constants) → UC6006 INFO.
       // Applies to functions AND constants, so it's checked before the function branch.
       this.flagPlatformGated(source, importedName, specifier.imported.start, specifier.imported.end);
-      if (reg && reg.getFunctionNames().includes(importedName)) {
+      const isModuleFunction = !!reg && reg.getFunctionNames().includes(importedName);
+      if (isModuleFunction) {
         dataType = UcodeType.FUNCTION as UcodeDataType;
-        // Version-gated: the function exists on the LSP's (newest) model but was
-        // added after the configured target's ucode → UC6005 on the specifier.
-        const fnIntro = VERSION_MODULE_FUNCTIONS[`${source}.${importedName}`];
-        if (fnIntro && !this.moduleGatedOutAtTarget(source)) {
-          this.flagVersionMin(fnIntro, `\`${source}.${importedName}\` requires {INTRO}'s ucode`,
-            `it isn't available on the target`, specifier.imported.start, specifier.imported.end);
-        }
+      }
+      // Version-gated: the symbol exists on the LSP's (newest) model but was added after
+      // the configured target's ucode → UC6005 on the specifier. Fires for functions AND
+      // constants (e.g. fs's `ST_*` mount flags, modeled as main-only).
+      const symIntro = VERSION_MODULE_FUNCTIONS[`${source}.${importedName}`];
+      if (symIntro && !this.moduleGatedOutAtTarget(source)) {
+        this.flagVersionMin(symIntro, `\`${source}.${importedName}\` requires {INTRO}'s ucode`,
+          `it isn't available on the target`, specifier.imported.start, specifier.imported.end);
       }
       // Object-handle exports (e.g. fs `stdin`/`stdout`/`stderr` → `fs.file`) are typed
       // as their object type — using the same ModuleType wrapper form as a local
@@ -2639,7 +2641,19 @@ export class SemanticAnalyzer extends BaseVisitor {
     // module (e.g. `io`); the lookup is a no-op for non-gated members.
     {
       const nsModule = this.getModuleNameFromSymbol(symbol);
-      if (nsModule) this.flagPlatformGated(nsModule, methodName, node.property.start, node.property.end);
+      if (nsModule) {
+        this.flagPlatformGated(nsModule, methodName, node.property.start, node.property.end);
+        // Version-gate a CONSTANT/property member (e.g. `fs.ST_RDONLY`). Method CALLS are
+        // gated by the version check after the call-only return below, so restrict this to
+        // non-call access to avoid a double diagnostic.
+        if (!this.processingFunctionCallCallee) {
+          const cIntro = VERSION_MODULE_FUNCTIONS[`${nsModule}.${methodName}`];
+          if (cIntro && !this.moduleGatedOutAtTarget(nsModule)) {
+            this.flagVersionMin(cIntro, `\`${nsModule}.${methodName}\` requires {INTRO}'s ucode`,
+              `it isn't available on the target`, node.property.start, node.property.end);
+          }
+        }
+      }
     }
 
     // Only validate method calls

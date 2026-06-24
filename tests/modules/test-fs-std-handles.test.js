@@ -69,10 +69,13 @@ test('20 import { | } from "fs" offers stdin/stdout/stderr', async () => {
   const c = labels(await server.getCompletions(`import {  } from "fs";\n`, uri(), 0, 8));
   for (const e of ['stdin', 'stdout', 'stderr']) expect(c).toContain(e);
 });
-test('21 import { | } from "fs" still offers functions (open) and constants (ST_RDONLY)', async () => {
+test('21 import { | } from "fs" offers functions (open) + object exports (stdin); not ST_* (main-only)', async () => {
   const c = labels(await server.getCompletions(`import {  } from "fs";\n`, uri(), 0, 8));
-  expect(c).toContain('open');
-  expect(c).toContain('ST_RDONLY');
+  expect(c).toContain('open');    // function
+  expect(c).toContain('stdin');   // object export
+  // ST_* statvfs mount flags are NOT real OpenWrt fs exports (musl exports none; lib/fs.c
+  // gates them behind #ifdef per-libc) — modeled as main-only, so they're not offered here.
+  expect(c).not.toContain('ST_RDONLY');
 });
 test('22 fs. namespace completion offers stdin/stdout/stderr', async () => {
   const c = labels(await server.getCompletions(`import * as fs from "fs";\nfs.\n`, uri(), 1, 3));

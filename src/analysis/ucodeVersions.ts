@@ -121,6 +121,18 @@ export const VERSION_MODULE_FUNCTIONS: Record<string, UcodeTargetVersion> = {
   'rtnl.listener': '23.05',
   'uloop.interval': '23.05',
   'uloop.signal': '23.05',
+
+  // --- fs statvfs ST_* mount-flag constants: modeled as `main`-only ---
+  // These are `#ifdef ST_<name>`-guarded C macros in lib/fs.c (libc-dependent), and are
+  // ABSENT on every released OpenWrt build — OpenWrt's musl doesn't define them, so
+  // `exists(fs, "ST_RDONLY")` is false on 22.03/23.05/24.10/25.12 (container-verified).
+  // They only appear on a glibc/from-source build. So they're flagged on all concrete
+  // releases and tolerated only under the `main` (checks-relaxed) target. Reaching them
+  // portably means testing `statvfs(path).flag & <bit>` with a literal bit, not the const.
+  'fs.ST_RDONLY': 'main', 'fs.ST_NOSUID': 'main', 'fs.ST_NODEV': 'main',
+  'fs.ST_NOEXEC': 'main', 'fs.ST_SYNCHRONOUS': 'main', 'fs.ST_MANDLOCK': 'main',
+  'fs.ST_NOATIME': 'main', 'fs.ST_NODIRATIME': 'main', 'fs.ST_RELATIME': 'main',
+  'fs.ST_NOSYMFOLLOW': 'main',
 };
 
 /**

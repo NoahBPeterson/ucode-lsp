@@ -208,19 +208,21 @@ export function getModuleMembers(moduleName: string): ModuleMember[] {
     }
 
     let members: ModuleMember[];
-    try {
-        const dynamicMembers = discoverModuleMembers(moduleName);
-
-        // If dynamic discovery succeeded, use those results
-        if (dynamicMembers.length > 0) {
-            members = dynamicMembers;
-        } else {
-            // Fallback to static type definitions if available
+    // For a KNOWN builtin module, the registry is the authoritative, version-aware source
+    // of members — and it does NOT depend on whatever `ucode` binary happens to be on the
+    // dev's PATH (which may be an old/outlier build, or mid-upgrade). Runtime introspection
+    // is only used for non-registry (user/system) modules. This keeps builtin-module
+    // completion deterministic across machines.
+    if (isKnownModule(moduleName)) {
+        members = getStaticModuleMembers(moduleName);
+    } else {
+        try {
+            const dynamicMembers = discoverModuleMembers(moduleName);
+            members = dynamicMembers.length > 0 ? dynamicMembers : getStaticModuleMembers(moduleName);
+        } catch (error) {
+            console.warn(`Failed to get module members for ${moduleName}:`, error);
             members = getStaticModuleMembers(moduleName);
         }
-    } catch (error) {
-        console.warn(`Failed to get module members for ${moduleName}:`, error);
-        members = getStaticModuleMembers(moduleName);
     }
 
     // Cache for the session
@@ -246,6 +248,12 @@ function getStaticModuleMembers(moduleName: string): ModuleMember[] {
 
     for (const name of reg.getConstantNames()) {
         members.push({ name, type: 'constant' });
+    }
+
+    // Object-handle exports (e.g. fs `stdin`/`stdout`/`stderr`) are real top-level module
+    // members — offer them for `import { … }` completion.
+    for (const name of reg.getObjectExportNames()) {
+        members.push({ name, type: 'resource' });
     }
 
     // nl80211 and rtnl have a special 'const' bulk export
