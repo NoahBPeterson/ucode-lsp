@@ -114,7 +114,12 @@ export function activate(context: vscode.ExtensionContext) {
         documentSelector: [{ scheme: 'file', language: 'ucode' }],
         synchronize: {
             // Notify the server about file changes to '.uc' files contained in the workspace
-            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.uc')
+            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.uc'),
+            // Watch the `ucode.*` settings so changing them (e.g. `ucode.targetVersion`)
+            // sends workspace/didChangeConfiguration to the server, which re-pulls the
+            // value and re-analyzes open docs. Without this, VS Code never notifies the
+            // server and version-gated diagnostics (UC6005) wouldn't update on a change.
+            configurationSection: 'ucode',
         }
     };
 

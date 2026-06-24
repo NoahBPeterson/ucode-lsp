@@ -641,6 +641,17 @@ function createLSPTestServer(options = {}) {
       params: { changes: [{ uri, type }] },
     }));
   }
+  // Mutate the injected `ucode` configuration (merged) and fire didChangeConfiguration
+  // so the server re-pulls it via workspace/configuration (which this harness answers
+  // from options.configuration). Used to exercise targetVersion re-analysis.
+  function notifyConfigChange(ucodePatch) {
+    options.configuration = options.configuration || {};
+    options.configuration.ucode = { ...(options.configuration.ucode || {}), ...ucodePatch };
+    serverProcess.stdin.write(createLSPMessage({
+      jsonrpc: '2.0', method: 'workspace/didChangeConfiguration',
+      params: { settings: {} },
+    }));
+  }
   // Opens the doc (so it's analyzed + in the cache), then queries workspace symbols.
   const getWorkspaceSymbols = (content, file, query) =>
     sendPositionRequest('workspace/symbol', content, file, 0, 0, { query });
@@ -702,6 +713,7 @@ function createLSPTestServer(options = {}) {
     getFoldingRanges,
     getDocumentLinks,
     notifyWatchedFileChange,
+    notifyConfigChange,
     getWorkspaceSymbols,
     getCodeActions,
     getCodeLens,

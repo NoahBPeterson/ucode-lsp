@@ -133,6 +133,10 @@ test('49 narrowed result keeps array element access typed (string | null)', asyn
   expect(await clean(await server.getHover(code, uri(), 2, 8))).toBe('string | null');
 });
 test('50 end-to-end: filtered-then-returned element is usable, no diagnostics', async () => {
-  const code = `'use strict';\nexport function only_strings(...values) {\n    values = filter(values, (x) => type(x) == "string");\n    return length(values) ? values[0] : "";\n}\n`;
+  // Trailing ';' after the export function: without it, `export function` is
+  // version-gated (UC6005 — the no-semicolon form is 'main'-only) and, under the
+  // 'use strict' here, now a hard error — unrelated to what this test checks (filter
+  // element narrowing). The ';' keeps the sample version-clean on the default target.
+  const code = `'use strict';\nexport function only_strings(...values) {\n    values = filter(values, (x) => type(x) == "string");\n    return length(values) ? values[0] : "";\n};\n`;
   expect((await errs(code)).length).toBe(0);
 });

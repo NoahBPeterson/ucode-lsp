@@ -1795,6 +1795,9 @@ connection.onDidChangeConfiguration(async () => {
     // version-gated diagnostics update immediately.
     const targetChanged = await refreshTargetVersion();
     if (targetChanged) {
+        // Version gates fire in the always-run scope pass (and the incremental skip
+        // only short-circuits the type checker), so a normal re-validate re-evaluates
+        // them correctly — no forceFull needed.
         for (const doc of documents.all()) validateAndAnalyzeDocument(doc);
     }
 });
