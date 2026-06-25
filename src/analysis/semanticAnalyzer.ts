@@ -3227,6 +3227,24 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     super.visitUnaryExpression(node);
     if (node.operator === '!') this.truthinessDepth--;
 
+    // `!x = y` parses as `!(x = y)` in ucode — the assignment binds *below* the prefix
+    // unary operator. This is valid but easy to misread (looks like an attempt to assign
+    // to `!x`), so warn and offer to make the order of operations explicit with parens.
+    // Always-on (even under 'use strict'); a clarity lint, not a target-version gate.
+    // Gate on `absorbedAssignment`: the parser sets it only for the UNPARENTHESIZED
+    // form, so applying the paren quick fix (`!(x = y)`) clears the warning even though
+    // the AST shape (unary→assignment) is unchanged.
+    if (node.prefix && node.absorbedAssignment && node.argument.type === 'AssignmentExpression') {
+      const assign = node.argument;
+      this.addDiagnostic(
+        `This parses as \`${node.operator}(…)\`: the assignment binds below the \`${node.operator}\` operator. ` +
+        `Add parentheses to make the order of operations explicit.`,
+        node.start, node.end, DiagnosticSeverity.Warning,
+        UcodeErrorCode.CONFUSING_UNARY_ASSIGNMENT,
+        { unaryAssign: { assignStart: assign.start, assignEnd: assign.end } }
+      );
+    }
+
     // `const x = 1; x++;` / `--x;` is a ucode error ("Invalid increment/decrement of constant").
     if (node.operator === '++' || node.operator === '--') {
       this.checkConstReassignment(node.argument, true);

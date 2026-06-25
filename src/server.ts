@@ -1128,6 +1128,22 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 });
             }
 
+            // UC6007: `!x = y` parses as `!(x = y)`. Offer to add the clarifying parens
+            // around the assignment (AST-based: uses the assignment node's offsets).
+            if (diagnostic.code === 'UC6007' && (diagnostic as any).data?.unaryAssign) {
+                const { assignStart, assignEnd } = (diagnostic as any).data.unaryAssign;
+                codeActions.push({
+                    title: 'Add parentheses around the assignment',
+                    kind: CodeActionKind.QuickFix,
+                    diagnostics: [diagnostic],
+                    isPreferred: true,
+                    edit: { changes: { [params.textDocument.uri]: [
+                        TextEdit.insert(document.positionAt(assignStart), '('),
+                        TextEdit.insert(document.positionAt(assignEnd), ')'),
+                    ] } },
+                });
+            }
+
             // UC7005: an `@returns {T}` annotation that doesn't match the body. Offer to set
             // the type expression to the TRUE inferred return type (the full union of returns;
             // `null` when there's no return). AST-based: replaces the `{…}` span the analyzer

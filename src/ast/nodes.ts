@@ -102,6 +102,10 @@ export interface UnaryExpressionNode extends AstNode {
   operator: '+' | '-' | '!' | '~' | '++' | '--';
   argument: AstNode;
   prefix: boolean; // true for ++x, false for x++
+  // Set when the parser absorbed an UNPARENTHESIZED assignment as the operand
+  // (e.g. `!x = y` → `!(x = y)`). Distinguishes it from the already-clear `!(x = y)`,
+  // which carries the same AST shape but should not be warned about (UC6007).
+  absorbedAssignment?: boolean;
 }
 
 // Assignment expressions: x = y

@@ -12,14 +12,51 @@ import { TokenType } from '../../lexer';
 import { Precedence } from '../types';
 import { CompositeExpressions } from './compositeExpressions';
 
+/** All assignment-operator tokens (`=`, `+=`, … `??=`). */
+const ASSIGNMENT_OPERATORS: ReadonlySet<TokenType> = new Set([
+  TokenType.TK_ASSIGN, TokenType.TK_ASADD, TokenType.TK_ASSUB, TokenType.TK_ASMUL,
+  TokenType.TK_ASDIV, TokenType.TK_ASMOD, TokenType.TK_ASEXP, TokenType.TK_ASLEFT,
+  TokenType.TK_ASRIGHT, TokenType.TK_ASBAND, TokenType.TK_ASBXOR, TokenType.TK_ASBOR,
+  TokenType.TK_ASAND, TokenType.TK_ASOR, TokenType.TK_ASNULLISH,
+]);
+
+/** Prefix unary operators that wrap a following assignment (`!`, `~`, `+`, `-`).
+ *  NOT `++`/`--`: ucode rejects `++a = b` ("Invalid increment/decrement operand"). */
+const ASSIGN_ABSORBING_UNARY: ReadonlySet<TokenType> = new Set([
+  TokenType.TK_NOT, TokenType.TK_COMPL, TokenType.TK_ADD, TokenType.TK_SUB,
+]);
+
 export abstract class OperatorExpressions extends CompositeExpressions {
 
   protected parseUnary(): UnaryExpressionNode | null {
     const operatorToken = this.previous()!;
     const operator = this.tokenToOperator(operatorToken.type);
-    const argument = this.parseExpression(Precedence.UNARY);
-    
+    let argument = this.parseExpression(Precedence.UNARY);
+    let absorbedAssignment = false;
+
     if (!argument) return null;
+
+    // ucode parses `<unary> <lvalue> = <rhs>` as `<unary>(<lvalue> = <rhs>)`:
+    // assignment binds *below* a prefix unary operator, and the assignment target
+    // is the unary's operand. Verified against ucode — `!k[2] = f()` runs as
+    // `!(k[2] = f())`, and `!a += b` as `!(a += b)`. Our Pratt loop parses the
+    // operand at UNARY precedence (above ASSIGNMENT), so the trailing assignment
+    // must be absorbed here; otherwise the outer loop hands a non-lvalue unary to
+    // parseAssignment and we emit a spurious "Invalid assignment target".
+    // Scope matches ucode exactly: only `! ~ + -` (not `++`/`--`), and only when
+    // the operand is itself an lvalue (Identifier/MemberExpression) — ucode rejects
+    // `!(a+1) = b` and `!a() = 5`.
+    const nextType = this.peek()?.type;
+    if (nextType !== undefined &&
+        ASSIGN_ABSORBING_UNARY.has(operatorToken.type) &&
+        ASSIGNMENT_OPERATORS.has(nextType) &&
+        (argument.type === 'Identifier' || argument.type === 'MemberExpression')) {
+      this.advance(); // consume the assignment operator (parseAssignment reads previous())
+      const assigned = this.parseAssignment(argument);
+      if (!assigned) return null;
+      argument = assigned;
+      absorbedAssignment = true;
+    }
 
     return {
       type: 'UnaryExpression',
@@ -27,7 +64,8 @@ export abstract class OperatorExpressions extends CompositeExpressions {
       end: argument.end,
       operator: operator as any,
       argument,
-      prefix: true
+      prefix: true,
+      absorbedAssignment,
     };
   }
 
