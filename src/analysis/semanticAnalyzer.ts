@@ -28,7 +28,7 @@ import { fsModuleTypeRegistry, fsConstants, getFsReturnObjectType, fsReturnIsNul
 import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
-import { type UcodeTargetVersion, type VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, PLATFORM_GATED_SYMBOLS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
+import { type UcodeTargetVersion, type VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, VERSION_GLOBAL_BUILTINS, PLATFORM_GATED_SYMBOLS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
 import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
 import { type JsDocCommentNode } from '../ast/nodes';
 import { Either, Option } from 'effect';
@@ -2960,7 +2960,25 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         this.symbolTable.markUsed(functionName, node.callee.start);
       }
     }
-    
+
+    // Version-gate calls to global builtins introduced after the configured target
+    // (e.g. `signal()` is 23.05+; absent from 22.03's global scope). Fires in the
+    // always-run scope pass. Only when the name resolves to the builtin — a user-defined
+    // function/variable of the same name (a shadow) is exempt.
+    if (node.callee.type === 'Identifier') {
+      const calleeName = (node.callee as IdentifierNode).name;
+      const builtinIntro = VERSION_GLOBAL_BUILTINS[calleeName];
+      if (builtinIntro) {
+        const sym = this.symbolTable.lookup(calleeName);
+        if (!sym || sym.type === SymbolType.BUILTIN) {
+          this.flagVersionMin(builtinIntro,
+            `The \`${calleeName}()\` builtin requires {INTRO}'s ucode`,
+            `guard for older targets or avoid it`,
+            node.callee.start, node.callee.end);
+        }
+      }
+    }
+
     if (this.options.enableTypeChecking) {
       // Pass truthiness context to the type checker so builtins in if-test contexts
       // don't warn about unknown args (e.g., if (!length(args)) is a valid pattern)

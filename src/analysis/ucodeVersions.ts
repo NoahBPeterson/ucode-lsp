@@ -156,6 +156,21 @@ export const VERSION_OBJECT_METHODS: Record<string, UcodeTargetVersion> = {
 };
 
 /**
+ * GLOBAL builtin functions → the release they were introduced in. Calling the builtin on
+ * an older target is flagged: the global simply isn't in that release's scope (a bare call
+ * resolves to null → "not a callable value" at runtime).
+ *
+ * Ground-truthed (2026-06) by introspecting the built-in `global` scope on each release's
+ * ucode (`for (k in global) print(type(global[k]), k)` via the `openwrt/rootfs` containers):
+ * the global scope is IDENTICAL across 22.03→main EXCEPT `signal`, which 22.03 lacks.
+ * (NB: this is the top-level `signal()` builtin — distinct from the `uloop.signal` module
+ * function, which is gated separately in VERSION_MODULE_FUNCTIONS.)
+ */
+export const VERSION_GLOBAL_BUILTINS: Record<string, UcodeTargetVersion> = {
+  signal: '23.05',
+};
+
+/**
  * Module symbols (functions/constants/methods) that ucode only compiles on a specific
  * PLATFORM, keyed `"module.symbol"` → the platform they require. Unlike version gating,
  * these exist on the newest ucode but are `#ifdef`'d out on other OSes, so importing/using
