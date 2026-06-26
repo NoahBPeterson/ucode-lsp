@@ -129,10 +129,14 @@ let test3 = invalidFunc(); // ucode-lsp disable with more
         console.log(`  [${i}] Line ${d.range.start.line}: "${d.message}" (severity: ${d.severity})`);
       });
       
-      // Should have no errors since all lines have disable comments
+      // Exactly one disable comment is malformed (the mid-line "some text … more text"
+      // variant on line 2), so its diagnostic must NOT be suppressed — and it must be the
+      // specific undefined-function error for invalidFunc, on that line.
       const errors = diagnostics.filter(d => d.severity === 1);
-      console.log(`Expected 1 error, got ${errors.length}`);
-      assert.strictEqual(errors.length, 1, 'Should handle disable comments at different positions');
+      assert.strictEqual(errors.length, 1, 'only the malformed mid-line disable comment should fail to suppress');
+      assert.strictEqual(errors[0].code, 'UC1002', 'the surviving error is the undefined-function error');
+      assert.match(errors[0].message, /invalidFunc/);
+      assert.strictEqual(errors[0].range.start.line, 2, 'on line 2 (the embedded-in-other-text disable comment)');
     });
 
     it('should be case sensitive for disable comment', async function() {

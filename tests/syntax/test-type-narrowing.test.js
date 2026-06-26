@@ -628,9 +628,10 @@ let joined1 = join(",", a1);
     );
     expect(joinErrors.length).toBe(0);
 
-    // Should have a warning
+    // Should have a possibly-null warning specifically for the join() argument.
     const joinWarnings = diagnostics.filter(d =>
-      d.severity === 2 && d.range.start.line === 7
+      d.severity === 2 && d.range.start.line === 7 &&
+      /join/.test(d.message) && /null/i.test(d.message)
     );
     expect(joinWarnings.length).toBeGreaterThan(0);
   } finally {
@@ -687,9 +688,10 @@ let parts1 = split(s1, ",");
     );
     expect(splitErrors.length).toBe(0);
 
-    // Should have a warning
+    // Should have a possibly-null warning specifically for the split() argument.
     const splitWarnings = diagnostics.filter(d =>
-      d.severity === 2 && d.range.start.line === 7
+      d.severity === 2 && d.range.start.line === 7 &&
+      /split/.test(d.message) && /null/i.test(d.message)
     );
     expect(splitWarnings.length).toBeGreaterThan(0);
   } finally {

@@ -13,7 +13,6 @@ afterAll(() => { try { server.shutdown(); } catch {} });
 async function ds(content) { return (await server.getDiagnostics(content, `/tmp/frm-${n++}.uc`)) || []; }
 const usedBefore = (d, name) => d.filter(x => x.message.includes(`Function '${name}' is used before its declaration`));
 const undefFn = (d, name) => d.filter(x => x.message.includes(`Undefined function: ${name}`));
-const errsFor = (d, name) => d.filter(x => x.severity === 1 && x.message.includes(name));
 
 // ── A. Calls: forward vs backward ────────────────────────────────────────────
 test('01 plain forward call is flagged', async () => {
@@ -97,7 +96,7 @@ test('22 forward value reference inside an array literal is flagged', async () =
 
 // ── E. Nested functions ──────────────────────────────────────────────────────
 test('23 a nested forward call is flagged', async () => {
-  expect(errsFor(await ds('function o(){ a(); function a(){ return 1; } }\n'), 'a').length).toBeGreaterThan(0);
+  expect(undefFn(await ds('function o(){ a(); function a(){ return 1; } }\n'), 'a').length).toBeGreaterThan(0);
 });
 test('24 a nested backward call is clean', async () => {
   expect((await ds('function o(){ function a(){ return 1; } return a(); }\n')).filter(x => x.severity === 1).length).toBe(0);
@@ -106,7 +105,7 @@ test('25 an inner function calling its enclosing function is clean', async () =>
   expect((await ds('function outer(){ function inner(){ return outer(); } return inner(); }\n')).filter(x => x.severity === 1).length).toBe(0);
 });
 test('26 a sibling nested forward call is flagged', async () => {
-  expect(errsFor(await ds('function o(){ function a(){ return b(); } function b(){ return 1; } return a(); }\n'), 'b').length).toBeGreaterThan(0);
+  expect(undefFn(await ds('function o(){ function a(){ return b(); } function b(){ return 1; } return a(); }\n'), 'b').length).toBeGreaterThan(0);
 });
 test('27 nested recursion is clean', async () => {
   expect((await ds('function o(){ function fac(n){ return n<=1?1:n*fac(n-1); } return fac(3); }\n')).filter(x => x.severity === 1).length).toBe(0);
@@ -128,10 +127,10 @@ test('31 forward call inside a try block is flagged', async () => {
 
 // ── G. Function-expression / arrow variables ─────────────────────────────────
 test('32 forward call to a function-expression variable is flagged', async () => {
-  expect(errsFor(await ds('foo();\nlet foo = function(){ return 1; };\n'), 'foo').length).toBeGreaterThan(0);
+  expect(undefFn(await ds('foo();\nlet foo = function(){ return 1; };\n'), 'foo').length).toBeGreaterThan(0);
 });
 test('33 forward call to an arrow variable is flagged', async () => {
-  expect(errsFor(await ds('foo();\nlet foo = () => 1;\n'), 'foo').length).toBeGreaterThan(0);
+  expect(undefFn(await ds('foo();\nlet foo = () => 1;\n'), 'foo').length).toBeGreaterThan(0);
 });
 test('34 backward call to a function-expression variable is clean', async () => {
   expect((await ds('let foo = function(){ return 1; };\nfoo();\n')).filter(x => x.severity === 1).length).toBe(0);

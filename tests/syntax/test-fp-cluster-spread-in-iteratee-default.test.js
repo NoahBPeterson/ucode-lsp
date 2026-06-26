@@ -48,7 +48,9 @@ test('76 `x in "string"` is an error with an accurate always-false message', asy
   expect(e[0].message).toMatch(/always false/);
 });
 test('76 `2 in <integer>` is flagged', async () => {
-  expect(errs(await diags('let n = 5; let r = (2 in n);\n')).length).toBe(1);
+  const e = errs(await diags('let n = 5; let r = (2 in n);\n'));
+  expect(e.length).toBe(1);
+  expect(e[0].message).toMatch(/always false/);
 });
 test('76 `x in <object|null>` (defensive idiom) is NOT flagged', async () => {
   const code = 'function f(o){ if (type(o) == "object" || o == null) return ("k" in o); }\n';

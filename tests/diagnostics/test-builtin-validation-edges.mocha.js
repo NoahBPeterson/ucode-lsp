@@ -63,7 +63,13 @@ describe('builtin argument validation edges (server-driven)', function () {
     ];
     for (const c of cases) {
       const ds = await diag('sweep-' + c.replace(/\W/g, ''), c + '\n');
-      assert.ok(ds.length >= 1, `expected a diagnostic for "${c}", got none`);
+      const name = c.match(/^\w+/)[0];
+      // Pin the diagnostic to THIS builtin (its message names it as `name(` or 'name'),
+      // not merely "some diagnostic exists" — a stray/unrelated diagnostic must not pass.
+      assert.ok(
+        ds.some(d => d.message.includes(`${name}(`) || d.message.includes(`'${name}'`)),
+        `expected a diagnostic naming "${name}" for "${c}", got: ${JSON.stringify(msgs(ds))}`
+      );
     }
   });
 });

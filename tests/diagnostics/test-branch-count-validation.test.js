@@ -46,7 +46,9 @@ if (type(unionValue) === "array" || type(unionValue) == "string" || true)
 
     const diag2 = await server.getDiagnostics(test2Content, testPath + '2');
     console.log('\n=== Test 2: 2 guards, 3 branches with literal true (should NOT narrow, expect warning) ===');
-    const warnings2 = diag2.filter(d => d.message.includes('object'));
+    // The unnarrowed array|object union makes index() flag a possibly-object argument.
+    const warnings2 = diag2.filter(d =>
+      d.code === 'nullable-argument' && d.message.includes('index') && d.message.includes('object'));
     console.log(`Warnings: ${warnings2.length} (expected 1)`);
     expect(warnings2.length).toBe(1);
 

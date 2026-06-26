@@ -501,7 +501,9 @@ import { nonExistentFunction } from 'math';
 print(nonExistentFunction);
 `);
     // Should report that nonExistentFunction is not exported by math
-    expect(errors.length).toBeGreaterThan(0);
+    const notExported = errors.filter(d =>
+      d.code === 'UC3005' && d.message.includes('nonExistentFunction') && d.message.includes('not exported'));
+    expect(notExported.length).toBe(1);
   });
 
   test('import from non-existent file produces warning', async () => {
