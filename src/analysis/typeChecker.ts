@@ -326,6 +326,12 @@ export class TypeChecker {
     this.truthinessDepth = depth;
   }
 
+  /** Whether a pure-UNKNOWN builtin argument escalates to an error under 'use strict'
+   *  (default true). Forwarded to the builtin validator. */
+  public setStrictUnknownArguments(strict: boolean): void {
+    this.builtinValidator.setStrictUnknownArguments(strict);
+  }
+
   /**
    * Get the type narrowing engine for checking type compatibility
    */

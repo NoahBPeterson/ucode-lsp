@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
@@ -110,6 +110,12 @@
           ],
           "default": "25.12",
           "markdownDescription": "Which OpenWrt release's ucode the diagnostics should target. Defaults to `25.12` (latest release). Newer ucode syntax features are flagged when targeting a release that lacks them (e.g. `export function` without a trailing `;`, added after 25.12 — valid only on `main`). Choose `main` to disable these version checks."
+        },
+        "ucode.strictUnknownArguments": {
+          "scope": "resource",
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "When a `'use strict'` file passes a builtin an argument whose type can't be verified (a value of *unknown* type — e.g. an unannotated function parameter), treat it as an **error** (`true`, the default — TypeScript `noImplicitAny`-style) or merely a **warning** (`false`).\n\nThis only affects *unverifiable* arguments. Arguments that are provably wrong — a definite type mismatch, or a possibly-`null` value passed where non-null is required — are **always errors** regardless of this setting.\n\nSet to `false` if you prefer the LSP to surface unannotated/dynamic code as warnings rather than errors (common for OpenWrt-style ucode that leans on dynamic values and shared module state); absolute, true-positive errors will still appear as errors. Annotating the parameter (e.g. `/** @param {string} name */`) resolves it either way."
         },
         "ucode.inlayHints.enable": {
           "scope": "window",

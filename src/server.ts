@@ -192,21 +192,33 @@ async function refreshInlayHintSetting(): Promise<void> {
 // target. Drives version-gated diagnostics (see analysis/ucodeVersions.ts). The
 // analyzer runs synchronously, so we keep the latest value and re-pull on change.
 let ucodeTargetVersion: UcodeTargetVersion = DEFAULT_TARGET_VERSION;
+// Cached `ucode.strictUnknownArguments` — whether an unverifiable (UNKNOWN) builtin
+// argument errors under 'use strict' (default true). See analysis/checkers/builtinValidation.ts.
+let ucodeStrictUnknownArguments = true;
 
-async function refreshTargetVersion(): Promise<boolean> {
-    const prev = ucodeTargetVersion;
-    let next: UcodeTargetVersion = DEFAULT_TARGET_VERSION;
+async function refreshTargetVersion(): Promise<{ targetChanged: boolean; strictChanged: boolean }> {
+    const prevVersion = ucodeTargetVersion;
+    const prevStrictUnknown = ucodeStrictUnknownArguments;
+    let nextVersion: UcodeTargetVersion = DEFAULT_TARGET_VERSION;
+    let nextStrictUnknown = true;
     if (hasConfigurationCapability) {
         try {
             const cfg = await connection.workspace.getConfiguration({ section: 'ucode' });
             const v = cfg?.targetVersion;
             if (typeof v === 'string' && (UCODE_TARGET_VERSIONS as readonly string[]).includes(v)) {
-                next = v as UcodeTargetVersion;
+                nextVersion = v as UcodeTargetVersion;
             }
-        } catch { /* keep default */ }
+            if (typeof cfg?.strictUnknownArguments === 'boolean') {
+                nextStrictUnknown = cfg.strictUnknownArguments;
+            }
+        } catch { /* keep defaults */ }
     }
-    ucodeTargetVersion = next;
-    return next !== prev; // did it change?
+    ucodeTargetVersion = nextVersion;
+    ucodeStrictUnknownArguments = nextStrictUnknown;
+    return {
+        targetChanged: nextVersion !== prevVersion,
+        strictChanged: nextStrictUnknown !== prevStrictUnknown,
+    };
 }
 let hasWorkspaceFolderCapability = false;
 
@@ -397,8 +409,9 @@ connection.onInitialized(async () => {
     refreshInlayHintSetting().then(() => requestInlayHintRefresh());
     // Pull the initial target ucode version; re-validate open docs if it isn't the
     // default (so version-gated diagnostics reflect a configured older target).
-    refreshTargetVersion().then((changed) => {
-        if (changed) for (const doc of documents.all()) validateAndAnalyzeDocument(doc);
+    refreshTargetVersion().then(({ targetChanged, strictChanged }) => {
+        if (targetChanged || strictChanged)
+            for (const doc of documents.all()) validateAndAnalyzeDocument(doc, strictChanged);
     });
     if (hasWorkspaceFolderCapability) {
         connection.workspace.onDidChangeWorkspaceFolders(async (event: WorkspaceFoldersChangeEvent) => {
@@ -603,6 +616,7 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
                 enableShadowingWarnings: true,
                 workspaceRoot: workspaceFolders.length > 0 ? workspaceFolders[0] : process.cwd(),
                 targetVersion: ucodeTargetVersion,
+                strictUnknownArguments: ucodeStrictUnknownArguments,
             });
             // Template render scope: if some file include()s THIS file with a scope object,
             // those keys are injected globals here — suppress UC1001 for them. (phase 4b)
@@ -1809,12 +1823,13 @@ connection.onDidChangeConfiguration(async () => {
     requestInlayHintRefresh();
     // If the target ucode version changed, re-validate every open document so
     // version-gated diagnostics update immediately.
-    const targetChanged = await refreshTargetVersion();
-    if (targetChanged) {
-        // Version gates fire in the always-run scope pass (and the incremental skip
-        // only short-circuits the type checker), so a normal re-validate re-evaluates
-        // them correctly — no forceFull needed.
-        for (const doc of documents.all()) validateAndAnalyzeDocument(doc);
+    const { targetChanged, strictChanged } = await refreshTargetVersion();
+    if (targetChanged || strictChanged) {
+        // Version gates fire in the always-run scope pass, so they re-evaluate with a
+        // normal re-validate. strictUnknownArguments governs a TYPE-CHECKER diagnostic,
+        // and the incremental cache skips unchanged function bodies' type-check results —
+        // so a strict-setting change needs forceFull to re-run the type checker.
+        for (const doc of documents.all()) validateAndAnalyzeDocument(doc, strictChanged);
     }
 });
 

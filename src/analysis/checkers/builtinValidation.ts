@@ -327,6 +327,11 @@ export class BuiltinValidator {
   public narrowedReturnType: UcodeDataType | null = null;
   public inTruthinessContext = false;
   private strictMode = false;
+  // When true (default), a pure-UNKNOWN argument under 'use strict' is escalated to an
+  // error (TypeScript noImplicitAny style). When false, it stays a warning even under
+  // 'use strict'. Proven mismatches and possibly-null args are unaffected — they error
+  // regardless. Driven by the `ucode.strictUnknownArguments` setting.
+  private strictUnknownArguments = true;
   private sourceText = '';
 
   constructor() {}
@@ -337,6 +342,10 @@ export class BuiltinValidator {
 
   setStrictMode(strict: boolean): void {
     this.strictMode = strict;
+  }
+
+  setStrictUnknownArguments(strict: boolean): void {
+    this.strictUnknownArguments = strict;
   }
 
   /** Push a definite type mismatch diagnostic — always an error */
@@ -625,7 +634,10 @@ export class BuiltinValidator {
           diagData.fullExprStart = arg.start;
           diagData.fullExprEnd = arg.end;
         }
-        if (this.strictMode) {
+        // An UNKNOWN arg is *unverifiable*, not proven wrong. It errors under strict only
+        // when strictUnknownArguments is on (the default, TypeScript-style); otherwise it
+        // stays a warning even under 'use strict' so unannotated params don't read as bugs.
+        if (this.strictMode && this.strictUnknownArguments) {
           this.errors.push({
             message, start: diagStart, end: diagEnd,
             severity: 'error', code: 'incompatible-function-argument', data: diagData

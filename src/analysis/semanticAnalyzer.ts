@@ -43,6 +43,10 @@ export interface SemanticAnalysisOptions {
   /** Which OpenWrt release's ucode to target for version-divergent diagnostics
    *  (e.g. `export function` without a trailing `;`). Defaults to 'main' (newest). */
   targetVersion?: UcodeTargetVersion;
+  /** When true (default), a pure-UNKNOWN builtin argument under 'use strict' is an
+   *  error (TypeScript noImplicitAny style); when false it stays a warning. Proven
+   *  mismatches / possibly-null args always error. `ucode.strictUnknownArguments`. */
+  strictUnknownArguments?: boolean;
 }
 
 export interface SemanticAnalysisResult {
@@ -397,6 +401,9 @@ export class SemanticAnalyzer extends BaseVisitor {
     // to an implicit global isn't flagged "Undefined function".
     this.collectImplicitGlobalNames(node);
     this.typeChecker.setImplicitGlobalNames(this.implicitGlobalNames);
+    // Whether an unverifiable (UNKNOWN) builtin argument errors under 'use strict'
+    // (default true, TypeScript-style). Off → such args stay warnings even under strict.
+    this.typeChecker.setStrictUnknownArguments(this.options.strictUnknownArguments ?? true);
     // Collect `global.X = …` property names so a bare call `X(...)` isn't flagged
     // "Undefined function" (the variable check already honors these via isGlobalProperty;
     // the call check did not). Legal in strict mode too, so not strict-gated.
