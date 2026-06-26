@@ -7,7 +7,7 @@ const { createLSPTestServer } = require('../lsp-test-helpers');
 // enforced by tests/modules/test-module-completeness.js; this server smoke test
 // just confirms the LSP surfaces them all. Bump here when a module is added.
 // (This is a node-run mocha suite, so it can't require the TS source directly.)
-const EXPECTED_BUILTIN_MODULES = 22;
+const EXPECTED_BUILTIN_MODULES = 23;
 
 describe('Module Completions Integration Test', function() {
   this.timeout(15000);

@@ -15,7 +15,10 @@ export const KNOWN_MODULES = [
   // OpenWrt feed modules (ucode-mod-*), version-gated in ucodeVersions.ts:
   'bpf', 'html', 'lua',     // 23.05
   'uclient', 'udebug',      // 24.10
-  'uline', 'pkgen'          // 25.12
+  'uline', 'pkgen',         // 25.12
+  // LuCI library binding (liblucihttp-ucode); feed-available on all releases (22.03+),
+  // pulled in by luci-base — not version-gated.
+  'lucihttp'
 ] as const;
 
 export type KnownModule = typeof KNOWN_MODULES[number];

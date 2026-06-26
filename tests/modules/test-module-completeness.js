@@ -52,6 +52,9 @@ const EXPECTED_FUNCTIONS = {
     udebug: ['init', 'create_ring', 'get_ring', 'trace_ring', 'foreach_packet', 'pcap_file', 'pcap_udp'],
     uline: ['new', 'arg_parser', 'getpass'],
     pkgen: ['generate_key', 'load_key', 'generate_cert', 'cert_info', 'generate_pkcs12', 'error', 'errno'],
+    // LuCI library binding (liblucihttp-ucode) — names introspection-authoritative,
+    // identical across 22.03→main (same pinned source rev), so not version-gated.
+    lucihttp: ['urlencode', 'urldecode', 'urlencoded_parser', 'multipart_parser', 'header_attribute'],
 };
 
 // Verify every module

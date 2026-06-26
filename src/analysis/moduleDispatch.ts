@@ -49,6 +49,7 @@ import { uclientModule } from './uclientTypes';
 import { udebugModule } from './udebugTypes';
 import { ulineModule, ulineStateObjectType, ulineArgpObjectType } from './ulineTypes';
 import { pkgenModule, mbedtlsPkObjectType, mbedtlsCrtObjectType } from './pkgenTypes';
+import { lucihttpModule } from './lucihttpTypes';
 
 // ---- Build MODULE_REGISTRIES using factory ----
 
@@ -75,6 +76,7 @@ export const MODULE_REGISTRIES: Record<KnownModule, ModuleRegistry> = {
   udebug: createModuleRegistry(udebugModule),
   uline: createModuleRegistry(ulineModule),
   pkgen: createModuleRegistry(pkgenModule),
+  lucihttp: createModuleRegistry(lucihttpModule),
 };
 
 // ---- Build OBJECT_REGISTRIES using factory ----
