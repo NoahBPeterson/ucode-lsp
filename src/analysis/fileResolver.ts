@@ -36,6 +36,35 @@ export interface FactoryReturnInfo {
     propertyDefinitionLocations?: Map<string, { start: number; end: number }>;
 }
 
+/**
+ * Structural view of an AST node for the type-only / literal-rendering walks in
+ * this module. Several helpers receive nodes that were obtained through `as any`
+ * casts of the parser output and access a handful of fields dynamically; this
+ * captures exactly those fields while keeping child access typed rather than
+ * `any`. Children are themselves `AstBag` so chained access (`prop.key.name`)
+ * stays sound, and `value` is `unknown` (a Literal's value is a JS primitive).
+ */
+interface AstBag {
+    type?: string;
+    start?: number;
+    end?: number;
+    name?: string;
+    operator?: string;
+    // `value` is overloaded in the AST: a Literal's value is a JS primitive,
+    // while a Property's value is a child node. Kept `unknown`; narrow with
+    // `asBag` for the node case and `typeof` for the primitive case.
+    value?: unknown;
+    literalType?: string;
+    argument?: AstBag;
+    key?: AstBag;
+    properties?: AstBag[];
+}
+
+/** Narrow an arbitrary value to a walkable AST-node bag. */
+function asBag(v: unknown): AstBag | undefined {
+    return (v && typeof v === 'object') ? (v as AstBag) : undefined;
+}
+
 export class FileResolver {
     private workspaceRoot: string;
     // Caches keyed by file URI, tagged with the file's content so a changed file
@@ -50,11 +79,11 @@ export class FileResolver {
     // several of them per function, so a CodeLens pass re-parsed the same file
     // O(functions × exports) times and stalled the single-threaded server. Caching
     // the parse collapses that to one parse per (file, content).
-    private astCache = new Map<string, { content: string; ast: any }>();
+    private astCache = new Map<string, { content: string; ast: AstNode | null }>();
 
     /** Lex+parse `source` for `fileUri`, reusing a cached AST when the content is
      *  unchanged. Returns the Program AST or null on parse failure. */
-    private getCachedAst(fileUri: string, source: string): any | null {
+    private getCachedAst(fileUri: string, source: string): AstNode | null {
         const cached = this.astCache.get(fileUri);
         if (cached && cached.content === source) return cached.ast;
         try {
@@ -207,7 +236,7 @@ export class FileResolver {
             const ast = parser.parse().ast as any;
             if (!ast?.body) return null;
 
-            const renderLiteral = (v: any): string | null => {
+            const renderLiteral = (v: AstBag | undefined): string | null => {
                 if (!v) return null;
                 if (v.type === 'Literal') {
                     if (typeof v.value === 'string') return display ? JSON.stringify(v.value) : v.value;
@@ -222,11 +251,11 @@ export class FileResolver {
                 return null;
             };
 
-            const findInObject = (objNode: any): string | null => {
+            const findInObject = (objNode: AstBag | undefined): string | null => {
                 for (const prop of (objNode?.properties || [])) {
                     const key = prop?.key?.name ?? prop?.key?.value;
                     if (key !== propertyName) continue;
-                    return renderLiteral(prop?.value);
+                    return renderLiteral(asBag(prop?.value));
                 }
                 return null;
             };
@@ -270,10 +299,11 @@ export class FileResolver {
             const ast = parser.parse().ast as any;
             if (!ast?.body) return null;
 
-            const findInObject = (objNode: any): { start: number; end: number } | null => {
+            const findInObject = (objNode: AstBag | undefined): { start: number; end: number } | null => {
                 for (const prop of (objNode?.properties || [])) {
                     const key = prop?.key?.name ?? prop?.key?.value;
-                    if (key === propertyName && prop.key) {
+                    if (key === propertyName && prop.key
+                        && typeof prop.key.start === 'number' && typeof prop.key.end === 'number') {
                         return { start: prop.key.start, end: prop.key.end };
                     }
                 }
@@ -711,7 +741,7 @@ export class FileResolver {
             const types = new Map<string, UcodeDataType>();
             const nested = new Map<string, Map<string, UcodeDataType>>();
 
-            const recordExport = (name: string, init: any) => {
+            const recordExport = (name: string, init: AstBag | undefined) => {
                 types.set(name, this.inferShallowType(init));
                 // For object-literal exports, walk one level deeper so chained
                 // access like `ns.NAME.PROP` can resolve. Deeper than one level
@@ -749,19 +779,19 @@ export class FileResolver {
     }
 
     /** Type-only walk of an ObjectExpression's direct properties — one level. */
-    private inferObjectLiteralPropertyTypesShallow(objNode: any): Map<string, UcodeDataType> {
+    private inferObjectLiteralPropertyTypesShallow(objNode: AstBag | undefined): Map<string, UcodeDataType> {
         const m = new Map<string, UcodeDataType>();
         for (const prop of (objNode?.properties || [])) {
             const key = prop?.key?.name ?? prop?.key?.value;
             if (typeof key !== 'string' && typeof key !== 'number') continue;
             const keyStr = String(key);
-            const val = prop?.value;
+            const val = asBag(prop?.value);
             if (val) m.set(keyStr, this.inferShallowType(val));
         }
         return m;
     }
 
-    private inferShallowType(node: any): UcodeDataType {
+    private inferShallowType(node: AstBag | undefined): UcodeDataType {
         if (!node) return UcodeType.UNKNOWN as UcodeDataType;
         switch (node.type) {
             case 'FunctionDeclaration':
@@ -773,7 +803,7 @@ export class FileResolver {
             case 'ObjectExpression':
                 return UcodeType.OBJECT as UcodeDataType;
             case 'Literal': {
-                const lit: any = node;
+                const lit = node;
                 if (lit.literalType === 'string' || typeof lit.value === 'string') return UcodeType.STRING as UcodeDataType;
                 if (lit.literalType === 'double' || (typeof lit.value === 'number' && !Number.isInteger(lit.value))) return UcodeType.DOUBLE as UcodeDataType;
                 if (lit.literalType === 'integer' || typeof lit.value === 'number') return UcodeType.INTEGER as UcodeDataType;
@@ -1370,7 +1400,7 @@ export class FileResolver {
             }
         }
 
-        const result: ParamInfo[] = params.map((p: any) => ({
+        const result: ParamInfo[] = (params as { name: string }[]).map((p) => ({
             name: p.name,
             type: jsdocTypes.get(p.name) ?? (UcodeType.UNKNOWN as UcodeDataType),
             isRest: false,
@@ -1517,7 +1547,7 @@ export class FileResolver {
         outLocs?: Map<string, { start: number; end: number }>
     ): Map<string, UcodeDataType> {
         const propertyTypes = new Map<string, UcodeDataType>();
-        const setLoc = (key: string, node: any) => {
+        const setLoc = (key: string, node: AstBag | null | undefined) => {
             if (outLocs && node && typeof node.start === 'number' && typeof node.end === 'number') {
                 outLocs.set(key, { start: node.start, end: node.end });
             }

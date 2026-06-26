@@ -5,29 +5,36 @@
 import { TokenType } from '../lexer';
 import { Precedence, type ParseRule } from './types';
 import { ParserUtils } from './parserUtils';
+import {
+  type AstNode, type LiteralNode, type IdentifierNode, type ThisExpressionNode,
+  type CallExpressionNode, type ArrayExpressionNode, type MemberExpressionNode,
+  type ObjectExpressionNode, type UnaryExpressionNode, type BinaryExpressionNode,
+  type AssignmentExpressionNode, type ConditionalExpressionNode, type DeleteExpressionNode,
+  type FunctionExpressionNode, type ArrowFunctionExpressionNode, type TemplateLiteralNode
+} from '../ast/nodes';
 
 export abstract class ParseRules extends ParserUtils {
   protected rules: Map<TokenType, ParseRule> = new Map();
 
   // Abstract methods that must be implemented by subclasses
-  protected abstract parseLiteral(type: string): any;
-  protected abstract parseIdentifier(): any;
-  protected abstract parseThis(): any;
-  protected abstract parseRegex(): any;
-  protected abstract parseGrouping(): any;
-  protected abstract parseCall(left: any): any;
-  protected abstract parseArray(): any;
-  protected abstract parseMemberAccess(left: any): any;
-  protected abstract parseObject(): any;
-  protected abstract parseUnary(): any;
-  protected abstract parseBinary(left: any): any;
-  protected abstract parsePostfix(left: any): any;
-  protected abstract parseAssignment(left: any): any;
-  protected abstract parseConditional(left: any): any;
-  protected abstract parseDelete(): any;
-  protected abstract parseFunctionExpression(): any;
-  protected abstract parseArrowFunction(left: any): any;
-  protected abstract parseTemplateLiteral(): any;
+  protected abstract parseLiteral(type: string): LiteralNode;
+  protected abstract parseIdentifier(): IdentifierNode | null;
+  protected abstract parseThis(): ThisExpressionNode;
+  protected abstract parseRegex(): LiteralNode;
+  protected abstract parseGrouping(): AstNode | null;
+  protected abstract parseCall(left: AstNode): CallExpressionNode;
+  protected abstract parseArray(): ArrayExpressionNode;
+  protected abstract parseMemberAccess(left: AstNode): MemberExpressionNode | null;
+  protected abstract parseObject(): ObjectExpressionNode;
+  protected abstract parseUnary(): UnaryExpressionNode | null;
+  protected abstract parseBinary(left: AstNode): BinaryExpressionNode | null;
+  protected abstract parsePostfix(left: AstNode): UnaryExpressionNode;
+  protected abstract parseAssignment(left: AstNode): AssignmentExpressionNode | null;
+  protected abstract parseConditional(left: AstNode): ConditionalExpressionNode | null;
+  protected abstract parseDelete(): DeleteExpressionNode | null;
+  protected abstract parseFunctionExpression(): FunctionExpressionNode | null;
+  protected abstract parseArrowFunction(left: AstNode): ArrowFunctionExpressionNode | null;
+  protected abstract parseTemplateLiteral(): TemplateLiteralNode;
 
   protected initializeParseRules(): void {
     // Primary expressions

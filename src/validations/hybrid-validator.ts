@@ -4,7 +4,8 @@
  */
 
 import {
-    Diagnostic
+    Diagnostic,
+    type Connection
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { validateWithLexer } from './lexer';
@@ -24,8 +25,8 @@ interface HybridValidationConfig {
 }
 
 export function validateDocument(
-    textDocument: TextDocument, 
-    connection: any,
+    textDocument: TextDocument,
+    connection: Connection,
     config: HybridValidationConfig = {}
 ): Diagnostic[] {
     const startTime = Date.now();

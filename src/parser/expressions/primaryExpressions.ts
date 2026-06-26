@@ -3,7 +3,7 @@
  * Handles literals, identifiers, this, regex, and grouping
  */
 
-import { TokenType } from '../../lexer';
+import { TokenType, type Token } from '../../lexer';
 import { type AstNode, type IdentifierNode, type LiteralNode, type ThisExpressionNode, type FunctionExpressionNode, type BlockStatementNode, type TemplateLiteralNode, type TemplateElementNode, type SpreadElementNode } from '../../ast/nodes';
 import { ParseRules } from '../parseRules';
 import { Precedence } from '../types';
@@ -416,6 +416,6 @@ export abstract class PrimaryExpressions extends ParseRules {
   }
 
   // Abstract methods that must be implemented by subclasses
-  protected abstract parseExpression(precedence?: any): AstNode | null;
-  protected abstract parseBlockStatement(openingBrace: any, context: string): BlockStatementNode;
+  protected abstract parseExpression(precedence?: Precedence): AstNode | null;
+  protected abstract parseBlockStatement(openingBrace: Token | null, context: string): BlockStatementNode;
 }

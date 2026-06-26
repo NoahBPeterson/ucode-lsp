@@ -20,6 +20,16 @@
 
 import { type AstNode } from '../ast/nodes';
 
+/** A node viewed as an open record, for dynamic traversal/property access. AST nodes carry
+ *  many type-specific fields that the base `AstNode` interface does not enumerate; this alias
+ *  documents that we are reading those dynamically (after a `type`-string guard). */
+type AnyNode = AstNode & Record<string, unknown>;
+
+/** Narrow an arbitrary value to a traversable AST-like node (an object with a string `type`). */
+function isNode(n: unknown): n is AnyNode {
+  return !!n && typeof n === 'object' && typeof (n as { type?: unknown }).type === 'string';
+}
+
 /** How a scope value's type is determined. */
 export type ScopeValueInfo =
   | { kind: 'type'; type: string }       // literal / object / array / function — concrete type
@@ -46,16 +56,16 @@ export interface IncludeSite {
 
 /** Read a property key name from either a `Literal` (shorthand `{ fw4 }` normalizes to a
  *  Literal "fw4") or an `Identifier` key. Returns null for anything else. */
-function propertyKeyName(key: any): string | null {
-  if (!key || typeof key !== 'object') return null;
+function propertyKeyName(key: unknown): string | null {
+  if (!isNode(key)) return null;
   if (key.type === 'Identifier' && typeof key.name === 'string') return key.name;
   if (key.type === 'Literal' && key.value != null) return String(key.value);
   return null;
 }
 
 /** Classify a scope value expression into a type, an identifier reference, or a require(). */
-function classifyScopeValue(node: any): ScopeValueInfo {
-  if (!node || typeof node !== 'object') return { kind: 'unknown' };
+function classifyScopeValue(node: unknown): ScopeValueInfo {
+  if (!isNode(node)) return { kind: 'unknown' };
   switch (node.type) {
     case 'Literal': {
       const v = node.value;
@@ -69,11 +79,14 @@ function classifyScopeValue(node: any): ScopeValueInfo {
     case 'ArrayExpression': return { kind: 'type', type: 'array' };
     case 'ArrowFunctionExpression':
     case 'FunctionExpression': return { kind: 'type', type: 'function' };
-    case 'Identifier': return node.name ? { kind: 'ident', name: node.name } : { kind: 'unknown' };
+    case 'Identifier': return typeof node.name === 'string' && node.name ? { kind: 'ident', name: node.name } : { kind: 'unknown' };
     case 'CallExpression': {
-      if (node.callee?.type === 'Identifier' && node.callee.name === 'require'
-          && node.arguments?.[0]?.type === 'Literal' && typeof node.arguments[0].value === 'string') {
-        return { kind: 'require', module: node.arguments[0].value };
+      const callee = node.callee;
+      const args = node.arguments;
+      if (isNode(callee) && callee.type === 'Identifier' && callee.name === 'require'
+          && Array.isArray(args) && isNode(args[0]) && args[0].type === 'Literal'
+          && typeof args[0].value === 'string') {
+        return { kind: 'require', module: args[0].value };
       }
       return { kind: 'unknown' };
     }
@@ -90,25 +103,28 @@ function classifyScopeValue(node: any): ScopeValueInfo {
 export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSite[] {
   const sites: IncludeSite[] = [];
 
-  const walk = (n: any): void => {
-    if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+  const walk = (n: unknown): void => {
+    if (!isNode(n)) return;
 
+    const callee = n.callee;
     if (n.type === 'CallExpression'
-        && n.callee?.type === 'Identifier' && n.callee.name === 'include'
+        && isNode(callee) && callee.type === 'Identifier' && callee.name === 'include'
         && Array.isArray(n.arguments) && n.arguments.length >= 1) {
       const pathArg = n.arguments[0];
-      if (pathArg?.type === 'Literal' && typeof pathArg.value === 'string') {
-        const scopeArg = n.arguments[1];
+      if (isNode(pathArg) && pathArg.type === 'Literal' && typeof pathArg.value === 'string') {
+        const scopeArg: unknown = n.arguments[1];
         const scopeKeys: string[] = [];
         const scopeValues: Record<string, ScopeValueInfo> = {};
         let hasScope = false;
         let hasDynamicScope = false;
 
-        if (scopeArg?.type === 'ObjectExpression') {
+        if (isNode(scopeArg) && scopeArg.type === 'ObjectExpression') {
           hasScope = true;
-          for (const p of scopeArg.properties ?? []) {
-            if (p?.type === 'SpreadElement') { hasDynamicScope = true; continue; }
-            if (p?.type === 'Property') {
+          const properties = Array.isArray(scopeArg.properties) ? scopeArg.properties : [];
+          for (const p of properties) {
+            if (!isNode(p)) continue;
+            if (p.type === 'SpreadElement') { hasDynamicScope = true; continue; }
+            if (p.type === 'Property') {
               if (p.computed) { hasDynamicScope = true; continue; }
               const name = propertyKeyName(p.key);
               if (name !== null) {
@@ -142,7 +158,7 @@ export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSit
       if (k === 'leadingJsDoc') continue;
       const v = n[k];
       if (Array.isArray(v)) { for (const it of v) walk(it); }
-      else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+      else if (isNode(v)) walk(v);
     }
   };
 
@@ -335,34 +351,36 @@ export function computeFreeVariables(ast: AstNode | null | undefined): Set<strin
   const declared = new Set<string>();
   const read = new Set<string>();
 
-  const addId = (n: any) => { if (n?.type === 'Identifier' && n.name) declared.add(n.name); };
+  const addId = (n: unknown) => { if (isNode(n) && n.type === 'Identifier' && typeof n.name === 'string') declared.add(n.name); };
 
-  const collectDecls = (n: any): void => {
-    if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+  const collectDecls = (n: unknown): void => {
+    if (!isNode(n)) return;
     if (n.type === 'VariableDeclarator') addId(n.id);
     if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') {
       addId(n.id);
-      for (const p of n.params ?? []) {
-        if (p?.type === 'Identifier') addId(p);
-        else if (p?.type === 'RestElement' && p.argument?.type === 'Identifier') addId(p.argument);
-        else addId(p?.id);
+      const params = Array.isArray(n.params) ? n.params : [];
+      for (const p of params) {
+        // ucode function params are plain Identifiers (rest params live on a separate
+        // `restParam` field, never as a 'RestElement' param node), so this is the only case.
+        if (isNode(p) && p.type === 'Identifier') addId(p);
       }
     }
     if (n.type === 'ImportDeclaration') {
-      for (const s of n.specifiers ?? []) addId(s?.local ?? s?.id);
+      const specifiers = Array.isArray(n.specifiers) ? n.specifiers : [];
+      for (const s of specifiers) addId(isNode(s) ? (s.local ?? s.id) : undefined);
     }
-    if (n.type === 'ForInStatement' && n.left?.type === 'Identifier') addId(n.left);
+    if (n.type === 'ForInStatement' && isNode(n.left) && n.left.type === 'Identifier') addId(n.left);
     for (const k of Object.keys(n)) {
       if (k === 'leadingJsDoc') continue;
       const v = n[k];
       if (Array.isArray(v)) { for (const it of v) collectDecls(it); }
-      else if (v && typeof v === 'object' && typeof v.type === 'string') collectDecls(v);
+      else if (isNode(v)) collectDecls(v);
     }
   };
 
-  const collectReads = (n: any): void => {
-    if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
-    if (n.type === 'Identifier' && n.name) {
+  const collectReads = (n: unknown): void => {
+    if (!isNode(n)) return;
+    if (n.type === 'Identifier' && typeof n.name === 'string' && n.name) {
       // Only count value-position reads: skip declaration ids, the `.prop` of a member,
       // and object-literal property keys (handled by their parents below).
       read.add(n.name);
@@ -377,7 +395,7 @@ export function computeFreeVariables(ast: AstNode | null | undefined): Set<strin
       if (n.type === 'ForInStatement' && k === 'left') continue;
       const v = n[k];
       if (Array.isArray(v)) { for (const it of v) collectReads(it); }
-      else if (v && typeof v === 'object' && typeof v.type === 'string') collectReads(v);
+      else if (isNode(v)) collectReads(v);
     }
   };
 

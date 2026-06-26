@@ -9,6 +9,7 @@
 import { execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import type { AstNode, FunctionDeclarationNode } from './ast/nodes';
 
 /** One parsed commit from the `git log -L` custom format. */
 export interface GitCommit {
@@ -35,21 +36,21 @@ export interface GitSummary {
  * they're bound to a variable/property rather than declared. Skips recursing
  * into `leadingJsDoc` to avoid walking comment sub-trees.
  */
-export function collectFunctionDeclarations(ast: any): any[] {
-    const out: any[] = [];
-    const walk = (n: any): void => {
+export function collectFunctionDeclarations(ast: AstNode | null | undefined): FunctionDeclarationNode[] {
+    const out: FunctionDeclarationNode[] = [];
+    const walk = (n: AstNode): void => {
         if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
         // Skip forward declarations (`function f;`) — they have no body; the real
         // definition (if any) gets the lens, so `f` isn't annotated twice.
-        if (n.type === 'FunctionDeclaration' && !n.forwardDeclaration) out.push(n);
+        if (n.type === 'FunctionDeclaration' && !(n as FunctionDeclarationNode).forwardDeclaration) out.push(n as FunctionDeclarationNode);
         for (const k of Object.keys(n)) {
             if (k === 'leadingJsDoc') continue;
-            const v = n[k];
-            if (Array.isArray(v)) { for (const it of v) walk(it); }
-            else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+            const v = (n as unknown as Record<string, unknown>)[k];
+            if (Array.isArray(v)) { for (const it of v) walk(it as AstNode); }
+            else if (v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string') walk(v as AstNode);
         }
     };
-    walk(ast);
+    if (ast) walk(ast);
     return out;
 }
 

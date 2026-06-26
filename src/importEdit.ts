@@ -5,21 +5,24 @@
  */
 import { TextEdit } from 'vscode-languageserver';
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import type { AstNode, ProgramNode, ExpressionStatementNode, LiteralNode } from './ast/nodes';
 
 /** Offset at the end of the leading imports / 'use strict' run, or -1 if none. */
-export function leadingImportAnchor(ast: any): number {
+export function leadingImportAnchor(ast: AstNode | null | undefined): number {
     let anchorEnd = -1;
-    for (const stmt of (ast?.body || [])) {
+    const body: AstNode[] = (ast && Array.isArray((ast as ProgramNode).body)) ? (ast as ProgramNode).body : [];
+    for (const stmt of body) {
         if (stmt?.type === 'ImportDeclaration') anchorEnd = stmt.end;
         else if (anchorEnd === -1 && stmt?.type === 'ExpressionStatement'
-            && stmt.expression?.type === 'Literal' && stmt.expression.value === 'use strict') anchorEnd = stmt.end;
+            && (stmt as ExpressionStatementNode).expression?.type === 'Literal'
+            && ((stmt as ExpressionStatementNode).expression as LiteralNode).value === 'use strict') anchorEnd = stmt.end;
         else break;
     }
     return anchorEnd;
 }
 
 /** A TextEdit that inserts `importText` as its own line in the right place. */
-export function computeImportInsertEdit(ast: any, document: TextDocument, importText: string): TextEdit {
+export function computeImportInsertEdit(ast: AstNode | null | undefined, document: TextDocument, importText: string): TextEdit {
     const anchorEnd = leadingImportAnchor(ast);
     return anchorEnd >= 0
         ? TextEdit.insert(document.positionAt(anchorEnd), `\n${importText}`)

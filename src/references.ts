@@ -10,9 +10,50 @@
 // shadows the function name could be over-counted. That's rare; cross-file
 // references are out of scope for now (in-file only).
 
+import { type AstNode } from './ast/nodes';
+
 export interface SourceSpan {
     start: number; // character offset
     end: number;   // character offset (exclusive)
+}
+
+/**
+ * Structural view of an AST node for the generic, name-keyed tree walks below.
+ * The walkers treat nodes as untyped property bags (they recurse over every own
+ * key), so this captures the fields they actually read while keeping arbitrary
+ * child access typed as `WalkNode | undefined` rather than `any`.
+ */
+interface WalkNode {
+    type: string;
+    start: number;
+    end: number;
+    name?: string;
+    computed?: boolean;
+    operator?: string;
+    property?: WalkNode;
+    key?: WalkNode;
+    id?: WalkNode;
+    object?: WalkNode;
+    callee?: WalkNode;
+    init?: WalkNode;
+    left?: WalkNode;
+    right?: WalkNode;
+    source?: { value?: unknown };
+    imported?: { name?: string };
+    local?: { name?: string };
+    value?: unknown;
+    params?: WalkNode[];
+    declarations?: WalkNode[];
+    specifiers?: WalkNode[];
+    body?: WalkNode[];
+    [key: string]: unknown;
+}
+
+/** Narrow an arbitrary child value to a walkable AST node. */
+function asWalkNode(v: unknown): WalkNode | null {
+    return (v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string')
+        ? (v as WalkNode)
+        : null;
 }
 
 const FUNCTIONISH = new Set([
@@ -30,17 +71,17 @@ const FUNCTIONISH = new Set([
  * blind to shadowing within a single file.
  */
 export function findFunctionReferences(
-    ast: any,
+    ast: AstNode | null | undefined,
     funcName: string,
-    declId: any,
-    isReference?: (node: any) => boolean,
+    declId: AstNode | null,
+    isReference?: (node: WalkNode) => boolean,
 ): SourceSpan[] {
     const refs: SourceSpan[] = [];
 
-    const visit = (node: any, parent: any): void => {
+    const visit = (node: WalkNode | null, parent: WalkNode | null): void => {
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
 
-        if (node.type === 'Identifier' && node.name === funcName && node !== declId) {
+        if (node.type === 'Identifier' && node.name === funcName && (node as AstNode) !== declId) {
             // A member property name: `x.funcName` (dot access) — not a reference.
             const isMemberProp = parent?.type === 'MemberExpression'
                 && parent.property === node && !parent.computed;
@@ -68,12 +109,12 @@ export function findFunctionReferences(
         for (const k of Object.keys(node)) {
             if (k === 'leadingJsDoc') continue;
             const v = node[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it, node); }
-            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v, node);
+            if (Array.isArray(v)) { for (const it of v) visit(asWalkNode(it), node); }
+            else { const child = asWalkNode(v); if (child) visit(child, node); }
         }
     };
 
-    visit(ast, null);
+    visit(asWalkNode(ast), null);
     return refs;
 }
 
@@ -82,9 +123,9 @@ export function findFunctionReferences(
  * are references to the module's `member` export via the namespace
  * (`import * as ns from 'mod'; ns.fn()`). Returns the property identifier's span.
  */
-export function findNamespaceMemberReferences(ast: any, namespaceLocal: string, memberName: string): SourceSpan[] {
+export function findNamespaceMemberReferences(ast: AstNode, namespaceLocal: string, memberName: string): SourceSpan[] {
     const refs: SourceSpan[] = [];
-    const visit = (node: any): void => {
+    const visit = (node: WalkNode | null): void => {
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
         if (node.type === 'MemberExpression' && !node.computed
             && node.object?.type === 'Identifier' && node.object.name === namespaceLocal
@@ -94,11 +135,11 @@ export function findNamespaceMemberReferences(ast: any, namespaceLocal: string, 
         for (const k of Object.keys(node)) {
             if (k === 'leadingJsDoc') continue;
             const v = node[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it); }
-            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v);
+            if (Array.isArray(v)) { for (const it of v) visit(asWalkNode(it)); }
+            else { const child = asWalkNode(v); if (child) visit(child); }
         }
     };
-    visit(ast);
+    visit(asWalkNode(ast));
     return refs;
 }
 
@@ -115,34 +156,34 @@ export function findNamespaceMemberReferences(ast: any, namespaceLocal: string, 
  * interprocedural flow) is still out of scope. Returns the property
  * identifier's span.
  */
-export function findFactoryMethodReferences(ast: any, factoryLocal: string, methodName: string): SourceSpan[] {
+export function findFactoryMethodReferences(ast: AstNode, factoryLocal: string, methodName: string): SourceSpan[] {
     const receivers = new Set<string>();
     // Identifier-to-identifier assignments (`lhs = rhsIdentifier`), used to
     // propagate receiver-ness through aliases after the direct receivers are known.
     const aliasEdges: Array<{ lhs: string; rhs: string }> = [];
-    const collect = (node: any): void => {
+    const collect = (node: WalkNode | null): void => {
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
-        const isFactoryCall = (n: any) =>
+        const isFactoryCall = (n: WalkNode | undefined) =>
             n?.type === 'CallExpression' && n.callee?.type === 'Identifier' && n.callee.name === factoryLocal;
         if (node.type === 'VariableDeclaration') {
             for (const d of node.declarations || []) {
                 if (d?.id?.type !== 'Identifier') continue;
-                if (isFactoryCall(d.init)) receivers.add(d.id.name);
-                else if (d.init?.type === 'Identifier') aliasEdges.push({ lhs: d.id.name, rhs: d.init.name });
+                if (isFactoryCall(d.init)) receivers.add(d.id.name!);
+                else if (d.init?.type === 'Identifier') aliasEdges.push({ lhs: d.id.name!, rhs: d.init.name! });
             }
         }
         if (node.type === 'AssignmentExpression' && node.operator === '=' && node.left?.type === 'Identifier') {
-            if (isFactoryCall(node.right)) receivers.add(node.left.name);
-            else if (node.right?.type === 'Identifier') aliasEdges.push({ lhs: node.left.name, rhs: node.right.name });
+            if (isFactoryCall(node.right)) receivers.add(node.left.name!);
+            else if (node.right?.type === 'Identifier') aliasEdges.push({ lhs: node.left.name!, rhs: node.right.name! });
         }
         for (const k of Object.keys(node)) {
             if (k === 'leadingJsDoc') continue;
             const v = node[k];
-            if (Array.isArray(v)) { for (const it of v) collect(it); }
-            else if (v && typeof v === 'object' && typeof v.type === 'string') collect(v);
+            if (Array.isArray(v)) { for (const it of v) collect(asWalkNode(it)); }
+            else { const child = asWalkNode(v); if (child) collect(child); }
         }
     };
-    collect(ast);
+    collect(asWalkNode(ast));
     if (receivers.size === 0) return [];
 
     // Propagate receiver-ness across alias edges to a fixpoint (`s2 = r`, `s3 = s2`).
@@ -155,21 +196,21 @@ export function findFactoryMethodReferences(ast: any, factoryLocal: string, meth
     }
 
     const refs: SourceSpan[] = [];
-    const visit = (node: any): void => {
+    const visit = (node: WalkNode | null): void => {
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
         if (node.type === 'MemberExpression' && !node.computed
-            && node.object?.type === 'Identifier' && receivers.has(node.object.name)
+            && node.object?.type === 'Identifier' && receivers.has(node.object.name!)
             && node.property?.type === 'Identifier' && node.property.name === methodName) {
             refs.push({ start: node.property.start, end: node.property.end });
         }
         for (const k of Object.keys(node)) {
             if (k === 'leadingJsDoc') continue;
             const v = node[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it); }
-            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v);
+            if (Array.isArray(v)) { for (const it of v) visit(asWalkNode(it)); }
+            else { const child = asWalkNode(v); if (child) visit(child); }
         }
     };
-    visit(ast);
+    visit(asWalkNode(ast));
     return refs;
 }
 
@@ -188,16 +229,16 @@ export interface ImportBinding {
 }
 
 /** Top-level import declarations of a file, flattened to their bindings. */
-export function getImportBindings(ast: any): ImportBinding[] {
+export function getImportBindings(ast: AstNode | null | undefined): ImportBinding[] {
     const out: ImportBinding[] = [];
-    const body = ast?.body;
+    const body = (ast as WalkNode | null)?.body;
     if (!Array.isArray(body)) return out;
-    for (const stmt of body) {
+    for (const stmt of body as WalkNode[]) {
         if (!stmt || stmt.type !== 'ImportDeclaration') continue;
         const source = stmt.source && typeof stmt.source.value === 'string' ? stmt.source.value : null;
         if (!source) continue;
         const binding: ImportBinding = { source, named: [] };
-        for (const spec of (stmt.specifiers || [])) {
+        for (const spec of ((stmt.specifiers || []) as WalkNode[])) {
             if (spec.type === 'ImportDefaultSpecifier' && spec.local?.name) {
                 binding.defaultLocal = spec.local.name;
             } else if (spec.type === 'ImportNamespaceSpecifier' && spec.local?.name) {

@@ -47,7 +47,7 @@ export interface FunctionSignature {
     name: string;
     type: string;
     optional: boolean;
-    defaultValue?: any;
+    defaultValue?: string | number | boolean | null;
   }>;
   returnType: string;
   description: string;

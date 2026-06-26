@@ -363,8 +363,9 @@ function runCheck() {
             } else if (stat.isFile()) {
                 files.push(resolved);
             }
-        } catch (e: any) {
-            process.stderr.write(`ucode-lsp: cannot access '${target}': ${e.message}\n`);
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            process.stderr.write(`ucode-lsp: cannot access '${target}': ${msg}\n`);
             process.exit(2);
         }
     }
@@ -382,8 +383,9 @@ function runCheck() {
         let diagnostics: Diagnostic[];
         try {
             diagnostics = analyzeFile(file, targetVersion);
-        } catch (e: any) {
-            process.stderr.write(`ucode-lsp: error analyzing ${file}: ${e.message}\n`);
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            process.stderr.write(`ucode-lsp: error analyzing ${file}: ${msg}\n`);
             continue;
         }
 

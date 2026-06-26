@@ -7,39 +7,44 @@
 import {
     type SignatureHelp, SignatureInformation, ParameterInformation, MarkupKind,
 } from 'vscode-languageserver/node';
-import { extractModuleType } from './analysis/symbolTable';
+import { extractModuleType, type SymbolTable, type UcodeDataType } from './analysis/symbolTable';
 import { isKnownModule, isKnownObjectType, MODULE_REGISTRIES, OBJECT_REGISTRIES } from './analysis/moduleDispatch';
+import type {
+    AstNode, CallExpressionNode, MemberExpressionNode, IdentifierNode, LiteralNode,
+} from './ast/nodes';
 import { Option } from 'effect';
 
-interface ParamInfo { name: string; type?: any; isRest?: boolean }
+interface ParamInfo { name: string; type?: UcodeDataType; isRest?: boolean }
 
 /** The innermost call whose argument region contains `offset`, plus that offset's
  *  active argument index. The arg region is `(callee.end, node.end]` — being past
  *  the callee but within the call node means we're in the parentheses. */
-function findEnclosingCall(ast: any, offset: number): { call: any; activeParam: number } | null {
-    let best: any = null;
-    const visit = (node: any): void => {
+function findEnclosingCall(ast: AstNode | null | undefined, offset: number): { call: CallExpressionNode; activeParam: number } | null {
+    let best: CallExpressionNode | null = null;
+    const visit = (node: AstNode | null | undefined): void => {
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
-        if (node.type === 'CallExpression' && node.callee
-            && offset > node.callee.end && offset <= node.end) {
-            // innermost wins (smallest span)
-            if (!best || (node.end - node.start) < (best.end - best.start)) best = node;
+        if (node.type === 'CallExpression') {
+            const call = node as CallExpressionNode;
+            if (call.callee && offset > call.callee.end && offset <= call.end) {
+                // innermost wins (smallest span)
+                if (!best || (call.end - call.start) < (best.end - best.start)) best = call;
+            }
         }
         for (const k of Object.keys(node)) {
             if (k === 'leadingJsDoc') continue;
-            const v = node[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it); }
-            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v);
+            const v = (node as unknown as Record<string, unknown>)[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
+            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode);
         }
     };
     visit(ast);
     if (!best) return null;
-    const args: any[] = best.arguments || [];
+    const args: AstNode[] = (best as CallExpressionNode).arguments || [];
     // active index: first arg whose end is at/after the cursor; else past the last
     // (typing a fresh trailing argument).
     let activeParam = args.length;
     for (let i = 0; i < args.length; i++) {
-        if (args[i] && offset <= args[i].end) { activeParam = i; break; }
+        const a = args[i]; if (a && offset <= a.end) { activeParam = i; break; }
     }
     return { call: best, activeParam };
 }
@@ -127,20 +132,20 @@ function buildSignature(name: string, paramLabels: string[], activeParam: number
  *  the variadic (rest) form; a string-literal first arg → a non-rest form; otherwise the
  *  form whose arity fits the current argument position (preferring a rest form once the
  *  fixed forms are exceeded). Falls back to the first overload. */
-function selectActiveOverload(sets: string[][], arg0: any, activeParam: number): number {
+function selectActiveOverload(sets: string[][], arg0: AstNode | undefined, activeParam: number): number {
     const restIdx = sets.findIndex(hasRestParam);
     const nonRestIdx = sets.findIndex(s => !hasRestParam(s));
     if (arg0) {
         const t = arg0.type;
         if ((t === 'ArrowFunctionExpression' || t === 'FunctionExpression') && restIdx >= 0) return restIdx;
-        if (t === 'Literal' && typeof arg0.value === 'string' && nonRestIdx >= 0) return nonRestIdx;
+        if (t === 'Literal' && typeof (arg0 as LiteralNode).value === 'string' && nonRestIdx >= 0) return nonRestIdx;
     }
     if (restIdx >= 0 && nonRestIdx >= 0 && activeParam >= sets[nonRestIdx]!.length) return restIdx;
     return 0;
 }
 
 /** Build a multi-signature SignatureHelp (overloads), choosing the active one. */
-function buildOverloadedSignature(name: string, paramSets: string[][], arg0: any, activeParam: number, doc?: string): SignatureHelp {
+function buildOverloadedSignature(name: string, paramSets: string[][], arg0: AstNode | undefined, activeParam: number, doc?: string): SignatureHelp {
     const activeSignature = selectActiveOverload(paramSets, arg0, activeParam);
     const signatures = paramSets.map(labels => makeSignatureInformation(name, labels, doc));
     return { signatures, activeSignature, activeParameter: clampActiveParam(paramSets[activeSignature]!, activeParam) };
@@ -171,16 +176,19 @@ export interface CalleeSignature {
 export type MemberParamResolver = (uri: string, fnStart: number) => CalleeParam[] | null;
 
 export function resolveCalleeParameters(
-    callee: any,
-    symbolTable: any,
+    callee: AstNode | null | undefined,
+    symbolTable: SymbolTable | undefined,
     builtins: Map<string, string>,
     resolveMemberParams?: MemberParamResolver,
 ): CalleeSignature | null {
-    if (callee?.type === 'MemberExpression' && !callee.computed && callee.property?.type === 'Identifier'
-        && callee.object?.type === 'Identifier') {
-        const method: string = callee.property.name;
-        const obj = callee.object;
-        const objSym: any = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
+    if (callee?.type === 'MemberExpression'
+        && !(callee as MemberExpressionNode).computed
+        && (callee as MemberExpressionNode).property?.type === 'Identifier'
+        && (callee as MemberExpressionNode).object?.type === 'Identifier') {
+        const mem = callee as MemberExpressionNode;
+        const method: string = (mem.property as IdentifierNode).name;
+        const obj = mem.object as IdentifierNode;
+        const objSym = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
         const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
         if (!mt) {
             // Not a module/object-registry receiver. It may be a factory-returned
@@ -208,10 +216,10 @@ export function resolveCalleeParameters(
     }
 
     if (callee?.type !== 'Identifier') return null;
-    const name: string = callee.name;
+    const name: string = (callee as IdentifierNode).name;
 
     // User function first (so a local function shadowing a builtin name wins).
-    const sym: any = symbolTable?.lookupAtPosition?.(name, callee.start) ?? symbolTable?.lookup?.(name);
+    const sym = symbolTable?.lookupAtPosition?.(name, callee.start) ?? symbolTable?.lookup?.(name);
     const userParams: ParamInfo[] | undefined = sym?.parameters;
     if (Array.isArray(userParams)) {
         return {
@@ -249,13 +257,15 @@ export function resolveCalleeParameters(
  *  argument — e.g. `inst.unpack(mac)` ⟹ `mac` is `string`. The receiver's type may
  *  be nullable (`struct.instance | null`); extractModuleType handles the union. */
 export function resolveMemberCallParameterTypes(
-    callee: any, symbolTable: any
+    callee: AstNode | null | undefined, symbolTable: SymbolTable | undefined
 ): Array<{ name: string; type: string; optional: boolean }> | null {
-    if (!(callee?.type === 'MemberExpression' && !callee.computed
-        && callee.property?.type === 'Identifier' && callee.object?.type === 'Identifier')) return null;
-    const method: string = callee.property.name;
-    const obj = callee.object;
-    const objSym: any = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
+    if (!(callee?.type === 'MemberExpression' && !(callee as MemberExpressionNode).computed
+        && (callee as MemberExpressionNode).property?.type === 'Identifier'
+        && (callee as MemberExpressionNode).object?.type === 'Identifier')) return null;
+    const mem = callee as MemberExpressionNode;
+    const method: string = (mem.property as IdentifierNode).name;
+    const obj = mem.object as IdentifierNode;
+    const objSym = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
     const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
     if (!mt) return null;
     const tn = mt.moduleName;
@@ -263,7 +273,7 @@ export function resolveMemberCallParameterTypes(
         : isKnownModule(tn) ? MODULE_REGISTRIES[tn].getFunction(method)
         : Option.none();
     if (Option.isNone(sigOpt)) return null;
-    return sigOpt.value.parameters.map((p: any) => ({ name: p.name, type: p.type, optional: !!p.optional }));
+    return sigOpt.value.parameters.map(p => ({ name: p.name, type: p.type, optional: !!p.optional }));
 }
 
 /**
@@ -271,8 +281,8 @@ export function resolveMemberCallParameterTypes(
  * resolveCalleeParameters) and highlights the active argument.
  */
 export function provideSignatureHelp(
-    ast: any,
-    symbolTable: any,
+    ast: AstNode | null | undefined,
+    symbolTable: SymbolTable | undefined,
     builtins: Map<string, string>,
     offset: number,
     resolveMemberParams?: MemberParamResolver,

@@ -1,16 +1,23 @@
 import {
     type TextDocumentPositionParams,
     type CompletionParams,
+    type Connection,
+    type TextDocuments,
     CompletionItem,
     CompletionItemKind,
     MarkupKind,
     InsertTextFormat
 } from 'vscode-languageserver/node';
+import type {
+    AstNode, ObjectExpressionNode, PropertyNode, IdentifierNode, LiteralNode,
+    CallExpressionNode, AssignmentExpressionNode, VariableDeclaratorNode, MemberExpressionNode,
+} from './ast/nodes';
 import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
 import { discoverAvailableModules, getModuleMembers, type DiscoveredModule, type ModuleMember } from './moduleDiscovery';
 import { UcodeLexer, TokenType, isMemberAccessDot, type Token } from './lexer';
+import { TextDocument } from 'vscode-languageserver-textdocument';
 import { UcodeParser } from './parser';
 import { allBuiltinFunctions } from './builtins';
 import { compactBuiltinSignature } from './signatureHelp';
@@ -98,8 +105,8 @@ function lookupSymbol(
 
 export function handleCompletion(
     textDocumentPositionParams: TextDocumentPositionParams | CompletionParams,
-    documents: any,
-    connection: any,
+    documents: TextDocuments<TextDocument>,
+    connection: Connection,
     analysisResult?: SemanticAnalysisResult
 ): CompletionItem[] {
     connection.console.log(`[COMPLETION_DEBUG] analysisResult provided: ${!!analysisResult}, symbolTable: ${!!analysisResult?.symbolTable}`);
@@ -342,9 +349,9 @@ export function handleCompletion(
 // expression — right after the `function` keyword (`function |` or
 // `function lo|`). Completions there are never wanted: the user is inventing a
 // new identifier, not referencing an existing one.
-function isFunctionNameContext(offset: number, tokens: any[]): boolean {
+function isFunctionNameContext(offset: number, tokens: Token[]): boolean {
     // Nearest meaningful token that begins before the cursor, and the one before it.
-    let cur: any = null, prev: any = null;
+    let cur: Token | null = null, prev: Token | null = null;
     for (const t of tokens) {
         if (t.type === TokenType.TK_EOF) continue;
         if (t.pos < offset) { prev = cur; cur = t; }
@@ -362,7 +369,7 @@ function isFunctionNameContext(offset: number, tokens: any[]): boolean {
  *  suppressed there (a `.` in prose / a path / a URL should not pop the builtin list). String
  *  delimiters and comment boundaries are exclusive, so the cursor just outside still completes
  *  normally. JSDoc-tag and import-path contexts are handled earlier and bypass this. (#21) */
-function isInsideStringOrComment(offset: number, tokens: any[], comments: any[]): boolean {
+function isInsideStringOrComment(offset: number, tokens: Token[], comments: Token[]): boolean {
     for (const t of tokens) {
         if (t.type === TokenType.TK_STRING && offset > t.pos && offset < t.end) return true;
     }
@@ -380,14 +387,14 @@ function isInsideStringOrComment(offset: number, tokens: any[], comments: any[])
 /** True when a member-access dot (`.` / `?.`) ends exactly at the cursor — i.e. a property
  *  name belongs at the cursor. Used to suppress the global-builtin fallback when the receiver
  *  chain can't be resolved (malformed `a..`), so we never offer builtins where a member goes. */
-function isAfterMemberAccessDot(offset: number, tokens: any[]): boolean {
+function isAfterMemberAccessDot(offset: number, tokens: Token[]): boolean {
     for (const t of tokens) {
         if (t.end === offset && isMemberAccessDot(t.type)) return true;
     }
     return false;
 }
 
-function detectMemberCompletionContext(offset: number, tokens: any[]): { objectName: string; propertyChain?: string[]; resolvedObjectType?: KnownObjectType; callFunctionName?: string } | undefined {
+function detectMemberCompletionContext(offset: number, tokens: Token[]): { objectName: string; propertyChain?: string[]; resolvedObjectType?: KnownObjectType; callFunctionName?: string } | undefined {
     // Look for pattern: LABEL DOT [LABEL DOT]* (cursor position)
     // Also handles call chains: LABEL(...) DOT, LABEL DOT LABEL(...) DOT
 
@@ -400,7 +407,7 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
     // is another dot, so no chain builds → the global-list fallback).
     for (let i = tokens.length - 1; i >= 0; i--) {
         const token = tokens[i];
-        if (isMemberAccessDot(token.type) && token.end === offset) {
+        if (token && isMemberAccessDot(token.type) && token.end === offset) {
             dotTokenIndex = i;
             break;
         }
@@ -410,7 +417,7 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
     if (dotTokenIndex < 0) {
         for (let i = tokens.length - 1; i >= 0; i--) {
             const token = tokens[i];
-            if (isMemberAccessDot(token.type) && token.pos <= offset && offset <= token.end) {
+            if (token && isMemberAccessDot(token.type) && token.pos <= offset && offset <= token.end) {
                 dotTokenIndex = i;
                 break;
             }
@@ -422,6 +429,9 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
     }
 
     const dotToken = tokens[dotTokenIndex];
+    if (!dotToken) {
+        return undefined;
+    }
 
     // Make sure the cursor is after the dot or right at it (for completion)
     if (offset < dotToken.pos || offset > dotToken.end) {
@@ -437,19 +447,22 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
     // Build the chain by walking backwards through LABEL DOT patterns
     while (currentTokenIndex >= 0) {
         const token = tokens[currentTokenIndex];
+        if (!token) {
+            break;
+        }
 
         if (token.type === TokenType.TK_LABEL) {
             // Check if this label is properly connected to the next dot
             if (currentTokenIndex + 1 < tokens.length) {
                 const nextToken = tokens[currentTokenIndex + 1];
-                if (isMemberAccessDot(nextToken.type) && token.end === nextToken.pos) {
+                if (nextToken && isMemberAccessDot(nextToken.type) && token.end === nextToken.pos) {
                     // This label is connected to a dot, add it to the chain
                     propertyChain.unshift(token.value as string);
 
                     // Look for another dot before this label
                     if (currentTokenIndex > 0) {
                         const prevToken = tokens[currentTokenIndex - 1];
-                        if (isMemberAccessDot(prevToken.type) && prevToken.end === token.pos) {
+                        if (prevToken && isMemberAccessDot(prevToken.type) && prevToken.end === token.pos) {
                             // There's another dot before this label, continue the chain
                             currentTokenIndex -= 2; // Skip the dot and continue
                             continue;
@@ -472,7 +485,7 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
             // (declared by the analyzer for object methods), resolved downstream. (#22)
             if (currentTokenIndex + 1 < tokens.length) {
                 const nextToken = tokens[currentTokenIndex + 1];
-                if (isMemberAccessDot(nextToken.type) && token.end === nextToken.pos) {
+                if (nextToken && isMemberAccessDot(nextToken.type) && token.end === nextToken.pos) {
                     propertyChain.unshift('this');
                 }
             }
@@ -482,17 +495,23 @@ function detectMemberCompletionContext(offset: number, tokens: any[]): { objectN
             let parenDepth = 1;
             let j = currentTokenIndex - 1;
             while (j >= 0 && parenDepth > 0) {
-                if (tokens[j].type === TokenType.TK_RPAREN) parenDepth++;
-                else if (tokens[j].type === TokenType.TK_LPAREN) parenDepth--;
+                const jt = tokens[j];
+                if (jt) {
+                    if (jt.type === TokenType.TK_RPAREN) parenDepth++;
+                    else if (jt.type === TokenType.TK_LPAREN) parenDepth--;
+                }
                 j--;
             }
             // j now points to the token before the opening paren
-            if (j >= 0 && tokens[j].type === TokenType.TK_LABEL) {
-                const funcName = tokens[j].value as string;
+            const calleeToken = j >= 0 ? tokens[j] : undefined;
+            if (calleeToken && calleeToken.type === TokenType.TK_LABEL) {
+                const funcName = calleeToken.value as string;
                 let moduleName: string | undefined;
                 // Check for module prefix: LABEL DOT LABEL(...)
-                if (j >= 2 && isMemberAccessDot(tokens[j - 1].type) && tokens[j - 2].type === TokenType.TK_LABEL) {
-                    moduleName = tokens[j - 2].value as string;
+                const modDot = j >= 2 ? tokens[j - 1] : undefined;
+                const modLabel = j >= 2 ? tokens[j - 2] : undefined;
+                if (modDot && modLabel && isMemberAccessDot(modDot.type) && modLabel.type === TokenType.TK_LABEL) {
+                    moduleName = modLabel.value as string;
                 }
                 const objType = resolveReturnObjectType(funcName, moduleName);
                 if (objType) {
@@ -688,7 +707,7 @@ function getUnifiedObjectTypeCompletions(objectName: string, analysisResult?: Se
 
 // Legacy per-module completion functions removed - now handled by getUnifiedModuleCompletions/getUnifiedObjectTypeCompletions
 
-function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, connection?: any, offset?: number): CompletionItem[] {
+function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, connection?: Connection, offset?: number): CompletionItem[] {
     const completions: CompletionItem[] = [];
     
     // Debug: Check if we have analysis result
@@ -1166,7 +1185,7 @@ function extractDefaultExportProperties(fileContent: string, filePath?: string):
         }
 
         const program = parseResult.ast as any;
-        const variableInitializers = new Map<string, any>();
+        const variableInitializers = new Map<string, AstNode | null>();
 
         for (const statement of program.body || []) {
             if (statement?.type === 'VariableDeclaration') {
@@ -1199,20 +1218,20 @@ function extractDefaultExportProperties(fileContent: string, filePath?: string):
 }
 
 function resolveDefaultExportObject(
-    declaration: any,
-    variableInitializers: Map<string, any>,
+    declaration: AstNode | null | undefined,
+    variableInitializers: Map<string, AstNode | null>,
     visited: Set<string>
-): any | null {
+): ObjectExpressionNode | null {
     if (!declaration) {
         return null;
     }
 
     if (declaration.type === 'ObjectExpression') {
-        return declaration;
+        return declaration as ObjectExpressionNode;
     }
 
     if (declaration.type === 'Identifier') {
-        const name = declaration.name;
+        const name = (declaration as IdentifierNode).name;
         if (!name || visited.has(name)) {
             return null;
         }
@@ -1225,7 +1244,7 @@ function resolveDefaultExportObject(
     }
 
     if (declaration.type === 'CallExpression') {
-        for (const arg of declaration.arguments || []) {
+        for (const arg of (declaration as CallExpressionNode).arguments || []) {
             const resolved = resolveDefaultExportObject(arg, variableInitializers, visited);
             if (resolved) {
                 return resolved;
@@ -1235,11 +1254,11 @@ function resolveDefaultExportObject(
     }
 
     if (declaration.type === 'AssignmentExpression') {
-        return resolveDefaultExportObject(declaration.right, variableInitializers, visited);
+        return resolveDefaultExportObject((declaration as AssignmentExpressionNode).right, variableInitializers, visited);
     }
 
     if (declaration.type === 'VariableDeclarator') {
-        return resolveDefaultExportObject(declaration.init, variableInitializers, visited);
+        return resolveDefaultExportObject((declaration as VariableDeclaratorNode).init, variableInitializers, visited);
     }
 
     return null;
@@ -1248,20 +1267,24 @@ function resolveDefaultExportObject(
 /** Resolve an AST node to the ObjectExpression it ultimately denotes, following variable
  *  bindings (`let i = o`) and non-computed member access (`o.inner`) through object literals.
  *  Returns null if it doesn't resolve to an object literal. (#19) */
-function resolveToObjectLiteral(node: any, analysisResult: SemanticAnalysisResult | undefined, offset: number | undefined, visited = new Set<string>()): any | null {
+function resolveToObjectLiteral(node: AstNode | null | undefined, analysisResult: SemanticAnalysisResult | undefined, offset: number | undefined, visited = new Set<string>()): ObjectExpressionNode | null {
     if (!node || typeof node !== 'object') return null;
-    if (node.type === 'ObjectExpression') return node;
+    if (node.type === 'ObjectExpression') return node as ObjectExpressionNode;
     if (node.type === 'Identifier') {
-        if (visited.has(node.name)) return null;
-        visited.add(node.name);
-        const sym = analysisResult ? lookupSymbol(node.name, analysisResult, offset) : undefined;
+        const ident = node as IdentifierNode;
+        if (visited.has(ident.name)) return null;
+        visited.add(ident.name);
+        const sym = analysisResult ? lookupSymbol(ident.name, analysisResult, offset) : undefined;
         return sym ? resolveToObjectLiteral((sym as any).initNode, analysisResult, offset, visited) : null;
     }
-    if (node.type === 'MemberExpression' && !node.computed && node.property?.type === 'Identifier') {
-        const objLit = resolveToObjectLiteral(node.object, analysisResult, offset, visited);
-        if (!objLit) return null;
-        const prop = (objLit.properties || []).find((p: any) => p?.type === 'Property' && extractDefaultExportPropertyName(p) === node.property.name);
-        return prop ? resolveToObjectLiteral(prop.value, analysisResult, offset, visited) : null;
+    if (node.type === 'MemberExpression') {
+        const mem = node as MemberExpressionNode;
+        if (!mem.computed && mem.property?.type === 'Identifier') {
+            const objLit = resolveToObjectLiteral(mem.object, analysisResult, offset, visited);
+            if (!objLit) return null;
+            const prop = (objLit.properties || []).find((p): p is PropertyNode => p?.type === 'Property' && extractDefaultExportPropertyName(p) === (mem.property as IdentifierNode).name);
+            return prop ? resolveToObjectLiteral(prop.value, analysisResult, offset, visited) : null;
+        }
     }
     return null;
 }
@@ -1269,11 +1292,11 @@ function resolveToObjectLiteral(node: any, analysisResult: SemanticAnalysisResul
 /** Walk a property chain (`['inner','deep']`) down through nested object literals starting at
  *  `rootLit`, resolving each step's value (which may itself be a binding/member). Returns the
  *  ObjectExpression the chain lands on, or null. (#19) */
-function objectLiteralAtChain(rootLit: any, chain: string[], analysisResult: SemanticAnalysisResult | undefined, offset: number | undefined): any | null {
-    let current = rootLit;
+function objectLiteralAtChain(rootLit: ObjectExpressionNode | null, chain: string[], analysisResult: SemanticAnalysisResult | undefined, offset: number | undefined): ObjectExpressionNode | null {
+    let current: ObjectExpressionNode | null = rootLit;
     for (const key of chain) {
         if (!current || current.type !== 'ObjectExpression') return null;
-        const prop = (current.properties || []).find((p: any) => p?.type === 'Property' && extractDefaultExportPropertyName(p) === key);
+        const prop = (current.properties || []).find((p): p is PropertyNode => p?.type === 'Property' && extractDefaultExportPropertyName(p) === key);
         if (!prop) return null;
         current = resolveToObjectLiteral(prop.value, analysisResult, offset);
     }
@@ -1299,7 +1322,7 @@ function objectLiteralChainCompletions(objectName: string, propertyChain: string
     }));
 }
 
-function extractPropertiesFromObjectExpression(objectExpression: any): { name: string; type: string }[] {
+function extractPropertiesFromObjectExpression(objectExpression: ObjectExpressionNode): { name: string; type: string }[] {
     const properties: { name: string; type: string }[] = [];
     if (!objectExpression?.properties) {
         return properties;
@@ -1325,33 +1348,35 @@ function extractPropertiesFromObjectExpression(objectExpression: any): { name: s
     return properties;
 }
 
-function extractDefaultExportPropertyName(property: any): string | null {
+function extractDefaultExportPropertyName(property: PropertyNode | null | undefined): string | null {
     if (!property) {
         return null;
     }
 
+    const key = property.key as LiteralNode | IdentifierNode | undefined;
+
     if (property.computed) {
-        if (property.key?.type === 'Literal' && property.key.value !== undefined && property.key.value !== null) {
-            return String(property.key.value);
+        if (key?.type === 'Literal' && key.value !== undefined && key.value !== null) {
+            return String(key.value);
         }
         return null;
     }
 
-    if (property.key?.type === 'Identifier') {
-        return property.key.name;
+    if (key?.type === 'Identifier') {
+        return key.name;
     }
 
-    if (property.key?.type === 'Literal') {
-        if (property.key.value === undefined || property.key.value === null) {
+    if (key?.type === 'Literal') {
+        if (key.value === undefined || key.value === null) {
             return null;
         }
-        return String(property.key.value);
+        return String(key.value);
     }
 
     return null;
 }
 
-function inferDefaultExportPropertyType(valueNode: any): string {
+function inferDefaultExportPropertyType(valueNode: AstNode | null | undefined): string {
     if (!valueNode) {
         return 'property';
     }
@@ -1360,14 +1385,16 @@ function inferDefaultExportPropertyType(valueNode: any): string {
         case 'FunctionExpression':
         case 'ArrowFunctionExpression':
             return 'function';
-        case 'Literal':
-            if (valueNode.literalType === 'string') {
+        case 'Literal': {
+            const literalType = (valueNode as LiteralNode).literalType;
+            if (literalType === 'string') {
                 return 'string';
             }
-            if (valueNode.literalType === 'number' || valueNode.literalType === 'double') {
+            if (literalType === 'number' || literalType === 'double') {
                 return 'number';
             }
             return 'property';
+        }
         default:
             return 'property';
     }
@@ -1514,7 +1541,7 @@ function getRtnlConstObjectCompletions(objectName: string, analysisResult?: Sema
     return [];
 }
 
-function detectImportCompletionContext(offset: number, tokens: any[], text: string): { inStringLiteral: boolean; currentPath?: string } | undefined {
+function detectImportCompletionContext(offset: number, tokens: Token[], text: string): { inStringLiteral: boolean; currentPath?: string } | undefined {
     // Look for pattern: import [specifiers] from "..." where cursor is inside the string
     // We want to detect: import * as lol from '|' (cursor at |)
     
@@ -1525,7 +1552,8 @@ function detectImportCompletionContext(offset: number, tokens: any[], text: stri
     // Find relevant tokens moving backward from cursor position
     for (let i = tokens.length - 1; i >= 0; i--) {
         const token = tokens[i];
-        
+        if (!token) continue;
+
         // Skip tokens that are beyond our cursor position
         if (token.pos > offset) continue;
         
@@ -1563,6 +1591,9 @@ function detectImportCompletionContext(offset: number, tokens: any[], text: stri
         if (importTokenIndex < fromTokenIndex && fromTokenIndex < stringTokenIndex) {
             // Extract the current path being typed from the string literal
             const stringToken = tokens[stringTokenIndex];
+            if (!stringToken) {
+                return undefined;
+            }
             const stringStart = stringToken.pos + 1; // Skip opening quote
             const stringEnd = Math.min(stringToken.end - 1, offset); // Up to cursor or closing quote
             const currentPath = text.substring(stringStart, stringEnd);
@@ -1578,7 +1609,7 @@ function detectImportCompletionContext(offset: number, tokens: any[], text: stri
     if (importTokenIndex !== -1 && fromTokenIndex !== -1 && stringTokenIndex === -1) {
         const fromToken = tokens[fromTokenIndex];
         // Check if cursor is shortly after the 'from' token (allowing for whitespace)
-        if (offset >= fromToken.end && offset <= fromToken.end + 10) {
+        if (fromToken && offset >= fromToken.end && offset <= fromToken.end + 10) {
             return { inStringLiteral: false };
         }
     }
@@ -1627,12 +1658,13 @@ function createModuleDocumentation(module: DiscoveredModule): string {
 /**
  * Detects if we're in a destructured import context like: import { open, l| } from 'fs'
  */
-function detectDestructuredImportContext(offset: number, tokens: any[]): { moduleName: string, alreadyImported: string[] } | undefined {
+function detectDestructuredImportContext(offset: number, tokens: Token[]): { moduleName: string, alreadyImported: string[] } | undefined {
     
     // Find all import statements and check which one contains the cursor
     for (let i = 0; i < tokens.length; i++) {
         const token = tokens[i];
-        
+        if (!token) continue;
+
         if (token.type === TokenType.TK_IMPORT) {
             // Found an import, now look for the pattern: import { ... } from "module"
             let lbraceTokenIndex = -1;
@@ -1643,7 +1675,8 @@ function detectDestructuredImportContext(offset: number, tokens: any[]): { modul
             // Look ahead from this import token
             for (let j = i + 1; j < tokens.length; j++) {
                 const nextToken = tokens[j];
-                
+                if (!nextToken) continue;
+
                 if (nextToken.type === TokenType.TK_LBRACE && lbraceTokenIndex === -1) {
                     lbraceTokenIndex = j;
                 } else if (nextToken.type === TokenType.TK_FROM && fromTokenIndex === -1 && lbraceTokenIndex !== -1) {
@@ -1662,14 +1695,15 @@ function detectDestructuredImportContext(offset: number, tokens: any[]): { modul
             if (lbraceTokenIndex !== -1 && fromTokenIndex !== -1 && stringTokenIndex !== -1) {
                 const lbraceToken = tokens[lbraceTokenIndex];
                 const fromToken = tokens[fromTokenIndex];
-                
+
                 // Check if cursor is after the opening brace and before 'from'
-                if (offset > lbraceToken.pos && offset < fromToken.pos) {
+                if (lbraceToken && fromToken && offset > lbraceToken.pos && offset < fromToken.pos) {
                     // Collect already imported identifiers
                     const alreadyImported: string[] = [];
                     for (let k = lbraceTokenIndex + 1; k < fromTokenIndex; k++) {
-                        if (tokens[k].type === TokenType.TK_LABEL) {
-                            alreadyImported.push(tokens[k].value as string);
+                        const kt = tokens[k];
+                        if (kt && kt.type === TokenType.TK_LABEL) {
+                            alreadyImported.push(kt.value as string);
                         }
                     }
                     return { moduleName, alreadyImported };
@@ -1700,10 +1734,11 @@ const PARSE_CONFIG_PROPERTIES: { name: string; type: string; doc: string }[] = [
  * enclosing `{`, require it to be the 2nd argument (preceded by `,`) of a `loadfile`/
  * `loadstring` call, and ensure we're not in a value position (after a `:`).
  */
-function detectParseConfigOptionsContext(offset: number, tokens: any[]): { alreadyPresent: string[] } | undefined {
+function detectParseConfigOptionsContext(offset: number, tokens: Token[]): { alreadyPresent: string[] } | undefined {
     let idx = -1;
     for (let i = 0; i < tokens.length; i++) {
-        if (tokens[i].pos < offset) idx = i; else break;
+        const ti = tokens[i];
+        if (ti && ti.pos < offset) idx = i; else break;
     }
     if (idx < 0) return undefined;
 
@@ -1711,7 +1746,9 @@ function detectParseConfigOptionsContext(offset: number, tokens: any[]): { alrea
     let depth = 0;
     let braceIdx = -1;
     for (let i = idx; i >= 0; i--) {
-        const t = tokens[i].type;
+        const ti = tokens[i];
+        if (!ti) continue;
+        const t = ti.type;
         if (t === TokenType.TK_RBRACE || t === TokenType.TK_RPAREN || t === TokenType.TK_RBRACK) depth++;
         else if (t === TokenType.TK_LPAREN || t === TokenType.TK_LBRACK) {
             if (depth === 0) return undefined; // directly inside (...) or [...], not {...}
@@ -1724,13 +1761,16 @@ function detectParseConfigOptionsContext(offset: number, tokens: any[]): { alrea
     if (braceIdx < 0) return undefined;
 
     // the options object is the 2nd argument → its `{` is immediately preceded by `,`
-    if (braceIdx - 1 < 0 || tokens[braceIdx - 1].type !== TokenType.TK_COMMA) return undefined;
+    const beforeBrace = braceIdx - 1 >= 0 ? tokens[braceIdx - 1] : undefined;
+    if (!beforeBrace || beforeBrace.type !== TokenType.TK_COMMA) return undefined;
 
     // walk back over the first argument (depth-aware) to the call's `(`
     depth = 0;
     let parenIdx = -1;
     for (let i = braceIdx - 2; i >= 0; i--) {
-        const t = tokens[i].type;
+        const ti = tokens[i];
+        if (!ti) continue;
+        const t = ti.type;
         if (t === TokenType.TK_RPAREN || t === TokenType.TK_RBRACE || t === TokenType.TK_RBRACK) depth++;
         else if (t === TokenType.TK_LBRACE || t === TokenType.TK_LBRACK) {
             if (depth === 0) return undefined;
@@ -1744,13 +1784,15 @@ function detectParseConfigOptionsContext(offset: number, tokens: any[]): { alrea
 
     // callee must be loadfile / loadstring
     const callee = tokens[parenIdx - 1];
-    if (callee.type !== TokenType.TK_LABEL) return undefined;
+    if (!callee || callee.type !== TokenType.TK_LABEL) return undefined;
     if (callee.value !== 'loadfile' && callee.value !== 'loadstring') return undefined;
 
     // not in value position: a `:` at object depth 0 before any `,`/`{` ⇒ typing a value
     let localDepth = 0;
     for (let i = idx; i > braceIdx; i--) {
-        const t = tokens[i].type;
+        const ti = tokens[i];
+        if (!ti) continue;
+        const t = ti.type;
         if (t === TokenType.TK_RBRACE || t === TokenType.TK_RPAREN || t === TokenType.TK_RBRACK) localDepth++;
         else if (t === TokenType.TK_LBRACE || t === TokenType.TK_LPAREN || t === TokenType.TK_LBRACK) {
             if (localDepth === 0) break;
@@ -1766,14 +1808,16 @@ function detectParseConfigOptionsContext(offset: number, tokens: any[]): { alrea
     const alreadyPresent: string[] = [];
     let d2 = 0;
     for (let i = braceIdx + 1; i < tokens.length; i++) {
-        const t = tokens[i].type;
+        const ti = tokens[i];
+        if (!ti) continue;
+        const t = ti.type;
         if (t === TokenType.TK_LBRACE || t === TokenType.TK_LPAREN || t === TokenType.TK_LBRACK) d2++;
         else if (t === TokenType.TK_RBRACE || t === TokenType.TK_RPAREN || t === TokenType.TK_RBRACK) {
             if (d2 === 0) break;
             d2--;
         } else if (d2 === 0 && (t === TokenType.TK_LABEL || t === TokenType.TK_STRING)
-                   && i + 1 < tokens.length && tokens[i + 1].type === TokenType.TK_COLON) {
-            alreadyPresent.push(String(tokens[i].value));
+                   && i + 1 < tokens.length && tokens[i + 1]?.type === TokenType.TK_COLON) {
+            alreadyPresent.push(String(ti.value));
         }
     }
 
@@ -1869,7 +1913,7 @@ function createDestructuredImportCompletions(moduleName: string, alreadyImported
     }
 }
 
-function createFileSystemCompletions(currentPath: string, documentUri: string, connection: any): CompletionItem[] {
+function createFileSystemCompletions(currentPath: string, documentUri: string, connection: Connection): CompletionItem[] {
     
     try {
         // Convert document URI to file path
@@ -2009,7 +2053,7 @@ function detectJsDocCompletionContext(text: string, offset: number, comments: To
     return null;
 }
 
-function createJsDocCompletions(context: JsDocCompletionContext, documentUri: string, connection: any): CompletionItem[] {
+function createJsDocCompletions(context: JsDocCompletionContext, documentUri: string, connection: Connection): CompletionItem[] {
     // Cursor is inside `import('…')` — complete sibling files/directories so the
     // user picks a real module path instead of typing it blind.
     if (context.kind === 'import-path') {

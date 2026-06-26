@@ -2,7 +2,7 @@
  * Built-in function validation for ucode semantic analysis
  */
 
-import { type AstNode, type CallExpressionNode, type LiteralNode } from '../../ast/nodes';
+import { type AstNode, type CallExpressionNode, type LiteralNode, type ObjectExpressionNode, type PropertyNode, type IdentifierNode } from '../../ast/nodes';
 import { UcodeType, type UcodeDataType, createUnionType, createArrayType, isArrayType, getArrayElementType } from '../symbolTable';
 import { type TypeError, type TypeWarning } from '../types';
 import { UcodeErrorCode } from '../errorConstants';
@@ -2085,14 +2085,18 @@ export class BuiltinValidator {
    * literal; a variable/spread options arg is left alone. Known value types only (an
    * unknown-typed value, e.g. a variable, is not flagged).
    */
-  private validateParseConfigObject(optionsArg: any, fnName: string): void {
-    if (!optionsArg || optionsArg.type !== 'ObjectExpression' || !Array.isArray(optionsArg.properties)) return;
-    for (const prop of optionsArg.properties) {
-      if (!prop || prop.type !== 'Property' || prop.computed) continue;
-      const key = prop.key;
-      const keyName = key && key.type === 'Literal' ? key.value : (key ? key.name : undefined);
+  private validateParseConfigObject(optionsArg: AstNode | undefined, fnName: string): void {
+    if (!optionsArg || optionsArg.type !== 'ObjectExpression') return;
+    const objExpr = optionsArg as ObjectExpressionNode;
+    if (!Array.isArray(objExpr.properties)) return;
+    for (const prop of objExpr.properties) {
+      if (!prop || prop.type !== 'Property' || (prop as PropertyNode).computed) continue;
+      const key = (prop as PropertyNode).key;
+      const keyName = key && key.type === 'Literal'
+        ? (key as LiteralNode).value
+        : (key && key.type === 'Identifier' ? (key as IdentifierNode).name : undefined);
       if (typeof keyName !== 'string') continue;
-      const value = prop.value;
+      const value = (prop as PropertyNode).value;
       if (PARSE_CONFIG_BOOLEAN_KEYS.has(keyName)) {
         const vt = this.getNodeType(value);
         if (vt !== UcodeType.UNKNOWN && vt !== UcodeType.BOOLEAN) {
@@ -2514,7 +2518,7 @@ export class BuiltinValidator {
   }
 
   // This method should be implemented by the type checker that uses this validator
-  private getNodeType(_node: any): UcodeType {
+  private getNodeType(_node: AstNode | undefined): UcodeType {
     // This will be injected by the main type checker
     return UcodeType.UNKNOWN;
   }
@@ -2545,17 +2549,17 @@ export class BuiltinValidator {
     return true;
   }
 
-  private getNodeFullType(_node: any): UcodeDataType | null {
+  private getNodeFullType(_node: AstNode): UcodeDataType | null {
     // This will be injected by the main type checker
     return null;
   }
 
   // Method to inject the type checker
-  setTypeChecker(typeChecker: (node: any) => UcodeType): void {
+  setTypeChecker(typeChecker: (node: AstNode | undefined) => UcodeType): void {
     this.getNodeType = typeChecker;
   }
 
-  setFullTypeChecker(checker: (node: any) => UcodeDataType | null): void {
+  setFullTypeChecker(checker: (node: AstNode) => UcodeDataType | null): void {
     this.getNodeFullType = checker;
   }
 }

@@ -1,6 +1,7 @@
 import {
     Diagnostic,
-    DiagnosticSeverity
+    DiagnosticSeverity,
+    type Connection
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { UcodeLexer, TokenType } from '../lexer';
@@ -10,7 +11,7 @@ import { validateConstReassignments } from './const-reassignments';
 import { validateConversionFunctions } from './conversion-functions';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 
-export function validateWithLexer(textDocument: TextDocument, connection: any): Diagnostic[] {
+export function validateWithLexer(textDocument: TextDocument, connection: Connection): Diagnostic[] {
     const text = textDocument.getText();
     const diagnostics: Diagnostic[] = [];
     

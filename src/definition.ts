@@ -1,10 +1,11 @@
 import {
     type DefinitionParams,
     type Definition,
+    type TextDocuments,
     Range
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { UcodeLexer, TokenType, isMemberAccessDot } from './lexer';
+import { UcodeLexer, TokenType, isMemberAccessDot, type Token } from './lexer';
 import { type SemanticAnalysisResult, type Symbol, SymbolType } from './analysis';
 import { FileResolver } from './analysis/fileResolver';
 import { isKnownObjectType, OBJECT_REGISTRIES } from './analysis/moduleDispatch';
@@ -16,7 +17,7 @@ let fileResolver: FileResolver | null = null;
 
 export function handleDefinition(
     params: DefinitionParams,
-    documents: any,
+    documents: TextDocuments<TextDocument>,
     analysisCache: Map<string, SemanticAnalysisResult>
 ): Definition | null {
     // Initialize file resolver if not already done
@@ -102,12 +103,12 @@ export function handleDefinition(
 function resolveMemberDefinition(
     symbolName: string,
     objName: string,
-    tokens: any[],
+    tokens: Token[],
     tokenIndex: number,
     offset: number,
     analysisResult: SemanticAnalysisResult,
     document: TextDocument,
-    documents: any,
+    documents: TextDocuments<TextDocument>,
     fileResolver: FileResolver
 ): Definition | null {
     const objSymbol = analysisResult.symbolTable.lookupAtPosition(objName, offset)

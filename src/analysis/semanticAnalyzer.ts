@@ -10,7 +10,8 @@ import { type AstNode, type ProgramNode, type VariableDeclarationNode, type Vari
          type ImportSpecifierNode, type ImportDefaultSpecifierNode, type ImportNamespaceSpecifierNode,
          type PropertyNode, type MemberExpressionNode, type TryStatementNode, type CatchClauseNode,
          type ExportNamedDeclarationNode, type ExportDefaultDeclarationNode, type ArrowFunctionExpressionNode,
-         type SpreadElementNode, type TemplateLiteralNode, type SwitchStatementNode, type LiteralNode, type IfStatementNode, type ObjectExpressionNode, type ConditionalExpressionNode, type ExpressionStatementNode, type DeleteExpressionNode } from '../ast/nodes';
+         type SpreadElementNode, type TemplateLiteralNode, type SwitchStatementNode, type LiteralNode, type IfStatementNode, type ObjectExpressionNode, type ConditionalExpressionNode, type ExpressionStatementNode, type DeleteExpressionNode,
+         type ForInStatementNode, type ForStatementNode, type WhileStatementNode } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, type TypeCheckResult } from './types';
 import { detectTemplateMode } from '../lexer/templateMode';
@@ -32,6 +33,19 @@ import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, ex
 import { type JsDocCommentNode } from '../ast/nodes';
 import { Either, Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, validateImport } from './moduleDispatch';
+
+/** An AST node viewed as an open record, for dynamic traversal/field access. The base
+ *  `AstNode` interface only enumerates `type`/`start`/`end`; the generic walkers read
+ *  kind-specific fields after a `type`-string guard. */
+type AnyNode = AstNode & Record<string, unknown>;
+
+/** Narrow an arbitrary value to a traversable AST-like node (an object with a string `type`). */
+function isAstNodeLike(n: unknown): n is AnyNode {
+  return !!n && typeof n === 'object' && typeof (n as { type?: unknown }).type === 'string';
+}
+
+/** Any function-shaped AST node (declaration, expression, or arrow). */
+type FunctionLikeNode = FunctionDeclarationNode | FunctionExpressionNode | ArrowFunctionExpressionNode;
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -499,28 +513,34 @@ export class SemanticAnalyzer extends BaseVisitor {
     const definedNames = new Set<string>();
     const exportedNames = new Set<string>();
 
-    const collect = (n: any): void => {
-      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
-      if (n.type === 'FunctionDeclaration' && n.id?.name) {
-        if (n.forwardDeclaration) forwardDecls.push(n);
-        else definedNames.add(n.id.name);
-      } else if (n.type === 'ExportNamedDeclaration') {
-        const decl = n.declaration;
-        if (decl?.type === 'FunctionDeclaration' && decl.id?.name) {
-          (decl.forwardDeclaration ? exportedNames : definedNames).add(decl.id.name);
+    const collect = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (n.type === 'FunctionDeclaration') {
+        const fn = n as unknown as FunctionDeclarationNode;
+        if (fn.id?.name) {
+          if (fn.forwardDeclaration) forwardDecls.push(fn);
+          else definedNames.add(fn.id.name);
         }
-        for (const spec of (n.specifiers || [])) {
+      } else if (n.type === 'ExportNamedDeclaration') {
+        const exp = n as unknown as ExportNamedDeclarationNode;
+        const decl = exp.declaration;
+        if (decl?.type === 'FunctionDeclaration' && (decl as FunctionDeclarationNode).id?.name) {
+          const fnDecl = decl as FunctionDeclarationNode;
+          (fnDecl.forwardDeclaration ? exportedNames : definedNames).add(fnDecl.id.name);
+        }
+        for (const spec of (exp.specifiers || [])) {
           const nm = spec.local?.name ?? spec.exported?.name;
           if (nm) exportedNames.add(nm);
         }
-      } else if (n.type === 'ExportDefaultDeclaration' && n.declaration?.type === 'Identifier') {
-        exportedNames.add(n.declaration.name);
+      } else if (n.type === 'ExportDefaultDeclaration') {
+        const exp = n as unknown as ExportDefaultDeclarationNode;
+        if (exp.declaration?.type === 'Identifier') exportedNames.add((exp.declaration as IdentifierNode).name);
       }
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc') continue;
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) collect(it); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') collect(v);
+        else if (isAstNodeLike(v)) collect(v);
       }
     };
     collect(node);
@@ -560,43 +580,55 @@ export class SemanticAnalyzer extends BaseVisitor {
     // globals (which would wrongly suppress the "out of scope" diagnostic when the loop var is
     // read after the loop). Finding #17.
     const loopHeaderLocals = new Set<string>();
-    const collectLoopLocals = (n: any): void => {
-      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
-      const header = (n.type === 'ForStatement') ? n.init
-        : (n.type === 'ForInStatement' || n.type === 'ForOfStatement') ? n.left : null;
-      if (header?.type === 'VariableDeclaration') {
-        for (const d of header.declarations ?? []) {
-          if (d?.id?.type === 'Identifier' && d.id.name) loopHeaderLocals.add(d.id.name);
+    const collectLoopLocals = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      const header: unknown = (n.type === 'ForStatement') ? n.init
+        : (n.type === 'ForInStatement') ? n.left : null;
+      if (isAstNodeLike(header) && header.type === 'VariableDeclaration') {
+        const decls = (header as unknown as VariableDeclarationNode).declarations ?? [];
+        for (const d of decls) {
+          if (d?.id?.type === 'Identifier' && (d.id as IdentifierNode).name) loopHeaderLocals.add((d.id as IdentifierNode).name);
         }
       }
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc') continue;
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) collectLoopLocals(it); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') collectLoopLocals(v);
+        else if (isAstNodeLike(v)) collectLoopLocals(v);
       }
     };
     collectLoopLocals(node);
 
-    const walk = (n: any): void => {
-      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
-      if (n.type === 'AssignmentExpression' && n.left?.type === 'Identifier' && n.left.name) {
-        if (!loopHeaderLocals.has(n.left.name)) names.add(n.left.name);
-      } else if (n.type === 'UnaryExpression' && (n.operator === '++' || n.operator === '--')
-          && n.argument?.type === 'Identifier' && n.argument.name) {
-        // `x++` / `--x` on an undeclared name also auto-creates the implicit global.
-        if (!loopHeaderLocals.has(n.argument.name)) names.add(n.argument.name);
-      } else if (n.type === 'ForInStatement' && n.left?.type === 'Identifier' && n.left.name) {
-        // A bare `for (x in …)` loop variable (no `let`) is an implicit global that
-        // persists after the loop (verified vs the interpreter). Strict mode flags it
-        // separately (visitForInStatement).
-        names.add(n.left.name);
+    const walk = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (n.type === 'AssignmentExpression') {
+        const a = n as unknown as AssignmentExpressionNode;
+        if (a.left?.type === 'Identifier' && (a.left as IdentifierNode).name) {
+          const nm = (a.left as IdentifierNode).name;
+          if (!loopHeaderLocals.has(nm)) names.add(nm);
+        }
+      } else if (n.type === 'UnaryExpression') {
+        const u = n as unknown as UnaryExpressionNode;
+        if ((u.operator === '++' || u.operator === '--')
+            && u.argument?.type === 'Identifier' && (u.argument as IdentifierNode).name) {
+          // `x++` / `--x` on an undeclared name also auto-creates the implicit global.
+          const nm = (u.argument as IdentifierNode).name;
+          if (!loopHeaderLocals.has(nm)) names.add(nm);
+        }
+      } else if (n.type === 'ForInStatement') {
+        const f = n as unknown as ForInStatementNode;
+        if (f.left?.type === 'Identifier' && (f.left as IdentifierNode).name) {
+          // A bare `for (x in …)` loop variable (no `let`) is an implicit global that
+          // persists after the loop (verified vs the interpreter). Strict mode flags it
+          // separately (visitForInStatement).
+          names.add((f.left as IdentifierNode).name);
+        }
       }
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc') continue;
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+        else if (isAstNodeLike(v)) walk(v);
       }
     };
     walk(node);
@@ -612,22 +644,27 @@ export class SemanticAnalyzer extends BaseVisitor {
   private collectGlobalPropertyNames(node: ProgramNode): void {
     this.globalPropertyNames.clear();
     const names = this.globalPropertyNames;
-    const walk = (n: any): void => {
-      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
-      if (n.type === 'AssignmentExpression' && n.operator === '=' && n.left?.type === 'MemberExpression'
-          && n.left.object?.type === 'Identifier' && n.left.object.name === 'global') {
-        const prop = n.left.property;
-        if (!n.left.computed && prop?.type === 'Identifier' && prop.name) {
-          names.add(prop.name);
-        } else if (n.left.computed && prop?.type === 'Literal' && typeof prop.value === 'string') {
-          names.add(prop.value);
+    const walk = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (n.type === 'AssignmentExpression') {
+        const a = n as unknown as AssignmentExpressionNode;
+        if (a.operator === '=' && a.left?.type === 'MemberExpression') {
+          const mem = a.left as MemberExpressionNode;
+          if (mem.object?.type === 'Identifier' && (mem.object as IdentifierNode).name === 'global') {
+            const prop = mem.property;
+            if (!mem.computed && prop?.type === 'Identifier' && (prop as IdentifierNode).name) {
+              names.add((prop as IdentifierNode).name);
+            } else if (mem.computed && prop?.type === 'Literal' && typeof (prop as LiteralNode).value === 'string') {
+              names.add((prop as LiteralNode).value as string);
+            }
+          }
         }
       }
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc') continue;
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+        else if (isAstNodeLike(v)) walk(v);
       }
     };
     walk(node);
@@ -644,22 +681,30 @@ export class SemanticAnalyzer extends BaseVisitor {
    */
   private hoistBareRequireModules(node: ProgramNode): void {
     if (!this.options.enableScopeAnalysis) return;
-    const walk = (n: any): void => {
-      if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
-      if (n.type === 'AssignmentExpression' && n.operator === '=' && n.left?.type === 'Identifier' && n.left.name
-          && n.right?.type === 'CallExpression' && n.right.callee?.type === 'Identifier'
-          && n.right.callee.name === 'require' && n.right.arguments?.length === 1
-          && n.right.arguments[0]?.type === 'Literal' && typeof n.right.arguments[0].value === 'string'
-          && isKnownModule(n.right.arguments[0].value)) {
-        const moduleName = n.right.arguments[0].value;
-        const dataType = { type: UcodeType.OBJECT, moduleName } as UcodeDataType;
-        this.symbolTable.declare(n.left.name, SymbolType.MODULE, dataType, n.left);
+    const walk = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (n.type === 'AssignmentExpression') {
+        const a = n as unknown as AssignmentExpressionNode;
+        const left = a.left;
+        const right = a.right;
+        if (a.operator === '=' && left?.type === 'Identifier' && (left as IdentifierNode).name
+            && right?.type === 'CallExpression') {
+          const call = right as CallExpressionNode;
+          if (call.callee?.type === 'Identifier' && (call.callee as IdentifierNode).name === 'require'
+              && call.arguments?.length === 1
+              && call.arguments[0]?.type === 'Literal' && typeof (call.arguments[0] as LiteralNode).value === 'string'
+              && isKnownModule((call.arguments[0] as LiteralNode).value as string)) {
+            const moduleName = (call.arguments[0] as LiteralNode).value as string;
+            const dataType = { type: UcodeType.OBJECT, moduleName } as UcodeDataType;
+            this.symbolTable.declare((left as IdentifierNode).name, SymbolType.MODULE, dataType, left);
+          }
+        }
       }
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc') continue;
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+        else if (isAstNodeLike(v)) walk(v);
       }
     };
     walk(node);
@@ -1578,7 +1623,7 @@ export class SemanticAnalyzer extends BaseVisitor {
    *  integer/double are unified (ucode coerces); `null` is NOT special — the annotation must
    *  explicitly include it to cover a nullable value. Returns false = annotation too narrow. */
   private jsdocAnnotationCovers(declared: UcodeDataType, actual: UcodeDataType): boolean {
-    const unify = (b: any) => (b === UcodeType.DOUBLE ? UcodeType.INTEGER : b);
+    const unify = (b: UcodeType): UcodeType => (b === UcodeType.DOUBLE ? UcodeType.INTEGER : b);
     const declaredBases = new Set(getUnionTypes(declared).map(s => unify(singleTypeToBase(s))));
     const actualBases = getUnionTypes(actual).map(s => unify(singleTypeToBase(s)));
     return actualBases.every(b => b === UcodeType.UNKNOWN || declaredBases.has(b));
@@ -2167,25 +2212,26 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   /** Return type of one function node via checkNodeQuietly over its `return` expressions
    *  (no diagnostics; nested functions are not descended into). */
-  private collectReturnTypesQuiet(fnNode: any): UcodeDataType {
+  private collectReturnTypesQuiet(fnNode: FunctionExpressionNode | ArrowFunctionExpressionNode): UcodeDataType {
     // Expression-body arrow: the body IS the returned value.
     if (fnNode.type === 'ArrowFunctionExpression' && fnNode.body && fnNode.body.type !== 'BlockStatement') {
       return this.typeChecker.checkNodeQuietly(fnNode.body) as UcodeDataType;
     }
     const types: UcodeDataType[] = [];
-    const walk = (n: any): void => {
-      if (!n || typeof n !== 'object') return;
+    const walk = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
       // Don't descend into nested functions — their returns aren't this function's.
       if (n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression' || n.type === 'FunctionDeclaration') return;
       if (n.type === 'ReturnStatement') {
-        types.push(n.argument ? (this.typeChecker.checkNodeQuietly(n.argument) as UcodeDataType) : (UcodeType.NULL as UcodeDataType));
+        const ret = n as unknown as ReturnStatementNode;
+        types.push(ret.argument ? (this.typeChecker.checkNodeQuietly(ret.argument) as UcodeDataType) : (UcodeType.NULL as UcodeDataType));
         return;
       }
       for (const k in n) {
         if (k === 'parent') continue;
-        const v = (n as any)[k];
+        const v = (n as AnyNode)[k];
         if (Array.isArray(v)) v.forEach(walk);
-        else if (v && typeof v === 'object' && v.type) walk(v);
+        else if (isAstNodeLike(v)) walk(v);
       }
     };
     if (fnNode.body) walk(fnNode.body);
@@ -3432,7 +3478,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   // Override loop visitors to track loop scopes
-  override visitWhileStatement(node: any): void {
+  override visitWhileStatement(node: WhileStatementNode): void {
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
@@ -3446,7 +3492,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  override visitForStatement(node: any): void {
+  override visitForStatement(node: ForStatementNode): void {
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
@@ -3482,7 +3528,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
-  override visitForInStatement(node: any): void {
+  override visitForInStatement(node: ForInStatementNode): void {
 
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
@@ -3507,8 +3553,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // type-inference + keys-of provenance treatment as the `let` case
         // below — otherwise `data_generator` here would hover as `unknown`
         // and `obj[data_generator]` wouldn't narrow through propertyTypes.
-        const iteratorName = node.left.name;
-        const iteratorNode = node.left;
+        const leftId = node.left as IdentifierNode;
+        const iteratorName = leftId.name;
+        const iteratorNode = leftId;
 
         // Under 'use strict', a bare `for (x in …)` loop variable is a runtime error
         // ("access to undeclared variable x") — it must be declared `for (let x in …)`.
@@ -3567,14 +3614,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           }
           if (keysOf) iterSym.keysOfSymbol = keysOf;
         }
-      } else if (node.left && node.left.type === 'VariableDeclaration' && node.left.declarations.length > 0) {
+      } else if (node.left && node.left.type === 'VariableDeclaration' && (node.left as VariableDeclarationNode).declarations.length > 0) {
         // Declaration case: for (let var_name in ...) or for (let i, item in ...)
-        const declarations = node.left.declarations;
+        const declarations = (node.left as VariableDeclarationNode).declarations;
         
         if (declarations.length === 1) {
           // Single variable: gets the value for arrays, the key for objects
           const declarator = declarations[0];
-          if (declarator.id && declarator.id.type === 'Identifier') {
+          if (declarator && declarator.id && declarator.id.type === 'Identifier') {
             const iteratorName = declarator.id.name;
             const iteratorNode = declarator.id;
 
@@ -3637,7 +3684,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           const indexDeclarator = declarations[0];
           const valueDeclarator = declarations[1];
           
-          if (indexDeclarator.id && indexDeclarator.id.type === 'Identifier') {
+          if (indexDeclarator && indexDeclarator.id && indexDeclarator.id.type === 'Identifier') {
             const indexName = indexDeclarator.id.name;
             const indexNode = indexDeclarator.id;
             
@@ -3660,7 +3707,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             this.symbolTable.markUsed(indexName, indexNode.start);
           }
           
-          if (valueDeclarator.id && valueDeclarator.id.type === 'Identifier') {
+          if (valueDeclarator && valueDeclarator.id && valueDeclarator.id.type === 'Identifier') {
             const valueName = valueDeclarator.id.name;
             const valueNode = valueDeclarator.id;
             
@@ -3730,14 +3777,15 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return elems.length ? createUnionType(elems) : null;
   }
 
-  private getIterableFullType(node: any): UcodeDataType | null {
+  private getIterableFullType(node: AstNode): UcodeDataType | null {
     if (node.type === 'Identifier') {
+      const id = node as IdentifierNode;
       // Prefer the narrowed type at this position (e.g. after `type(x) == 'array'`
       // the union `string | array<T> | null` narrows to `array<T>`), so for-in can
       // recover the element type. Fall back to the declared type.
-      const narrowed = this.typeChecker.getNarrowedTypeAtPosition(node.name, node.start);
+      const narrowed = this.typeChecker.getNarrowedTypeAtPosition(id.name, id.start);
       if (narrowed) return narrowed;
-      const sym = this.symbolTable.lookup(node.name);
+      const sym = this.symbolTable.lookup(id.name);
       if (sym) return sym.dataType;
     }
     // Non-identifier iterables (e.g. `keys(obj)`): the caller checkNode'd the
@@ -4120,7 +4168,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const setterHops: { fnName: string; paramIndex: number }[] = [];
     let bailed = false;
 
-    const isFn = (n: any) => n && (n.type === 'FunctionDeclaration'
+    const isFn = (n: unknown): n is FunctionLikeNode => isAstNodeLike(n) && (n.type === 'FunctionDeclaration'
       || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression');
 
     // Does function `fnNode` REDECLARE `nm` (a param, rest-param, or a local
@@ -4128,22 +4176,22 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // `nm[…] = …` writes belong to a DIFFERENT symbol — we must not let them
     // pollute the outer map's value shape. Scans the body but stops at deeper
     // nested functions.
-    const declaresLocally = (fnNode: any, nm: string): boolean => {
+    const declaresLocally = (fnNode: FunctionLikeNode, nm: string): boolean => {
       const params = fnNode.params || [];
-      if (params.some((p: any) => p?.name === nm)) return true;
+      if (params.some((p) => p?.name === nm)) return true;
       if (fnNode.restParam?.name === nm) return true;
       let found = false;
-      const scan = (n: any): void => {
-        if (found || !n || typeof n !== 'object' || typeof n.type !== 'string') return;
+      const scan = (n: unknown): void => {
+        if (found || !isAstNodeLike(n)) return;
         if (isFn(n) && n !== fnNode) return; // don't descend into deeper functions
         if (n.type === 'VariableDeclaration') {
-          for (const d of n.declarations || []) if (d?.id?.name === nm) { found = true; return; }
+          for (const d of (n as unknown as VariableDeclarationNode).declarations || []) if (d?.id?.name === nm) { found = true; return; }
         }
         for (const k of Object.keys(n)) {
           if (k === 'leadingJsDoc') continue;
           const v = n[k];
           if (Array.isArray(v)) { for (const it of v) scan(it); }
-          else if (v && typeof v === 'object' && typeof v.type === 'string') scan(v);
+          else if (isAstNodeLike(v)) scan(v);
         }
       };
       scan(fnNode.body);
@@ -4152,32 +4200,37 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
     // Collect computed writes to `mapName`, tracking the nearest enclosing
     // function so `m[k] = param` can be resolved to (function, param index).
-    const walk = (node: any, fn: any): void => {
-      if (bailed || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
+    const walk = (node: unknown, fn: FunctionLikeNode | null): void => {
+      if (bailed || !isAstNodeLike(node)) return;
       // Scope safety: a nested function that redeclares `mapName` is a different
       // binding — skip it entirely so its writes don't pollute this map's shape.
       if (isFn(node) && node !== scopeRoot && declaresLocally(node, mapName)) return;
-      const curFn = isFn(node) ? node : fn;
-      if (node.type === 'AssignmentExpression' && node.operator === '='
-          && node.left?.type === 'MemberExpression' && node.left.computed
-          && node.left.object?.type === 'Identifier' && node.left.object.name === mapName) {
-        const rhs = node.right;
-        if (rhs?.type === 'ObjectExpression') {
-          const shape = this.inferObjectLiteralPropertyTypes(rhs as ObjectExpressionNode);
-          if (shape) shapes.push(shape); // empty literal → ignore (no shape contribution)
-        } else if (rhs?.type === 'Identifier' && curFn && Array.isArray(curFn.params) && curFn.id?.name) {
-          const idx = curFn.params.findIndex((p: any) => p?.name === (rhs as IdentifierNode).name);
-          if (idx >= 0) setterHops.push({ fnName: curFn.id.name, paramIndex: idx });
-          else bailed = true; // assigned an identifier of unknown shape
-        } else {
-          bailed = true; // non-object write → heterogeneous/opaque map
+      const curFn: FunctionLikeNode | null = isFn(node) ? node : fn;
+      if (node.type === 'AssignmentExpression') {
+        const asn = node as unknown as AssignmentExpressionNode;
+        const left = asn.left as MemberExpressionNode;
+        if (asn.operator === '='
+            && left?.type === 'MemberExpression' && left.computed
+            && left.object?.type === 'Identifier' && (left.object as IdentifierNode).name === mapName) {
+          const rhs = asn.right;
+          if (rhs?.type === 'ObjectExpression') {
+            const shape = this.inferObjectLiteralPropertyTypes(rhs as ObjectExpressionNode);
+            if (shape) shapes.push(shape); // empty literal → ignore (no shape contribution)
+          } else if (rhs?.type === 'Identifier' && curFn && Array.isArray(curFn.params)
+                     && (curFn as FunctionDeclarationNode).id?.name) {
+            const idx = curFn.params.findIndex((p) => p?.name === (rhs as IdentifierNode).name);
+            if (idx >= 0) setterHops.push({ fnName: (curFn as FunctionDeclarationNode).id.name, paramIndex: idx });
+            else bailed = true; // assigned an identifier of unknown shape
+          } else {
+            bailed = true; // non-object write → heterogeneous/opaque map
+          }
         }
       }
       for (const k of Object.keys(node)) {
         if (k === 'leadingJsDoc') continue;
         const v = node[k];
         if (Array.isArray(v)) { for (const it of v) walk(it, curFn); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, curFn);
+        else if (isAstNodeLike(v)) walk(v, curFn);
       }
     };
     walk(scopeRoot, null);
@@ -4187,21 +4240,23 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // call sites within the same scope.
     for (const hop of setterHops) {
       let found = false;
-      const callWalk = (node: any): void => {
-        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
-        if (node.type === 'CallExpression' && node.callee?.type === 'Identifier'
-            && node.callee.name === hop.fnName) {
-          const arg = node.arguments?.[hop.paramIndex];
-          if (arg?.type === 'ObjectExpression') {
-            const shape = this.inferObjectLiteralPropertyTypes(arg as ObjectExpressionNode);
-            if (shape) { shapes.push(shape); found = true; }
+      const callWalk = (node: unknown): void => {
+        if (!isAstNodeLike(node)) return;
+        if (node.type === 'CallExpression') {
+          const call = node as unknown as CallExpressionNode;
+          if (call.callee?.type === 'Identifier' && (call.callee as IdentifierNode).name === hop.fnName) {
+            const arg = call.arguments?.[hop.paramIndex];
+            if (arg?.type === 'ObjectExpression') {
+              const shape = this.inferObjectLiteralPropertyTypes(arg as ObjectExpressionNode);
+              if (shape) { shapes.push(shape); found = true; }
+            }
           }
         }
         for (const k of Object.keys(node)) {
           if (k === 'leadingJsDoc') continue;
           const v = node[k];
           if (Array.isArray(v)) { for (const it of v) callWalk(it); }
-          else if (v && typeof v === 'object' && typeof v.type === 'string') callWalk(v);
+          else if (isAstNodeLike(v)) callWalk(v);
         }
       };
       callWalk(scopeRoot);
@@ -4302,24 +4357,26 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (funcSym.returnPropertyDefinitionLocations) symbol.propertyDefinitionLocations = new Map(funcSym.returnPropertyDefinitionLocations);
   }
 
-  private isLiteralType(dataType: UcodeDataType, initNode: any): boolean {
+  private isLiteralType(dataType: UcodeDataType, initNode: AstNode | null | undefined): boolean {
     // Check if the dataType corresponds to a literal type and if the init node is actually a literal
     if (!initNode) return false;
-    
+
     switch (initNode.type) {
       case 'ArrayExpression':
         return dataType === UcodeType.ARRAY || isArrayType(dataType);
       case 'ObjectExpression':
         return dataType === UcodeType.OBJECT;
-      case 'Literal':
-        if (initNode.literalType === 'regexp') {
+      case 'Literal': {
+        const lit = initNode as LiteralNode;
+        if (lit.literalType === 'regexp') {
           return dataType === UcodeType.REGEX;
         }
-        if (typeof initNode.value === 'string') return dataType === UcodeType.STRING;
-        if (typeof initNode.value === 'number') return dataType === UcodeType.INTEGER || dataType === UcodeType.DOUBLE;
-        if (typeof initNode.value === 'boolean') return dataType === UcodeType.BOOLEAN;
-        if (initNode.value === null) return dataType === UcodeType.NULL;
+        if (typeof lit.value === 'string') return dataType === UcodeType.STRING;
+        if (typeof lit.value === 'number') return dataType === UcodeType.INTEGER || dataType === UcodeType.DOUBLE;
+        if (typeof lit.value === 'boolean') return dataType === UcodeType.BOOLEAN;
+        if (lit.value === null) return dataType === UcodeType.NULL;
         break;
+      }
     }
     return false;
   }
@@ -4654,7 +4711,7 @@ private addDiagnostic(
     end: number,
     severity?: DiagnosticSeverity,
     code?: string,
-    data?: any
+    data?: unknown
   ): void {
     let finalSeverity: DiagnosticSeverity = severity || DiagnosticSeverity.Error;
 
@@ -4698,10 +4755,10 @@ private addDiagnostic(
         message,
         source: 'ucode-semantic',
         ...(code && { code }),
-        ...(data && { data })
+        ...(data ? { data } : {})
       };
 
-      if (data?.unnecessary) {
+      if (data && typeof data === 'object' && (data as { unnecessary?: unknown }).unnecessary) {
         diagnostic.tags = [DiagnosticTag.Unnecessary];
       }
 
@@ -4786,15 +4843,15 @@ private addDiagnostic(
    *  functions/loops too) so it never under-reports an exit → never a false error. */
   private bodyContainsLoopExit(node: AstNode): boolean {
     let found = false;
-    const scan = (n: any): void => {
-      if (found || !n || typeof n !== 'object' || typeof n.type !== 'string') return;
+    const scan = (n: unknown): void => {
+      if (found || !isAstNodeLike(n)) return;
       if (n.type === 'BreakStatement' || n.type === 'ReturnStatement') { found = true; return; }
       if (n.type === 'CallExpression' && this.isExitingCall(n)) { found = true; return; }
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc') continue;
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) scan(it); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') scan(v);
+        else if (isAstNodeLike(v)) scan(v);
       }
     };
     scan(node);
@@ -4821,18 +4878,20 @@ private addDiagnostic(
    *  so it may not run every iteration. (UC4005, finding #58.) */
   private collectIterateeRebinds(loopBody: AstNode, name: string): Array<{ start: number; conditional: boolean }> {
     const rebinds: Array<{ start: number; conditional: boolean }> = [];
-    const walk = (node: any, conditional: boolean): void => {
-      if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
-      if (node.type === 'AssignmentExpression' && node.operator === '='
-          && node.left?.type === 'Identifier' && node.left.name === name) {
-        rebinds.push({ start: node.start, conditional });
+    const walk = (node: unknown, conditional: boolean): void => {
+      if (!isAstNodeLike(node)) return;
+      if (node.type === 'AssignmentExpression') {
+        const a = node as unknown as AssignmentExpressionNode;
+        if (a.operator === '=' && a.left?.type === 'Identifier' && (a.left as IdentifierNode).name === name) {
+          rebinds.push({ start: node.start, conditional });
+        }
       }
       const childConditional = conditional || SemanticAnalyzer.CONDITIONAL_CONTAINERS.has(node.type);
       for (const k of Object.keys(node)) {
         if (k === 'leadingJsDoc') continue;
         const v = node[k];
         if (Array.isArray(v)) { for (const it of v) walk(it, childConditional); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, childConditional);
+        else if (isAstNodeLike(v)) walk(v, childConditional);
       }
     };
     walk(loopBody, false);
@@ -4843,13 +4902,14 @@ private addDiagnostic(
     if (!itereeName || !loopBody) return;
     const bodyHasExit = this.bodyContainsLoopExit(loopBody);
     const rebinds = this.collectIterateeRebinds(loopBody, itereeName);
-    const walk = (node: any, enclosingBlock: AstNode, conditional: boolean): void => {
-      if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
-      const block = node.type === 'BlockStatement' ? node : enclosingBlock;
+    const walk = (node: unknown, enclosingBlock: AstNode, conditional: boolean): void => {
+      if (!isAstNodeLike(node)) return;
+      const block: AstNode = node.type === 'BlockStatement' ? node : enclosingBlock;
       const childConditional = conditional || SemanticAnalyzer.CONDITIONAL_CONTAINERS.has(node.type);
-      if (node.type === 'CallExpression' && node.callee?.type === 'Identifier'
-          && SemanticAnalyzer.ARRAY_MUTATORS.has(node.callee.name)
-          && node.arguments?.[0]?.type === 'Identifier' && node.arguments[0].name === itereeName) {
+      const call = node as unknown as CallExpressionNode;
+      if (node.type === 'CallExpression' && call.callee?.type === 'Identifier'
+          && SemanticAnalyzer.ARRAY_MUTATORS.has((call.callee as IdentifierNode).name)
+          && call.arguments?.[0]?.type === 'Identifier' && (call.arguments[0] as IdentifierNode).name === itereeName) {
         if (!this.blockExitsLoop(enclosingBlock)) {
           // A rebind of the iteratee name BEFORE this call means the call operates
           // on a different array object than the one being iterated (finding #58).
@@ -4858,7 +4918,7 @@ private addDiagnostic(
           const priorRebinds = rebinds.filter(r => r.start < node.start);
           if (priorRebinds.some(r => !r.conditional)) return;
           const conditionallyRebound = priorRebinds.length > 0;
-          const fn = node.callee.name;
+          const fn = (call.callee as IdentifierNode).name;
           const grows = fn === 'push' || fn === 'unshift';
           const provablyInfinite = grows && !conditional && !bodyHasExit && !conditionallyRebound;
           const message = provablyInfinite
@@ -4877,7 +4937,7 @@ private addDiagnostic(
         if (k === 'leadingJsDoc') continue;
         const v = node[k];
         if (Array.isArray(v)) { for (const it of v) walk(it, block, childConditional); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v, block, childConditional);
+        else if (isAstNodeLike(v)) walk(v, block, childConditional);
       }
     };
     walk(loopBody, loopBody, false);
@@ -5202,7 +5262,7 @@ private addDiagnostic(
     // Build per-function CFGs with never-returns inference
     if (this.currentASTRoot) {
       // Collect all function declarations for multi-pass analysis
-      const funcNodes: any[] = [];
+      const funcNodes: FunctionLikeNode[] = [];
       this.collectFunctionNodes(this.currentASTRoot, funcNodes);
 
       // Phase 1: Initial pass with default terminators (die/exit)
@@ -5214,7 +5274,7 @@ private addDiagnostic(
       while (changed) {
         changed = false;
         for (const funcNode of funcNodes) {
-          const name = funcNode.id?.name;
+          const name = (funcNode as FunctionDeclarationNode).id?.name;
           if (!name || !funcNode.body) continue;
           const symbol = this.symbolTable.lookup(name);
           if (!symbol || symbol.neverReturns) continue;
@@ -5251,12 +5311,12 @@ private addDiagnostic(
   /**
    * Collect all function declaration/expression nodes from the AST.
    */
-  private collectFunctionNodes(node: AstNode, result: any[]): void {
+  private collectFunctionNodes(node: AstNode, result: FunctionLikeNode[]): void {
     if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
-      result.push(node);
+      result.push(node as unknown as FunctionLikeNode);
     }
     for (const key of Object.keys(node)) {
-      const val = (node as any)[key];
+      const val = (node as AnyNode)[key];
       if (val && typeof val === 'object') {
         if (Array.isArray(val)) {
           for (const child of val) {
@@ -5264,7 +5324,7 @@ private addDiagnostic(
               this.collectFunctionNodes(child, result);
             }
           }
-        } else if (typeof val.type === 'string') {
+        } else if (isAstNodeLike(val)) {
           this.collectFunctionNodes(val, result);
         }
       }
@@ -5274,11 +5334,11 @@ private addDiagnostic(
   /**
    * Build CFGs for all functions and emit unreachable diagnostics.
    */
-  private analyzeAllFunctions(funcNodes: any[], terminators: Set<string>): void {
+  private analyzeAllFunctions(funcNodes: FunctionLikeNode[], terminators: Set<string>): void {
     for (const funcNode of funcNodes) {
       if (!funcNode.body) continue;
       try {
-        const builder = new CFGBuilder(funcNode.id?.name || 'anonymous', terminators);
+        const builder = new CFGBuilder((funcNode as FunctionDeclarationNode).id?.name || 'anonymous', terminators);
         const cfg = builder.build(funcNode.body);
         const engine = new CFGQueryEngine(cfg);
         this.emitUnreachableDiagnostics(engine, cfg);
@@ -5361,7 +5421,7 @@ private addDiagnostic(
     }
   }
 
-  private narrowFunctionReturnType(funcNode: any, engine: CFGQueryEngine, cfg: ControlFlowGraph): void {
+  private narrowFunctionReturnType(funcNode: FunctionLikeNode, engine: CFGQueryEngine, cfg: ControlFlowGraph): void {
     const returnEntries = this.functionReturnTypes.get(funcNode as FunctionDeclarationNode);
     if (!returnEntries || returnEntries.length === 0) return;
 
@@ -5382,7 +5442,7 @@ private addDiagnostic(
     this.functionReturnTypes.set(funcNode as FunctionDeclarationNode, reachableEntries);
 
     // Re-compute and update the function symbol's return type
-    const name = funcNode.id?.name;
+    const name = (funcNode as FunctionDeclarationNode).id?.name;
     if (name) {
       const symbol = this.symbolTable.lookup(name);
       if (symbol) {

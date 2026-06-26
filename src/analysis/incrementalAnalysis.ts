@@ -13,15 +13,17 @@
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { Diagnostic } from 'vscode-languageserver/node';
 import { type ProgramNode } from '../ast/nodes';
+import { type SymbolTable } from './symbolTable';
 import {
   extractUnits, computeFingerprint, bodyHashOf, classifyBody, hashString,
-  type IncrementalCacheEntry, type UnitState, type UnitRange,
+  type IncrementalCacheEntry, type UnitState, type UnitRange, type RelDiagnostic,
 } from './incrementalCache';
 
 export type CleanBody = { bodyEnd: number; returnType: unknown; diagnostics: Diagnostic[]; thisWrites: Array<[string, unknown]> };
 
-function reanchor(rel: { relStart: number; relEnd: number; diag: any }, bodyStart: number, doc: TextDocument): Diagnostic {
-  return { ...rel.diag, range: { start: doc.positionAt(bodyStart + rel.relStart), end: doc.positionAt(bodyStart + rel.relEnd) } };
+function reanchor(rel: RelDiagnostic, bodyStart: number, doc: TextDocument): Diagnostic {
+  const diag = rel.diag as Partial<Diagnostic>;
+  return { ...diag, range: { start: doc.positionAt(bodyStart + rel.relStart), end: doc.positionAt(bodyStart + rel.relEnd) } } as Diagnostic;
 }
 
 /** Which unchanged+pure bodies can have type checking skipped this run, keyed by current body
@@ -50,22 +52,23 @@ export function planClean(
   return clean;
 }
 
-function unitReturnType(u: UnitRange, symbolTable: any): unknown {
-  if (u.kind === 'function') return symbolTable?.lookup?.(u.name)?.returnType;
+function unitReturnType(u: UnitRange, symbolTable: SymbolTable | undefined): unknown {
+  if (u.kind === 'function') return symbolTable?.lookup(u.name)?.returnType;
   return (u.fnNode as any)._inferredReturnType;
 }
 
 // Stable JSON for a value that may contain Maps (rich types / property shapes).
 function stableJson(v: unknown): string {
-  const seen = new WeakSet();
-  const enc = (x: any): any => {
+  const seen = new WeakSet<object>();
+  const enc = (x: unknown): unknown => {
     if (x instanceof Map) return ['Map', [...x.entries()].map(([k, val]) => [k, enc(val)]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))];
     if (x && typeof x === 'object') {
       if (seen.has(x)) return '[circular]';
       seen.add(x);
       if (Array.isArray(x)) return x.map(enc);
-      const keys = Object.keys(x).sort();
-      return keys.map((k) => [k, enc(x[k])]);
+      const rec = x as Record<string, unknown>;
+      const keys = Object.keys(rec).sort();
+      return keys.map((k) => [k, enc(rec[k])]);
     }
     return x;
   };
@@ -74,9 +77,9 @@ function stableJson(v: unknown): string {
 
 /** A unit's externally-visible signature: what a SKIPPED reader of this unit could depend on
  *  — its return type, its returned-object shape, and the `this.<prop>` types it writes. */
-function unitSig(u: UnitRange, symbolTable: any): string {
+function unitSig(u: UnitRange, symbolTable: SymbolTable | undefined): string {
   const rt = unitReturnType(u, symbolTable);
-  const rpt = u.kind === 'function' ? symbolTable?.lookup?.(u.name)?.returnPropertyTypes : (u.fnNode as any)._inferredReturnPropertyTypes;
+  const rpt = u.kind === 'function' ? symbolTable?.lookup(u.name)?.returnPropertyTypes : (u.fnNode as any)._inferredReturnPropertyTypes;
   const tw = ((u.fnNode as any)._thisWrites ?? []) as Array<[string, unknown]>;
   return stableJson([rt, rpt, tw]);
 }
@@ -90,7 +93,7 @@ export function buildCache(
   ast: ProgramNode,
   doc: TextDocument,
   diagnostics: Diagnostic[],
-  symbolTable: any,
+  symbolTable: SymbolTable | undefined,
 ): IncrementalCacheEntry {
   const units = extractUnits(ast);
   const fingerprint = computeFingerprint(text, units);
@@ -132,7 +135,7 @@ export function buildCache(
  *  the derived semantic signature changed (a sibling's return type / returned shape / this-
  *  property type moved), a skipped reader could be stale, so we transparently redo a FULL
  *  analysis. Pure-logic edits (the common typing case) don't change the signature → fast path. */
-export function runIncremental<T extends { diagnostics: Diagnostic[]; symbolTable: any }>(
+export function runIncremental<T extends { diagnostics: Diagnostic[]; symbolTable: SymbolTable }>(
   doc: TextDocument,
   ast: ProgramNode,
   prevCache: IncrementalCacheEntry | undefined,

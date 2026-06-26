@@ -3,7 +3,7 @@
  * Handles block statements, expression statements, and empty statements
  */
 
-import { TokenType } from '../../lexer';
+import { TokenType, type Token } from '../../lexer';
 import { UcodeErrorCode } from '../../analysis/errorConstants';
 import {
   type AstNode, type BlockStatementNode, type ExpressionStatementNode, type EmptyStatementNode
@@ -13,8 +13,10 @@ import { ControlFlowStatements } from './controlFlowStatements';
 
 export abstract class BasicStatements extends ControlFlowStatements {
 
-  protected parseBlockStatement(openingBrace: any, context: string): BlockStatementNode {
-    const start = openingBrace.pos;
+  protected parseBlockStatement(openingBrace: Token | null, context: string): BlockStatementNode {
+    // openingBrace is null only when the caller's `consume('{')` already failed (a parse
+    // error was emitted) — fall back to the current position so we don't deref null.
+    const start = openingBrace?.pos ?? this.peek()?.pos ?? 0;
     const body: AstNode[] = [];
     
     while (!this.check(TokenType.TK_RBRACE) && !this.isAtEnd()) {

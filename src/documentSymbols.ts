@@ -6,8 +6,27 @@
 // methods of a factory's returned object literal are surfaced as callable.
 
 import { DocumentSymbol, SymbolKind, Range } from 'vscode-languageserver/node';
+import type {
+    AstNode,
+    IdentifierNode,
+    LiteralNode,
+    ObjectExpressionNode,
+    PropertyNode,
+    VariableDeclaratorNode,
+    BlockStatementNode,
+    ProgramNode,
+    FunctionDeclarationNode,
+    VariableDeclarationNode,
+    ExportNamedDeclarationNode,
+    ExportDefaultDeclarationNode,
+    FunctionExpressionNode,
+    ArrowFunctionExpressionNode,
+} from './ast/nodes';
 
 type PosAt = (offset: number) => { line: number; character: number };
+
+/** A node that carries a function `body` (declaration/expression/arrow). */
+type FunctionishNode = FunctionDeclarationNode | FunctionExpressionNode | ArrowFunctionExpressionNode;
 
 const FUNCTIONISH = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
 
@@ -17,26 +36,31 @@ function range(a: number, b: number, posAt: PosAt): Range {
 
 /** Symbols for the members of an object literal `{ a, b, method() {} }` —
  *  used for a factory's returned object so its API shows in the outline. */
-function objectMembers(obj: any, posAt: PosAt): DocumentSymbol[] {
+function objectMembers(obj: ObjectExpressionNode | null | undefined, posAt: PosAt): DocumentSymbol[] {
     const out: DocumentSymbol[] = [];
-    for (const prop of (obj?.properties || [])) {
-        const key = prop?.key;
+    for (const member of (obj?.properties || [])) {
+        // Skip spread elements (`...rest`) — they have no key.
+        if (member?.type !== 'Property') continue;
+        const prop = member as PropertyNode;
+        const key = prop.key;
         if (!key || (key.type !== 'Identifier' && key.type !== 'Literal')) continue;
-        const name = key.type === 'Identifier' ? key.name : String(key.value);
+        const name = key.type === 'Identifier'
+            ? (key as IdentifierNode).name
+            : String((key as LiteralNode).value);
         const valueIsFn = prop.value && FUNCTIONISH.has(prop.value.type);
         out.push({
             name,
             kind: valueIsFn ? SymbolKind.Method : SymbolKind.Property,
             range: range(prop.start, prop.end, posAt),
             selectionRange: range(key.start, key.end, posAt),
-            children: valueIsFn ? symbolsInBody(prop.value.body, posAt) : [],
+            children: valueIsFn ? symbolsInBody((prop.value as FunctionishNode).body, posAt) : [],
         });
     }
     return out;
 }
 
 /** A symbol for one declarator `name = init`, classified by its initializer. */
-function declaratorSymbol(d: any, isConst: boolean, posAt: PosAt): DocumentSymbol | null {
+function declaratorSymbol(d: VariableDeclaratorNode, isConst: boolean, posAt: PosAt): DocumentSymbol | null {
     if (d?.id?.type !== 'Identifier') return null;
     const name = d.id.name;
     const init = d.init;
@@ -44,10 +68,10 @@ function declaratorSymbol(d: any, isConst: boolean, posAt: PosAt): DocumentSymbo
     let children: DocumentSymbol[] = [];
     if (init && FUNCTIONISH.has(init.type)) {
         kind = SymbolKind.Function;
-        children = symbolsInBody(init.body, posAt);
+        children = symbolsInBody((init as FunctionishNode).body, posAt);
     } else if (init?.type === 'ObjectExpression') {
         kind = SymbolKind.Object;
-        children = objectMembers(init, posAt);
+        children = objectMembers(init as ObjectExpressionNode, posAt);
     } else if (init?.type === 'ArrayExpression') {
         kind = SymbolKind.Array;
     }
@@ -61,28 +85,30 @@ function declaratorSymbol(d: any, isConst: boolean, posAt: PosAt): DocumentSymbo
 
 /** Symbols declared directly in a block/program body (one nesting level), with
  *  function bodies recursed into. */
-function symbolsInBody(body: any, posAt: PosAt): DocumentSymbol[] {
-    const stmts: any[] = body?.type === 'BlockStatement' ? body.body
-        : body?.type === 'Program' ? body.body
+function symbolsInBody(body: AstNode | AstNode[] | null | undefined, posAt: PosAt): DocumentSymbol[] {
+    const stmts: AstNode[] = (body && !Array.isArray(body) && body.type === 'BlockStatement') ? (body as BlockStatementNode).body
+        : (body && !Array.isArray(body) && body.type === 'Program') ? (body as ProgramNode).body
         : Array.isArray(body) ? body : [];
     const out: DocumentSymbol[] = [];
     for (let stmt of stmts) {
         // Unwrap `export function …` / `export let …` / `export default …`.
-        if (stmt?.type === 'ExportNamedDeclaration' && stmt.declaration) stmt = stmt.declaration;
-        else if (stmt?.type === 'ExportDefaultDeclaration' && stmt.declaration) stmt = stmt.declaration;
+        if (stmt?.type === 'ExportNamedDeclaration' && (stmt as ExportNamedDeclarationNode).declaration) stmt = (stmt as ExportNamedDeclarationNode).declaration!;
+        else if (stmt?.type === 'ExportDefaultDeclaration' && (stmt as ExportDefaultDeclarationNode).declaration) stmt = (stmt as ExportDefaultDeclarationNode).declaration!;
         if (!stmt) continue;
 
-        if (stmt.type === 'FunctionDeclaration' && stmt.id?.type === 'Identifier') {
+        if (stmt.type === 'FunctionDeclaration' && (stmt as FunctionDeclarationNode).id?.type === 'Identifier') {
+            const fn = stmt as FunctionDeclarationNode;
             out.push({
-                name: stmt.id.name,
+                name: fn.id.name,
                 kind: SymbolKind.Function,
-                range: range(stmt.start, stmt.end, posAt),
-                selectionRange: range(stmt.id.start, stmt.id.end, posAt),
-                children: symbolsInBody(stmt.body, posAt),
+                range: range(fn.start, fn.end, posAt),
+                selectionRange: range(fn.id.start, fn.id.end, posAt),
+                children: symbolsInBody(fn.body, posAt),
             });
         } else if (stmt.type === 'VariableDeclaration') {
-            const isConst = stmt.kind === 'const';
-            for (const d of (stmt.declarations || [])) {
+            const varDecl = stmt as VariableDeclarationNode;
+            const isConst = varDecl.kind === 'const';
+            for (const d of (varDecl.declarations || [])) {
                 const sym = declaratorSymbol(d, isConst, posAt);
                 if (sym) out.push(sym);
             }
@@ -92,7 +118,7 @@ function symbolsInBody(body: any, posAt: PosAt): DocumentSymbol[] {
 }
 
 /** The DocumentSymbol tree for a parsed ucode file. */
-export function buildDocumentSymbols(ast: any, posAt: PosAt): DocumentSymbol[] {
+export function buildDocumentSymbols(ast: AstNode | null | undefined, posAt: PosAt): DocumentSymbol[] {
     if (!ast) return [];
     return symbolsInBody(ast, posAt);
 }

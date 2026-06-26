@@ -5,7 +5,8 @@
 
 import {
     Diagnostic,
-    DiagnosticSeverity
+    DiagnosticSeverity,
+    type Connection
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { UcodeLexer } from '../lexer';
@@ -22,8 +23,8 @@ interface ValidationOptions {
 }
 
 export function validateWithAst(
-    textDocument: TextDocument, 
-    connection: any,
+    textDocument: TextDocument,
+    connection: Connection,
     options: ValidationOptions = {}
 ): Diagnostic[] {
     const text = textDocument.getText();

@@ -18,6 +18,16 @@ import {
 } from '../ast/nodes';
 import { AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
 
+/** An AST node viewed as an open record, for dynamic traversal/field access. The base
+ *  `AstNode` interface only enumerates `type`/`start`/`end`; specific node kinds carry many
+ *  more fields that the generic walkers read after a `type`-string guard. */
+type AnyNode = AstNode & Record<string, unknown>;
+
+/** Narrow an arbitrary value to a traversable AST-like node (an object with a string `type`). */
+function isAstNodeLike(n: unknown): n is AnyNode {
+  return !!n && typeof n === 'object' && typeof (n as { type?: unknown }).type === 'string';
+}
+
 /**
  * Represents a type guard that narrows a variable's type
  */
@@ -116,7 +126,7 @@ export interface TypeError {
   end: number;
   severity: 'error';
   code?: string; // Diagnostic code for quick fixes
-  data?: any;    // Additional data for quick fixes
+  data?: unknown;    // Additional data for quick fixes
 }
 
 export interface TypeWarning {
@@ -125,7 +135,7 @@ export interface TypeWarning {
   end: number;
   severity: 'warning';
   code?: string;
-  data?: any;
+  data?: unknown;
 }
 
 /**
@@ -988,13 +998,16 @@ export class TypeChecker {
 
   /** The numeric value of a literal, or a unary +/- on one (`-2`); else null. */
   private numericLiteralValue(node: AstNode): number | null {
-    let n: any = node;
+    let n: AstNode = node;
     let sign = 1;
-    if (n?.type === 'UnaryExpression' && (n.operator === '-' || n.operator === '+')) {
-      if (n.operator === '-') sign = -1;
-      n = n.argument;
+    if (n.type === 'UnaryExpression') {
+      const u = n as UnaryExpressionNode;
+      if (u.operator === '-' || u.operator === '+') {
+        if (u.operator === '-') sign = -1;
+        n = u.argument;
+      }
     }
-    if (n?.type === 'Literal' && typeof n.value === 'number') return sign * n.value;
+    if (n.type === 'Literal' && typeof (n as LiteralNode).value === 'number') return sign * ((n as LiteralNode).value as number);
     return null;
   }
 
@@ -1021,17 +1034,20 @@ export class TypeChecker {
         if (lowerBound !== null && index < lowerBound) proven = true;
       }
     };
-    const walk = (node: any): void => {
-      if (proven || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
-      if (node.type === 'IfStatement' && node.consequent
-          && position >= node.consequent.start && position <= node.consequent.end) {
-        checkTest(node.test);
+    const walk = (node: unknown): void => {
+      if (proven || !isAstNodeLike(node)) return;
+      if (node.type === 'IfStatement') {
+        const ifNode = node as unknown as IfStatementNode;
+        if (ifNode.consequent
+            && position >= ifNode.consequent.start && position <= ifNode.consequent.end) {
+          checkTest(ifNode.test);
+        }
       }
       for (const k of Object.keys(node)) {
         if (k === 'leadingJsDoc') continue;
         const v = node[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+        else if (isAstNodeLike(v)) walk(v);
       }
     };
     walk(ast);
@@ -1129,19 +1145,28 @@ export class TypeChecker {
     const SHRINKERS = new Set(['pop', 'shift', 'splice']);
     const reassignedInBody = (body: AstNode): boolean => {
       let found = false;
-      const scan = (n: any): void => {
-        if (found || !n || typeof n !== 'object' || typeof n.type !== 'string') return;
-        if (n.type === 'AssignmentExpression' && n.left?.type === 'Identifier'
-            && (n.left.name === idxVar || n.left.name === arrName)) { found = true; return; }
-        if (n.type === 'UnaryExpression' && (n.operator === '++' || n.operator === '--')
-            && n.argument?.type === 'Identifier' && n.argument.name === idxVar) { found = true; return; }
-        if (n.type === 'CallExpression' && n.callee?.type === 'Identifier' && SHRINKERS.has(n.callee.name)
-            && n.arguments?.[0]?.type === 'Identifier' && n.arguments[0].name === arrName) { found = true; return; }
+      const scan = (n: unknown): void => {
+        if (found || !isAstNodeLike(n)) return;
+        if (n.type === 'AssignmentExpression') {
+          const a = n as unknown as AssignmentExpressionNode;
+          if (a.left?.type === 'Identifier'
+              && ((a.left as IdentifierNode).name === idxVar || (a.left as IdentifierNode).name === arrName)) { found = true; return; }
+        }
+        if (n.type === 'UnaryExpression') {
+          const u = n as unknown as UnaryExpressionNode;
+          if ((u.operator === '++' || u.operator === '--')
+              && u.argument?.type === 'Identifier' && (u.argument as IdentifierNode).name === idxVar) { found = true; return; }
+        }
+        if (n.type === 'CallExpression') {
+          const c = n as unknown as CallExpressionNode;
+          if (c.callee?.type === 'Identifier' && SHRINKERS.has((c.callee as IdentifierNode).name)
+              && c.arguments?.[0]?.type === 'Identifier' && (c.arguments[0] as IdentifierNode).name === arrName) { found = true; return; }
+        }
         for (const k of Object.keys(n)) {
           if (k === 'leadingJsDoc') continue;
           const v = n[k];
           if (Array.isArray(v)) { for (const it of v) scan(it); }
-          else if (v && typeof v === 'object' && typeof v.type === 'string') scan(v);
+          else if (isAstNodeLike(v)) scan(v);
         }
       };
       scan(body);
@@ -1149,19 +1174,22 @@ export class TypeChecker {
     };
 
     let proven = false;
-    const walk = (node: any): void => {
-      if (proven || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
-      if (node.type === 'ForStatement' && node.body
-          && position >= node.body.start && position <= node.body.end
-          && testProvesUpper(node.test) && initProvesLower(node.init) && !reassignedInBody(node.body)) {
-        proven = true;
-        return;
+    const walk = (node: unknown): void => {
+      if (proven || !isAstNodeLike(node)) return;
+      if (node.type === 'ForStatement') {
+        const forNode = node as unknown as ForStatementNode;
+        if (forNode.body
+            && position >= forNode.body.start && position <= forNode.body.end
+            && testProvesUpper(forNode.test) && initProvesLower(forNode.init) && !reassignedInBody(forNode.body)) {
+          proven = true;
+          return;
+        }
       }
       for (const k of Object.keys(node)) {
         if (k === 'leadingJsDoc') continue;
         const v = node[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+        else if (isAstNodeLike(v)) walk(v);
       }
     };
     walk(ast);
@@ -1560,7 +1588,9 @@ export class TypeChecker {
     return null;
   }
 
-  private getNodeTypeDescription(node: AstNode): UcodeType {
+  private getNodeTypeDescription(node: AstNode | undefined): UcodeType {
+    // A missing argument (e.g. a builtin called with too few args) has no type → UNKNOWN.
+    if (!node) return UcodeType.UNKNOWN;
     // For identifiers, check if there's a narrowed type in the current context.
     // NOTE: this deliberately bases on getFullTypeFromNode (the node's CHECKED
     // type, which carries reassignment / nullMeansWrongType narrowing — e.g.
@@ -2571,7 +2601,12 @@ export class TypeChecker {
   /** Fix-data for the null-access quick fixes (optional chaining / null guard). Carries the
    *  source offsets the code-action handler needs (object span, property start, computed flag,
    *  write flag, and whether the receiver is a bare identifier — for the guard). */
-  private nullAccessFixData(node: MemberExpressionNode): any {
+  private nullAccessFixData(node: MemberExpressionNode): {
+    nullAccess: {
+      objStart: number; objEnd: number; propStart: number;
+      computed: boolean; isWrite: boolean; isIdentifier: boolean;
+    };
+  } {
     return {
       nullAccess: {
         objStart: node.object.start,
@@ -3393,7 +3428,7 @@ export class TypeChecker {
     return false;
   }
 
-  private checkReturnStatement(node: any): CheckResult {
+  private checkReturnStatement(node: ReturnStatementNode): CheckResult {
     if (node.argument) {
       return this.checkNode(node.argument);
     }
@@ -3475,7 +3510,7 @@ export class TypeChecker {
     }
   }
 
-  private checkTryStatement(node: any): CheckResult {
+  private checkTryStatement(node: TryStatementNode): CheckResult {
     // Check the try block
     if (node.block) {
       this.checkNode(node.block);
@@ -3486,15 +3521,17 @@ export class TypeChecker {
       this.checkNode(node.handler);
     }
 
-    // Check finally block
-    if (node.finalizer) {
-      this.checkNode(node.finalizer);
+    // Check finally block. NOTE: TryStatementNode has no `finalizer` in the grammar
+    // (ucode `try` has no `finally`), so this branch is effectively dead; kept for safety.
+    const finalizer = (node as { finalizer?: AstNode }).finalizer;
+    if (finalizer) {
+      this.checkNode(finalizer);
     }
 
     return UcodeType.UNKNOWN;
   }
 
-  private checkCatchClause(node: any): CheckResult {
+  private checkCatchClause(node: CatchClauseNode): CheckResult {
     // Enter catch scope
     this.symbolTable.enterScope(node?.start ?? 0);
 
@@ -3996,12 +4033,17 @@ export class TypeChecker {
    *  could have changed the variable (so `if (!x) return; x = null; x.foo` still flags). */
   private isVariableAssignedBetween(root: AstNode | null, name: string, after: number, before: number): boolean {
     let found = false;
-    const targetsName = (t: any): boolean => t && t.type === 'Identifier' && t.name === name;
-    const walk = (n: any): void => {
-      if (found || !n || typeof n !== 'object' || typeof n.type !== 'string') return;
+    const targetsName = (t: unknown): boolean => isAstNodeLike(t) && t.type === 'Identifier' && t.name === name;
+    const walk = (n: unknown): void => {
+      if (found || !isAstNodeLike(n)) return;
       if (typeof n.start === 'number' && n.start > after && n.start < before) {
+        // NB: only `=`/compound-assign and re-declaration invalidate the guard here.
+        // ucode's ++/-- is a UnaryExpression, but `x++`/`x--` can't turn `x` back into
+        // null, so it must NOT count as an invalidating reassignment for a null-guard —
+        // treating it as one reverts `x` to its declared-null type and falsely flags
+        // `if (!x) return; x++; x.foo()`. (The old code checked a non-existent
+        // 'UpdateExpression' kind, so it never matched — correct by accident; made explicit.)
         if ((n.type === 'AssignmentExpression' && targetsName(n.left))
-            || (n.type === 'UpdateExpression' && targetsName(n.argument))
             || (n.type === 'VariableDeclarator' && targetsName(n.id))) {
           found = true;
           return;
@@ -4011,7 +4053,7 @@ export class TypeChecker {
         if (k === 'parent' || k === 'leadingJsDoc') continue;
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (v && typeof v === 'object' && typeof v.type === 'string') walk(v);
+        else if (isAstNodeLike(v)) walk(v);
       }
     };
     walk(root);
@@ -4580,7 +4622,7 @@ export class TypeChecker {
     }
   }
 
-  private comparisonExcludesNull(operator: string, literalValue: any, callOnLeft: boolean): boolean {
+  private comparisonExcludesNull(operator: string, literalValue: string | number | boolean | null, callOnLeft: boolean): boolean {
     if (callOnLeft) {
       switch (operator) {
         case '>':  return typeof literalValue === 'number' && literalValue >= 0;
@@ -5044,19 +5086,19 @@ export class TypeChecker {
     }
 
     let typeCall: CallExpressionNode | null = null;
-    let typeLiteral: any = null;
+    let typeLiteral: LiteralNode | null = null;
 
     // Check left side for type() call, right side for string literal
     if (binaryExpr.left.type === 'CallExpression' &&
         binaryExpr.right.type === 'Literal') {
       typeCall = binaryExpr.left as CallExpressionNode;
-      typeLiteral = binaryExpr.right;
+      typeLiteral = binaryExpr.right as LiteralNode;
     }
     // Check right side for type() call, left side for string literal
     else if (binaryExpr.right.type === 'CallExpression' &&
              binaryExpr.left.type === 'Literal') {
       typeCall = binaryExpr.right as CallExpressionNode;
-      typeLiteral = binaryExpr.left;
+      typeLiteral = binaryExpr.left as LiteralNode;
     }
 
     // Indirect pattern: t == "object" where t = type(variable)
@@ -5133,19 +5175,19 @@ export class TypeChecker {
     }
 
     let typeCall: CallExpressionNode | null = null;
-    let typeLiteral: any = null;
+    let typeLiteral: LiteralNode | null = null;
 
     // Check left side for type() call, right side for string literal
     if (binaryExpr.left.type === 'CallExpression' &&
         binaryExpr.right.type === 'Literal') {
       typeCall = binaryExpr.left as CallExpressionNode;
-      typeLiteral = binaryExpr.right;
+      typeLiteral = binaryExpr.right as LiteralNode;
     }
     // Check right side for type() call, left side for string literal
     else if (binaryExpr.right.type === 'CallExpression' &&
              binaryExpr.left.type === 'Literal') {
       typeCall = binaryExpr.right as CallExpressionNode;
-      typeLiteral = binaryExpr.left;
+      typeLiteral = binaryExpr.left as LiteralNode;
     }
 
     // Indirect pattern: t != "object" where t = type(variable)
@@ -5213,16 +5255,16 @@ export class TypeChecker {
   private resolveIndirectTypeCall(
     binaryExpr: BinaryExpressionNode,
     variableName: string
-  ): { typeCall: CallExpressionNode; typeLiteral: any } | null {
+  ): { typeCall: CallExpressionNode; typeLiteral: LiteralNode } | null {
     let identNode: IdentifierNode | null = null;
-    let literalNode: any = null;
+    let literalNode: LiteralNode | null = null;
 
     if (binaryExpr.left.type === 'Identifier' && binaryExpr.right.type === 'Literal') {
       identNode = binaryExpr.left as IdentifierNode;
-      literalNode = binaryExpr.right;
+      literalNode = binaryExpr.right as LiteralNode;
     } else if (binaryExpr.right.type === 'Identifier' && binaryExpr.left.type === 'Literal') {
       identNode = binaryExpr.right as IdentifierNode;
-      literalNode = binaryExpr.left;
+      literalNode = binaryExpr.left as LiteralNode;
     }
 
     if (!identNode || !literalNode || typeof literalNode.value !== 'string') {

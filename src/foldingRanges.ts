@@ -8,6 +8,8 @@
 // matching how function/object folds behave elsewhere. Single-line spans never fold.
 
 import { FoldingRange, FoldingRangeKind } from 'vscode-languageserver/node';
+import type { AstNode, ProgramNode } from './ast/nodes';
+import type { Token } from './lexer';
 
 type LineAt = (offset: number) => number;
 
@@ -20,8 +22,8 @@ const BLOCK_NODE_TYPES = new Set([
 ]);
 
 export function provideFoldingRanges(
-    ast: any,
-    comments: any[],
+    ast: AstNode | null | undefined,
+    comments: Token[],
     text: string,
     lineAt: LineAt,
 ): FoldingRange[] {
@@ -39,28 +41,29 @@ export function provideFoldingRanges(
     };
 
     // 1) Block-bearing AST nodes.
-    const visit = (node: any): void => {
+    const visit = (node: AstNode): void => {
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
         if (BLOCK_NODE_TYPES.has(node.type) && typeof node.start === 'number' && typeof node.end === 'number') {
             add(lineAt(node.start), lineAt(node.end - 1));
         }
         for (const k of Object.keys(node)) {
             if (k === 'leadingJsDoc') continue; // JSDoc is folded via the comment pass
-            const v = node[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it); }
-            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v);
+            const v = (node as unknown as Record<string, unknown>)[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
+            else if (v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string') visit(v as AstNode);
         }
     };
-    visit(ast);
+    if (ast) visit(ast);
 
     // 2) Leading import group — fold a run of >=2 consecutive top-level imports.
-    const body = Array.isArray(ast?.body) ? ast.body : [];
+    const body: AstNode[] = (ast && Array.isArray((ast as ProgramNode).body)) ? (ast as ProgramNode).body : [];
     for (let i = 0; i < body.length;) {
         if (body[i]?.type === 'ImportDeclaration') {
             let j = i;
             while (j + 1 < body.length && body[j + 1]?.type === 'ImportDeclaration') j++;
-            if (j > i && typeof body[i].start === 'number' && typeof body[j].end === 'number') {
-                add(lineAt(body[i].start), lineAt(body[j].end - 1), FoldingRangeKind.Imports);
+            const first = body[i], last = body[j];
+            if (j > i && first && last && typeof first.start === 'number' && typeof last.end === 'number') {
+                add(lineAt(first.start), lineAt(last.end - 1), FoldingRangeKind.Imports);
             }
             i = j + 1;
         } else {

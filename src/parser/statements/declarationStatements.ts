@@ -3,7 +3,7 @@
  * Handles variable declarations and function declarations
  */
 
-import { TokenType } from '../../lexer';
+import { TokenType, type Token } from '../../lexer';
 import { UcodeErrorCode } from '../../analysis/errorConstants';
 import {
   type AstNode, type VariableDeclarationNode, type VariableDeclaratorNode,
@@ -521,5 +521,5 @@ export abstract class DeclarationStatements extends ExpressionParser {
   }
 
   // Abstract method that must be implemented by subclasses
-  protected abstract override parseBlockStatement(openingBrace: any, context: string): BlockStatementNode;
+  protected abstract override parseBlockStatement(openingBrace: Token | null, context: string): BlockStatementNode;
 }

@@ -1,9 +1,16 @@
 import {
     type TextDocumentPositionParams,
+    type Position,
+    type TextDocuments,
     Hover,
     MarkupKind
 } from 'vscode-languageserver/node';
+import { TextDocument } from 'vscode-languageserver-textdocument';
 import { UcodeLexer, TokenType, isKeyword, isMemberAccessDot, type Token } from './lexer';
+import type {
+    AstNode, PropertyNode, ImportDeclarationNode, ImportSpecifierNode,
+    LiteralNode, FunctionExpressionNode, ArrowFunctionExpressionNode, FunctionDeclarationNode,
+} from './ast/nodes';
 import { allBuiltinFunctions } from './builtins';
 import { type SemanticAnalysisResult, SymbolType, type Symbol as UcodeSymbol } from './analysis';
 import { typeToString, type UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt } from './analysis/symbolTable';
@@ -27,7 +34,7 @@ function appendBuiltinNote(doc: string): string {
     return doc + BUILTIN_METHOD_NOTE;
 }
 
-function detectMemberHoverContext(position: any, tokens: any[], document: any): { objectName: string, memberName: string, memberTokenPos: number, memberTokenEnd: number, resolvedObjectType?: KnownObjectType } | undefined {
+function detectMemberHoverContext(position: Position, tokens: Token[], document: TextDocument): { objectName: string, memberName: string, memberTokenPos: number, memberTokenEnd: number, resolvedObjectType?: KnownObjectType } | undefined {
     // Look for pattern: LABEL DOT LABEL (where cursor is over the second LABEL)
     // Also handles call chains: LABEL(...) DOT LABEL, LABEL DOT LABEL(...) DOT LABEL
 
@@ -37,7 +44,7 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
     let hoverTokenIndex = -1;
     for (let i = 0; i < tokens.length; i++) {
         const token = tokens[i];
-        if (token.pos <= offset && offset < token.end) {
+        if (token && token.pos <= offset && offset < token.end) {
             hoverTokenIndex = i;
             break;
         }
@@ -48,6 +55,9 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
     }
 
     const hoverToken = tokens[hoverTokenIndex];
+    if (!hoverToken) {
+        return undefined;
+    }
 
     // Check if we're hovering over a LABEL token
     if (hoverToken.type !== TokenType.TK_LABEL) {
@@ -60,11 +70,14 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
     }
 
     const dotToken = tokens[hoverTokenIndex - 1];
-    if (!isMemberAccessDot(dotToken.type) || dotToken.end !== hoverToken.pos) {
+    if (!dotToken || !isMemberAccessDot(dotToken.type) || dotToken.end !== hoverToken.pos) {
         return undefined;
     }
 
     const objectToken = tokens[hoverTokenIndex - 2];
+    if (!objectToken) {
+        return undefined;
+    }
 
     // Verify the pattern: LABEL DOT LABEL
     if (objectToken.type === TokenType.TK_LABEL &&
@@ -97,16 +110,20 @@ function detectMemberHoverContext(position: any, tokens: any[], document: any): 
         let parenDepth = 1;
         let j = hoverTokenIndex - 3;
         while (j >= 0 && parenDepth > 0) {
-            if (tokens[j].type === TokenType.TK_RPAREN) parenDepth++;
-            else if (tokens[j].type === TokenType.TK_LPAREN) parenDepth--;
+            const t = tokens[j];
+            if (t?.type === TokenType.TK_RPAREN) parenDepth++;
+            else if (t?.type === TokenType.TK_LPAREN) parenDepth--;
             j--;
         }
         // j now points to the token before the opening paren
-        if (j >= 0 && tokens[j].type === TokenType.TK_LABEL) {
-            const funcName = tokens[j].value as string;
+        const funcToken = j >= 0 ? tokens[j] : undefined;
+        if (funcToken && funcToken.type === TokenType.TK_LABEL) {
+            const funcName = funcToken.value as string;
             let moduleName: string | undefined;
-            if (j >= 2 && isMemberAccessDot(tokens[j - 1].type) && tokens[j - 2].type === TokenType.TK_LABEL) {
-                moduleName = tokens[j - 2].value as string;
+            const dotBefore = tokens[j - 1];
+            const labelBefore = tokens[j - 2];
+            if (j >= 2 && dotBefore && labelBefore && isMemberAccessDot(dotBefore.type) && labelBefore.type === TokenType.TK_LABEL) {
+                moduleName = labelBefore.value as string;
             }
             const objType = resolveReturnObjectType(funcName, moduleName);
             if (objType) {
@@ -396,7 +413,8 @@ function getUnifiedMemberHover(
         if (uri && !uri.startsWith('builtin://')) {
             const fnDef = getHoverFileResolver().findFunctionDefinition(uri, propertyName);
             if (fnDef && fnDef.kind === 'function') {
-                const params = (((fnDef.node as any)?.params) || []).map((p: any) => p.name).join(', ');
+                const fnNode = fnDef.node as FunctionDeclarationNode;
+                const params = (fnNode.params || []).map(p => p.name).join(', ');
                 const moduleLabel = symbol.importedFrom.startsWith('file://')
                     ? (symbol.importedFrom.split('/').pop() || symbol.importedFrom)
                     : symbol.importedFrom;
@@ -431,7 +449,7 @@ const FORMAT_SPECIFIER_DESCRIPTIONS: Record<string, string> = {
     '%': "literal '%'",
 };
 
-function getFormatSpecifierHover(token: Token, tokenIndex: number, tokens: Token[], offset: number, document: any): Hover | undefined {
+function getFormatSpecifierHover(token: Token, tokenIndex: number, tokens: Token[], offset: number, document: TextDocument): Hover | undefined {
     // Walk backwards: expect TK_LPAREN, then TK_LABEL with value printf/sprintf
     // Allow for optional comma/args between, but the string must be the first arg
     // Pattern: LABEL LPAREN STRING ...
@@ -541,19 +559,22 @@ function getFormatSpecifierHover(token: Token, tokenIndex: number, tokens: Token
 }
 
 /** Find the object-literal Property whose KEY identifier spans `offset`. */
-function findPropertyKeyAtOffset(node: any, offset: number): any | null {
+function findPropertyKeyAtOffset(node: AstNode, offset: number): PropertyNode | null {
     if (!node || typeof node !== 'object' || typeof node.type !== 'string') return null;
-    if (node.type === 'Property' && node.key && typeof node.key.start === 'number'
-        && node.key.start <= offset && offset <= node.key.end) {
-        return node;
+    if (node.type === 'Property') {
+        const prop = node as PropertyNode;
+        if (prop.key && typeof prop.key.start === 'number'
+            && prop.key.start <= offset && offset <= prop.key.end) {
+            return prop;
+        }
     }
     for (const k of Object.keys(node)) {
         if (k === 'type' || k === 'start' || k === 'end') continue;
-        const v = (node as any)[k];
+        const v = (node as unknown as Record<string, unknown>)[k];
         if (Array.isArray(v)) {
-            for (const it of v) { const f = findPropertyKeyAtOffset(it, offset); if (f) return f; }
-        } else if (v && typeof v === 'object' && typeof v.type === 'string') {
-            const f = findPropertyKeyAtOffset(v, offset); if (f) return f;
+            for (const it of v) { const f = findPropertyKeyAtOffset(it as AstNode, offset); if (f) return f; }
+        } else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') {
+            const f = findPropertyKeyAtOffset(v as AstNode, offset); if (f) return f;
         }
     }
     return null;
@@ -564,42 +585,49 @@ function findPropertyKeyAtOffset(node: any, offset: number): any | null {
  * spanning `offset`, returning its module + original name. Works regardless of
  * how the import statement is wrapped across lines.
  */
-function findImportedNameAtOffset(node: any, offset: number): { moduleName: string; importedName: string } | null {
+function findImportedNameAtOffset(node: AstNode, offset: number): { moduleName: string; importedName: string } | null {
     if (!node || typeof node !== 'object' || typeof node.type !== 'string') return null;
-    if (node.type === 'ImportDeclaration' && Array.isArray(node.specifiers) && node.source) {
-        for (const spec of node.specifiers) {
-            if (spec.type === 'ImportSpecifier' && spec.imported && typeof spec.imported.start === 'number'
-                && spec.imported.start <= offset && offset <= spec.imported.end) {
-                const raw = node.source.value;
-                if (typeof raw === 'string') {
-                    return { moduleName: raw.replace(/^['"]|['"]$/g, ''), importedName: spec.imported.name };
+    if (node.type === 'ImportDeclaration') {
+        const imp = node as ImportDeclarationNode;
+        if (Array.isArray(imp.specifiers) && imp.source) {
+            for (const spec of imp.specifiers) {
+                if (spec.type === 'ImportSpecifier') {
+                    const importSpec = spec as ImportSpecifierNode;
+                    if (importSpec.imported && typeof importSpec.imported.start === 'number'
+                        && importSpec.imported.start <= offset && offset <= importSpec.imported.end) {
+                        const raw = imp.source.value;
+                        if (typeof raw === 'string') {
+                            return { moduleName: raw.replace(/^['"]|['"]$/g, ''), importedName: importSpec.imported.name };
+                        }
+                    }
                 }
             }
         }
     }
     for (const k of Object.keys(node)) {
         if (k === 'type' || k === 'start' || k === 'end') continue;
-        const v = (node as any)[k];
+        const v = (node as unknown as Record<string, unknown>)[k];
         if (Array.isArray(v)) {
-            for (const it of v) { const f = findImportedNameAtOffset(it, offset); if (f) return f; }
-        } else if (v && typeof v === 'object' && typeof v.type === 'string') {
-            const f = findImportedNameAtOffset(v, offset); if (f) return f;
+            for (const it of v) { const f = findImportedNameAtOffset(it as AstNode, offset); if (f) return f; }
+        } else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') {
+            const f = findImportedNameAtOffset(v as AstNode, offset); if (f) return f;
         }
     }
     return null;
 }
 
 /** Describe an object-literal property's value (function/literal/array/object) for hover. */
-function formatPropertyValueHover(value: any): string | undefined {
+function formatPropertyValueHover(value: AstNode): string | undefined {
     if (!value || typeof value.type !== 'string') return undefined;
     if (value.type === 'ArrowFunctionExpression' || value.type === 'FunctionExpression') {
-        const params = ((value.params as any[]) || []).map((p) => p.name);
-        if (value.restParam) params.push('...' + value.restParam.name);
-        const rest = value.restParam ? ' with rest parameters' : '';
-        if (value.type === 'ArrowFunctionExpression') {
+        const fn = value as ArrowFunctionExpressionNode | FunctionExpressionNode;
+        const params = (fn.params || []).map((p) => p.name);
+        if (fn.restParam) params.push('...' + fn.restParam.name);
+        const rest = fn.restParam ? ' with rest parameters' : '';
+        if (fn.type === 'ArrowFunctionExpression') {
             let ret = 'unknown';
-            if (value.expression && value.body && value.body.type === 'Literal') {
-                const bv = value.body.value;
+            if (fn.expression && fn.body && fn.body.type === 'Literal') {
+                const bv = (fn.body as LiteralNode).value;
                 if (typeof bv === 'number') ret = 'number';
                 else if (typeof bv === 'string') ret = 'string';
                 else if (typeof bv === 'boolean') ret = 'boolean';
@@ -610,7 +638,7 @@ function formatPropertyValueHover(value: any): string | undefined {
         return `**(function)** **function(${params.join(', ')})**\n\nFunction expression${rest}`;
     }
     if (value.type === 'Literal') {
-        const v = value.value;
+        const v = (value as LiteralNode).value;
         if (typeof v === 'string') return '**(string)** String literal';
         if (typeof v === 'number') return '**(number)** Number literal';
         if (typeof v === 'boolean') return '**(boolean)** Boolean literal';
@@ -623,9 +651,9 @@ function formatPropertyValueHover(value: any): string | undefined {
 
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
-    documents: any,
+    documents: TextDocuments<TextDocument>,
     analysisResult?: SemanticAnalysisResult,
-    cachedTokens?: any[]
+    cachedTokens?: Token[]
 ): Hover | undefined {
     const document = documents.get(textDocumentPositionParams.textDocument.uri);
     if (!document) {
@@ -638,8 +666,8 @@ export function handleHover(
 
     try {
         // Use cached tokens when available to avoid re-lexing the entire document
-        let tokens: any[];
-        let comments: any[] = [];
+        let tokens: Token[];
+        let comments: Token[] = [];
         if (cachedTokens && cachedTokens.length > 0) {
             tokens = cachedTokens;
             const cl = new UcodeLexer(text, { rawMode: true });
@@ -1192,7 +1220,7 @@ export function handleHover(
             // like `best[k].signal` or `f().signal`, where detectMemberExpression's
             // LABEL.LABEL pattern doesn't match — must NOT fall back to a same-named
             // global builtin (e.g. the `signal` builtin). Show a minimal property hover.
-            const tokIdx = tokens.findIndex((t: any) => t.pos <= offset && offset < t.end);
+            const tokIdx = tokens.findIndex((t) => t.pos <= offset && offset < t.end);
             if (tokIdx > 0 && isMemberAccessDot(tokens[tokIdx - 1]?.type)) {
                 return {
                     contents: { kind: MarkupKind.Markdown, value: `**${word}**: \`unknown\`` },
@@ -1246,7 +1274,7 @@ export function handleHover(
         
         // Handle regex literals
         if (token && token.type === TokenType.TK_REGEXP) {
-            const regexInfo = regexTypeRegistry.extractPattern(token.value);
+            const regexInfo = regexTypeRegistry.extractPattern(String(token.value));
             const flags = regexInfo.flags ?? '';
             // Cursor over the trailing flag characters → explain what each flag does, rather than
             // the generic pattern doc.
@@ -1318,13 +1346,14 @@ export function handleHover(
     return undefined;
 }
 
-function detectFunctionCall(offset: number, tokens: any[]): boolean {
+function detectFunctionCall(offset: number, tokens: Token[]): boolean {
     // Find the token at the current position
     const currentTokenIndex = tokens.findIndex(t => t.pos <= offset && offset < t.end);
     if (currentTokenIndex === -1) return false;
     
     const currentToken = tokens[currentTokenIndex];
-    
+    if (!currentToken) return false;
+
     // Check if current token is a label (function name)
     if (currentToken.type !== TokenType.TK_LABEL) return false;
     
@@ -1339,7 +1368,7 @@ function detectFunctionCall(offset: number, tokens: any[]): boolean {
     // Check if there's an opening parenthesis immediately after this token
     if (currentTokenIndex + 1 < tokens.length) {
         const nextToken = tokens[currentTokenIndex + 1];
-        if (nextToken.type === TokenType.TK_LPAREN && currentToken.end === nextToken.pos) {
+        if (nextToken && nextToken.type === TokenType.TK_LPAREN && currentToken.end === nextToken.pos) {
             return true; // This is a function call
         }
     }
@@ -1347,12 +1376,13 @@ function detectFunctionCall(offset: number, tokens: any[]): boolean {
     return false;
 }
 
-function detectMemberExpression(offset: number, tokens: any[]): { objectName: string; propertyName: string; cursorOnObject: boolean; chain?: string[] } | undefined {
+function detectMemberExpression(offset: number, tokens: Token[]): { objectName: string; propertyName: string; cursorOnObject: boolean; chain?: string[] } | undefined {
     // Find the token at the current position
     const currentTokenIndex = tokens.findIndex(t => t.pos <= offset && offset < t.end);
     if (currentTokenIndex === -1) return undefined;
 
     const currentToken = tokens[currentTokenIndex];
+    if (!currentToken) return undefined;
 
     // Look for pattern: LABEL DOT LABEL or LABEL DOT current_position
     // Check if current token is part of a member expression
@@ -1362,7 +1392,8 @@ function detectMemberExpression(offset: number, tokens: any[]): { objectName: st
         const nextToken = tokens[currentTokenIndex + 1];
         const afterNextToken = tokens[currentTokenIndex + 2];
 
-        if (isMemberAccessDot(nextToken.type) &&
+        if (nextToken && afterNextToken &&
+            isMemberAccessDot(nextToken.type) &&
             afterNextToken.type === TokenType.TK_LABEL &&
             currentToken.type === TokenType.TK_LABEL) {
             return {
@@ -1378,7 +1409,8 @@ function detectMemberExpression(offset: number, tokens: any[]): { objectName: st
         const prevToken = tokens[currentTokenIndex - 1];
         const beforePrevToken = tokens[currentTokenIndex - 2];
 
-        if (isMemberAccessDot(prevToken.type) &&
+        if (prevToken && beforePrevToken &&
+            isMemberAccessDot(prevToken.type) &&
             beforePrevToken.type === TokenType.TK_LABEL &&
             currentToken.type === TokenType.TK_LABEL) {
             // Walk further back through additional LABEL.DOT pairs so chained

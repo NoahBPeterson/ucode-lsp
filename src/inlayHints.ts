@@ -12,8 +12,9 @@
 // shifted) offsets to LSP positions and filters to the requested range.
 
 import { InlayHint, InlayHintKind } from 'vscode-languageserver/node';
-import { typeToString } from './analysis/symbolTable';
+import { typeToString, type SymbolTable, type Symbol } from './analysis/symbolTable';
 import { resolveCalleeParameters } from './signatureHelp';
+import type { AstNode, VariableDeclarationNode, CallExpressionNode } from './ast/nodes';
 
 type PosAt = (offset: number) => { line: number; character: number };
 
@@ -34,7 +35,7 @@ export interface RawInlayHint {
 // (`fs_mod || require('fs')`) — does not reveal its type at a glance, so we annotate
 // it. The `unknown`-type guard at the call site still suppresses noise where no
 // concrete type is known, so this only adds hints that carry real information.
-function isNonObviousInit(init: any): boolean {
+function isNonObviousInit(init: AstNode | null): boolean {
     if (!init || typeof init.type !== 'string') return false;
     switch (init.type) {
         case 'Literal':
@@ -51,20 +52,20 @@ function isNonObviousInit(init: any): boolean {
 
 /** Walk the whole AST and produce offset-anchored hints for the entire document. */
 export function computeRawInlayHints(
-    ast: any,
-    symbolTable: any,
+    ast: AstNode | null | undefined,
+    symbolTable: SymbolTable,
     builtins: Map<string, string>,
 ): RawInlayHint[] {
     const hints: RawInlayHint[] = [];
 
-    const visit = (node: any): void => {
+    const visit = (node: AstNode): void => {
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
 
         // 1) Variable type hint after the declared name.
         if (node.type === 'VariableDeclaration') {
-            for (const d of (node.declarations || [])) {
+            for (const d of ((node as VariableDeclarationNode).declarations || [])) {
                 if (d?.id?.type !== 'Identifier' || !isNonObviousInit(d.init)) continue;
-                const sym: any = symbolTable?.lookupAtPosition?.(d.id.name, d.id.start) ?? symbolTable?.lookup?.(d.id.name);
+                const sym: Symbol | null = symbolTable?.lookupAtPosition?.(d.id.name, d.id.start) ?? symbolTable?.lookup?.(d.id.name);
                 if (sym?.dataType === undefined) continue;
                 const ts = typeToString(sym.dataType);
                 if (!ts || ts === 'unknown') continue;
@@ -73,32 +74,35 @@ export function computeRawInlayHints(
         }
 
         // 2) Parameter-name hints at call arguments.
-        if (node.type === 'CallExpression' && Array.isArray(node.arguments) && node.arguments.length) {
-            const sig = resolveCalleeParameters(node.callee, symbolTable, builtins);
-            if (sig && sig.params.length) {
-                const lastIsRest = sig.params[sig.params.length - 1]!.isRest;
-                for (let i = 0; i < node.arguments.length; i++) {
-                    const arg = node.arguments[i];
-                    if (!arg) continue;
-                    // Map arg index → parameter (a trailing rest param absorbs extras).
-                    const p = i < sig.params.length ? sig.params[i]
-                        : (lastIsRest ? sig.params[sig.params.length - 1] : undefined);
-                    if (!p || p.isRest) continue;
-                    // Redundant when the argument is exactly that name (`foo(name)`).
-                    if (arg.type === 'Identifier' && arg.name === p.name) continue;
-                    hints.push({ offset: arg.start, label: `${p.name}:`, kind: InlayHintKind.Parameter, paddingLeft: false, paddingRight: true });
+        if (node.type === 'CallExpression') {
+            const call = node as CallExpressionNode;
+            if (Array.isArray(call.arguments) && call.arguments.length) {
+                const sig = resolveCalleeParameters(call.callee, symbolTable, builtins);
+                if (sig && sig.params.length) {
+                    const lastIsRest = sig.params[sig.params.length - 1]!.isRest;
+                    for (let i = 0; i < call.arguments.length; i++) {
+                        const arg = call.arguments[i];
+                        if (!arg) continue;
+                        // Map arg index → parameter (a trailing rest param absorbs extras).
+                        const p = i < sig.params.length ? sig.params[i]
+                            : (lastIsRest ? sig.params[sig.params.length - 1] : undefined);
+                        if (!p || p.isRest) continue;
+                        // Redundant when the argument is exactly that name (`foo(name)`).
+                        if (arg.type === 'Identifier' && (arg as { name?: string }).name === p.name) continue;
+                        hints.push({ offset: arg.start, label: `${p.name}:`, kind: InlayHintKind.Parameter, paddingLeft: false, paddingRight: true });
+                    }
                 }
             }
         }
 
         for (const k of Object.keys(node)) {
             if (k === 'leadingJsDoc') continue;
-            const v = node[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it); }
-            else if (v && typeof v === 'object' && typeof v.type === 'string') visit(v);
+            const v = (node as unknown as Record<string, unknown>)[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
+            else if (v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string') visit(v as AstNode);
         }
     };
-    visit(ast);
+    if (ast) visit(ast);
     return hints;
 }
 

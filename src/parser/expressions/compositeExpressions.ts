@@ -3,7 +3,7 @@
  * Handles arrays, objects, and member access
  */
 
-import { TokenType } from '../../lexer';
+import { TokenType, type Token } from '../../lexer';
 import {
   type AstNode, type IdentifierNode, type ArrayExpressionNode, type ObjectExpressionNode,
   type PropertyNode, type MemberExpressionNode, type LiteralNode, type SpreadElementNode,
@@ -257,7 +257,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
   /**
    * Get the string representation of a token to use as an identifier name
    */
-  protected getTokenAsIdentifierName(token: any): string {
+  protected getTokenAsIdentifierName(token: Token): string {
     // If it's already a label token, use its value
     if (token.type === TokenType.TK_LABEL) {
       return token.value as string;
