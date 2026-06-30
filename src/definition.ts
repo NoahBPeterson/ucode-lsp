@@ -164,6 +164,37 @@ function resolveMemberDefinition(
         }
     }
 
+    // Named import of an object-literal const: `import { E } from './util.uc'`
+    // where `export const E = { INVALID_PARAMS: -32602, ... }`. Cursor on a member
+    // (`E.INVALID_PARAMS`) jumps to that key inside the source file. importSpecifier
+    // is the original exported name (the imported side of `import { E as Errors }`),
+    // so it keys the object-literal lookup correctly even when aliased.
+    if (objSymbol && objSymbol.type === SymbolType.IMPORTED
+        && objSymbol.importSpecifier && objSymbol.importSpecifier !== '*'
+        && objSymbol.importedFrom) {
+        let srcUri: string | null;
+        if (objSymbol.importedFrom.startsWith('file://')) {
+            srcUri = objSymbol.importedFrom;
+        } else if (objSymbol.importedFrom.startsWith('builtin://')) {
+            srcUri = null;
+        } else {
+            srcUri = fileResolver.resolveImportPath(objSymbol.importedFrom, document.uri);
+        }
+        if (srcUri) {
+            const loc = fileResolver.findExportedObjectPropertyLocation(srcUri, objSymbol.importSpecifier, symbolName);
+            if (loc) {
+                const target: TextDocument | undefined = documents.get(srcUri);
+                const targetContent = target ? target.getText() : fileResolver.getFileContent(srcUri);
+                if (targetContent !== null && targetContent !== undefined) {
+                    const tmpDoc = TextDocument.create(srcUri, 'ucode', 1, targetContent);
+                    const start = tmpDoc.positionAt(loc.start);
+                    const end = tmpDoc.positionAt(loc.end);
+                    return { uri: srcUri, range: { start, end } };
+                }
+            }
+        }
+    }
+
     // Factory-returned member: a param typed `@param {import('./sys.uc')} sh`
     // (or a local bound to an imported factory's return) carries each member's
     // cross-file source location. `sh.exec` / `platform.env` jump to the member's

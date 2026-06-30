@@ -2029,6 +2029,22 @@ export class FileResolver {
             case 'FunctionExpression':
             case 'ArrowFunctionExpression': return UcodeType.FUNCTION as UcodeDataType;
             case 'TemplateLiteral': return UcodeType.STRING as UcodeDataType;
+            case 'UnaryExpression': {
+                // ucode parses negative number literals as `-` UnaryExpression over a
+                // Literal, so `INVALID_PARAMS: -32602` is a UnaryExpression, not a Literal.
+                // Without this, every negative-valued object-literal constant resolved to
+                // UNKNOWN at the import site (positive `NONE: 0` worked). `+x`/`-x` follow
+                // the operand's numeric type; `!x` is boolean; `~x` is integer.
+                const un = node as any;
+                if (un.operator === '!') return UcodeType.BOOLEAN as UcodeDataType;
+                if (un.operator === '~') return UcodeType.INTEGER as UcodeDataType;
+                if (un.operator === '-' || un.operator === '+') {
+                    const operand = this.inferNodeType(un.argument);
+                    if (operand === UcodeType.INTEGER || operand === UcodeType.DOUBLE) return operand;
+                    return UcodeType.INTEGER as UcodeDataType;
+                }
+                return UcodeType.UNKNOWN as UcodeDataType;
+            }
             case 'Literal': {
                 const val = (node as any).value;
                 if (typeof val === 'string') return UcodeType.STRING as UcodeDataType;
