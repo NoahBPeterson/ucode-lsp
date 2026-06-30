@@ -1228,6 +1228,20 @@ export function handleHover(
                 };
             }
 
+            // A `loadfile("x.uc")()`-injected global (no in-file symbol) — show its coarse
+            // type + origin file, mirroring an imported symbol's hover.
+            const lfg = analysisResult?.loadfileGlobals?.get(word);
+            if (lfg) {
+                const origin = lfg.uri.replace(/^.*\//, '');
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: `(global) **${word}**: \`${lfg.typeStr}\`\n\nInjected via \`loadfile()\` from \`${origin}\``,
+                    },
+                    range: { start: document.positionAt(token.pos), end: document.positionAt(token.end) },
+                };
+            }
+
             // Check built-in functions BEFORE exception properties
             // (builtin functions like 'type' take precedence over exception properties)
             const documentation = allBuiltinFunctions.get(word);

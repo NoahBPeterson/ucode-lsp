@@ -177,6 +177,13 @@ export function handleCompletion(
             }
         }
 
+        // loadfile("./x.uc") / include("./x.uc"): the first string arg is a FILE PATH, so
+        // offer the same relative/multi-dir path completion as import-from strings.
+        const loadfilePathContext = detectLoadfilePathContext(offset, tokens);
+        if (loadfilePathContext) {
+            return createFileSystemCompletions(loadfilePathContext.currentPath, textDocumentPositionParams.textDocument.uri, connection);
+        }
+
         // Suppress completion inside a string literal or a (non-JSDoc) comment — a `.` in
         // prose / a path / a URL must NOT pop the builtin list. Placed AFTER the import-path
         // and JSDoc-comment contexts above (which legitimately complete inside a string /
@@ -1539,6 +1546,29 @@ function getRtnlConstObjectCompletions(objectName: string, analysisResult?: Sema
     }
     console.log(`[RTNL_CONST_COMPLETION] Not an rtnl constants object: ${objectName}`);
     return [];
+}
+
+/** Cursor inside the FIRST string-literal argument of a file-path builtin
+ *  (`loadfile(...)` / `include(...)`), e.g. `loadfile("./|h2.uc")`. Returns the partial
+ *  path typed up to the cursor so the same file-system completion as import strings applies. */
+function detectLoadfilePathContext(offset: number, tokens: Token[]): { currentPath: string } | undefined {
+    const PATH_BUILTINS = new Set(['loadfile', 'include']);
+    for (let i = 0; i < tokens.length; i++) {
+        const str = tokens[i];
+        if (!str || str.type !== TokenType.TK_STRING) continue;
+        if (offset < str.pos || offset > str.end) continue;          // cursor inside this string
+        // …and it's the first arg: previous tokens are `(` then a path-builtin identifier.
+        const lparen = tokens[i - 1];
+        const callee = tokens[i - 2];
+        if (lparen?.type === TokenType.TK_LPAREN
+            && callee?.type === TokenType.TK_LABEL
+            && PATH_BUILTINS.has(callee.value as string)) {
+            const start = str.pos + 1;                                 // skip opening quote
+            return { currentPath: str.value !== undefined ? (str.value as string).slice(0, Math.max(0, offset - start)) : '' };
+        }
+        return undefined; // cursor is in a string that isn't a path-builtin arg
+    }
+    return undefined;
 }
 
 function detectImportCompletionContext(offset: number, tokens: Token[], text: string): { inStringLiteral: boolean; currentPath?: string } | undefined {

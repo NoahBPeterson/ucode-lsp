@@ -41,7 +41,27 @@ export function handleDefinition(
         
         // Find the token at the cursor position
         const token = tokens.find(t => t.pos <= offset && offset <= t.end);
-        
+
+        // Go-to-definition on a path STRING — open the referenced file. Covers
+        // `import … from "x.uc"`, `loadfile("x.uc")`, and `include("x.uc")` (the path arg).
+        if (token && token.type === TokenType.TK_STRING && typeof token.value === 'string') {
+            const ti = tokens.indexOf(token);
+            const prev = ti >= 1 ? tokens[ti - 1] : undefined;
+            const callee = ti >= 2 ? tokens[ti - 2] : undefined;
+            const isImportPath = prev?.type === TokenType.TK_FROM;
+            const isCallPath = prev?.type === TokenType.TK_LPAREN
+                && callee?.type === TokenType.TK_LABEL
+                && (callee.value === 'loadfile' || callee.value === 'include');
+            if (isImportPath || isCallPath) {
+                const resolved = fileResolver.resolveImportPath(token.value, document.uri);
+                // Only a real file target — skip builtin:// modules (no source to open).
+                if (resolved && resolved.startsWith('file://') && fileResolver.getFileContent(resolved) !== null) {
+                    const zero = { line: 0, character: 0 };
+                    return { uri: resolved, range: { start: zero, end: zero } };
+                }
+            }
+        }
+
         if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string') {
             const symbolName = token.value;
             const tokenIndex = tokens.indexOf(token);
@@ -76,6 +96,18 @@ export function handleDefinition(
 
             if (symbol) {
                 return getSymbolDefinition(symbol, document, fileResolver);
+            }
+
+            // A `loadfile("x.uc")()`-injected global has no in-file symbol — jump to its
+            // `global.X = …` (or bare `X = …`) site in the loaded file.
+            const lf = analysisResult.loadfileGlobals?.get(symbolName);
+            if (lf) {
+                const target = documents.get(lf.uri);
+                const content = target ? target.getText() : fileResolver.getFileContent(lf.uri);
+                if (content !== null && content !== undefined) {
+                    const tmpDoc = TextDocument.create(lf.uri, 'ucode', 1, content);
+                    return { uri: lf.uri, range: { start: tmpDoc.positionAt(lf.defStart), end: tmpDoc.positionAt(lf.defEnd) } };
+                }
             }
         }
     } catch (error) {

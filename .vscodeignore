@@ -53,3 +53,6 @@ packages/**
 utest/**
 firewall4/**
 luci/**
+adblock-fast/**
+openwrt-firewall4-with-fullcone/**
+uspot/**

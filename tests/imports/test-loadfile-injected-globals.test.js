@@ -17,6 +17,7 @@ beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loadfile-glob-'));
   fs.writeFileSync(path.join(dir, 'handler.uc'),
     'global.handle_request = function(env) { return env; };\n' +
+    'global.MAX_BODY = 131072;\n' +                            // non-function global (read as a value)
     'bare_helper = function() { return 1; };\n' +              // bare implicit global (leaks)
     'function local_only() { return 2; }\n');                  // fn-decl (does NOT leak)
 });
@@ -31,6 +32,11 @@ async function diagFor(code) {
 test('global.X from the loaded file is callable (no UC1002)', async () => {
   const ds = await diagFor('loadfile("./handler.uc")();\nhandle_request({ x: 1 });\n');
   expect(u1002(ds, 'handle_request').length).toBe(0);
+});
+
+test('a non-function injected global READ as a value is not a false UC1001', async () => {
+  const ds = await diagFor('loadfile("./handler.uc")();\nprint(MAX_BODY);\n');
+  expect(ds.filter(d => d.code === 'UC1001' && d.message.includes('MAX_BODY')).length).toBe(0);
 });
 
 test('bare implicit-global from the loaded file is callable too', async () => {

@@ -12,8 +12,9 @@ describe('Function CodeLenses (git history + references)', function() {
 
   let lspServer, getCodeLens, resolveCodeLens, initResult;
 
-  // Function DECLARATIONS get lenses at any depth: alpha@1, nested@2, and
-  // (exported) beta@6. The arrow and function expression are values → no lens.
+  // Function DECLARATIONS get lenses at any depth: alpha@1, nested@2, (exported) beta@6.
+  // Top-level function-VALUED let/const vars now also get a lens (API surface): the arrow
+  // gamma@10 and the function-expression delta@11. (Nested local function values still don't.)
   const fixture = [
     "'use strict';",                       // 0
     'function alpha() {',                  // 1  → lenses
@@ -53,11 +54,11 @@ describe('Function CodeLenses (git history + references)', function() {
     assert.strictEqual(initResult.capabilities.codeLensProvider.resolveProvider, true);
   });
 
-  it('emits a git + references lens per function declaration (incl. nested), not arrows/expressions', async function() {
+  it('emits a git + references lens per declaration (incl. nested) and top-level function-valued vars', async function() {
     const lenses = await getCodeLens(fixture, file);
     assert.ok(Array.isArray(lenses), 'expected an array of lenses');
-    assert.deepStrictEqual(linesOf(byKind(lenses, 'git')), [1, 2, 6], 'git lens lines');
-    assert.deepStrictEqual(linesOf(byKind(lenses, 'refs')), [1, 2, 6], 'references lens lines');
+    assert.deepStrictEqual(linesOf(byKind(lenses, 'git')), [1, 2, 6, 10, 11], 'git lens lines');
+    assert.deepStrictEqual(linesOf(byKind(lenses, 'refs')), [1, 2, 6, 10, 11], 'references lens lines');
     // onCodeLens must not pre-resolve commands (lazy).
     assert.ok(lenses.every(l => !l.command), 'lenses should be unresolved (no command) initially');
   });

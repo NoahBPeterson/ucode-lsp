@@ -241,6 +241,11 @@ export abstract class DeclarationStatements extends ExpressionParser {
         end: local.end,
         local
       });
+    } else if (this.check(TokenType.TK_STRING)) {
+      // Bare side-effect import: `import "module";` — no bindings. ucode supports this
+      // (the compiler falls through to the module string with an empty import list and
+      // runs the module's top-level for side effects), so leave `specifiers` empty and
+      // skip straight to the source string below (there is no `from`).
     } else {
       // Default import: import name from 'module'
       // or mixed import: import Default, { named } from 'module'
@@ -305,8 +310,9 @@ export abstract class DeclarationStatements extends ExpressionParser {
       }
     }
 
-    // Parse 'from' keyword
-    if (!this.match(TokenType.TK_FROM)) {
+    // Parse 'from' keyword — present only when the import has bindings. A bare
+    // side-effect import (`import "module";`, no specifiers) has no `from`.
+    if (specifiers.length > 0 && !this.match(TokenType.TK_FROM)) {
       this.error("Expected 'from' after import specifiers");
       return null;
     }

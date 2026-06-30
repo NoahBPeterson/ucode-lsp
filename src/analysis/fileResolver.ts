@@ -26,6 +26,17 @@ export interface ModuleExport {
     exportedName?: string; // Original identifier name for default exports (e.g., 'create_validators')
 }
 
+/** A global a file injects into its caller's scope via `loadfile(path)()` — its name,
+ *  the loaded file's URI, the definition's offset range there (for go-to-definition),
+ *  and a coarse RHS type (for hover). */
+export interface LoadfileGlobal {
+    name: string;
+    uri: string;
+    defStart: number;
+    defEnd: number;
+    typeStr: string;
+}
+
 /** Return-shape info for a factory function (one that returns an object literal).
  *  `propertyDefinitionLocations` carries each member's source offsets, which are
  *  file-LOCAL — the consumer stamps the factory file URI. */
@@ -114,8 +125,12 @@ export class FileResolver {
      * Verified vs the interpreter: function declarations and let/const do NOT leak, and only
      * top-level code runs on `loadfile()()` — so nested-function assignments are excluded.
      * Empty when the path is unresolvable or the file can't be parsed (→ no suppression).
+     *
+     * Each entry carries the target file `uri`, the definition's offset range (the `X` in
+     * `global.X` / the bare LHS identifier) for go-to-definition, and a coarse RHS type
+     * (`function`/`integer`/`string`/…) for hover.
      */
-    getLoadfileGlobals(rawPath: string, currentFileUri: string): string[] {
+    getLoadfileGlobals(rawPath: string, currentFileUri: string): LoadfileGlobal[] {
         const curPath = this.uriToFilePath(currentFileUri);
         if (!curPath) return [];
         const targetPath = rawPath.startsWith('/')
@@ -140,7 +155,36 @@ export class FileResolver {
             }
         }
 
-        const names = new Set<string>();
+        const coarseType = (rhs: any): string => {
+            switch (rhs?.type) {
+                case 'FunctionExpression':
+                case 'ArrowFunctionExpression': return 'function';
+                case 'ObjectExpression': return 'object';
+                case 'ArrayExpression': return 'array';
+                case 'Literal': {
+                    const v = rhs.value;
+                    if (typeof v === 'string') return 'string';
+                    if (typeof v === 'boolean') return 'bool';
+                    if (v === null) return 'null';
+                    if (typeof v === 'number') return Number.isInteger(v) ? 'integer' : 'double';
+                    return 'unknown';
+                }
+                default: return 'unknown';
+            }
+        };
+
+        const out: LoadfileGlobal[] = [];
+        const seen = new Set<string>();
+        const add = (name: string, defNode: any, rhs: any) => {
+            if (!name || seen.has(name)) return;
+            seen.add(name);
+            out.push({
+                name, uri: targetUri,
+                defStart: typeof defNode?.start === 'number' ? defNode.start : 0,
+                defEnd: typeof defNode?.end === 'number' ? defNode.end : 0,
+                typeStr: coarseType(rhs),
+            });
+        };
         for (const stmt of ast.body) {
             const s = stmt as { type?: string; expression?: any };
             const expr = s?.type === 'ExpressionStatement' ? s.expression : null;
@@ -148,18 +192,18 @@ export class FileResolver {
             const left = expr.left;
             if (left?.type === 'MemberExpression'
                 && left.object?.type === 'Identifier' && left.object.name === 'global') {
-                // global.X = …  (explicit global property)
+                // global.X = …  (explicit global property) — def range is the `X` property node
                 if (!left.computed && left.property?.type === 'Identifier' && left.property.name) {
-                    names.add(left.property.name);
+                    add(left.property.name, left.property, expr.right);
                 } else if (left.computed && left.property?.type === 'Literal' && typeof left.property.value === 'string') {
-                    names.add(left.property.value);
+                    add(left.property.value, left.property, expr.right);
                 }
             } else if (left?.type === 'Identifier' && left.name && !declared.has(left.name)) {
-                // bare implicit-global assignment X = … (non-strict)
-                names.add(left.name);
+                // bare implicit-global assignment X = … (non-strict) — def range is the identifier
+                add(left.name, left, expr.right);
             }
         }
-        return [...names];
+        return out;
     }
 
     /**

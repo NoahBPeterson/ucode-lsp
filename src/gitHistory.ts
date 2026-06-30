@@ -54,6 +54,116 @@ export function collectFunctionDeclarations(ast: AstNode | null | undefined): Fu
     return out;
 }
 
+/** A CodeLens target: a function definition the lens (git history + references) sits above.
+ *  Covers plain `function foo(){}` declarations, function-VALUED global definitions
+ *  (`global.X = function…` / top-level bare `X = function…`), top-level function-valued
+ *  `let`/`const` variables, and object-literal METHODS (`{ m: function… }` — the rpc-handler
+ *  API pattern). All form a referenceable surface worth a history/references annotation. */
+export interface CodeLensFn {
+    name: string;
+    /** The identifier node to exclude from its own reference list (null = none to exclude). */
+    idNode: AstNode | null;
+    nameStart: number;   // identifier offset — declaration position + stable lens key
+    anchorStart: number; // offset whose LINE the lens renders on
+    defStart: number;    // git -L range start offset
+    defEnd: number;      // git -L range end offset
+    /** When set, this is an object-literal method bound to `<memberOf>` — its references are
+     *  `<memberOf>.name` MEMBER accesses, not bare calls. Empty string = unbound (e.g. a bare
+     *  `return {…}`), so no in-file reference base. */
+    memberOf?: string;
+    /** True for a function-valued GLOBAL definition (`global.X = fn` / bare `X = fn`). Such a
+     *  name leaks into a `loadfile()()` caller, so its references also live in those callers —
+     *  the resolver follows loadfile edges (not just import edges) for these. */
+    isGlobal?: boolean;
+}
+
+const isFnValue = (n: any): boolean => n?.type === 'FunctionExpression' || n?.type === 'ArrowFunctionExpression';
+
+/**
+ * CodeLens targets = every `collectFunctionDeclarations` PLUS top-level function-valued
+ * definitions worth annotating:
+ *   • `global.X = fn` / bare `X = fn` (implicit globals; leak into a `loadfile()()` caller),
+ *   • `let`/`const X = fn` (module-scope function variables),
+ *   • object-literal methods `{ m: fn }` on a top-level object (`let api = {…}`, `api = {…}`,
+ *     or a top-level `return {…}` — the rpc-handler export pattern). References for these are
+ *     MEMBER accesses through the object's binding (tracked via `memberOf`).
+ * Nested/local function values are intentionally left out (low value, refs already local).
+ */
+export function collectCodeLensFunctions(ast: AstNode | null | undefined): CodeLensFn[] {
+    const out: CodeLensFn[] = [];
+    for (const fn of collectFunctionDeclarations(ast)) {
+        if (fn.id) out.push({ name: fn.id.name, idNode: fn.id, nameStart: fn.id.start, anchorStart: fn.start, defStart: fn.start, defEnd: fn.end });
+    }
+    const prog = ast as { type?: string; body?: unknown[] } | null | undefined;
+    if (!prog || prog.type !== 'Program' || !Array.isArray(prog.body)) return out;
+
+    // Top-level let/const/function names — a bare `name = fn` to one of these is a local
+    // reassignment, not a global, so it gets no lens (consistent with `let f = function`).
+    const declared = new Set<string>();
+    for (const stmt of prog.body) {
+        const s = stmt as { type?: string; id?: { name?: string }; declarations?: { id?: { type?: string; name?: string } }[] };
+        if (s?.type === 'FunctionDeclaration' && s.id?.name) declared.add(s.id.name);
+        if (s?.type === 'VariableDeclaration') for (const d of (s.declarations ?? [])) if (d?.id?.type === 'Identifier' && d.id.name) declared.add(d.id.name);
+    }
+
+    // Emit a lens per function-valued property of an object literal, bound to `memberOf`.
+    const emitObjectMethods = (obj: any, memberOf: string): void => {
+        for (const prop of (obj?.properties ?? [])) {
+            if (prop?.type !== 'Property' || !isFnValue(prop.value)) continue;
+            const key = prop.key;
+            const keyName = key?.type === 'Identifier' ? key.name
+                : (key?.type === 'Literal' && typeof key.value === 'string' ? key.value : undefined);
+            if (!keyName) continue;
+            out.push({
+                name: keyName, idNode: key as AstNode, nameStart: key.start,
+                anchorStart: prop.start, defStart: prop.start, defEnd: prop.value.end, memberOf,
+            });
+        }
+    };
+
+    for (const stmt of prog.body) {
+        const s = stmt as { type?: string; expression?: any; declarations?: any[]; argument?: any };
+
+        // let/const X = fn  (module-scope function var)  |  let/const api = { …methods }
+        if (s?.type === 'VariableDeclaration') {
+            for (const d of (s.declarations ?? [])) {
+                if (d?.id?.type !== 'Identifier' || !d.init) continue;
+                if (isFnValue(d.init)) {
+                    out.push({ name: d.id.name, idNode: d.id as AstNode, nameStart: d.id.start, anchorStart: d.id.start, defStart: d.init.start, defEnd: d.init.end });
+                } else if (d.init.type === 'ObjectExpression') {
+                    emitObjectMethods(d.init, d.id.name);
+                }
+            }
+            continue;
+        }
+
+        // top-level `return { …methods }`  (module export object — unbound)
+        if (s?.type === 'ReturnStatement' && s.argument?.type === 'ObjectExpression') {
+            emitObjectMethods(s.argument, '');
+            continue;
+        }
+
+        const expr = s?.type === 'ExpressionStatement' ? s.expression : null;
+        if (!expr || expr.type !== 'AssignmentExpression' || expr.operator !== '=') continue;
+        const left = expr.left, rhs = expr.right;
+
+        // api = { …methods }  (assignment to a bare identifier)
+        if (rhs?.type === 'ObjectExpression' && left?.type === 'Identifier' && left.name) {
+            emitObjectMethods(rhs, left.name);
+            continue;
+        }
+        if (!isFnValue(rhs)) continue;
+        // global.X = fn  |  bare X = fn (implicit global)
+        if (left?.type === 'MemberExpression' && left.object?.type === 'Identifier' && left.object.name === 'global'
+            && !left.computed && left.property?.type === 'Identifier' && left.property.name) {
+            out.push({ name: left.property.name, idNode: left.property as AstNode, nameStart: left.property.start, anchorStart: expr.start, defStart: expr.start, defEnd: rhs.end, isGlobal: true });
+        } else if (left?.type === 'Identifier' && left.name && !declared.has(left.name)) {
+            out.push({ name: left.name, idNode: left as AstNode, nameStart: left.start, anchorStart: left.start, defStart: left.start, defEnd: rhs.end, isGlobal: true });
+        }
+    }
+    return out;
+}
+
 // ASCII Unit Separator — the field delimiter in the git --format string. Never
 // appears in author names or commit subjects, so splitting on it is safe.
 const FS_CHAR = '\x1f';

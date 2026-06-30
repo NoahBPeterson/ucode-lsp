@@ -19,7 +19,7 @@ import { BaseVisitor, AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visito
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
-import { FileResolver, type FactoryReturnInfo } from './fileResolver';
+import { FileResolver, type FactoryReturnInfo, type LoadfileGlobal } from './fileResolver';
 import { CFGBuilder } from './cfg/cfgBuilder';
 import { CFGQueryEngine } from './cfg/queryEngine';
 import { type ControlFlowGraph } from './cfg/types';
@@ -75,6 +75,10 @@ export interface SemanticAnalysisResult {
    *  Used by the server to invalidate this file's cache when a dependency
    *  changes — see analysisCache reverse-deps tracking in server.ts. */
   resolvedImports?: Set<string>;
+  /** Globals injected by `loadfile("x.uc")()` in this file, keyed by name → the loaded
+   *  file's URI + the definition's offset range there + a coarse type. Powers go-to-definition
+   *  and hover for those names (which have no in-file symbol). */
+  loadfileGlobals?: Map<string, LoadfileGlobal>;
 }
 
 export class SemanticAnalyzer extends BaseVisitor {
@@ -182,6 +186,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   // module. Shared with the type checker so a bare call `X(...)` isn't a false "Undefined
   // function" — `global.X` is a real global binding in BOTH strict and non-strict mode.
   private globalPropertyNames = new Set<string>();
+  private loadfileGlobals = new Map<string, LoadfileGlobal>();
   // Name to attribute to the next function-expression we visit, set by the
   // enclosing assignment/declaration (e.g. `nft_file.init = function(){}`), so a
   // method-style function expression can get the same UC7003 "add @param" hint as
@@ -383,6 +388,10 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     if (this.cfg) {
       result.cfg = this.cfg;
+    }
+
+    if (this.loadfileGlobals.size > 0) {
+      result.loadfileGlobals = this.loadfileGlobals;
     }
 
     if (this.cfgQueryEngine) {
@@ -652,9 +661,11 @@ export class SemanticAnalyzer extends BaseVisitor {
    *  path (e.g. `loadfile(`${BASE}/x.uc`)()`) is skipped — but a sibling literal-path
    *  loadfile of the same file still covers it. */
   private collectLoadfileGlobals(node: ProgramNode): void {
+    this.loadfileGlobals.clear();
     const merge = (rawPath: string) => {
-      for (const name of this.fileResolver.getLoadfileGlobals(rawPath, this.textDocument.uri)) {
-        this.globalPropertyNames.add(name);
+      for (const g of this.fileResolver.getLoadfileGlobals(rawPath, this.textDocument.uri)) {
+        this.globalPropertyNames.add(g.name);       // suppress UC1001/UC1002 for the name
+        if (!this.loadfileGlobals.has(g.name)) this.loadfileGlobals.set(g.name, g); // def + hover
       }
     };
     const walk = (n: unknown): void => {
@@ -2560,9 +2571,13 @@ export class SemanticAnalyzer extends BaseVisitor {
         // Check if it's a builtin function before reporting as undefined
         const isBuiltin = allBuiltinFunctions.has(node.name);
 
-        // Check if it was set as a property on the global object (e.g., global.FOO = ...)
+        // Check if it was set as a property on the global object (e.g., global.FOO = ...).
+        // globalPropertyNames also carries cross-file `global.X` injected via `loadfile()()`,
+        // so a bare *read* of such a name (e.g. `print(MAX_BODY)`, not just a call) isn't a
+        // false UC1001 — matching how the call case is suppressed for UC1002.
         const globalSymbol = this.symbolTable.lookup('global');
-        const isGlobalProperty = globalSymbol?.propertyTypes?.has(node.name);
+        const isGlobalProperty = globalSymbol?.propertyTypes?.has(node.name)
+          || this.globalPropertyNames.has(node.name);
 
         // Don't report "Undefined variable" if this identifier is a function call callee
         // The TypeChecker will handle "Undefined function" diagnostic for function calls

@@ -49,7 +49,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isUcodeSourceFile, isUcodeSourceFileAsync } from './shebang';
-import { collectFunctionDeclarations, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
+import { collectCodeLensFunctions, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
 import { findFunctionReferences, findNamespaceMemberReferences, findFactoryMethodReferences, formatReferencesTitle, getImportBindings, type ImportBinding } from './references';
 // import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
@@ -1539,6 +1539,52 @@ function findCrossFileReferences(targetUri: string, fnName: string): RefLocation
     });
 }
 
+// Does `ast` (a file at `callerFilePath`) contain a `loadfile(<literal>)()` whose path
+// resolves to `targetPath`? (Relative to the caller's dir, matching getLoadfileGlobals.)
+function fileLoadfilesTarget(ast: AstNode, callerFilePath: string, targetPath: string): boolean {
+    let found = false;
+    const walk = (n: any): void => {
+        if (found || !n || typeof n.type !== 'string') return;
+        if (n.type === 'CallExpression' && n.callee?.type === 'CallExpression') {
+            const lf = n.callee;
+            if (lf.callee?.type === 'Identifier' && lf.callee.name === 'loadfile'
+                && lf.arguments?.[0]?.type === 'Literal' && typeof lf.arguments[0].value === 'string') {
+                const raw: string = lf.arguments[0].value;
+                const resolved = raw.startsWith('/') ? path.normalize(raw) : path.normalize(path.join(path.dirname(callerFilePath), raw));
+                if (path.resolve(resolved) === targetPath) { found = true; return; }
+            }
+        }
+        for (const k of Object.keys(n)) {
+            if (k === 'leadingJsDoc' || found) continue;
+            const v = (n as Record<string, unknown>)[k];
+            if (Array.isArray(v)) { for (const it of v) walk(it); }
+            else if (v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string') walk(v);
+        }
+    };
+    walk(ast);
+    return found;
+}
+
+// References to a `loadfile()()`-injected GLOBAL (`global.X = fn` / bare `X = fn`) defined in
+// `targetUri`: its callers reach it as a bare `X(...)`, so find every workspace file that
+// loadfile()s the target and collect bare references to the name there. (Import-edge search
+// in findCrossFileReferences can't see loadfile callers — no import binding, no export.)
+function findLoadfileCallerReferences(targetUri: string, fnName: string): RefLocation[] {
+    const out: RefLocation[] = [];
+    if (workspaceFolders.length === 0) return out;
+    const targetPath = path.resolve(uriToFilePath(targetUri));
+    for (const filePath of listWorkspaceUcodeFiles()) {
+        if (path.resolve(filePath) === targetPath) continue;
+        const entry = getWorkspaceFile(filePath);
+        if (!entry?.ast || !fileLoadfilesTarget(entry.ast, filePath, targetPath)) continue;
+        const fileUri = filePathToUri(filePath);
+        for (const r of findFunctionReferences(entry.ast, fnName, null)) {
+            out.push({ uri: fileUri, range: { start: entry.doc.positionAt(r.start), end: entry.doc.positionAt(r.end) } });
+        }
+    }
+    return out;
+}
+
 // CodeLens: a per-function git-history annotation. onCodeLens enumerates the
 // functions and returns lenses WITHOUT running git (fast); the git call happens
 // lazily in onCodeLensResolve, only for lenses the editor actually displays.
@@ -1556,20 +1602,19 @@ connection.onCodeLens(async (params: CodeLensParams): Promise<CodeLens[]> => {
     if (!document || !ast) return [];
 
     const lenses: CodeLens[] = [];
-    for (const fn of collectFunctionDeclarations(ast)) {
-        // Anchor the lens directly on the function declaration line — never above a
-        // leading comment/JSDoc block, which would float the lens far from the
-        // function it describes.
-        const anchorLine = document.positionAt(fn.start).line;
+    for (const fn of collectCodeLensFunctions(ast)) {
+        // Anchor the lens directly on the definition line — never above a leading
+        // comment/JSDoc block, which would float the lens far from what it describes.
+        const anchorLine = document.positionAt(fn.anchorStart).line;
         // node.end is EXCLUSIVE, so step back one char to land on the last line.
-        const startLine = anchorLine + 1; // git -L is 1-based
-        const endLine = document.positionAt(Math.max(fn.start, fn.end - 1)).line + 1;
+        const startLine = document.positionAt(fn.defStart).line + 1; // git -L is 1-based
+        const endLine = document.positionAt(Math.max(fn.defStart, fn.defEnd - 1)).line + 1;
         const range = { start: { line: anchorLine, character: 0 }, end: { line: anchorLine, character: 0 } };
-        const name = fn.id?.name ?? '<anonymous>';
         const uri = params.textDocument.uri;
         // Two lenses per function (rendered side by side): git history + references.
-        lenses.push(CodeLens.create(range, { kind: 'git', uri, startLine, endLine, name }));
-        lenses.push(CodeLens.create(range, { kind: 'refs', uri, fnStart: fn.start, name }));
+        // `nameStart` keys the target stably across the serialize/resolve round-trip.
+        lenses.push(CodeLens.create(range, { kind: 'git', uri, startLine, endLine, name: fn.name }));
+        lenses.push(CodeLens.create(range, { kind: 'refs', uri, nameStart: fn.nameStart, name: fn.name }));
     }
     return lenses;
 });
@@ -1583,35 +1628,48 @@ connection.onCodeLensResolve((lens: CodeLens): CodeLens => {
         const cacheEntry = analysisCache.get(data.uri);
         const ast = cacheEntry?.result?.ast;
         const document = documents.get(data.uri);
-        const fn = ast ? collectFunctionDeclarations(ast).find((f: FunctionDeclarationNode) => f.start === data.fnStart) : undefined;
-        if (!ast || !document || !fn || !fn.id) {
+        const fn = ast ? collectCodeLensFunctions(ast).find((f) => f.nameStart === data.nameStart) : undefined;
+        if (!ast || !document || !fn) {
             lens.command = Command.create('no references', '');
             return lens;
         }
         // Scope-aware in-file resolution: keep a name-matched candidate only if
         // it resolves to THIS function's binding (not a shadowing param/local),
         // using the symbol table's position-aware lookup + declaration offset.
+        // (Skipped for function-valued globals — they have no in-table symbol; a plain
+        // name match plus the def-identifier exclusion is correct there.)
         const symbolTable = cacheEntry?.result?.symbolTable;
         let isReference: ((node: { start: number }) => boolean) | undefined;
         if (symbolTable && typeof symbolTable.lookupAtPosition === 'function') {
-            const targetSym = symbolTable.lookupAtPosition(fn.id.name, fn.id.start) ?? symbolTable.lookup(fn.id.name);
+            const targetSym = symbolTable.lookupAtPosition(fn.name, fn.nameStart) ?? symbolTable.lookup(fn.name);
             const targetDeclaredAt = targetSym?.declaredAt;
             if (targetDeclaredAt !== undefined) {
                 isReference = (node: { start: number }): boolean => {
-                    const s = symbolTable.lookupAtPosition(fn.id.name, node.start) ?? symbolTable.lookup(fn.id.name);
+                    const s = symbolTable.lookupAtPosition(fn.name, node.start) ?? symbolTable.lookup(fn.name);
                     return !!s && s.declaredAt === targetDeclaredAt;
                 };
             }
         }
-        const inFileRefs = findFunctionReferences(ast, fn.id.name, fn.id, isReference);
-        const crossFileRefs = findCrossFileReferences(data.uri, fn.id.name);
+        // Object-literal methods are called as `<memberOf>.name` (member access), so count
+        // member references through the binding; an unbound `return {…}` (memberOf === '')
+        // has no in-file base. Plain functions/globals are bare-name calls.
+        const inFileRefs = fn.memberOf !== undefined
+            ? (fn.memberOf ? findNamespaceMemberReferences(ast, fn.memberOf, fn.name) : [])
+            : findFunctionReferences(ast, fn.name, fn.idNode, isReference);
+        // Cross-file fan-out is the bare-name/global case only; member-through-binding
+        // cross-file resolution is out of scope here. A function-valued GLOBAL also fans out
+        // through loadfile()() callers (no import edge), so follow those too.
+        const crossFileRefs = fn.memberOf !== undefined
+            ? []
+            : [...findCrossFileReferences(data.uri, fn.name),
+               ...(fn.isGlobal ? findLoadfileCallerReferences(data.uri, fn.name) : [])];
         const total = inFileRefs.length + crossFileRefs.length;
         const title = formatReferencesTitle(total);
         if (total === 0) {
             lens.command = Command.create(title, ''); // non-clickable label
             return lens;
         }
-        const declPosition = document.positionAt(fn.id.start);
+        const declPosition = document.positionAt(fn.nameStart);
         const locations = [
             ...inFileRefs.map(r => ({
                 uri: data.uri,
@@ -1873,6 +1931,11 @@ function collectReferences(uri: string, position: { line: number; character: num
         for (const r of findCrossFileReferences(canon.canonicalUri, canon.canonicalName)) add(r.uri, r.range as Range);
     } else {
         for (const r of findCrossFileReferences(uri, name)) add(r.uri, r.range as Range);
+        // If `name` is a function-valued GLOBAL defined in THIS file (`global.X = fn` /
+        // bare `X = fn`), its references also live in loadfile()() callers — follow those.
+        if (collectCodeLensFunctions(entry.result.ast).some(f => f.isGlobal && f.name === name)) {
+            for (const r of findLoadfileCallerReferences(uri, name)) add(r.uri, r.range as Range);
+        }
     }
     return locs;
 }
