@@ -422,6 +422,11 @@ export class SemanticAnalyzer extends BaseVisitor {
     // "Undefined function" (the variable check already honors these via isGlobalProperty;
     // the call check did not). Legal in strict mode too, so not strict-gated.
     this.collectGlobalPropertyNames(node);
+    // `loadfile("file.uc")()` runs file.uc's top-level code in the shared global scope —
+    // a poor-man's import. Harvest the globals that file injects (its top-level
+    // `global.X = …` + bare implicit-global assignments) so bare `X(...)`/`X` here isn't a
+    // false UC1002/UC1001. (Verified vs the interpreter: those leak; fn-decls/let/const don't.)
+    this.collectLoadfileGlobals(node);
     this.typeChecker.setGlobalPropertyNames(this.globalPropertyNames);
     // Render-scope names injected into this file by an `include(path, {…})` elsewhere in
     // the workspace — share with the type checker so a bare call to one isn't flagged
@@ -641,6 +646,42 @@ export class SemanticAnalyzer extends BaseVisitor {
    * order. Unlike implicit globals this is NOT strict-gated — `global.X = fn` is a real
    * global binding under `'use strict'` too (verified vs the interpreter).
    */
+  /** Find `loadfile(<stringLiteral>)()` immediate-invoke sites and merge the globals the
+   *  loaded file injects into the caller's global-property name set (suppresses false
+   *  UC1002/UC1001 for those names). Only literal paths resolve; a template/non-literal
+   *  path (e.g. `loadfile(`${BASE}/x.uc`)()`) is skipped — but a sibling literal-path
+   *  loadfile of the same file still covers it. */
+  private collectLoadfileGlobals(node: ProgramNode): void {
+    const merge = (rawPath: string) => {
+      for (const name of this.fileResolver.getLoadfileGlobals(rawPath, this.textDocument.uri)) {
+        this.globalPropertyNames.add(name);
+      }
+    };
+    const walk = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      // immediate-invoke: outer CallExpression whose callee is `loadfile(<literal>)`
+      if (n.type === 'CallExpression') {
+        const inner = (n as unknown as CallExpressionNode).callee;
+        if (isAstNodeLike(inner) && inner.type === 'CallExpression') {
+          const lf = inner as unknown as CallExpressionNode;
+          if (lf.callee?.type === 'Identifier' && (lf.callee as IdentifierNode).name === 'loadfile'
+              && lf.arguments?.length >= 1
+              && lf.arguments[0]?.type === 'Literal'
+              && typeof (lf.arguments[0] as LiteralNode).value === 'string') {
+            merge((lf.arguments[0] as LiteralNode).value as string);
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (isAstNodeLike(v)) walk(v);
+      }
+    };
+    walk(node);
+  }
+
   private collectGlobalPropertyNames(node: ProgramNode): void {
     this.globalPropertyNames.clear();
     const names = this.globalPropertyNames;

@@ -107,6 +107,62 @@ export class FileResolver {
     }
 
     /**
+     * Names a file injects into its CALLER's global scope when run via `loadfile(path)()`
+     * (the poor-man's-import idiom) — `rawPath` is resolved relative to `currentFileUri`'s
+     * directory (how the corpus uses it). Returns the file's TOP-LEVEL `global.X = …`
+     * property names plus top-level bare implicit-global assignments (`X = …`, non-strict).
+     * Verified vs the interpreter: function declarations and let/const do NOT leak, and only
+     * top-level code runs on `loadfile()()` — so nested-function assignments are excluded.
+     * Empty when the path is unresolvable or the file can't be parsed (→ no suppression).
+     */
+    getLoadfileGlobals(rawPath: string, currentFileUri: string): string[] {
+        const curPath = this.uriToFilePath(currentFileUri);
+        if (!curPath) return [];
+        const targetPath = rawPath.startsWith('/')
+            ? path.normalize(rawPath)
+            : path.normalize(path.join(path.dirname(curPath), rawPath));
+        const targetUri = this.filePathToUri(targetPath);
+        const content = this.readFileContent(targetUri);
+        if (content === null) return [];
+        const ast = this.getCachedAst(targetUri, content) as { type?: string; body?: unknown[] } | null;
+        if (!ast || ast.type !== 'Program' || !Array.isArray(ast.body)) return [];
+
+        // Top-level declared names (let/const/function) — these are local to the loaded
+        // program and must NOT count as injected implicit globals.
+        const declared = new Set<string>();
+        for (const stmt of ast.body) {
+            const s = stmt as { type?: string; id?: { name?: string }; declarations?: { id?: { type?: string; name?: string } }[] };
+            if (s?.type === 'FunctionDeclaration' && s.id?.name) declared.add(s.id.name);
+            if (s?.type === 'VariableDeclaration') {
+                for (const d of (s.declarations ?? [])) {
+                    if (d?.id?.type === 'Identifier' && d.id.name) declared.add(d.id.name);
+                }
+            }
+        }
+
+        const names = new Set<string>();
+        for (const stmt of ast.body) {
+            const s = stmt as { type?: string; expression?: any };
+            const expr = s?.type === 'ExpressionStatement' ? s.expression : null;
+            if (!expr || expr.type !== 'AssignmentExpression' || expr.operator !== '=') continue;
+            const left = expr.left;
+            if (left?.type === 'MemberExpression'
+                && left.object?.type === 'Identifier' && left.object.name === 'global') {
+                // global.X = …  (explicit global property)
+                if (!left.computed && left.property?.type === 'Identifier' && left.property.name) {
+                    names.add(left.property.name);
+                } else if (left.computed && left.property?.type === 'Literal' && typeof left.property.value === 'string') {
+                    names.add(left.property.value);
+                }
+            } else if (left?.type === 'Identifier' && left.name && !declared.has(left.name)) {
+                // bare implicit-global assignment X = … (non-strict)
+                names.add(left.name);
+            }
+        }
+        return [...names];
+    }
+
+    /**
      * Content of the file behind a URI, or null if unavailable. Prefers the live
      * editor buffer (so unsaved cross-file edits are seen) and falls back to disk.
      */
