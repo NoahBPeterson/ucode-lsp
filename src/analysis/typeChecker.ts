@@ -919,6 +919,17 @@ export class TypeChecker {
         if (leftNonNull.excludedTypes.length === 0) {
           return leftType; // a can't be null → b unreachable
         }
+        // `a ?? []` with an EMPTY array literal as the fallback: the empty array
+        // contributes no elements, so the result is exactly a-without-null. This keeps
+        // the common `lsdir(...) ?? []` idiom typed `array<string>` (and for-in over it
+        // `string`) instead of `array<string> | array` → element `unknown`. Sound: the
+        // fallback is provably empty. (Bare `[]` is typed UcodeType.ARRAY, which would
+        // otherwise dilute the typed-array element type to unknown in the union below.)
+        if (node.right.type === 'ArrayExpression'
+            && (node.right as ArrayExpressionNode).elements.length === 0
+            && isArrayType(leftNonNull.narrowedType)) {
+          return leftNonNull.narrowedType;
+        }
         // a is nullable → (a without null) ∪ b
         return createUnionType([
           ...getUnionTypes(leftNonNull.narrowedType),
@@ -3320,10 +3331,12 @@ export class TypeChecker {
     const consequentType = this.checkNode(node.consequent);
     const alternateType = this.checkNode(node.alternate);
 
-    // Return the rich result type directly — consumers (union-aware arithmetic,
-    // variable-declarator inference, nullable-argument machinery) read the real
-    // union and distribute over its members. Base consumers collapse to UNKNOWN.
-    return this.typeCompatibility.getTernaryResultType(this.dataTypeToUcodeType(consequentType), this.dataTypeToUcodeType(alternateType));
+    // Union the RICH branch types directly so refined members survive. Collapsing each
+    // branch to a base UcodeType first (the old behavior) turned any *union* branch into
+    // UNKNOWN — e.g. `cond ? lsdir() : null` (lsdir → array<string>|null) became
+    // `unknown | null` instead of `array<string> | null`, and `d ? d : null`
+    // (d: string|null) became `unknown | null` instead of `string | null`.
+    return createUnionType([...getUnionTypes(consequentType), ...getUnionTypes(alternateType)]);
   }
 
   private checkArrowFunctionExpression(_node: ArrowFunctionExpressionNode): CheckResult {
