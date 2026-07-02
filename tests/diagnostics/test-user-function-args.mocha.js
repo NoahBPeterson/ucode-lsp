@@ -137,3 +137,97 @@ describe('User-function call argument checking', function () {
     assert.ok((actions || []).length > 0, 'expected at least one quick-fix action');
   });
 });
+
+// JSDoc optional-parameter syntax: `@param {T} [name]` / `[name=default]`,
+// Closure `{T=}` (optional suffix) and `{?T}` (nullable prefix). In ucode an
+// omitted argument IS null, so optional ≡ nullable: all of these mean `T|null`
+// — arity check silent, param typed nullable inside the body.
+describe('JSDoc optional parameters', function () {
+  this.timeout(15000);
+  let lspServer, getDiagnostics, getHover;
+  const FP = '/tmp/jsdoc-optional-params.uc';
+  const argDiags = async (code) =>
+    (await getDiagnostics(code, FP)).filter(d =>
+      /expects|passes null|ignored/i.test(d.message || ''));
+
+  before(async function () {
+    lspServer = createLSPTestServer();
+    await lspServer.initialize();
+    getDiagnostics = lspServer.getDiagnostics;
+    getHover = lspServer.getHover;
+  });
+  after(function () { if (lspServer) lspServer.shutdown(); });
+
+  it('does NOT flag omission of a `[name=default]` param', async () => {
+    const code = `/** @param {string} aa\n * @param {integer} [bb=5] */\nfunction oo(aa,bb){return aa;}\noo("x");`;
+    assert.strictEqual((await argDiags(code)).length, 0);
+  });
+
+  it('does NOT flag omission of a `{T=}` (Closure optional) param, and resolves the type', async () => {
+    const code = `/** @param {string} aa\n * @param {object=} bb */\nfunction oo(aa,bb){return aa;}\noo("x");`;
+    const all = await getDiagnostics(code, FP);
+    assert.strictEqual(all.filter(d => /passes null|Unknown type/.test(d.message)).length, 0);
+  });
+
+  it('does NOT flag omission of a `{?T}` (Closure nullable) param, and resolves the type', async () => {
+    const code = `/** @param {string} aa\n * @param {?object} bb */\nfunction oo(aa,bb){return aa;}\noo("x");`;
+    const all = await getDiagnostics(code, FP);
+    assert.strictEqual(all.filter(d => /passes null|Unknown type/.test(d.message)).length, 0);
+  });
+
+  it('retains the declared type of a bracketed param (widened with null)', async () => {
+    // Before the fix `[bb]` failed the @param regex entirely — the tag was
+    // silently dropped and the type lost. Hover on the param must show T|null.
+    const code = `/** @param {string} aa\n * @param {object} [bb] */\nfunction oo(aa,bb){return bb;}\noo("x");`;
+    const hover = await getHover(code, FP, 2, 15); // `bb` in `function oo(aa,bb)`
+    const text = JSON.stringify(hover || {});
+    assert.match(text, /object/);
+    assert.match(text, /null/);
+  });
+
+  it('does NOT report @param-mismatch for a bracketed name', async () => {
+    const code = `/** @param {string} aa\n * @param {object} [bb] */\nfunction oo(aa,bb){return aa;}\noo("x");`;
+    const all = await getDiagnostics(code, FP);
+    assert.strictEqual(all.filter(d => /does not match any parameter/.test(d.message)).length, 0);
+  });
+
+  it('mixed required + optional signature (rpc-test scenario)', async () => {
+    const sig = `/**\n * @param {object|string} body\n * @param {unknown} reqinfo\n * @param {object} [sink]\n */\nfunction call(body, reqinfo, sink) { return [body, reqinfo, sink]; }\n`;
+    // sink optional, reqinfo unknown → 1-arg call is clean…
+    assert.strictEqual((await argDiags(`${sig}call("not json");`)).length, 0);
+    // …but body is required: a 0-arg call flags exactly it.
+    const ds = await argDiags(`${sig}call();`);
+    assert.strictEqual(ds.length, 1);
+    assert.match(ds[0].message, /argument 'body'/);
+  });
+
+  it('escalates a missing required param to an error under "use strict"', async () => {
+    const sig = `'use strict';\n/** @param {object} sink */\nfunction call(sink) { return sink; }\n`;
+    const ds = await argDiags(`${sig}call();`);
+    assert.strictEqual(ds.length, 1);
+    assert.strictEqual(ds[0].severity, 1);
+  });
+
+  it('teaches the optional syntax in the missing-argument message', async () => {
+    const ds = await argDiags(`/** @param {object} sink */\nfunction call(sink) { return sink; }\ncall();`);
+    assert.match(ds[0].message, /declare it optional: @param \{object\} \[sink\]/);
+  });
+
+  it('anchors the missing-argument diagnostic on the callee, not the whole call', async () => {
+    const code = `/** @param {string} aa\n * @param {object} sink */\nfunction call(aa, sink) { return aa; }\ncall("x");`;
+    const ds = await argDiags(code);
+    assert.strictEqual(ds.length, 1);
+    assert.strictEqual(ds[0].range.start.line, 3);
+    assert.strictEqual(ds[0].range.start.character, 0);
+    assert.strictEqual(ds[0].range.end.character, 4); // just `call`
+  });
+
+  it('anchors the too-many-arguments diagnostic on the extra arguments', async () => {
+    const code = `/** @param {string} aa */\nfunction oo(aa){return aa;}\noo("x", "y");`;
+    const ds = await argDiags(code);
+    assert.strictEqual(ds.length, 1);
+    assert.strictEqual(ds[0].range.start.line, 2);
+    assert.strictEqual(ds[0].range.start.character, 8);  // start of `"y"`
+    assert.strictEqual(ds[0].range.end.character, 11);   // end of `"y"`
+  });
+});

@@ -2361,30 +2361,44 @@ export class TypeChecker {
       isUnionType(p.type) ? UcodeType.UNKNOWN : dataTypeToBase(p.type));
     this.checkArgumentTypes(node, expectedBases, fnName, { flagUnknownActual: false, softSeverity: true });
 
-    // Emit at warning severity, escalated to error under `'use strict'`.
-    const emit = (message: string) => {
-      const d = { message, start: node.start, end: node.end, code: UcodeErrorCode.INVALID_PARAMETER_COUNT };
+    // Emit at warning severity, escalated to error under `'use strict'`. The
+    // range defaults to the callee (not the whole call — flagging every
+    // argument for a MISSING one reads as if the present args were wrong).
+    const emit = (message: string, start = node.callee.start, end = node.callee.end) => {
+      const d = { message, start, end, code: UcodeErrorCode.INVALID_PARAMETER_COUNT };
       if (this.strictMode) this.errors.push({ ...d, severity: 'error' });
       else this.warnings.push({ ...d, severity: 'warning' });
     };
 
     // Too many arguments — only meaningful when non-variadic (no `...rest`), and
     // ucode has no `arguments` object so the extra args are provably dead.
+    // Anchor on the extra arguments themselves.
     if (!variadic && argCount > positional.length) {
-      emit(`Function '${fnName}' expects at most ${positional.length} argument${positional.length === 1 ? '' : 's'}, got ${argCount} (extra arguments are ignored)`);
+      const firstExtra = node.arguments[positional.length]!;
+      const lastArg = node.arguments[argCount - 1]!;
+      emit(`Function '${fnName}' expects at most ${positional.length} argument${positional.length === 1 ? '' : 's'}, got ${argCount} (extra arguments are ignored)`,
+        firstExtra.start, lastArg.end);
     }
 
     // Too few arguments — only for missing params with a declared, NON-optional
-    // type (un-annotated/unknown or nullable `[name]`/`{T|null}` params are
-    // silent; ucode passes null for the missing ones).
+    // type. Optional (`@param {T} [name]`, `{T=}`, `{?T}` — ParamInfo.optional),
+    // nullable (`{T|null}`, `{T?}`) and un-annotated/unknown params are silent;
+    // ucode passes null for the missing ones. A union WITHOUT a null member
+    // (e.g. `{object|string}`) is required: null satisfies none of its arms.
     for (let i = argCount; i < positional.length; i++) {
       const p = positional[i]!;
-      const base = dataTypeToBase(p.type);
-      const isOptional = isUnionType(p.type)
-        ? getUnionTypes(p.type).some(m => dataTypeToBase(m) === UcodeType.NULL)
-        : base === UcodeType.NULL;
-      if (base === UcodeType.UNKNOWN || isOptional) continue;
-      emit(`Function '${fnName}' expects argument '${p.name}' (${base}); omitting it passes null.`);
+      if (p.optional === true) continue;
+      const members = isUnionType(p.type) ? getUnionTypes(p.type) : null;
+      const nullable = members
+        ? members.some(m => dataTypeToBase(m) === UcodeType.NULL)
+        : dataTypeToBase(p.type) === UcodeType.NULL;
+      if (nullable) continue;
+      const declared = members
+        ? !members.some(m => dataTypeToBase(m) === UcodeType.UNKNOWN)
+        : dataTypeToBase(p.type) !== UcodeType.UNKNOWN;
+      if (!declared) continue;
+      const shown = this.getTypeDescription(p.type);
+      emit(`Function '${fnName}' expects argument '${p.name}' (${shown}); omitting it passes null. If that is intended, declare it optional: @param {${shown}} [${p.name}]`);
     }
   }
 

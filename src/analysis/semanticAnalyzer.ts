@@ -13,7 +13,7 @@ import { type AstNode, type ProgramNode, type VariableDeclarationNode, type Vari
          type SpreadElementNode, type TemplateLiteralNode, type SwitchStatementNode, type LiteralNode, type IfStatementNode, type ObjectExpressionNode, type ConditionalExpressionNode, type ExpressionStatementNode, type DeleteExpressionNode,
          type ForInStatementNode, type ForStatementNode, type WhileStatementNode,
          type AstNodeKind } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, widenWithNull, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, type TypeCheckResult } from './types';
 import { detectTemplateMode } from '../lexer/templateMode';
 import { BaseVisitor, AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
@@ -3345,6 +3345,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       propertyFunctionReturnTypes?: Map<string, string> | undefined;
       propertyDefinitionLocations?: Map<string, { uri: string; start: number; end: number }> | undefined;
       closedPropertyShape?: boolean | undefined;
+      optional?: boolean | undefined;
     }
     const jsdocParams = new Map<string, JsDocParamInfo>();
     for (const tag of paramTags) {
@@ -3355,7 +3356,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (importExpr) {
         const importResolved = this.resolveImportTypeExpression(importExpr.modulePath, importExpr.propertyName);
         if (importResolved) {
-          jsdocParams.set(tag.name, { ...importResolved, description: tag.description });
+          jsdocParams.set(tag.name, { ...importResolved, description: tag.description, optional: tag.optional });
           continue;
         }
         // Fall through to unknown type diagnostic
@@ -3376,6 +3377,7 @@ export class SemanticAnalyzer extends BaseVisitor {
             propertyTypes: propTypes.size > 0 ? propTypes : undefined,
             // A @typedef's @property list is the declared, complete shape.
             closedPropertyShape: propTypes.size > 0 ? true : undefined,
+            optional: tag.optional,
           });
           continue;
         }
@@ -3387,7 +3389,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         );
         continue;
       }
-      jsdocParams.set(tag.name, { type: resolved, description: tag.description });
+      jsdocParams.set(tag.name, { type: resolved, description: tag.description, optional: tag.optional });
     }
 
     // Check for @param names that don't match any actual parameter
@@ -3407,9 +3409,13 @@ export class SemanticAnalyzer extends BaseVisitor {
     for (const param of params) {
       const jsdocInfo = jsdocParams.get(param.name);
       if (jsdocInfo) {
-        this.symbolTable.declare(param.name, SymbolType.PARAMETER, jsdocInfo.type, param);
+        // An optional param (`[name]`, `{T=}`, `{?T}`) receives null when the
+        // caller omits it, so its declared type is really `T|null`.
+        const declaredType = jsdocInfo.optional ? widenWithNull(jsdocInfo.type) : jsdocInfo.type;
+        this.symbolTable.declare(param.name, SymbolType.PARAMETER, declaredType, param);
         const sym = this.symbolTable.lookup(param.name);
         if (sym) {
+          if (jsdocInfo.optional) sym.jsdocOptionalParam = true;
           if (jsdocInfo.description) sym.jsdocDescription = jsdocInfo.description;
           if (jsdocInfo.propertyTypes) sym.propertyTypes = jsdocInfo.propertyTypes;
           if (jsdocInfo.nestedPropertyTypes) sym.nestedPropertyTypes = jsdocInfo.nestedPropertyTypes;
@@ -3674,7 +3680,12 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (!node.forwardDeclaration) {
           const paramInfos: ParamInfo[] = node.params.map(p => {
             const psym = this.symbolTable.lookup(p.name);
-            return { name: p.name, type: psym ? psym.dataType : (UcodeType.UNKNOWN as UcodeDataType), isRest: false };
+            return {
+              name: p.name,
+              type: psym ? psym.dataType : (UcodeType.UNKNOWN as UcodeDataType),
+              isRest: false,
+              ...(psym?.jsdocOptionalParam ? { optional: true } : {})
+            };
           });
           if (node.restParam) {
             paramInfos.push({ name: node.restParam.name, type: UcodeType.ARRAY as UcodeDataType, isRest: true });
@@ -3733,7 +3744,12 @@ export class SemanticAnalyzer extends BaseVisitor {
   private buildFunctionExprParamInfos(node: { params: { name: string }[]; restParam?: { name: string } | null }): ParamInfo[] {
     const paramInfos: ParamInfo[] = node.params.map(p => {
       const psym = this.symbolTable.lookup(p.name);
-      return { name: p.name, type: psym ? psym.dataType : (UcodeType.UNKNOWN as UcodeDataType), isRest: false };
+      return {
+        name: p.name,
+        type: psym ? psym.dataType : (UcodeType.UNKNOWN as UcodeDataType),
+        isRest: false,
+        ...(psym?.jsdocOptionalParam ? { optional: true } : {})
+      };
     });
     if (node.restParam) {
       paramInfos.push({ name: node.restParam.name, type: UcodeType.ARRAY as UcodeDataType, isRest: true });

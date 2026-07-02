@@ -3,7 +3,7 @@
  * Parses @param and @returns tags from JSDoc comments and resolves type expressions
  */
 
-import { UcodeType, type UcodeDataType, type SingleType, createUnionType, createArrayType, isObjectType, isArrayType } from './symbolTable';
+import { UcodeType, type UcodeDataType, type SingleType, createUnionType, createArrayType, isObjectType, isArrayType, widenWithNull } from './symbolTable';
 import { isKnownModule, isKnownObjectType } from './moduleDispatch';
 
 export interface JsDocTag {
@@ -11,6 +11,7 @@ export interface JsDocTag {
   name?: string | undefined;          // parameter name (for @param)
   typeExpression: string; // 'module:fs', 'string|number', etc.
   description?: string | undefined;   // trailing description after ' - '
+  optional?: boolean | undefined;     // @param declared optional: `[name]` / `[name=default]` (brackets already stripped from `name`)
 }
 
 export interface ParsedJsDoc {
@@ -43,19 +44,27 @@ export function parseJsDocComment(value: string): ParsedJsDoc {
   }
 
   // Parse @param tags
-  // Supports: @param {type} name, @param {type} name - description, @param name type, @param name type - description
-  const paramRegexBraces = /@param\s+\{([^}]+)\}\s+(\w+)(?:\s+-\s+(.*))?/g;
+  // Supports: @param {type} name, @param {type} name - description, @param name type, @param name type - description.
+  // The name may use standard JSDoc optional syntax: `[name]` or `[name=default]`
+  // (brackets/default are stripped; the tag is marked `optional`).
+  const paramRegexBraces = /@param\s+\{([^}]+)\}\s+(\w+|\[\w+(?:\s*=[^\]]*)?\])(?:\s+-\s+(.*))?/g;
   const paramRegexBare = /@param\s+(\w+)\s+(\S+)(?:\s+-\s+(.*))?/g;
 
   let match: RegExpExecArray | null;
 
   // Try brace syntax first: @param {type} name
   while ((match = paramRegexBraces.exec(fullText)) !== null) {
+    const rawName = match[2]!;
+    const optional = rawName.startsWith('[');
+    const name = optional
+      ? rawName.slice(1, -1).split('=')[0]!.trim()
+      : rawName;
     tags.push({
       tag: 'param',
       typeExpression: match[1]!.trim(),
-      name: match[2]!,
-      description: match[3]?.trim()
+      name,
+      description: match[3]?.trim(),
+      ...(optional ? { optional: true } : {})
     });
   }
 
@@ -134,14 +143,18 @@ export function parseJsDocComment(value: string): ParsedJsDoc {
 export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
   typeExpr = typeExpr.trim();
 
-  // Handle optional type: type?  → type|null
-  if (typeExpr.endsWith('?')) {
+  // Handle nullable/optional type sugar — all mean `type|null` (in ucode an
+  // omitted argument IS null, so optional and nullable collapse):
+  //   `type?` (suffix), `?type` (Closure nullable prefix), `type=` (Closure optional suffix)
+  if (typeExpr.endsWith('?') || typeExpr.endsWith('=')) {
     const baseType = resolveTypeExpression(typeExpr.slice(0, -1));
     if (baseType === null) return null;
-    if (typeof baseType === 'string') {
-      return createUnionType([baseType as UcodeType, UcodeType.NULL]);
-    }
-    return baseType;
+    return widenWithNull(baseType);
+  }
+  if (typeExpr.startsWith('?') && typeExpr.length > 1) {
+    const baseType = resolveTypeExpression(typeExpr.slice(1));
+    if (baseType === null) return null;
+    return widenWithNull(baseType);
   }
 
   // Handle union types: type1|type2

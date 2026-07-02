@@ -140,6 +140,21 @@ export function createUnionType(types: SingleType[]): UcodeDataType {
   };
 }
 
+/** Widen a type with `null` (`T` → `T|null`). Used for optional/nullable JSDoc
+ *  params: in ucode an omitted argument IS null, so optionality and nullability
+ *  collapse to the same representation. Types that cannot be a union member
+ *  (module/default-import types) are returned unchanged — callers that need
+ *  optionality for those must carry a separate flag (ParamInfo.optional). */
+export function widenWithNull(type: UcodeDataType): UcodeDataType {
+  if (isUnionType(type)) {
+    return createUnionType([...type.types, UcodeType.NULL]);
+  }
+  if (typeof type === 'string' || isArrayType(type) || isObjectType(type)) {
+    return createUnionType([type as SingleType, UcodeType.NULL]);
+  }
+  return type;
+}
+
 /** String key for deduplication */
 function singleTypeKey(t: SingleType): string {
   if (typeof t === 'string') return t;
@@ -332,11 +347,16 @@ export function isTypeCompatible(actual: UcodeDataType, expected: UcodeDataType)
 
 /** One parameter of a user function's signature, captured at declaration time
  *  for call-site argument checking. `type` is the declared/inferred type (JSDoc
- *  `@param {T}` or `unknown`); `isRest` marks a `...spread` parameter (variadic). */
+ *  `@param {T}` or `unknown`); `isRest` marks a `...spread` parameter (variadic).
+ *  `optional` marks a JSDoc-declared optional param (`@param {T} [name]`,
+ *  `{T=}`, `{?T}`) — its type is also widened to `T|null` where representable,
+ *  but the flag is authoritative for arity checking (some types, e.g. module
+ *  types, cannot carry a null union member). */
 export interface ParamInfo {
   name: string;
   type: UcodeDataType;
   isRest: boolean;
+  optional?: boolean;
 }
 
 export interface Symbol {
@@ -383,6 +403,7 @@ export interface Symbol {
     scopeEnd?: number; // End offset of the scope this symbol was declared in (set when scope exits)
     scopeStart?: number; // Start offset of the block scope this symbol was declared in (set at declare)
     jsdocDescription?: string; // Description from @param JSDoc tag
+    jsdocOptionalParam?: boolean; // True when the @param declared this parameter optional (`[name]`, `{T=}`, `{?T}`) — threaded into ParamInfo.optional for call-site arity checking
     isRestParam?: boolean; // True if this parameter was declared with ...spread syntax
     isExceptionParam?: boolean; // True if this is a catch-clause parameter (exception object)
     /** When set, this variable's value is provably a key of the named object —
