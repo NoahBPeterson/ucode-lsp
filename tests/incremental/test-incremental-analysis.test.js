@@ -152,6 +152,9 @@ describe('incremental analysis ≡ full analysis on real fw4.uc', () => {
   try { base = readFileSync(fw4Path, 'utf8'); } catch { base = null; }
   const t = base ? test : test.skip;
 
+  // CPU-heavy: two full analyzer passes over the real ~10k-line fw4.uc (~2.5s
+  // alone, ~8s under `bun test --concurrent` CPU contention) — needs an
+  // explicit budget above the 5s default.
   t('edit inside one method body of fw4.uc — incremental matches full', () => {
     // Find a method body and insert a harmless comment inside it.
     const idx = base.indexOf('parse_weekdays: function');
@@ -160,5 +163,5 @@ describe('incremental analysis ≡ full analysis on real fw4.uc', () => {
     const edited = base.slice(0, braceOpen + 1) + ' /* incremental test */ ' + base.slice(braceOpen + 1);
     const skipped = runSequence([base, edited]);
     expect(skipped).toBeGreaterThan(0); // most of fw4's ~100 bodies should skip
-  });
+  }, { timeout: 30000 });
 });

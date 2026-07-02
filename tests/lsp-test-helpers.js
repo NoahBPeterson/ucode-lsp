@@ -21,42 +21,80 @@ const ISOLATED_TEST_WORKSPACE = (() => {
   catch { return os.tmpdir(); }
 })();
 
+// Every spawned server process, so nothing outlives the test run. shutdown()
+// SIGTERMs (with a SIGKILL fallback); this reaper catches suites that never
+// call shutdown() and runs killed mid-suite — orphaned servers were observed
+// to accumulate (holding pipes/FDs) until spawning machine-wide degraded.
+const LIVE_SERVERS = new Set();
+process.on('exit', () => {
+  for (const p of LIVE_SERVERS) {
+    try { p.kill('SIGKILL'); } catch (_) {}
+  }
+});
+
+// Capability set for the SHARED server (superset the suites rely on: hover,
+// snippet completions, quickfix code-action literals). Historically lived in
+// mocha-shared-setup.js; the lazy path below uses the same set so mocha and
+// bun runs see identical server behavior.
+const SHARED_SERVER_CAPABILITIES = {
+  textDocument: {
+    hover: { dynamicRegistration: false },
+    completion: {
+      completionItem: { snippetSupport: true }
+    },
+    codeAction: {
+      dynamicRegistration: false,
+      codeActionLiteralSupport: {
+        codeActionKind: {
+          valueSet: ['quickfix']
+        }
+      }
+    }
+  }
+};
+
 /**
  * Creates an LSP test server instance with the robust Buffer-based protocol handling
  * @param {Object} options - Optional configuration
  * @param {Object} options.capabilities - Client capabilities to send during initialization
+ * @param {Object} options.workspaceRoot - Root the server scans (default: isolated empty temp dir)
+ * @param {Object} options.configuration - Map of section -> value answered to workspace/configuration
  */
 function createLSPTestServer(options = {}) {
-  // If a shared server exists (via mocha root hook), return a no-op wrapper.
-  // A custom workspaceRoot needs its own server (the shared one is rooted at the
-  // repo), so bypass the wrapper in that case.
-  if (global.__sharedLSPServer && !options.workspaceRoot) {
-    return {
-      initialize: () => Promise.resolve(),
-      shutdown: () => {},
-      getDiagnostics: global.__sharedLSPServer.getDiagnostics,
-      getCompletions: global.__sharedLSPServer.getCompletions,
-      getHover: global.__sharedLSPServer.getHover,
-      getDefinition: global.__sharedLSPServer.getDefinition,
-      getReferences: global.__sharedLSPServer.getReferences,
-      getDocumentSymbols: global.__sharedLSPServer.getDocumentSymbols,
-      getHighlights: global.__sharedLSPServer.getHighlights,
-      getRename: global.__sharedLSPServer.getRename,
-      getPrepareRename: global.__sharedLSPServer.getPrepareRename,
-      getSignatureHelp: global.__sharedLSPServer.getSignatureHelp,
-      getInlayHints: global.__sharedLSPServer.getInlayHints,
-      getFoldingRanges: global.__sharedLSPServer.getFoldingRanges,
-      getDocumentLinks: global.__sharedLSPServer.getDocumentLinks,
-      notifyWatchedFileChange: global.__sharedLSPServer.notifyWatchedFileChange,
-      getWorkspaceSymbols: global.__sharedLSPServer.getWorkspaceSymbols,
-      getCodeActions: global.__sharedLSPServer.getCodeActions,
-      getCodeLens: global.__sharedLSPServer.getCodeLens,
-      resolveCodeLens: global.__sharedLSPServer.resolveCodeLens,
-      openOrChangeDocument: global.__sharedLSPServer.openOrChangeDocument,
-      closeDocument: global.__sharedLSPServer.closeDocument,
-      requestInlayHints: global.__sharedLSPServer.requestInlayHints,
-      waitForDiagnostics: global.__sharedLSPServer.waitForDiagnostics,
+  // SHARED-SERVER FAST PATH. Spawning a server per suite costs ~300ms each and
+  // was the dominant cost of a full run (~90 e2e suites). Any caller with no
+  // bespoke options transparently shares ONE server process (created lazily on
+  // first use, or eagerly by the mocha root hook): they get a wrapper whose
+  // initialize() performs/awaits the one-time real handshake and whose
+  // shutdown() is a no-op (the process-exit reaper reclaims the server).
+  // Callers passing workspaceRoot / capabilities / configuration need their
+  // own server semantics → always isolated. UCODE_LSP_ISOLATED_TEST_SERVERS=1
+  // restores a server per suite everywhere (debug escape hatch).
+  const needsIsolation = !!(options.workspaceRoot || options.capabilities || options.configuration)
+    || process.env.UCODE_LSP_ISOLATED_TEST_SERVERS === '1';
+  if (!needsIsolation) {
+    if (!global.__sharedLSPServer) {
+      global.__sharedLSPServer = createLSPTestServer({ capabilities: SHARED_SERVER_CAPABILITIES });
+      global.__sharedLSPServerInit = null;
+    }
+    const real = global.__sharedLSPServer;
+    const wrapper = {};
+    for (const [k, v] of Object.entries(real)) {
+      if (typeof v === 'function') wrapper[k] = v;
+    }
+    wrapper.initialize = () => {
+      if (!global.__sharedLSPServerInit) {
+        global.__sharedLSPServerInit = real.initialize().catch((e) => {
+          // Failed handshake: forget the broken server so the next suite retries.
+          global.__sharedLSPServerInit = null;
+          global.__sharedLSPServer = null;
+          throw e;
+        });
+      }
+      return global.__sharedLSPServerInit;
     };
+    wrapper.shutdown = () => {};
+    return wrapper;
   }
 
   let serverProcess = null;
@@ -229,6 +267,19 @@ function createLSPTestServer(options = {}) {
       serverProcess = spawn('node', [serverPath, '--stdio'], {
         stdio: ['pipe', 'pipe', 'inherit']
       });
+      LIVE_SERVERS.add(serverProcess);
+      serverProcess.on('exit', function onServerExit() {
+        LIVE_SERVERS.delete(this);
+      });
+      // The server must never hold the TEST process's event loop open: the
+      // shared server (whose wrapper shutdown() is a no-op) would otherwise
+      // keep a hook-less `npx mocha <file>` run alive forever after the last
+      // test. unref the child and its pipes — events still flow while tests
+      // hold the loop; once they finish, the process exits and the
+      // process-exit reaper SIGKILLs the server.
+      serverProcess.unref();
+      if (typeof serverProcess.stdin.unref === 'function') serverProcess.stdin.unref();
+      if (typeof serverProcess.stdout.unref === 'function') serverProcess.stdout.unref();
 
       serverProcess.stdout.on('data', (data) => {
         handleIncomingChunk(data);
@@ -286,12 +337,25 @@ function createLSPTestServer(options = {}) {
     });
   }
 
-  // Shutdown the server
+  // Shutdown the server. SIGTERM first; if the process is still alive shortly
+  // after, SIGKILL it — a polite kill that never lands is how orphaned servers
+  // piled up across a session. The timer is unref'd so it can't hold the
+  // test-runner process open.
   function shutdown() {
     if (serverProcess) {
-      try { 
-        serverProcess.kill(); 
+      const proc = serverProcess;
+      try {
+        proc.kill();
       } catch (_) {}
+      const hardKill = setTimeout(() => {
+        // Still running = has neither exited nor died to a signal. (`proc.killed`
+        // only means a signal was SENT, so it must not gate the hard kill.)
+        if (proc.exitCode === null && proc.signalCode === null) {
+          try { proc.kill('SIGKILL'); } catch (_) {}
+        }
+        LIVE_SERVERS.delete(proc);
+      }, 1500);
+      if (typeof hardKill.unref === 'function') hardKill.unref();
       serverProcess = null;
     }
     pendingRequests.clear();

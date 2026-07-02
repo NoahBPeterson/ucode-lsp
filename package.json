@@ -176,6 +176,7 @@
   "scripts": {
     "vscode:prepublish": "bun run package",
     "compile": "webpack",
+    "test:fast": "bun scripts/test-fast.mjs",
     "package": "webpack --mode production --devtool false",
     "watch": "webpack --watch",
     "coverage:e2e": "node scripts/coverage/run-e2e-coverage.cjs",

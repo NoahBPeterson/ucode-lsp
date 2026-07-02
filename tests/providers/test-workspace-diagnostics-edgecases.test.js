@@ -61,11 +61,15 @@ test('05 startup publishes for multiple error files', async () => {
 });
 
 // ── Directory exclusions ─────────────────────────────────────────────────────
-test('06 a node_modules file is never analyzed/published', async () => {
-  expect(await neverPublishes(uriOf(P('node_modules/excluded.uc')))).toBe(true);
-});
-test('07 a dot-directory file is never analyzed/published', async () => {
-  expect(await neverPublishes(uriOf(P('.hidden/hiddenerr.uc')))).toBe(true);
+test('06+07 node_modules and dot-directory files are never analyzed/published', async () => {
+  // Both negatives watch the same startup scan, so their 2.5s "nothing arrives"
+  // windows overlap — same two assertions, half the wall-clock.
+  const [nm, hidden] = await Promise.all([
+    neverPublishes(uriOf(P('node_modules/excluded.uc'))),
+    neverPublishes(uriOf(P('.hidden/hiddenerr.uc'))),
+  ]);
+  expect(nm).toBe(true);
+  expect(hidden).toBe(true);
 });
 
 // ── Create / change / fix / delete lifecycle ─────────────────────────────────

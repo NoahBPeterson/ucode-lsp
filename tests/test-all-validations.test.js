@@ -8,7 +8,7 @@
 // with no registration; to KEEP one out, add it to QUARANTINE below. (Previously
 // this was two hand-maintained lists, which silently orphaned any unlisted file.)
 import { test, expect } from 'bun:test';
-import { execSync, exec } from 'child_process';
+import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
@@ -107,34 +107,90 @@ test('Comprehensive Validation Test Suite', async () => {
         }
     }
 
-    // --- Run all mocha tests in a single invocation with shared LSP server ---
-    if (mochaTestPaths.length > 0) {
-        console.log(`\nRunning ${mochaTestPaths.length} mocha test suites (shared LSP server)...\n`);
-
-        const mochaCmd = [
-            './node_modules/.bin/mocha',
-            '--require', 'tests/mocha-shared-setup.js',
-            '--timeout', '30000',
-            '--reporter', 'min',
-            ...mochaTestPaths
-        ].join(' ');
-
-        let mochaOutput = '';
-        let mochaExitOk = false;
-
-        try {
-            mochaOutput = execSync(mochaCmd, { encoding: 'utf8', timeout: 90000 });
-            mochaExitOk = true;
-        } catch (error) {
-            // mocha exits non-zero on test failures but still writes output to stdout
-            mochaOutput = error.stdout || '';
+    // --- Launch BOTH heavy phases concurrently ---------------------------------
+    // The mocha invocation (1 process, shared LSP server, ~10s) and the standalone
+    // bun-script pool are independent process trees; running them side by side
+    // makes the wall-clock max(mocha, pool) instead of the sum. Each phase only
+    // COLLECTS results here; parsing/reporting stays sequential below so the
+    // output and pass/fail accounting are unchanged.
+    const mochaPhase = (async () => {
+        if (mochaTestPaths.length === 0) return null;
+        const t0 = Date.now();
+        // SHARDED: every suite here was written to run standalone (they each
+        // originally spawned their own server), so any partition is valid.
+        // Three concurrent mocha processes — each with its own shared LSP
+        // server via the root hook — cut the phase's wall-clock to ~max(shard)
+        // instead of the sum. Round-robin keeps slow suites spread out.
+        const SHARDS = Math.min(3, mochaTestPaths.length);
+        console.log(`\nRunning ${mochaTestPaths.length} mocha test suites (${SHARDS} shards, shared LSP server each)...`);
+        const shards = Array.from({ length: SHARDS }, () => []);
+        mochaTestPaths.forEach((p, i) => shards[i % SHARDS].push(p));
+        const shardResults = await Promise.all(shards.map(async (files) => {
+            const cmd = [
+                './node_modules/.bin/mocha',
+                '--require', 'tests/mocha-shared-setup.js',
+                '--timeout', '30000',
+                '--reporter', 'min',
+                ...files
+            ].join(' ');
+            try {
+                const { stdout } = await execAsync(cmd, { encoding: 'utf8', timeout: 120000, maxBuffer: 16 * 1024 * 1024 });
+                return { output: stdout, exitOk: true };
+            } catch (error) {
+                // mocha exits non-zero on test failures but still writes output to stdout
+                return { output: error.stdout || '', exitOk: false };
+            }
+        }));
+        console.log(`  [mocha phase: ${((Date.now() - t0) / 1000).toFixed(1)}s]`);
+        // Combine shard outputs: sum the min-reporter pass/fail counts, keep
+        // every shard's failure detail for the report below.
+        let passes = 0, failures = 0, exitOk = true, failText = '';
+        for (const r of shardResults) {
+            const p = r.output.match(/(\d+) passing/);
+            const f = r.output.match(/(\d+) failing/);
+            passes += p ? parseInt(p[1]) : 0;
+            const fl = f ? parseInt(f[1]) : 0;
+            failures += fl;
+            if (!r.exitOk) exitOk = false;
+            if (fl > 0) failText += r.output.substring(r.output.indexOf('failing')) + '\n';
         }
+        return { passes, failures, exitOk, failText };
+    })();
 
-        // Parse "N passing" and "N failing" from mocha min reporter
-        const passingMatch = mochaOutput.match(/(\d+) passing/);
-        const failingMatch = mochaOutput.match(/(\d+) failing/);
-        const mochaPasses = passingMatch ? parseInt(passingMatch[1]) : 0;
-        const mochaFailures = failingMatch ? parseInt(failingMatch[1]) : 0;
+    const poolPhase = (async () => {
+        if (nonMochaTestFiles.length === 0) return [];
+        // Bounded worker pool, NOT Promise.all: launching all ~120 scripts at
+        // once (each a bun process, many spawning their own LSP server) was a
+        // 200+-process storm that exhausted pipes/FDs and degraded the whole
+        // machine's ability to spawn (observed as multi-minute hangs). The
+        // scripts are IO-bound (LSP round-trips), so the pool runs ~2× the
+        // cores — bounded, but not starved.
+        const POOL = Math.max(8, (await import('os')).cpus().length * 2);
+        const t0 = Date.now();
+        console.log(`Running ${nonMochaTestFiles.length} bun test suites (pool of ${POOL})...`);
+        const queue = [...nonMochaTestFiles];
+        const results = [];
+        await Promise.all(Array.from({ length: POOL }, async () => {
+            while (queue.length > 0) {
+                const testFile = queue.shift();
+                const command = `bun ${testFile}`;
+                try {
+                    const { stdout } = await execAsync(command, { encoding: 'utf8', timeout: 30000 });
+                    results.push({ testFile, stdout, ok: true });
+                } catch (error) {
+                    results.push({ testFile, stdout: error.stdout || error.message, ok: false });
+                }
+            }
+        }));
+        console.log(`  [standalone pool phase: ${((Date.now() - t0) / 1000).toFixed(1)}s]`);
+        return results;
+    })();
+
+    const [mochaResult, bunResults] = await Promise.all([mochaPhase, poolPhase]);
+
+    // --- Report mocha results ---
+    if (mochaResult) {
+        const { passes: mochaPasses, failures: mochaFailures, exitOk: mochaExitOk, failText } = mochaResult;
         totalTestCount += mochaPasses + mochaFailures;
         totalSuites += mochaTestPaths.length;
 
@@ -146,38 +202,19 @@ test('Comprehensive Validation Test Suite', async () => {
             const failedSuiteCount = Math.min(mochaFailures, mochaTestPaths.length);
             passedSuites += mochaTestPaths.length - failedSuiteCount;
             console.log(`  Mocha: ${mochaPasses} passed, ${mochaFailures} failed\n`);
-            // Show failure details from the output
-            const failureSection = mochaOutput.substring(mochaOutput.indexOf('failing'));
-            if (failureSection) {
-                console.log(failureSection.substring(0, 2000));
+            // Show failure details from the shard outputs
+            if (failText) {
+                console.log(failText.substring(0, 2000));
             }
         } else {
-            // No passing/failing match found but exit was ok - assume all passed
-            if (mochaExitOk) {
-                passedSuites += mochaTestPaths.length;
-                console.log(`  All ${mochaTestPaths.length} mocha suites passed\n`);
-            } else {
-                console.log('  Mocha invocation failed');
-                console.log(mochaOutput.substring(0, 1000));
-            }
+            // Exit not ok but no failure counts parsed — the invocation itself broke
+            console.log('  Mocha invocation failed (no test counts parsed)');
         }
     }
 
-    // --- Run non-mocha (bun) tests in parallel ---
+    // --- Report standalone (bun script) results ---
     if (nonMochaTestFiles.length > 0) {
-        console.log(`Running ${nonMochaTestFiles.length} bun test suites (parallel)...\n`);
-
         totalSuites += nonMochaTestFiles.length;
-
-        const bunResults = await Promise.all(nonMochaTestFiles.map(async (testFile) => {
-            const command = `bun ${testFile}`;
-            try {
-                const { stdout } = await execAsync(command, { encoding: 'utf8', timeout: 30000 });
-                return { testFile, stdout, ok: true };
-            } catch (error) {
-                return { testFile, stdout: error.stdout || error.message, ok: false };
-            }
-        }));
 
         for (const { testFile, stdout, ok } of bunResults) {
             if (!ok) {
