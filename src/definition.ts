@@ -95,7 +95,10 @@ export function handleDefinition(
                         || analysisResult.symbolTable.lookup(symbolName);
 
             if (symbol) {
-                return getSymbolDefinition(symbol, document, fileResolver);
+                const symDef = getSymbolDefinition(symbol, document, fileResolver);
+                if (symDef) return symDef;
+                // fall through — a symbol without a resolvable location (e.g. a registry
+                // entry) shouldn't block the global-def-site fallbacks below.
             }
 
             // A `loadfile("x.uc")()`-injected global has no in-file symbol — jump to its
@@ -108,6 +111,19 @@ export function handleDefinition(
                     const tmpDoc = TextDocument.create(lf.uri, 'ucode', 1, content);
                     return { uri: lf.uri, range: { start: tmpDoc.positionAt(lf.defStart), end: tmpDoc.positionAt(lf.defEnd) } };
                 }
+            }
+
+            // An IN-FILE global with no declared symbol (scalar `global.X = …`, bare
+            // implicit-global `X = …`, or a JSDoc `@global X` declaration) — jump to its
+            // definition site(s). Multiple sites (e.g. one per switch case) all return;
+            // the editor shows a peek list.
+            const defSites = analysisResult.globalDefSites?.get(symbolName);
+            if (defSites && defSites.length > 0) {
+                const locs = defSites.map(s => ({
+                    uri: document.uri,
+                    range: { start: document.positionAt(s.start), end: document.positionAt(s.end) },
+                }));
+                return locs.length === 1 ? locs[0]! : locs;
             }
         }
     } catch (error) {

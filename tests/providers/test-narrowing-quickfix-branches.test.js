@@ -49,6 +49,22 @@ describe('generateTypeNarrowingQuickFixes edge branches (e2e)', () => {
     expect(actions.some((a) => /null guard/i.test(a.title))).toBe(true);
   });
 
+  test('top-level `let x = call(nullable)` used later → split-declaration guard', async () => {
+    // No enclosing function (no `return` for an early guard) and `out` is used later (a wrap
+    // would scope it out) → the only offered fix is the scope-preserving split declaration.
+    const code = MAYBE + "let val = maybeNull(3);\nlet out = split(val, \",\");\nprint(out);\n";
+    const file = '/tmp/qf-split.uc';
+    const { diag, actions } = await actionsFor(code, file);
+    expect(diag).toBeDefined();
+    const split = actions.find((a) => /Guard the assignment/.test(a.title));
+    expect(split).toBeTruthy();
+    const out = split.edit.changes[`file://${file}`][0].newText;
+    // preserves the declaration (out stays in scope) and guards on val
+    expect(/let out;/.test(out)).toBe(true);
+    expect(/if \(val != null\)/.test(out)).toBe(true);
+    expect(/out = split\(val, ","\);/.test(out)).toBe(true);
+  });
+
 });
 
 // The non-null (type-mismatch) branch: an UNKNOWN-typed arg passed to a builtin

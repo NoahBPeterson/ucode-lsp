@@ -56,3 +56,5 @@ luci/**
 adblock-fast/**
 openwrt-firewall4-with-fullcone/**
 uspot/**
+zzzz/**
+*.vsix

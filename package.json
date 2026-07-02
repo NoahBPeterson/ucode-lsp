@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.7.12",
+  "version": "0.7.38",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
@@ -116,6 +116,42 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "When a `'use strict'` file passes a builtin an argument whose type can't be verified (a value of *unknown* type — e.g. an unannotated function parameter), treat it as an **error** (`true`, the default — TypeScript `noImplicitAny`-style) or merely a **warning** (`false`).\n\nThis only affects *unverifiable* arguments. Arguments that are provably wrong — a definite type mismatch, or a possibly-`null` value passed where non-null is required — are **always errors** regardless of this setting.\n\nSet to `false` if you prefer the LSP to surface unannotated/dynamic code as warnings rather than errors (common for OpenWrt-style ucode that leans on dynamic values and shared module state); absolute, true-positive errors will still appear as errors. Annotating the parameter (e.g. `/** @param {string} name */`) resolves it either way."
+        },
+        "ucode.warnUnguardedThrowingCalls": {
+          "scope": "resource",
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Flag calls to builtins that **throw an exception on invalid input** — `json()`, `loadfile()`, `loadstring()`, `require()`, `render()` — when they aren't inside a `try`/`catch` (diagnostic `UC8001`). All are **warnings**; only `json()` escalates to an **error** under `'use strict'` (use `ucode.strictThrowingCalls` to escalate the rest too). `require()`/`loadfile()`/`render()` are silent when their module/path/template provably resolves (see `ucode.warnResolvableThrowingCalls`); `render()` with a function argument isn't flagged (it only propagates). A quick fix wraps the call *and the code that depends on its result* in a `try`/`catch`.\n\n**On by default** — parsing/loading external input and letting an exception unwind is a common crash source, so the LSP nudges you to guard it. Set to `false` to silence it. Note `die()` and `assert()` throw *intentionally* and are never flagged."
+        },
+        "ucode.warnResolvableThrowingCalls": {
+          "scope": "resource",
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Also flag `require()` / `loadfile()` (`UC8001`) when their argument **provably resolves** — a known module available at the target version, or an existing file path. By default these are silent when they resolve (only a *missing* module/path warns), because a resolvable call won't fail at resolution. Enable this if you also want to be reminded that a resolvable module/file can still throw on a **compile or runtime error** inside it. Off by default."
+        },
+        "ucode.strictThrowingCalls": {
+          "scope": "resource",
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Under `'use strict'`, escalate **every** unguarded throwing-builtin call (`UC8001`) to an **error**. By default only `json()` escalates to an error under strict; `loadstring()`, `render()`, `require()`, and `loadfile()` stay warnings (a missing module/file/template is a common fail-early case). Turn this on for maximum strictness. Off by default."
+        },
+        "ucode.assumeUndefinedGlobalsDefined": {
+          "scope": "resource",
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Treat a read of any name with **no visible declaration** as an implicit global instead of flagging it `UC1001` (\"Undefined variable\"). This matches ucode's non-strict runtime, where reading an undeclared name simply yields `null`.\n\n**Off by default** — leaving it on hides genuine typos. Prefer the narrower option first: declare known host-injected globals with a JSDoc `/** @global name */` (a `{type}` may be given, e.g. `/** @global {object} uhttpd */`), which the LSP recognizes without disabling the check everywhere. Enable this blanket setting only for heavily injected codebases where per-name declaration isn't practical."
+        },
+        "ucode.uncertainGlobalScope": {
+          "scope": "resource",
+          "type": "string",
+          "enum": ["off", "warn", "errorInStrict"],
+          "default": "errorInStrict",
+          "enumDescriptions": [
+            "Disabled.",
+            "Always a warning.",
+            "Warning normally; error under 'use strict' (matches ucode's strict Reference-error)."
+          ],
+          "markdownDescription": "Global-scope soundness checks (same severity knob for both):\n\n- **`UC8002` — read before definition:** a read of a global before it is assigned in this file (an in-file `global.X = …`/bare `X = …` assignment, or a top-level `loadfile(\"f.uc\")()` that injects it). On first execution such a read is `null` (non-strict) or throws a `Reference error` (strict). Conservative: never fires when the global is assigned inside any function (no call graph), for reads inside functions, or for host/`@global`-declared names — declare the name with a JSDoc `@global` tag if a caller or previous run defines it.\n- **`UC8003` — untrackable cross-type reassignment:** a global assigned two *different* types where at least one of the conflicting assignments sits **inside a function** — call timing is unknowable, so the global's type at any read cannot be statically determined. **Always a Warning** (never an Error, even under `'use strict'` — cross-type reassignment is legal, deterministic ucode; this is a type-trackability lint). NOT flagged when order is statically known: all-top-level cross-type reassignment is SSA-tracked (reads between assignments get the positional type), top-level branches yield a knowable union, and same-type reassignments/local `let` are always fine.\n- **`UC8004` — non-deterministic definition:** a global whose existence at a later read *cannot be statically determined* — every assignment to it sits in a spot that may not execute (a function body, an `if`/`else` branch, a `switch` case, a loop, a `try`/`catch`, a ternary arm, a short-circuit RHS). Statically-determinable definitions are silent: an unconditional top-level assignment (incl. under `if (true)`), an exhaustive `if`/`else` or ternary where **both** arms assign it, a `switch` **with a `default`** where every entry assigns it before `break`, a `try`/`catch` where both sides assign it, or an unconditional top-level **call** to an in-file function that unconditionally assigns it (the `init()` idiom). Quick fixes: seed a top-level default (`global.X = null;`, preferred) or declare `/** @global X */` — the sanctioned opt-out when the environment guarantees the global.\n- **`UC8005` — read of a shaky global:** the echo of `UC8004` at the site where the hazard materializes — a read (top-level **or inside a function**) of a global whose *every* definition is non-deterministic. One severity step below the definition diagnostic (Information; **Warning** under `'use strict'`, where the read would throw at runtime), cross-linked to the definition sites. Same quick fixes as `UC8004`. Silent when the global is definitely assigned earlier in the same body (directly, or via a call to a function that unconditionally assigns it — `function g() { load(); return CONF; }` is clean) and for shadowing parameters/locals.\n- **`UC8006` — never-assigned property:** a read of a property that is **never assigned** on a global bound to an object literal (`global.CACHE = {}` … `CACHE.hot`) — provably always `null` in this file: the literal doesn't define it and nothing writes it. Warning. Only fires when the shape is fully visible — silent if the object ever escapes (used as a value/argument), takes a computed write (`X[k] = …`), or is reassigned to a non-literal. Property writes anywhere — including `global.X.p = …` inside functions, now tracked like locals — count as defining it.\n\n- `errorInStrict` (default): warning, escalated to error under `'use strict'`.\n- `warn`: always a warning.\n- `off`: disabled."
         },
         "ucode.inlayHints.enable": {
           "scope": "window",

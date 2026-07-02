@@ -61,8 +61,15 @@ export abstract class CallExpressions extends OperatorExpressions {
     if (!consequent) return null;
 
     this.consume(TokenType.TK_COLON, "Expected ':' after '?' in conditional expression");
-    
-    const alternate = this.parseExpression(Precedence.CONDITIONAL);
+
+    // The alternate is an ASSIGNMENT expression, like the consequent: ucode accepts
+    // `cond ? a = 1 : b = 2` unparenthesized (verified vs the interpreter — the C compiler
+    // inherits assignability from the enclosing statement via its exprstack parent walk, so
+    // the trailing `= …` is absorbed into the member/label compile). Parsing the alternate
+    // at CONDITIONAL excluded the `=`, and the outer Pratt loop then handed the whole
+    // ternary to parseAssignment → spurious "Invalid assignment target". Right-associative
+    // chaining (`a ? b : c ? d : e`) is unaffected: `?` binds tighter than `=`.
+    const alternate = this.parseExpression(Precedence.ASSIGNMENT);
     if (!alternate) return null;
 
     return {

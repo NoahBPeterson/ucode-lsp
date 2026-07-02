@@ -1,5 +1,116 @@
 # Changelog
 
+## 0.7.38 (2026-07-02)
+
+Everything since `v0.7.2`. Two arcs: **per-OpenWrt-release version gating** finished its
+module bring-up (0.7.3–0.7.9), and a **global-scope soundness suite** landed end to end —
+six new diagnostics (`UC8001`–`UC8007`) that make ucode's runtime-VM-state globals (and
+object shapes) statically accountable, each with quick fixes, an explicit opt-out story,
+and precision passes so the checks only speak when they can prove something.
+
+### Global-scope soundness (`UC8002`–`UC8007`, `ucode.uncertainGlobalScope`)
+
+ucode globals are runtime VM state, not lexical bindings — `global.X = …` exists only once
+the assignment executes. The suite classifies every global by *definite assignment*
+(design: `docs/global-scope-soundness.md`):
+
+- **`UC8002` read-before-definition** (0.7.17): a top-level read that lexically precedes
+  every in-file def — including cross-file def-points via `loadfile("f.uc")()`. Warning,
+  Error under `'use strict'` (mirrors ucode's strict Reference error). Conservative: never
+  fires when a function assignment or unknown call order could define the name first.
+- **`UC8004` non-deterministic definition** (0.7.31–0.7.32): a global assigned *only* from
+  spots that may not execute — function bodies, `if`/`else` branches, `switch` cases,
+  loops, `try`/`catch`, ternary arms, short-circuit RHS. Message: existence "cannot be
+  statically determined". Precision is a real **must-assign analysis**, silent wherever
+  existence *is* provable: unconditional top-level defs (incl. `if (true)`-style static
+  guards), exhaustive `if`/`else`/ternary (both arms assign), `switch` **with `default`**
+  where every entry assigns before `break` (fallthrough followed), `try`/`catch` where both
+  sides assign, and a **tier-1-lite call graph** — an unconditional top-level call to a
+  function that unconditionally assigns the global (the `init()` idiom; transitive through
+  direct calls, cycle-safe, covers `let`-bound lambdas from 0.7.34).
+- **`UC8005` read-site echo** (0.7.33, 0.7.35): the same hazard surfaced where the null /
+  Reference error would actually happen — reads of a global whose *every* def is
+  non-deterministic, at top level **and inside functions**; one severity step below the
+  def''s diagnostic, cross-linked both ways via related information. Silent when the global
+  is definitely assigned earlier in the same body (directly or through a call) or shadowed
+  by a param/local.
+- **`UC8003` untrackable cross-type reassignment** (redesigned 0.7.34): fires only when the
+  type *genuinely* can''t be tracked — a cross-type conflict where at least one assignment
+  sits inside a function (call timing unknowable). **Always a Warning** (legal, deterministic
+  ucode — no runtime failure to mirror). Straight-line top-level reassignment is silent AND
+  delivered on: **scalar globals get SSA positional typing** — reads between assignments see
+  the type in effect at that point, hover is position-aware.
+- **`UC8006`/`UC8007` never-assigned property** (0.7.36–0.7.38): reading a property that is
+  never assigned on a fully-visible object-literal global (`UC8006`) or local (`UC8007`) is
+  provably **always null** — a definite bug: Warning, **Error under `''use strict''`**. Only
+  fires when the shape is fully enumerable: escapes (value/argument/`export { x }` uses),
+  computed writes, non-literal reassignment, and spread/computed-key literals all forfeit
+  the proof. Property writes are tracked like locals everywhere — including the previously
+  missed nested `global.X.p = …` form inside functions. `UC8007` resolves occurrences
+  through the symbol table (shadowing-precise; closure writes count).
+- **Opt-outs**: JSDoc `/** @global name */` (per-name, developer-extensible; also feeds a
+  built-in host-globals registry, e.g. `uhttpd`) and the blanket
+  `ucode.assumeUndefinedGlobalsDefined` setting (default off). Quick fixes on every
+  UC8004/UC8005: seed `global.X = null;` at top level (preferred; inserted below shebang
+  and `''use strict''`) or declare `@global`.
+- **Navigation**: go-to-definition works for symbol-less globals — scalar `global.X = …`
+  assignments, bare implicit globals, `@global` tags (jumps to the tag), multi-site globals
+  (peek list), and object/function/array-typed globals (previously landed at offset 0).
+
+### Unguarded throwing-builtin calls (`UC8001`, on by default)
+
+`json()` / `require()` / `loadfile()` / `loadstring()` / `render()` throw on invalid input;
+calling them outside `try`/`catch` is a common crash source (0.7.15, refined through 0.7.29):
+
+- Data-driven spec (`src/analysis/throwingBuiltins.ts`); all Warnings by default, only
+  `json()` escalates to Error under strict (`ucode.strictThrowingCalls` escalates the rest).
+- **Resolution- and version-aware suppression**: `require("fs")` never warns; a module is
+  checked against the *target OpenWrt release* (`socket` resolves on 24.10+, not 22.03);
+  `loadfile`/`render` paths are checked on disk; `render(fn)` is recognized as
+  propagate-only. Missing module/path messages are specific.
+  `ucode.warnResolvableThrowingCalls` (default off) re-enables warnings on resolvable calls.
+- **Dependency-scoped wrap quick fix**: wraps the call *and its transitive dependents* only
+  (stops at function/import/export boundaries — no more swallowing unrelated code); the
+  `require` variant generates a runtime catch that globs `REQUIRE_SEARCH_PATH` to report
+  available modules.
+
+### Type inference & language fixes
+
+- Namespace/named-import member calls propagate `@returns` (incl. unions) to use sites
+  (0.7.13); named object-const import members type correctly with go-to-def (0.7.12).
+- `global.X = {…}` / bare implicit-global objects expose typed shapes — in-file and
+  cross-file via `loadfile()()`; global functions/arrays/scalars get first-class symbols
+  (0.7.14, 0.7.18+).
+- **Parser**: `cond ? a = 1 : b = 2` — unparenthesized assignment in a ternary alternate is
+  valid ucode (verified against the interpreter and the C compiler''s inherited
+  assignability); previously a spurious `UC6001` (0.7.34). `!lvalue = rhs` parses as ucode
+  does, with a `UC6007` clarity warning + paren quick fix (0.7.4).
+- Union type display is canonical: concrete types first, `unknown` next, `null` always last
+  (0.7.30). Rich `fs.*` types survive ternary / `?? []` / for-in (0.7.9).
+- Nullable-argument quick fix: split-declaration null guard (0.7.22). `throw` removed from
+  completions (not a ucode keyword).
+
+### Per-release version gating (0.7.3–0.7.9)
+
+- Modules gated by **feed availability**, not source existence: `html`/`bpf`/`lua` (23.05),
+  `uclient`/`udebug` (24.10), `uline`/`pkgen` (25.12), `lucihttp`; global `signal()` gated;
+  fs `ST_*` main-only; `io` `IOC_DIR_*` flagged Linux-only (`UC6006`).
+- `UC6005` (feature newer than target) escalates to Error under strict; CLI gained
+  `--target-version`; registry-based module completion; the client now pushes `ucode.*`
+  configuration changes live.
+- `ucode.strictUnknownArguments` (default on): unverifiable builtin arguments are errors
+  under strict, noImplicitAny-style (0.7.5).
+
+### Internals
+
+- TypeScript 6.0.3, `verbatimModuleSyntax`, `noImplicitOverride`, zero explicit `: any` in
+  `src/` (0.7.6).
+- The UC8007 walker is an **exhaustive per-node-kind handler table**
+  (`satisfies Record<AstNodeKind, …>`): a missing node kind is a compile error, so growing
+  the AST forces a conscious value-use-vs-name-position decision per context (0.7.37).
+- ~350 new tests across the suite (2554 total green); diagnostics carry machine-readable
+  `data` payloads (quick-fix targets) and related-information cross-links.
+
 ## 0.7.2 (2026-06-23)
 
 Everything since the last release (`v0.6.254`). The headline is end-to-end ucode **template

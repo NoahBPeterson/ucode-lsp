@@ -107,6 +107,23 @@ export function parseJsDocComment(value: string): ParsedJsDoc {
     });
   }
 
+  // Parse @global tags: `@global name`, `@global {type} name`, or `@global name {type}`.
+  // Declares a name as an injected/host global so a read isn't flagged UC1001 (and, when a
+  // type is given, types it). Multiple tags allowed.
+  const globalBraces = /@global\s+\{([^}]+)\}\s+(\w+)/g;        // @global {object} uhttpd
+  const globalNameType = /@global\s+(\w+)\s+\{([^}]+)\}/g;       // @global uhttpd {object}
+  const globalBare = /@global\s+(\w+)\s*(?=$|[\r\n*])/gm;        // @global uhttpd
+  while ((match = globalBraces.exec(fullText)) !== null) {
+    tags.push({ tag: 'global', typeExpression: match[1]!.trim(), name: match[2]! });
+  }
+  while ((match = globalNameType.exec(fullText)) !== null) {
+    tags.push({ tag: 'global', name: match[1]!, typeExpression: match[2]!.trim() });
+  }
+  const typedGlobals = new Set(tags.filter(t => t.tag === 'global').map(t => t.name));
+  while ((match = globalBare.exec(fullText)) !== null) {
+    if (!typedGlobals.has(match[1]!)) tags.push({ tag: 'global', name: match[1]!, typeExpression: '' });
+  }
+
   return { tags, description };
 }
 

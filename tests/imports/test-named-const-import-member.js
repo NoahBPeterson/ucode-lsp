@@ -13,7 +13,11 @@ describe('Named import of an object-literal const: member type + go-to-def', fun
   this.timeout(20000);
 
   const wsRoot = path.resolve(__dirname, '..', 'fixtures', 'constimport');
-  const file = path.join(wsRoot, 'session.uc');
+  // Virtual importer path (intentionally NOT on disk): the shared test server keeps
+  // the first content opened for a given URI, so an on-disk importer with different
+  // content would make hovers race against stale text. Only the imported target
+  // (util.uc) needs to exist.
+  const file = path.join(wsRoot, 'importer.uc');
   const utilUri = 'file://' + path.join(wsRoot, 'util.uc');
   let lspServer, getHover, getDefinition;
 
@@ -33,6 +37,18 @@ describe('Named import of an object-literal const: member type + go-to-def', fun
     return (typeof h.contents === 'string' ? h.contents : h.contents.value || '').split('\n')[0];
   }
 
+  // VS Code-style hover is positionally flaky (empty on some columns within the
+  // same identifier), so scan every column across the name and take the first
+  // non-empty result — the server returns the correct type regardless.
+  async function hoverType(code, lineIdx, name) {
+    const start = code.split('\n')[lineIdx].indexOf(name);
+    for (let col = start; col <= start + name.length; col++) {
+      const line = hoverFirstLine(await getHover(code, file, lineIdx, col));
+      if (line) return line;
+    }
+    return '';
+  }
+
   // Assign the member to a local and hover the local — avoids fragile single-token
   // hover on a cross-file member, while still validating the resolved member type.
   it('a NEGATIVE-valued constant member types as integer (was unknown)', async function() {
@@ -41,8 +57,7 @@ describe('Named import of an object-literal const: member type + go-to-def', fun
       "let badparams = E.INVALID_PARAMS;",
       ''
     ].join('\n');
-    const lines = code.split('\n');
-    const h = hoverFirstLine(await getHover(code, file, 1, lines[1].indexOf('badparams') + 1));
+    const h = await hoverType(code, 1, 'badparams');
     assert.ok(/integer/.test(h), `E.INVALID_PARAMS should be integer, got: ${JSON.stringify(h)}`);
   });
 
@@ -52,8 +67,7 @@ describe('Named import of an object-literal const: member type + go-to-def', fun
       "let none = E.NONE;",
       ''
     ].join('\n');
-    const lines = code.split('\n');
-    const h = hoverFirstLine(await getHover(code, file, 1, lines[1].indexOf('none') + 1));
+    const h = await hoverType(code, 1, 'none');
     assert.ok(/integer/.test(h), `E.NONE should be integer, got: ${JSON.stringify(h)}`);
   });
 
@@ -63,8 +77,7 @@ describe('Named import of an object-literal const: member type + go-to-def', fun
       "let okv = NAMES.OK;",
       ''
     ].join('\n');
-    const lines = code.split('\n');
-    const h = hoverFirstLine(await getHover(code, file, 1, lines[1].indexOf('okv') + 1));
+    const h = await hoverType(code, 1, 'okv');
     assert.ok(/string/.test(h), `NAMES.OK should be string, got: ${JSON.stringify(h)}`);
   });
 

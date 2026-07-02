@@ -742,8 +742,9 @@ function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, conne
         });
     }
     
-    // Add common keywords
-    const keywords = ['let', 'const', 'function', 'if', 'else', 'for', 'while', 'return', 'break', 'continue', 'try', 'catch', 'throw'];
+    // Add common keywords. NOTE: ucode has NO `throw` (raise exceptions with `die()`);
+    // `try`/`catch` exist but `throw` is not a reserved word — do not suggest it.
+    const keywords = ['let', 'const', 'function', 'if', 'else', 'for', 'while', 'return', 'break', 'continue', 'try', 'catch'];
     for (const keyword of keywords) {
         completions.push({
             label: keyword,

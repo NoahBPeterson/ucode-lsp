@@ -81,6 +81,7 @@ import { buildIncludeScopeIndex, checkIncludeScopes, computeFreeVariables, type 
 import { runIncremental, type CleanBody } from './analysis/incrementalAnalysis';
 import { type IncrementalCacheEntry } from './analysis/incrementalCache';
 import { isKnownModule } from './analysis/moduleDispatch';
+import { THROWING_BUILTINS } from './analysis/throwingBuiltins';
 import { FileResolver } from './analysis/fileResolver';
 import { MODULE_REGISTRIES } from './analysis/moduleDispatch';
 import { Option } from 'effect';
@@ -113,6 +114,10 @@ interface DiagnosticData {
         isWrite: boolean;
         isIdentifier: boolean;
     };
+    /** UC8001: offsets of the statements to wrap in try/catch (throwing-call statement
+     *  through the end of its enclosing block), plus the throwing builtin's name (drives a
+     *  require-specific catch body listing the available modules). */
+    wrapTryCatch?: { start: number; end: number; fn?: string };
 }
 
 /** Narrow a diagnostic's opaque `data` payload to our known shape. */
@@ -254,12 +259,37 @@ let ucodeTargetVersion: UcodeTargetVersion = DEFAULT_TARGET_VERSION;
 // Cached `ucode.strictUnknownArguments` — whether an unverifiable (UNKNOWN) builtin
 // argument errors under 'use strict' (default true). See analysis/checkers/builtinValidation.ts.
 let ucodeStrictUnknownArguments = true;
+// Cached `ucode.warnUnguardedThrowingCalls` — flag throwing builtins (json/loadfile/…)
+// outside try/catch with a "wrap in try/catch" fix (UC8001). Default off (opt-in).
+let ucodeWarnUnguardedThrowingCalls = true;
+// Cached `ucode.warnResolvableThrowingCalls` — also warn require()/loadfile() when the module/
+// path provably resolves (they can still throw on a compile error). Default off.
+let ucodeWarnResolvableThrowingCalls = false;
+// Cached `ucode.strictThrowingCalls` — escalate ALL unguarded throwing-builtin calls to errors
+// under 'use strict' (default off → only json() escalates).
+let ucodeStrictThrowingCalls = false;
+// Cached `ucode.assumeUndefinedGlobalsDefined` — treat any unexplained read as an implicit
+// global (suppress UC1001) instead of flagging it. Default off (opt-in; hides typos).
+let ucodeAssumeUndefinedGlobalsDefined = false;
+// Cached `ucode.uncertainGlobalScope` — Case-2 read-before-definition check (UC8002).
+// 'errorInStrict' (default) = warn, error under 'use strict'; 'warn' = always warn; 'off'.
+let ucodeUncertainGlobalScope: 'off' | 'warn' | 'errorInStrict' = 'errorInStrict';
 
 async function refreshTargetVersion(): Promise<{ targetChanged: boolean; strictChanged: boolean }> {
     const prevVersion = ucodeTargetVersion;
     const prevStrictUnknown = ucodeStrictUnknownArguments;
+    const prevWarnThrowing = ucodeWarnUnguardedThrowingCalls;
+    const prevWarnResolvable = ucodeWarnResolvableThrowingCalls;
+    const prevStrictThrowing = ucodeStrictThrowingCalls;
+    const prevAssumeGlobals = ucodeAssumeUndefinedGlobalsDefined;
+    const prevUncertainScope = ucodeUncertainGlobalScope;
     let nextVersion: UcodeTargetVersion = DEFAULT_TARGET_VERSION;
     let nextStrictUnknown = true;
+    let nextWarnThrowing = true;
+    let nextWarnResolvable = false;
+    let nextStrictThrowing = false;
+    let nextAssumeGlobals = false;
+    let nextUncertainScope: 'off' | 'warn' | 'errorInStrict' = 'errorInStrict';
     if (hasConfigurationCapability) {
         try {
             const cfg = await connection.workspace.getConfiguration({ section: 'ucode' });
@@ -270,13 +300,38 @@ async function refreshTargetVersion(): Promise<{ targetChanged: boolean; strictC
             if (typeof cfg?.strictUnknownArguments === 'boolean') {
                 nextStrictUnknown = cfg.strictUnknownArguments;
             }
+            if (typeof cfg?.warnUnguardedThrowingCalls === 'boolean') {
+                nextWarnThrowing = cfg.warnUnguardedThrowingCalls;
+            }
+            if (typeof cfg?.warnResolvableThrowingCalls === 'boolean') {
+                nextWarnResolvable = cfg.warnResolvableThrowingCalls;
+            }
+            if (typeof cfg?.strictThrowingCalls === 'boolean') {
+                nextStrictThrowing = cfg.strictThrowingCalls;
+            }
+            if (typeof cfg?.assumeUndefinedGlobalsDefined === 'boolean') {
+                nextAssumeGlobals = cfg.assumeUndefinedGlobalsDefined;
+            }
+            if (cfg?.uncertainGlobalScope === 'off' || cfg?.uncertainGlobalScope === 'warn' || cfg?.uncertainGlobalScope === 'errorInStrict') {
+                nextUncertainScope = cfg.uncertainGlobalScope;
+            }
         } catch { /* keep defaults */ }
     }
     ucodeTargetVersion = nextVersion;
     ucodeStrictUnknownArguments = nextStrictUnknown;
+    ucodeWarnUnguardedThrowingCalls = nextWarnThrowing;
+    ucodeWarnResolvableThrowingCalls = nextWarnResolvable;
+    ucodeStrictThrowingCalls = nextStrictThrowing;
+    ucodeAssumeUndefinedGlobalsDefined = nextAssumeGlobals;
+    ucodeUncertainGlobalScope = nextUncertainScope;
     return {
         targetChanged: nextVersion !== prevVersion,
-        strictChanged: nextStrictUnknown !== prevStrictUnknown,
+        strictChanged: nextStrictUnknown !== prevStrictUnknown
+            || nextWarnThrowing !== prevWarnThrowing
+            || nextWarnResolvable !== prevWarnResolvable
+            || nextStrictThrowing !== prevStrictThrowing
+            || nextAssumeGlobals !== prevAssumeGlobals
+            || nextUncertainScope !== prevUncertainScope,
     };
 }
 let hasWorkspaceFolderCapability = false;
@@ -676,6 +731,11 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
                 workspaceRoot: workspaceFolders.length > 0 ? workspaceFolders[0] : process.cwd(),
                 targetVersion: ucodeTargetVersion,
                 strictUnknownArguments: ucodeStrictUnknownArguments,
+                warnUnguardedThrowingCalls: ucodeWarnUnguardedThrowingCalls,
+                warnResolvableThrowingCalls: ucodeWarnResolvableThrowingCalls,
+                strictThrowingCalls: ucodeStrictThrowingCalls,
+                assumeUndefinedGlobalsDefined: ucodeAssumeUndefinedGlobalsDefined,
+                uncertainGlobalScope: ucodeUncertainGlobalScope,
             });
             // Template render scope: if some file include()s THIS file with a scope object,
             // those keys are injected globals here — suppress UC1001 for them. (phase 4b)
@@ -1114,6 +1174,112 @@ function generateNullAccessQuickFixes(diagnostic: Diagnostic, document: TextDocu
     return actions;
 }
 
+
+// UC8001: wrap a throwing builtin call AND the rest of its enclosing block in try/catch.
+// The diagnostic carries the statement range to wrap (first throwing statement → end of
+// block); everything in between is re-indented one level under the new `try {`.
+function generateWrapTryCatchQuickFix(diagnostic: Diagnostic, document: TextDocument, uri: string): CodeAction[] {
+    const data = diagData(diagnostic).wrapTryCatch;
+    if (!data || typeof data.start !== 'number' || typeof data.end !== 'number') return [];
+
+    const startPos = document.positionAt(data.start);
+    const lineStartOffset = document.offsetAt({ line: startPos.line, character: 0 });
+    // Base indentation = the leading whitespace of the first statement's line.
+    const firstLine = document.getText({
+        start: { line: startPos.line, character: 0 },
+        end: { line: startPos.line + 1, character: 0 },
+    });
+    const baseIndent = (firstLine.match(/^[ \t]*/) || [''])[0];
+    const unit = baseIndent.includes('\t') ? '\t' : '    ';
+
+    const range: Range = { start: document.positionAt(lineStartOffset), end: document.positionAt(data.end) };
+    const original = document.getText(range);
+    // Shift every non-blank line one level deeper (each line already carries its own
+    // indentation, so a uniform +unit keeps relative structure intact).
+    const indented = original.split('\n').map(l => (l.trim().length ? unit + l : l)).join('\n');
+
+    // Builtins whose spec requests it (require) get a catch body listing the modules actually on
+    // the require search path (globbed from the filesystem), so the fix doubles as a reference
+    // for the correct name to require.
+    let catchBody: string;
+    if (data.fn && THROWING_BUILTINS.get(data.fn)?.catchStyle === 'modules') {
+        // Emit RUNTIME ucode that enumerates the modules actually on the require search path,
+        // so the failure prints what IS available (needs `fs` in scope — import it if absent).
+        catchBody =
+            `${baseIndent}${unit}// require() failed — module not found. Available modules on the search path:\n` +
+            `${baseIndent}${unit}for (let searchdir in REQUIRE_SEARCH_PATH)\n` +
+            `${baseIndent}${unit}${unit}for (let modpath in fs.glob(searchdir))\n` +
+            `${baseIndent}${unit}${unit}${unit}warn(\`available module: \${modpath}\\n\`);\n` +
+            `${baseIndent}${unit}warn(\`require failed: \${e}\\n\`);\n`;
+    } else {
+        catchBody =
+            `${baseIndent}${unit}// handle the exception — e.message / e.stacktrace\n` +
+            `${baseIndent}${unit}warn(\`caught: \${e}\\n\`);\n`;
+    }
+    const wrapped =
+        `${baseIndent}try {\n` +
+        `${indented}\n` +
+        `${baseIndent}} catch (e) {\n` +
+        catchBody +
+        `${baseIndent}}`;
+
+    return [{
+        title: 'Wrap in try/catch (through end of block)',
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        isPreferred: true,
+        edit: { changes: { [uri]: [TextEdit.replace(range, wrapped)] } },
+    }];
+}
+
+// The top-of-file insertion point for a global declaration/definition: after a shebang line
+// and after a `'use strict'` prologue (inserting above the directive would silently disable
+// strict mode for the whole file).
+function topInsertPosition(document: TextDocument): { line: number; character: number } {
+    let line = 0;
+    const lineText = (l: number) => document.getText({ start: { line: l, character: 0 }, end: { line: l + 1, character: 0 } });
+    if (lineText(line).startsWith('#!')) line++;
+    if (/^\s*(['"])use strict\1\s*;?\s*$/.test(lineText(line).replace(/\r?\n$/, ''))) line++;
+    return { line, character: 0 };
+}
+
+// UC1001/UC1002: the name isn't declared here, but it may be a host-injected global (uhttpd,
+// ubus, …). UC8004: the global IS assigned in-file, but non-deterministically — declaring it
+// `@global` is the sanctioned "the environment guarantees it" opt-out. Either way, offer a
+// JSDoc `@global` tag, which the LSP recognizes so the diagnostic stops. Inserts
+// `/** @global <name> */` at the top of the file (after shebang / 'use strict').
+function generateDeclareGlobalQuickFix(diagnostic: Diagnostic, document: TextDocument, uri: string): CodeAction[] {
+    // UC8004 carries the exact name (the range covers the whole `global.X = …` assignment);
+    // UC1001/UC1002 ranges start at the bare name or the call — take the leading identifier.
+    const carried = (diagnostic.data as { globalName?: string } | undefined)?.globalName;
+    const m = carried ? [carried] : document.getText(diagnostic.range).match(/^[A-Za-z_]\w*/);
+    if (!m) return [];
+    const name = m[0];
+    const at = topInsertPosition(document);
+    return [{
+        title: `Declare '${name}' as an injected global (@global)`,
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        edit: { changes: { [uri]: [TextEdit.insert(at, `/** @global ${name} */\n`)] } },
+    }];
+}
+
+// UC8004: seed the global with a default at top level so its existence becomes deterministic
+// (the conditional site then merely reassigns it). Inserts `global.X = null;` at the top of
+// the file (after shebang / 'use strict').
+function generateSeedGlobalDefaultQuickFix(diagnostic: Diagnostic, document: TextDocument, uri: string): CodeAction[] {
+    const name = (diagnostic.data as { globalName?: string } | undefined)?.globalName;
+    if (!name) return [];
+    const at = topInsertPosition(document);
+    return [{
+        title: `Assign a default at top level (global.${name} = null;)`,
+        kind: CodeActionKind.QuickFix,
+        isPreferred: true,
+        diagnostics: [diagnostic],
+        edit: { changes: { [uri]: [TextEdit.insert(at, `global.${name} = null;\n`)] } },
+    }];
+}
+
 connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
     const document = documents.get(params.textDocument.uri);
     if (!document) {
@@ -1181,6 +1347,24 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // offer optional chaining (`.`→`?.`) and a null guard (`if (x) …`).
             if (diagnostic.code === 'UC5005' || diagnostic.code === 'UC5006') {
                 codeActions.push(...generateNullAccessQuickFixes(diagnostic, document, params.textDocument.uri, ast));
+            }
+
+            // UC8001: throwing builtin outside try/catch → wrap it (and the rest of its
+            // block) in a try/catch.
+            if (diagnostic.code === 'UC8001') {
+                codeActions.push(...generateWrapTryCatchQuickFix(diagnostic, document, params.textDocument.uri));
+            }
+
+            // UC1001/UC1002: an undefined name may be a host-injected global → offer to
+            // declare it with a JSDoc `@global` tag (silences the diagnostic).
+            // UC8004 (shaky def) / UC8005 (read of a shaky global) additionally get the
+            // preferred fix: seed a top-level default so the definition becomes deterministic.
+            if (diagnostic.code === 'UC1001' || diagnostic.code === 'UC1002'
+                || diagnostic.code === 'UC8004' || diagnostic.code === 'UC8005') {
+                if (diagnostic.code === 'UC8004' || diagnostic.code === 'UC8005') {
+                    codeActions.push(...generateSeedGlobalDefaultQuickFix(diagnostic, document, params.textDocument.uri));
+                }
+                codeActions.push(...generateDeclareGlobalQuickFix(diagnostic, document, params.textDocument.uri));
             }
 
             // UC6005: syntax valid in newer ucode but not the configured target. Offer
@@ -3600,13 +3784,43 @@ function generateTypeNarrowingQuickFixes(
     const wrapAllowed = !needsStatementRedirect && !varUsedLater && !ctx.inLoopHeader
         && !ctx.inCondition && !needsBlockExpansion && declCase1End == null && !inlineFn;
 
+    // Split-declaration guard: `let cfg = json(raw);` → `let cfg;\nif (raw != null)\n\tcfg =
+    // json(raw);`. Preserves `cfg`'s scope (so it works even when it's used later) and needs
+    // no enclosing function — it fills the gap where a wrap would scope the var out AND there's
+    // no return/continue to hang an early guard on (e.g. top-level code). `let` only (a `const`
+    // must be initialised at its declaration).
+    const pushSplitDecl = (title: string, cond: string): void => {
+        if (!declStmt || !declStmtW || declStmtW.type !== 'VariableDeclaration') return;
+        if ((declStmtW.kind as string) === 'const') return;
+        const decls = declStmtW.declarations as WalkableNode[] | undefined;
+        if (!decls || decls.length !== 1) return;
+        const id = (decls[0]!.id as WalkableNode | undefined)?.name as string | undefined;
+        const init = decls[0]!.init as WalkableNode | undefined;
+        if (!id || !init || typeof init.start !== 'number' || typeof init.end !== 'number') return;
+        const base = indentOf(document, declStmt.start);
+        const kw = (declStmtW.kind as string) || 'let';
+        const initSrc = document.getText({ start: document.positionAt(init.start), end: document.positionAt(init.end) });
+        const replacement = `${kw} ${id};\n${base}if (${cond})\n${base}\t${id} = ${initSrc};`;
+        actions.push({
+            title, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
+            edit: { changes: { [uri]: [TextEdit.replace(
+                { start: document.positionAt(declStmt.start), end: document.positionAt(declStmt.end) }, replacement)] } },
+        });
+    };
+
     if (varName) {
         // === SIMPLE IDENTIFIER ===
         if (nullish) {
             const guardCond = `${varName} == null`;
             if (guardAlreadyExists(document, line, guardCond, ctx.enclosingFunctionLine)) return actions;
-            pushEarlyGuard(`Add null guard for \`${varName}\``, guardCond);
+            const earlyGuarded = pushEarlyGuard(`Add null guard for \`${varName}\``, guardCond);
             if (wrapAllowed) pushWrap(`Wrap in null guard for \`${varName}\``, `${varName} != null`);
+            // Neither an early-return guard nor a scope-safe wrap was possible (e.g. top-level
+            // `let x = call(nullable)` whose result is used later) → offer the split-declaration
+            // guard, which narrows the argument while keeping the declared variable in scope.
+            if (!earlyGuarded && !wrapAllowed) {
+                pushSplitDecl(`Guard the assignment (only call when \`${varName}\` is non-null)`, `${varName} != null`);
+            }
         } else {
             // Type mismatch — filter "null" (type(x) never returns "null", so a guard
             // can't test for it). e.g. expected "object | null" → guard only on "object".

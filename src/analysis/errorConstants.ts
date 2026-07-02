@@ -73,6 +73,15 @@ export enum UcodeErrorCode {
   JSDOC_UNKNOWN_MEMBER = 'UC7004',
   JSDOC_TYPE_CONTRADICTS = 'UC7005',
 
+  // Robustness / defensive-coding hints (8000-8999)
+  UNGUARDED_THROWING_CALL = 'UC8001', // call to a throwing builtin (json/loadfile/…) outside try/catch
+  GLOBAL_USED_BEFORE_DEFINED = 'UC8002', // read of a global before any in-file/loadfile assignment defines it
+  GLOBAL_TYPE_REASSIGNED = 'UC8003',     // a global reassigned to a different type (its type can't be tracked)
+  GLOBAL_DEFINED_NONDETERMINISTICALLY = 'UC8004', // a global assigned only conditionally / inside a function → existence uncertain
+  GLOBAL_READ_UNPROVEN = 'UC8005',                // read of a global whose every definition is non-deterministic (echo of UC8004 at the hazard site)
+  GLOBAL_PROPERTY_NEVER_ASSIGNED = 'UC8006',      // read of a property never assigned on a fully-visible global object literal → always null
+  LOCAL_PROPERTY_NEVER_ASSIGNED = 'UC8007',       // same, for a local `let x = { … }` whose shape is fully visible
+
   // System and internal errors (9000-9999)
   INTERNAL_ERROR = 'UC9001',
   ANALYSIS_ERROR = 'UC9002'

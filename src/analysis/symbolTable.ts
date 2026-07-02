@@ -263,7 +263,13 @@ export function propertyTypeAt(
 
 export function typeToString(type: UcodeDataType): string {
   if (isUnionType(type)) {
-    return type.types.map(singleTypeToString).join(' | ');
+    // Display order: concrete types first (in their existing order), then `unknown`, then
+    // `null` last — so a union reads e.g. `integer | null`, `string | unknown | null`.
+    const rank = (s: string): number => (s === 'null' ? 2 : s === 'unknown' ? 1 : 0);
+    return type.types
+      .map(singleTypeToString)
+      .sort((a, b) => rank(a) - rank(b)) // stable (ES2019+): equal-rank members keep their order
+      .join(' | ');
   }
 
   if (isObjectType(type)) {

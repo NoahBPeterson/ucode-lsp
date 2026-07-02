@@ -2,7 +2,7 @@ import { UcodeLexer } from '../lexer';
 import { UcodeParser } from '../parser';
 import { type FunctionDeclarationNode, type AstNode, type ExportDefaultDeclarationNode, type ExportNamedDeclarationNode, type IdentifierNode } from '../ast/nodes';
 import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
-import { UcodeType, type UcodeDataType, type SingleType, createUnionType, isUnionType, isObjectType, isArrayType, type ParamInfo } from './symbolTable';
+import { UcodeType, type UcodeDataType, type SingleType, createUnionType, isUnionType, isObjectType, isArrayType, typeToString, type ParamInfo } from './symbolTable';
 import { parseJsDocComment, resolveTypeExpression } from './jsdocParser';
 import { getOpenDocumentContent } from './openDocuments';
 import { MAX_ANALYSIS_DEPTH } from './visitor';
@@ -35,6 +35,11 @@ export interface LoadfileGlobal {
     defStart: number;
     defEnd: number;
     typeStr: string;
+    /** For an object-valued global (`global.X = { … }`), the literal's member types and
+     *  each method's return-type string — so a member access on the injected global
+     *  (`X.docroot`, `X.send()`) resolves cross-file, not just the bare name. */
+    propertyTypes?: Map<string, UcodeDataType>;
+    propertyReturnTypes?: Map<string, string>;
 }
 
 /** Return-shape info for a factory function (one that returns an object literal).
@@ -178,12 +183,30 @@ export class FileResolver {
         const add = (name: string, defNode: any, rhs: any) => {
             if (!name || seen.has(name)) return;
             seen.add(name);
-            out.push({
+            const entry: LoadfileGlobal = {
                 name, uri: targetUri,
                 defStart: typeof defNode?.start === 'number' ? defNode.start : 0,
                 defEnd: typeof defNode?.end === 'number' ? defNode.end : 0,
                 typeStr: coarseType(rhs),
-            });
+            };
+            // Carry the object shape so a member access on the injected global resolves
+            // cross-file (mirrors the in-file `global.X = { … }` property inference).
+            if (rhs?.type === 'ObjectExpression') {
+                const propTypes = this.inferObjectLiteralPropertyTypesShallow(rhs);
+                if (propTypes.size > 0) entry.propertyTypes = propTypes;
+                const fnReturns = new Map<string, string>();
+                for (const prop of (rhs.properties || [])) {
+                    const key = prop?.key?.name ?? prop?.key?.value;
+                    const val = prop?.value;
+                    if (typeof key !== 'string' && typeof key !== 'number') continue;
+                    if (val?.type === 'FunctionExpression' || val?.type === 'ArrowFunctionExpression') {
+                        const ret = this.functionReturnTypeString(val);
+                        if (ret) fnReturns.set(String(key), ret);
+                    }
+                }
+                if (fnReturns.size > 0) entry.propertyReturnTypes = fnReturns;
+            }
+            out.push(entry);
         };
         for (const stmt of ast.body) {
             const s = stmt as { type?: string; expression?: any };
@@ -232,6 +255,47 @@ export class FileResolver {
     isBuiltinModule(modulePath: string): boolean {
         const availableModules = discoverAvailableModules();
         return availableModules.some(module => module.name === modulePath && module.source === 'builtin');
+    }
+
+    /**
+     * Does `require("name")` resolve to a FILE on ucode's default REQUIRE_SEARCH_PATH — a
+     * `name.uc`/`name.so` (dotted → `a/b.uc`) under `{/usr/local,/usr}/{lib,share}/ucode` or the
+     * requiring file's own directory (the `./*` entries)? Builtin C modules are handled by the
+     * caller (version-aware, via VERSION_MODULES) since their availability varies by OpenWrt
+     * release; this method covers only on-disk modules.
+     */
+    requireResolvesFile(name: string, currentFileUri: string): boolean {
+        const dirs = [
+            '/usr/local/lib/ucode', '/usr/local/share/ucode',
+            '/usr/lib/ucode', '/usr/share/ucode',
+        ];
+        const cur = this.uriToFilePath(currentFileUri);
+        if (cur) dirs.push(path.dirname(cur));
+        const rel = name.replace(/\./g, '/'); // dotted module → subdirectory path
+        for (const d of dirs) {
+            for (const ext of ['.uc', '.so']) {
+                try { if (fs.existsSync(path.join(d, rel + ext))) return true; } catch { /* skip */ }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Does a `loadfile()`/`render()` PATH argument point at an existing file? Absolute paths are
+     * checked directly; any relative path (`./x`, `../x`, or a bare `files/x.uc`) is resolved
+     * against the current file's directory. Unlike resolveImportPath this doesn't require a `./`
+     * prefix and doesn't consult builtins/search paths — it's purely "does this file exist".
+     */
+    filePathResolves(p: string, currentFileUri: string): boolean {
+        let full: string;
+        if (p.startsWith('/')) {
+            full = p;
+        } else {
+            const cur = this.uriToFilePath(currentFileUri);
+            if (!cur) return false;
+            full = path.resolve(path.dirname(cur), p);
+        }
+        try { return fs.existsSync(full); } catch { return false; }
     }
 
     /**
@@ -809,6 +873,7 @@ export class FileResolver {
         content: string;
         types: Map<string, UcodeDataType>;
         nested: Map<string, Map<string, UcodeDataType>>;
+        functionReturnTypes: Map<string, string>;
     }>();
 
     getNamespaceExportPropertyTypes(fileUri: string): Map<string, UcodeDataType> | null {
@@ -822,16 +887,49 @@ export class FileResolver {
      * `export const ALFRED_TYPES = { HOSTINFO: 64, ... }` would stop at "ALFRED_TYPES
      * is object" and `.HOSTINFO` would have no hover or go-to-definition.
      */
+    /**
+     * Resolve a function node's declared return type from an `@returns` JSDoc tag,
+     * if present and recognized. Authoritative across files — preferred over body
+     * inference. Returns null when there's no usable `@returns`.
+     */
+    private functionReturnTypeFromJsDoc(funcNode: AstNode): UcodeDataType | null {
+        const leadingJsDoc = (funcNode as any).leadingJsDoc;
+        if (!leadingJsDoc?.value) return null;
+        const parsed = parseJsDocComment(leadingJsDoc.value);
+        const ret = parsed.tags.find(t => t.tag === 'returns');
+        if (!ret?.typeExpression) return null;
+        return resolveTypeExpression(ret.typeExpression);
+    }
+
+    /**
+     * Best-effort return type for a function as a parseable type string, preferring
+     * an `@returns` JSDoc annotation over body inference. Returns null when neither
+     * yields anything beyond `unknown` — callers then leave the return unresolved
+     * rather than locking in `unknown`. Used to carry namespace-member function
+     * return types (e.g. `import * as session; session.get()`).
+     */
+    private functionReturnTypeString(funcNode: AstNode): string | null {
+        const fromJsDoc = this.functionReturnTypeFromJsDoc(funcNode);
+        if (fromJsDoc !== null) return typeToString(fromJsDoc);
+        const inferred = this.inferFunctionReturnType(funcNode);
+        if (inferred !== null && inferred !== (UcodeType.UNKNOWN as UcodeDataType)) {
+            const s = typeToString(inferred);
+            if (s && s !== 'unknown') return s;
+        }
+        return null;
+    }
+
     getNamespaceExportInfo(fileUri: string): {
         types: Map<string, UcodeDataType>;
         nested: Map<string, Map<string, UcodeDataType>>;
+        functionReturnTypes: Map<string, string>;
     } | null {
         try {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
             const content = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
             const cached = this.namespaceTypesCache.get(fileUri);
-            if (cached && cached.content === content) return { types: cached.types, nested: cached.nested };
+            if (cached && cached.content === content) return { types: cached.types, nested: cached.nested, functionReturnTypes: cached.functionReturnTypes };
 
             const lexer = new UcodeLexer(content, { rawMode: true });
             const tokens = lexer.tokenize();
@@ -840,6 +938,7 @@ export class FileResolver {
             const ast = parser.parse().ast as any;
             const types = new Map<string, UcodeDataType>();
             const nested = new Map<string, Map<string, UcodeDataType>>();
+            const functionReturnTypes = new Map<string, string>();
 
             const recordExport = (name: string, init: AstBag | undefined) => {
                 types.set(name, this.inferShallowType(init));
@@ -850,6 +949,12 @@ export class FileResolver {
                     const inner = this.inferObjectLiteralPropertyTypesShallow(init);
                     if (inner.size > 0) nested.set(name, inner);
                 }
+                // Function-valued const export (`export const f = () => …`): carry
+                // its return type too, like a FunctionDeclaration export.
+                if (init?.type === 'FunctionExpression' || init?.type === 'ArrowFunctionExpression') {
+                    const retStr = this.functionReturnTypeString(init as unknown as AstNode);
+                    if (retStr) functionReturnTypes.set(name, retStr);
+                }
             };
 
             if (ast?.body) {
@@ -859,6 +964,11 @@ export class FileResolver {
                         const decl = (stmt as any).declaration;
                         if (decl?.type === 'FunctionDeclaration' && decl.id?.name) {
                             types.set(decl.id.name, UcodeType.FUNCTION as UcodeDataType);
+                            // Carry the function's return type (JSDoc @returns first, else
+                            // body inference) so `ns.fn()` call sites resolve a real type
+                            // instead of `unknown`.
+                            const retStr = this.functionReturnTypeString(decl);
+                            if (retStr) functionReturnTypes.set(decl.id.name, retStr);
                         } else if (decl?.type === 'VariableDeclaration') {
                             for (const d of (decl.declarations || [])) {
                                 if (d?.id?.name) recordExport(d.id.name, d.init);
@@ -870,8 +980,8 @@ export class FileResolver {
                 }
             }
 
-            this.namespaceTypesCache.set(fileUri, { content, types, nested });
-            return { types, nested };
+            this.namespaceTypesCache.set(fileUri, { content, types, nested, functionReturnTypes });
+            return { types, nested, functionReturnTypes };
         } catch (error) {
             console.error('Error loading namespace export property types:', error);
             return null;
@@ -1334,9 +1444,19 @@ export class FileResolver {
             if (!funcNode) return null;
 
             // First try the object-factory path — it produces richer info
-            // (property types + nested function return types).
+            // (property types + nested function return types). A factory's inferred
+            // object shape is more useful than a coarse `@returns {object}`, so it wins.
             const factoryInfo = this.computeFunctionReturnInfo(funcNode, topLevelFuncs);
             if (factoryInfo) return factoryInfo;
+
+            // An explicit `@returns` JSDoc is authoritative for non-factory functions —
+            // prefer it over body inference (e.g. `@returns {object|null}` on a function
+            // whose body returns `json(...)`, which the analyzer would otherwise only
+            // infer as `null | unknown`).
+            const jsdocReturn = this.functionReturnTypeFromJsDoc(funcNode);
+            if (jsdocReturn !== null) {
+                return { returnType: jsdocReturn, returnPropertyTypes: new Map() };
+            }
 
             // Otherwise infer a simple return type (string, null, integer, array, …)
             // so non-object-returning named exports still propagate their return type

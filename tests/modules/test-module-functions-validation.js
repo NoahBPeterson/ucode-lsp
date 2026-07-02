@@ -28,6 +28,7 @@ describe('Module Functions Validation Tests', function() {
     const diagnostics = await getDiagnostics(code, filename);
     return diagnostics.filter(d =>
       d.severity === 1 &&
+      d.code !== 'UC8001' && // orthogonal unguarded-throwing-call lint (on by default); not arg validation
       !d.message.includes('declared but never used')
     );
   }

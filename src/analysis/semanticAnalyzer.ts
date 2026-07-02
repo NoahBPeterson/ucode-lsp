@@ -11,12 +11,13 @@ import { type AstNode, type ProgramNode, type VariableDeclarationNode, type Vari
          type PropertyNode, type MemberExpressionNode, type TryStatementNode, type CatchClauseNode,
          type ExportNamedDeclarationNode, type ExportDefaultDeclarationNode, type ArrowFunctionExpressionNode,
          type SpreadElementNode, type TemplateLiteralNode, type SwitchStatementNode, type LiteralNode, type IfStatementNode, type ObjectExpressionNode, type ConditionalExpressionNode, type ExpressionStatementNode, type DeleteExpressionNode,
-         type ForInStatementNode, type ForStatementNode, type WhileStatementNode } from '../ast/nodes';
+         type ForInStatementNode, type ForStatementNode, type WhileStatementNode,
+         type AstNodeKind } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, type TypeCheckResult } from './types';
 import { detectTemplateMode } from '../lexer/templateMode';
 import { BaseVisitor, AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
-import { Diagnostic, DiagnosticSeverity, DiagnosticTag } from 'vscode-languageserver/node';
+import { Diagnostic, DiagnosticSeverity, DiagnosticTag, type DiagnosticRelatedInformation } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
 import { FileResolver, type FactoryReturnInfo, type LoadfileGlobal } from './fileResolver';
@@ -30,6 +31,9 @@ import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
 import { type UcodeTargetVersion, type VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, VERSION_GLOBAL_BUILTINS, PLATFORM_GATED_SYMBOLS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
 import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
+import { KNOWN_HOST_GLOBALS } from './hostGlobals';
+import { THROWING_BUILTINS } from './throwingBuiltins';
+import { KNOWN_MODULES } from './moduleTypes';
 import { type JsDocCommentNode } from '../ast/nodes';
 import { Either, Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, validateImport } from './moduleDispatch';
@@ -61,6 +65,32 @@ export interface SemanticAnalysisOptions {
    *  error (TypeScript noImplicitAny style); when false it stays a warning. Proven
    *  mismatches / possibly-null args always error. `ucode.strictUnknownArguments`. */
   strictUnknownArguments?: boolean;
+  /** When true, calls to builtins that throw on bad input (json/loadfile/loadstring/
+   *  require/render) outside a try/catch are flagged (UC8001) with a "wrap in try/catch" fix.
+   *  The PRODUCT default (server / `ucode.warnUnguardedThrowingCalls`) is ON; this option
+   *  itself defaults off when omitted, so programmatic/library callers opt in explicitly. */
+  warnUnguardedThrowingCalls?: boolean;
+  /** When true, `require()`/`loadfile()` are flagged even when their argument provably resolves
+   *  (a resolved module/path can still throw on a compile/runtime error). Default off — a
+   *  resolvable require/loadfile is normally silent. `ucode.warnResolvableThrowingCalls`. */
+  warnResolvableThrowingCalls?: boolean;
+  /** When true, ALL unguarded throwing-builtin calls escalate to an Error under 'use strict'.
+   *  Default off — only `json()` escalates by default; the rest stay warnings even under strict.
+   *  `ucode.strictThrowingCalls`. */
+  strictThrowingCalls?: boolean;
+  /** When true, a read of a name with no visible declaration is treated as an implicit
+   *  global instead of UC1001 (matches non-strict runtime null-safety). Default off —
+   *  hides typos. `ucode.assumeUndefinedGlobalsDefined`. (Case 3 blanket suppress.) */
+  assumeUndefinedGlobalsDefined?: boolean;
+  /** Case-2 (global-scope soundness): flag a top-level read of a global that lexically
+   *  precedes every assignment/loadfile that defines it (in-file or cross-file) — the
+   *  strict Reference-error / non-strict-null case (UC8002).
+   *   - 'errorInStrict' (default): Warning, escalated to Error under 'use strict'.
+   *   - 'warn': always Warning.
+   *   - 'off': disabled.
+   *  Conservative: never fires when the global is assigned inside any function (call timing
+   *  unknown) or for reads inside functions. `ucode.uncertainGlobalScope`. */
+  uncertainGlobalScope?: 'off' | 'warn' | 'errorInStrict';
 }
 
 export interface SemanticAnalysisResult {
@@ -79,6 +109,10 @@ export interface SemanticAnalysisResult {
    *  file's URI + the definition's offset range there + a coarse type. Powers go-to-definition
    *  and hover for those names (which have no in-file symbol). */
   loadfileGlobals?: Map<string, LoadfileGlobal>;
+  /** In-file global definition sites, keyed by name: every `global.X = …` property span,
+   *  every bare implicit-global assignment target, and every JSDoc `@global X` tag name.
+   *  Powers go-to-definition for globals that have no declared symbol (scalars, @global). */
+  globalDefSites?: Map<string, Array<{ start: number; end: number }>>;
 }
 
 export class SemanticAnalyzer extends BaseVisitor {
@@ -157,6 +191,9 @@ export class SemanticAnalyzer extends BaseVisitor {
   private truthinessDepth = 0; // Track when we're inside a truthiness context (if test, !, ternary test)
   private callbackElementType: UcodeDataType | null = null; // Element type to pass to callback parameters (filter/map/sort)
   private typedefRegistry: Map<string, ParsedTypedef> = new Map(); // File-level @typedef definitions
+  // File-level `@global [{type}] name` declarations: name → type string ('' if untyped).
+  // Plus the built-in host-globals registry — both "explain" a name so a read isn't UC1001.
+  private declaredGlobalNames: Map<string, string> = new Map();
   private strictMode = false; // Whether 'use strict'; is present
   // Function symbols whose REAL declaration has been visited. The hoist pre-pass
   // pre-declares every top-level function, so the symbol table alone can't tell a
@@ -187,6 +224,14 @@ export class SemanticAnalyzer extends BaseVisitor {
   // function" — `global.X` is a real global binding in BOTH strict and non-strict mode.
   private globalPropertyNames = new Set<string>();
   private loadfileGlobals = new Map<string, LoadfileGlobal>();
+  private globalDefSites = new Map<string, Array<{ start: number; end: number }>>();
+  /** Globals whose EVERY assignment is a straight-line top-level scalar (`global.X = 1; …
+   *  global.X = "s";`) — execution order is statically known, so reads can be SSA-typed
+   *  positionally (declare a symbol, update dataType per assignment in source order). */
+  private scalarSSAEligible = new Set<string>();
+  /** Globals bound to an object LITERAL (`global.X = {…}`) — candidates for the
+   *  never-assigned-property check (UC8006) when their shape is fully visible. */
+  private globalObjectBindings = new Set<string>();
   // Name to attribute to the next function-expression we visit, set by the
   // enclosing assignment/declaration (e.g. `nft_file.init = function(){}`), so a
   // method-style function expression can get the same UC7003 "add @param" hint as
@@ -394,6 +439,10 @@ export class SemanticAnalyzer extends BaseVisitor {
       result.loadfileGlobals = this.loadfileGlobals;
     }
 
+    if (this.globalDefSites.size > 0) {
+      result.globalDefSites = this.globalDefSites;
+    }
+
     if (this.cfgQueryEngine) {
       result.cfgQueryEngine = this.cfgQueryEngine;
     }
@@ -436,6 +485,10 @@ export class SemanticAnalyzer extends BaseVisitor {
     // `global.X = …` + bare implicit-global assignments) so bare `X(...)`/`X` here isn't a
     // false UC1002/UC1001. (Verified vs the interpreter: those leak; fn-decls/let/const don't.)
     this.collectLoadfileGlobals(node);
+    // Known/declared host globals (built-in registry + JSDoc `@global`). Runs AFTER
+    // collectGlobalPropertyNames (which clears the set) so the names survive; merges into
+    // the same globalPropertyNames set the type checker shares below.
+    if (this.options.enableScopeAnalysis) this.scanGlobalDeclarations();
     this.typeChecker.setGlobalPropertyNames(this.globalPropertyNames);
     // Render-scope names injected into this file by an `include(path, {…})` elsewhere in
     // the workspace — share with the type checker so a bare call to one isn't flagged
@@ -458,6 +511,1444 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Flag `export { name }` of a name that isn't a module-local binding.
       this.checkExportedNames(node);
     }
+    // Opt-in: flag calls to throwing builtins (json/loadfile/…) outside try/catch.
+    if (this.options.warnUnguardedThrowingCalls) {
+      this.checkUnguardedThrowingCalls(node);
+    }
+    // Case-2 global-scope soundness: a top-level read before any defining assignment/loadfile.
+    if (this.options.enableScopeAnalysis && (this.options.uncertainGlobalScope ?? 'errorInStrict') !== 'off') {
+      this.checkGlobalScopeOrder(node);
+      this.checkGlobalTypeReassignment(node);
+      this.checkNonDeterministicGlobalDefs(node);
+      this.checkNeverAssignedGlobalProperties(node);
+    }
+    // UC8007: never-assigned property reads on fully-visible LOCAL object literals — not a
+    // global-soup concern, so not gated by uncertainGlobalScope. Needs type checking for
+    // the propertyTypes shape data.
+    if (this.options.enableScopeAnalysis && this.options.enableTypeChecking) {
+      this.checkNeverAssignedLocalProperties(node);
+    }
+  }
+
+  /**
+   * UC8006: a read of a property that is NEVER assigned on a global bound to an object
+   * LITERAL (`global.CACHE = {}` … `CACHE.hot`) — provably always null at runtime, in this
+   * file: the literal doesn't define it and no visible write creates it. Only fires when the
+   * shape is FULLY VISIBLE — the global is tainted (silent) if it ever escapes or takes an
+   * unanalyzable write:
+   *   • the bare name (or `global.X`) used as a VALUE — call argument, RHS of another
+   *     variable, array/object element, return value, … (an alias/callee could add props);
+   *   • a COMPUTED write `X[k] = …` (unknown key);
+   *   • reassigned to anything but another object literal.
+   * Property WRITES anywhere (incl. `global.X.p = …` inside functions) count as defining the
+   * property — this check is about "never", not "maybe not yet" (that's UC8004/8005's job).
+   * Warning severity; `@global`-declared names are exempt; `uncertainGlobalScope: off` disables.
+   */
+  private checkNeverAssignedGlobalProperties(node: ProgramNode): void {
+    if (this.globalObjectBindings.size === 0) return;
+
+    // The bare identifier form only maps to the global when no local shadows it; keep this
+    // simple and sound: skip any candidate name that is ALSO a top-level local or param
+    // anywhere (rare for globals; avoids shadow bookkeeping).
+    const candidates = new Set<string>();
+    for (const name of this.globalObjectBindings) {
+      if (!this.declaredGlobalNames.has(name)) candidates.add(name);
+    }
+    if (candidates.size === 0) return;
+
+    // Is this node the identifier X or the member `global.X` (the two spellings of the
+    // global's value)?
+    const globalRefName = (n: AstNode): string | null => {
+      if (n.type === 'Identifier') {
+        const nm = (n as IdentifierNode).name;
+        return candidates.has(nm) ? nm : null;
+      }
+      if (n.type === 'MemberExpression') {
+        const m = n as MemberExpressionNode;
+        if (!m.computed && m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global'
+            && m.property.type === 'Identifier' && candidates.has((m.property as IdentifierNode).name)) {
+          return (m.property as IdentifierNode).name;
+        }
+      }
+      return null;
+    };
+
+    const tainted = new Set<string>();
+    const reads: Array<{ name: string; prop: string; start: number; end: number }> = [];
+    // Locals that shadow a candidate name make bare references ambiguous → taint.
+    const walk = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      const t = n.type;
+      if (t === 'VariableDeclarator' || t === 'FunctionDeclaration') {
+        const id = (n as unknown as { id?: AstNode }).id;
+        if (id?.type === 'Identifier' && candidates.has((id as IdentifierNode).name)) tainted.add((id as IdentifierNode).name);
+      }
+      if ((t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression')) {
+        for (const p of ((n as unknown as { params?: AstNode[] }).params || [])) {
+          if (p?.type === 'Identifier' && candidates.has((p as IdentifierNode).name)) tainted.add((p as IdentifierNode).name);
+        }
+      }
+      if (t === 'AssignmentExpression') {
+        const a = n as unknown as AssignmentExpressionNode;
+        const left = a.left;
+        // `global.X = <expr>`: an object literal refreshes the shape; anything else taints.
+        const reName = left ? globalRefName(left) : null;
+        if (reName && left!.type === 'MemberExpression') {
+          if (a.right?.type !== 'ObjectExpression') tainted.add(reName);
+          walk(a.right);
+          return;
+        }
+        // `X.p = …` / `global.X.p = …`: a WRITE — the property exists; not a read of p.
+        // `X[k] = …`: computed write → unknown key → taint.
+        if (left?.type === 'MemberExpression') {
+          const m = left as MemberExpressionNode;
+          const baseName = globalRefName(m.object as AstNode);
+          if (baseName) {
+            if (m.computed) tainted.add(baseName);
+            walk(a.right);
+            return;
+          }
+        }
+        walk(a.left);
+        walk(a.right);
+        return;
+      }
+      if (t === 'MemberExpression') {
+        const m = n as unknown as MemberExpressionNode;
+        const baseName = globalRefName(m.object as AstNode);
+        if (baseName) {
+          if (!m.computed && m.property.type === 'Identifier') {
+            const p = m.property as IdentifierNode;
+            reads.push({ name: baseName, prop: p.name, start: p.start, end: p.end });
+          }
+          // computed READ `X[k]` is fine (can't add props); don't descend into the base
+          // (it would look like a bare value use), do descend into a computed key.
+          if (m.computed) walk(m.property);
+          return;
+        }
+        walk(m.object);
+        if (m.computed) walk(m.property);
+        return;
+      }
+      if (t === 'ForInStatement') {
+        // `for (k in X)` reads keys — safe; don't treat the RHS as a value escape.
+        const s = n as unknown as { left?: unknown; right?: AstNode; body?: unknown };
+        if (!(s.right && globalRefName(s.right))) walk(s.right);
+        walk(s.left);
+        walk(s.body);
+        return;
+      }
+      if (t === 'DeleteExpression') {
+        // delete removes — it can't create a property; skip the member inside.
+        const arg = (n as unknown as { argument?: AstNode }).argument;
+        if (arg?.type === 'MemberExpression' && globalRefName((arg as MemberExpressionNode).object as AstNode)) return;
+        walk(arg);
+        return;
+      }
+      if (t === 'Identifier') {
+        // A bare candidate identifier reached OUTSIDE the handled member/for-in contexts is
+        // a VALUE use (call arg, alias, return, element, …) → the object escapes → taint.
+        const nm = (n as unknown as IdentifierNode).name;
+        if (candidates.has(nm)) tainted.add(nm); // value use — the object escapes
+        return;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else walk(v);
+      }
+    };
+    walk(node);
+
+    // `global.X` value-uses: `let y = global.X;` — the member walk above treats `global.X`
+    // itself via globalRefName only when it's a BASE of a further member or an assignment
+    // target; a bare `global.X` value read reaches the MemberExpression case with base
+    // 'global' (not a candidate) → walk(m.object) → Identifier 'global' (not a candidate) —
+    // and the X property name is never visited (non-computed property). So it is NOT
+    // tainted by that path. Catch it here: any non-computed member read `global.X` that we
+    // recorded as a "read" of X on the pseudo-candidate 'global'… simpler: 'global' itself
+    // can't be a candidate, so scan reads of the form name==='global'—not recorded either.
+    // Handle it directly: treat `global.X` appearing OUTSIDE assignment-target/member-base
+    // positions as an escape. The walk above already recursed into MemberExpression with
+    // base 'global' via the non-candidate path, recording nothing — so re-scan cheaply:
+    const escapeScan = (n: unknown, safe: boolean): void => {
+      if (!isAstNodeLike(n)) return;
+      const ref = globalRefName(n as AstNode);
+      if (ref && n.type === 'MemberExpression' && !safe) { tainted.add(ref); return; }
+      if (n.type === 'AssignmentExpression') {
+        const a = n as unknown as AssignmentExpressionNode;
+        escapeScan(a.left, true);   // `global.X = …` target — not an escape
+        escapeScan(a.right, false);
+        return;
+      }
+      if (n.type === 'MemberExpression') {
+        const m = n as unknown as MemberExpressionNode;
+        escapeScan(m.object, true); // base position — `global.X.p` — not an escape
+        if (m.computed) escapeScan(m.property, false);
+        return;
+      }
+      if (n.type === 'ForInStatement') {
+        const s = n as unknown as { left?: unknown; right?: unknown; body?: unknown };
+        escapeScan(s.right, true); escapeScan(s.left, false); escapeScan(s.body, false);
+        return;
+      }
+      if (n.type === 'DeleteExpression') { escapeScan((n as unknown as { argument?: unknown }).argument, true); return; }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) escapeScan(it, false); }
+        else escapeScan(v, false);
+      }
+    };
+    escapeScan(node, false);
+
+    // A never-assigned read is provably meaningless in EVERY execution (always null) — a
+    // definite authoring bug, so strict files escalate to Error (the family's `warn` mode
+    // still pins it at Warning).
+    const mode = this.options.uncertainGlobalScope ?? 'errorInStrict';
+    const severity = (mode === 'errorInStrict' && this.strictMode) ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning;
+    for (const r of reads) {
+      if (tainted.has(r.name)) continue;
+      const sym = this.symbolTable.lookup(r.name);
+      if (!sym || sym.propertyTypes?.has(r.prop)) continue; // assigned somewhere → fine
+      this.addDiagnostic(
+        `Property '${r.prop}' is never assigned on global '${r.name}' in this file — its object ` +
+        `literal doesn't define it and nothing else writes it, so this read is always null. ` +
+        `Add it to the literal, assign it somewhere, or check the spelling.`,
+        r.start, r.end, severity, UcodeErrorCode.GLOBAL_PROPERTY_NEVER_ASSIGNED,
+      );
+    }
+  }
+
+  /**
+   * UC8007: the local-variable counterpart of UC8006 — a read of a property NEVER assigned
+   * on a `let/const x = { … }` object literal whose shape is fully visible. Same proof
+   * discipline: the literal must be fully static (no spread / computed key), and the
+   * variable is tainted (silent) if it escapes as a value, takes a computed write, or is
+   * reassigned. Unlike the global check, occurrences resolve through the SYMBOL TABLE
+   * (lookupAtPosition + declaredAt identity), so shadowing (`let cache` in two scopes) is
+   * handled precisely, and closure writes (`function warm() { cache.hot = 1; }`) count as
+   * defining the property via the existing propertyTypes tracking.
+   */
+  private checkNeverAssignedLocalProperties(node: ProgramNode): void {
+    // Candidates: every `let/const <Identifier> = <fully-static ObjectExpression>` in the
+    // file, keyed by name → set of declaredAt (symbol identity).
+    const candidates = new Map<string, Set<number>>();
+    const collect = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (n.type === 'VariableDeclarator') {
+        const d = n as unknown as { id?: AstNode; init?: AstNode };
+        if (d.id?.type === 'Identifier' && d.init?.type === 'ObjectExpression'
+            && this.isFullyStaticObjectLiteral(d.init as ObjectExpressionNode)) {
+          const name = (d.id as IdentifierNode).name;
+          const sym = this.symbolTable.lookupAtPosition(name, d.id.start) ?? this.symbolTable.lookup(name);
+          // declaredAt identity ties the occurrence to THIS declarator; names that are also
+          // object-literal GLOBALS are UC8006's turf (top-level `let` is fine — it's a local).
+          if (sym && sym.declaredAt === d.id.start && !this.globalObjectBindings.has(name)) {
+            let set = candidates.get(name);
+            if (!set) { set = new Set(); candidates.set(name, set); }
+            set.add(sym.declaredAt);
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) collect(it); }
+        else collect(v);
+      }
+    };
+    collect(node);
+    if (candidates.size === 0) return;
+
+    // Resolve an identifier occurrence to a candidate's declaredAt, or null. On resolution
+    // ambiguity (no symbol found), returns 'ambiguous' so escapes taint every same-named
+    // candidate (conservative in the silence direction).
+    const resolveCandidate = (name: string, pos: number): number | 'ambiguous' | null => {
+      const set = candidates.get(name);
+      if (!set) return null;
+      const sym = this.symbolTable.lookupAtPosition(name, pos) ?? this.symbolTable.lookup(name);
+      if (!sym) return 'ambiguous';
+      return set.has(sym.declaredAt) ? sym.declaredAt : null; // resolved to a different (shadowing) binding
+    };
+
+    const tainted = new Set<number>();
+    const taint = (name: string, pos: number): void => {
+      const r = resolveCandidate(name, pos);
+      if (r === null) return;
+      if (r === 'ambiguous') { for (const at of candidates.get(name) ?? []) tainted.add(at); }
+      else tainted.add(r);
+    };
+    const reads: Array<{ key: number; name: string; prop: string; start: number; end: number }> = [];
+
+    // EXHAUSTIVE per-node-kind dispatch: `satisfies Record<AstNodeKind, …>` makes tsc reject
+    // a missing (or misspelled) kind, so adding a node type to the AST forces a conscious
+    // decision here. Two invariants the handlers preserve:
+    //   • an unhandled VALUE position must fall through to the Identifier handler (taint) —
+    //     that's the conservative default (escape → silent), so `walkChildren` is safe for
+    //     every kind that merely CONTAINS expressions;
+    //   • positions where an identifier is NOT a value (declarator ids, property keys,
+    //     non-computed member names, import/export specifiers) must NOT reach it.
+    const walkChildren = (n: AnyNode): void => {
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else walk(v);
+      }
+    };
+    const skip = (_n: AnyNode): void => {};
+    const handlers = {
+      // ── the contexts this check actually reasons about ────────────────────────────────
+      AssignmentExpression: (n: AnyNode) => {
+        const a = n as unknown as AssignmentExpressionNode;
+        if (a.left?.type === 'Identifier') {
+          // Reassignment of the variable itself — shape no longer the literal's → taint.
+          taint((a.left as IdentifierNode).name, a.left.start);
+          walk(a.right);
+          return;
+        }
+        if (a.left?.type === 'MemberExpression') {
+          const m = a.left as MemberExpressionNode;
+          if (m.object.type === 'Identifier') {
+            const baseName = (m.object as IdentifierNode).name;
+            if (resolveCandidate(baseName, m.object.start) !== null) {
+              if (m.computed) { taint(baseName, m.object.start); walk(m.property); } // unknown key written
+              // non-computed write: recordPropertyWrite already added it to propertyTypes
+              walk(a.right);
+              return;
+            }
+          }
+          walk(a.left);
+          walk(a.right);
+          return;
+        }
+        walk(a.left); walk(a.right);
+      },
+      MemberExpression: (n: AnyNode) => {
+        const m = n as unknown as MemberExpressionNode;
+        if (m.object.type === 'Identifier') {
+          const baseName = (m.object as IdentifierNode).name;
+          const r = resolveCandidate(baseName, m.object.start);
+          if (r !== null && r !== 'ambiguous') {
+            if (!m.computed && m.property.type === 'Identifier') {
+              const p = m.property as IdentifierNode;
+              reads.push({ key: r, name: baseName, prop: p.name, start: p.start, end: p.end });
+            }
+            if (m.computed) walk(m.property); // computed READ can't add props — safe
+            return;
+          }
+        }
+        walk(m.object);
+        if (m.computed) walk(m.property);
+      },
+      ForInStatement: (n: AnyNode) => {
+        const s = n as unknown as { left?: unknown; right?: AstNode; body?: unknown };
+        // `for (k in x)` reads keys — safe, not an escape.
+        if (!(s.right?.type === 'Identifier' && resolveCandidate((s.right as IdentifierNode).name, s.right.start) !== null)) walk(s.right);
+        walk(s.left); walk(s.body);
+      },
+      DeleteExpression: (n: AnyNode) => {
+        const arg = (n as unknown as { argument?: AstNode }).argument;
+        if (arg?.type === 'MemberExpression' && (arg as MemberExpressionNode).object.type === 'Identifier'
+            && resolveCandidate(((arg as MemberExpressionNode).object as IdentifierNode).name, arg.start) !== null) return; // delete removes, never adds
+        walk(arg);
+      },
+      VariableDeclarator: (n: AnyNode) => walk((n as unknown as { init?: unknown }).init), // id is a declaration, not a use
+      Property: (n: AnyNode) => {
+        const p = n as unknown as { computed?: boolean; key?: unknown; value?: unknown };
+        if (p.computed) walk(p.key); // computed key IS a value use
+        walk(p.value);               // a non-computed key is not
+      },
+      Identifier: (n: AnyNode) => {
+        // A candidate reached OUTSIDE the handled contexts is a VALUE use → escapes → taint.
+        taint((n as unknown as IdentifierNode).name, n.start);
+      },
+      // ── kinds where an identifier child is a NAME, not a value — must not taint ───────
+      ImportDeclaration: skip, ImportSpecifier: skip, ImportDefaultSpecifier: skip,
+      ImportNamespaceSpecifier: skip, ExportAllDeclaration: skip,
+      ExportSpecifier: (n: AnyNode) => {
+        // `export { cache }` hands the object to other modules — an escape → taint.
+        const local = (n as unknown as { local?: AstNode }).local;
+        if (local?.type === 'Identifier') taint((local as IdentifierNode).name, local.start);
+      },
+      LabeledStatement: (n: AnyNode) => walk((n as unknown as { body?: unknown }).body), // the label is a name, not a value
+      // ── leaves: nothing to do ──────────────────────────────────────────────────────────
+      Literal: skip, ThisExpression: skip, TemplateElement: skip, JsDocComment: skip,
+      EmptyStatement: skip, BreakStatement: skip, ContinueStatement: skip,
+      // ── everything else just contains expressions/statements → generic recursion ──────
+      Program: walkChildren, BlockStatement: walkChildren, ExpressionStatement: walkChildren,
+      VariableDeclaration: walkChildren, IfStatement: walkChildren, ForStatement: walkChildren,
+      WhileStatement: walkChildren, DoWhileStatement: walkChildren, SwitchStatement: walkChildren,
+      SwitchCase: walkChildren, TryStatement: walkChildren, CatchClause: walkChildren,
+      ReturnStatement: walkChildren, ThrowStatement: walkChildren,
+      FunctionDeclaration: walkChildren, FunctionExpression: walkChildren, ArrowFunctionExpression: walkChildren,
+      BinaryExpression: walkChildren, LogicalExpression: walkChildren, UnaryExpression: walkChildren,
+      ConditionalExpression: walkChildren, CallExpression: walkChildren, SpreadElement: walkChildren,
+      ArrayExpression: walkChildren, ObjectExpression: walkChildren, TemplateLiteral: walkChildren,
+      ExportDefaultDeclaration: walkChildren, ExportNamedDeclaration: walkChildren,
+    } satisfies Record<AstNodeKind, (n: AnyNode) => void>;
+    const walk = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      // `satisfies` guarantees compile-time exhaustiveness over AstNodeKind, but
+      // isAstNodeLike is structural — nodes can carry NON-AST objects that happen to have a
+      // string `type` (parsed JSDoc tags, stashed inference data). Fall back to generic
+      // recursion for those instead of crashing the analysis.
+      (handlers[n.type as keyof typeof handlers] ?? walkChildren)(n);
+    };
+    walk(node);
+
+    // Provably-always-null read = a definite authoring bug → Error under 'use strict',
+    // Warning otherwise (matches UC8006; this check isn't behind uncertainGlobalScope, so
+    // strictMode alone decides).
+    const severity = this.strictMode ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning;
+    for (const r of reads) {
+      if (tainted.has(r.key)) continue;
+      const sym = this.symbolTable.lookupAtPosition(r.name, r.start) ?? this.symbolTable.lookup(r.name);
+      if (!sym || sym.declaredAt !== r.key) continue;
+      if (sym.propertyTypes?.has(r.prop)) continue; // assigned somewhere (incl. closures) → fine
+      this.addDiagnostic(
+        `Property '${r.prop}' is never assigned on '${r.name}' — its object literal doesn't ` +
+        `define it and nothing else writes it, so this read is always null. Add it to the ` +
+        `literal, assign it somewhere, or check the spelling.`,
+        r.start, r.end, severity, UcodeErrorCode.LOCAL_PROPERTY_NEVER_ASSIGNED,
+      );
+    }
+  }
+
+  /**
+   * UC8004: a global (`global.X = …` or a bare implicit-global `X = …`) whose existence at a
+   * later read CANNOT BE STATICALLY DETERMINED — every assignment to it sits in a spot whose
+   * execution isn't guaranteed (a function body, an `if`/`else` branch, a `switch` case, a
+   * loop, a `try`/`catch`, a ternary arm, a short-circuit RHS). On any path where no
+   * assignment runs, the global never exists: a read is `null` (non-strict) / a Reference
+   * error (strict). The message asks for a deterministic definition (seed a default at top
+   * level) or an explicit `@global` declaration (the sanctioned "I meant this" escape).
+   *
+   * The check only claims "cannot be statically determined" where that is TRUE — cases it CAN
+   * determine are silent (a definite-assignment "must-assign" analysis, `definitelyAssigns`):
+   *   • an unconditional top-level assignment, incl. under `if (true)`-style static guards;
+   *   • an `if`/`else` (or ternary) where BOTH arms assign it — exhaustive, definite;
+   *   • a `switch` WITH a `default` where every entry point assigns it before `break`
+   *     (fallthrough followed);
+   *   • a `try`/`catch` where both the block and the handler assign it;
+   *   • tier-1-lite call graph: a top-level unconditional CALL to an in-file function whose
+   *     body unconditionally assigns it (`function boot(){global.CFG={};} boot();`) — the
+   *     common init() idiom (transitive through direct calls, cycle-safe);
+   *   • a name declared `/** @global X *​/` or in the host-globals registry is exempt.
+   * Must-assign UNDER-approximates (anything unproven stays flagged), so precision misses
+   * only add flags, never hide real ones. Exceptions (e.g. `json()` throwing mid-statement)
+   * are ignored, matching every other check here; explicit `return`/`break`/`continue` stop
+   * the straight-line accumulation. Severity follows `ucode.uncertainGlobalScope`.
+   * Multiple shaky sites for the same global are cross-linked via relatedInformation.
+   */
+  private checkNonDeterministicGlobalDefs(node: ProgramNode): void {
+    const mode = this.options.uncertainGlobalScope ?? 'errorInStrict';
+    const severity = (mode === 'errorInStrict' && this.strictMode) ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning;
+
+    // Top-level let/const/function names are locals, not globals.
+    const localNames = new Set<string>();
+    for (const stmt of node.body) {
+      if (stmt.type === 'FunctionDeclaration' && (stmt as unknown as FunctionDeclarationNode).id?.name) localNames.add((stmt as unknown as FunctionDeclarationNode).id!.name);
+      if (stmt.type === 'VariableDeclaration') for (const d of ((stmt as unknown as VariableDeclarationNode).declarations || [])) if (d?.id?.type === 'Identifier') localNames.add((d.id as IdentifierNode).name);
+    }
+
+    const globalTargetName = (left: AstNode | undefined): string | null => {
+      if (!left) return null;
+      if (left.type === 'Identifier') {
+        const nm = (left as IdentifierNode).name;
+        return (nm && this.implicitGlobalNames.has(nm)) ? nm : null; // bare X → only if implicit global
+      }
+      if (left.type === 'MemberExpression') {
+        const m = left as MemberExpressionNode;
+        if (!m.computed && m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global' && m.property.type === 'Identifier') return (m.property as IdentifierNode).name;
+      }
+      return null;
+    };
+    const isStaticTruthy = (test: AstNode | undefined): boolean => {
+      if (!test || test.type !== 'Literal') return false;
+      const v = (test as LiteralNode).value;
+      if (typeof v === 'boolean') return v;
+      if (typeof v === 'number') return v !== 0;
+      if (typeof v === 'string') return v.length > 0;
+      return false;
+    };
+    const isStaticFalsy = (test: AstNode | undefined): boolean => {
+      if (!test || test.type !== 'Literal') return false;
+      const v = (test as LiteralNode).value;
+      return v === false || v === 0 || v === '' || v === null;
+    };
+
+    // ── must-assign (definite assignment) ─────────────────────────────────────────────────
+    // definitelyAssigns(n) = the set of globals PROVABLY assigned whenever n executes to
+    // completion. Under-approximates: unknown node shapes yield ∅ (stay flagged). Explicit
+    // return/break/continue stop straight-line accumulation (statements after them may be
+    // skipped); exceptions are ignored (same assumption as the rest of this analyzer).
+
+    // Does this subtree contain control flow that could skip FOLLOWING statements —
+    // a return anywhere, or a break/continue not consumed by a loop/switch inside `n`?
+    // (Nested functions don't count; their control flow is theirs.)
+    const mayDivert = (n: unknown, loopDepth: number): boolean => {
+      if (!isAstNodeLike(n)) return false;
+      const t = n.type;
+      if (t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') return false;
+      if (t === 'ReturnStatement' || t === 'ThrowStatement') return true;
+      if ((t === 'BreakStatement' || t === 'ContinueStatement') && loopDepth === 0) return true;
+      const nested = (t === 'WhileStatement' || t === 'ForStatement'
+        || t === 'ForInStatement' || t === 'SwitchStatement') ? loopDepth + 1 : loopDepth;
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) if (mayDivert(it, nested)) return true; }
+        else if (mayDivert(v, nested)) return true;
+      }
+      return false;
+    };
+
+    // Straight-line sequence: accumulate must-assigns; stop after a statement that may
+    // divert control (its own must-assign still counts — it executed up to the divert).
+    const seqAssigns = (stmts: unknown[]): Set<string> => {
+      const acc = new Set<string>();
+      for (const stmt of stmts) {
+        for (const nm of definitelyAssigns(stmt)) acc.add(nm);
+        if (mayDivert(stmt, 0)) break;
+      }
+      return acc;
+    };
+    const intersect = (a: Set<string>, b: Set<string>): Set<string> => {
+      const out = new Set<string>();
+      for (const x of a) if (b.has(x)) out.add(x);
+      return out;
+    };
+
+    // Tier-1-lite call graph: top-level `function f() { … }` AND top-level `let/const f =
+    // function/arrow` → the globals f's body unconditionally assigns. A `let`-bound name
+    // that is REASSIGNED anywhere is excluded (the call site's target is then unknowable);
+    // `const` can't be reassigned. Memoized; cycles yield ∅ (sound).
+    const reassignedNames = new Set<string>();
+    const scanReassigns = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (n.type === 'AssignmentExpression') {
+        const a = n as unknown as AssignmentExpressionNode;
+        if (a.left?.type === 'Identifier' && (a.left as IdentifierNode).name) reassignedNames.add((a.left as IdentifierNode).name);
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) scanReassigns(it); }
+        else scanReassigns(v);
+      }
+    };
+    scanReassigns(node);
+    const fnBodies = new Map<string, AstNode>();
+    for (const stmt of node.body) {
+      if (stmt.type === 'FunctionDeclaration') {
+        const fd = stmt as unknown as FunctionDeclarationNode;
+        if (fd.id?.name && !fd.forwardDeclaration) fnBodies.set(fd.id.name, fd.body);
+      }
+      if (stmt.type === 'VariableDeclaration') {
+        for (const d of ((stmt as unknown as VariableDeclarationNode).declarations || [])) {
+          const init = (d as unknown as { init?: AstNode }).init;
+          if (d?.id?.type === 'Identifier' && (d.id as IdentifierNode).name
+              && (init?.type === 'FunctionExpression' || init?.type === 'ArrowFunctionExpression')
+              && !reassignedNames.has((d.id as IdentifierNode).name)) {
+            fnBodies.set((d.id as IdentifierNode).name, (init as unknown as { body: AstNode }).body);
+          }
+        }
+      }
+    }
+    const fnMustAssign = new Map<string, Set<string>>();
+    const fnInProgress = new Set<string>();
+    const callMustAssign = (calleeName: string): Set<string> => {
+      const memo = fnMustAssign.get(calleeName);
+      if (memo) return memo;
+      const body = fnBodies.get(calleeName);
+      if (!body || fnInProgress.has(calleeName)) return new Set();
+      fnInProgress.add(calleeName);
+      const result = definitelyAssigns(body);
+      fnInProgress.delete(calleeName);
+      fnMustAssign.set(calleeName, result);
+      return result;
+    };
+
+    const definitelyAssigns = (n: unknown): Set<string> => {
+      if (!isAstNodeLike(n)) return new Set();
+      switch (n.type) {
+        case 'ExpressionStatement':
+          return definitelyAssigns((n as Record<string, unknown>)['expression']);
+        case 'AssignmentExpression': {
+          const a = n as unknown as AssignmentExpressionNode;
+          const out = definitelyAssigns(a.right); // RHS evaluates before the store
+          if (a.operator === '=') {
+            const name = globalTargetName(a.left);
+            if (name && !localNames.has(name)) out.add(name);
+          }
+          return out;
+        }
+        case 'CallExpression': {
+          const c = n as unknown as CallExpressionNode;
+          const out = new Set<string>();
+          for (const arg of (c.arguments || [])) for (const nm of definitelyAssigns(arg)) out.add(nm);
+          if (c.callee?.type === 'Identifier') {
+            for (const nm of callMustAssign((c.callee as IdentifierNode).name)) out.add(nm);
+          } else {
+            for (const nm of definitelyAssigns(c.callee)) out.add(nm);
+          }
+          return out;
+        }
+        case 'BlockStatement':
+          return seqAssigns((n as unknown as BlockStatementNode).body || []);
+        case 'IfStatement': {
+          const s = n as unknown as { test?: AstNode; consequent?: unknown; alternate?: unknown };
+          const out = definitelyAssigns(s.test);
+          if (isStaticTruthy(s.test)) {
+            for (const nm of definitelyAssigns(s.consequent)) out.add(nm);
+          } else if (isStaticFalsy(s.test)) {
+            if (s.alternate) for (const nm of definitelyAssigns(s.alternate)) out.add(nm);
+          } else if (s.alternate) {
+            for (const nm of intersect(definitelyAssigns(s.consequent), definitelyAssigns(s.alternate))) out.add(nm);
+          }
+          return out;
+        }
+        case 'ConditionalExpression': {
+          const s = n as unknown as { test?: AstNode; consequent?: unknown; alternate?: unknown };
+          const out = definitelyAssigns(s.test);
+          // A statically-decided test takes exactly one arm (mirrors the `if (true)` rule).
+          const arm = isStaticTruthy(s.test) ? definitelyAssigns(s.consequent)
+            : isStaticFalsy(s.test) ? definitelyAssigns(s.alternate)
+            : intersect(definitelyAssigns(s.consequent), definitelyAssigns(s.alternate));
+          for (const nm of arm) out.add(nm);
+          return out;
+        }
+        case 'SwitchStatement': {
+          // Exhaustive only WITH a default; every entry point (fallthrough followed) must assign.
+          const s = n as unknown as { discriminant?: unknown; cases?: SwitchCaseLike[] };
+          const out = definitelyAssigns(s.discriminant);
+          const cases = s.cases || [];
+          if (!cases.some(c => !c.test)) return out; // no default → not exhaustive
+          let meet: Set<string> | null = null;
+          for (let i = 0; i < cases.length; i++) {
+            const entry = new Set<string>();
+            outer: for (let j = i; j < cases.length; j++) {
+              for (const stmt of (cases[j]!.consequent || [])) {
+                for (const nm of definitelyAssigns(stmt)) entry.add(nm);
+                if (mayDivert(stmt, 0)) break outer; // break/return ends this entry's path
+              }
+            }
+            meet = meet === null ? entry : intersect(meet, entry);
+          }
+          if (meet) for (const nm of meet) out.add(nm);
+          return out;
+        }
+        case 'TryStatement': {
+          // Normal path runs the block; exception path runs the handler (or unwinds out of
+          // scope entirely, in which case no later read happens) → block ∩ handler, or the
+          // block alone when there's no handler.
+          const s = n as unknown as { block?: unknown; handler?: { body?: unknown } | null };
+          const blockSet = definitelyAssigns(s.block);
+          return s.handler ? intersect(blockSet, definitelyAssigns(s.handler.body)) : blockSet;
+        }
+        case 'WhileStatement': // test always evaluates once; body may not
+          return definitelyAssigns((n as unknown as { test?: unknown }).test);
+        case 'ForStatement': {
+          const s = n as unknown as { init?: unknown; test?: unknown };
+          const out = definitelyAssigns(s.init);
+          for (const nm of definitelyAssigns(s.test)) out.add(nm);
+          return out;
+        }
+        case 'ForInStatement': // the iterated expression always evaluates
+          return definitelyAssigns((n as unknown as { right?: unknown }).right);
+        case 'VariableDeclaration': {
+          const out = new Set<string>();
+          for (const d of ((n as unknown as VariableDeclarationNode).declarations || [])) {
+            for (const nm of definitelyAssigns((d as unknown as Record<string, unknown>)['init'])) out.add(nm);
+          }
+          return out;
+        }
+        case 'ReturnStatement':
+          return definitelyAssigns((n as unknown as { argument?: unknown }).argument);
+        case 'UnaryExpression':
+          return definitelyAssigns((n as unknown as { argument?: unknown }).argument);
+        case 'BinaryExpression': case 'LogicalExpression': {
+          const s = n as unknown as { operator?: string; left?: unknown; right?: unknown };
+          const out = definitelyAssigns(s.left);
+          if (s.operator !== '&&' && s.operator !== '||' && s.operator !== '??') {
+            for (const nm of definitelyAssigns(s.right)) out.add(nm); // short-circuit RHS may not run
+          }
+          return out;
+        }
+        default:
+          return new Set(); // unknown shape → prove nothing (stays flagged)
+      }
+    };
+    type SwitchCaseLike = { test?: AstNode | null; consequent?: unknown[] };
+
+    // ctx = the innermost non-deterministic context enclosing a node, or null (deterministic,
+    // straight-line top level). Innermost wins for the message.
+    type Ctx = { kind: 'function' | 'conditional' | 'switch' | 'loop' | 'try'; detail?: string | undefined } | null;
+    // Everything the top level MUST assign (incl. exhaustive branches, unconditional calls)
+    // definitely exists → all its sites are silent.
+    const hasDeterministicDef = seqAssigns(node.body);
+    const sites: { name: string; start: number; end: number; ctx: Exclude<Ctx, null> }[] = [];
+
+    const record = (left: AstNode, right: AstNode | undefined, ctx: Ctx) => {
+      const name = globalTargetName(left);
+      if (!name || localNames.has(name)) return;
+      if (ctx === null) hasDeterministicDef.add(name);
+      else sites.push({ name, start: left.start, end: (right ?? left).end, ctx });
+    };
+
+    const recurseChildren = (n: AnyNode, ctx: Ctx): void => {
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it, ctx); }
+        else walk(v, ctx);
+      }
+    };
+    const walk = (n: unknown, ctx: Ctx): void => {
+      if (!isAstNodeLike(n)) return;
+      switch (n.type) {
+        case 'AssignmentExpression': {
+          const a = n as unknown as AssignmentExpressionNode;
+          if (a.operator === '=') record(a.left, a.right, ctx);
+          walk(a.right, ctx); // RHS may nest further assignments / functions
+          if (a.left?.type === 'MemberExpression') walk((a.left as MemberExpressionNode).object, ctx);
+          return;
+        }
+        case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression': {
+          const fn = n as unknown as { id?: IdentifierNode; params?: unknown[]; body?: unknown };
+          const inner: Ctx = { kind: 'function', detail: fn.id?.name };
+          for (const p of (fn.params || [])) walk(p, inner);
+          walk(fn.body, inner);
+          return;
+        }
+        case 'VariableDeclarator': {
+          // `let lambda = () => …` — name the lambda in the message ("inside function 'lambda'").
+          const d = n as unknown as { id?: AstNode; init?: AstNode };
+          if (d.id?.type === 'Identifier' && (d.id as IdentifierNode).name
+              && (d.init?.type === 'FunctionExpression' || d.init?.type === 'ArrowFunctionExpression')) {
+            const fn = d.init as unknown as { params?: unknown[]; body?: unknown };
+            const inner: Ctx = { kind: 'function', detail: (d.id as IdentifierNode).name };
+            for (const p of (fn.params || [])) walk(p, inner);
+            walk(fn.body, inner);
+            return;
+          }
+          recurseChildren(n, ctx);
+          return;
+        }
+        case 'IfStatement': {
+          const s = n as unknown as { test?: AstNode; consequent?: unknown; alternate?: unknown };
+          walk(s.test, ctx);
+          // `if (true)`'s consequent / `if (false)`'s alternate stays deterministic; the
+          // dead branch is conditional.
+          const truthy = isStaticTruthy(s.test), falsy = isStaticFalsy(s.test);
+          walk(s.consequent, truthy ? ctx : { kind: 'conditional' });
+          if (s.alternate) walk(s.alternate, falsy ? ctx : { kind: 'conditional' });
+          return;
+        }
+        case 'SwitchStatement': {
+          const s = n as unknown as { discriminant?: unknown; cases?: unknown[] };
+          walk(s.discriminant, ctx);
+          for (const c of (s.cases || [])) walk(c, { kind: 'switch' });
+          return;
+        }
+        case 'WhileStatement': {
+          const s = n as unknown as { test?: unknown; body?: unknown };
+          walk(s.test, ctx);
+          walk(s.body, { kind: 'loop' });
+          return;
+        }
+        case 'ForStatement': {
+          const s = n as unknown as { init?: unknown; test?: unknown; update?: unknown; body?: unknown };
+          walk(s.init, ctx); walk(s.test, ctx); walk(s.update, ctx);
+          walk(s.body, { kind: 'loop' });
+          return;
+        }
+        case 'ForInStatement': {
+          const s = n as unknown as { left?: unknown; right?: unknown; body?: unknown };
+          walk(s.right, ctx);
+          walk(s.body, { kind: 'loop' });
+          return;
+        }
+        case 'TryStatement': {
+          const s = n as unknown as { block?: unknown; handler?: unknown; finalizer?: unknown };
+          walk(s.block, { kind: 'try' });
+          walk(s.handler, { kind: 'try' });
+          if (s.finalizer) walk(s.finalizer, ctx); // finally always runs
+          return;
+        }
+        case 'ConditionalExpression': {
+          const s = n as unknown as { test?: AstNode; consequent?: unknown; alternate?: unknown };
+          walk(s.test, ctx);
+          // `(true) ? A : B` — the taken arm is deterministic (same as `if (true)`); the
+          // dead arm stays conditional.
+          const truthy = isStaticTruthy(s.test), falsy = isStaticFalsy(s.test);
+          walk(s.consequent, truthy ? ctx : { kind: 'conditional' });
+          walk(s.alternate, falsy ? ctx : { kind: 'conditional' });
+          return;
+        }
+        case 'LogicalExpression': case 'BinaryExpression': {
+          const s = n as unknown as { operator?: string; left?: unknown; right?: unknown };
+          // Short-circuit operators only evaluate the RHS conditionally; other binaries don't.
+          if (s.operator === '&&' || s.operator === '||' || s.operator === '??') {
+            walk(s.left, ctx);
+            walk(s.right, { kind: 'conditional' });
+            return;
+          }
+          recurseChildren(n, ctx); // arithmetic/comparison: both sides always evaluate
+          return;
+        }
+        default: recurseChildren(n, ctx);
+      }
+    };
+    walk(node, null);
+
+    const label = (c: Exclude<Ctx, null>): string => {
+      switch (c.kind) {
+        case 'function': return c.detail ? `inside function '${c.detail}'` : 'inside a function';
+        case 'conditional': return 'inside a conditional (if/else) branch';
+        case 'switch': return 'inside a switch case';
+        case 'loop': return 'inside a loop body';
+        case 'try': return 'inside a try/catch block';
+      }
+    };
+    // Report. `@global`-declared / host-registry names are exempt (the sanctioned opt-out:
+    // the developer has declared the global is environment-provided / intentional).
+    const flagged = sites.filter(s => !hasDeterministicDef.has(s.name) && !this.declaredGlobalNames.has(s.name));
+    const byName = new Map<string, typeof flagged>();
+    for (const s of flagged) {
+      let group = byName.get(s.name);
+      if (!group) { group = []; byName.set(s.name, group); }
+      group.push(s);
+    }
+    for (const s of flagged) {
+      const fix = s.ctx.kind === 'function'
+        ? `Call ${s.ctx.detail ? `'${s.ctx.detail}'` : 'the function'} unconditionally at top level, ` +
+          `assign a default at top level (e.g. \`global.${s.name} = null;\`), or declare ` +
+          `\`/** @global ${s.name} */\` if the environment guarantees it.`
+        : `Make the definition deterministic — assign a default at top level (e.g. ` +
+          `\`global.${s.name} = null;\`) before the conditional assignment — or declare ` +
+          `\`/** @global ${s.name} */\` if the environment guarantees it.`;
+      const siblings = byName.get(s.name)!.filter(o => o !== s);
+      const related: DiagnosticRelatedInformation[] = siblings.map(o => ({
+        location: {
+          uri: this.textDocument.uri,
+          range: { start: this.textDocument.positionAt(o.start), end: this.textDocument.positionAt(o.end) },
+        },
+        message: `'${o.name}' is also assigned non-deterministically here (${label(o.ctx)})`,
+      }));
+      this.addDiagnostic(
+        `Global '${s.name}' is assigned only ${label(s.ctx)}, so whether it exists at any later ` +
+        `read cannot be statically determined. A read of a missing global is null (non-strict) ` +
+        `or throws a Reference error ('use strict'). ${fix}`,
+        s.start, s.end, severity, UcodeErrorCode.GLOBAL_DEFINED_NONDETERMINISTICALLY,
+        { globalName: s.name }, related,
+      );
+    }
+
+    // ── UC8005: echo at the READ site — where the hazard actually materializes ──────────
+    // A read of a global whose EVERY definition is non-deterministic — INCLUDING reads inside
+    // functions: their call timing is unknown in both directions, so "a def might have run"
+    // is exactly the unprovable claim the echo exists to surface. One severity step below the
+    // UC8004 at the def (Information; Warning under strict). Suppressed when the global is
+    // definitely assigned EARLIER IN THE SAME BODY (directly, or via a call whose must-assign
+    // covers it — `function g() { load(); return CONF; }` is clean), and for reads of a
+    // shadowing parameter/local of the same name.
+    const shakyNames = new Set(flagged.map(s => s.name));
+    if (shakyNames.size === 0) return;
+    const readSeverity = (mode === 'errorInStrict' && this.strictMode)
+      ? DiagnosticSeverity.Warning : DiagnosticSeverity.Information;
+    const defSitesFor = (name: string): DiagnosticRelatedInformation[] =>
+      byName.get(name)!.map(o => ({
+        location: {
+          uri: this.textDocument.uri,
+          range: { start: this.textDocument.positionAt(o.start), end: this.textDocument.positionAt(o.end) },
+        },
+        message: `'${name}' is assigned non-deterministically here (${label(o.ctx)})`,
+      }));
+    const visitRead = (name: string, pos: number): void => {
+      if (!shakyNames.has(name)) return;
+      this.addDiagnostic(
+        `The global variable '${name}' may not exist here: all of its definitions are ` +
+        `non-deterministic, so whether it has been defined by the time this read executes ` +
+        `cannot be statically determined. If it hasn't, this read is null (non-strict) or ` +
+        `throws a Reference error ('use strict'). Make a definition deterministic (e.g. ` +
+        `\`global.${name} = null;\` at top level), or declare \`/** @global ${name} */\` ` +
+        `if the environment guarantees it.`,
+        pos, pos + name.length, readSeverity, UcodeErrorCode.GLOBAL_READ_UNPROVEN,
+        { globalName: name }, defSitesFor(name),
+      );
+    };
+    // Names lexically bound within a function (params, let/const, nested fn decls, catch
+    // params) — reads of those are locals, not globals. Doesn't descend into nested
+    // functions (their locals are their own).
+    const fnLocalNames = (fn: { params?: unknown[]; restParam?: unknown; body?: unknown }): Set<string> => {
+      const out = new Set<string>();
+      for (const p of (fn.params || [])) if (isAstNodeLike(p) && p.type === 'Identifier') out.add((p as unknown as IdentifierNode).name);
+      if (isAstNodeLike(fn.restParam) && fn.restParam.type === 'Identifier') out.add((fn.restParam as unknown as IdentifierNode).name);
+      const scan = (n: unknown): void => {
+        if (!isAstNodeLike(n)) return;
+        const t = n.type;
+        if (t === 'FunctionExpression' || t === 'ArrowFunctionExpression') return;
+        if (t === 'FunctionDeclaration') { const id = (n as unknown as FunctionDeclarationNode).id; if (id?.name) out.add(id.name); return; }
+        if (t === 'VariableDeclaration') {
+          for (const d of ((n as unknown as VariableDeclarationNode).declarations || [])) {
+            if (d?.id?.type === 'Identifier') out.add((d.id as IdentifierNode).name);
+            scan((d as unknown as Record<string, unknown>)['init']);
+          }
+          return;
+        }
+        if (t === 'CatchClause') { const p = (n as unknown as CatchClauseNode).param; if (p?.name) out.add(p.name); }
+        for (const k of Object.keys(n)) {
+          if (k === 'leadingJsDoc') continue;
+          const v = (n as Record<string, unknown>)[k];
+          if (Array.isArray(v)) { for (const it of v) scan(it); }
+          else scan(v);
+        }
+      };
+      scan(fn.body);
+      return out;
+    };
+    // Walk a statement SEQUENCE tracking what's definitely assigned so far: reads in
+    // statement N are suppressed by must-assigns of statements 1..N-1 (they provably ran
+    // if N runs). Within one statement the pre-statement set applies (an RHS read happens
+    // before its own store).
+    const readSeq = (stmts: unknown[], locals: Set<string>, assigned: Set<string>): void => {
+      let cur = assigned;
+      for (const stmt of stmts) {
+        collectReads(stmt, locals, cur);
+        const next = new Set(cur);
+        for (const nm of definitelyAssigns(stmt)) next.add(nm);
+        cur = next;
+      }
+    };
+    const enterFunction = (fn: { params?: unknown[]; restParam?: unknown; body?: unknown }, locals: Set<string>): void => {
+      const inner = new Set([...locals, ...fnLocalNames(fn)]);
+      // Call timing unknown → nothing carried in from the caller's straight line.
+      if (isAstNodeLike(fn.body) && fn.body.type === 'BlockStatement') {
+        readSeq(((fn.body as unknown as BlockStatementNode).body || []) as unknown[], inner, new Set());
+      } else {
+        collectReads(fn.body, inner, new Set()); // arrow expression body
+      }
+    };
+    const collectReads = (n: unknown, locals: Set<string>, assigned: Set<string>): void => {
+      if (!isAstNodeLike(n)) return;
+      const t = n.type;
+      if (t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') {
+        enterFunction(n as unknown as { params?: unknown[]; body?: unknown }, locals);
+        return;
+      }
+      if (t === 'BlockStatement') { readSeq(((n as unknown as BlockStatementNode).body || []) as unknown[], locals, assigned); return; }
+      if (t === 'Identifier') {
+        const name = (n as unknown as IdentifierNode).name;
+        if (!locals.has(name) && !assigned.has(name)) visitRead(name, n.start);
+        return;
+      }
+      if (t === 'MemberExpression') {
+        const m = n as unknown as MemberExpressionNode;
+        collectReads(m.object, locals, assigned);
+        if (m.computed) collectReads(m.property, locals, assigned); // obj[x]: x is a read; obj.prop: prop is not
+        return;
+      }
+      if (t === 'AssignmentExpression') {
+        const a = n as unknown as AssignmentExpressionNode;
+        // A bare-identifier LHS is a write, not a read; a member LHS still reads its object.
+        if (a.left?.type === 'MemberExpression') collectReads((a.left as MemberExpressionNode).object, locals, assigned);
+        else if (a.left?.type !== 'Identifier') collectReads(a.left, locals, assigned);
+        collectReads(a.right, locals, assigned);
+        return;
+      }
+      if (t === 'VariableDeclarator') { collectReads((n as Record<string, unknown>)['init'], locals, assigned); return; } // id is not a read
+      if (t === 'Property' && !(n as Record<string, unknown>)['computed']) { collectReads((n as Record<string, unknown>)['value'], locals, assigned); return; } // key is not a read
+      if (t === 'CatchClause') {
+        const c = n as unknown as CatchClauseNode;
+        const inner = c.param?.name ? new Set([...locals, c.param.name]) : locals;
+        collectReads(c.body, inner, assigned);
+        return;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) collectReads(it, locals, assigned); }
+        else collectReads(v, locals, assigned);
+      }
+    };
+    readSeq(node.body as unknown[], new Set(localNames), new Set());
+  }
+
+  /**
+   * UC8003: a global whose TYPE cannot be statically determined — it is assigned two
+   * different types AND at least one of the conflicting assignments sits inside a FUNCTION,
+   * whose call timing (and re-invocation) is unknowable, so no read of the global has a
+   * knowable type.
+   *
+   * Deliberately NOT flagged (statically determinable, per SSA):
+   *   • all cross-type assignments at top level — straight-line order is known, so each
+   *     read's type is positional (`global.M = 1; …reads integer…; global.M = "s";` — and
+   *     the scalar-SSA binding actually types those reads);
+   *   • top-level branches/loops — path-dependent, but the type at any read is a knowable
+   *     union of the branch types (a phi), not an unknowable;
+   *   • same-type reassignments, `let` locals, unknown-typed RHS (proves nothing).
+   *
+   * Always a WARNING (never an Error, even under 'use strict'): unlike UC8002/8004/8005
+   * there is no runtime failure to mirror — cross-type reassignment is legal, deterministic
+   * ucode. This is purely a type-trackability lint. `off` disables it.
+   */
+  private checkGlobalTypeReassignment(node: ProgramNode): void {
+    // Top-level let/const/function names are locals — a `let X` reassignment is not a global.
+    const localNames = new Set<string>();
+    for (const stmt of node.body) {
+      if (stmt.type === 'FunctionDeclaration' && (stmt as unknown as FunctionDeclarationNode).id?.name) localNames.add((stmt as unknown as FunctionDeclarationNode).id!.name);
+      if (stmt.type === 'VariableDeclaration') for (const d of ((stmt as unknown as VariableDeclarationNode).declarations || [])) if (d?.id?.type === 'Identifier') localNames.add((d.id as IdentifierNode).name);
+    }
+
+    const coarse = (n: AstNode | undefined): string => {
+      if (!n) return 'unknown';
+      switch (n.type) {
+        case 'ObjectExpression': return 'object';
+        case 'ArrayExpression': return 'array';
+        case 'FunctionExpression': case 'ArrowFunctionExpression': return 'function';
+        case 'TemplateLiteral': return 'string';
+        case 'Literal': {
+          const v = (n as LiteralNode).value;
+          if (typeof v === 'string') return 'string';
+          if (typeof v === 'boolean') return 'boolean';
+          if (v === null) return 'null';
+          if (typeof v === 'number') return Number.isInteger(v) ? 'integer' : 'double';
+          return 'unknown';
+        }
+        default: return 'unknown';
+      }
+    };
+    const targetName = (left: AstNode | undefined): string | null => {
+      if (!left) return null;
+      if (left.type === 'Identifier') return (left as IdentifierNode).name || null;
+      if (left.type === 'MemberExpression') {
+        const m = left as MemberExpressionNode;
+        if (!m.computed && m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global' && m.property.type === 'Identifier') return (m.property as IdentifierNode).name;
+      }
+      return null;
+    };
+
+    // Collect EVERY typed global assignment, noting whether it sits inside a function.
+    const assigns = new Map<string, Array<{ type: string; inFunc: boolean; fnName: string | undefined; start: number; end: number }>>();
+    const walk = (n: unknown, inFunc: boolean, fnName: string | undefined): void => {
+      if (!isAstNodeLike(n)) return;
+      const t = n.type;
+      let nextFn = fnName;
+      const entering = t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression';
+      if (entering) nextFn = (n as unknown as { id?: IdentifierNode }).id?.name ?? undefined;
+      if (t === 'AssignmentExpression' && (n as unknown as AssignmentExpressionNode).operator === '=') {
+        const a = n as unknown as AssignmentExpressionNode;
+        const name = targetName(a.left);
+        // Bare `X =` counts only when X is an implicit global (non-strict); `global.X =` always.
+        const isGlobalTarget = a.left?.type === 'MemberExpression'
+          || (a.left?.type === 'Identifier' && this.implicitGlobalNames.has(name || ''));
+        if (name && isGlobalTarget && !localNames.has(name)) {
+          const ty = coarse(a.right);
+          if (ty !== 'unknown') {
+            let list = assigns.get(name);
+            if (!list) { list = []; assigns.set(name, list); }
+            list.push({ type: ty, inFunc, fnName: inFunc ? fnName : undefined, start: a.left!.start, end: (a.right ?? a.left!).end });
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it, inFunc || entering, nextFn); }
+        else walk(v, inFunc || entering, nextFn);
+      }
+    };
+    walk(node, false, undefined);
+
+    for (const [name, list] of assigns) {
+      const types = new Set(list.map(s => s.type));
+      if (types.size < 2) continue;                       // type-stable → fine
+      if (!list.some(s => s.inFunc)) continue;            // all top level → order known (SSA) → fine
+      // Flag each FUNCTION-context site whose type conflicts with some other assignment —
+      // that's the assignment whose timing makes the type unknowable.
+      for (const s of list) {
+        if (!s.inFunc) continue;
+        const others = [...types].filter(ty => ty !== s.type);
+        if (others.length === 0) continue;
+        this.addDiagnostic(
+          `Global '${name}' is assigned \`${s.type}\` here but \`${others.join('`/`')}\` elsewhere, and this ` +
+          `assignment is inside ${s.fnName ? `function '${s.fnName}'` : 'a function'} whose call timing is unknown — ` +
+          `the type of '${name}' at any read cannot be statically determined. Keep a global's type ` +
+          `stable, or use distinct names.`,
+          s.start, s.end, DiagnosticSeverity.Warning, UcodeErrorCode.GLOBAL_TYPE_REASSIGNED,
+        );
+      }
+    }
+  }
+
+  /**
+   * Case-2 global-scope soundness (UC8002): flag a TOP-LEVEL read of a global that lexically
+   * precedes every statement that defines it — an in-file `global.X=`/bare `X=` assignment OR
+   * a top-level `loadfile("f.uc")()` that injects it. On first execution such a read is `null`
+   * (non-strict) or throws `Reference error` (strict).
+   *
+   * SOUND / conservative — only fires when we can prove the global isn't defined yet:
+   *   • never for a global assigned inside ANY function (its `init()` could run first — we
+   *     don't have a call graph, so we don't guess);
+   *   • never for reads inside a function (call timing unknown);
+   *   • never for host/`@global`/registry names (no in-file def → not our concern here).
+   * Everything it can't prove, it leaves silent (no false positive). Escape hatch: declare
+   * the name with a JSDoc @global tag if a caller or a previous run defines it.
+   */
+  private checkGlobalScopeOrder(node: ProgramNode): void {
+    // Top-level let/const/function names are locals (or hoisted) — never "globals" here.
+    const localNames = new Set<string>();
+    for (const stmt of node.body) {
+      if (stmt.type === 'FunctionDeclaration' && (stmt as unknown as FunctionDeclarationNode).id?.name) {
+        localNames.add((stmt as unknown as FunctionDeclarationNode).id!.name);
+      }
+      if (stmt.type === 'VariableDeclaration') {
+        for (const d of ((stmt as unknown as VariableDeclarationNode).declarations || [])) {
+          if (d?.id?.type === 'Identifier' && (d.id as IdentifierNode).name) localNames.add((d.id as IdentifierNode).name);
+        }
+      }
+    }
+
+    const earliestDef = new Map<string, number>(); // global name → earliest top-level def offset
+    const funcAssigned = new Set<string>();         // global assigned inside some function → skip
+    const recordDef = (name: string, pos: number) => {
+      if (localNames.has(name)) return;
+      const cur = earliestDef.get(name);
+      if (cur === undefined || pos < cur) earliestDef.set(name, pos);
+    };
+    const loadfileInjects = (call: CallExpressionNode): string[] => {
+      const inner = call.callee;
+      if (inner?.type === 'CallExpression') {
+        const lf = inner as CallExpressionNode;
+        if (lf.callee?.type === 'Identifier' && (lf.callee as IdentifierNode).name === 'loadfile'
+            && lf.arguments?.[0]?.type === 'Literal' && typeof (lf.arguments[0] as LiteralNode).value === 'string') {
+          return this.fileResolver.getLoadfileGlobals((lf.arguments[0] as LiteralNode).value as string, this.textDocument.uri).map(g => g.name);
+        }
+      }
+      return [];
+    };
+    // A global assignment target (`global.X` or bare `X`), or null.
+    const assignTargetName = (left: AstNode | undefined): string | null => {
+      if (!left) return null;
+      if (left.type === 'Identifier') return (left as IdentifierNode).name || null;
+      if (left.type === 'MemberExpression') {
+        const m = left as MemberExpressionNode;
+        if (!m.computed && m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global'
+            && m.property.type === 'Identifier') return (m.property as IdentifierNode).name;
+      }
+      return null;
+    };
+
+    // Pass 1: collect def points. inFunc assignments/loadfiles → funcAssigned (skip name).
+    const collectDefs = (n: unknown, inFunc: boolean): void => {
+      if (!isAstNodeLike(n)) return;
+      const t = n.type;
+      const entering = t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression';
+      if (t === 'AssignmentExpression' && (n as unknown as AssignmentExpressionNode).operator === '=') {
+        const name = assignTargetName((n as unknown as AssignmentExpressionNode).left);
+        if (name && !localNames.has(name)) { if (inFunc) funcAssigned.add(name); else recordDef(name, n.start); }
+      }
+      if (t === 'CallExpression') {
+        for (const name of loadfileInjects(n as unknown as CallExpressionNode)) {
+          if (!localNames.has(name)) { if (inFunc) funcAssigned.add(name); else recordDef(name, n.start); }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) collectDefs(it, inFunc || entering); }
+        else collectDefs(v, inFunc || entering);
+      }
+    };
+    collectDefs(node, false);
+    if (earliestDef.size === 0) return;
+
+    // Pass 2: top-level reads (skip function interiors, assignment LHS, non-computed member
+    // property names). Flag a read of a global before its earliest def, unless funcAssigned.
+    const mode = this.options.uncertainGlobalScope ?? 'errorInStrict';
+    const severity = (mode === 'errorInStrict' && this.strictMode) ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning;
+    const flagged = new Set<string>(); // one per name (the first/earliest offending read)
+
+    const visitRead = (name: string, pos: number): void => {
+      if (localNames.has(name) || funcAssigned.has(name) || flagged.has(name)) return;
+      const def = earliestDef.get(name);
+      if (def === undefined || pos >= def) return;
+      flagged.add(name);
+      this.addDiagnostic(
+        `'${name}' is read before it is assigned in this file (its definition is below). On first ` +
+        `execution it is null (non-strict) or throws a Reference error (strict). If a caller or a ` +
+        `previous run defines it, declare it with \`/** @global ${name} */\`.`,
+        pos, pos + name.length, severity, UcodeErrorCode.GLOBAL_USED_BEFORE_DEFINED,
+      );
+    };
+    const collectReads = (n: unknown, inFunc: boolean): void => {
+      if (!isAstNodeLike(n)) return;
+      const t = n.type;
+      if (t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') return; // call timing unknown
+      if (inFunc) return;
+      if (t === 'Identifier') { visitRead((n as unknown as IdentifierNode).name, n.start); return; }
+      if (t === 'MemberExpression') {
+        const m = n as unknown as MemberExpressionNode;
+        collectReads(m.object, inFunc);
+        if (m.computed) collectReads(m.property, inFunc); // obj[x]: x is a read; obj.prop: prop is not
+        return;
+      }
+      if (t === 'AssignmentExpression') {
+        const a = n as unknown as AssignmentExpressionNode;
+        // LHS bare identifier is a write, not a read; a member LHS still reads its object.
+        if (a.left?.type === 'MemberExpression') collectReads((a.left as MemberExpressionNode).object, inFunc);
+        else if (a.left?.type !== 'Identifier') collectReads(a.left, inFunc);
+        collectReads(a.right, inFunc);
+        return;
+      }
+      if (t === 'VariableDeclarator') { collectReads((n as Record<string, unknown>)['init'], inFunc); return; } // id is not a read
+      if (t === 'Property' && !(n as Record<string, unknown>)['computed']) { collectReads((n as Record<string, unknown>)['value'], inFunc); return; } // key is not a read
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) collectReads(it, inFunc); }
+        else collectReads(v, inFunc);
+      }
+    };
+    collectReads(node, false);
+  }
+
+  // Throwing-builtin behavior lives in one data-driven table (src/analysis/throwingBuiltins.ts),
+  // shared with the quick-fix generator — see THROWING_BUILTINS.
+
+  /** Is `n` a function value — a literal function/arrow expression, or an identifier bound to
+   *  a function? Used to spare `render(fn, …)` from the throwing-call warning (it only
+   *  propagates the callee's exceptions, like `call()`). */
+  private argIsFunction(n: AstNode | undefined): boolean {
+    if (!n) return false;
+    if (n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return true;
+    if (n.type === 'Identifier') {
+      const sym = this.symbolTable.lookup((n as IdentifierNode).name);
+      if (!sym) return false;
+      return sym.type === SymbolType.FUNCTION
+        || sym.dataType === (UcodeType.FUNCTION as UcodeDataType)
+        || sym.returnType !== undefined;
+    }
+    return false;
+  }
+
+  /**
+   * Opt-in robustness pass: when a throwing builtin is called outside any enclosing
+   * try block, flag the FIRST such call in each statement-list (block) and offer a
+   * quick fix that wraps from that statement through the END of the block — so the
+   * whole downstream usage of the parsed/loaded value is guarded, not just the call.
+   *
+   * Scope boundaries (try blocks, nested `{}` blocks, function bodies) each form their
+   * own statement-list: a throw inside a nested block wraps within that block; a call
+   * already inside a try block (its `block`, not its catch/finally) is not flagged.
+   */
+  private checkUnguardedThrowingCalls(node: ProgramNode): void {
+    // Does `stmt` contain a throwing-builtin call AT THIS block level — i.e. before any
+    // nested block/try/function boundary (those are handled by their own walkBlock)?
+    // Returns the first such CallExpression, or null.
+    const firstThrowAtLevel = (n: unknown): CallExpressionNode | null => {
+      if (!isAstNodeLike(n)) return null;
+      const t = n.type;
+      // Don't descend past boundaries that start a new statement-list.
+      if (t === 'BlockStatement' || t === 'TryStatement'
+          || t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') {
+        return null;
+      }
+      if (t === 'CallExpression') {
+        const call = n as unknown as CallExpressionNode;
+        if (call.callee?.type === 'Identifier'
+            && THROWING_BUILTINS.has((call.callee as IdentifierNode).name)) {
+          // Only the actual builtin throws; if a user shadowed the name with their own
+          // binding, it's not our throwing builtin, so skip it.
+          const sym = this.symbolTable.lookup((call.callee as IdentifierNode).name);
+          if (!sym || sym.type === SymbolType.BUILTIN) return call;
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) { const f = firstThrowAtLevel(it); if (f) return f; } }
+        else { const f = firstThrowAtLevel(v); if (f) return f; }
+      }
+      return null;
+    };
+
+    // A statement that must NOT be pulled into a try block: function declarations (moving them
+    // changes scope/hoisting) and imports/exports (illegal anywhere but top level). The wrap
+    // stops BEFORE the first such statement after the throwing call — otherwise a top-level
+    // `json()` followed by function declarations would swallow every following function.
+    const isWrapBoundary = (s: AstNode | undefined): boolean => !!s && (
+      s.type === 'FunctionDeclaration' || s.type === 'ImportDeclaration'
+      || s.type === 'ExportNamedDeclaration' || s.type === 'ExportDefaultDeclaration'
+      || s.type === 'ExportAllDeclaration'
+    );
+
+    // The names a statement PRODUCES: a `let/const X = …` declares X; a `X = …` / `global.X = …`
+    // assigns X; a `loadfile("f.uc")()` immediate-invoke injects f.uc's globals. Drives the
+    // dependency-based wrap extent below.
+    const gTarget = (left: AstNode | undefined): string | null => {
+      if (!left) return null;
+      if (left.type === 'Identifier') return (left as IdentifierNode).name || null;
+      if (left.type === 'MemberExpression') {
+        const m = left as MemberExpressionNode;
+        if (!m.computed && m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global'
+            && m.property.type === 'Identifier') return (m.property as IdentifierNode).name;
+      }
+      return null;
+    };
+    const producedNames = (stmt: AstNode): string[] => {
+      const expr = stmt.type === 'ExpressionStatement' ? (stmt as ExpressionStatementNode).expression : stmt;
+      if (expr?.type === 'CallExpression') {
+        const inner = (expr as CallExpressionNode).callee;
+        if (inner?.type === 'CallExpression') {
+          const lf = inner as CallExpressionNode;
+          if (lf.callee?.type === 'Identifier' && (lf.callee as IdentifierNode).name === 'loadfile'
+              && lf.arguments?.[0]?.type === 'Literal' && typeof (lf.arguments[0] as LiteralNode).value === 'string') {
+            return this.fileResolver.getLoadfileGlobals((lf.arguments[0] as LiteralNode).value as string, this.textDocument.uri).map(g => g.name);
+          }
+        }
+      }
+      if (stmt.type === 'VariableDeclaration') {
+        const out: string[] = [];
+        for (const d of ((stmt as VariableDeclarationNode).declarations || [])) if (d?.id?.type === 'Identifier') out.push((d.id as IdentifierNode).name);
+        return out;
+      }
+      if (expr?.type === 'AssignmentExpression' && (expr as AssignmentExpressionNode).operator === '=') {
+        const n = gTarget((expr as AssignmentExpressionNode).left); return n ? [n] : [];
+      }
+      return [];
+    };
+    // Does `stmt` read any of `names`? (skips non-computed member property positions).
+    const stmtRefsAny = (n: unknown, names: Set<string>): boolean => {
+      if (!isAstNodeLike(n)) return false;
+      if (n.type === 'Identifier') return names.has((n as unknown as IdentifierNode).name);
+      if (n.type === 'MemberExpression') {
+        const m = n as unknown as MemberExpressionNode;
+        if (stmtRefsAny(m.object, names)) return true;
+        return m.computed ? stmtRefsAny(m.property, names) : false;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) if (stmtRefsAny(it, names)) return true; }
+        else if (stmtRefsAny(v, names)) return true;
+      }
+      return false;
+    };
+
+    const walkBlock = (stmts: AstNode[] | undefined, insideTry: boolean): void => {
+      if (!Array.isArray(stmts) || stmts.length === 0) return;
+      if (!insideTry) {
+        let i = 0;
+        while (i < stmts.length) {
+          const call = firstThrowAtLevel(stmts[i]);
+          if (!call) { i++; continue; }
+          const throwName = (call.callee as IdentifierNode).name;
+          const spec = THROWING_BUILTINS.get(throwName);
+          // For a `resolvable` builtin, decide whether its string-literal argument provably
+          // resolves. 'module' (require): a builtin available at the CONFIGURED target version
+          // (`socket` needs 24.10, `zlib`/`io` 25.12 → `require("socket")` on 22.03 does NOT
+          // resolve) — using the builtin NAME list, since isKnownModule is registry-based and
+          // misses builtins like `socket`; a non-builtin resolves if a file is on the search
+          // path. 'path' (loadfile): the path exists on disk. `argVal`/`resolvedArg` are also
+          // used to build a specific "not found" message. Host-injected globals (e.g. `uhttpd`)
+          // aren't modules → they don't resolve → require() of one correctly still warns.
+          const arg0 = call.arguments?.[0];
+          // A function first argument (e.g. `render(fn, …)`) only propagates the callee's
+          // exceptions (like `call()`) → don't flag. Covers a literal fn expression or an
+          // identifier that resolves to a function.
+          if (spec?.functionArgSafe && this.argIsFunction(arg0)) { i++; continue; }
+          let argVal: string | null = null;
+          let resolvedArg: boolean | null = null; // null = not a resolvable-kind call
+          if (spec?.resolvable) {
+            if (arg0?.type === 'Literal' && typeof (arg0 as LiteralNode).value === 'string') {
+              argVal = (arg0 as LiteralNode).value as string;
+              resolvedArg = spec.resolvable === 'module'
+                ? ((KNOWN_MODULES as readonly string[]).includes(argVal)
+                    ? !this.moduleGatedOutAtTarget(argVal)
+                    : this.fileResolver.requireResolvesFile(argVal, this.textDocument.uri))
+                : this.fileResolver.filePathResolves(argVal, this.textDocument.uri);
+            }
+            // Resolvable and the "always warn resolvable" setting is off → don't flag at all.
+            if (resolvedArg === true && !this.options.warnResolvableThrowingCalls) { i++; continue; }
+          }
+          // Wrap extent = the throwing statement through the LAST statement that (transitively)
+          // depends on its result. Unrelated trailing code (e.g. an independent `require()`) is
+          // left OUT of the try — and gets its own diagnostic on the next loop iteration. Stops
+          // at a boundary (function/import/export) that can't be wrapped.
+          const produced = new Set<string>(producedNames(stmts[i]!));
+          let endIdx = i;
+          for (let j = i + 1; j < stmts.length; j++) {
+            if (isWrapBoundary(stmts[j])) break;
+            if (produced.size > 0 && stmtRefsAny(stmts[j], produced)) {
+              endIdx = j;
+              for (const nm of producedNames(stmts[j]!)) produced.add(nm);
+            }
+          }
+          // Warning by default. Escalates to Error under 'use strict' only for builtins that
+          // aren't `warnOnly` (just `json` by default) — unless the `strictThrowingCalls` setting
+          // escalates ALL of them under strict.
+          const escalatesUnderStrict = this.options.strictThrowingCalls === true || !spec?.warnOnly;
+          const severity = (escalatesUnderStrict && this.strictMode)
+            ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning;
+          // Message: specific when we know the arg didn't resolve (require/loadfile "not found"),
+          // otherwise the generic "throws on invalid input" wording.
+          let message: string;
+          if (resolvedArg === false && argVal !== null) {
+            message = spec?.resolvable === 'module'
+              ? `Module '${argVal}' was not found on the require search path — \`require()\` throws at runtime when the module is missing. Guard it with try/catch, or fix the name.`
+              : `File '${argVal}' was not found — \`${throwName}()\` throws at runtime when the path is missing. Guard it with try/catch, or fix the path.`;
+          } else if (resolvedArg === true) {
+            message = `\`${throwName}("${argVal}")\` resolves, but can still throw on a compile/runtime error. Guard it with try/catch.`;
+          } else {
+            message = `\`${throwName}()\` throws on invalid input and isn't inside a try/catch. ` +
+              `Wrap it (and the code that uses its result) to handle failures gracefully.`;
+          }
+          this.addDiagnostic(
+            message,
+            call.start, call.end, severity,
+            UcodeErrorCode.UNGUARDED_THROWING_CALL,
+            { wrapTryCatch: { start: stmts[i]!.start, end: stmts[endIdx]!.end, fn: throwName } },
+          );
+          i = endIdx + 1; // continue AFTER this wrap — later independent throwers get flagged too
+        }
+      }
+      // Descend into nested statement-lists regardless (each is its own scope).
+      for (const stmt of stmts) descend(stmt, insideTry);
+    };
+
+    // Walk into nested blocks/try/functions, invoking walkBlock on each new list.
+    const descend = (n: unknown, insideTry: boolean): void => {
+      if (!isAstNodeLike(n)) return;
+      const t = n.type;
+      if (t === 'BlockStatement') { walkBlock((n as any).body, insideTry); return; }
+      if (t === 'TryStatement') {
+        const tryNode = n as any;
+        walkBlock(tryNode.block?.body, true);                 // guarded
+        if (tryNode.catch?.body) walkBlock(tryNode.catch.body.body, false); // catch isn't caught by this try
+        if (tryNode.finalizer?.body) walkBlock(tryNode.finalizer.body.body, false);
+        return;
+      }
+      if (t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') {
+        const fn = n as any;
+        const body = fn.body;
+        if (body?.type === 'BlockStatement') walkBlock(body.body, false);
+        else descend(body, false); // expression-bodied arrow
+        return;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) descend(it, insideTry); }
+        else descend(v, insideTry);
+      }
+    };
+
+    walkBlock(node.body as AstNode[], false);
   }
 
   /**
@@ -666,6 +2157,35 @@ export class SemanticAnalyzer extends BaseVisitor {
       for (const g of this.fileResolver.getLoadfileGlobals(rawPath, this.textDocument.uri)) {
         this.globalPropertyNames.add(g.name);       // suppress UC1001/UC1002 for the name
         if (!this.loadfileGlobals.has(g.name)) this.loadfileGlobals.set(g.name, g); // def + hover
+        // An object-valued injected global carries its member shape — declare it as a
+        // real global object symbol so member access resolves cross-file (the in-file
+        // `global.X = { … }` equivalent of declareGlobalObjectBinding).
+        if (g.propertyTypes && g.propertyTypes.size > 0) {
+          this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE, UcodeType.OBJECT as UcodeDataType);
+          const sym = this.symbolTable.lookup(g.name);
+          if (sym) {
+            sym.dataType = UcodeType.OBJECT as UcodeDataType;
+            sym.propertyTypes = g.propertyTypes;
+            if (g.propertyReturnTypes) sym.propertyFunctionReturnTypes = g.propertyReturnTypes;
+            sym.used = true; // ambient injected global — never "unused"
+          }
+        } else {
+          // Non-object injected global: carry a true SCALAR's type across the loadfile
+          // boundary — previously only objects crossed, so `let y = S` for a cross-file
+          // `global.S = 42` resolved to `unknown` instead of `integer` (09). Deliberately
+          // NOT function/array — those stay name-only so cross-file go-to-definition/hover
+          // keep resolving through the loadfileGlobals map (a declared symbol would shadow it).
+          const scalar: Record<string, UcodeType> = {
+            integer: UcodeType.INTEGER, double: UcodeType.DOUBLE, string: UcodeType.STRING,
+            bool: UcodeType.BOOLEAN, null: UcodeType.NULL,
+          };
+          const dt = scalar[g.typeStr];
+          if (dt) {
+            this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE, dt as UcodeDataType);
+            const sym = this.symbolTable.lookup(g.name);
+            if (sym) { sym.dataType = dt as UcodeDataType; sym.used = true; }
+          }
+        }
       }
     };
     const walk = (n: unknown): void => {
@@ -693,10 +2213,51 @@ export class SemanticAnalyzer extends BaseVisitor {
     walk(node);
   }
 
+  /** The coarse scalar type of a literal RHS, or null when it isn't a statically-typed
+   *  scalar (calls, identifiers, objects, …). Used by the scalar-global SSA gate. */
+  private scalarCoarseType(n: AstNode | undefined): UcodeType | null {
+    if (!n) return null;
+    if (n.type === 'TemplateLiteral') return UcodeType.STRING;
+    if (n.type === 'Literal') {
+      const v = (n as LiteralNode).value;
+      if (typeof v === 'string') return UcodeType.STRING;
+      if (typeof v === 'boolean') return UcodeType.BOOLEAN;
+      if (v === null) return UcodeType.NULL;
+      if (typeof v === 'number') return Number.isInteger(v) ? UcodeType.INTEGER : UcodeType.DOUBLE;
+      return null;
+    }
+    if (n.type === 'UnaryExpression') {
+      const u = n as unknown as { operator?: string; argument?: AstNode };
+      if ((u.operator === '-' || u.operator === '+') && u.argument?.type === 'Literal') {
+        const inner = this.scalarCoarseType(u.argument);
+        return (inner === UcodeType.INTEGER || inner === UcodeType.DOUBLE) ? inner : null;
+      }
+    }
+    return null;
+  }
+
   private collectGlobalPropertyNames(node: ProgramNode): void {
     this.globalPropertyNames.clear();
+    this.globalDefSites.clear();
+    this.scalarSSAEligible.clear();
+    this.globalObjectBindings.clear();
     const names = this.globalPropertyNames;
-    const walk = (n: unknown): void => {
+    const recordSite = (name: string, start: number, end: number): void => {
+      let list = this.globalDefSites.get(name);
+      if (!list) { list = []; this.globalDefSites.set(name, list); }
+      list.push({ start, end });
+    };
+    // SSA gate: a global is eligible only if EVERY assignment to it is a straight-line
+    // top-level statement (Program → ExpressionStatement → AssignmentExpression chains —
+    // order statically known) with a scalar-literal RHS. One assignment anywhere else
+    // (branch/function/loop, or a non-literal RHS) taints the name.
+    const sawScalar = new Set<string>();
+    const tainted = new Set<string>();
+    const noteAssign = (name: string, rhs: AstNode | undefined, straight: boolean): void => {
+      if (straight && this.scalarCoarseType(rhs) !== null) sawScalar.add(name);
+      else tainted.add(name);
+    };
+    const walk = (n: unknown, straight: boolean): void => {
       if (!isAstNodeLike(n)) return;
       if (n.type === 'AssignmentExpression') {
         const a = n as unknown as AssignmentExpressionNode;
@@ -706,20 +2267,38 @@ export class SemanticAnalyzer extends BaseVisitor {
             const prop = mem.property;
             if (!mem.computed && prop?.type === 'Identifier' && (prop as IdentifierNode).name) {
               names.add((prop as IdentifierNode).name);
+              recordSite((prop as IdentifierNode).name, prop.start, prop.end);
+              noteAssign((prop as IdentifierNode).name, a.right, straight);
             } else if (mem.computed && prop?.type === 'Literal' && typeof (prop as LiteralNode).value === 'string') {
               names.add((prop as LiteralNode).value as string);
+              recordSite((prop as LiteralNode).value as string, prop.start, prop.end);
+              noteAssign((prop as LiteralNode).value as string, a.right, straight);
             }
+          }
+        } else if (a.operator === '=' && a.left?.type === 'Identifier') {
+          // Bare `X = …` where X is an implicit global (non-strict) — a def site too, so
+          // go-to-definition on a later read of X can land here. (collectImplicitGlobalNames
+          // has already run; the name-only suppression set is unaffected.)
+          const nm = (a.left as IdentifierNode).name;
+          if (nm && this.implicitGlobalNames.has(nm)) {
+            recordSite(nm, a.left.start, a.left.end);
+            noteAssign(nm, a.right, straight);
           }
         }
       }
+      // Straight-line only survives Program-body statement → expression → nested-assignment
+      // chains; descending into anything else (functions, branches, calls, …) breaks it.
+      const keepsStraight = n.type === 'Program' || n.type === 'ExpressionStatement'
+        || n.type === 'AssignmentExpression';
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc') continue;
         const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
+        if (Array.isArray(v)) { for (const it of v) walk(it, straight && keepsStraight); }
+        else if (isAstNodeLike(v)) walk(v, straight && keepsStraight);
       }
     };
-    walk(node);
+    walk(node, true);
+    for (const nm of sawScalar) if (!tainted.has(nm)) this.scalarSSAEligible.add(nm);
   }
 
   /**
@@ -1438,6 +3017,11 @@ export class SemanticAnalyzer extends BaseVisitor {
             symbol.propertyTypes = nsInfo.types;
             if (nsInfo.nested.size > 0) {
               symbol.nestedPropertyTypes = nsInfo.nested;
+            }
+            // Carry exported-function return types so `ns.fn()` call sites resolve
+            // a real type (JSDoc @returns or body-inferred) instead of `unknown`.
+            if (nsInfo.functionReturnTypes.size > 0) {
+              symbol.propertyFunctionReturnTypes = nsInfo.functionReturnTypes;
             }
           }
         }
@@ -2160,6 +3744,19 @@ export class SemanticAnalyzer extends BaseVisitor {
   override visitDeleteExpression(node: DeleteExpressionNode): void {
     // Validate the operand subtree (member-access checks, undefined vars, …).
     this.visit(node.argument);
+    // `delete X.prop` removes the property → a later read of `X.prop` yields null at runtime,
+    // not the stale declared type. Record a flow-write of null so reads AFTER the delete see
+    // null instead of the pre-delete type (07). Non-computed member on a known symbol only.
+    if (this.options.enableScopeAnalysis && node.argument.type === 'MemberExpression') {
+      const mem = node.argument as MemberExpressionNode;
+      if (!mem.computed && mem.object.type === 'Identifier' && mem.property.type === 'Identifier') {
+        const sym = this.symbolTable.lookup((mem.object as IdentifierNode).name);
+        const prop = (mem.property as IdentifierNode).name;
+        if (sym?.propertyTypes?.has(prop)) {
+          this.recordPropertyWrite(sym, prop, UcodeType.NULL as UcodeDataType, node.end);
+        }
+      }
+    }
     // Then run the delete-specific check (e.g. `delete arr[i]` is a runtime error)
     // through the type checker and surface its diagnostics.
     if (this.options.enableTypeChecking) {
@@ -2589,7 +4186,10 @@ export class SemanticAnalyzer extends BaseVisitor {
         const isImplicitGlobal = this.implicitGlobalNames.has(node.name);
         // A name injected by an include() render-scope is a real global here (strict too).
         const isInjectedScope = this.injectedScopeNames.has(node.name);
-        if (!isBuiltin && !isGlobalProperty && !this.processingFunctionCallCallee && !isUnimportedModuleBase && !isImplicitGlobal && !isInjectedScope) {
+        // Case-3 blanket opt-in: treat any unexplained read as an implicit global (matches
+        // non-strict runtime null-safety). Off by default — it hides typos.
+        const assumeGlobal = this.options.assumeUndefinedGlobalsDefined === true;
+        if (!isBuiltin && !isGlobalProperty && !this.processingFunctionCallCallee && !isUnimportedModuleBase && !isImplicitGlobal && !isInjectedScope && !assumeGlobal) {
           // Defer: a `let`/`const` declared later in this same/enclosing block isn't in
           // the table yet (single pass). resolvePendingUndefinedRefs decides UC1001 vs
           // UC1011 ("used before its declaration") once all declarations are known.
@@ -3161,6 +4761,50 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
                 deferredPropertyWrites.push(() => this.recordPropertyWrite(targetSymbol, propertyName, propertyType, node.end));
               }
+
+              // `global.X = { … }`: also expose X as a first-class global object symbol
+              // carrying the literal's shape. Without this, X is a name-only global
+              // property (suppresses UC1001 but has no type), so bare `X`, its literal
+              // members (`X.docroot`), and later `X.prop = …` property-flow tracking all
+              // resolved to `unknown` — there was no symbol to read or attach types to.
+              if (objectName === 'global' && node.right.type === 'ObjectExpression') {
+                this.declareGlobalObjectBinding(propertyName, node.right as ObjectExpressionNode);
+              }
+              // `global.fn = function(){…}` → bare `fn(...)` resolves its return type (12).
+              if (objectName === 'global' && (node.right.type === 'FunctionExpression' || node.right.type === 'ArrowFunctionExpression')) {
+                this.declareGlobalFunctionBinding(propertyName, node.right);
+              }
+              // `global.X = ['a','b']` → element type so `X[0]` resolves (05).
+              if (objectName === 'global' && node.right.type === 'ArrayExpression') {
+                this.declareGlobalArrayBinding(propertyName, node.right);
+              }
+              // `global.X = <scalar literal>` where every assignment to X is straight-line
+              // top-level: SSA-type it — reads between assignments see the type in effect
+              // (visitation is source-order), and hover is positional via typeHistory.
+              if (objectName === 'global' && this.scalarSSAEligible.has(propertyName)) {
+                const sc = this.scalarCoarseType(node.right);
+                if (sc !== null) this.declareGlobalScalarBinding(propertyName, sc, node.end);
+              }
+            }
+
+            // `global.X.prop = val` — the base is itself a member (`global.X`), so the
+            // Identifier branch above misses it. Resolve X's global symbol and record the
+            // property write there, exactly like the bare `X.prop = val` form (which works
+            // because X resolves to the symbol declareGlobalObjectBinding created). Without
+            // this, `function warm() { global.CACHE.hot = 1; }` left CACHE.hot unknown
+            // while `CACHE.hot = 1` tracked — locals track both.
+            if (memberNode.object.type === 'MemberExpression') {
+              const base = memberNode.object as MemberExpressionNode;
+              if (!base.computed && base.object.type === 'Identifier'
+                  && (base.object as IdentifierNode).name === 'global'
+                  && base.property.type === 'Identifier') {
+                const globalName = (base.property as IdentifierNode).name;
+                const targetSymbol = this.symbolTable.lookup(globalName);
+                if (targetSymbol && targetSymbol.type !== SymbolType.MODULE && targetSymbol.type !== SymbolType.IMPORTED) {
+                  const propertyType = this.inferAssignmentDataType(node.right);
+                  deferredPropertyWrites.push(() => this.recordPropertyWrite(targetSymbol, propertyName, propertyType, node.end));
+                }
+              }
             }
 
             // this.prop = val — update the `this` symbol's propertyTypes
@@ -3206,6 +4850,24 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             if (mt && isKnownObjectType(mt.moduleName)) {
               this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, fullType);
             }
+          }
+        }
+
+        // Bare implicit-global assignment `X = { … }` / `X = function(){}` (non-strict, X not a
+        // local): mirror the `global.X = …` shape/return handling so `X.a`/`X()` resolve (08, 12).
+        // Gated on implicitGlobalNames (non-strict only) so it never suppresses the strict
+        // "assignment to undeclared" error.
+        if (!symbol && this.implicitGlobalNames.has(variableName)) {
+          if (node.right.type === 'ObjectExpression') {
+            this.declareGlobalObjectBinding(variableName, node.right as ObjectExpressionNode);
+          } else if (node.right.type === 'FunctionExpression' || node.right.type === 'ArrowFunctionExpression') {
+            this.declareGlobalFunctionBinding(variableName, node.right);
+          } else if (node.right.type === 'ArrayExpression') {
+            this.declareGlobalArrayBinding(variableName, node.right);
+          } else if (this.scalarSSAEligible.has(variableName)) {
+            // Bare implicit scalar `X = 1` with all-straight-line assignments → SSA-type it.
+            const sc = this.scalarCoarseType(node.right);
+            if (sc !== null) this.declareGlobalScalarBinding(variableName, sc, node.end);
           }
         }
       }
@@ -3343,9 +5005,106 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // Base traversal already happened at the beginning of this method
   }
 
+  /**
+   * `global.X = { … }`: declare X as a first-class global-scoped object symbol carrying
+   * the object literal's shape (property types, method return types, member locations),
+   * reusing the same machinery as a local `let obj = { … }`. Makes bare reads of X, its
+   * literal members, and later `X.prop = …` flow-tracking all resolve, instead of X being
+   * a name-only global property whose members were always `unknown`.
+   */
+  /** forceGlobalDeclaration falls back to a zero-width fake node at offset 0 when the name
+   *  had no prior symbol — go-to-definition would land on line 1, column 0. Stamp the first
+   *  recorded `global.X = …` def site (the property span) instead. */
+  private stampGlobalSymbolPosition(name: string, sym: SymbolEntry): void {
+    if (sym.declaredAt !== 0 || sym.node?.start !== 0 || sym.node?.end !== 0) return; // real position — keep it
+    const site = this.globalDefSites.get(name)?.[0];
+    if (!site) return;
+    sym.declaredAt = site.start;
+    sym.node = { type: 'Identifier', start: site.start, end: site.end, name } as IdentifierNode;
+  }
+
+  /** Every top-level key of this literal is statically enumerable — no spread (`{...src}`
+   *  copies properties we may not see) and no computed key (`{[k]: v}`). Required before
+   *  claiming a property "never exists" on the object (UC8006/UC8007). */
+  private isFullyStaticObjectLiteral(objNode: ObjectExpressionNode): boolean {
+    for (const prop of (objNode.properties || [])) {
+      if (!prop || prop.type !== 'Property') return false; // SpreadElement etc.
+      if ((prop as unknown as { computed?: boolean }).computed) return false;
+    }
+    return true;
+  }
+
+  private declareGlobalObjectBinding(name: string, objNode: ObjectExpressionNode): void {
+    this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, UcodeType.OBJECT as UcodeDataType);
+    // UC8006 candidacy requires a fully-enumerable shape; a spread/computed key means the
+    // literal itself can carry properties we can't list → never claim "never assigned".
+    if (this.isFullyStaticObjectLiteral(objNode)) this.globalObjectBindings.add(name);
+    const sym = this.symbolTable.lookup(name);
+    if (!sym) return;
+    this.stampGlobalSymbolPosition(name, sym);
+    sym.dataType = UcodeType.OBJECT as UcodeDataType;
+    const propTypes = this.inferObjectLiteralPropertyTypes(objNode);
+    if (propTypes) sym.propertyTypes = propTypes;
+    const fnReturns = this.inferObjectLiteralFunctionReturnTypes(objNode);
+    if (fnReturns) sym.propertyReturnTypes = fnReturns;
+    if (!sym.propertyDefinitionLocations) {
+      const locs = this.inferObjectLiteralPropertyLocations(objNode);
+      if (locs) sym.propertyDefinitionLocations = locs;
+    }
+  }
+
+  /**
+   * `global.fn = function(){…}` / bare implicit `fn = () => …`: expose fn as a first-class
+   * global FUNCTION symbol carrying its inferred return type + params, so bare `fn(...)`
+   * resolves its return type and argument-checks (the fn-value visitor stashed both on the node).
+   */
+  private declareGlobalFunctionBinding(name: string, fnNode: AstNode): void {
+    this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, UcodeType.FUNCTION as UcodeDataType);
+    const sym = this.symbolTable.lookup(name);
+    if (!sym) return;
+    this.stampGlobalSymbolPosition(name, sym);
+    sym.dataType = UcodeType.FUNCTION as UcodeDataType;
+    const rt = (fnNode as unknown as { _inferredReturnType?: UcodeDataType })._inferredReturnType;
+    if (rt !== undefined && rt !== null) sym.returnType = rt;
+    const params = (fnNode as unknown as { _inferredParams?: ParamInfo[] })._inferredParams;
+    if (params) sym.parameters = params;
+  }
+
+  /** `global.X = […]` / bare implicit `X = […]`: expose X as a global with the array's
+   *  element type (via checkNode → array<T>), so `X[i]` resolves instead of `unknown` (05). */
+  private declareGlobalArrayBinding(name: string, arrNode: AstNode): void {
+    const at = this.typeChecker.checkNode(arrNode);
+    if (!isArrayType(at)) return;
+    this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, at);
+    const sym = this.symbolTable.lookup(name);
+    if (sym) { this.stampGlobalSymbolPosition(name, sym); sym.dataType = at; sym.used = true; }
+  }
+
   /** Append an entry to a variable's per-assignment type history (for position-aware hover). */
   private recordTypeHistory(symbol: SymbolEntry, from: number, type: UcodeDataType): void {
     (symbol.typeHistory ??= []).push({ from, type });
+  }
+
+  /**
+   * `global.X = <scalar>` / bare implicit `X = <scalar>` where the SSA gate holds (every
+   * assignment to X is straight-line top-level — see scalarSSAEligible): declare/refresh a
+   * global VARIABLE symbol whose dataType is the CURRENT assignment's type. Because the
+   * analyzer visits statements in source order, a read between two assignments resolves the
+   * type in effect at that point (`global.M = 1; let a = M;` → integer, then `global.M =
+   * "s"; let b = M;` → string) — the same most-recent mechanism local variables use.
+   * typeHistory makes hover on M itself positional too.
+   */
+  private declareGlobalScalarBinding(name: string, type: UcodeType, from: number): void {
+    let sym = this.symbolTable.lookup(name);
+    if (!sym) {
+      this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, type as UcodeDataType);
+      sym = this.symbolTable.lookup(name);
+      if (!sym) return;
+      sym.used = true; // a global is externally observable — never "unused"
+      this.stampGlobalSymbolPosition(name, sym);
+    }
+    sym.dataType = type as UcodeDataType;
+    this.recordTypeHistory(sym, from, type as UcodeDataType);
   }
 
   override visitUnaryExpression(node: UnaryExpressionNode): void {
@@ -3952,7 +5711,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // Don't warn about unused parameters, builtins, or global VM variables
       if (symbol.type === SymbolType.PARAMETER ||
           symbol.type === SymbolType.BUILTIN ||
-          globalVMVariables.has(symbol.name)) {
+          globalVMVariables.has(symbol.name) ||
+          // Injected/host globals (built-in registry + JSDoc `@global`) are ambient — a
+          // declared-but-unreferenced one is not a real "unused variable".
+          this.declaredGlobalNames.has(symbol.name)) {
         continue;
       }
 
@@ -4785,7 +6547,8 @@ private addDiagnostic(
     end: number,
     severity?: DiagnosticSeverity,
     code?: string,
-    data?: unknown
+    data?: unknown,
+    relatedInformation?: DiagnosticRelatedInformation[]
   ): void {
     let finalSeverity: DiagnosticSeverity = severity || DiagnosticSeverity.Error;
 
@@ -4829,7 +6592,8 @@ private addDiagnostic(
         message,
         source: 'ucode-semantic',
         ...(code && { code }),
-        ...(data ? { data } : {})
+        ...(data ? { data } : {}),
+        ...(relatedInformation && relatedInformation.length > 0 ? { relatedInformation } : {})
       };
 
       if (data && typeof data === 'object' && (data as { unnecessary?: unknown }).unnecessary) {
@@ -5069,6 +6833,49 @@ private addDiagnostic(
       if (typedef) {
         this.typedefRegistry.set(typedef.name, typedef);
       }
+    }
+  }
+
+  /**
+   * Scan document for JSDoc `@global` declarations (developer-extensible host globals) and,
+   * together with the built-in host-globals registry, register them so a read isn't flagged
+   * UC1001 and (when typed) resolves to its type. Mirrors scanTypedefs.
+   */
+  private scanGlobalDeclarations(): void {
+    this.declaredGlobalNames.clear();
+    // Built-in host globals first (a `@global` of the same name can re-type it below).
+    for (const [name, typeStr] of KNOWN_HOST_GLOBALS) this.declaredGlobalNames.set(name, typeStr);
+
+    const text = this.textDocument.getText();
+    const jsdocRegex = /\/\*\*([\s\S]*?)\*\//g;
+    let match: RegExpExecArray | null;
+    while ((match = jsdocRegex.exec(text)) !== null) {
+      const body = match[1]!;
+      if (!body.includes('@global')) continue;
+      for (const tag of parseJsDocComment(body).tags) {
+        if (tag.tag === 'global' && tag.name) this.declaredGlobalNames.set(tag.name, tag.typeExpression || '');
+      }
+      // Record each tag's NAME span as a definition site, so go-to-definition on a read of
+      // a @global-declared name lands on its declaration comment.
+      const tagRe = /@global\s+(?:\{[^}]*\}\s+)?([A-Za-z_]\w*)/g;
+      let tm: RegExpExecArray | null;
+      while ((tm = tagRe.exec(match[0])) !== null) {
+        const name = tm[1]!;
+        const nameOfs = match.index + tm.index + tm[0].lastIndexOf(name);
+        let list = this.globalDefSites.get(name);
+        if (!list) { list = []; this.globalDefSites.set(name, list); }
+        list.push({ start: nameOfs, end: nameOfs + name.length });
+      }
+    }
+
+    // Register every known/declared global so all existing suppression paths honor it
+    // (UC1001 read + UC1002 call, in the analyzer and via the shared globalPropertyNames
+    // set in the type checker). Suppression only for Stage 1 — we deliberately do NOT
+    // declare a symbol here: doing so unconditionally would surface the name in completion
+    // in every file and could collide with a user's own `let <name>` (false redeclaration).
+    // Typing a `@global {type}` is a fast-follow that needs reference-gated declaration.
+    for (const name of this.declaredGlobalNames.keys()) {
+      this.globalPropertyNames.add(name);
     }
   }
 

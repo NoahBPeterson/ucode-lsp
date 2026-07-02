@@ -1993,18 +1993,14 @@ export class TypeChecker {
         const objSym = this.symbolTable.lookup(objName);
         if (objSym?.propertyFunctionReturnTypes?.has(methodName)) {
           const returnHint = objSym.propertyFunctionReturnTypes.get(methodName)!;
-          // Map simple type strings to UcodeType
-          switch (returnHint) {
-            case 'string': return UcodeType.STRING;
-            case 'integer': return UcodeType.INTEGER;
-            case 'double': return UcodeType.DOUBLE;
-            case 'boolean': return UcodeType.BOOLEAN;
-            case 'array': return UcodeType.ARRAY;
-            case 'object': return UcodeType.OBJECT;
-            case 'function': return UcodeType.FUNCTION;
-            case 'null': return UcodeType.NULL;
-          }
-          // For complex types (uci.cursor, etc.), fall through
+          // parseReturnType handles unions ("object | null"), arrays, and known
+          // object types alike — a plain switch dropped unions to UNKNOWN, which is
+          // why a namespace member like `session.get()` (return "object | null")
+          // resolved correctly at the declaration but reverted to `unknown` in the
+          // SSA history used at downstream read sites. Only return when it actually
+          // resolved, so genuinely-unresolvable hints still fall through.
+          const parsed = this.parseReturnType(returnHint);
+          if (parsed !== UcodeType.UNKNOWN) return parsed;
         }
       }
       // Namespace module calls: import * as io from 'io'; io.open()
