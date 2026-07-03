@@ -407,16 +407,44 @@ function detectMemberCompletionContext(offset: number, tokens: Token[]): { objec
 
     let dotTokenIndex = -1;
 
+    // Partial property name being typed: `socket.AF|`. The cursor sits inside/at the end of
+    // a LABEL that immediately follows a member-access dot. VS Code re-requests completion on
+    // every keystroke, so this MUST be recognized as a member context — otherwise completion
+    // vanishes the moment the first letter of the property is typed (falling through to the
+    // global list). The partial label is the prefix the editor filters on, NOT a chain link,
+    // so we resolve to the dot before it and let the chain root at the object.
+    let partialProperty = false;
+    for (let i = tokens.length - 1; i >= 0; i--) {
+        const t = tokens[i];
+        if (!t) continue;
+        if (t.end < offset) break; // fell below the cursor without a containing token → a gap
+        // The token the cursor is at the END of (or inside). `pos < offset` excludes a token
+        // that merely STARTS at the cursor (e.g. the `;` in `socket.AF|;`), so a just-typed
+        // partial label `AF` wins the boundary over the following punctuation.
+        if (t.pos < offset && offset <= t.end) {
+            if (t.type === TokenType.TK_LABEL) {
+                const prev = i > 0 ? tokens[i - 1] : undefined;
+                if (prev && isMemberAccessDot(prev.type) && prev.end === t.pos) {
+                    dotTokenIndex = i - 1;
+                    partialProperty = true;
+                }
+            }
+            break; // the token under the cursor decides
+        }
+    }
+
     // Find the most recent DOT/QDOT token before or at the cursor
     // Prefer the dot the cursor sits immediately AFTER (end === offset) — the just-typed `.`.
     // This disambiguates a malformed `nl.const..x`: with the cursor right after the FIRST dot
     // (`nl.const.|.x`) we resolve to that dot, not the adjacent second dot (whose predecessor
     // is another dot, so no chain builds → the global-list fallback).
-    for (let i = tokens.length - 1; i >= 0; i--) {
-        const token = tokens[i];
-        if (token && isMemberAccessDot(token.type) && token.end === offset) {
-            dotTokenIndex = i;
-            break;
+    if (dotTokenIndex < 0) {
+        for (let i = tokens.length - 1; i >= 0; i--) {
+            const token = tokens[i];
+            if (token && isMemberAccessDot(token.type) && token.end === offset) {
+                dotTokenIndex = i;
+                break;
+            }
         }
     }
     // Fall back to a dot the cursor is within (pos ≤ offset ≤ end) for callers that place the
@@ -440,8 +468,9 @@ function detectMemberCompletionContext(offset: number, tokens: Token[]): { objec
         return undefined;
     }
 
-    // Make sure the cursor is after the dot or right at it (for completion)
-    if (offset < dotToken.pos || offset > dotToken.end) {
+    // Make sure the cursor is after the dot or right at it (for completion). Skipped when the
+    // cursor is on a partial property name after the dot (offset is past the dot by design).
+    if (!partialProperty && (offset < dotToken.pos || offset > dotToken.end)) {
         return undefined;
     }
 
