@@ -16,6 +16,7 @@ const FILES = {
   'impl.uc': 'export function helper() { return 7; }\n',
   'reexport.uc': 'export { helper } from "./impl.uc";\n',
   'reexportstar.uc': 'export * from "./impl.uc";\n',
+  'sub/nested.uc': 'export function helper() { return 7; }\n',
 };
 
 let server;
@@ -47,6 +48,27 @@ describe('#70/#71 relative import resolution', () => {
     // ...but the correct relative path up to the root does resolve.
     const d2 = await diagsAt('import { helper } from "../impl.uc";\nhelper();\n', 'sub/from-sub.uc');
     expect(moduleNotFound(d2)).toEqual([]);
+  });
+});
+
+describe('bare-slash import is importer-relative (uc_compiler_resolve_module_path: any name with "/" → canonicalize vs importer)', () => {
+  test('`import from "sub/nested.uc"` resolves importer-relative (no ./ prefix needed)', async () => {
+    const d = await diagsAt('import { helper } from "sub/nested.uc";\nhelper();\n', 'app.uc');
+    expect(moduleNotFound(d)).toEqual([]);
+  });
+  test('a bare-slash path that does not exist importer-relative is still flagged', async () => {
+    const d = await diagsAt('import { helper } from "sub/missing.uc";\nhelper();\n', 'app.uc');
+    expect(moduleNotFound(d).length).toBe(1);
+  });
+  test('bare-slash resolution is importer-relative, NOT workspace-root (from a subdir it must not reach root-level names)', async () => {
+    // `sub/nested.uc` exists relative to the ROOT; from inside sub/ the importer-relative
+    // path would be sub/sub/nested.uc, which does not exist.
+    const d = await diagsAt('import { helper } from "sub/nested.uc";\nhelper();\n', 'sub/from-sub.uc');
+    expect(moduleNotFound(d).length).toBe(1);
+  });
+  test('extensionless bare-slash import is flagged (ucode does not auto-append .uc for paths)', async () => {
+    const d = await diagsAt('import { helper } from "sub/nested";\nhelper();\n', 'app.uc');
+    expect(moduleNotFound(d).length).toBe(1);
   });
 });
 

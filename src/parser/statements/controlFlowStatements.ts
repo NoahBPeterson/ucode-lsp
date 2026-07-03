@@ -18,6 +18,32 @@ import { Precedence } from '../types';
 export abstract class ControlFlowStatements extends DeclarationStatements {
 
   /**
+   * Parse the single-statement body of a control-flow construct (the non-block arm
+   * of an `if`/`else`/`while`/`for`).
+   *
+   * ucode declarations (`let`/`const`) are NOT statements: uc_compiler_compile_statement
+   * (compiler.c) has no TK_LOCAL/TK_CONST case, so a bare `if (x) let y = …;` falls
+   * through to the expression parser and fails to compile with "Expecting expression"
+   * pointing at the keyword. Declarations are only legal at block/program level (via
+   * uc_compiler_compile_declaration). Mirror that: surface a targeted syntax error and
+   * still parse the declaration for scope/type recovery. `construct` names the arm for
+   * the message (e.g. "an 'if' statement").
+   */
+  protected parseControlFlowBody(construct: string): AstNode | null {
+    if (this.check(TokenType.TK_LOCAL) || this.check(TokenType.TK_CONST)) {
+      const kw = this.peek()!;
+      const kind = kw.type === TokenType.TK_CONST ? 'const' : 'let';
+      this.errorAt(
+        `a '${kind}' declaration cannot be the body of ${construct}; wrap it in a block { … }`,
+        kw.pos, kw.end, UcodeErrorCode.DECLARATION_AS_CONTROL_BODY);
+      this.panicMode = false;
+      this.advance(); // consume let/const; parseVariableDeclaration reads it via previous()
+      return this.parseVariableDeclaration();
+    }
+    return this.parseStatement();
+  }
+
+  /**
    * Parse a colon-end block (e.g., : statements endfor)
    * Used by for-in, while, if statements when using colon syntax
    */
@@ -67,12 +93,12 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
       return this.parseColonIfStatement(start, test);
     }
 
-    const consequent = this.parseStatement();
+    const consequent = this.parseControlFlowBody("an 'if' statement");
     if (!consequent) return null;
 
     let alternate: AstNode | null = null;
     if (this.match(TokenType.TK_ELSE)) {
-      alternate = this.parseStatement();
+      alternate = this.parseControlFlowBody("an 'else' clause");
     }
 
     return {
@@ -151,7 +177,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     // Alternative colon-block syntax: `while (x): … endwhile` (template form).
     const body = this.check(TokenType.TK_COLON)
       ? this.parseColonEndBlock(TokenType.TK_ENDWHILE, "endwhile")
-      : this.parseStatement();
+      : this.parseControlFlowBody("a 'while' loop");
     if (!body) return null;
 
     return {
@@ -247,9 +273,9 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
         if (this.check(TokenType.TK_COLON)) {
           body = this.parseColonEndBlock(TokenType.TK_ENDFOR, "endfor");
         } else {
-          body = this.parseStatement();
+          body = this.parseControlFlowBody("a 'for' loop");
         }
-        
+
         if (!body) return null;
 
         return {
@@ -297,7 +323,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     }
     this.consume(TokenType.TK_RPAREN, "Expected ')' after for loop");
 
-    const body = this.parseStatement();
+    const body = this.parseControlFlowBody("a 'for' loop");
     if (!body) return null;
 
     return {

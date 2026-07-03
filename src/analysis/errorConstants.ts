@@ -72,6 +72,7 @@ export enum UcodeErrorCode {
   PARAM_AFTER_REST = 'UC6011', // parameter after `...rest` — ucode expects `)` right after a rest param
   DELETE_NON_PROPERTY = 'UC6012', // `delete x` on a non-member operand — ucode requires a property access expression
   INVALID_ESCAPE_SEQUENCE = 'UC6013', // `\u` without 4 hex digits / `\x` without 2 / octal >255 — ucode: "Invalid escape sequence"
+  DECLARATION_AS_CONTROL_BODY = 'UC6014', // `let`/`const` as the non-block body of if/while/for/else — ucode: declarations aren't statements ("Expecting expression"); wrap in a block
 
   // JSDoc annotation errors (7000-7999)
   JSDOC_UNKNOWN_TYPE = 'UC7001',
