@@ -340,12 +340,19 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
 
   protected parseBreakStatement(): BreakStatementNode {
     const start = this.previous()!.pos;
-    
+
     let label: IdentifierNode | null = null;
     if (this.check(TokenType.TK_LABEL)) {
+      // Labelled break is a JS-ism: ucode has no labels — uc_compiler_compile_control
+      // takes no operand, so the statement must end at `;` ("Expecting ';'"). Consume
+      // the label for recovery (nothing downstream validates it) but surface the error.
+      const labelToken = this.peek()!;
       label = this.parseIdentifierName();
+      this.errorAt("ucode does not support labels; expected ';' after 'break'",
+                   labelToken.pos, labelToken.end, UcodeErrorCode.LABELED_BREAK_CONTINUE);
+      this.panicMode = false;
     }
-    
+
     this.consume(TokenType.TK_SCOL, "Expected ';' after 'break'", UcodeErrorCode.MISSING_SEMICOLON);
     
     return {
@@ -358,12 +365,17 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
 
   protected parseContinueStatement(): ContinueStatementNode {
     const start = this.previous()!.pos;
-    
+
     let label: IdentifierNode | null = null;
     if (this.check(TokenType.TK_LABEL)) {
+      // Same JS-ism as labelled break — see parseBreakStatement.
+      const labelToken = this.peek()!;
       label = this.parseIdentifierName();
+      this.errorAt("ucode does not support labels; expected ';' after 'continue'",
+                   labelToken.pos, labelToken.end, UcodeErrorCode.LABELED_BREAK_CONTINUE);
+      this.panicMode = false;
     }
-    
+
     this.consume(TokenType.TK_SCOL, "Expected ';' after 'continue'", UcodeErrorCode.MISSING_SEMICOLON);
     
     return {
