@@ -70,6 +70,7 @@ export enum UcodeErrorCode {
   LABELED_BREAK_CONTINUE = 'UC6010', // `break label;` / `continue label;` — ucode has no labels; the statement must end at `;`
   PARAM_AFTER_REST = 'UC6011', // parameter after `...rest` — ucode expects `)` right after a rest param
   DELETE_NON_PROPERTY = 'UC6012', // `delete x` on a non-member operand — ucode requires a property access expression
+  INVALID_ESCAPE_SEQUENCE = 'UC6013', // `\u` without 4 hex digits / `\x` without 2 / octal >255 — ucode: "Invalid escape sequence"
 
   // JSDoc annotation errors (7000-7999)
   JSDOC_UNKNOWN_TYPE = 'UC7001',

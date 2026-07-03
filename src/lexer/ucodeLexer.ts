@@ -501,6 +501,89 @@ export class UcodeLexer {
         return this.emitToken(isFloat ? TokenType.TK_DOUBLE : TokenType.TK_NUMBER, numValue, startPos);
     }
 
+    /**
+     * Consume one `\`-escape (cursor ON the backslash) and return its decoded value.
+     * Mirrors ucode's parse_escape (ucode/lexer.c): `\u` takes EXACTLY 4 hex digits
+     * (no ES6 `\u{…}` form exists), `\x` exactly 2, octal runs 1–3 digits capped at
+     * \377 — violations are "Invalid escape sequence" compile errors, surfaced via
+     * the side-channel (a valid token is still emitted so the AST/arg counts stay
+     * intact, same as unsupported regex flags, #56). Every other escape decodes:
+     * \a \b \e \f \n \r \t \v, and unknown escapes pass the character through
+     * (which also covers \\ \" \' \` \$). Surrogate halves from paired `\u` escapes
+     * combine naturally in UTF-16 strings.
+     */
+    private consumeEscape(): string {
+        const escStart = this.pos;
+        this.nextChar(); // consume backslash
+        if (this.pos >= this.source.length) {
+            return ''; // trailing backslash — the caller's loop ends in "Unterminated"
+        }
+        const escaped = this.nextChar();
+
+        switch (escaped) {
+            case 'a': return '\x07';
+            case 'b': return '\b';
+            case 'e': return '\x1b';
+            case 'f': return '\f';
+            case 'n': return '\n';
+            case 'r': return '\r';
+            case 't': return '\t';
+            case 'v': return '\v';
+            case 'u': {
+                let code = 0;
+                for (let i = 0; i < 4; i++) {
+                    if (!isHexDigit(this.peekChar())) {
+                        this.errors.push({
+                            message: "Invalid escape sequence: '\\u' requires exactly 4 hex digits (ucode has no '\\u{…}' form)",
+                            start: escStart,
+                            end: this.pos,
+                            code: UcodeErrorCode.INVALID_ESCAPE_SEQUENCE,
+                        });
+                        return 'u'; // recovery: pass through; the rest lexes as literal text
+                    }
+                    code = code * 16 + parseInt(this.nextChar(), 16);
+                }
+                return String.fromCharCode(code);
+            }
+            case 'x': {
+                let code = 0;
+                for (let i = 0; i < 2; i++) {
+                    if (!isHexDigit(this.peekChar())) {
+                        this.errors.push({
+                            message: "Invalid escape sequence: '\\x' requires exactly 2 hex digits",
+                            start: escStart,
+                            end: this.pos,
+                            code: UcodeErrorCode.INVALID_ESCAPE_SEQUENCE,
+                        });
+                        return 'x';
+                    }
+                    code = code * 16 + parseInt(this.nextChar(), 16);
+                }
+                return String.fromCharCode(code);
+            }
+            default: {
+                if (escaped >= '0' && escaped <= '7') {
+                    let digits = escaped;
+                    while (digits.length < 3 && this.peekChar() >= '0' && this.peekChar() <= '7') {
+                        digits += this.nextChar();
+                    }
+                    const code = parseInt(digits, 8);
+                    if (code > 255) {
+                        this.errors.push({
+                            message: `Invalid escape sequence: octal escape '\\${digits}' exceeds \\377 (255)`,
+                            start: escStart,
+                            end: this.pos,
+                            code: UcodeErrorCode.INVALID_ESCAPE_SEQUENCE,
+                        });
+                        return digits;
+                    }
+                    return String.fromCharCode(code);
+                }
+                return escaped; // unknown escape: the character itself (ucode's default)
+            }
+        }
+    }
+
     private parseString(quote: string): Token | null {
         const startPos = this.pos;
         let value = '';
@@ -516,23 +599,12 @@ export class UcodeLexer {
             }
             
             if (ch === '\\') {
-                this.nextChar(); // consume backslash
-                const escaped = this.nextChar();
-                
-                switch (escaped) {
-                    case 'n': value += '\n'; break;
-                    case 't': value += '\t'; break;
-                    case 'r': value += '\r'; break;
-                    case '\\': value += '\\'; break;
-                    case '"': value += '"'; break;
-                    case "'": value += "'"; break;
-                    default: value += escaped; break;
-                }
+                value += this.consumeEscape();
             } else {
                 value += this.nextChar();
             }
         }
-        
+
         return this.emitToken(TokenType.TK_ERROR, 'Unterminated string', startPos);
     }
 
@@ -553,18 +625,7 @@ export class UcodeLexer {
 
             // Handle escape sequences
             if (ch === '\\') {
-                this.nextChar(); // consume backslash
-                const escaped = this.nextChar();
-
-                switch (escaped) {
-                    case 'n': value += '\n'; break;
-                    case 't': value += '\t'; break;
-                    case 'r': value += '\r'; break;
-                    case '\\': value += '\\'; break;
-                    case '`': value += '`'; break;
-                    case '$': value += '$'; break;
-                    default: value += escaped; break;
-                }
+                value += this.consumeEscape();
             }
             // Handle template interpolations ${...}
             else if (ch === '$' && this.peekChar(1) === '{') {
@@ -786,18 +847,7 @@ export class UcodeLexer {
 
             // Handle escape sequences
             if (ch === '\\') {
-                this.nextChar(); // consume backslash
-                const escaped = this.nextChar();
-
-                switch (escaped) {
-                    case 'n': value += '\n'; break;
-                    case 't': value += '\t'; break;
-                    case 'r': value += '\r'; break;
-                    case '\\': value += '\\'; break;
-                    case '`': value += '`'; break;
-                    case '$': value += '$'; break;
-                    default: value += escaped; break;
-                }
+                value += this.consumeEscape();
             }
             // Handle template interpolations ${...}
             else if (ch === '$' && this.peekChar(1) === '{') {
