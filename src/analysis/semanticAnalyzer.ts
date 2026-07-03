@@ -781,6 +781,10 @@ export class SemanticAnalyzer extends BaseVisitor {
       else tainted.add(r);
     };
     const reads: Array<{ key: number; name: string; prop: string; start: number; end: number }> = [];
+    // `delete x.prop` sites — same proof discipline as reads, but the verdict differs:
+    // deleting a never-assigned property is a provable runtime NO-OP (returns false),
+    // almost certainly a typo, not an always-null read.
+    const deletes: Array<{ key: number; name: string; prop: string; start: number; end: number }> = [];
 
     // EXHAUSTIVE per-node-kind dispatch: `satisfies Record<AstNodeKind, …>` makes tsc reject
     // a missing (or misspelled) kind, so adding a node type to the AST forces a conscious
@@ -851,8 +855,22 @@ export class SemanticAnalyzer extends BaseVisitor {
       },
       DeleteExpression: (n: AnyNode) => {
         const arg = (n as unknown as { argument?: AstNode }).argument;
-        if (arg?.type === 'MemberExpression' && (arg as MemberExpressionNode).object.type === 'Identifier'
-            && resolveCandidate(((arg as MemberExpressionNode).object as IdentifierNode).name, arg.start) !== null) return; // delete removes, never adds
+        if (arg?.type === 'MemberExpression' && (arg as MemberExpressionNode).object.type === 'Identifier') {
+          const m = arg as MemberExpressionNode;
+          const baseName = (m.object as IdentifierNode).name;
+          const r = resolveCandidate(baseName, m.object.start);
+          if (r !== null && r !== 'ambiguous') {
+            // delete removes, never adds — the base stays untainted. A non-computed
+            // target on an untainted candidate is checkable: deleting a never-assigned
+            // property is a provable no-op (likely typo), recorded for UC8008 below.
+            if (!m.computed && m.property.type === 'Identifier') {
+              const p = m.property as IdentifierNode;
+              deletes.push({ key: r, name: baseName, prop: p.name, start: p.start, end: p.end });
+            }
+            if (m.computed) walk(m.property); // the KEY expression is still a value use
+            return;
+          }
+        }
         walk(arg);
       },
       VariableDeclarator: (n: AnyNode) => walk((n as unknown as { init?: unknown }).init), // id is a declaration, not a use
@@ -913,6 +931,22 @@ export class SemanticAnalyzer extends BaseVisitor {
         `define it and nothing else writes it, so this read is always null. Add it to the ` +
         `literal, assign it somewhere, or check the spelling.`,
         r.start, r.end, severity, UcodeErrorCode.LOCAL_PROPERTY_NEVER_ASSIGNED,
+      );
+    }
+
+    // UC8008: `delete x.prop` where prop is provably never assigned — a runtime no-op
+    // returning false, almost certainly a typo. Always a Warning (it executes fine, even
+    // under 'use strict'; nothing crashes or reads null — the code just does nothing).
+    for (const d of deletes) {
+      if (tainted.has(d.key)) continue;
+      const sym = this.symbolTable.lookupAtPosition(d.name, d.start) ?? this.symbolTable.lookup(d.name);
+      if (!sym || sym.declaredAt !== d.key) continue;
+      if (sym.propertyTypes?.has(d.prop)) continue; // assigned somewhere (incl. closures) → real delete
+      this.addDiagnostic(
+        `'delete' has no effect: property '${d.prop}' is never assigned on '${d.name}' — its ` +
+        `object literal doesn't define it and nothing else writes it, so this always returns ` +
+        `false. Check the spelling.`,
+        d.start, d.end, DiagnosticSeverity.Warning, UcodeErrorCode.DELETE_NEVER_ASSIGNED_PROPERTY,
       );
     }
   }

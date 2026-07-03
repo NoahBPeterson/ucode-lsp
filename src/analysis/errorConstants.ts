@@ -69,6 +69,7 @@ export enum UcodeErrorCode {
   FOR_LOOP_CONST = 'UC6009', // `for (const …)` — ucode's for grammar only matches `let`; `const` fails to compile
   LABELED_BREAK_CONTINUE = 'UC6010', // `break label;` / `continue label;` — ucode has no labels; the statement must end at `;`
   PARAM_AFTER_REST = 'UC6011', // parameter after `...rest` — ucode expects `)` right after a rest param
+  DELETE_NON_PROPERTY = 'UC6012', // `delete x` on a non-member operand — ucode requires a property access expression
 
   // JSDoc annotation errors (7000-7999)
   JSDOC_UNKNOWN_TYPE = 'UC7001',
@@ -85,6 +86,7 @@ export enum UcodeErrorCode {
   GLOBAL_READ_UNPROVEN = 'UC8005',                // read of a global whose every definition is non-deterministic (echo of UC8004 at the hazard site)
   GLOBAL_PROPERTY_NEVER_ASSIGNED = 'UC8006',      // read of a property never assigned on a fully-visible global object literal → always null
   LOCAL_PROPERTY_NEVER_ASSIGNED = 'UC8007',       // same, for a local `let x = { … }` whose shape is fully visible
+  DELETE_NEVER_ASSIGNED_PROPERTY = 'UC8008',      // `delete x.prop` where prop is provably never assigned → runtime no-op returning false (likely typo)
 
   // System and internal errors (9000-9999)
   INTERNAL_ERROR = 'UC9001',

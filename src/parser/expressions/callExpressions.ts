@@ -4,9 +4,10 @@
  */
 
 import { TokenType } from '../../lexer';
-import { 
-  type AstNode, type CallExpressionNode, type ConditionalExpressionNode, 
-  type DeleteExpressionNode, type SpreadElementNode 
+import { UcodeErrorCode } from '../../analysis/errorConstants';
+import {
+  type AstNode, type CallExpressionNode, type ConditionalExpressionNode,
+  type DeleteExpressionNode, type SpreadElementNode
 } from '../../ast/nodes';
 import { Precedence } from '../types';
 import { OperatorExpressions } from './operatorExpressions';
@@ -86,6 +87,18 @@ export abstract class CallExpressions extends OperatorExpressions {
     const start = this.previous()!.pos;
     const argument = this.parseExpression(Precedence.UNARY);
     if (!argument) return null;
+
+    // `delete object` (bare identifier / call result / anything non-member) is a
+    // compile error in ucode — uc_compiler_compile_delete requires the operand to
+    // compile to a property access ("expecting a property access expression"),
+    // unconditionally in strict AND non-strict, for every target we support (the
+    // strict-only gate belonged to the legacy delete() CALL form, removed 2022-01).
+    // Parenthesized members (`delete (o.b)`) survive: grouping returns the inner node.
+    if (argument.type !== 'MemberExpression') {
+      this.errorAt("'delete' expects a property access expression (e.g. obj.key or obj[key])",
+                   argument.start, argument.end, UcodeErrorCode.DELETE_NON_PROPERTY);
+      this.panicMode = false;
+    }
 
     return {
       type: 'DeleteExpression',
