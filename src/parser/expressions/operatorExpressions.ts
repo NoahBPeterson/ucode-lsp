@@ -144,8 +144,9 @@ export abstract class OperatorExpressions extends CompositeExpressions {
           // Handle rest parameter: ...args
           if (arg.argument && arg.argument.type === 'Identifier') {
             restParam = arg.argument as IdentifierNode;
-            // Rest parameter should be the last one
-            break;
+            // Params after a rest param already got their one UC6011 in
+            // parseGrouping; keep converting them so they stay declared for
+            // body analysis (recovery).
           } else {
             this.error("Invalid rest parameter in arrow function");
             return null;

@@ -147,6 +147,6 @@ Status:
 - 1 (`\u` escapes): **open**
 - 2 (`delete` non-member): **open**
 - 3 (array elision): **fixed in 0.7.40** — UC6008, `tests/syntax/test-array-elision.test.js`
-- 4 (params after rest): **open**
+- 4 (params after rest): **fixed in 0.7.43** — UC6011, `tests/syntax/test-param-after-rest.test.js`
 - 5 (`for (const …)`): **fixed in 0.7.41** — UC6009, `tests/syntax/test-for-const.test.js`
 - 6 (labelled break/continue): **fixed in 0.7.42** — UC6010, `tests/syntax/test-labelled-break-continue.test.js`

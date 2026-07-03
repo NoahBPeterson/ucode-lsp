@@ -68,6 +68,7 @@ export enum UcodeErrorCode {
   ARRAY_HOLE = 'UC6008', // array elision `[1,,2]` — a JS-ism; ucode demands an expression after every comma
   FOR_LOOP_CONST = 'UC6009', // `for (const …)` — ucode's for grammar only matches `let`; `const` fails to compile
   LABELED_BREAK_CONTINUE = 'UC6010', // `break label;` / `continue label;` — ucode has no labels; the statement must end at `;`
+  PARAM_AFTER_REST = 'UC6011', // parameter after `...rest` — ucode expects `)` right after a rest param
 
   // JSDoc annotation errors (7000-7999)
   JSDOC_UNKNOWN_TYPE = 'UC7001',

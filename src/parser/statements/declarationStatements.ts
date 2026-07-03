@@ -127,8 +127,16 @@ export abstract class DeclarationStatements extends ExpressionParser {
           const param = this.parseIdentifierName();
           if (param) {
             restParam = param;
-            // Rest parameter must be the last parameter
-            break;
+            // ucode expects `)` right after a rest param (the compiler leaves the
+            // param loop) — a following `,x` is one "Expecting ')'" compile error.
+            // Emit exactly one diagnostic on the comma, then keep parsing the
+            // trailing params so they stay declared and the body still analyzes.
+            if (this.check(TokenType.TK_COMMA)) {
+              const comma = this.peek()!;
+              this.errorAt("a rest parameter ('...') must be the final parameter",
+                           comma.pos, comma.end, UcodeErrorCode.PARAM_AFTER_REST);
+              this.panicMode = false;
+            }
           }
         } else {
           const param = this.parseIdentifierName();

@@ -4,6 +4,7 @@
  */
 
 import { TokenType, type Token } from '../../lexer';
+import { UcodeErrorCode } from '../../analysis/errorConstants';
 import { type AstNode, type IdentifierNode, type LiteralNode, type ThisExpressionNode, type FunctionExpressionNode, type BlockStatementNode, type TemplateLiteralNode, type TemplateElementNode, type SpreadElementNode } from '../../ast/nodes';
 import { ParseRules } from '../parseRules';
 import { Precedence } from '../types';
@@ -190,8 +191,10 @@ export abstract class PrimaryExpressions extends ParseRules {
             this.advance(); // consume spread operator
             if (this.check(TokenType.TK_LABEL)) {
               this.advance(); // consume rest parameter name
-              // Rest parameter must be the last one
-              break;
+              // Keep scanning: params after a rest param are a compile error in
+              // ucode, but detection must still recognize `(a, ...r, f) =>` as
+              // arrow params so the parse branch can emit ONE clean diagnostic
+              // instead of derailing into expression parsing.
             } else {
               break; // Invalid rest parameter
             }
@@ -242,8 +245,14 @@ export abstract class PrimaryExpressions extends ParseRules {
                 argument: restParam
               };
               params.push(spreadElement);
-              // Rest parameter must be the last one
-              break;
+              // ucode expects `)` right after a rest param — one diagnostic on the
+              // comma; keep collecting trailing params for recovery.
+              if (this.check(TokenType.TK_COMMA)) {
+                const comma = this.peek()!;
+                this.errorAt("a rest parameter ('...') must be the final parameter",
+                             comma.pos, comma.end, UcodeErrorCode.PARAM_AFTER_REST);
+                this.panicMode = false;
+              }
             } else {
               this.error("Expected parameter name after '...'");
             }
@@ -307,8 +316,15 @@ export abstract class PrimaryExpressions extends ParseRules {
           const param = this.parseIdentifierName();
           if (param) {
             restParam = param;
-            // Rest parameter must be the last parameter
-            break;
+            // ucode expects `)` right after a rest param — a following `,x` is one
+            // "Expecting ')'" compile error. One diagnostic on the comma; keep
+            // parsing trailing params so the body still analyzes (recovery).
+            if (this.check(TokenType.TK_COMMA)) {
+              const comma = this.peek()!;
+              this.errorAt("a rest parameter ('...') must be the final parameter",
+                           comma.pos, comma.end, UcodeErrorCode.PARAM_AFTER_REST);
+              this.panicMode = false;
+            }
           }
         } else {
           const param = this.parseIdentifierName();
