@@ -1998,6 +1998,29 @@ export class BuiltinValidator {
 
     if (node.arguments[0]) {
       this.validateArgumentType(node.arguments[0], 'require', 1, [UcodeType.STRING]);
+
+      // require() resolves via REQUIRE_SEARCH_PATH templates, and template splicing
+      // accepts ONLY [A-Za-z0-9_.] in the module name (lib.c uc_require_path rejects
+      // everything else, including '/'). A path-shaped argument therefore can NEVER
+      // resolve — the call throws unconditionally, try/catch or not — so this is a
+      // hard error, not an "unguarded call" warning. (docs/ucode-module-resolution.md §4)
+      const arg0 = node.arguments[0];
+      if (arg0.type === 'Literal' && typeof (arg0 as LiteralNode).value === 'string') {
+        const name = (arg0 as LiteralNode).value as string;
+        if (/[^A-Za-z0-9_.]/.test(name)) {
+          this.errors.push({
+            message: `require() cannot load a path — module names may only contain letters, digits, `
+              + `'_' and '.' ('.' maps to '/' against REQUIRE_SEARCH_PATH templates), so `
+              + `'${name}' can never resolve and this call always throws. Use `
+              + `import { … } from "${name}" (compile-time, importer-relative) or `
+              + `loadfile("${name}")() (runtime, CWD-relative) instead.`,
+            start: node.start,
+            end: node.end,
+            severity: 'error',
+            code: UcodeErrorCode.REQUIRE_PATH_NOT_MODULE_NAME,
+          });
+        }
+      }
     }
     return true;
   }
@@ -2071,6 +2094,32 @@ export class BuiltinValidator {
     if (node.arguments[1]) {
       this.validateArgumentType(node.arguments[1], 'loadfile', 2, [UcodeType.OBJECT]);
       this.validateParseConfigObject(node.arguments[1], 'loadfile');
+    }
+
+    // A relative loadfile() path resolves against the ucode PROCESS's working
+    // directory — wherever ucode was launched — NOT this file's directory (lib.c
+    // uc_loadfile → fopen; verified vs the interpreter: the same script succeeds or
+    // fails purely by the launch dir). Under procd/an init script the CWD is
+    // typically '/', so a relative path that works in dev breaks deployed — the
+    // corpus idiom is an absolute path (netifd builds them at runtime). String
+    // literals only; a variable argument is left alone. include()/render() resolve
+    // against the including file and are NOT affected. (docs/ucode-module-resolution.md)
+    if (arg.type === 'Literal' && typeof (arg as LiteralNode).value === 'string') {
+      const rawPath = (arg as LiteralNode).value as string;
+      if (!rawPath.startsWith('/')) {
+        this.warnings.push({
+          message: `loadfile() resolves '${rawPath}' against the ucode process's working `
+            + `directory (wherever ucode was launched), not this file's directory — under `
+            + `procd/init the CWD is typically '/', so this works in dev and breaks deployed. `
+            + `Use an absolute path, or sourcepath(0, true) + "/${rawPath.replace(/^\.\//, '')}" `
+            + `for file-relative loading.`,
+          start: arg.start,
+          end: arg.end,
+          severity: 'warning',
+          code: UcodeErrorCode.LOADFILE_CWD_RELATIVE_PATH,
+          data: { loadfileRelPath: { raw: rawPath, litStart: arg.start, litEnd: arg.end } },
+        });
+      }
     }
 
     return true;

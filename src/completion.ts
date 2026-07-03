@@ -1951,15 +1951,19 @@ function createFileSystemCompletions(currentPath: string, documentUri: string, c
         const documentPath = new URL(documentUri).pathname;
         const documentDir = path.dirname(documentPath);
         
-        // Resolve the target directory based on current path
+        // Resolve the target directory from the path's directory part (everything up to
+        // the last '/'). This must work for ALL path shapes, not just './'-prefixed:
+        // `loadfile("utest/…")` (bare relative) and `loadfile("/lib/netifd/…")` (absolute,
+        // the netifd corpus idiom) previously fell into a document-dir fallback, so typing
+        // `dir/` re-listed the top level — which the client then filtered down to just the
+        // directory itself (no .uc files, no descent).
+        const dirEnd = currentPath.lastIndexOf('/');
+        const dirPart = dirEnd >= 0 ? currentPath.substring(0, dirEnd + 1) : '';
         let targetDir: string;
-        if (currentPath.startsWith('./') || currentPath.startsWith('../')) {
-            // Handle relative path
-            const relativePath = currentPath.endsWith('/') ? currentPath : path.dirname(currentPath);
-            targetDir = path.resolve(documentDir, relativePath);
+        if (currentPath.startsWith('/')) {
+            targetDir = dirPart || '/';
         } else {
-            // Fallback to document directory
-            targetDir = documentDir;
+            targetDir = path.resolve(documentDir, dirPart || '.');
         }
         
         connection.console.log(`[FS_COMPLETION] Document: ${documentPath}, Target dir: ${targetDir}, Current path: ${currentPath}`);

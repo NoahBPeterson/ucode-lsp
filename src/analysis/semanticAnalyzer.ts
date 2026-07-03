@@ -20,7 +20,7 @@ import { BaseVisitor, AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visito
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag, type DiagnosticRelatedInformation } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
-import { FileResolver, type FactoryReturnInfo, type LoadfileGlobal } from './fileResolver';
+import { FileResolver, type FactoryReturnInfo, type LoadfileGlobal, type LoadfileProgramReturn } from './fileResolver';
 import { CFGBuilder } from './cfg/cfgBuilder';
 import { CFGQueryEngine } from './cfg/queryEngine';
 import { type ControlFlowGraph } from './cfg/types';
@@ -1901,6 +1901,11 @@ export class SemanticAnalyzer extends BaseVisitor {
           if (spec?.resolvable) {
             if (arg0?.type === 'Literal' && typeof (arg0 as LiteralNode).value === 'string') {
               argVal = (arg0 as LiteralNode).value as string;
+              // A path-shaped require() name can never resolve (template charset is
+              // [A-Za-z0-9_.]) — that's the hard error UC3008 from the builtin
+              // validator, and "guard it with try/catch" would be the wrong advice.
+              // Skip the UC8001 framing entirely for that case.
+              if (spec.resolvable === 'module' && /[^A-Za-z0-9_.]/.test(argVal)) { i++; continue; }
               resolvedArg = spec.resolvable === 'module'
                 ? ((KNOWN_MODULES as readonly string[]).includes(argVal)
                     ? !this.moduleGatedOutAtTarget(argVal)
@@ -2549,6 +2554,17 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
 
+      // `let a = loadfile("x.uc")()` — the call returns the loaded program's top-level
+      // return value (explicit `return` first, else a trailing bare expression, else
+      // null — verified vs the interpreter). Infer it from the target file so `a` gets
+      // a real type instead of unknown; an object-literal return also carries its
+      // member shape for hover/completion. (docs/ucode-module-resolution.md)
+      const loadfileReturnShape: LoadfileProgramReturn | null = node.init
+        ? this.loadfileCallReturnInfo(node.init) : null;
+      if (loadfileReturnShape) {
+        dataType = loadfileReturnShape.dataType;
+      }
+
       // Handle member expression assignments (e.g., const logger = logs.default)
       if (node.init && node.init.type === 'MemberExpression') {
         const memberExpr = node.init as any; // MemberExpressionNode
@@ -2647,6 +2663,18 @@ export class SemanticAnalyzer extends BaseVisitor {
             symbol.importSpecifier = commonjsImport.importSpecifier;
           }
           this.commonjsImports.delete(name); // Clean up
+        }
+      }
+
+      // Stamp the member shape of a loadfile()()-returned object literal so
+      // `a.member` / `a.method()` resolve like a local object literal would.
+      if (loadfileReturnShape) {
+        const sym = this.symbolTable.lookup(name);
+        if (sym) {
+          if (loadfileReturnShape.propertyTypes) sym.propertyTypes = loadfileReturnShape.propertyTypes;
+          if (loadfileReturnShape.propertyFunctionReturnTypes) {
+            sym.propertyFunctionReturnTypes = loadfileReturnShape.propertyFunctionReturnTypes;
+          }
         }
       }
 
@@ -3005,13 +3033,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Store import information in the symbol
       const symbol = this.symbolTable.lookup(localName);
       if (symbol) {
-        // Convert dot notation to file path if needed, then resolve to URI
-        let actualModulePath = source;
-        if (this.isDotNotationModule(source)) {
-          actualModulePath = this.convertDotNotationToPath(source);
-        }
-
-        const effectiveUri = resolvedUri || this.fileResolver.resolveImportPath(actualModulePath, this.textDocument.uri);
+        const effectiveUri = resolvedUri || this.resolveModuleSource(source);
         // Object-handle exports (fs stdin/stdout/stderr → fs.file) behave like a local
         // fs.file handle, NOT a module namespace — so don't stamp importedFrom, which
         // would make member access/hover/type-resolution treat them as the module. The
@@ -3159,14 +3181,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       return;
     }
 
-    // Convert dot notation to file path if needed
-    let actualModulePath = modulePath;
-    if (this.isDotNotationModule(modulePath)) {
-      actualModulePath = this.convertDotNotationToPath(modulePath);
-    }
-
     // Try to resolve the module and validate exports
-    const resolvedUri = this.fileResolver.resolveImportPath(actualModulePath, this.textDocument.uri);
+    const resolvedUri = this.resolveModuleSource(modulePath);
 
     if (resolvedUri) {
       // Record the cross-file dependency edge as soon as the PATH resolves —
@@ -6267,6 +6283,19 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return false;
   }
 
+  /** When `init` is the immediate-invoke `loadfile(<stringLiteral>)(…)`, the cross-file
+   *  inference of the loaded program's return value; null for any other shape. */
+  private loadfileCallReturnInfo(init: AstNode): LoadfileProgramReturn | null {
+    if (init.type !== 'CallExpression') return null;
+    const outer = init as CallExpressionNode;
+    if (outer.callee?.type !== 'CallExpression') return null;
+    const lf = outer.callee as CallExpressionNode;
+    if (lf.callee?.type !== 'Identifier' || (lf.callee as IdentifierNode).name !== 'loadfile') return null;
+    const arg0 = lf.arguments?.[0];
+    if (arg0?.type !== 'Literal' || typeof (arg0 as LiteralNode).value !== 'string') return null;
+    return this.fileResolver.getLoadfileProgramReturn((arg0 as LiteralNode).value as string, this.textDocument.uri);
+  }
+
   private processInitializerTypeInference(node: VariableDeclaratorNode, name: string): void {
     if (!node.init) {
       return;
@@ -6363,6 +6392,15 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const importedFsReturnType = this.inferImportedFsFunctionReturnType(node.init!);
         if (importedFsReturnType) {
           symbol.dataType = importedFsReturnType;
+          this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
+          return;
+        }
+
+        // `loadfile("x.uc")()` — keep the cross-file program-return inference from the
+        // declaration pass; the generic checkNode fallback below would reset it to unknown.
+        const loadfileInfo = this.loadfileCallReturnInfo(node.init!);
+        if (loadfileInfo) {
+          symbol.dataType = loadfileInfo.dataType;
           this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
           return;
         }
@@ -7056,6 +7094,27 @@ private addDiagnostic(
         }
       }
     }
+  }
+
+  /**
+   * Resolve an import/require source string to a URI. A dotted name first tries the
+   * namespace-prefix conversion (an importer-relative `./x.uc` for `pkg.sub` imported
+   * from inside `pkg/sub/`'s own directory chain), then falls back to the RAW dotted
+   * form so FileResolver's search-root resolution (workspace root + ancestor-directory
+   * walk) applies — `cli.utils` imported from `…/usr/share/ucode/cli/modules/` lives at
+   * `…/usr/share/ucode/cli/utils.uc`, a SIBLING subtree the importer-relative
+   * conversion can never reach. (docs/dotted-module-search-root.md)
+   */
+  private resolveModuleSource(source: string): string | null {
+    let actualModulePath = source;
+    if (this.isDotNotationModule(source)) {
+      actualModulePath = this.convertDotNotationToPath(source);
+    }
+    let uri = this.fileResolver.resolveImportPath(actualModulePath, this.textDocument.uri);
+    if (!uri && actualModulePath !== source) {
+      uri = this.fileResolver.resolveImportPath(source, this.textDocument.uri);
+    }
+    return uri;
   }
 
   /**

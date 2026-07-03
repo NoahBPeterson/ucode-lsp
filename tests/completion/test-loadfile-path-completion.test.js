@@ -36,3 +36,23 @@ test('a non-path string (not a loadfile/include arg) does NOT path-complete', as
   const labels = await labelsAt(code, code.indexOf('./') + 2);
   expect(labels.some(l => /handler\.uc/.test(l))).toBe(false);
 });
+
+// ── Path shapes beyond './' — previously fell into a document-dir fallback, so typing
+// `dir/` re-listed the TOP level (which the client filters down to just the directory:
+// no .uc files visible, no descent). The directory part must resolve for ALL shapes.
+test('BARE directory + slash descends (no ./ prefix)', async () => {
+  const code = 'loadfile("sub/");\n';
+  const labels = await labelsAt(code, code.indexOf('sub/') + 4);
+  expect(labels.some(l => /nested\.uc/.test(l))).toBe(true);
+  expect(labels.some(l => /handler\.uc/.test(l))).toBe(false); // not the top level again
+});
+test('bare partial filename in a subdirectory filters correctly', async () => {
+  const code = 'loadfile("sub/nes");\n';
+  const labels = await labelsAt(code, code.indexOf('nes') + 3);
+  expect(labels).toEqual(['nested.uc']);
+});
+test('ABSOLUTE directory path lists that directory', async () => {
+  const code = `loadfile("${dir}/sub/");\n`;
+  const labels = await labelsAt(code, code.indexOf('/sub/') + 5);
+  expect(labels.some(l => /nested\.uc/.test(l))).toBe(true);
+});

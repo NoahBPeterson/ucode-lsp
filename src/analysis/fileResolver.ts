@@ -42,6 +42,14 @@ export interface LoadfileGlobal {
     propertyReturnTypes?: Map<string, string>;
 }
 
+/** The inferred type of `loadfile(path)()` — the loaded program's top-level return
+ *  value. For an object-literal return, carries the member shape like LoadfileGlobal. */
+export interface LoadfileProgramReturn {
+    dataType: UcodeDataType;
+    propertyTypes?: Map<string, UcodeDataType>;
+    propertyFunctionReturnTypes?: Map<string, string>;
+}
+
 /** Return-shape info for a factory function (one that returns an object literal).
  *  `propertyDefinitionLocations` carries each member's source offsets, which are
  *  file-LOCAL — the consumer stamps the factory file URI. */
@@ -74,6 +82,12 @@ interface AstBag {
     argument?: AstBag;
     key?: AstBag;
     properties?: AstBag[];
+    expression?: AstBag;
+    declarations?: AstBag[];
+    id?: AstBag;
+    init?: AstBag;
+    left?: AstBag;
+    right?: AstBag;
 }
 
 /** Narrow an arbitrary value to a walkable AST-node bag. */
@@ -230,6 +244,102 @@ export class FileResolver {
     }
 
     /**
+     * The type of `loadfile(rawPath)()` — the loaded program's return value. Verified vs
+     * the interpreter: the first explicit top-level `return <expr>` wins; otherwise the
+     * program's value is its LAST top-level statement when that is a bare expression
+     * statement (REPL-style implicit result); otherwise null. A `return M` of a top-level
+     * binding traces ONE hop to M's initializer (`let M = {…}; return M;` — the common
+     * module pattern). `rawPath` resolves relative to the caller's directory (the shared
+     * LSP convention from getLoadfileGlobals; the runtime actually resolves loadfile()
+     * against the process CWD, which the LSP cannot know — the corpus loads by absolute
+     * or caller-adjacent paths, where the two agree).
+     * Returns null when the path/parse fails or the returned expression's type can't be
+     * claimed confidently (→ caller stays `unknown`).
+     */
+    getLoadfileProgramReturn(rawPath: string, currentFileUri: string): LoadfileProgramReturn | null {
+        const curPath = this.uriToFilePath(currentFileUri);
+        if (!curPath) return null;
+        const targetPath = rawPath.startsWith('/')
+            ? path.normalize(rawPath)
+            : path.normalize(path.join(path.dirname(curPath), rawPath));
+        const targetUri = this.filePathToUri(targetPath);
+        const content = this.readFileContent(targetUri);
+        if (content === null) return null;
+        const ast = this.getCachedAst(targetUri, content) as { type?: string; body?: unknown[] } | null;
+        if (!ast || ast.type !== 'Program' || !Array.isArray(ast.body)) return null;
+        const body = ast.body.map(asBag);
+
+        // The returned expression: first explicit top-level return, else a trailing bare
+        // expression statement (undefined = "no explicit return found yet").
+        let retNode: AstBag | null | undefined = undefined;
+        for (const stmt of body) {
+            if (stmt?.type === 'ReturnStatement') { retNode = stmt.argument ?? null; break; }
+        }
+        if (retNode === undefined) {
+            const last = body[body.length - 1];
+            retNode = last?.type === 'ExpressionStatement' ? (last.expression ?? null) : null;
+        }
+        if (retNode === null) return { dataType: UcodeType.NULL as UcodeDataType };
+
+        // `return M;` — one-hop trace to M's last top-level initializer/assignment.
+        if (retNode.type === 'Identifier' && typeof retNode.name === 'string') {
+            const target = retNode.name;
+            let traced: AstBag | undefined;
+            for (const stmt of body) {
+                if (stmt?.type === 'VariableDeclaration') {
+                    for (const d of stmt.declarations ?? []) {
+                        if (d?.id?.type === 'Identifier' && d.id.name === target && d.init) traced = d.init;
+                    }
+                } else if (stmt?.type === 'ExpressionStatement' && stmt.expression?.type === 'AssignmentExpression'
+                           && stmt.expression.operator === '='
+                           && stmt.expression.left?.type === 'Identifier' && stmt.expression.left.name === target
+                           && stmt.expression.right) {
+                    traced = stmt.expression.right;
+                }
+            }
+            if (traced) retNode = traced;
+        }
+
+        switch (retNode.type) {
+            case 'ObjectExpression': {
+                const out: LoadfileProgramReturn = { dataType: UcodeType.OBJECT as UcodeDataType };
+                const propTypes = this.inferObjectLiteralPropertyTypesShallow(retNode);
+                if (propTypes.size > 0) out.propertyTypes = propTypes;
+                const fnReturns = new Map<string, string>();
+                for (const prop of retNode.properties ?? []) {
+                    const key = prop?.key?.name ?? prop?.key?.value;
+                    const val = asBag(prop?.value);
+                    if (typeof key !== 'string' && typeof key !== 'number') continue;
+                    if (val?.type === 'FunctionExpression' || val?.type === 'ArrowFunctionExpression') {
+                        const ret = this.functionReturnTypeString(val as unknown as AstNode);
+                        if (ret) fnReturns.set(String(key), ret);
+                    }
+                }
+                if (fnReturns.size > 0) out.propertyFunctionReturnTypes = fnReturns;
+                return out;
+            }
+            case 'ArrayExpression':
+                return { dataType: UcodeType.ARRAY as UcodeDataType };
+            case 'FunctionExpression':
+            case 'ArrowFunctionExpression':
+                return { dataType: UcodeType.FUNCTION as UcodeDataType };
+            case 'Literal': {
+                if (retNode.literalType === 'regexp') return { dataType: UcodeType.REGEX as UcodeDataType };
+                const v = retNode.value;
+                if (typeof v === 'string') return { dataType: UcodeType.STRING as UcodeDataType };
+                if (typeof v === 'boolean') return { dataType: UcodeType.BOOLEAN as UcodeDataType };
+                if (v === null) return { dataType: UcodeType.NULL as UcodeDataType };
+                if (typeof v === 'number') {
+                    return { dataType: (Number.isInteger(v) ? UcodeType.INTEGER : UcodeType.DOUBLE) as UcodeDataType };
+                }
+                return null;
+            }
+            default:
+                return null; // can't claim a type — caller stays unknown
+        }
+    }
+
+    /**
      * Content of the file behind a URI, or null if unavailable. Prefers the live
      * editor buffer (so unsaved cross-file edits are seen) and falls back to disk.
      */
@@ -359,17 +469,50 @@ export class FileResolver {
                 }
             }
 
-            // Handle dotted module paths (e.g., 'u1905.u1905d.src.u1905.log')
+            // Handle dotted module paths (e.g., 'cli.utils', 'u1905.u1905d.src.u1905.log')
             if (!importPath.includes('/') && !importPath.startsWith('.')) {
                 const dottedPath = importPath.replace(/\./g, '/') + '.uc';
                 const resolvedPath = path.resolve(this.workspaceRoot, dottedPath);
                 if (fs.existsSync(resolvedPath)) {
                     return this.filePathToUri(resolvedPath);
                 }
-                // Also try dotted path relative to importing file's directory
+                // Importer-relative: faithful to ucode's default `./*.uc` search-path
+                // template, which the compiler expands relative to the IMPORTING file's
+                // directory (compiler.c uc_compiler_canonicalize_path; verified vs the
+                // interpreter: `cli.utils` resolves to <importer-dir>/cli/utils.uc).
                 const localDottedPath = path.resolve(currentDir, dottedPath);
                 if (fs.existsSync(localDottedPath)) {
                     return this.filePathToUri(localDottedPath);
+                }
+                // ucode's other default templates are absolute install roots
+                // (<prefix>/share/ucode/*.uc, <prefix>/lib/ucode/*.so). A package
+                // SOURCE tree mirrors that layout under the checkout
+                // (…/files/usr/share/ucode/cli/modules/network.uc importing
+                // "cli.utils" → …/files/usr/share/ucode/cli/utils.uc), so treat an
+                // ANCESTOR directory ending in share/ucode or lib/ucode as the
+                // mirrored install root — nearest first, never escaping the workspace
+                // when the importer is inside it (for a file outside any workspace the
+                // walk is bounded only by the filesystem root). Deliberately NOT any
+                // ancestor: the runtime only searches configured roots, so a generic
+                // ancestor walk could resolve imports that fail on-device.
+                // (docs/dotted-module-search-root.md)
+                const isSearchRootMirror = (d: string): boolean =>
+                    d.endsWith(`${path.sep}share${path.sep}ucode`)
+                    || d.endsWith(`${path.sep}lib${path.sep}ucode`);
+                let dir = currentDir;
+                const insideWorkspace = dir === this.workspaceRoot
+                    || dir.startsWith(this.workspaceRoot + path.sep);
+                while (true) {
+                    if (isSearchRootMirror(dir)) {
+                        const candidate = path.resolve(dir, dottedPath);
+                        if (fs.existsSync(candidate)) {
+                            return this.filePathToUri(candidate);
+                        }
+                    }
+                    if (insideWorkspace && dir === this.workspaceRoot) break;
+                    const parent = path.dirname(dir);
+                    if (parent === dir) break;
+                    dir = parent;
                 }
             }
 

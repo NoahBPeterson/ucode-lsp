@@ -40,6 +40,7 @@ export enum UcodeErrorCode {
   EXPORT_NOT_FOUND = 'UC3005',
   MODULE_NOT_IMPORTED = 'UC3006',
   IMPORT_NOT_TOP_LEVEL = 'UC3007',
+  REQUIRE_PATH_NOT_MODULE_NAME = 'UC3008',
 
   // Control flow errors (4000-4999)
   UNREACHABLE_CODE = 'UC4001',
@@ -88,6 +89,7 @@ export enum UcodeErrorCode {
   GLOBAL_PROPERTY_NEVER_ASSIGNED = 'UC8006',      // read of a property never assigned on a fully-visible global object literal → always null
   LOCAL_PROPERTY_NEVER_ASSIGNED = 'UC8007',       // same, for a local `let x = { … }` whose shape is fully visible
   DELETE_NEVER_ASSIGNED_PROPERTY = 'UC8008',      // `delete x.prop` where prop is provably never assigned → runtime no-op returning false (likely typo)
+  LOADFILE_CWD_RELATIVE_PATH = 'UC8009',          // loadfile() with a relative literal path — resolves against the PROCESS's launch dir, not this file's dir (breaks under procd/init where CWD=/)
 
   // System and internal errors (9000-9999)
   INTERNAL_ERROR = 'UC9001',

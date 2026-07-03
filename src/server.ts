@@ -71,6 +71,7 @@ import type {
     FunctionDeclarationNode,
     FunctionExpressionNode,
     ArrowFunctionExpressionNode,
+    ImportDeclarationNode,
 } from './ast/nodes';
 import { UCODE_TARGET_VERSIONS, type UcodeTargetVersion, DEFAULT_TARGET_VERSION } from './analysis/ucodeVersions';
 import { UcodeErrorCode } from './analysis/errorConstants';
@@ -1232,6 +1233,80 @@ function generateWrapTryCatchQuickFix(diagnostic: Diagnostic, document: TextDocu
     }];
 }
 
+// Diagnostic-independent action: a `./`/`../` relative import whose target lives under a
+// share/ucode- or lib/ucode-style install root can instead use the ecosystem-conventional
+// dotted module form ("cli.utils") — the spelling installed packages use to address each
+// other, which also works for runtime require() (relative paths never do: the search-path
+// templates reject '/' in module names). Verified convention: 36 dotted vs 9 relative
+// intra-package imports across the OpenWrt corpus, with relative used only OUTSIDE search
+// roots (/lib/netifd scripts loaded by explicit path). Offered only when the dotted form
+// provably resolves back to the SAME file through the resolver, so the fix can never
+// produce a broken import. AST-based: replaces the import's source literal by node
+// offsets. (docs/dotted-module-search-root.md)
+function generateRelativeToDottedImportActions(
+    ast: ProgramNode,
+    document: TextDocument,
+    uri: string,
+    requestRange: Range
+): CodeAction[] {
+    const actions: CodeAction[] = [];
+    if (!uri.startsWith('file://')) return actions;
+    const importerPath = uriToFilePath(uri);
+    const reqStart = document.offsetAt(requestRange.start);
+    const reqEnd = document.offsetAt(requestRange.end);
+
+    for (const stmt of ast.body) {
+        if (stmt.type !== 'ImportDeclaration') continue;
+        const imp = stmt as ImportDeclarationNode;
+        if (imp.end < reqStart || imp.start > reqEnd) continue;
+        const source = imp.source;
+        const raw = typeof source.value === 'string' ? source.value : null;
+        if (!raw || !(raw.startsWith('./') || raw.startsWith('../')) || !raw.endsWith('.uc')) continue;
+
+        const targetPath = path.resolve(path.dirname(importerPath), raw);
+        let exists = false;
+        try { exists = fs.existsSync(targetPath); } catch { /* unreadable → no action */ }
+        if (!exists) continue;
+
+        // Nearest install-root mirror above the target.
+        let root = path.dirname(targetPath);
+        while (!root.endsWith(`${path.sep}share${path.sep}ucode`)
+               && !root.endsWith(`${path.sep}lib${path.sep}ucode`)) {
+            const parent = path.dirname(root);
+            if (parent === root) { root = ''; break; }
+            root = parent;
+        }
+        if (!root) continue;
+
+        // Dotted name = target's path from the root, '/' → '.', '.uc' dropped. Every
+        // segment must be a valid module-name segment (the runtime's template splice
+        // accepts [A-Za-z0-9_.] only).
+        const segments = path.relative(root, targetPath).slice(0, -3).split(path.sep);
+        if (!segments.every(s => /^[A-Za-z_][A-Za-z0-9_]*$/.test(s))) continue;
+        const dotted = segments.join('.');
+
+        // Round-trip guard: the dotted form must resolve to the very same file (it could
+        // instead hit a same-named module under the workspace root or importer's dir).
+        const resolved = getCrossRefResolver().resolveImportPath(dotted, uri);
+        if (!resolved || !resolved.startsWith('file://')
+            || path.normalize(uriToFilePath(resolved)) !== path.normalize(targetPath)) continue;
+
+        const q = document.getText({
+            start: document.positionAt(source.start),
+            end: document.positionAt(source.start + 1),
+        }) === "'" ? "'" : '"';
+        actions.push({
+            title: `Convert to dotted module import ${q}${dotted}${q}`,
+            kind: CodeActionKind.QuickFix,
+            edit: { changes: { [uri]: [TextEdit.replace(
+                { start: document.positionAt(source.start), end: document.positionAt(source.end) },
+                `${q}${dotted}${q}`
+            )] } },
+        });
+    }
+    return actions;
+}
+
 // The top-of-file insertion point for a global declaration/definition: after a shebang line
 // and after a `'use strict'` prologue (inserting above the directive would silently disable
 // strict mode for the whole file).
@@ -1353,6 +1428,47 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // block) in a try/catch.
             if (diagnostic.code === 'UC8001') {
                 codeActions.push(...generateWrapTryCatchQuickFix(diagnostic, document, params.textDocument.uri));
+            }
+
+            // UC8009: relative loadfile() path resolves against the PROCESS's launch dir
+            // (CWD footgun). Two rewrites of the path literal (AST offsets from data):
+            //  1. (preferred) file-relative via sourcepath(0, true) — the current file's
+            //     directory at runtime, works from any launch dir (interpreter-verified)
+            //  2. the deployed absolute path, when the target sits in an OpenWrt package
+            //     `files/` tree (…/files/lib/netifd/x.uc installs at /lib/netifd/x.uc)
+            if (diagnostic.code === UcodeErrorCode.LOADFILE_CWD_RELATIVE_PATH
+                && (diagnostic as any).data?.loadfileRelPath) {
+                const { raw, litStart, litEnd } = (diagnostic as any).data.loadfileRelPath;
+                const litRange = { start: document.positionAt(litStart), end: document.positionAt(litEnd) };
+                const q = document.getText({
+                    start: litRange.start, end: document.positionAt(litStart + 1),
+                }) === "'" ? "'" : '"';
+                const tail = String(raw).replace(/^\.\//, '');
+                codeActions.push({
+                    title: `Make file-relative: sourcepath(0, true) + ${q}/${tail}${q}`,
+                    kind: CodeActionKind.QuickFix,
+                    diagnostics: [diagnostic],
+                    isPreferred: true,
+                    edit: { changes: { [params.textDocument.uri]: [
+                        TextEdit.replace(litRange, `sourcepath(0, true) + ${q}/${tail}${q}`),
+                    ] } },
+                });
+                const importerPath = uriToFilePath(params.textDocument.uri);
+                const targetLocal = path.resolve(path.dirname(importerPath), String(raw));
+                const filesIdx = targetLocal.indexOf(`${path.sep}files${path.sep}`);
+                let deployedExists = false;
+                try { deployedExists = filesIdx >= 0 && fs.existsSync(targetLocal); } catch { /* no fix */ }
+                if (deployedExists) {
+                    const deployed = targetLocal.substring(filesIdx + `${path.sep}files`.length);
+                    codeActions.push({
+                        title: `Use deployed absolute path ${q}${deployed}${q}`,
+                        kind: CodeActionKind.QuickFix,
+                        diagnostics: [diagnostic],
+                        edit: { changes: { [params.textDocument.uri]: [
+                            TextEdit.replace(litRange, `${q}${deployed}${q}`),
+                        ] } },
+                    });
+                }
             }
 
             // UC1001/UC1002: an undefined name may be a host-injected global → offer to
@@ -1502,6 +1618,12 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 }
             }
         });
+    }
+
+    // Diagnostic-independent: offer to rewrite a `./`-relative import of a file under a
+    // mirrored install root (share/ucode | lib/ucode) into the conventional dotted form.
+    if (ast) {
+        codeActions.push(...generateRelativeToDottedImportActions(ast, document, params.textDocument.uri, params.range));
     }
 
     // Deduplicate actions with the same title — overlapping diagnostics
