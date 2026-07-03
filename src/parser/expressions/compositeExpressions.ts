@@ -4,6 +4,7 @@
  */
 
 import { TokenType, type Token } from '../../lexer';
+import { UcodeErrorCode } from '../../analysis/errorConstants';
 import {
   type AstNode, type IdentifierNode, type ArrayExpressionNode, type ObjectExpressionNode,
   type PropertyNode, type MemberExpressionNode, type LiteralNode, type SpreadElementNode,
@@ -20,6 +21,14 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
     if (!this.check(TokenType.TK_RBRACK)) {
       do {
         if (this.check(TokenType.TK_COMMA)) {
+          // Array elision is a JS-ism: ucode demands an expression after every comma
+          // ("Expecting expression"; trailing commas are fine — verified vs
+          // uc_compiler_compile_array). Keep the null element so downstream indices
+          // stay aligned, but surface the compile error the interpreter would raise.
+          const comma = this.peek()!;
+          this.errorAt("ucode does not allow array holes; expected expression before ','",
+                       comma.pos, comma.end, UcodeErrorCode.ARRAY_HOLE);
+          this.panicMode = false; // recovery is exact — don't suppress later diagnostics
           elements.push(null);
         } else if (this.match(TokenType.TK_ELLIP)) {
           // Handle spread element: ...expression

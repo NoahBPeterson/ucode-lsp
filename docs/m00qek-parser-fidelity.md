@@ -143,4 +143,10 @@ not support labelled break/continue" anchored on the label. (Optionally drop
 
 ---
 
-Status: **documented only** (this file). No fixes built yet.
+Status:
+- 1 (`\u` escapes): **open**
+- 2 (`delete` non-member): **open**
+- 3 (array elision): **fixed in 0.7.40** — UC6008, `tests/syntax/test-array-elision.test.js`
+- 4 (params after rest): **open**
+- 5 (`for (const …)`): **open**
+- 6 (labelled break/continue): **open**

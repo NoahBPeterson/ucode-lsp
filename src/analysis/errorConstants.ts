@@ -65,6 +65,7 @@ export enum UcodeErrorCode {
   TARGET_VERSION_UNSUPPORTED = 'UC6005', // syntax valid in newer ucode but not the configured ucode.targetVersion
   PLATFORM_GATED_SYMBOL = 'UC6006', // module symbol only compiled on a specific platform (e.g. Linux-only io ioctl constants)
   CONFUSING_UNARY_ASSIGNMENT = 'UC6007', // prefix unary op wraps an assignment, e.g. `!x = y` parses as `!(x = y)`
+  ARRAY_HOLE = 'UC6008', // array elision `[1,,2]` — a JS-ism; ucode demands an expression after every comma
 
   // JSDoc annotation errors (7000-7999)
   JSDOC_UNKNOWN_TYPE = 'UC7001',
