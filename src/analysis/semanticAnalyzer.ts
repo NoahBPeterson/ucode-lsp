@@ -515,6 +515,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (this.options.warnUnguardedThrowingCalls) {
       this.checkUnguardedThrowingCalls(node);
     }
+    // Blocking recv() on a socket.pair() socket that will hang forever. Runs here (not
+    // during traversal) so the symbol table is complete — the send-suppression walk and
+    // the initNode traces can see forward-declared sockets.
+    if (this.options.enableScopeAnalysis) {
+      this.checkBlockingSocketpairRecvs(node);
+    }
     // Case-2 global-scope soundness: a top-level read before any defining assignment/loadfile.
     if (this.options.enableScopeAnalysis && (this.options.uncertainGlobalScope ?? 'errorInStrict') !== 'off') {
       this.checkGlobalScopeOrder(node);
@@ -7105,6 +7111,206 @@ private addDiagnostic(
    * `…/usr/share/ucode/cli/utils.uc`, a SIBLING subtree the importer-relative
    * conversion can never reach. (docs/dotted-module-search-root.md)
    */
+  // ── UC8010: blocking recv() on a socket.pair() socket ──────────────────────
+  // socket.pair() returns a connected socketpair in BLOCKING mode by default
+  // (uc_socket_pair: SOCK_STREAM, no SOCK_NONBLOCK). recv()/recvmsg() on such a
+  // socket with no MSG_DONTWAIT flag blocks in recvfrom() until the PEER end is
+  // written to — and both ends are local to this process, so if nothing ever
+  // send()s on the other socket the program hangs silently (no output, since
+  // print() is buffered and never flushes). This exact footgun cost real debug
+  // time. We only warn when we can PROVE the socket is a blocking pair() socket
+  // and the file never send()s on a pair socket — otherwise stay quiet.
+  private pairSocketSendCache: Set<CallExpressionNode> | undefined;
+
+  /** Whole-AST pass (post-traversal, so the symbol table is complete): flag every
+   *  blocking recv()/recvmsg() on a socket.pair() socket. */
+  private checkBlockingSocketpairRecvs(root: ProgramNode): void {
+    const visit = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (n.type === 'CallExpression') this.flagBlockingSocketpairRecv(n as unknown as CallExpressionNode);
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) visit(it); }
+        else visit(v);
+      }
+    };
+    visit(root);
+  }
+
+  private flagBlockingSocketpairRecv(node: CallExpressionNode): void {
+    const callee = node.callee;
+    if (callee.type !== 'MemberExpression' || (callee as MemberExpressionNode).computed) return;
+    const method = this.staticMemberName((callee as MemberExpressionNode).property);
+    if (method !== 'recv' && method !== 'recvmsg') return;
+
+    // The socket must provably originate from a blocking socket.pair() call.
+    const pairCall = this.findPairSocketForReceiver((callee as MemberExpressionNode).object, 0);
+    if (!pairCall || !this.pairCallIsBlocking(pairCall)) return;
+
+    // A non-blocking recv (MSG_DONTWAIT) returns immediately — never hangs.
+    if (this.argsReferenceFlag(node.arguments, 'MSG_DONTWAIT', 64)) return;
+
+    // If THIS socketpair is written to by a send()/sendmsg() somewhere, the developer
+    // is doing real IPC on it — assume the peer produces data. Keyed by the originating
+    // pair() call so a send on one pair doesn't silence a blocking recv on another.
+    if (this.sentPairCalls().has(pairCall)) return;
+
+    const anchor = (callee as MemberExpressionNode).property;
+    this.addDiagnostic(
+      `${method}() on a blocking socketpair waits until the peer sends — with nothing written to the other end this hangs forever (and buffered print() output never appears). Pass MSG_DONTWAIT (e.g. ${method}(len, MSG_DONTWAIT)), create the pair with SOCK_NONBLOCK, or send() on the other socket first.`,
+      anchor.start, anchor.end, DiagnosticSeverity.Warning, UcodeErrorCode.BLOCKING_SOCKETPAIR_RECV,
+      this.buildBlockingRecvFixData(node));
+  }
+
+  /** Quick-fix payload for UC8010: how to add MSG_DONTWAIT to this recv call, plus whether
+   *  socket's MSG_DONTWAIT needs importing. The server turns this into TextEdits. */
+  private buildBlockingRecvFixData(node: CallExpressionNode): { blockingRecv: {
+    flagText: string; needsImport: boolean; mode: 'append' | 'or';
+    insertOffset?: number; arg1Start?: number; arg1End?: number;
+  } } | undefined {
+    const ref = this.resolveMsgDontwaitRef();
+    const args = node.arguments;
+    if (args.length === 1 && args[0]) {
+      // recv(len) → recv(len, MSG_DONTWAIT)
+      return { blockingRecv: { ...ref, mode: 'append', insertOffset: args[0].end } };
+    }
+    if (args.length >= 2 && args[1]) {
+      // recv(len, existingFlags) → recv(len, (existingFlags) | MSG_DONTWAIT)
+      return { blockingRecv: { ...ref, mode: 'or', arg1Start: args[1].start, arg1End: args[1].end } };
+    }
+    return undefined; // 0-arg recvmsg(): no clean positional slot for the flag
+  }
+
+  /** How to reference socket.MSG_DONTWAIT from THIS file: prefer an existing namespace
+   *  import (`socket.MSG_DONTWAIT`), then an existing named import, else a bare
+   *  `MSG_DONTWAIT` that needs a new `import { MSG_DONTWAIT } from 'socket'`. */
+  private resolveMsgDontwaitRef(): { flagText: string; needsImport: boolean } {
+    let nsName: string | undefined;
+    let hasNamed = false;
+    const body = this.currentASTRoot?.body ?? [];
+    for (const stmt of body) {
+      if (stmt?.type !== 'ImportDeclaration') continue;
+      const imp = stmt as ImportDeclarationNode;
+      if (imp.source?.value !== 'socket') continue;
+      for (const spec of imp.specifiers) {
+        if (spec.type === 'ImportNamespaceSpecifier') nsName = spec.local.name;
+        else if (spec.type === 'ImportSpecifier' && spec.imported.name === 'MSG_DONTWAIT') hasNamed = true;
+      }
+    }
+    if (nsName) return { flagText: `${nsName}.MSG_DONTWAIT`, needsImport: false };
+    if (hasNamed) return { flagText: 'MSG_DONTWAIT', needsImport: false };
+    return { flagText: 'MSG_DONTWAIT', needsImport: true };
+  }
+
+  /** The pair() CallExpression backing a socket-valued receiver (`sox[0]`, `s0`,
+   *  `pair()[0]`), traced through `let` initializers, or null. */
+  private findPairSocketForReceiver(node: AstNode, depth: number): CallExpressionNode | null {
+    if (depth > 8 || !node) return null;
+    if (node.type === 'MemberExpression') {
+      const m = node as MemberExpressionNode;
+      if (m.computed) return this.findPairArray(m.object, depth + 1); // arr[idx]
+      return null;
+    }
+    if (node.type === 'Identifier') {
+      // Position-aware: the recv may sit in a nested block whose scope has exited by
+      // the time this post-pass runs, so lookupAtPosition (not lookup) resolves it.
+      const sym = this.symbolTable.lookupAtPosition((node as IdentifierNode).name, node.start);
+      if (sym?.initNode) return this.findPairSocketForReceiver(sym.initNode, depth + 1);
+    }
+    return null;
+  }
+
+  /** The pair() CallExpression if `node` evaluates to a socket.pair() result array. */
+  private findPairArray(node: AstNode, depth: number): CallExpressionNode | null {
+    if (depth > 8 || !node) return null;
+    if (node.type === 'CallExpression') {
+      return this.isSocketPairCall(node as CallExpressionNode) ? (node as CallExpressionNode) : null;
+    }
+    if (node.type === 'Identifier') {
+      const sym = this.symbolTable.lookupAtPosition((node as IdentifierNode).name, node.start);
+      if (sym?.initNode) return this.findPairArray(sym.initNode, depth + 1);
+    }
+    return null;
+  }
+
+  /** Is this CallExpression a call to socket.pair() (named or namespace import)? */
+  private isSocketPairCall(call: CallExpressionNode): boolean {
+    const callee = call.callee;
+    if (callee.type === 'Identifier') {
+      const sym = this.symbolTable.lookupAtPosition((callee as IdentifierNode).name, callee.start);
+      return sym?.importedFrom === 'socket' && sym.importSpecifier === 'pair';
+    }
+    if (callee.type === 'MemberExpression' && !(callee as MemberExpressionNode).computed) {
+      const m = callee as MemberExpressionNode;
+      if (this.staticMemberName(m.property) !== 'pair') return false;
+      if (m.object.type === 'Identifier') {
+        const sym = this.symbolTable.lookupAtPosition((m.object as IdentifierNode).name, m.object.start);
+        return extractModuleType(sym?.dataType)?.moduleName === 'socket';
+      }
+    }
+    return false;
+  }
+
+  /** A pair() call is blocking unless SOCK_NONBLOCK is passed in its arguments. */
+  private pairCallIsBlocking(call: CallExpressionNode): boolean {
+    return !this.argsReferenceFlag(call.arguments, 'SOCK_NONBLOCK', 2048);
+  }
+
+  /** Does any argument subtree reference the named flag constant (by identifier,
+   *  namespace member, or its raw numeric value)? Covers `SOCK_NONBLOCK`,
+   *  `SOCK_STREAM | SOCK_NONBLOCK`, `socket.SOCK_NONBLOCK`, and `2048`. */
+  private argsReferenceFlag(args: AstNode[], flagName: string, flagValue: number): boolean {
+    const walk = (n: AstNode | null | undefined): boolean => {
+      if (!n || typeof n !== 'object') return false;
+      if (n.type === 'Identifier' && (n as IdentifierNode).name === flagName) return true;
+      if (n.type === 'Literal' && (n as LiteralNode).value === flagValue) return true;
+      for (const key of ['left', 'right', 'argument', 'object', 'property', 'expression']) {
+        if (walk((n as any)[key])) return true;
+      }
+      return false;
+    };
+    return (args || []).some(walk);
+  }
+
+  /** The set of pair() calls whose sockets are written to by a send()/sendmsg()
+   *  somewhere in the file (→ real IPC, so a blocking recv on them is intentional).
+   *  Keyed by pair() CallExpression node identity; memoized. */
+  private sentPairCalls(): Set<CallExpressionNode> {
+    if (this.pairSocketSendCache) return this.pairSocketSendCache;
+    const found = new Set<CallExpressionNode>();
+    const visit = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (n.type === 'CallExpression') {
+        const c = n as unknown as CallExpressionNode;
+        if (c.callee.type === 'MemberExpression' && !(c.callee as MemberExpressionNode).computed) {
+          const mn = this.staticMemberName((c.callee as MemberExpressionNode).property);
+          if (mn === 'send' || mn === 'sendmsg') {
+            const p = this.findPairSocketForReceiver((c.callee as MemberExpressionNode).object, 0);
+            if (p) found.add(p);
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) visit(it); }
+        else visit(v);
+      }
+    };
+    if (this.currentASTRoot) visit(this.currentASTRoot);
+    this.pairSocketSendCache = found;
+    return found;
+  }
+
+  private staticMemberName(prop: AstNode): string | null {
+    if (prop.type === 'Identifier') return (prop as IdentifierNode).name;
+    if (prop.type === 'Literal' && typeof (prop as LiteralNode).value === 'string') {
+      return (prop as LiteralNode).value as string;
+    }
+    return null;
+  }
+
   private resolveModuleSource(source: string): string | null {
     let actualModulePath = source;
     if (this.isDotNotationModule(source)) {

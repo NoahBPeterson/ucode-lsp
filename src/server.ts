@@ -1471,6 +1471,39 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 }
             }
 
+            // UC8010: blocking recv() on a socketpair → offer to add MSG_DONTWAIT (making the
+            // read non-blocking), auto-importing socket's MSG_DONTWAIT when it isn't in scope.
+            if (diagnostic.code === UcodeErrorCode.BLOCKING_SOCKETPAIR_RECV
+                && (diagnostic as any).data?.blockingRecv) {
+                const fx = (diagnostic as any).data.blockingRecv as {
+                    flagText: string; needsImport: boolean; mode: 'append' | 'or';
+                    insertOffset?: number; arg1Start?: number; arg1End?: number;
+                };
+                const edits: TextEdit[] = [];
+                if (fx.mode === 'append' && typeof fx.insertOffset === 'number') {
+                    edits.push(TextEdit.insert(document.positionAt(fx.insertOffset), `, ${fx.flagText}`));
+                } else if (fx.mode === 'or' && typeof fx.arg1Start === 'number' && typeof fx.arg1End === 'number') {
+                    const existing = document.getText({
+                        start: document.positionAt(fx.arg1Start), end: document.positionAt(fx.arg1End),
+                    });
+                    edits.push(TextEdit.replace(
+                        { start: document.positionAt(fx.arg1Start), end: document.positionAt(fx.arg1End) },
+                        `${existing} | ${fx.flagText}`));
+                }
+                if (edits.length > 0) {
+                    if (fx.needsImport && ast) {
+                        edits.push(computeImportInsertEdit(ast, document, `import { MSG_DONTWAIT } from 'socket';`));
+                    }
+                    codeActions.push({
+                        title: `Make the read non-blocking: add ${fx.flagText}`,
+                        kind: CodeActionKind.QuickFix,
+                        diagnostics: [diagnostic],
+                        isPreferred: true,
+                        edit: { changes: { [params.textDocument.uri]: edits } },
+                    });
+                }
+            }
+
             // UC1001/UC1002: an undefined name may be a host-injected global → offer to
             // declare it with a JSDoc `@global` tag (silences the diagnostic).
             // UC8004 (shaky def) / UC8005 (read of a shaky global) additionally get the
