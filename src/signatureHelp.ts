@@ -7,7 +7,7 @@
 import {
     type SignatureHelp, SignatureInformation, ParameterInformation, MarkupKind,
 } from 'vscode-languageserver/node';
-import { extractModuleType, type SymbolTable, type UcodeDataType } from './analysis/symbolTable';
+import { extractModuleType, SymbolType, type SymbolTable, type UcodeDataType } from './analysis/symbolTable';
 import { isKnownModule, isKnownObjectType, MODULE_REGISTRIES, OBJECT_REGISTRIES } from './analysis/moduleDispatch';
 import type {
     AstNode, CallExpressionNode, MemberExpressionNode, IdentifierNode, LiteralNode,
@@ -202,7 +202,11 @@ export function resolveCalleeParameters(
             return null;
         }
         const tn = mt.moduleName;
-        const sigOpt = isKnownObjectType(tn) ? OBJECT_REGISTRIES[tn].getMethod(method)
+        // `socket` names both a module and its handle object-type; a namespace-import receiver
+        // (`import * as socket`) resolves as the MODULE, a handle variable as the object type.
+        const nsLike = objSym?.importSpecifier === '*' || objSym?.type === SymbolType.MODULE;
+        const sigOpt = (nsLike && isKnownModule(tn)) ? MODULE_REGISTRIES[tn].getFunction(method)
+            : isKnownObjectType(tn) ? OBJECT_REGISTRIES[tn].getMethod(method)
             : isKnownModule(tn) ? MODULE_REGISTRIES[tn].getFunction(method)
             : Option.none();
         if (Option.isNone(sigOpt)) return null;
@@ -229,6 +233,23 @@ export function resolveCalleeParameters(
                 return { name: p.name, label: (p.isRest ? '...' : '') + p.name + ty, isRest: !!p.isRest };
             }),
         };
+    }
+
+    // Named-import module function: `import { pair } from 'socket'; pair(…)`. The symbol is
+    // neither a user function nor a global builtin, so resolve its params via the module
+    // registry (the same signatures `socket.pair(…)` uses).
+    if (sym?.importedFrom && isKnownModule(sym.importedFrom)) {
+        const specName = sym.importSpecifier ?? name;
+        const sigOpt = MODULE_REGISTRIES[sym.importedFrom].getFunction(specName);
+        if (Option.isSome(sigOpt)) {
+            const sig = sigOpt.value;
+            const res: CalleeSignature = {
+                displayName: name,
+                params: sig.parameters.map(p => ({ name: p.name, label: p.optional ? `${p.name}?` : p.name, isRest: false })),
+            };
+            if (sig.description) res.documentation = sig.description;
+            return res;
+        }
     }
 
     const doc = builtins.get(name);

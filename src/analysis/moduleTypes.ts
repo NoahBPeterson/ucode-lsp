@@ -51,6 +51,10 @@ export interface FunctionSignature {
     type: string;
     optional: boolean;
     defaultValue?: string | number | boolean | null;
+    /** Constant-name prefixes this parameter accepts (e.g. ['MSG_'] for a recv flags arg,
+     *  ['AF_'] for a socket domain). Drives argument-position value completion: an empty/
+     *  partial arg slot offers the module's constants matching any of these prefixes. */
+    constantPrefixes?: string[];
   }>;
   returnType: string;
   description: string;

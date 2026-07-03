@@ -22,30 +22,30 @@ const socketMethods = new Map<string, FunctionSignature>([
     ], returnType: 'boolean | null', description: 'Mark the socket as accepting connections, with an optional backlog. Returns true on success, null on error.' }],
   ['accept', { name: 'accept', parameters: [
       { name: 'address', type: 'object', optional: true },
-      { name: 'flags', type: 'integer', optional: true },
+      { name: 'flags', type: 'integer', optional: true, constantPrefixes: ['SOCK_'] },
     ], returnType: 'socket | null', description: 'Accept an incoming connection, returning a new connected socket, or null on error.' }],
   ['send', { name: 'send', parameters: [
       { name: 'data', type: 'string', optional: false },
-      { name: 'flags', type: 'integer', optional: true },
+      { name: 'flags', type: 'integer', optional: true, constantPrefixes: ['MSG_'] },
       { name: 'address', type: 'string | array', optional: true },
     ], returnType: 'integer | null', description: 'Send data on the socket. Returns the number of bytes sent, or null on error.' }],
   ['sendmsg', { name: 'sendmsg', parameters: [
       { name: 'data', type: 'string | array', optional: true },
       { name: 'address', type: 'string | array', optional: true },
-      { name: 'flags', type: 'integer', optional: true },
+      { name: 'flags', type: 'integer', optional: true, constantPrefixes: ['MSG_'] },
     ], returnType: 'integer | null', description: 'Send a message with optional ancillary data. Returns the number of bytes sent, or null on error.' }],
   ['recv', { name: 'recv', parameters: [
       { name: 'length', type: 'integer', optional: false },
-      { name: 'flags', type: 'integer', optional: true },
+      { name: 'flags', type: 'integer', optional: true, constantPrefixes: ['MSG_'] },
       { name: 'address', type: 'object', optional: true },
     ], returnType: 'string | null', description: 'Receive up to `length` bytes from the socket. Returns the received string, or null on error.' }],
   ['recvmsg', { name: 'recvmsg', parameters: [
       { name: 'length', type: 'integer', optional: true },
-      { name: 'flags', type: 'integer', optional: true },
+      { name: 'flags', type: 'integer', optional: true, constantPrefixes: ['MSG_'] },
     ], returnType: 'object | null', description: 'Receive a message, returning an object with the data and ancillary fields, or null on error.' }],
   ['setopt', { name: 'setopt', parameters: [
-      { name: 'level', type: 'integer', optional: false },
-      { name: 'option', type: 'integer', optional: false },
+      { name: 'level', type: 'integer', optional: false, constantPrefixes: ['SOL_', 'IPPROTO_'] },
+      { name: 'option', type: 'integer', optional: false, constantPrefixes: ['SO_', 'TCP_', 'IP_', 'IPV6_'] },
       { name: 'value', type: 'integer | string | object', optional: false },
     ], returnType: 'boolean | null', description: 'Set a socket option. Returns true on success, null on error.' }],
   ['getopt', { name: 'getopt', parameters: [
@@ -54,7 +54,7 @@ const socketMethods = new Map<string, FunctionSignature>([
     ], returnType: 'integer | string | object | null', description: 'Get a socket option value, or null on error.' }],
   ['fileno', { name: 'fileno', parameters: [], returnType: 'integer | null', description: 'Return the underlying file descriptor number of the socket.' }],
   ['shutdown', { name: 'shutdown', parameters: [
-      { name: 'how', type: 'integer', optional: false },
+      { name: 'how', type: 'integer', optional: false, constantPrefixes: ['SHUT_'] },
     ], returnType: 'boolean | null', description: 'Shut down part or all of the connection. Returns true on success, null on error.' }],
   ['peercred', { name: 'peercred', parameters: [], returnType: 'object | null', description: 'Return the credentials (pid/uid/gid) of the peer process for a UNIX socket, or null.' }],
   ['peername', { name: 'peername', parameters: [], returnType: 'object | null', description: 'Return the address of the connected peer, or null on error.' }],
@@ -81,9 +81,9 @@ const functions = new Map<string, FunctionSignature>([
   ["create", {
     name: "create",
     parameters: [
-      { name: "domain", type: "number", optional: true, defaultValue: "AF_INET" },
-      { name: "type", type: "number", optional: true, defaultValue: "SOCK_STREAM" },
-      { name: "protocol", type: "number", optional: true, defaultValue: 0 }
+      { name: "domain", type: "number", optional: true, defaultValue: "AF_INET", constantPrefixes: ['AF_'] },
+      { name: "type", type: "number", optional: true, defaultValue: "SOCK_STREAM", constantPrefixes: ['SOCK_'] },
+      { name: "protocol", type: "number", optional: true, defaultValue: 0, constantPrefixes: ['IPPROTO_'] }
     ],
     returnType: "socket | null",
     description: "Creates a network socket instance with the specified domain, type, and protocol."
@@ -166,12 +166,14 @@ const functions = new Map<string, FunctionSignature>([
   ["pair", {
     name: "pair",
     parameters: [
-      { name: "domain", type: "number", optional: true, defaultValue: "AF_UNIX" },
-      { name: "type", type: "number", optional: true, defaultValue: "SOCK_STREAM" },
-      { name: "protocol", type: "number", optional: true, defaultValue: 0 }
+      // ucode's uc_socket_pair takes a SINGLE `type` argument (the socktype, optionally
+      // OR-ed with SOCK_NONBLOCK/SOCK_CLOEXEC); the domain is hardcoded to AF_UNIX and there
+      // is no protocol argument (socket.c uc_socket_pair). A 3-arg call silently misfeeds the
+      // socktype, so this is intentionally one parameter.
+      { name: "type", type: "number", optional: true, defaultValue: "SOCK_STREAM", constantPrefixes: ['SOCK_'] }
     ],
     returnType: "array<socket> | null",
-    description: "Creates a pair of connected sockets. Returns an array of two socket instances or null on failure."
+    description: "Creates a pair of connected AF_UNIX sockets of the given type (default SOCK_STREAM, optionally | SOCK_NONBLOCK / SOCK_CLOEXEC). Returns an array of two socket instances or null on failure."
   }],
   ["open", {
     name: "open",

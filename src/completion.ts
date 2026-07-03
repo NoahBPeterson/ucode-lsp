@@ -28,6 +28,9 @@ import { rtnlTypeRegistry } from './analysis/rtnlTypes';
 import { Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, type KnownObjectType } from './analysis/moduleDispatch';
 import { FileResolver } from './analysis/fileResolver';
+import { computeImportInsertEdit } from './importEdit';
+import type { FunctionSignature } from './analysis/moduleTypes';
+import type { ImportDeclarationNode } from './ast/nodes';
 
 const defaultExportPropertiesCache = new Map<string, { content: string; properties: { name: string; type: string }[] }>();
 
@@ -343,8 +346,12 @@ export function handleCompletion(
             return [];
         }
 
-        // Only show general completions when NOT in a member expression context
-        return createGeneralCompletions(analysisResult, connection, offset);
+        // Argument-position constant completion: inside a call to a module function whose
+        // active parameter accepts a constant family (pair(│)→SOCK_*, recv(10,│)→MSG_*, …),
+        // surface those constants (high priority) alongside the general list. Empty otherwise.
+        const argConstants = getArgumentConstantCompletions(offset, tokens, analysisResult, document);
+        const general = createGeneralCompletions(analysisResult, connection, offset);
+        return argConstants.length > 0 ? [...argConstants, ...general] : general;
 
     } catch (error) {
         connection.console.log('Completion error: ' + error);
@@ -399,6 +406,165 @@ function isAfterMemberAccessDot(offset: number, tokens: Token[]): boolean {
         if (t.end === offset && isMemberAccessDot(t.type)) return true;
     }
     return false;
+}
+
+/** Inside a call to a module function/method whose active parameter accepts a constant
+ *  family (socket pair()→SOCK_*, recv flags→MSG_*, create domain→AF_*): the matching
+ *  constants, with auto-import. Empty when the cursor isn't in such a slot. Merged (high
+ *  priority) into the general list so an empty/partial argument surfaces the right constants. */
+function getArgumentConstantCompletions(
+    offset: number, tokens: Token[], analysisResult: SemanticAnalysisResult | undefined,
+    document: TextDocument
+): CompletionItem[] {
+    if (!analysisResult?.symbolTable) return [];
+
+    // 1. Walk back from the cursor to the enclosing call's `(`, counting top-level commas
+    //    (the active argument index) and skipping balanced nested brackets/parens.
+    let i = tokens.length - 1;
+    while (i >= 0 && tokens[i] && tokens[i]!.pos >= offset) i--;
+    let depth = 0, argIndex = 0, openParen = -1;
+    for (; i >= 0; i--) {
+        const t = tokens[i]; if (!t) continue;
+        const ty = t.type;
+        if (ty === TokenType.TK_RPAREN || ty === TokenType.TK_RBRACK || ty === TokenType.TK_RBRACE) depth++;
+        else if (ty === TokenType.TK_LBRACK || ty === TokenType.TK_LBRACE) { if (depth === 0) return []; depth--; }
+        else if (ty === TokenType.TK_LPAREN) { if (depth === 0) { openParen = i; break; } depth--; }
+        else if (ty === TokenType.TK_COMMA && depth === 0) argIndex++;
+    }
+    if (openParen <= 0) return [];
+
+    // 2. Resolve the callee before `(` to a module-function signature + owning module.
+    const resolved = resolveCalleeSignatureForArgs(tokens, openParen, analysisResult);
+    if (!resolved) return [];
+    const param = resolved.fn.parameters[argIndex];
+    if (!param?.constantPrefixes || param.constantPrefixes.length === 0) return [];
+    if (!isKnownModule(resolved.moduleName)) return [];
+
+    // 3. Collect the module's constants matching the family, with auto-import matching how the
+    //    module is already imported (namespace → `ns.NAME`; named/absent → bare + import edit).
+    const reg = MODULE_REGISTRIES[resolved.moduleName];
+    const names = reg.getConstantNames().filter(n => param.constantPrefixes!.some(p => n.startsWith(p)));
+    if (names.length === 0) return [];
+    const imp = scanModuleImport(resolved.moduleName, analysisResult.ast);
+    const items: CompletionItem[] = [];
+    for (const name of names) {
+        const doc = reg.getConstantDocumentation(name);
+        const item: CompletionItem = {
+            label: name,
+            kind: CompletionItemKind.Constant,
+            detail: `${resolved.moduleName} ${param.name} constant`,
+            sortText: `0_${name}`,
+            insertTextFormat: InsertTextFormat.PlainText,
+        };
+        if (imp.namespace) {
+            item.insertText = `${imp.namespace}.${name}`;
+        } else {
+            item.insertText = name;
+            if (!imp.named.has(name)) {
+                item.additionalTextEdits = [computeImportInsertEdit(
+                    analysisResult.ast, document, `import { ${name} } from '${resolved.moduleName}';`)];
+            }
+        }
+        if (Option.isSome(doc)) item.documentation = { kind: MarkupKind.Markdown, value: doc.value };
+        items.push(item);
+    }
+    return items;
+}
+
+/** The module-function signature + owning module for the callee immediately before `openParen`,
+ *  for a bare named-import call (`pair(`), a namespace member (`socket.pair(`), or a simple
+ *  object-handle method (`sox0.recv(`). Null for complex receivers or non-module callees. */
+function resolveCalleeSignatureForArgs(
+    tokens: Token[], openParen: number, analysisResult: SemanticAnalysisResult
+): { fn: FunctionSignature; moduleName: string } | null {
+    const st = analysisResult.symbolTable!;
+    const nameTok = tokens[openParen - 1];
+    if (!nameTok || nameTok.type !== TokenType.TK_LABEL) return null;
+    const method = nameTok.value as string;
+    const dotTok = tokens[openParen - 2];
+    const recvTok = tokens[openParen - 3];
+    // Indexed receiver: `arr[i].method(` — resolve arr's element object-type (e.g. a
+    // socket.pair() result `sox[0]` → socket handle). Walk back over the balanced `[ … ]`.
+    if (dotTok && isMemberAccessDot(dotTok.type) && recvTok && recvTok.type === TokenType.TK_RBRACK) {
+        let bdepth = 1, k = openParen - 4;
+        for (; k >= 0 && bdepth > 0; k--) {
+            const tk = tokens[k]; if (!tk) continue;
+            if (tk.type === TokenType.TK_RBRACK) bdepth++;
+            else if (tk.type === TokenType.TK_LBRACK) { bdepth--; if (bdepth === 0) break; }
+        }
+        const arrTok = k > 0 ? tokens[k - 1] : undefined;
+        if (!arrTok || arrTok.type !== TokenType.TK_LABEL) return null;
+        const arrSym = st.lookupAtPosition(arrTok.value as string, arrTok.pos) ?? st.lookup(arrTok.value as string);
+        const elemType = arrayElementObjectType(arrSym?.dataType);
+        if (elemType && isKnownObjectType(elemType)) {
+            const m = OBJECT_REGISTRIES[elemType].getMethod(method);
+            if (Option.isSome(m)) return { fn: m.value, moduleName: elemType.split('.')[0]! };
+        }
+        return null;
+    }
+    if (dotTok && isMemberAccessDot(dotTok.type) && recvTok && recvTok.type === TokenType.TK_LABEL) {
+        const recvSym = st.lookupAtPosition(recvTok.value as string, recvTok.pos) ?? st.lookup(recvTok.value as string);
+        const mt = recvSym?.dataType !== undefined ? extractModuleType(recvSym.dataType) : null;
+        if (!mt) return null;
+        const tn = mt.moduleName;
+        // `socket` names both a module AND its handle object-type, so a namespace-import
+        // receiver (`import * as socket`) must resolve as the MODULE (socket.pair), while a
+        // handle variable resolves as the object type (sox0.recv).
+        const nsLike = recvSym?.importSpecifier === '*' || recvSym?.type === SymbolType.MODULE;
+        if (nsLike && isKnownModule(tn)) {
+            const f = MODULE_REGISTRIES[tn].getFunction(method);
+            return Option.isSome(f) ? { fn: f.value, moduleName: tn } : null;
+        }
+        if (isKnownObjectType(tn)) {
+            const m = OBJECT_REGISTRIES[tn].getMethod(method);
+            if (Option.isSome(m)) return { fn: m.value, moduleName: tn.split('.')[0]! };
+        }
+        if (isKnownModule(tn)) {
+            const f = MODULE_REGISTRIES[tn].getFunction(method);
+            if (Option.isSome(f)) return { fn: f.value, moduleName: tn };
+        }
+        return null;
+    }
+    const sym = st.lookupAtPosition(method, nameTok.pos) ?? st.lookup(method);
+    if (sym?.importedFrom && isKnownModule(sym.importedFrom)) {
+        const f = MODULE_REGISTRIES[sym.importedFrom].getFunction(sym.importSpecifier ?? method);
+        if (Option.isSome(f)) return { fn: f.value, moduleName: sym.importedFrom };
+    }
+    return null;
+}
+
+/** The object-type name of an array's elements (`array<socket>` → 'socket'), digging through
+ *  a `T[] | null` union. Null when the type isn't an array of a known object handle. */
+function arrayElementObjectType(dataType: unknown): string | null {
+    const candidates: any[] = (dataType && typeof dataType === 'object' && (dataType as any).type === 'union')
+        ? (dataType as any).types : [dataType];
+    for (const c of candidates) {
+        if (c && typeof c === 'object' && c.type === 'array' && c.elementType) {
+            const el = c.elementType;
+            if (el && typeof el === 'object' && el.type === 'object' && typeof el.moduleName === 'string') {
+                return el.moduleName;
+            }
+        }
+    }
+    return null;
+}
+
+/** How `moduleName` is imported in this file: the namespace alias (if any) and the set of
+ *  named specifiers. Drives auto-import for argument-constant completion. */
+function scanModuleImport(moduleName: string, ast: AstNode | undefined): { namespace?: string; named: Set<string> } {
+    const named = new Set<string>();
+    let namespace: string | undefined;
+    const body: AstNode[] = (ast && Array.isArray((ast as any).body)) ? (ast as any).body : [];
+    for (const stmt of body) {
+        if (stmt?.type !== 'ImportDeclaration') continue;
+        const imp = stmt as ImportDeclarationNode;
+        if (imp.source?.value !== moduleName) continue;
+        for (const spec of imp.specifiers) {
+            if (spec.type === 'ImportNamespaceSpecifier') namespace = spec.local.name;
+            else if (spec.type === 'ImportSpecifier') named.add(spec.imported.name);
+        }
+    }
+    return namespace !== undefined ? { namespace, named } : { named };
 }
 
 function detectMemberCompletionContext(offset: number, tokens: Token[]): { objectName: string; propertyChain?: string[]; resolvedObjectType?: KnownObjectType; callFunctionName?: string } | undefined {

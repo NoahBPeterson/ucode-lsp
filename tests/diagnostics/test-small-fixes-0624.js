@@ -178,12 +178,12 @@ for (const ucType of CONCRETE_TYPES) {
     const pair = socketTypeRegistry.getFunction('pair');
     check('socket.pair exists', !!pair, true);
     check('socket.pair returnType', pair?.returnType, 'array<socket> | null');
-    check('socket.pair domain param', pair?.parameters[0]?.name, 'domain');
-    check('socket.pair domain optional', pair?.parameters[0]?.optional, true);
-    check('socket.pair type param', pair?.parameters[1]?.name, 'type');
-    check('socket.pair type optional', pair?.parameters[1]?.optional, true);
-    check('socket.pair protocol param', pair?.parameters[2]?.name, 'protocol');
-    check('socket.pair protocol optional', pair?.parameters[2]?.optional, true);
+    // ucode's uc_socket_pair takes a SINGLE `type` argument (domain is hardcoded AF_UNIX;
+    // no protocol arg) — see socket.c. Corrected from the old 3-param (domain/type/protocol).
+    check('socket.pair single param', pair?.parameters.length, 1);
+    check('socket.pair type param', pair?.parameters[0]?.name, 'type');
+    check('socket.pair type optional', pair?.parameters[0]?.optional, true);
+    check('socket.pair type constantPrefixes', JSON.stringify(pair?.parameters[0]?.constantPrefixes), '["SOCK_"]');
 }
 
 // Semantic analysis
