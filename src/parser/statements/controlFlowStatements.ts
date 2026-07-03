@@ -215,8 +215,9 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     // Check for for-in loop
     if (this.check(TokenType.TK_LABEL) || this.check(TokenType.TK_LOCAL) || this.check(TokenType.TK_CONST)) {
       const checkpoint = this.current;
+      const kwToken = this.peek(); // `let`/`const` keyword (or the bare identifier)
       let left: AstNode | null = null;
-      
+
       // Handle variable declarations in for-in loops
       if (this.match(TokenType.TK_LOCAL, TokenType.TK_CONST)) {
         left = this.parseVariableDeclarationWithoutSemicolon();
@@ -227,6 +228,15 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
       }
       
       if (left && this.match(TokenType.TK_IN)) {
+        // `for (const a in x)` is a JS-ism: ucode's for grammar only matches TK_LOCAL
+        // (uc_compiler_compile_for) — `const` falls through to the expression path and
+        // fails to compile ("Expecting expression"). Keep parsing for scope/type
+        // recovery, but surface the compile error, anchored on the keyword.
+        if (kwToken && kwToken.type === TokenType.TK_CONST) {
+          this.errorAt("ucode does not allow 'const' in a for loop; use 'let'",
+                       kwToken.pos, kwToken.end, UcodeErrorCode.FOR_LOOP_CONST);
+          this.panicMode = false;
+        }
         const right = this.parseExpression();
         if (!right) return null;
 
@@ -259,6 +269,13 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     let init: AstNode | null = null;
     if (!this.check(TokenType.TK_SCOL)) {
       if (this.match(TokenType.TK_LOCAL, TokenType.TK_CONST)) {
+        // Same JS-ism in the C-style form: `for (const i = 0; …)` fails to compile.
+        const kw = this.previous()!;
+        if (kw.type === TokenType.TK_CONST) {
+          this.errorAt("ucode does not allow 'const' in a for loop; use 'let'",
+                       kw.pos, kw.end, UcodeErrorCode.FOR_LOOP_CONST);
+          this.panicMode = false;
+        }
         init = this.parseVariableDeclaration();
       } else {
         init = this.parseExpression();

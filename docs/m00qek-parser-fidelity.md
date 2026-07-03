@@ -148,5 +148,5 @@ Status:
 - 2 (`delete` non-member): **open**
 - 3 (array elision): **fixed in 0.7.40** — UC6008, `tests/syntax/test-array-elision.test.js`
 - 4 (params after rest): **open**
-- 5 (`for (const …)`): **open**
+- 5 (`for (const …)`): **fixed in 0.7.41** — UC6009, `tests/syntax/test-for-const.test.js`
 - 6 (labelled break/continue): **open**
