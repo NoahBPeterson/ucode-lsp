@@ -1813,6 +1813,46 @@ export class TypeChecker {
     return false;
   }
 
+  /** Post-visit oracle for the deferred-closure callee false positive
+   *  (docs/forward-declared-function-valued-let-uc1002.md): a NOT_CALLABLE error on
+   *  `name(...)` is FALSE when the call sits inside a function body that CAPTURES the
+   *  variable (declared outside that function) and some assignment anywhere gives it a
+   *  callable value — the body executes after assignments run, not at its textual
+   *  position, so position-based flow state (SSA effective-from) does not apply. This
+   *  is the recursive-closure idiom `let f; f = function(){ f(); };` and its mutual /
+   *  helper-defined-later variants. Must be consulted AFTER the whole file is visited:
+   *  a mutually-recursive partner's assignment stamps its type only when that later
+   *  assignment is reached, so an emission-time check misses it. */
+  isDeferredCallableFalsePositive(name: string, position: number): boolean {
+    const symbol = this.symbolTable.lookupAtPosition(name, position);
+    if (!symbol) return false;
+    const everCallable = this.typeCouldBeCallable(symbol.dataType)
+      || this.typeCouldBeCallable(symbol.currentType)
+      || (symbol.typeHistory ?? []).some(h => this.typeCouldBeCallable(h.type));
+    if (!everCallable) return false;
+    return this.insideFunctionExcluding(position, symbol.declaredAt);
+  }
+
+  /** True when `position` lies inside a function-like node that does NOT contain
+   *  `declaredAt` — i.e. the reference executes inside a closure capturing the symbol,
+   *  deferred relative to straight-line top-level flow. */
+  private insideFunctionExcluding(position: number, declaredAt: number): boolean {
+    if (!this.currentAST) return false;
+    const walk = (node: AstNode): boolean => {
+      if (position < node.start || position > node.end) return false;
+      if ((node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression'
+           || node.type === 'ArrowFunctionExpression')
+          && (declaredAt < node.start || declaredAt > node.end)) {
+        return true;
+      }
+      for (const child of this.getChildNodes(node)) {
+        if (walk(child)) return true;
+      }
+      return false;
+    };
+    return walk(this.currentAST);
+  }
+
   private checkCallExpression(node: CallExpressionNode): CheckResult {
     if (node.callee.type === 'Identifier') {
       const funcName = (node.callee as IdentifierNode).name;

@@ -1,6 +1,23 @@
 # Forward-declared function-valued `let` called bare → false UC1002 "Undefined function"
 
-Status: **OPEN** (found 2026-06-19, verified vs `/usr/local/bin/ucode`). High value — this is
+Status: **FIX IMPLEMENTED 0.7.47** (2026-07-02, awaiting user verification). The original
+UC1002 at the *outer* call site had already been fixed by SSA reassignment stamping; what
+remained (strict mode only) was a successor false positive — **UC2010 "'f' is not a function
+(it is of type null)"** on calls *inside* closure bodies whose assignment completes later
+(self-recursion, mutual recursion, helper-assigned-after-use). Non-strict escaped via the
+implicit-globals suppression at typeChecker `checkCallExpression`.
+
+Fix: post-visit filter in `filterDiagnosticsWithFlowSensitiveAnalysis` backed by
+`typeChecker.isDeferredCallableFalsePositive(name, pos)` — drop UC2010 when the call sits
+inside a function that CAPTURES the variable (declared outside that function) and any
+assignment anywhere stamps a callable type (`currentType`/`typeHistory`). Closure bodies
+execute after assignments run, not at their textual position, so position-based SSA state
+does not apply inside them. Post-visit because a mutually-recursive partner's assignment is
+stamped only after the whole file is visited. True positives preserved (runtime-verified):
+straight-line `let f; f(); f = fn` and closures calling never-callable variables still flag.
+Tests: `tests/diagnostics/test-forward-declared-function-let.test.js` (8 cases).
+
+Status was: **OPEN** (found 2026-06-19, verified vs `/usr/local/bin/ucode`). High value — this is
 the canonical **recursive-closure idiom** in ucode and recurs across the OpenWrt corpus.
 Corpus hits: `mwan4/files/lib/mwan4/mwan4.uc` (`_ensure_init`, ~9 false errors at 336/342/356/
 395/598/1591/1596/1611/1621), `pbr/files/lib/pbr/pbr.uc:1426` (`result`),

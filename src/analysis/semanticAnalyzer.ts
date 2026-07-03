@@ -7466,6 +7466,20 @@ private addDiagnostic(
     }
 
     return diagnostics.filter(diagnostic => {
+      // UC2010 on a bare identifier call inside a closure that captures the variable:
+      // false when any assignment gives the variable a callable value — the closure
+      // body runs after assignments, not at its textual position, so the position-based
+      // "still null here" flow state doesn't apply. Post-visit so mutually-recursive
+      // partners assigned LATER in the file are already stamped.
+      // (docs/forward-declared-function-valued-let-uc1002.md)
+      if ((diagnostic as any).code === UcodeErrorCode.NOT_CALLABLE) {
+        const calleeMatch = diagnostic.message.match(/^'(\w+)' is not a function/);
+        if (calleeMatch && this.typeChecker.isDeferredCallableFalsePositive(
+              calleeMatch[1]!, this.textDocument.offsetAt(diagnostic.range.start))) {
+          return false;
+        }
+      }
+
       // Option C: Selective Re-checking
       // Check if this is a recheckable diagnostic (nullable-argument with variable name and AST node)
       if ((diagnostic as any).code === 'nullable-argument') {
