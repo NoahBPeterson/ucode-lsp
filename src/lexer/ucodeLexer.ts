@@ -28,6 +28,91 @@ interface ParseConfig {
 
 
 
+/** Result of decoding one `\`-escape: how many source chars it spans (including the
+ *  backslash), the decoded value (passthrough recovery text when invalid), and the
+ *  ucode compile-error message when the escape is invalid. */
+export interface DecodedEscape {
+    length: number;
+    value: string;
+    error?: string;
+}
+
+/**
+ * Decode one `\`-escape with `pos` ON the backslash. Pure — shared by the lexer
+ * (which advances its cursor by `length` and reports `error` via its side-channel)
+ * and by hover (which shows the decoded character for the escape under the cursor).
+ * Mirrors ucode's parse_escape (ucode/lexer.c): `\u` takes EXACTLY 4 hex digits
+ * (no ES6 `\u{…}` form exists), `\x` exactly 2, octal runs 1–3 digits capped at
+ * \377 — violations are "Invalid escape sequence" compile errors. Every other
+ * escape decodes: \a \b \e \f \n \r \t \v, and unknown escapes pass the character
+ * through (which also covers \\ \" \' \` \$). Surrogate halves from paired `\u`
+ * escapes combine naturally in UTF-16 strings.
+ */
+export function decodeEscape(source: string, pos: number): DecodedEscape {
+    let i = pos + 1; // past the backslash
+    if (i >= source.length) {
+        return { length: 1, value: '' }; // trailing backslash — caller ends in "Unterminated"
+    }
+    const escaped = source[i++]!;
+
+    switch (escaped) {
+        case 'a': return { length: 2, value: '\x07' };
+        case 'b': return { length: 2, value: '\b' };
+        case 'e': return { length: 2, value: '\x1b' };
+        case 'f': return { length: 2, value: '\f' };
+        case 'n': return { length: 2, value: '\n' };
+        case 'r': return { length: 2, value: '\r' };
+        case 't': return { length: 2, value: '\t' };
+        case 'v': return { length: 2, value: '\v' };
+        case 'u': {
+            let code = 0;
+            for (let n = 0; n < 4; n++) {
+                if (i >= source.length || !isHexDigit(source[i]!)) {
+                    return {
+                        length: i - pos,
+                        value: 'u', // recovery: pass through; the rest lexes as literal text
+                        error: "Invalid escape sequence: '\\u' requires exactly 4 hex digits (ucode has no '\\u{…}' form)",
+                    };
+                }
+                code = code * 16 + parseInt(source[i++]!, 16);
+            }
+            return { length: i - pos, value: String.fromCharCode(code) };
+        }
+        case 'x': {
+            let code = 0;
+            for (let n = 0; n < 2; n++) {
+                if (i >= source.length || !isHexDigit(source[i]!)) {
+                    return {
+                        length: i - pos,
+                        value: 'x',
+                        error: "Invalid escape sequence: '\\x' requires exactly 2 hex digits",
+                    };
+                }
+                code = code * 16 + parseInt(source[i++]!, 16);
+            }
+            return { length: i - pos, value: String.fromCharCode(code) };
+        }
+        default: {
+            if (escaped >= '0' && escaped <= '7') {
+                let digits = escaped;
+                while (digits.length < 3 && i < source.length && source[i]! >= '0' && source[i]! <= '7') {
+                    digits += source[i++]!;
+                }
+                const code = parseInt(digits, 8);
+                if (code > 255) {
+                    return {
+                        length: i - pos,
+                        value: digits,
+                        error: `Invalid escape sequence: octal escape '\\${digits}' exceeds \\377 (255)`,
+                    };
+                }
+                return { length: i - pos, value: String.fromCharCode(code) };
+            }
+            return { length: i - pos, value: escaped }; // unknown escape: the character itself (ucode's default)
+        }
+    }
+}
+
 export class UcodeLexer {
     private state: LexState = LexState.UC_LEX_IDENTIFY_BLOCK;
     private readonly source: string;
@@ -503,85 +588,24 @@ export class UcodeLexer {
 
     /**
      * Consume one `\`-escape (cursor ON the backslash) and return its decoded value.
-     * Mirrors ucode's parse_escape (ucode/lexer.c): `\u` takes EXACTLY 4 hex digits
-     * (no ES6 `\u{…}` form exists), `\x` exactly 2, octal runs 1–3 digits capped at
-     * \377 — violations are "Invalid escape sequence" compile errors, surfaced via
+     * Decoding lives in the pure `decodeEscape` (shared with hover, which shows the
+     * decoded character); this wrapper advances the cursor and surfaces any error via
      * the side-channel (a valid token is still emitted so the AST/arg counts stay
-     * intact, same as unsupported regex flags, #56). Every other escape decodes:
-     * \a \b \e \f \n \r \t \v, and unknown escapes pass the character through
-     * (which also covers \\ \" \' \` \$). Surrogate halves from paired `\u` escapes
-     * combine naturally in UTF-16 strings.
+     * intact, same as unsupported regex flags, #56).
      */
     private consumeEscape(): string {
         const escStart = this.pos;
-        this.nextChar(); // consume backslash
-        if (this.pos >= this.source.length) {
-            return ''; // trailing backslash — the caller's loop ends in "Unterminated"
+        const d = decodeEscape(this.source, this.pos);
+        this.pos += d.length;
+        if (d.error) {
+            this.errors.push({
+                message: d.error,
+                start: escStart,
+                end: this.pos,
+                code: UcodeErrorCode.INVALID_ESCAPE_SEQUENCE,
+            });
         }
-        const escaped = this.nextChar();
-
-        switch (escaped) {
-            case 'a': return '\x07';
-            case 'b': return '\b';
-            case 'e': return '\x1b';
-            case 'f': return '\f';
-            case 'n': return '\n';
-            case 'r': return '\r';
-            case 't': return '\t';
-            case 'v': return '\v';
-            case 'u': {
-                let code = 0;
-                for (let i = 0; i < 4; i++) {
-                    if (!isHexDigit(this.peekChar())) {
-                        this.errors.push({
-                            message: "Invalid escape sequence: '\\u' requires exactly 4 hex digits (ucode has no '\\u{…}' form)",
-                            start: escStart,
-                            end: this.pos,
-                            code: UcodeErrorCode.INVALID_ESCAPE_SEQUENCE,
-                        });
-                        return 'u'; // recovery: pass through; the rest lexes as literal text
-                    }
-                    code = code * 16 + parseInt(this.nextChar(), 16);
-                }
-                return String.fromCharCode(code);
-            }
-            case 'x': {
-                let code = 0;
-                for (let i = 0; i < 2; i++) {
-                    if (!isHexDigit(this.peekChar())) {
-                        this.errors.push({
-                            message: "Invalid escape sequence: '\\x' requires exactly 2 hex digits",
-                            start: escStart,
-                            end: this.pos,
-                            code: UcodeErrorCode.INVALID_ESCAPE_SEQUENCE,
-                        });
-                        return 'x';
-                    }
-                    code = code * 16 + parseInt(this.nextChar(), 16);
-                }
-                return String.fromCharCode(code);
-            }
-            default: {
-                if (escaped >= '0' && escaped <= '7') {
-                    let digits = escaped;
-                    while (digits.length < 3 && this.peekChar() >= '0' && this.peekChar() <= '7') {
-                        digits += this.nextChar();
-                    }
-                    const code = parseInt(digits, 8);
-                    if (code > 255) {
-                        this.errors.push({
-                            message: `Invalid escape sequence: octal escape '\\${digits}' exceeds \\377 (255)`,
-                            start: escStart,
-                            end: this.pos,
-                            code: UcodeErrorCode.INVALID_ESCAPE_SEQUENCE,
-                        });
-                        return digits;
-                    }
-                    return String.fromCharCode(code);
-                }
-                return escaped; // unknown escape: the character itself (ucode's default)
-            }
-        }
+        return d.value;
     }
 
     private parseString(quote: string): Token | null {

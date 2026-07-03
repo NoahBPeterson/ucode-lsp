@@ -6,7 +6,7 @@ import {
     MarkupKind
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { UcodeLexer, TokenType, isKeyword, isMemberAccessDot, type Token } from './lexer';
+import { UcodeLexer, TokenType, isKeyword, isMemberAccessDot, decodeEscape, type Token } from './lexer';
 import type {
     AstNode, PropertyNode, ImportDeclarationNode, ImportSpecifierNode,
     LiteralNode, FunctionExpressionNode, ArrowFunctionExpressionNode, FunctionDeclarationNode,
@@ -649,6 +649,105 @@ function formatPropertyValueHover(value: AstNode): string | undefined {
     return undefined;
 }
 
+const CONTROL_CHAR_NAMES: Record<number, string> = {
+    0x00: 'NUL (null)',
+    0x07: 'BEL (bell)',
+    0x08: 'BS (backspace)',
+    0x09: 'TAB (horizontal tab)',
+    0x0A: 'LF (newline)',
+    0x0B: 'VT (vertical tab)',
+    0x0C: 'FF (form feed)',
+    0x0D: 'CR (carriage return)',
+    0x1B: 'ESC (escape)',
+    0x20: 'space',
+    0x7F: 'DEL (delete)',
+};
+
+const formatCodepoint = (cp: number): string => 'U+' + cp.toString(16).toUpperCase().padStart(4, '0');
+// Inline-code span that survives an embedded backtick (\` escapes decode to one).
+const mdCode = (s: string): string => (s.includes('`') ? `\`\` ${s} \`\`` : `\`${s}\``);
+
+/**
+ * Hover for a `\`-escape inside a string or template literal: show the character it
+ * decodes to (via the same decodeEscape the lexer uses, so hover and diagnostics can
+ * never disagree). Paired `\uD8xx\uDCxx` surrogate halves are combined — hovering
+ * either half shows the full astral character. Regex literals are excluded (their
+ * escapes are regex semantics like \d, not character escapes).
+ */
+function escapeSequenceHover(text: string, offset: number, tokens: Token[], document: TextDocument): Hover | undefined {
+    for (const tok of tokens) {
+        if (tok.type !== TokenType.TK_STRING && tok.type !== TokenType.TK_TEMPLATE) continue;
+        if (offset < tok.pos || offset >= tok.end) continue;
+
+        // Scan the token's RAW source for escapes; exact offsets fall out of decodeEscape's
+        // span lengths, and tracking the previous escape lets a hovered LOW surrogate half
+        // pair with the escape immediately before it without any error-prone back-scanning.
+        let i = tok.pos;
+        let prev: { start: number; end: number; value: string; error?: string | undefined } | null = null;
+        while (i < tok.end) {
+            if (text[i] !== '\\') { i++; continue; }
+            const esc = decodeEscape(text, i);
+            const end = i + esc.length;
+            if (offset >= i && offset < end) {
+                if (!esc.error && esc.value === '') return undefined; // trailing backslash
+                const raw = text.slice(i, end);
+
+                if (esc.error) {
+                    return escapeHoverResult(document, i, end,
+                        `${mdCode(raw)} — **invalid escape sequence**\n\n${esc.error.replace(/^Invalid escape sequence: /, '')}`);
+                }
+
+                let char = esc.value;
+                let rangeStart = i;
+                let rangeEnd = end;
+                const cp = char.charCodeAt(0);
+
+                if (char.length === 1 && cp >= 0xD800 && cp <= 0xDBFF && text[end] === '\\' && end < tok.end) {
+                    // high half — combine with an immediately-following low half
+                    const next = decodeEscape(text, end);
+                    if (!next.error && next.value.length === 1) {
+                        const lo = next.value.charCodeAt(0);
+                        if (lo >= 0xDC00 && lo <= 0xDFFF) { char = esc.value + next.value; rangeEnd = end + next.length; }
+                    }
+                } else if (char.length === 1 && cp >= 0xDC00 && cp <= 0xDFFF && prev && prev.end === i && !prev.error && prev.value.length === 1) {
+                    // low half — combine with the escape immediately before it
+                    const hi = prev.value.charCodeAt(0);
+                    if (hi >= 0xD800 && hi <= 0xDBFF) { char = prev.value + esc.value; rangeStart = prev.start; }
+                }
+
+                const shownRaw = text.slice(rangeStart, rangeEnd);
+                let body: string;
+                if (char.length === 2) {
+                    body = `${mdCode(shownRaw)} → ${mdCode(char)} — ${formatCodepoint(char.codePointAt(0)!)} (surrogate pair)`;
+                } else if (cp >= 0xD800 && cp <= 0xDFFF) {
+                    const half = cp <= 0xDBFF ? 'low' : 'high';
+                    body = `${mdCode(shownRaw)} → unpaired surrogate half ${formatCodepoint(cp)} — ucode substitutes U+FFFD (\`�\`) unless paired with a ${half} half`;
+                } else if (CONTROL_CHAR_NAMES[cp] !== undefined || cp < 0x20) {
+                    body = `${mdCode(shownRaw)} → ${CONTROL_CHAR_NAMES[cp] ?? 'control character'} — ${formatCodepoint(cp)}`;
+                } else {
+                    body = `${mdCode(shownRaw)} → ${mdCode(char)} — ${formatCodepoint(cp)}`;
+                    const kind = shownRaw[1]!;
+                    if (!'abefnrtvux'.includes(kind) && !(kind >= '0' && kind <= '7') && !'\\\'"`$'.includes(kind)) {
+                        body += '\n\nUnknown escape — ucode passes the character through unchanged';
+                    }
+                }
+                return escapeHoverResult(document, rangeStart, rangeEnd, body);
+            }
+            prev = { start: i, end, value: esc.value, error: esc.error };
+            i = end;
+        }
+        return undefined; // inside the string, but not on an escape
+    }
+    return undefined;
+}
+
+function escapeHoverResult(document: TextDocument, start: number, end: number, markdown: string): Hover {
+    return {
+        contents: { kind: MarkupKind.Markdown, value: markdown },
+        range: { start: document.positionAt(start), end: document.positionAt(end) },
+    };
+}
+
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
     documents: TextDocuments<TextDocument>,
@@ -687,7 +786,15 @@ export function handleHover(
                 return undefined;
             }
         }
-        
+
+        // Escape sequence under the cursor inside a string/template → show the decoded
+        // character. Checked before symbol resolution: words inside strings are prose.
+        const escapeHover = escapeSequenceHover(text, offset, tokens, document);
+        if (escapeHover) {
+            return escapeHover;
+        }
+
+
         // First check if we're hovering over a member expression (e.g., "rtnl.request")
         const memberContext = detectMemberHoverContext(textDocumentPositionParams.position, tokens, document);
         if (memberContext) {
