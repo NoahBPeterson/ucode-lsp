@@ -87,7 +87,13 @@ config in-tree, so this stays a possible *future* signal. Option-3 project-setti
 | B | **Handler-file detection** — the linchpin. In-file signal: template mode (`{%`) AND `global.handle_request` assigned. Exposes `result.isUhttpdHandler`. Strict = a *correct/working* handler; gates C and E. | — | ✅ 0.7.54 |
 | C | FN-4 (**UC8011**) — `loadfile`/`loadfile()()` / `include` in a handler → warning "aborts the request VM uncatchably; use static import" (loadstring/import safe). Suppresses UC8001's wrong "guard with try/catch" advice for loadfile in handler context. Whole-file (top-level + inside handle_request both abort); only the real builtins, not a shadowed name. | B | ✅ 0.7.54 |
 | D | FN-1 (**UC8012**) — a file that assigns `global.handle_request` but is NOT a `{%` template → warning + quick-fix "Wrap the handler in a `{% … %}` template" (keeps a shebang outside). FN-2 (**UC8013**) — a `{%` template that defines `handle_request` as a local function / `export function` / `let`-`const` binding (never `global.handle_request`) → warning + quick-fix "Register as `global.handle_request`" (funcdecl → `global.handle_request = function…;` anchoring the `;` on the body brace; let/const → `global.handle_request = …`). Also suppresses the misleading UC1006 "unused" on a `handle_request` in a template. Classified by `isTemplateFile` + `global.handle_request` presence (both tracked on the analyzer). | B | ✅ 0.7.55 |
-| E | FN-5 — gate the `uhttpd` ambient to handler context and give it a typed object shape (`send/sendc/recv/urldecode/urlencode/docroot`) + the `handle_request(env)` arg shape, so `uhttpd.snd()` flags. (FN-3 dropped — see above.) | B | ☐ TODO |
+| E | FN-5 — the `uhttpd` ambient is now a registered object type (`uhttpd` KnownObjectType, uhttpdTypes.ts) declared ONLY in handler context, so `uhttpd.recv()` types `string \| null`, `uhttpd.docroot` types `string`, and `uhttpd.snd()` flags UC5004. Removed from KNOWN_HOST_GLOBALS (was unconditional) → a non-handler file referencing `uhttpd` now gets UC1001. (FN-3 dropped.) | B | ✅ 0.7.56 |
+
+**Status: all phases A–E shipped (0.7.53–0.7.56).** Remaining report items are non-issues:
+FN-3 was a false premise (dropped); the residual UC7003 "add JSDoc" *suggestion* on the
+handler fn is not a correctness FP. The false-positive side was already resolved by
+template mode (0.7.0). Handler authoring is now supported end-to-end: detection (B),
+runtime-footgun warning (C), authoring quick-fixes (D), and a typed, gated ambient (E).
 
 ---
 

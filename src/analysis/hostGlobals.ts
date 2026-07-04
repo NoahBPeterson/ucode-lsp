@@ -7,12 +7,12 @@
 // {type} name`) — see docs/global-scope-soundness.md. Coarse types only (existence + kind);
 // the host provides no signatures.
 
-/** name → coarse ucode type string (parseable by TypeChecker.parseReturnTypePublic). */
-export const KNOWN_HOST_GLOBALS: ReadonlyMap<string, string> = new Map([
-  // uhttpd's ucode handler runtime injects the request/response handle as `uhttpd`
-  // (docroot/send/recv/urldecode/…). Present in `*.uc` loaded as a uhttpd ucode handler.
-  ['uhttpd', 'object'],
-]);
+/** name → coarse ucode type string (parseable by TypeChecker.parseReturnTypePublic).
+ *  Names here are suppressed in EVERY file. `uhttpd` used to live here, but it only exists in
+ *  a uhttpd HANDLER — seeding it everywhere let a non-handler script reference `uhttpd` with
+ *  no UC1001 (report FN-5). It is now declared, TYPED (uhttpd object handle), and gated to
+ *  handler context in SemanticAnalyzer.declareUhttpdAmbient. */
+export const KNOWN_HOST_GLOBALS: ReadonlyMap<string, string> = new Map([]);
 
 export function isKnownHostGlobal(name: string): boolean {
   return KNOWN_HOST_GLOBALS.has(name);

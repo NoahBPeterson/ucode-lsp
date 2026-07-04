@@ -47,10 +47,11 @@ test("cross-file: read after the loadfile → clean", () => {
 test("normal local code never trips it (no false positives)", () => {
   expect(u8002("let a = 1;\nlet b = a + 1;\nprint(b);\nfunction f(p) { return p + a; }\n").length).toBe(0);
 });
-test("a host/@global-declared name (no in-file def) is not a UC8002 (handled by Case 3)", () => {
-  // uhttpd is in the host-globals registry; with no in-file assignment there's nothing to be
-  // "before", so this check stays out of it (and Case 3 keeps it from being UC1001).
-  const ds = analyze("let d = uhttpd.docroot;\n").diagnostics;
+test("a @global-declared name (no in-file def) is not a UC8002 (handled by Case 3)", () => {
+  // A @global name has no in-file assignment, so there's nothing to be "before" — this check
+  // stays out of it (and Case 3 keeps it from being UC1001). (uhttpd is no longer an
+  // unconditional host global; it's gated to handler context — Phase E/FN-5.)
+  const ds = analyze("/** @global {object} host */\nlet d = host.docroot;\n").diagnostics;
   expect(ds.filter(d => d.code === 'UC8002').length).toBe(0);
   expect(ds.filter(d => d.code === 'UC1001').length).toBe(0);
 });

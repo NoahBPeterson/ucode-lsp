@@ -502,6 +502,10 @@ export class SemanticAnalyzer extends BaseVisitor {
     // property set is populated. Consumed by the handler-specific phases (C/D/E).
     this.isTemplateFile = detectTemplateMode(this.textDocument.getText());
     this.isUhttpdHandler = this.globalPropertyNames.has('handle_request') && this.isTemplateFile;
+    // Phase E / FN-5: seed the `uhttpd` ambient ONLY in handler context (before traversal, so
+    // `uhttpd.recv()` resolves during it). Declared and TYPED here rather than as an
+    // unconditional host global, so a non-handler script referencing `uhttpd` still gets UC1001.
+    if (this.isUhttpdHandler) this.declareUhttpdAmbient();
     // `loadfile("file.uc")()` runs file.uc's top-level code in the shared global scope —
     // a poor-man's import. Harvest the globals that file injects (its top-level
     // `global.X = …` + bare implicit-global assignments) so bare `X(...)`/`X` here isn't a
@@ -7383,6 +7387,15 @@ private addDiagnostic(
       }
     };
     visit(root);
+  }
+
+  /** Phase E / FN-5: declare the `uhttpd` ambient in a handler so member access resolves
+   *  (uhttpd.recv() → string|null, uhttpd.docroot → string) and an unknown member
+   *  (uhttpd.snd()) flags. Typed as the uhttpd object handle. */
+  private declareUhttpdAmbient(): void {
+    this.symbolTable.forceGlobalDeclaration('uhttpd', SymbolType.VARIABLE,
+      { type: UcodeType.OBJECT, moduleName: 'uhttpd' } as UcodeDataType);
+    this.symbolTable.markUsed('uhttpd', 0); // host-injected — never "unused"
   }
 
   /** Phase D — authoring help for uhttpd handlers.

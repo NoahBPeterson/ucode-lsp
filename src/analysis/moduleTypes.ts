@@ -40,6 +40,7 @@ export type KnownObjectType =
   | 'bpf.module' | 'bpf.map' | 'bpf.program' | 'bpf.map.iterator'
   | 'uline.state' | 'uline.argp'
   | 'mbedtls.pk' | 'mbedtls.crt'
+  | 'uhttpd'
   | 'exception';
 
 // ---- Common function signature ----

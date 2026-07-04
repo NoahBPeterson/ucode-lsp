@@ -15,8 +15,13 @@ function analyze(code, opt = {}) {
 }
 const uc1001 = (r) => r.diagnostics.filter(d => d.code === 'UC1001');
 
-test("built-in host global (uhttpd) read is not UC1001", () => {
-  expect(uc1001(analyze("let x = uhttpd.docroot;\n")).length).toBe(0);
+test("uhttpd is gated to handler context (Phase E/FN-5): UC1001 in a plain script, clean in a handler", () => {
+  // uhttpd is no longer an unconditional built-in host global — it's a typed ambient seeded
+  // only in a `{%` handler that assigns global.handle_request. The Case-3 suppression
+  // mechanism lives on for JSDoc @global (tested below); the built-in registry is now empty.
+  expect(uc1001(analyze("let x = uhttpd.docroot;\n")).length).toBe(1);
+  const handler = "{%\nglobal.handle_request = function(env) { return uhttpd.docroot; };\n%}\n";
+  expect(uc1001(analyze(handler)).length).toBe(0);
 });
 
 test("a name NOT in the registry is still UC1001 (no blanket pass)", () => {
