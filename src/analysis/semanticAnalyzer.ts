@@ -2960,8 +2960,17 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (node.computed) {
       this.visit(node.key);
     }
+    // Attribute a function-valued property to its key so it gets the same UC7003 "add
+    // @param" hint as a `name = function(){}` assignment (the RPC-handler idiom
+    // `export default { load_locales: function(args, ctx){…} }`). Non-computed keys only.
+    const val = node.value;
+    if (!node.computed && (val?.type === 'FunctionExpression' || val?.type === 'ArrowFunctionExpression')) {
+      const key = this.getStaticPropertyName(node.key);
+      if (key) this.pendingFunctionExprName = key;
+    }
     // Always visit the property value
     this.visit(node.value);
+    this.pendingFunctionExprName = null;
   }
 
   private processImportSpecifier(specifier: ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode, source: string, defaultIsFunction: boolean = false, resolvedUri?: string | null): void {
