@@ -10,7 +10,7 @@ import * as path from 'path';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { DiagnosticSeverity } from 'vscode-languageserver/node';
 import type { Diagnostic } from 'vscode-languageserver/node';
-import { UcodeLexer } from './lexer';
+import { UcodeLexer, detectTemplateMode, bridgeTemplateTokens } from './lexer';
 import { UcodeParser } from './parser';
 import { SemanticAnalyzer } from './analysis';
 import { UcodeErrorCode } from './analysis/errorConstants';
@@ -246,8 +246,14 @@ function analyzeFile(filePath: string, targetVersion: UcodeTargetVersion): Diagn
     const uri = 'file://' + encodeURIComponent(path.resolve(filePath)).replace(/%2F/g, '/');
     const textDocument = TextDocument.create(uri, 'ucode', 1, content);
 
-    const lexer = new UcodeLexer(content, { rawMode: true });
-    const tokens = lexer.tokenize();
+    // Template files (`{% %}`/`{{ }}`) — e.g. uhttpd handlers — lex in template mode and
+    // have their framing tokens bridged to statement separators so the ordinary parser can
+    // consume them; raw scripts are unchanged. Mirrors the LSP server path so the CLI checker
+    // and the editor agree (without this the CLI parses a `{%` handler as raw and emits a
+    // spurious UC6001/UC3007/UC1002 cascade on valid template code).
+    const isTemplate = detectTemplateMode(content);
+    const lexer = new UcodeLexer(content, { rawMode: !isTemplate });
+    const tokens = isTemplate ? bridgeTemplateTokens(lexer.tokenize()) : lexer.tokenize();
     const parser = new UcodeParser(tokens, content);
     parser.setComments(lexer.comments);
     const parseResult = parser.parse();

@@ -7371,9 +7371,15 @@ private addDiagnostic(
           if (name === 'loadfile' || name === 'include') {
             const sym = this.symbolTable.lookupAtPosition(name, c.callee.start) ?? this.symbolTable.lookup(name);
             if (!sym || sym.type === SymbolType.BUILTIN) {
+              // ERROR, not warning, and NOT strict-gated: the abort is uncatchable, silent
+              // (empty response, no log), unrecoverable, and has no legitimate use in a handler
+              // (loadstring/import are the alternatives). Unlike UC8001 (a catchable throw whose
+              // strict escalation reflects a strict-dependent semantic), this fails identically
+              // in strict and non-strict. Detection needs all three signals (template +
+              // global.handle_request + loadfile/include), so false positives are ~impossible.
               this.addDiagnostic(
                 `${name}() in a uhttpd handler aborts the request VM uncatchably — the client gets an empty response, nothing is logged, and try/catch does not help. Use a static \`import\` instead (loadstring() is also safe).`,
-                c.callee.start, c.callee.end, DiagnosticSeverity.Warning,
+                c.callee.start, c.callee.end, DiagnosticSeverity.Error,
                 UcodeErrorCode.HANDLER_VM_ABORTING_CALL);
             }
           }
@@ -7410,9 +7416,12 @@ private addDiagnostic(
     if (hasGlobalReg && !this.isTemplateFile) {
       const site = this.globalDefSites.get('handle_request')?.[0];
       if (site) {
+        // Error: this ALWAYS breaks the handler (uhttpd emits the file as body text, runs
+        // nothing → "declares no handle_request() callback"). Shift the true positive to
+        // edit-time rather than a post-deploy runtime failure.
         this.addDiagnostic(
           `A uhttpd handler must be a \`{% … %}\` template — as written, uhttpd emits this file as the response body and runs no code. Wrap the handler in \`{% … %}\`.`,
-          site.start, site.end, DiagnosticSeverity.Warning,
+          site.start, site.end, DiagnosticSeverity.Error,
           UcodeErrorCode.HANDLER_NOT_A_TEMPLATE, { handlerFormFix: { mode: 'wrap' } });
       }
       return;
@@ -7423,9 +7432,11 @@ private addDiagnostic(
       for (const stmt of root.body) {
         const found = this.wrongFormHandleRequest(stmt);
         if (found) {
+          // Error: the wrong form is ALWAYS invisible to uhttpd's global-scope lookup (fires
+          // only when there's no global.handle_request at all), so the handler never runs.
           this.addDiagnostic(
             `uhttpd looks up \`handle_request\` on the global scope object; a ${found.formLabel} is never found (uhttpd: "declares no handle_request() callback"). Register it as \`global.handle_request = …\`.`,
-            found.anchorStart, found.anchorEnd, DiagnosticSeverity.Warning,
+            found.anchorStart, found.anchorEnd, DiagnosticSeverity.Error,
             UcodeErrorCode.HANDLER_ENTRY_WRONG_FORM, { handlerFormFix: found.fix });
           return; // one report is enough
         }

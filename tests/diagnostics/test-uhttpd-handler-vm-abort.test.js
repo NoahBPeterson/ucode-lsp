@@ -22,7 +22,7 @@ const handler = (body) => `{%\nglobal.handle_request = function(env) {\n${body}\
 test('loadfile()() in a handler is flagged UC8011', async () => {
   const ds = await codesOf(handler("  let x = loadfile('/x.uc')();"), 'UC8011');
   expect(ds.length).toBe(1);
-  expect(ds[0].severity).toBe(2); // Warning
+  expect(ds[0].severity).toBe(1); // Error — uncatchable, silent, no valid use in a handler
   expect(ds[0].message).toContain('aborts the request VM');
 });
 test('include() in a handler is flagged UC8011', async () => {

@@ -34,9 +34,10 @@ async function run(code, wantCode) {
 const applied = (r) => applyEdits(r.code, r.act.edit.changes[`file://${r.file}`]);
 
 // ── FN-1 (UC8012) ─────────────────────────────────────────────────────────────
-test('global.handle_request in a plain script is flagged UC8012', async () => {
+test('global.handle_request in a plain script is flagged UC8012 (error — always breaks)', async () => {
   const r = await run("global.handle_request = function(env) { return env; };\n", 'UC8012');
   expect(r.d).toBeTruthy();
+  expect(r.d.severity).toBe(1); // Error
   expect(r.d.message).toContain('must be a `{% … %}` template');
 });
 test('UC8012 quick-fix wraps the file in a `{% %}` template', async () => {
@@ -53,9 +54,10 @@ test('UC8012 wrap keeps a shebang line outside the template', async () => {
 });
 
 // ── FN-2 (UC8013) ─────────────────────────────────────────────────────────────
-test('local `function handle_request` in a template is flagged UC8013', async () => {
+test('local `function handle_request` in a template is flagged UC8013 (error — always breaks)', async () => {
   const r = await run("{% function handle_request(env) { return env; } %}\n", 'UC8013');
   expect(r.d).toBeTruthy();
+  expect(r.d.severity).toBe(1); // Error
   expect(r.d.message).toContain('global scope');
 });
 test('UC8013 quick-fix converts a local function to global.handle_request', async () => {
