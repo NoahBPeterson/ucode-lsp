@@ -31,7 +31,7 @@ import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
 import { type UcodeTargetVersion, type VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, VERSION_GLOBAL_BUILTINS, PLATFORM_GATED_SYMBOLS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
 import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
-import { KNOWN_HOST_GLOBALS } from './hostGlobals';
+import { KNOWN_HOST_GLOBALS, isHostEntryPointCallback } from './hostGlobals';
 import { THROWING_BUILTINS } from './throwingBuiltins';
 import { KNOWN_MODULES } from './moduleTypes';
 import { type JsDocCommentNode } from '../ast/nodes';
@@ -5786,7 +5786,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           globalVMVariables.has(symbol.name) ||
           // Injected/host globals (built-in registry + JSDoc `@global`) are ambient — a
           // declared-but-unreferenced one is not a real "unused variable".
-          this.declaredGlobalNames.has(symbol.name)) {
+          this.declaredGlobalNames.has(symbol.name) ||
+          // Host entry-point callbacks registered as `global.<name> = fn` (e.g. uhttpd's
+          // `handle_request`) are INVOKED by the host, not local dead code — no UC1006.
+          (isHostEntryPointCallback(symbol.name) && this.globalPropertyNames.has(symbol.name))) {
         continue;
       }
 

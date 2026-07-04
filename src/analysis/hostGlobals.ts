@@ -17,3 +17,18 @@ export const KNOWN_HOST_GLOBALS: ReadonlyMap<string, string> = new Map([
 export function isKnownHostGlobal(name: string): boolean {
   return KNOWN_HOST_GLOBALS.has(name);
 }
+
+/** Names a C host INVOKES as an entry point (the inverse of KNOWN_HOST_GLOBALS, which the
+ *  host injects). A handler registers one by assigning `global.<name> = <callable>`; the host
+ *  then calls it, so it is NOT dead code even when nothing in the file references it — a
+ *  `global.<name>` binding must be exempt from the UC1006 "declared but never used" warning.
+ *  Conservative: only well-documented host callbacks belong here. */
+export const HOST_ENTRY_POINT_CALLBACKS: ReadonlySet<string> = new Set([
+  // uhttpd's ucode handler runtime looks up `handle_request` in the VM scope and calls it
+  // per request (uhttpd/ucode.c: UH_UCODE_CB). The contract is `global.handle_request = fn`.
+  'handle_request',
+]);
+
+export function isHostEntryPointCallback(name: string): boolean {
+  return HOST_ENTRY_POINT_CALLBACKS.has(name);
+}
