@@ -92,6 +92,7 @@ export enum UcodeErrorCode {
   DELETE_NEVER_ASSIGNED_PROPERTY = 'UC8008',      // `delete x.prop` where prop is provably never assigned → runtime no-op returning false (likely typo)
   LOADFILE_CWD_RELATIVE_PATH = 'UC8009',          // loadfile() with a relative literal path — resolves against the PROCESS's launch dir, not this file's dir (breaks under procd/init where CWD=/)
   BLOCKING_SOCKETPAIR_RECV = 'UC8010',            // recv()/recvmsg() on a blocking socket.pair() socket with no MSG_DONTWAIT and no send() to the peer → waits forever (silent hang)
+  HANDLER_VM_ABORTING_CALL = 'UC8011',            // loadfile()/loadfile()()/include() in a uhttpd handler — aborts the request VM uncatchably (empty response, no stderr; try/catch can't help). Use static import.
 
   // System and internal errors (9000-9999)
   INTERNAL_ERROR = 'UC9001',

@@ -113,6 +113,10 @@ export interface SemanticAnalysisResult {
    *  every bare implicit-global assignment target, and every JSDoc `@global X` tag name.
    *  Powers go-to-definition for globals that have no declared symbol (scalars, @global). */
   globalDefSites?: Map<string, Array<{ start: number; end: number }>>;
+  /** True when this file is a uhttpd ucode handler: a `{% … %}` template that assigns
+   *  `global.handle_request` (uhttpd's per-request entry point). Gates handler-specific
+   *  diagnostics (the uhttpd runtime contract) — see docs/uhttpd-false-negatives.md. */
+  isUhttpdHandler?: boolean;
 }
 
 export class SemanticAnalyzer extends BaseVisitor {
@@ -225,6 +229,9 @@ export class SemanticAnalyzer extends BaseVisitor {
   private globalPropertyNames = new Set<string>();
   private loadfileGlobals = new Map<string, LoadfileGlobal>();
   private globalDefSites = new Map<string, Array<{ start: number; end: number }>>();
+  /** This file is a uhttpd handler — a `{%` template that assigns `global.handle_request`.
+   *  Gates the handler-specific diagnostics (FN-1/2/4/5). See docs/uhttpd-false-negatives.md. */
+  private isUhttpdHandler = false;
   /** Globals whose EVERY assignment is a straight-line top-level scalar (`global.X = 1; …
    *  global.X = "s";`) — execution order is statically known, so reads can be SSA-typed
    *  positionally (declare a symbol, update dataType per assignment in source order). */
@@ -443,6 +450,10 @@ export class SemanticAnalyzer extends BaseVisitor {
       result.globalDefSites = this.globalDefSites;
     }
 
+    if (this.isUhttpdHandler) {
+      result.isUhttpdHandler = true;
+    }
+
     if (this.cfgQueryEngine) {
       result.cfgQueryEngine = this.cfgQueryEngine;
     }
@@ -480,6 +491,14 @@ export class SemanticAnalyzer extends BaseVisitor {
     // "Undefined function" (the variable check already honors these via isGlobalProperty;
     // the call check did not). Legal in strict mode too, so not strict-gated.
     this.collectGlobalPropertyNames(node);
+    // Handler-file detection (Phase B): a uhttpd ucode handler is a `{%` template that
+    // registers its per-request entry point via `global.handle_request = <callable>` (uhttpd
+    // looks it up on the VM scope object — a local/export/return form is invisible to it).
+    // Both conditions together are a strong, low-false-positive signal (nobody assigns
+    // `global.handle_request` by accident). Runs after collectGlobalPropertyNames so the
+    // property set is populated. Consumed by the handler-specific phases (C/D/E).
+    this.isUhttpdHandler = this.globalPropertyNames.has('handle_request')
+      && detectTemplateMode(this.textDocument.getText());
     // `loadfile("file.uc")()` runs file.uc's top-level code in the shared global scope —
     // a poor-man's import. Harvest the globals that file injects (its top-level
     // `global.X = …` + bare implicit-global assignments) so bare `X(...)`/`X` here isn't a
@@ -520,6 +539,11 @@ export class SemanticAnalyzer extends BaseVisitor {
     // the initNode traces can see forward-declared sockets.
     if (this.options.enableScopeAnalysis) {
       this.checkBlockingSocketpairRecvs(node);
+    }
+    // uhttpd handler (Phase C / FN-4): loadfile()/loadfile()()/include() abort the request
+    // VM uncatchably. Runs only for a detected handler file.
+    if (this.isUhttpdHandler) {
+      this.checkHandlerVmAbortingCalls(node);
     }
     // Case-2 global-scope soundness: a top-level read before any defining assignment/loadfile.
     if (this.options.enableScopeAnalysis && (this.options.uncertainGlobalScope ?? 'errorInStrict') !== 'off') {
@@ -1888,6 +1912,10 @@ export class SemanticAnalyzer extends BaseVisitor {
           const call = firstThrowAtLevel(stmts[i]);
           if (!call) { i++; continue; }
           const throwName = (call.callee as IdentifierNode).name;
+          // In a uhttpd handler, loadfile doesn't just "throw on bad input" — it aborts the
+          // request VM uncatchably, so "guard it with try/catch" is WRONG advice.
+          // checkHandlerVmAbortingCalls emits the correct fix (UC8011); skip UC8001 here.
+          if (this.isUhttpdHandler && throwName === 'loadfile') { i++; continue; }
           const spec = THROWING_BUILTINS.get(throwName);
           // For a `resolvable` builtin, decide whether its string-literal argument provably
           // resolves. 'module' (require): a builtin available at the CONFIGURED target version
@@ -7312,6 +7340,38 @@ private addDiagnostic(
       return (prop as LiteralNode).value as string;
     }
     return null;
+  }
+
+  /** UC8011 — in a uhttpd handler, flag loadfile()/include() (incl. loadfile()()): they abort
+   *  the request VM uncatchably (empty response, no stderr; try/catch does not help). Static
+   *  `import` and loadstring() are safe. Whole-file: a top-level call (module load) and one
+   *  inside handle_request both abort. Only the real builtins, not a user-shadowed name. */
+  private checkHandlerVmAbortingCalls(root: ProgramNode): void {
+    const visit = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (n.type === 'CallExpression') {
+        const c = n as unknown as CallExpressionNode;
+        if (c.callee?.type === 'Identifier') {
+          const name = (c.callee as IdentifierNode).name;
+          if (name === 'loadfile' || name === 'include') {
+            const sym = this.symbolTable.lookupAtPosition(name, c.callee.start) ?? this.symbolTable.lookup(name);
+            if (!sym || sym.type === SymbolType.BUILTIN) {
+              this.addDiagnostic(
+                `${name}() in a uhttpd handler aborts the request VM uncatchably — the client gets an empty response, nothing is logged, and try/catch does not help. Use a static \`import\` instead (loadstring() is also safe).`,
+                c.callee.start, c.callee.end, DiagnosticSeverity.Warning,
+                UcodeErrorCode.HANDLER_VM_ABORTING_CALL);
+            }
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) visit(it); }
+        else visit(v);
+      }
+    };
+    visit(root);
   }
 
   private resolveModuleSource(source: string): string | null {

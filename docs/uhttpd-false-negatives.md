@@ -52,6 +52,29 @@ its runtime claims were re-checked here:
   is always a valid object; modeling it as "null in scripts" would ADD a false positive.
   The existing global-scope suite (UC8001–8007) already handles `global.X` correctly.
 
+### Authoritative `uhttpd` contract (pulled from `uhttpd/ucode.c`, master, 2026-07-04)
+
+Extracted from the real source (not the report's summary). Entry point: uhttpd does
+`ucv_object_get(uc_vm_scope_get(vm), "handle_request")`, requires `ucv_is_callable`, and
+invokes `uc_vm_invoke(vm, "handle_request", 1, req)` — **one** argument.
+
+The `uhttpd` ambient object (`ucode.c:240-247`) has exactly these members:
+
+| Member | Kind | Signature (from the C impl) |
+|---|---|---|
+| `send` | method | `send(...values): integer` — stringifies + writes args to stdout, returns bytes written (`uh_ucode_send` → `ucv_int64_new(len)`) |
+| `sendc` | method | alias of `send` (`ucv_get(ucv_object_get(v, "send"))`) — same signature |
+| `recv` | method | `recv(length?: integer): string \| null` — reads ≤ length bytes (default BUFSIZ) from stdin; raises if arg present and non-integer (`uh_ucode_recv` → stringbuf) |
+| `urldecode` | method | `urldecode(s: string): string \| null` (`uh_ucode_strconvert`) |
+| `urlencode` | method | `urlencode(s: string): string \| null` (`uh_ucode_strconvert`) |
+| `docroot` | **string property** | `ucv_string_new(conf.docroot)` — NOT callable (the report/summary listed it as a method; it is a string) |
+
+The `req` argument to `handle_request(req)` (`ucode.c:340-367`): `PATH_INFO` (string),
+CGI process vars (dynamic — `REQUEST_METHOD`, `QUERY_STRING`, `REMOTE_ADDR`, … string
+values), `HTTP_VERSION` (double), `headers` (object: header-name → string). `vm->output`
+is `/dev/null` during module init, then `stdout`; a per-request exception routes through
+`uh_ucode_exception` (HTTP 500). Phase E types the ambient from this table.
+
 **Phased plan for the remainder** (each phase is independently shippable). **Detection =
 in-file heuristic only** (option-2 "read uhttpd config" dropped: the config lives in the
 DEPLOY layout — `/etc/config/*` names a deployed handler path — and mapping it back to a
@@ -61,9 +84,9 @@ config in-tree, so this stays a possible *future* signal. Option-3 project-setti
 | Phase | Scope | Depends on | Status |
 |---|---|---|---|
 | A | UC1006 exemption for `global.handle_request` entry point | — | ✅ 0.7.53 |
-| B | **Handler-file detection** — the linchpin. In-file signal: template mode (`{%`) AND a top-level `global.handle_request = <callable>` assignment. Expose an `isUhttpdHandler` flag on the analysis. | — | ▶ IN PROGRESS |
-| C | FN-4 — `loadfile`/`loadfile()()` / `include` reachable from a handler → warning "aborts the uhttpd VM uncatchably; use static import" (loadstring/import safe). Suppress UC8001's wrong "guard with try/catch" advice in handler context (the abort is uncatchable). | B | ☐ TODO |
-| D | FN-2 — in a handler, flag the local/`export`/`return` `handle_request` forms; quick-fix to `global.handle_request = …`. FN-1 — a file that assigns `global.handle_request` but is NOT a `{%` template → "wrap the handler body in `{% … %}`" (in-file detectable: `handle_request` is a uhttpd-specific name). | B | ☐ TODO |
+| B | **Handler-file detection** — the linchpin. In-file signal: template mode (`{%`) AND `global.handle_request` assigned. Exposes `result.isUhttpdHandler`. Strict = a *correct/working* handler; gates C and E. | — | ✅ 0.7.54 |
+| C | FN-4 (**UC8011**) — `loadfile`/`loadfile()()` / `include` in a handler → warning "aborts the request VM uncatchably; use static import" (loadstring/import safe). Suppresses UC8001's wrong "guard with try/catch" advice for loadfile in handler context. Whole-file (top-level + inside handle_request both abort); only the real builtins, not a shadowed name. | B | ✅ 0.7.54 |
+| D | FN-2 — in a handler, flag the local/`export`/`return` `handle_request` forms; quick-fix to `global.handle_request = …`. FN-1 — a file that assigns `global.handle_request` but is NOT a `{%` template → "wrap the handler body in `{% … %}`". **Note:** the strict `isUhttpdHandler` from B is FALSE for FN-2's wrong forms (they don't assign `global.handle_request`), so D needs a *broader* "handler candidate" signal = a template that defines `handle_request` in ANY form; then classify the form. `handle_request` is uhttpd-specific, so a candidate check is low-false-positive. | B | ☐ TODO |
 | E | FN-5 — gate the `uhttpd` ambient to handler context and give it a typed object shape (`send/sendc/recv/urldecode/urlencode/docroot`) + the `handle_request(env)` arg shape, so `uhttpd.snd()` flags. (FN-3 dropped — see above.) | B | ☐ TODO |
 
 ---
