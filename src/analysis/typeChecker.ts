@@ -1045,6 +1045,19 @@ export class TypeChecker {
         if (lowerBound !== null && index < lowerBound) proven = true;
       }
     };
+    // Early-exit guard: `if (TEST) continue|break|return|die()|exit();` makes the NEGATION of
+    // TEST hold for every later statement in the same block. `if (!m || length(m) < 4) continue;`
+    // → after it, `length(m) >= 4`. Negation of `A || B` is `!A && !B`, so either disjunct that
+    // proves the bound suffices.
+    const checkNegatedTest = (test: AstNode | null | undefined): void => {
+      if (proven || !test) return;
+      if (test.type === 'BinaryExpression') {
+        const b = test as BinaryExpressionNode;
+        if (b.operator === '||') { checkNegatedTest(b.left); checkNegatedTest(b.right); return; }
+        const lowerBound = this.lengthLowerBound(b, arrName, /*negate*/ true);
+        if (lowerBound !== null && index < lowerBound) proven = true;
+      }
+    };
     const walk = (node: unknown): void => {
       if (proven || !isAstNodeLike(node)) return;
       if (node.type === 'IfStatement') {
@@ -1052,6 +1065,21 @@ export class TypeChecker {
         if (ifNode.consequent
             && position >= ifNode.consequent.start && position <= ifNode.consequent.end) {
           checkTest(ifNode.test);
+        }
+      }
+      // Scan a statement list for an early-exit guard that dominates `position` (a preceding
+      // sibling `if (TEST) <exit>`), then apply its negated test — unless `arrName` is
+      // length-reduced or reassigned between the guard and the access (bound would be stale).
+      const stmts = (node as { body?: unknown }).body;
+      if (Array.isArray(stmts)) {
+        for (let i = 0; i < stmts.length && !proven; i++) {
+          const s = stmts[i] as AstNode | undefined;
+          if (!s || !this.isEarlyExitGuard(s)) continue;
+          const inLater = stmts.slice(i + 1).some(
+            (sj) => sj && position >= (sj as AstNode).start && position <= (sj as AstNode).end);
+          if (inLater && !this.arrLengthInvalidatedBetween(arrName, s.end, position)) {
+            checkNegatedTest((s as unknown as IfStatementNode).test);
+          }
         }
       }
       for (const k of Object.keys(node)) {
@@ -1079,7 +1107,7 @@ export class TypeChecker {
       && (c.arguments[0] as IdentifierNode).name === arrName;
   }
 
-  private lengthLowerBound(b: BinaryExpressionNode, arrName: string): number | null {
+  private lengthLowerBound(b: BinaryExpressionNode, arrName: string, negate: boolean = false): number | null {
     let op: string = b.operator;
     let lit: number | null;
     if (this.isLengthCall(b.left, arrName)) {
@@ -1091,6 +1119,9 @@ export class TypeChecker {
       return null;
     }
     if (lit === null) return null;
+    // For an early-exit guard `if (length(arr) <op> N) continue;`, the code AFTER it holds
+    // the NEGATED comparison. `length(arr) < 4` → after the guard, `length(arr) >= 4`.
+    if (negate) op = this.negateComparison(op);
     switch (op) {
       case '==':
       case '===': return lit;     // length == N → length >= N
@@ -1098,6 +1129,83 @@ export class TypeChecker {
       case '>':   return lit + 1; // length > N  → length >= N+1
       default:    return null;    // <, <=, != → no lower bound
     }
+  }
+
+  /** Logical negation of a comparison operator (for early-exit-guard narrowing). */
+  private negateComparison(op: string): string {
+    switch (op) {
+      case '<':  return '>=';
+      case '<=': return '>';
+      case '>':  return '<=';
+      case '>=': return '<';
+      case '==': return '!=';
+      case '===': return '!==';
+      case '!=': return '==';
+      case '!==': return '===';
+      default:   return op;
+    }
+  }
+
+  /** An `if (TEST) <exit>` guard clause whose consequent ALWAYS leaves the current block
+   *  (continue/break/return, or a die()/exit() call) — so the code after it holds `!TEST`. */
+  private isEarlyExitGuard(s: AstNode): boolean {
+    if (s.type !== 'IfStatement') return false;
+    const ifNode = s as unknown as IfStatementNode;
+    if (ifNode.alternate) return false; // an else means the code after isn't guarded by !TEST alone
+    return this.stmtAlwaysExits(ifNode.consequent);
+  }
+
+  private stmtAlwaysExits(c: AstNode | null | undefined): boolean {
+    if (!c) return false;
+    if (c.type === 'ContinueStatement' || c.type === 'BreakStatement' || c.type === 'ReturnStatement') return true;
+    if (c.type === 'BlockStatement') {
+      const body = (c as unknown as { body: AstNode[] }).body;
+      return Array.isArray(body) && body.length > 0 && this.stmtAlwaysExits(body[body.length - 1]);
+    }
+    if (c.type === 'ExpressionStatement') {
+      const e = (c as unknown as { expression: AstNode }).expression;
+      if (e?.type === 'CallExpression') {
+        const callee = (e as CallExpressionNode).callee;
+        if (callee?.type === 'Identifier') {
+          const n = (callee as IdentifierNode).name;
+          return n === 'die' || n === 'exit';
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Between `from` and `to`, is `arrName` length-reduced (shift/pop/splice) or reassigned?
+   *  Either invalidates a `length(arrName) >= L` lower bound (push/unshift only grow it, so
+   *  they don't). Conservative: any such site in the span bails the narrowing. */
+  private arrLengthInvalidatedBetween(arrName: string, from: number, to: number): boolean {
+    const ast = this.currentAST;
+    if (!ast) return false;
+    let hit = false;
+    const walk = (n: unknown): void => {
+      if (hit || !isAstNodeLike(n)) return;
+      if (n.start >= from && n.end <= to) {
+        if (n.type === 'CallExpression') {
+          const c = n as unknown as CallExpressionNode;
+          const name = c.callee?.type === 'Identifier' ? (c.callee as IdentifierNode).name : null;
+          if ((name === 'shift' || name === 'pop' || name === 'splice')
+              && c.arguments?.[0]?.type === 'Identifier'
+              && (c.arguments[0] as IdentifierNode).name === arrName) { hit = true; return; }
+        }
+        if (n.type === 'AssignmentExpression') {
+          const a = n as unknown as AssignmentExpressionNode;
+          if (a.left?.type === 'Identifier' && (a.left as IdentifierNode).name === arrName) { hit = true; return; }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (isAstNodeLike(v)) walk(v);
+      }
+    };
+    walk(ast);
+    return hit;
   }
 
   /** Does a computed array access `obj[prop]` resolve to an in-bounds element
@@ -3059,6 +3167,17 @@ export class TypeChecker {
       const arrMember = getUnionTypes(objectType).find(m => isArrayType(m) || singleTypeToBase(m) === UcodeType.ARRAY);
       if (arrMember) {
         const elemType = isArrayType(arrMember) ? getArrayElementType(arrMember) : UcodeType.UNKNOWN;
+        // `arr[i]` on `array<T> | null` is `T | null` for two reasons: the receiver may be
+        // null, and the index may be out of bounds. When a guard has narrowed the receiver
+        // to a non-null array HERE (e.g. `if (!m || length(m) < N) continue; … m[k]`) AND the
+        // index is proven in bounds, NEITHER applies → the bare element type. (`match()` →
+        // `array<string> | null`; the capture-access idiom is exactly this shape.)
+        if (node.object.type === 'Identifier') {
+          const nt = this.getNarrowedTypeAtPosition((node.object as IdentifierNode).name, node.object.start);
+          if (nt && isArrayType(nt) && this.computedAccessInBounds(node.object, node.property, node.start)) {
+            return getArrayElementType(nt);
+          }
+        }
         // Preserve the rich element type (handle moduleName) in the union.
         return createUnionType([...((isUnionType(elemType) ? getUnionTypes(elemType) : [elemType]) as SingleType[]), UcodeType.NULL]);
       }
@@ -4140,6 +4259,19 @@ export class TypeChecker {
         this.collectGuards(binaryNode.right, variableName, position, guards);
         return;
       }
+
+      // `A || B`: B is evaluated only when A is FALSE, so within B narrow by `!A`. A `!v`
+      // left disjunct (or a `||` chain of them) → v is non-null in B — so `!m || length(m)`
+      // types `m` non-null at the `length(m)` argument. (Mirrors the early-exit fall-through,
+      // which is the same `!A` narrowing on the other edge.)
+      if (binaryNode.operator === '||' &&
+          position >= binaryNode.right.start && position <= binaryNode.right.end) {
+        if (this.earlyExitNegatesIdentifier(binaryNode.left, variableName)) {
+          guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+        }
+        this.collectGuards(binaryNode.right, variableName, position, guards);
+        return;
+      }
     }
 
     if (node.type === 'IfStatement') {
@@ -4386,16 +4518,17 @@ export class TypeChecker {
               // proves `path` is a string in the fall-through. Independent of the
               // type-guard extractors above (works whether or not guardInfo matched).
               this.collectNegatedStringContractGuards(sibIf.test, variableName, guards);
-              // Handle: if (!x) die() → x is non-null after
+              // Handle: if (!x) die() → x is non-null after. Also `if (!x || …) return;`:
+              // the negated fall-through condition is `x && !(…)`, so `x` is non-null there
+              // regardless of the other OR disjuncts (a `!x` disjunct of a pure `||` chain, or
+              // the whole test being `!x`). Common with `if (!m || length(m) < N) continue;`.
               // Only when variable could be null. Use the EFFECTIVE type at this
               // position (SSA currentType) — not the declared dataType — so a
               // declare-then-assign variable (`let c; c = fs.readfile(p);`, whose
               // declared type is the uninitialized `null`) is recognised as
               // string|null and gets null removed after `if (!c) { … return }`.
-              if (sibIf.test.type === 'UnaryExpression') {
-                const unary = sibIf.test as any;
-                if (unary.operator === '!' && unary.argument?.type === 'Identifier'
-                    && unary.argument.name === variableName) {
+              if (this.earlyExitNegatesIdentifier(sibIf.test, variableName)) {
+                {
                   // Position-aware lookup: a hover/narrowing query runs AFTER the
                   // function scope has exited, so plain lookup() misses a local
                   // variable — lookupAtPosition finds it by the query position.
@@ -5134,6 +5267,24 @@ export class TypeChecker {
     }
     const single = this.extractTypeGuard(condition, variableName);
     return single ? [single] : [];
+  }
+
+  /** Does the NEGATION of an early-exit `test` imply `variableName` is truthy/non-null?
+   *  True when `!variableName` is the whole test or a disjunct of a pure `||` chain:
+   *  `!(!v) = v`, and `!(!v || B) = v && !B`. NOT for `&&` (its negation is a union). */
+  private earlyExitNegatesIdentifier(test: AstNode | null | undefined, variableName: string): boolean {
+    if (!test) return false;
+    if (test.type === 'UnaryExpression') {
+      const u = test as unknown as { operator: string; argument?: AstNode };
+      return u.operator === '!' && u.argument?.type === 'Identifier'
+        && (u.argument as IdentifierNode).name === variableName;
+    }
+    if (test.type === 'BinaryExpression' && (test as BinaryExpressionNode).operator === '||') {
+      const b = test as BinaryExpressionNode;
+      return this.earlyExitNegatesIdentifier(b.left, variableName)
+        || this.earlyExitNegatesIdentifier(b.right, variableName);
+    }
+    return false;
   }
 
   private extractTypeCallGuard(condition: AstNode, variableName: string): UcodeType | null {
