@@ -93,6 +93,8 @@ export enum UcodeErrorCode {
   LOADFILE_CWD_RELATIVE_PATH = 'UC8009',          // loadfile() with a relative literal path — resolves against the PROCESS's launch dir, not this file's dir (breaks under procd/init where CWD=/)
   BLOCKING_SOCKETPAIR_RECV = 'UC8010',            // recv()/recvmsg() on a blocking socket.pair() socket with no MSG_DONTWAIT and no send() to the peer → waits forever (silent hang)
   HANDLER_VM_ABORTING_CALL = 'UC8011',            // loadfile()/loadfile()()/include() in a uhttpd handler — aborts the request VM uncatchably (empty response, no stderr; try/catch can't help). Use static import.
+  HANDLER_NOT_A_TEMPLATE = 'UC8012',              // file registers global.handle_request but isn't a `{%` template — uhttpd emits the file as the response body and runs no code. Wrap in `{% … %}`.
+  HANDLER_ENTRY_WRONG_FORM = 'UC8013',            // in a handler template, handle_request defined as a local/export/let form — uhttpd looks it up on the global scope, so only `global.handle_request = …` is found.
 
   // System and internal errors (9000-9999)
   INTERNAL_ERROR = 'UC9001',

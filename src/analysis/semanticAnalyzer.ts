@@ -232,6 +232,9 @@ export class SemanticAnalyzer extends BaseVisitor {
   /** This file is a uhttpd handler — a `{%` template that assigns `global.handle_request`.
    *  Gates the handler-specific diagnostics (FN-1/2/4/5). See docs/uhttpd-false-negatives.md. */
   private isUhttpdHandler = false;
+  /** This file is ucode template mode (`{% … %}`). Used with the `handle_request` signal to
+   *  classify handler-form errors (FN-1 non-template vs FN-2 wrong entry-point form). */
+  private isTemplateFile = false;
   /** Globals whose EVERY assignment is a straight-line top-level scalar (`global.X = 1; …
    *  global.X = "s";`) — execution order is statically known, so reads can be SSA-typed
    *  positionally (declare a symbol, update dataType per assignment in source order). */
@@ -497,8 +500,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Both conditions together are a strong, low-false-positive signal (nobody assigns
     // `global.handle_request` by accident). Runs after collectGlobalPropertyNames so the
     // property set is populated. Consumed by the handler-specific phases (C/D/E).
-    this.isUhttpdHandler = this.globalPropertyNames.has('handle_request')
-      && detectTemplateMode(this.textDocument.getText());
+    this.isTemplateFile = detectTemplateMode(this.textDocument.getText());
+    this.isUhttpdHandler = this.globalPropertyNames.has('handle_request') && this.isTemplateFile;
     // `loadfile("file.uc")()` runs file.uc's top-level code in the shared global scope —
     // a poor-man's import. Harvest the globals that file injects (its top-level
     // `global.X = …` + bare implicit-global assignments) so bare `X(...)`/`X` here isn't a
@@ -544,6 +547,11 @@ export class SemanticAnalyzer extends BaseVisitor {
     // VM uncatchably. Runs only for a detected handler file.
     if (this.isUhttpdHandler) {
       this.checkHandlerVmAbortingCalls(node);
+    }
+    // uhttpd handler authoring help (Phase D / FN-1 + FN-2): a `handle_request` registered
+    // outside a `{%` template, or defined in a form uhttpd's scope lookup can't see.
+    if (this.options.enableScopeAnalysis) {
+      this.checkUhttpdHandlerForm(node);
     }
     // Case-2 global-scope soundness: a top-level read before any defining assignment/loadfile.
     if (this.options.enableScopeAnalysis && (this.options.uncertainGlobalScope ?? 'errorInStrict') !== 'off') {
@@ -5815,9 +5823,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           // Injected/host globals (built-in registry + JSDoc `@global`) are ambient — a
           // declared-but-unreferenced one is not a real "unused variable".
           this.declaredGlobalNames.has(symbol.name) ||
-          // Host entry-point callbacks registered as `global.<name> = fn` (e.g. uhttpd's
-          // `handle_request`) are INVOKED by the host, not local dead code — no UC1006.
-          (isHostEntryPointCallback(symbol.name) && this.globalPropertyNames.has(symbol.name))) {
+          // Host entry-point callbacks (e.g. uhttpd's `handle_request`) are INVOKED by the
+          // host, not local dead code — no UC1006. Exempt when registered as `global.<name>`,
+          // or when it appears in a template at all (entry-point intent; a wrong FORM there is
+          // flagged as UC8013 instead of a misleading "unused").
+          (isHostEntryPointCallback(symbol.name)
+            && (this.globalPropertyNames.has(symbol.name) || this.isTemplateFile))) {
         continue;
       }
 
@@ -7372,6 +7383,79 @@ private addDiagnostic(
       }
     };
     visit(root);
+  }
+
+  /** Phase D — authoring help for uhttpd handlers.
+   *  FN-1 (UC8012): registers `global.handle_request` but isn't a `{%` template → uhttpd emits
+   *  the file as the response body and runs nothing. FN-2 (UC8013): a `{%` template that
+   *  defines `handle_request` in a form uhttpd's scope lookup can't see (local function /
+   *  export / let-const) and never does `global.handle_request = …`. Both carry a quick-fix. */
+  private checkUhttpdHandlerForm(root: ProgramNode): void {
+    const hasGlobalReg = this.globalPropertyNames.has('handle_request');
+
+    // FN-1 — correct registration, missing template wrapper.
+    if (hasGlobalReg && !this.isTemplateFile) {
+      const site = this.globalDefSites.get('handle_request')?.[0];
+      if (site) {
+        this.addDiagnostic(
+          `A uhttpd handler must be a \`{% … %}\` template — as written, uhttpd emits this file as the response body and runs no code. Wrap the handler in \`{% … %}\`.`,
+          site.start, site.end, DiagnosticSeverity.Warning,
+          UcodeErrorCode.HANDLER_NOT_A_TEMPLATE, { handlerFormFix: { mode: 'wrap' } });
+      }
+      return;
+    }
+
+    // FN-2 — template, but the entry point is defined in a form uhttpd can't see.
+    if (this.isTemplateFile && !hasGlobalReg) {
+      for (const stmt of root.body) {
+        const found = this.wrongFormHandleRequest(stmt);
+        if (found) {
+          this.addDiagnostic(
+            `uhttpd looks up \`handle_request\` on the global scope object; a ${found.formLabel} is never found (uhttpd: "declares no handle_request() callback"). Register it as \`global.handle_request = …\`.`,
+            found.anchorStart, found.anchorEnd, DiagnosticSeverity.Warning,
+            UcodeErrorCode.HANDLER_ENTRY_WRONG_FORM, { handlerFormFix: found.fix });
+          return; // one report is enough
+        }
+      }
+    }
+  }
+
+  /** If `stmt` defines `handle_request` in a form invisible to uhttpd's scope lookup, return
+   *  its anchor + a quick-fix descriptor (convert to `global.handle_request = …`), else null. */
+  private wrongFormHandleRequest(stmt: AstNode): {
+    anchorStart: number; anchorEnd: number; formLabel: string;
+    fix: { mode: 'toGlobalFunc'; replaceStart: number; replaceEnd: number; appendAt: number }
+       | { mode: 'toGlobalVar'; replaceStart: number; replaceEnd: number };
+  } | null {
+    const fnNamed = (n: AstNode | null): n is FunctionDeclarationNode =>
+      !!n && n.type === 'FunctionDeclaration' && (n as FunctionDeclarationNode).id?.name === 'handle_request';
+
+    // export function handle_request(...) {}. Anchor the added `;` on the function BODY's
+    // closing brace, not the declaration end — the parser folds the bridged `%}`→`;`
+    // terminator into an exported function's end, which would place the `;` past `%}`.
+    if (stmt.type === 'ExportNamedDeclaration') {
+      const decl = (stmt as ExportNamedDeclarationNode).declaration;
+      if (fnNamed(decl)) {
+        return { anchorStart: decl.id.start, anchorEnd: decl.id.end, formLabel: 'exported function',
+          fix: { mode: 'toGlobalFunc', replaceStart: stmt.start, replaceEnd: decl.id.end, appendAt: decl.body.end } };
+      }
+    }
+    // function handle_request(...) {}
+    if (fnNamed(stmt)) {
+      const fn = stmt as FunctionDeclarationNode;
+      return { anchorStart: fn.id.start, anchorEnd: fn.id.end, formLabel: 'local function declaration',
+        fix: { mode: 'toGlobalFunc', replaceStart: fn.start, replaceEnd: fn.id.end, appendAt: fn.body.end } };
+    }
+    // let/const handle_request = <expr>   (single-declarator only, so the rewrite is clean)
+    if (stmt.type === 'VariableDeclaration') {
+      const vd = stmt as VariableDeclarationNode;
+      const d = vd.declarations.length === 1 ? vd.declarations[0] : undefined;
+      if (d?.id?.type === 'Identifier' && (d.id as IdentifierNode).name === 'handle_request' && d.init) {
+        return { anchorStart: d.id.start, anchorEnd: d.id.end, formLabel: `\`${vd.kind}\` binding`,
+          fix: { mode: 'toGlobalVar', replaceStart: vd.start, replaceEnd: d.id.end } };
+      }
+    }
+    return null;
   }
 
   private resolveModuleSource(source: string): string | null {

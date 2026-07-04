@@ -1504,6 +1504,52 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 }
             }
 
+            // UC8012 (FN-1): a handler registered outside a `{%` template → offer to wrap the
+            // file in `{% … %}`. UC8013 (FN-2): a wrong-form entry point → convert to
+            // `global.handle_request = …`.
+            if (diagnostic.code === UcodeErrorCode.HANDLER_NOT_A_TEMPLATE
+                && (diagnostic as any).data?.handlerFormFix?.mode === 'wrap') {
+                const text = document.getText();
+                // Keep a leading shebang line outside the template block.
+                const shebang = /^#![^\n]*\n/.exec(text);
+                const openAt = shebang ? shebang[0].length : 0;
+                const needsNL = text.length > 0 && !text.endsWith('\n');
+                codeActions.push({
+                    title: 'Wrap the handler in a `{% … %}` template',
+                    kind: CodeActionKind.QuickFix,
+                    diagnostics: [diagnostic],
+                    isPreferred: true,
+                    edit: { changes: { [params.textDocument.uri]: [
+                        TextEdit.insert(document.positionAt(openAt), '{%\n'),
+                        TextEdit.insert(document.positionAt(text.length), `${needsNL ? '\n' : ''}%}\n`),
+                    ] } },
+                });
+            }
+            if (diagnostic.code === UcodeErrorCode.HANDLER_ENTRY_WRONG_FORM
+                && (diagnostic as any).data?.handlerFormFix) {
+                const fx = (diagnostic as any).data.handlerFormFix;
+                const edits: TextEdit[] = [];
+                if (fx.mode === 'toGlobalFunc') {
+                    edits.push(TextEdit.replace(
+                        { start: document.positionAt(fx.replaceStart), end: document.positionAt(fx.replaceEnd) },
+                        'global.handle_request = function'));
+                    edits.push(TextEdit.insert(document.positionAt(fx.appendAt), ';'));
+                } else if (fx.mode === 'toGlobalVar') {
+                    edits.push(TextEdit.replace(
+                        { start: document.positionAt(fx.replaceStart), end: document.positionAt(fx.replaceEnd) },
+                        'global.handle_request'));
+                }
+                if (edits.length > 0) {
+                    codeActions.push({
+                        title: 'Register as `global.handle_request`',
+                        kind: CodeActionKind.QuickFix,
+                        diagnostics: [diagnostic],
+                        isPreferred: true,
+                        edit: { changes: { [params.textDocument.uri]: edits } },
+                    });
+                }
+            }
+
             // UC1001/UC1002: an undefined name may be a host-injected global → offer to
             // declare it with a JSDoc `@global` tag (silences the diagnostic).
             // UC8004 (shaky def) / UC8005 (read of a shaky global) additionally get the
