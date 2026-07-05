@@ -1,5 +1,10 @@
 # Parser-fidelity gaps vs. real ucode — reported by m00qek
 
+> ✅ **RESOLVED (filed 2026-07-04).** All six shipped as **UC6008–UC6013** (0.7.40–0.7.45),
+> crediting m00qek in every commit: array elision (UC6008/0.7.40), `for(const)` (UC6009/0.7.41),
+> labelled break/continue (UC6010/0.7.42), params-after-rest (UC6011/0.7.43), `delete` non-member
+> (UC6012/0.7.44), `\u`/`\x`/octal escapes (UC6013/0.7.45).
+
 > **Credit — REQUIRED IN EVERY COMMIT.** All six issues below were found by
 > **[`m00qek`](https://github.com/m00qek)** on GitHub while building
 > [`tree-sitter-ucode`](https://github.com/m00qek/tree-sitter-ucode).

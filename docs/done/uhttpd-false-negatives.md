@@ -1,5 +1,10 @@
 # ucode-lsp × uhttpd handlers — blind spots, false positives/negatives, and a fix plan
 
+> ✅ **RESOLVED (filed 2026-07-04).** All phases **A–E shipped (0.7.53–0.7.57)** — see the Status
+> section below. Handler support is end-to-end in both the server and the CLI checker: detection,
+> UC8011/UC8012/UC8013 (+ quick-fixes), and a typed, handler-gated `uhttpd` ambient. FN-3 dropped
+> as a false premise.
+
 A detailed, empirically-verified report for the `ucode-lsp` maintainer. Everything
 below was reproduced in a real OpenWrt **24.10.7 x86-64 Docker container** running the
 actual `uhttpd` + `uhttpd-mod-ucode` + `ucode-mod-{uci,ubus,fs,digest}` stack, and

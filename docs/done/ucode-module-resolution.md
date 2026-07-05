@@ -1,5 +1,10 @@
 # ucode module resolution — the complete field guide
 
+> ✅ **RESOLVED (filed 2026-07-04).** The module-resolution suite shipped in **0.7.48**: dotted
+> `share/ucode`|`lib/ucode` mirror-root resolution, bare-slash importer-relative imports, UC3008
+> (`require("./path")` hard error), UC8009 (relative-`loadfile()` CWD footgun), and `loadfile()()`
+> return inference. Retained as the reference field guide; see also `reference-ucode-module-resolution`.
+
 *Everything below is verified against the vendored `ucode/` C source (compiler.c,
 lib.c, vm.c, CMakeLists.txt), confirmed by interpreter experiments, and grounded in a
 survey of 12 vendored git repositories (2026-07-03). File/line references are to the
