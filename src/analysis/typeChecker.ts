@@ -2970,6 +2970,10 @@ export class TypeChecker {
           // Return the full method return type (preserves unions) directly.
           return this.parseReturnType(method.value.returnType);
         }
+        // Open types (runtime-extended, e.g. netifd) accept unknown members silently.
+        if (OBJECT_REGISTRIES[detectedObjectType].openMembers) {
+          return UcodeType.UNKNOWN;
+        }
         this.errors.push({
           message: `Method '${methodName}' does not exist on ${detectedObjectType}`,
           start: node.start,

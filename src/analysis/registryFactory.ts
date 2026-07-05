@@ -53,6 +53,9 @@ export interface ObjectTypeDefinition {
   readonly isPropertyBased?: boolean;
   readonly methods: ReadonlyMap<string, FunctionSignature>;
   readonly properties?: ReadonlyMap<string, PropertyDefinition>;
+  /** When true, unknown members resolve to `unknown` instead of UC5004 (for runtime-extended
+   *  objects). See ObjectTypeRegistry.openMembers. */
+  readonly openMembers?: boolean;
   readonly formatDoc?: (name: string, sig: FunctionSignature) => string;
   readonly formatPropertyDoc?: (name: string, prop: PropertyDefinition) => string;
 }
@@ -153,6 +156,7 @@ export function createObjectTypeRegistry(def: ObjectTypeDefinition): ObjectTypeR
     return {
       objectType: def.typeName as KnownObjectType,
       isPropertyBased: true,
+      ...(def.openMembers ? { openMembers: true as const } : {}),
       getMethodNames: () => propertyNames,
       getMethod: (name: string) => {
         const prop = def.properties!.get(name);
@@ -180,6 +184,7 @@ export function createObjectTypeRegistry(def: ObjectTypeDefinition): ObjectTypeR
   return {
     objectType: def.typeName as KnownObjectType,
     ...(def.isPropertyBased !== undefined ? { isPropertyBased: def.isPropertyBased } : {}),
+    ...(def.openMembers ? { openMembers: true as const } : {}),
     getMethodNames: () => methodNames,
     getMethod: (name: string) => Option.fromNullable(def.methods.get(name)),
     getMethodDocumentation: (name: string) => {

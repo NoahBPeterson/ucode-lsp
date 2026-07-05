@@ -36,6 +36,7 @@ import { logModule } from './logTypes';
 import { rtnlModule, rtnlListenerObjectType } from './rtnlTypes';
 import { socketModule, socketObjectType } from './socketTypes';
 import { uhttpdObjectType } from './uhttpdTypes';
+import { netifdProtoObjectType, netifdDaemonObjectType } from './netifdTypes';
 import { ubusModule, ubusConnectionObjectType, ubusChannelObjectType, ubusDeferredObjectType, ubusObjectObjectType, ubusRequestObjectType, ubusNotifyObjectType, ubusListenerObjectType, ubusSubscriberObjectType } from './ubusTypes';
 import { zlibModule, zlibDeflateObjectType, zlibInflateObjectType } from './zlibTypes';
 import { ioModule, ioHandleObjectType } from './ioTypes';
@@ -123,6 +124,8 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'mbedtls.pk': createObjectTypeRegistry(mbedtlsPkObjectType),
   'mbedtls.crt': createObjectTypeRegistry(mbedtlsCrtObjectType),
   'uhttpd': createObjectTypeRegistry(uhttpdObjectType),
+  'netifd.proto': createObjectTypeRegistry(netifdProtoObjectType),
+  'netifd.daemon': createObjectTypeRegistry(netifdDaemonObjectType),
   'exception': createObjectTypeRegistry(exceptionObjectType),
 };
 

@@ -37,6 +37,7 @@ import { KNOWN_MODULES } from './moduleTypes';
 import { type JsDocCommentNode } from '../ast/nodes';
 import { Either, Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, validateImport } from './moduleDispatch';
+import { NETIFD_DAEMON_ONLY_MEMBERS } from './netifdTypes';
 
 /** An AST node viewed as an open record, for dynamic traversal/field access. The base
  *  `AstNode` interface only enumerates `type`/`start`/`end`; the generic walkers read
@@ -506,6 +507,11 @@ export class SemanticAnalyzer extends BaseVisitor {
     // `uhttpd.recv()` resolves during it). Declared and TYPED here rather than as an
     // unconditional host global, so a non-handler script referencing `uhttpd` still gets UC1001.
     if (this.isUhttpdHandler) this.declareUhttpdAmbient();
+    // netifd ambient: `netifd` is injected into OpenWrt netifd ucode scripts — a rich C-daemon
+    // global in wireless/daemon scripts (25.12+), or a `{ add_proto }` stub in proto handlers
+    // (main+). Seeded ONLY in the matching context (usage/path signal) and version-gated, so a
+    // non-netifd script referencing `netifd` still gets UC1001. See docs/netifd-injected-global.md.
+    this.detectAndDeclareNetifd(node);
     // `loadfile("file.uc")()` runs file.uc's top-level code in the shared global scope —
     // a poor-man's import. Harvest the globals that file injects (its top-level
     // `global.X = …` + bare implicit-global assignments) so bare `X(...)`/`X` here isn't a
@@ -7411,6 +7417,98 @@ private addDiagnostic(
     this.symbolTable.forceGlobalDeclaration('uhttpd', SymbolType.VARIABLE,
       { type: UcodeType.OBJECT, moduleName: 'uhttpd' } as UcodeDataType);
     this.symbolTable.markUsed('uhttpd', 0); // host-injected — never "unused"
+  }
+
+  /** Collect `netifd.<member>` accesses in the file (property names). Returns an empty set if
+   *  the file locally declares `netifd` (a let/const/param/import of that name) — then it's a
+   *  user variable, not the injected ambient, so we must not seed it. */
+  private collectNetifdMemberUsage(root: AstNode): { members: Set<string>; declaresNetifd: boolean; uses: Array<{ start: number; end: number }> } {
+    const members = new Set<string>();
+    let declaresNetifd = false;
+    const uses: Array<{ start: number; end: number }> = [];
+    const walk = (n: unknown): void => {
+      if (!n || typeof n !== 'object') return;
+      const node = n as AnyNode;
+      const t = node.type;
+      if (t === 'VariableDeclarator' && (node.id as AnyNode | undefined)?.name === 'netifd') declaresNetifd = true;
+      if ((t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression')) {
+        if ((node.id as AnyNode | undefined)?.name === 'netifd') declaresNetifd = true;
+        const params = Array.isArray(node.params) ? node.params : [];
+        for (const p of params) if ((p as AnyNode | undefined)?.name === 'netifd') declaresNetifd = true;
+      }
+      if (t === 'MemberExpression' && !node.computed) {
+        const obj = node.object as AnyNode | undefined;
+        const prop = node.property as AnyNode | undefined;
+        if (obj?.type === 'Identifier' && obj.name === 'netifd' && prop?.type === 'Identifier' && typeof prop.name === 'string') {
+          members.add(prop.name);
+          // Record the MEMBER's range (`add_proto`/`log`/…) — the specific netifd API used — so
+          // the version note anchors there, not on the bare `netifd` object.
+          if (typeof prop.start === 'number' && typeof prop.end === 'number') {
+            uses.push({ start: prop.start, end: prop.end });
+          }
+        }
+      }
+      for (const k of Object.keys(node)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (node as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (v && typeof v === 'object') walk(v);
+      }
+    };
+    walk(root);
+    return declaresNetifd ? { members: new Set(), declaresNetifd, uses: [] } : { members, declaresNetifd, uses };
+  }
+
+  /** Detect a netifd ucode script and seed the correctly-shaped, version-gated `netifd` ambient.
+   *  Two shapes (see netifdTypes.ts): the rich daemon/wireless global (25.12+) and the proto-
+   *  handler `{ add_proto }` stub (main+). Shape is chosen by usage signal (a daemon-only member
+   *  ⇒ daemon; else `add_proto` ⇒ proto) OR the path convention — the latter so a canonical-path
+   *  handler resolves (and completes) even before its first complete `netifd.<member>`. A file that
+   *  locally declares `netifd` is never injected. Below the version floor nothing is declared →
+   *  `netifd` stays UC1001. */
+  private detectAndDeclareNetifd(root: AstNode): void {
+    const { members, declaresNetifd, uses } = this.collectNetifdMemberUsage(root);
+    if (declaresNetifd) return; // a user's own `netifd` — not the ambient
+    const uri = this.textDocument.uri;
+    const isProtoPath = /\/lib\/netifd\/proto\//.test(uri);
+    const isDaemonPath = /\/lib\/netifd\/(?!proto\/)[^/]*\.uc$/.test(uri) || /\/usr\/share\/ucode\/wifi\//.test(uri);
+    // No signal at all (no usage, no path) → don't inject.
+    if (members.size === 0 && !isProtoPath && !isDaemonPath) return;
+    const usesDaemonOnly = [...members].some((m) => NETIFD_DAEMON_ONLY_MEMBERS.has(m));
+
+    let shape: 'netifd.daemon' | 'netifd.proto';
+    let floor: UcodeTargetVersion;
+    if (usesDaemonOnly || isDaemonPath) {
+      shape = 'netifd.daemon'; floor = '25.12';
+    } else if (members.has('add_proto') || isProtoPath) {
+      shape = 'netifd.proto'; floor = 'main';
+    } else {
+      return; // uses only unrecognized `netifd.x` members and no path signal — can't classify
+    }
+    // Below the version floor, netifd's ucode support doesn't exist on the target. Don't emit a
+    // bare "Undefined variable: netifd" cascade (reads as a broken LSP, not a version gate) — but
+    // don't offer the typed API either (completing/hovering `add_proto` on a target that lacks it
+    // is wrong). So: flag the version requirement ONCE with an actionable UC6005 on the member, and
+    // resolve `netifd` as a PLAIN object — no UC1001, no members to suggest.
+    if (targetLacksFeature(this.targetVersion, floor)) {
+      const what = shape === 'netifd.proto'
+        ? 'netifd proto-handler support (`proto-ucode.uc`) was added in {INTRO}'
+        : 'the netifd daemon `netifd` global was added in {INTRO}';
+      const remedy = `Target OpenWrt ${floor === 'main' ? 'main/snapshot' : floor} to use it`;
+      // Flag EVERY netifd member usage (not just the first) — on this target the whole API is
+      // unavailable, so a single note would leave later usages looking fine.
+      for (const use of uses) this.flagVersionMin(floor, what, remedy, use.start, use.end);
+      this.symbolTable.forceGlobalDeclaration('netifd', SymbolType.VARIABLE, { type: UcodeType.OBJECT } as UcodeDataType);
+      this.symbolTable.markUsed('netifd', 0);
+      return;
+    }
+    this.declareNetifdAmbient(shape);
+  }
+
+  private declareNetifdAmbient(shape: 'netifd.daemon' | 'netifd.proto'): void {
+    this.symbolTable.forceGlobalDeclaration('netifd', SymbolType.VARIABLE,
+      { type: UcodeType.OBJECT, moduleName: shape } as UcodeDataType);
+    this.symbolTable.markUsed('netifd', 0); // host-injected — never "unused"
   }
 
   /** Phase D — authoring help for uhttpd handlers.

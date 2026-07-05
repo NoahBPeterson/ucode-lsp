@@ -2,6 +2,69 @@
 
 Status: **answered.** Date: 2026-06-08.
 
+---
+
+## ✅ BUILT — typed, handler-gated, version-gated `netifd` ambient (0.7.61)
+
+`netifd` is now modeled like the `uhttpd` ambient: seeded as a typed object ONLY in a detected
+netifd context, so it resolves (no false UC1001), its members type/hover/complete, and it stays
+`UC1001` in any other script. Two shapes, from netifd's **real C source**
+(`git.openwrt.org/project/netifd.git`, `ucode.c`/`proto-ucode.c`) — see `src/analysis/netifdTypes.ts`.
+
+### The two shapes and their version floors (verified against the OpenWrt release branches + the netifd commit each pins, refetched 2026-07-05)
+
+| shape | members | source | first ships |
+|---|---|---|---|
+| **proto** `{ add_proto(handler) }` | strict stub | `proto-ucode.uc`'s `include(script_path, { netifd })` | **main only** |
+| **daemon/wireless** | `log`/`debug`/`process`/`process_check`/`device_set`/`interface_get_enabled`/`interface_handle_link`/`interface_get_bridge` + props `cb`/`main_path`/`config_path`/`dummy_mode` + consts `L_CRIT`/`L_WARNING`/`L_NOTICE`/`L_INFO`/`L_DEBUG` | netifd C daemon binds it into the VM scope (`ucode.c`: `ucv_object_add(scope,"netifd",obj)` + `netifd_fns[]` + `ADD_CONST`) | **25.12+** (`main.uc` lands in 25.12) |
+
+- `proto-ucode.uc` is **main-only** — it is NOT in the 25.12 release branch (landed 2026-02, after 25.12 branched). So on the default target (25.12) a proto handler's `netifd` is correctly `UC1001`; set `ucode.targetVersion = "main"` to develop one.
+- The daemon `netifd_fns[]` is **byte-identical** across the 25.12 pin (2026-02-26), the main pin (2026-06-16), and netifd HEAD, EXCEPT `add_proto` was added to the daemon table after the 25.12 pin (harmless: daemon scripts never call it; the shape is OPEN).
+
+### Detection & gating (`SemanticAnalyzer.detectAndDeclareNetifd`)
+
+1. Pre-traversal scan for `netifd.<member>` usage (skipped if the file locally declares `netifd`).
+2. Shape by evidence: a daemon-only member ⇒ daemon; else `add_proto`/`lib/netifd/proto/` path ⇒ proto.
+3. Gate on `targetVersion` via `targetLacksFeature(target, floor)`. Below the floor, `netifd` resolves as a **plain object** (no bare "Undefined variable: netifd" cascade) but is NOT given the typed shape — so the target-unavailable API isn't hovered/completed. **Every** `netifd.<member>` usage is flagged with an actionable **UC6005** anchored on the member — "*netifd … was added in OpenWrt {floor}, but the target is {target}; target {floor}*" — so no usage looks fine. (Escalates to error under `'use strict'`, like version-gated modules.)
+4. Seeded via `forceGlobalDeclaration`; outside a netifd context nothing is injected, and a locally-declared `netifd` is never hijacked.
+
+### OPEN daemon object — the soundness call
+
+The daemon global is **extended at runtime by ucode** (`main.uc`: `netifd.ubus = …`; `wireless.uc`:
+`netifd.wireless = …`) and by the wireless/hostapd framework (`setup_failed`/`set_vlan`/…), none of
+which are in the C `netifd_fns[]`. A strict object type would emit **false UC5004** on real daemon
+scripts. So the object-type machinery gained an **`openMembers`** flag (`registryFactory.ts` →
+`typeChecker.ts`): known members still type/hover/complete, but an unknown member resolves to
+`unknown` instead of erroring. The daemon shape is open; the **proto** stub stays **strict** (its
+`{ add_proto }` set is fixed, so a typo there is a genuine UC5004). Verified 0 false UC1001/UC5004
+on the real `openvpn.uc`/`wireguard.uc`/`wireless-device.uc`/`main.uc`.
+
+### Why OpenWrt-specific behavior is the DEFAULT (not opt-in)
+
+ucode was created by OpenWrt, for OpenWrt, and is used essentially nowhere else — netifd/uhttpd/
+rpcd/LuCI/firewall4 and the `fs`/`ubus`/`uci`/`nl80211` modules ARE the ecosystem. So:
+
+- The default must be correct for ~100% of real users. Making OpenWrt globals opt-in would show
+  false `UC1001` across idiomatic netifd/uhttpd code out of the box — degrading the tool for
+  everyone to spare a standalone-ucode user who, ecosystem-wise, doesn't exist.
+- "Doesn't work off-OpenWrt" is the ground truth we MODEL, not a bug we hide: `netifd` genuinely is
+  undefined without netifd, but that code only exists to be run BY netifd. The **version gate** makes
+  it precise — not "netifd always exists" but "netifd exists on the release you target" (hence
+  the actionable `UC6005` "needs a newer target" note below the floor). The default target 25.12 = latest stable release, overridable via
+  `ucode.targetVersion`.
+- The edge case self-defends: to wrongly help a non-OpenWrt user they'd have to name a variable
+  `netifd`, call netifd's exact member names on it undeclared — and the only effect is suppressing an
+  "undefined variable" they'd hit at runtime anyway. No false *error* is introduced (daemon shape is
+  open). So it's default **because** ucode ≈ OpenWrt, gated by usage + release so it's accurate, not
+  assumed.
+
+### Remaining (not yet built)
+
+- **P3 — `ProtoCtx`**: type the `ctx`/`proto` object handler methods receive (13 members from
+  `proto-ucode.uc`). `netifd.process(...)` return is currently `object | null` (the `proc_fns` handle
+  with `.cancel()` isn't yet a registered sub-type).
+- **P4 — generalize** the detection into the shared dynamic-scope engine (also covers `call(fn,_,scope)`).
+
 ## Direct answer
 
 `netifd` is **not** a custom module and **not** a real undefined-variable error. It is a

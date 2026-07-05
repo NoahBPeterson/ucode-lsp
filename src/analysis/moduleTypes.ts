@@ -41,6 +41,8 @@ export type KnownObjectType =
   | 'uline.state' | 'uline.argp'
   | 'mbedtls.pk' | 'mbedtls.crt'
   | 'uhttpd'
+  | 'netifd.proto'
+  | 'netifd.daemon'
   | 'exception';
 
 // ---- Common function signature ----
@@ -86,6 +88,10 @@ export interface ModuleRegistry {
 export interface ObjectTypeRegistry {
   readonly objectType: KnownObjectType;
   readonly isPropertyBased?: boolean;
+  /** When true, an access of a member NOT in the known set resolves to `unknown` instead of
+   *  UC5004 — for objects the runtime extends dynamically (e.g. `netifd.ubus = …`). Known
+   *  members still type/hover/complete; only the "does not exist" error is suppressed. */
+  readonly openMembers?: boolean;
   getMethodNames(): string[];
   getMethod(name: string): Option.Option<FunctionSignature>;
   getMethodDocumentation(name: string): Option.Option<string>;
