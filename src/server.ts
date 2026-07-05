@@ -1377,6 +1377,14 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
     const disableLines = new Set<number>();
 
     for (const diagnostic of diagnostics) {
+        // UC6015 is a PARSER diagnostic (source 'ucode-parser') — a colon-block keyword whose
+        // opener is missing its `:`. Offer to insert the colon. Handled outside the
+        // 'ucode-semantic' gate below.
+        if (diagnostic.code === 'UC6015') {
+            const colonFix = generateColonBlockQuickFix(diagnostic, document, params.textDocument.uri);
+            if (colonFix) codeActions.push(colonFix);
+        }
+
         // Only provide fix for ucode-semantic diagnostics (our diagnostics)
         if (diagnostic.source === 'ucode-semantic') {
             const line = diagnostic.range.start.line;
@@ -3474,6 +3482,49 @@ function inferAllParamTypesFromUsage(ast: AstNode, allDiagnostics: Diagnostic[],
 // Generate JSDoc annotation quick fix for functions with unknown-typed parameters.
 // Uses diagnostic-driven inference to emit concrete types where possible instead
 // of every param stubbed as `{unknown}`.
+/** UC6015 quick-fix: a colon-block keyword (`elif`/`endif`/`endfor`/`endwhile`/`endfunction`)
+ *  reached statement position because its opener is missing the `:`. Scan back to the nearest
+ *  matching opener (`if`/`elif` for elif/endif, `for`/`while`/`function` for the rest) whose
+ *  condition `)` isn't already `:`-terminated, and insert `:` after it. (Raw-lex positions map
+ *  to the source, so a `{% %}` template's inner keywords resolve too.) */
+function generateColonBlockQuickFix(diagnostic: Diagnostic, document: TextDocument, uri: string): CodeAction | null {
+    const tokens: Token[] = new UcodeLexer(document.getText(), { rawMode: true }).tokenize();
+    const kwOffset = document.offsetAt(diagnostic.range.start);
+    const kwIdx = tokens.findIndex(t => t.pos === kwOffset);
+    if (kwIdx < 0) return null;
+    // Search backward for the nearest colon-block opener whose condition isn't yet `:`-terminated.
+    // Anchor-agnostic (works whether the diagnostic sits on a stray terminator `endif`, a stray
+    // `elif`, or the `)` of an in-block `elif` that lost its own colon).
+    const OPENER_TYPES = [TokenType.TK_IF, TokenType.TK_ELIF, TokenType.TK_FOR, TokenType.TK_WHILE, TokenType.TK_FUNC];
+    const NAME: Partial<Record<TokenType, string>> = {
+        [TokenType.TK_IF]: 'if', [TokenType.TK_ELIF]: 'elif', [TokenType.TK_FOR]: 'for',
+        [TokenType.TK_WHILE]: 'while', [TokenType.TK_FUNC]: 'function',
+    };
+    for (let j = kwIdx - 1; j >= 0; j--) {
+        if (!OPENER_TYPES.includes(tokens[j]!.type)) continue;
+        // Find the opener's first `(` and match it to its closing `)`.
+        let k = j + 1;
+        while (k < kwIdx && tokens[k]!.type !== TokenType.TK_LPAREN) k++;
+        if (k >= kwIdx) continue;
+        let depth = 0, close = -1;
+        for (; k < tokens.length; k++) {
+            if (tokens[k]!.type === TokenType.TK_LPAREN) depth++;
+            else if (tokens[k]!.type === TokenType.TK_RPAREN && --depth === 0) { close = k; break; }
+        }
+        if (close < 0) continue;
+        if (tokens[close + 1]?.type === TokenType.TK_COLON) continue; // already colon-terminated
+        const name = NAME[tokens[j]!.type] ?? 'if';
+        return {
+            title: `Add ':' after the '${name}' condition (colon-block form)`,
+            kind: CodeActionKind.QuickFix,
+            diagnostics: [diagnostic],
+            isPreferred: true,
+            edit: { changes: { [uri]: [TextEdit.insert(document.positionAt(tokens[close]!.end), ':')] } },
+        };
+    }
+    return null;
+}
+
 function generateJsDocQuickFix(
     ast: AstNode, cursorOffset: number, document: TextDocument, uri: string,
     analysisResult: SemanticAnalysisResult

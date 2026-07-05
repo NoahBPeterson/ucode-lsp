@@ -92,6 +92,17 @@ export abstract class StatementParser extends BasicStatements {
         return this.parseEmptyStatement();
       }
 
+      // A colon-block continuation/terminator keyword (`elif`/`endif`/`endfor`/`endwhile`/
+      // `endfunction`) in statement position: these only occur in the alt syntax
+      // `if (x): … elif (y): … endif`, consumed by the colon-block parsers. Reaching one here
+      // means the matching opener is missing its `:` — give a targeted error, not the cryptic
+      // "unexpected token in expression".
+      if (this.check(TokenType.TK_ELIF) || this.check(TokenType.TK_ENDIF)
+          || this.check(TokenType.TK_ENDFOR) || this.check(TokenType.TK_ENDWHILE)
+          || this.check(TokenType.TK_ENDFUNC)) {
+        return this.parseStrayColonBlockKeyword();
+      }
+
       // Expression statements (default)
       return this.parseExpressionStatement();
 

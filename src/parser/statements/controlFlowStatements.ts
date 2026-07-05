@@ -44,6 +44,45 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
   }
 
   /**
+   * A colon-block continuation/terminator keyword (`elif`/`endif`/`endfor`/`endwhile`/
+   * `endfunction`) reached statement position — which only happens when the matching opener
+   * is missing its `:` (ucode's alt syntax `if (x): … elif (y): … endif`). Emit a targeted
+   * UC6015 instead of the cryptic "Unexpected token in expression", and recover past it:
+   * skip an `elif`'s `(condition)` and any trailing `:` so the body still parses.
+   */
+  protected parseStrayColonBlockKeyword(): AstNode | null {
+    const tok = this.advance()!; // consume the keyword
+    const KW: Partial<Record<TokenType, string>> = {
+      [TokenType.TK_ELIF]: 'elif', [TokenType.TK_ENDIF]: 'endif', [TokenType.TK_ENDFOR]: 'endfor',
+      [TokenType.TK_ENDWHILE]: 'endwhile', [TokenType.TK_ENDFUNC]: 'endfunction',
+    };
+    const OPENER: Partial<Record<TokenType, string>> = {
+      [TokenType.TK_ELIF]: 'if', [TokenType.TK_ENDIF]: 'if', [TokenType.TK_ENDFOR]: 'for',
+      [TokenType.TK_ENDWHILE]: 'while', [TokenType.TK_ENDFUNC]: 'function',
+    };
+    const kw = KW[tok.type] ?? 'endif';
+    const opener = OPENER[tok.type] ?? 'if';
+    this.errorAt(
+      `'${kw}' is only valid in ucode's colon-block form (\`${opener} (…): … ${kw} …\`). ` +
+      `Add a ':' after the ${opener} condition, or use braces { }.`,
+      tok.pos, tok.end, UcodeErrorCode.STRAY_COLON_BLOCK_KEYWORD);
+    this.panicMode = false;
+    // `elif (cond):` carries a parenthesized condition — skip a balanced `( … )` so it
+    // doesn't cascade into "unexpected token" on the condition.
+    if (this.check(TokenType.TK_LPAREN)) {
+      let depth = 0;
+      do {
+        const t = this.advance();
+        if (!t) break;
+        if (t.type === TokenType.TK_LPAREN) depth++;
+        else if (t.type === TokenType.TK_RPAREN) depth--;
+      } while (depth > 0 && !this.isAtEnd());
+    }
+    this.match(TokenType.TK_COLON); // optional trailing `:`
+    return null;
+  }
+
+  /**
    * Parse a colon-end block (e.g., : statements endfor)
    * Used by for-in, while, if statements when using colon syntax
    */
@@ -137,8 +176,20 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
   /** `if (test): … [elif (c): …]* [else …] endif`. The whole chain shares ONE `endif`:
    *  an `elif` recurses (consuming the shared `endif`), so this caller must not consume
    *  it again on that path. */
+  /** Consume the `:` that opens an `if`/`elif` colon-block. When it's missing (e.g.
+   *  `if (x): … elif (y)  ← no colon` inside an already-entered colon-block), emit a targeted
+   *  UC6015 anchored on the condition's `)` — with the SAME quick-fix as the stray-keyword form
+   *  — and DO NOT panic, so the block still parses and later constructs aren't cascade-suppressed. */
+  private expectColonBlockColon(): void {
+    if (this.check(TokenType.TK_COLON)) { this.advance(); return; }
+    const prev = this.previous()!; // the condition's `)`
+    this.errorAt("expected ':' after this condition (ucode's colon-block `if (…): …` form)",
+                 prev.pos, prev.end, UcodeErrorCode.STRAY_COLON_BLOCK_KEYWORD);
+    this.panicMode = false;
+  }
+
   private parseColonIfStatement(start: number, test: AstNode): IfStatementNode {
-    this.consume(TokenType.TK_COLON, "Expected ':' for if block");
+    this.expectColonBlockColon();
     const consequent = this.parseColonBranchBody([TokenType.TK_ELIF, TokenType.TK_ELSE, TokenType.TK_ENDIF]);
 
     let alternate: AstNode | null = null;
@@ -155,7 +206,15 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     }
 
     if (this.match(TokenType.TK_ELSE)) {
-      if (this.check(TokenType.TK_COLON)) this.advance(); // optional `else:`
+      // ucode's colon-block `else` takes NO `:` — unlike `if (x):` / `elif (y):`. A colon here
+      // is a syntax error in ucode ("Expecting expression": it parses the `:` as the else body).
+      if (this.check(TokenType.TK_COLON)) {
+        const colon = this.peek()!;
+        this.errorAt("`else` takes no ':' in ucode's colon-block form (only `if`/`elif` do)",
+                     colon.pos, colon.end, UcodeErrorCode.UNEXPECTED_TOKEN);
+        this.panicMode = false;
+        this.advance(); // consume for recovery
+      }
       alternate = this.parseColonBranchBody([TokenType.TK_ENDIF]);
     }
 
@@ -323,7 +382,10 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     }
     this.consume(TokenType.TK_RPAREN, "Expected ')' after for loop");
 
-    const body = this.parseControlFlowBody("a 'for' loop");
+    // Colon-block `for (…; …; …): … endfor` (like the for-in form above), else a plain body.
+    const body = this.check(TokenType.TK_COLON)
+      ? this.parseColonEndBlock(TokenType.TK_ENDFOR, "endfor")
+      : this.parseControlFlowBody("a 'for' loop");
     if (!body) return null;
 
     return {

@@ -149,8 +149,13 @@ export abstract class DeclarationStatements extends ExpressionParser {
 
     this.consume(TokenType.TK_RPAREN, "Expected ')' after parameters");
 
-    const openingBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' to start function body");
-    const body = this.parseBlockStatement(openingBrace, "function body");
+    // Two body forms — braces `function f() { … }` OR ucode's colon-block alt syntax
+    // `function f(): … endfunction` (verified vs the interpreter). A `:` after the params
+    // selects the colon-block, which runs statements up to `endfunction`.
+    const body = this.check(TokenType.TK_COLON)
+      ? (this.parseColonEndBlock(TokenType.TK_ENDFUNC, "endfunction")
+         ?? { type: 'BlockStatement', start: this.previous()!.end, end: this.previous()!.end, body: [] } as BlockStatementNode)
+      : this.parseBlockStatement(this.consume(TokenType.TK_LBRACE, "Expected '{' or ':' to start the function body"), "function body");
 
     // A trailing semicolon after a function declaration is optional — ucode
     // accepts `export function f() {}` without one (upstream 552ca3c), same as a
@@ -534,6 +539,9 @@ export abstract class DeclarationStatements extends ExpressionParser {
     };
   }
 
-  // Abstract method that must be implemented by subclasses
+  // Abstract methods that must be implemented by subclasses
   protected abstract override parseBlockStatement(openingBrace: Token | null, context: string): BlockStatementNode;
+  // Colon-block body parser (from ControlFlowStatements) — used by the function colon-form
+  // `function f(): … endfunction`.
+  protected abstract override parseColonEndBlock(endToken: TokenType, endKeyword: string): BlockStatementNode | null;
 }

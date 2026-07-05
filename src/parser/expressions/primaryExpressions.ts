@@ -337,8 +337,12 @@ export abstract class PrimaryExpressions extends ParseRules {
 
     this.consume(TokenType.TK_RPAREN, "Expected ')' after parameters");
 
-    const openingBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' to start function body");
-    const body = this.parseBlockStatement(openingBrace, "function expression body");
+    // Braces `function(){ … }` OR ucode's colon-block `function(): … endfunction` (a `:` after
+    // the params selects the colon-block, running statements up to `endfunction`).
+    const body = this.check(TokenType.TK_COLON)
+      ? (this.parseColonEndBlock(TokenType.TK_ENDFUNC, "endfunction")
+         ?? { type: 'BlockStatement', start: this.previous()!.end, end: this.previous()!.end, body: [] } as BlockStatementNode)
+      : this.parseBlockStatement(this.consume(TokenType.TK_LBRACE, "Expected '{' or ':' to start the function body"), "function expression body");
 
     const result: FunctionExpressionNode = {
       type: 'FunctionExpression',
@@ -434,4 +438,7 @@ export abstract class PrimaryExpressions extends ParseRules {
   // Abstract methods that must be implemented by subclasses
   protected abstract parseExpression(precedence?: Precedence): AstNode | null;
   protected abstract parseBlockStatement(openingBrace: Token | null, context: string): BlockStatementNode;
+  // Colon-block body parser (from ControlFlowStatements) — for the function colon-form
+  // `function(): … endfunction` in expression position.
+  protected abstract parseColonEndBlock(endToken: TokenType, endKeyword: string): BlockStatementNode | null;
 }
