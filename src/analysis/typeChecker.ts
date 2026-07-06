@@ -59,7 +59,7 @@ import type { CheckResult } from './checkResult';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
 import { UcodeErrorCode } from './errorConstants';
-import { BuiltinValidator, TypeCompatibilityChecker } from './checkers';
+import { BuiltinValidator, TypeCompatibilityChecker, coerceArgNeedsParens } from './checkers';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { allBuiltinFunctions } from '../builtins';
 import { rtnlTypeRegistry } from './rtnlTypes';
@@ -2365,19 +2365,6 @@ export class TypeChecker {
    * in non-strict mode; user functions don't (ucode permits the call) — they
    * warn, escalating to an error only under `'use strict'`.
    */
-  /** Whether an argument node must be parenthesized when wrapped as `"" + (node)` — true for
-   *  operators that bind looser than `+` (so `"" + a ? b : c` / `"" + a - b` don't misparse). */
-  private static needsParensForAddition(node: AstNode): boolean {
-    switch (node.type) {
-      case 'BinaryExpression':
-      case 'LogicalExpression':
-      case 'ConditionalExpression':
-      case 'AssignmentExpression':
-        return true;
-      default:
-        return false;
-    }
-  }
 
   private checkArgumentTypes(node: CallExpressionNode, expectedTypes: UcodeType[], fnName: string, opts: { flagUnknownActual: boolean; softSeverity: boolean; coercesArgToString?: boolean }): void {
     const argCount = node.arguments.length;
@@ -2460,7 +2447,7 @@ export class TypeChecker {
           narrowable: hasCompatibleType,
           // String-coercion quick-fix marker (#30): wrap the arg in `"" + …`. argNeedsParens
           // is computed from the arg's AST node type so the fix stays AST-based.
-          ...(coerces ? { coerceToString: true, argNeedsParens: TypeChecker.needsParensForAddition(arg) } : {})
+          ...(coerces ? { coerceToString: true, argNeedsParens: coerceArgNeedsParens(arg) } : {})
         };
 
         // Warning when: a coercing builtin (uc/lc — valid, just stringified), partially

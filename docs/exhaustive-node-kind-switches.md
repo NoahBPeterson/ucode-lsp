@@ -86,11 +86,11 @@ by inspection:
 Converting any of these to a total `Record<AstNodeKind, …>` would be cargo-culting: it adds ~30
 no-op `case` labels and fixes nothing (the `cfgBuilder` gap included).
 
-**One real (tiny) drift risk, unrelated to totality:** `coerceArgNeedsParens` (builtinValidation)
-is a hand-copy of `TypeChecker.needsParensForAddition` — two identical 4-operator switches that must
-agree. If they ever diverge a `"" + (arg)` quick-fix could mis-parenthesize. The fix is
-*deduplication* (share one helper), not a `Record<AstNodeKind>`. Low priority — the operator set
-(`Binary`/`Logical`/`Conditional`/`Assignment`) is stable and both default to `false`.
+**One real (tiny) drift risk, unrelated to totality — FIXED.** `coerceArgNeedsParens`
+(builtinValidation) was a hand-copy of `TypeChecker.needsParensForAddition` — two identical
+4-operator switches that had to agree or a `"" + (arg)` quick-fix could mis-parenthesize. Deduplicated:
+`coerceArgNeedsParens` is now `export`ed as the single source and `TypeChecker` imports it (the copy
+is deleted). Not a `Record<AstNodeKind>` — just one shared helper.
 
 **Conclusion:** the exhaustive-node-kind-switch work is complete. `getChildNodes` and `BaseVisitor`
 are guarded; `SCOPE_ROLE` is total; two phantoms removed. The classifiers are intentionally partial.

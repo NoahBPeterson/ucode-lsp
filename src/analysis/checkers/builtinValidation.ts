@@ -243,9 +243,13 @@ const ZERO_ARG_USELESS_RESULT: Record<string, { type: UcodeType; effect: string 
   loadstring: { type: UcodeType.FUNCTION, effect: 'compiles the literal "null"' },
 };
 
-/** Whether an argument node must be parenthesized when wrapped as `"" + (node)` — true for
- *  operators that bind looser than `+`. Mirrors TypeChecker.needsParensForAddition (#30/#32). */
-function coerceArgNeedsParens(node: AstNode): boolean {
+/** Whether an argument node must be parenthesized when wrapped as `"" + (node)` — true for the
+ *  operators that bind looser than `+` (comparison/equality → BinaryExpression, logical, ternary,
+ *  assignment). The SINGLE source for this predicate: both the `match()`-suggestion message here
+ *  and the string-coercion quick-fix in TypeChecker consume it, so they can't drift (#30/#32).
+ *  Conservative-safe: it also parenthesizes tighter-binding binaries like `a * b`, which is
+ *  harmless (extra parens never change meaning). */
+export function coerceArgNeedsParens(node: AstNode): boolean {
   switch (node.type) {
     case 'BinaryExpression':
     case 'LogicalExpression':
