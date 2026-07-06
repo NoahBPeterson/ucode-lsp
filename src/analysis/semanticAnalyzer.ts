@@ -5336,6 +5336,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         let returnType: UcodeDataType = UcodeType.NULL;
         if (node.argument) {
           returnType = this.typeChecker.checkNode(node.argument);
+          // For a bare returned variable, prefer its type-guard-narrowed type at this
+          // position, so `if (type(v) == "array") return v;` infers `array`, not the param's
+          // widened `unknown`. checkIdentifier returns the SSA-effective type (guard narrowing
+          // deliberately flows through getNarrowedTypeAtPosition, not checkNode).
+          if (node.argument.type === 'Identifier') {
+            const narrowed = this.typeChecker.getNarrowedTypeAtPosition((node.argument as IdentifierNode).name, node.argument.start);
+            if (narrowed != null) returnType = narrowed;
+          }
         }
 
         // Store it for later inference.
