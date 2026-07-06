@@ -2847,8 +2847,7 @@ function findEnclosingContext(ast: AstNode | null | undefined, document: TextDoc
                        node.type === 'ArrowFunctionExpression';
         const isLoop = node.type === 'ForStatement' ||
                        node.type === 'ForInStatement' ||
-                       node.type === 'WhileStatement' ||
-                       node.type === 'DoWhileStatement';
+                       node.type === 'WhileStatement';
         const isControl = isLoop || node.type === 'IfStatement';
 
         const newInFunc = isFunc || inFunc;
@@ -2885,7 +2884,6 @@ function findEnclosingContext(ast: AstNode | null | undefined, document: TextDoc
             node.type === 'WhileStatement' ||
             node.type === 'ForStatement' ||
             node.type === 'ForInStatement' ||
-            node.type === 'DoWhileStatement' ||
             node.type === 'SwitchStatement' ||
             node.type === 'TryStatement' ||
             node.type === 'ThrowStatement' ||

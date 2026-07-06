@@ -936,14 +936,13 @@ export class SemanticAnalyzer extends BaseVisitor {
         const local = (n as unknown as { local?: AstNode }).local;
         if (local?.type === 'Identifier') taint((local as IdentifierNode).name, local.start);
       },
-      LabeledStatement: (n: AnyNode) => walk((n as unknown as { body?: unknown }).body), // the label is a name, not a value
       // ── leaves: nothing to do ──────────────────────────────────────────────────────────
       Literal: skip, ThisExpression: skip, TemplateElement: skip, JsDocComment: skip,
       EmptyStatement: skip, BreakStatement: skip, ContinueStatement: skip,
       // ── everything else just contains expressions/statements → generic recursion ──────
       Program: walkChildren, BlockStatement: walkChildren, ExpressionStatement: walkChildren,
       VariableDeclaration: walkChildren, IfStatement: walkChildren, ForStatement: walkChildren,
-      WhileStatement: walkChildren, DoWhileStatement: walkChildren, SwitchStatement: walkChildren,
+      WhileStatement: walkChildren, SwitchStatement: walkChildren,
       SwitchCase: walkChildren, TryStatement: walkChildren, CatchClause: walkChildren,
       ReturnStatement: walkChildren, ThrowStatement: walkChildren,
       FunctionDeclaration: walkChildren, FunctionExpression: walkChildren, ArrowFunctionExpression: walkChildren,
@@ -6834,7 +6833,7 @@ private addDiagnostic(
   // guaranteed to run every iteration, so it can't make the loop provably infinite.
   private static readonly CONDITIONAL_CONTAINERS = new Set([
     'IfStatement', 'ConditionalExpression', 'LogicalExpression', 'SwitchStatement',
-    'TryStatement', 'ForStatement', 'ForInStatement', 'WhileStatement', 'DoWhileStatement',
+    'TryStatement', 'ForStatement', 'ForInStatement', 'WhileStatement',
   ]);
 
   /** UC4005: flag a loop that mutates the very collection it iterates. ucode

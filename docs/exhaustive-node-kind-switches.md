@@ -1,44 +1,55 @@
-# Make `getChildNodes` (and peer node-kind switches) exhaustive via a `never` guard
+# Exhaustive node-kind switches — audit + follow-ups
 
-Status: **NOT STARTED** — follow-up to the `SCOPE_ROLE` work (0.7.63).
+Status: **MOSTLY DONE** (0.7.63 follow-up). The traversal walks are now guarded; a phantom union
+member was removed. Remaining work is the optional classification-switch pass (see bottom).
 
-## Why
+## What the audit found (the original premise was wrong)
 
-0.7.63 established compile-time totality for one node-kind classification: `SCOPE_ROLE` is a
-`Record<AstNodeKind, ScopeRole>` (`src/ast/scopeRoles.ts`), so adding a new `AstNodeKind` is a
-**compile error** until it's classified. That closed the class of bug where ad-hoc scope walks
-silently drifted (e.g. `computeFreeVariables` forgot `CatchClause` + rest params → false
-"undefined variable").
+The ticket assumed `TypeChecker.getChildNodes` lacked a `never` guard. It does **not** — it already
+ends in `default: { const _exhaustive: never = node.type; … }` (typeChecker.ts). The real gaps were
+elsewhere:
 
-Other `switch (node.type)` traversals in the codebase have the **same drift risk** and are NOT
-guarded. The most important is `TypeChecker.getChildNodes` (`src/analysis/typeChecker.ts:5570`) —
-a ~42-case switch that returns a node's children. It has **no `default`/`never`**, so a newly
-added `AstNodeKind` silently traverses to `[]` (its subtree is skipped by every type-check pass
-that walks children). That's an invisible correctness hole exactly like the scope one.
+- **`BaseVisitor.dispatch` (visitor.ts)** — the base traversal that `SemanticAnalyzer extends` — had
+  **no guard** and was **missing** `LogicalExpression`, `ThrowStatement` (real containers) plus the
+  leaves `TemplateElement` / `JsDocComment` / `ExportAllDeclaration` / `ExportSpecifier`.
+  `LogicalExpression` was a genuine oversight: structurally identical to `BinaryExpression` (which
+  *was* handled), so identifiers inside `&&` / `||` / `??` were skipped by the base symbol pass.
+  Benign today (the typeChecker's independent complete pass still catches undefined vars — UC1001
+  fires), but a latent trap for any future subclass.
+  → **FIXED:** all cases added with proper child traversal + a `never` default. Full suite
+  unchanged, so no behavioral regression. Test: `tests/inference/test-visitor-exhaustiveness.test.js`.
 
-## Task
+- **Two phantom union members removed** — `DoWhileStatement` AND `LabeledStatement`:
+  - **`DoWhileStatement`**: ucode has **no `do` token at all** (`lexer.c` keyword table has `while`,
+    no `do`). No do-while loops exist.
+  - **`LabeledStatement`**: ucode has **no statement labels**. `TK_LABEL` in the lexer is just
+    ucode's *identifier* token (`parse_label` lexes any non-keyword word); `uc_compiler_compile_labelexpr`
+    compiles a variable/arrow-fn, not a label. The real binary rejects `outer: while (…)` with
+    "Syntax error: Unexpected token, Expecting ';'", and `break`/`continue` (`uc_compiler_compile_control`)
+    take no label operand. (The separate `break LABEL;` JS-ism *is* handled — UC6010, 0.7.42 — but
+    that's a `.label` field on `BreakStatement`/`ContinueStatement`, a different node.)
 
-1. **`getChildNodes`** — add an exhaustiveness guard:
-   ```ts
-   default: { const _exhaustive: never = node.type; void _exhaustive; return children; }
-   ```
-   or convert to a total `Record<AstNodeKind, (n) => AstNode[]>`. The first compile after adding
-   the guard will likely surface latent missing cases (kinds that fall through today) — **audit
-   each one**: is it a genuine leaf (Literal/Identifier/ThisExpression/TemplateElement/JsDocComment
-   → no children, correct) or a container whose children were being skipped (a real bug)? Fix the
-   real ones; explicitly list the leaves.
-2. **Audit peer switches** for the same treatment (grep `switch (node.type)` / `switch (n.type)`):
-   - the `visitor.ts` traversal, if it has its own child enumeration;
-   - `references.ts` / `definition.ts` / `documentSymbols.ts` walks;
-   - any remaining ad-hoc declaration/scope collectors not yet routed through `scopeRoles.ts`.
-3. Where a switch is really a *classification* (not traversal), prefer the `SCOPE_ROLE` pattern —
-   a total `Record<AstNodeKind, …>` — over a switch, since the Record's totality is enforced
-   without needing a `never` line.
+  Neither is constructed by any parser path or has a live producer. → **REMOVED** from `AstNodeKind`,
+  compiler-guided: deleting each union member turned every consumer into a compile error
+  (getChildNodes cases, `Record<AstNodeKind, …>` keys in the taint dispatch + `SCOPE_ROLE`, a
+  `CONDITIONAL_CONTAINERS` set, `server.ts` comparisons, the `Statement` union + `isStatement` list,
+  the `LabeledStatementNode` interface) — each removed. This is the exhaustiveness discipline working
+  in reverse: deleting a union member surfaces every consumer.
 
-## Guard rails
+- **The two `visitChildren` helpers** (`ast-validator.ts`, `fileResolver.ts`) are generic
+  `Object.keys`/`for…in` walks — inherently exhaustive, no drift risk. Left as-is.
 
-- Do this as a **focused pass**, one switch at a time — enabling exhaustiveness can surface a pile
-  of latent cases at once; resist fixing unrelated things in the same change.
-- Model: `src/ast/scopeRoles.ts` (the total Record) and its consumers (`collectScopeBindings` etc.).
-- The `AstNodeKind` sub-unions (`AstFunctionKind`, `AstStatementKind`, …) already exist in
-  `src/ast/nodes.ts` — useful for grouping cases.
+## Remaining (optional): classification switches
+
+Several `switch (node.type)` sites are *classifications* (not child traversal), where a missing case
+falls through to a safe default rather than skipping a subtree — lower risk, but they could still
+drift. If we want to spread the discipline further, convert them to a `satisfies Record<AstNodeKind, …>`
+(the pattern `SemanticAnalyzer` already uses for its taint dispatch and `scopeRoles.ts` uses for
+`SCOPE_ROLE`), one at a time:
+
+- `documentLinks.ts:57`, `inlayHints.ts:40`, `completion.ts` (1587/2094), `fileResolver.ts` (303/1156/2296),
+  `cfg/cfgBuilder.ts:169`, `checkers/builtinValidation.ts:249`, `validations/ast-validator.ts:194`,
+  `includeScope.ts:70`.
+
+Guard rail: one switch per change; a `never` guard can surface a pile of latent cases at once.
+Model: `src/ast/scopeRoles.ts`.

@@ -14,7 +14,7 @@ import {
   type ExportNamedDeclarationNode, type ForStatementNode, type WhileStatementNode,
   type ThrowStatementNode, type TryStatementNode, type CatchClauseNode, type LogicalExpressionNode,
   type DeleteExpressionNode, type SpreadElementNode, type TemplateLiteralNode,
-  type ImportDeclarationNode, type LabeledStatementNode
+  type ImportDeclarationNode
 } from '../ast/nodes';
 import { AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
 
@@ -5618,11 +5618,6 @@ export class TypeChecker {
         children.push(wh.test, wh.body);
         break;
       }
-      case 'DoWhileStatement': {
-        const dw = node as any;
-        children.push(dw.body, dw.test);
-        break;
-      }
       case 'ReturnStatement': {
         const ret = node as ReturnStatementNode;
         if (ret.argument) children.push(ret.argument);
@@ -5638,11 +5633,6 @@ export class TypeChecker {
       case 'EmptyStatement':
         // Leaf statements — no children
         break;
-      case 'LabeledStatement': {
-        const lbl = node as LabeledStatementNode;
-        children.push(lbl.body);
-        break;
-      }
       case 'SwitchStatement': {
         const sw = node as SwitchStatementNode;
         children.push(sw.discriminant);

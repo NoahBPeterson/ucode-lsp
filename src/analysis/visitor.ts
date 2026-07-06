@@ -14,7 +14,8 @@ import {
   type ForInStatementNode, type EmptyStatementNode, type ThisExpressionNode, type DeleteExpressionNode,
   type ImportDeclarationNode, type ImportSpecifierNode, type ImportDefaultSpecifierNode, type ImportNamespaceSpecifierNode,
   type ArrowFunctionExpressionNode, type ExportNamedDeclarationNode, type ExportDefaultDeclarationNode, type TemplateLiteralNode,
-  type SpreadElementNode
+  type SpreadElementNode, type LogicalExpressionNode, type ThrowStatementNode,
+  type TemplateElementNode, type JsDocCommentNode, type ExportAllDeclarationNode, type ExportSpecifierNode
 } from '../ast/nodes';
 
 /**
@@ -76,6 +77,12 @@ export interface VisitorMethods {
   visitExportDefaultDeclaration?(node: ExportDefaultDeclarationNode): void;
   visitTemplateLiteral?(node: TemplateLiteralNode): void;
   visitSpreadElement?(node: SpreadElementNode): void;
+  visitLogicalExpression?(node: LogicalExpressionNode): void;
+  visitThrowStatement?(node: ThrowStatementNode): void;
+  visitTemplateElement?(node: TemplateElementNode): void;
+  visitJsDocComment?(node: JsDocCommentNode): void;
+  visitExportAllDeclaration?(node: ExportAllDeclarationNode): void;
+  visitExportSpecifier?(node: ExportSpecifierNode): void;
 }
 
 export class BaseVisitor implements VisitorMethods {
@@ -217,6 +224,30 @@ export class BaseVisitor implements VisitorMethods {
       case 'SpreadElement':
         this.visitSpreadElement(node as SpreadElementNode);
         break;
+      case 'LogicalExpression':
+        this.visitLogicalExpression(node as LogicalExpressionNode);
+        break;
+      case 'ThrowStatement':
+        this.visitThrowStatement(node as ThrowStatementNode);
+        break;
+      case 'TemplateElement':
+        this.visitTemplateElement(node as TemplateElementNode);
+        break;
+      case 'JsDocComment':
+        this.visitJsDocComment(node as JsDocCommentNode);
+        break;
+      case 'ExportAllDeclaration':
+        this.visitExportAllDeclaration(node as ExportAllDeclarationNode);
+        break;
+      case 'ExportSpecifier':
+        this.visitExportSpecifier(node as ExportSpecifierNode);
+        break;
+      default: {
+        // Exhaustive: a new AstNodeKind won't compile until it's dispatched here.
+        const _exhaustive: never = node.type;
+        void _exhaustive;
+        break;
+      }
     }
   }
 
@@ -476,5 +507,33 @@ export class BaseVisitor implements VisitorMethods {
   visitSpreadElement(node: SpreadElementNode): void {
     // Visit the spread argument so its identifiers are analyzed (and marked used)
     this.visit(node.argument);
+  }
+
+  visitLogicalExpression(node: LogicalExpressionNode): void {
+    // Structurally like a BinaryExpression (`&&` / `||` / `??`) — visit both operands so their
+    // identifiers are analyzed. (Previously missing from dispatch, an oversight.)
+    this.visit(node.left);
+    this.visit(node.right);
+  }
+
+  visitThrowStatement(node: ThrowStatementNode): void {
+    this.visit(node.argument);
+  }
+
+  visitTemplateElement(_node: TemplateElementNode): void {
+    // Leaf — the literal text chunk of a template; no children.
+  }
+
+  visitJsDocComment(_node: JsDocCommentNode): void {
+    // Leaf — attached documentation, not part of value flow.
+  }
+
+  visitExportAllDeclaration(_node: ExportAllDeclarationNode): void {
+    // `export * from "…"` — the source is a string literal; no local value references.
+  }
+
+  visitExportSpecifier(node: ExportSpecifierNode): void {
+    // Reached only if visited directly (visitExportNamedDeclaration handles specifiers inline).
+    this.visit(node.local);
   }
 }

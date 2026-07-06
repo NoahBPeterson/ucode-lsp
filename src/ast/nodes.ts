@@ -12,11 +12,11 @@ export type AstContainerKind =
 /** Control flow and declaration statements */
 export type AstStatementKind =
   | 'ExpressionStatement' | 'VariableDeclaration'
-  | 'IfStatement' | 'ForStatement' | 'ForInStatement' | 'WhileStatement' | 'DoWhileStatement'
+  | 'IfStatement' | 'ForStatement' | 'ForInStatement' | 'WhileStatement'
   | 'SwitchStatement' | 'SwitchCase'
   | 'TryStatement' | 'CatchClause'
   | 'ReturnStatement' | 'ThrowStatement' | 'BreakStatement' | 'ContinueStatement'
-  | 'EmptyStatement' | 'LabeledStatement';
+  | 'EmptyStatement';
 
 /** Function declarations and expressions */
 export type AstFunctionKind =
@@ -357,13 +357,6 @@ export interface EmptyStatementNode extends AstNode {
   type: 'EmptyStatement';
 }
 
-// Label statements: label: statement
-export interface LabeledStatementNode extends AstNode {
-  type: 'LabeledStatement';
-  label: IdentifierNode;
-  body: AstNode;
-}
-
 // Import statements: import { name } from 'module';
 export interface ImportDeclarationNode extends AstNode {
   type: 'ImportDeclaration';
@@ -461,7 +454,6 @@ export type Statement =
   | ThrowStatementNode
   | SwitchStatementNode
   | EmptyStatementNode
-  | LabeledStatementNode
   | ImportDeclarationNode
   | ExportNamedDeclarationNode
   | ExportDefaultDeclarationNode
@@ -479,6 +471,6 @@ export function isStatement(node: AstNode): node is Statement {
     'IfStatement', 'ForStatement', 'ForInStatement', 'WhileStatement',
     'FunctionDeclaration', 'ReturnStatement', 'BreakStatement',
     'ContinueStatement', 'TryStatement', 'ThrowStatement',
-    'SwitchStatement', 'EmptyStatement', 'LabeledStatement'
+    'SwitchStatement', 'EmptyStatement'
   ].includes(node.type);
 }

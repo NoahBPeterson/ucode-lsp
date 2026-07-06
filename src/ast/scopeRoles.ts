@@ -54,13 +54,12 @@ export const SCOPE_ROLE: Record<AstNodeKind, ScopeRole> = {
   ForStatement: BLOCK,
   ForInStatement: BLOCK,
   WhileStatement: NONE,
-  DoWhileStatement: NONE,
   SwitchStatement: BLOCK,        // one block scope shared by all cases (verified vs the interpreter)
   SwitchCase: NONE,
   TryStatement: NONE,            // try/finally bodies are BlockStatements; the handler is CatchClause
   CatchClause: CATCH,
   ReturnStatement: NONE, ThrowStatement: NONE, BreakStatement: NONE, ContinueStatement: NONE,
-  EmptyStatement: NONE, LabeledStatement: NONE,
+  EmptyStatement: NONE,
   // functions
   FunctionDeclaration: FN_NAMED,
   FunctionExpression: FN_ANON,
