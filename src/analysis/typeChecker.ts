@@ -4175,13 +4175,18 @@ export class TypeChecker {
         && this.getDottedPath(test) === variableName) {
       guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
     }
-    // `&&` left-operand truthiness: `x && expr` / `parts[5] && expr`.
+    // `&&` left-operand truthiness: `x && expr` / `parts[5] && expr`, and the assignment idiom
+    // `(x = expr) && …` — a truthy left means the assigned target `x` is non-null in the branch
+    // (e.g. the while-body of `while ((chunk = read()) && length(chunk))`).
     if (test.type === 'BinaryExpression') {
       const tb = test as BinaryExpressionNode;
-      if (tb.operator === '&&'
-          && (tb.left.type === 'Identifier' || tb.left.type === 'MemberExpression')
-          && this.getDottedPath(tb.left) === variableName) {
-        guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+      if (tb.operator === '&&') {
+        const left = tb.left.type === 'AssignmentExpression' && (tb.left as AssignmentExpressionNode).operator === '='
+          ? (tb.left as AssignmentExpressionNode).left : tb.left;
+        if ((left.type === 'Identifier' || left.type === 'MemberExpression')
+            && this.getDottedPath(left) === variableName) {
+          guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+        }
       }
     }
     // Truthiness of a null-propagating call: `if (length(x)) { ... }`.
@@ -4259,6 +4264,17 @@ export class TypeChecker {
         const guardInfo = this.findGuardInCondition(binaryNode.left, variableName);
         if (guardInfo) {
           guards.push(guardInfo);
+        }
+        // `(x = expr) && …`: the `&&` left is a truthy-tested assignment, so within the RHS the
+        // assigned target `x` is non-null — the read-line/match idiom `(chunk = read()) &&
+        // length(chunk)`. findGuardInCondition covers type-guard LHSs but not a bare truthy
+        // assignment target, so narrow it here (mirrors the identifier `x && …` form).
+        const asnLeft = binaryNode.left.type === 'AssignmentExpression'
+          && (binaryNode.left as AssignmentExpressionNode).operator === '='
+          ? (binaryNode.left as AssignmentExpressionNode).left : null;
+        if (asnLeft && (asnLeft.type === 'Identifier' || asnLeft.type === 'MemberExpression')
+            && this.getDottedPath(asnLeft) === variableName) {
+          guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
         }
         this.collectGuards(binaryNode.right, variableName, position, guards);
         return;
