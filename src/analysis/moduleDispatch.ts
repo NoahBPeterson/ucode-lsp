@@ -37,6 +37,7 @@ import { rtnlModule, rtnlListenerObjectType } from './rtnlTypes';
 import { socketModule, socketObjectType } from './socketTypes';
 import { uhttpdObjectType } from './uhttpdTypes';
 import { netifdProtoObjectType, netifdDaemonObjectType } from './netifdTypes';
+import { hostapdGlobalObjectType, hostapdBssObjectType, hostapdIfaceObjectType, wpasGlobalObjectType, wpasIfaceObjectType } from './hostapdTypes';
 import { ubusModule, ubusConnectionObjectType, ubusChannelObjectType, ubusDeferredObjectType, ubusObjectObjectType, ubusRequestObjectType, ubusNotifyObjectType, ubusListenerObjectType, ubusSubscriberObjectType } from './ubusTypes';
 import { zlibModule, zlibDeflateObjectType, zlibInflateObjectType } from './zlibTypes';
 import { ioModule, ioHandleObjectType } from './ioTypes';
@@ -126,6 +127,11 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'uhttpd': createObjectTypeRegistry(uhttpdObjectType),
   'netifd.proto': createObjectTypeRegistry(netifdProtoObjectType),
   'netifd.daemon': createObjectTypeRegistry(netifdDaemonObjectType),
+  'hostapd.global': createObjectTypeRegistry(hostapdGlobalObjectType),
+  'hostapd.bss': createObjectTypeRegistry(hostapdBssObjectType),
+  'hostapd.iface': createObjectTypeRegistry(hostapdIfaceObjectType),
+  'wpas.global': createObjectTypeRegistry(wpasGlobalObjectType),
+  'wpas.iface': createObjectTypeRegistry(wpasIfaceObjectType),
   'exception': createObjectTypeRegistry(exceptionObjectType),
 };
 

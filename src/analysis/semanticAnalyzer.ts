@@ -513,6 +513,11 @@ export class SemanticAnalyzer extends BaseVisitor {
     // (main+). Seeded ONLY in the matching context (usage/path signal) and version-gated, so a
     // non-netifd script referencing `netifd` still gets UC1001. See docs/netifd-injected-global.md.
     this.detectAndDeclareNetifd(node);
+    // hostapd/wpas ambients: the hostapd & wpa_supplicant daemons bind a `hostapd` / `wpas` C
+    // global into the VM scope before running their `/usr/share/hostap/*.uc` scripts. The single
+    // biggest FP source on the OpenWrt corpus (132 + 97 UC1001). Same discipline: seeded ONLY on a
+    // usage/path signal, version-gated (23.05+), so a non-hostapd file referencing them still gets UC1001.
+    this.detectAndDeclareHostapd(node);
     // `loadfile("file.uc")()` runs file.uc's top-level code in the shared global scope —
     // a poor-man's import. Harvest the globals that file injects (its top-level
     // `global.X = …` + bare implicit-global assignments) so bare `X(...)`/`X` here isn't a
@@ -7487,6 +7492,82 @@ private addDiagnostic(
     this.symbolTable.forceGlobalDeclaration('netifd', SymbolType.VARIABLE,
       { type: UcodeType.OBJECT, moduleName: shape } as UcodeDataType);
     this.symbolTable.markUsed('netifd', 0); // host-injected — never "unused"
+  }
+
+  /** Members read as `<name>.member` for a bare ambient global, plus whether the file locally
+   *  declares `<name>` (a let/const/param/function of that name — then it's a user variable, not
+   *  the injected ambient, so we must not seed it). Generic over the global name. */
+  private collectAmbientMemberUsage(root: AstNode, name: string): { members: Set<string>; declaresSelf: boolean; uses: Array<{ member: string; start: number; end: number }> } {
+    const members = new Set<string>();
+    let declaresSelf = false;
+    const uses: Array<{ member: string; start: number; end: number }> = [];
+    const walk = (n: unknown): void => {
+      if (!n || typeof n !== 'object') return;
+      const node = n as AnyNode;
+      const t = node.type;
+      if (t === 'VariableDeclarator' && (node.id as AnyNode | undefined)?.name === name) declaresSelf = true;
+      if (t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') {
+        if ((node.id as AnyNode | undefined)?.name === name) declaresSelf = true;
+        const params = Array.isArray(node.params) ? node.params : [];
+        for (const p of params) if ((p as AnyNode | undefined)?.name === name) declaresSelf = true;
+      }
+      if (t === 'MemberExpression' && !node.computed) {
+        const obj = node.object as AnyNode | undefined;
+        const prop = node.property as AnyNode | undefined;
+        if (obj?.type === 'Identifier' && obj.name === name && prop?.type === 'Identifier' && typeof prop.name === 'string') {
+          members.add(prop.name);
+          if (typeof prop.start === 'number' && typeof prop.end === 'number') uses.push({ member: prop.name, start: prop.start, end: prop.end });
+        }
+      }
+      for (const k of Object.keys(node)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (node as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (v && typeof v === 'object') walk(v);
+      }
+    };
+    walk(root);
+    return declaresSelf ? { members: new Set(), declaresSelf, uses: [] } : { members, declaresSelf, uses };
+  }
+
+  /** Detect a hostapd / wpa_supplicant ucode script and seed the typed `hostapd` / `wpas` ambient.
+   *  Signal: any `hostapd.<member>` / `wpas.<member>` usage OR the `/usr/share/hostap/` path. A file
+   *  that locally declares the name is never injected. Below the 23.05 floor (hostapd ucode support
+   *  didn't exist) nothing is declared — the name stays UC1001 — but each usage is flagged UC6005
+   *  once, and the name resolves to a plain object so there's no bare-`hostapd` UC1001 cascade. */
+  private detectAndDeclareHostapd(root: AstNode): void {
+    const isHostapPath = /\/usr\/share\/hostap\//.test(this.textDocument.uri);
+    const globals: ReadonlyArray<readonly [string, 'hostapd.global' | 'wpas.global']> = [
+      ['hostapd', 'hostapd.global'], ['wpas', 'wpas.global'],
+    ];
+    for (const [name, shape] of globals) {
+      const { members, declaresSelf, uses } = this.collectAmbientMemberUsage(root, name);
+      if (declaresSelf) continue;                          // a user's own `hostapd`/`wpas`
+      if (members.size === 0 && !isHostapPath) continue;   // no signal → don't inject
+      if (targetLacksFeature(this.targetVersion, '23.05')) {
+        const what = `the \`${name}\` global (hostapd/wpa_supplicant ucode support) was added in {INTRO}`;
+        const remedy = 'Target OpenWrt 23.05 or later to use it';
+        for (const use of uses) this.flagVersionMin('23.05', what, remedy, use.start, use.end);
+        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, { type: UcodeType.OBJECT } as UcodeDataType);
+        this.symbolTable.markUsed(name, 0);
+        continue;
+      }
+      this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE,
+        { type: UcodeType.OBJECT, moduleName: shape } as UcodeDataType);
+      this.symbolTable.markUsed(name, 0); // host-injected — never "unused"
+      // Per-member version floors: the global exists from 23.05, but individual members landed later
+      // (verified live — e.g. `udebug_set` was added in 24.10). Flag a usage the target predates.
+      // flagVersionMin self-guards, so this only fires below a member's own floor.
+      const reg = OBJECT_REGISTRIES[shape];
+      for (const use of uses) {
+        const sig = reg.getMethod(use.member);
+        const introducedIn = Option.isSome(sig) ? sig.value.introducedIn : undefined;
+        if (introducedIn) {
+          this.flagVersionMin(introducedIn, `\`${name}.${use.member}\` was added in {INTRO}`,
+            'Target that release or later to use it', use.start, use.end);
+        }
+      }
+    }
   }
 
   /** Phase D — authoring help for uhttpd handlers.

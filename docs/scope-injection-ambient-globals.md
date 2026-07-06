@@ -1,8 +1,12 @@
-# ⚠️ HIGH PRIORITY (deferred) — Scope-injection / ambient globals
+# ⚠️ HIGH PRIORITY — Scope-injection / ambient globals
 
-> **Status: NOT STARTED. This is the single biggest remaining false-positive source on real
-> OpenWrt code (250+ UC1001 on the corpus scan). Finish this — but it's intentionally
-> deferred, not abandoned.** When picked up, start with the netifd beachhead (Phase 1).
+> **Status: PARTIALLY BUILT.** ✅ **Phase 3 `hostapd`/`wpas` DONE (0.7.66)** — the two biggest
+> contributors (132 + 97 = **229 of the ~250** corpus UC1001) are fixed: typed, usage/path-gated,
+> version-gated ambient globals via the object-type-registry pattern (`src/analysis/hostapdTypes.ts`,
+> `SemanticAnalyzer.detectAndDeclareHostapd`). netifd (Phase 1, 0.7.61) + uhttpd already shipped.
+> **Remaining: Phase 2 `model` (call-scope, 44)** and any long-tail C-host globals. The hard
+> *association* problem (which injection site applies to which file) is sidestepped for hostapd/wpas
+> exactly as for netifd — by a specific-name usage signal + the `/usr/share/hostap/` path.
 
 ## The problem
 
@@ -74,11 +78,14 @@ site and treating the provided keys as defined (ideally typed).
 - **Phase 2 — call-scope provider.** Recognize `call(fn, this, scopeExpr, …)`; infer the scope
   object's shape; inject its keys as globals into `fn`. Covers `model` (cli) + luci templates.
   See `docs/call-scope-injection.md` (the prometheus-node-exporter scope-provider design).
-- **Phase 3 — C-host ambient globals.** `hostapd`/`wpas` (and any daemon-injected global) have no
-  ucode site. Options: a curated ambient-globals table keyed by path glob (`/usr/share/hostap/*.uc`
-  → `{ hostapd, wpas }` with the method tables above), or opt-in project config
-  (`.ucode-lsp.json` globals/ambientScopes). See `docs/cli-defined-globals.md` (the `-D` / config
-  family) — same "external globals" problem.
+- **Phase 3 — C-host ambient globals.** ✅ **BUILT for `hostapd`/`wpas` (0.7.66).** No ucode site,
+  so detection is by the specific-name usage signal (`hostapd.<member>` / `wpas.<member>`) OR the
+  `/usr/share/hostap/` path — no curated path table or project config needed after all. Typed from
+  the vendored C `uc_function_list_t` (`src/analysis/hostapdTypes.ts`: `hostapd.global`/`.bss`/`.iface`,
+  `wpas.global`/`.iface`; globals are `openMembers` because the scripts add `.ubus` at runtime).
+  Version floor 23.05 (below it → UC6005, no bare UC1001 cascade). Verified 0 FP on the vendored
+  `files/hostapd.uc` + `files/wpa_supplicant.uc`. Tests: `tests/diagnostics/test-hostapd-wpas-ambient.mocha.js`.
+  Any *other* daemon-injected global still needs a table or `.ucode-lsp.json` (see `docs/cli-defined-globals.md`).
 
 ## Related existing notes (consolidate when implementing)
 - `docs/netifd-injected-global.md` — Phase-1 detail + the three derivable types.

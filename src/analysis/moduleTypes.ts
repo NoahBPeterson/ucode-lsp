@@ -5,6 +5,7 @@
  * moduleDispatch.ts import from here instead of defining their own.
  */
 import { Option } from 'effect';
+import type { UcodeTargetVersion } from './ucodeVersions';
 
 // ---- Module/object type enumerations ----
 
@@ -43,6 +44,8 @@ export type KnownObjectType =
   | 'uhttpd'
   | 'netifd.proto'
   | 'netifd.daemon'
+  | 'hostapd.global' | 'hostapd.bss' | 'hostapd.iface'
+  | 'wpas.global' | 'wpas.iface'
   | 'exception';
 
 // ---- Common function signature ----
@@ -61,6 +64,11 @@ export interface FunctionSignature {
   }>;
   returnType: string;
   description: string;
+  /** OpenWrt release this member first appeared in (per-member version floor). When set and the
+   *  configured target is older, an access flags UC6005 — e.g. `hostapd.udebug_set` was added in
+   *  24.10 even though the `hostapd` global itself exists from 23.05. Undefined ⇒ no per-member gate
+   *  (the containing type's/ambient's floor applies). Verified against the OpenWrt release binaries. */
+  introducedIn?: UcodeTargetVersion;
   /** When true, null in returnType means only "wrong argument type" — safe to narrow away
    *  when argument types are known to be correct. */
   nullMeansWrongType?: boolean;
