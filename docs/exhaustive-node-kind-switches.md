@@ -39,17 +39,58 @@ elsewhere:
 - **The two `visitChildren` helpers** (`ast-validator.ts`, `fileResolver.ts`) are generic
   `Object.keys`/`for…in` walks — inherently exhaustive, no drift risk. Left as-is.
 
-## Remaining (optional): classification switches
+## Classification switches — AUDITED, no conversion warranted
 
-Several `switch (node.type)` sites are *classifications* (not child traversal), where a missing case
-falls through to a safe default rather than skipping a subtree — lower risk, but they could still
-drift. If we want to spread the discipline further, convert them to a `satisfies Record<AstNodeKind, …>`
-(the pattern `SemanticAnalyzer` already uses for its taint dispatch and `scopeRoles.ts` uses for
-`SCOPE_ROLE`), one at a time:
+The remaining `switch (node.type)` sites were audited (2026-07-06). **None should become a total
+`Record<AstNodeKind, …>` / `never`-guarded switch.** They are a categorically different kind of
+switch from the ones we fixed, and forcing totality would add noise, not safety.
 
-- `documentLinks.ts:57`, `inlayHints.ts:40`, `completion.ts` (1587/2094), `fileResolver.ts` (303/1156/2296),
-  `cfg/cfgBuilder.ts:169`, `checkers/builtinValidation.ts:249`, `validations/ast-validator.ts:194`,
-  `includeScope.ts:70`.
+**The distinction that matters.** Exhaustiveness pays off only when *silently doing nothing for an
+unlisted kind is a bug*:
+- **Traversal** (`getChildNodes`, `BaseVisitor`) — a missing kind SKIPS A SUBTREE → silent
+  incorrectness. Guard it.
+- **Binding collection** (`SCOPE_ROLE`) — a missing kind FORGETS A BINDING → silent FP/FN. Guard it.
+- **Classification with a meaningful default** — a missing kind gets the CORRECT conservative
+  answer. Do NOT guard it: totality would force ~30 `case` labels that all resolve to the default.
 
-Guard rail: one switch per change; a `never` guard can surface a pile of latent cases at once.
-Model: `src/ast/scopeRoles.ts`.
+Every remaining site is the third kind — the `default` is the intended, correct answer:
+
+| site | classifies | default (correct for a new kind) |
+|---|---|---|
+| `documentLinks.ts:57` | which nodes carry a module-source link | no link |
+| `inlayHints.ts:40` `isNonObviousInit` | is an initializer self-evident? | `true` → annotate (conservative) |
+| `includeScope.ts:70` `classifyScopeValue` | scope-value → type/ident/require | `{ kind: 'unknown' }` |
+| `cfg/cfgBuilder.ts:169` `visitNode` | dispatch control-flow nodes | `addStatement` (opaque) — see note ⚠ |
+| `checkers/builtinValidation.ts:249` `coerceArgNeedsParens` | operators looser-binding than `+` | `false` |
+| `validations/ast-validator.ts:194` | per-kind structural invariants | no check |
+| `completion.ts:1587` `inferDefaultExportPropertyType` | value → completion label kind | `'property'` |
+| `completion.ts:2094` | member → completion item kind | conservative default |
+
+For most of these the `default` is provably right (a leaf/import/expression carries no link, no
+control flow, a conservative label). Two were verified by *enumerating* the fall-through kinds, not
+by inspection:
+
+- **`coerceArgNeedsParens`** — provably safe: the only operators binding looser than `+`
+  (comparison/equality = `BinaryExpression`, logical = `LogicalExpression`, ternary =
+  `ConditionalExpression`, assignment) are all cased; everything else binds tighter or isn't an
+  operator, so `false` (no parens) is correct. It even over-parenthesizes `a * b` harmlessly (extra
+  parens never change meaning), so it can only ever be conservative.
+- ⚠ **`cfgBuilder.visitNode`** — enumeration found a REAL gap. It cases every control-flow *statement*
+  kind, but a terminator call buried in a **`VariableDeclaration` init** (`let x = die(); …`) falls
+  to the opaque default, so the following code is wrongly considered reachable (confirmed: no UC4001,
+  vs. `die();` as a statement which IS flagged). **This is NOT an exhaustiveness bug** — adding
+  `case 'VariableDeclaration': this.addStatement(node)` behaves identically to the default. The fix
+  is a CFG feature (recurse a declaration/assignment init for terminator calls). Filed separately →
+  `docs/cfg-terminator-in-initializer.md`.
+
+Converting any of these to a total `Record<AstNodeKind, …>` would be cargo-culting: it adds ~30
+no-op `case` labels and fixes nothing (the `cfgBuilder` gap included).
+
+**One real (tiny) drift risk, unrelated to totality:** `coerceArgNeedsParens` (builtinValidation)
+is a hand-copy of `TypeChecker.needsParensForAddition` — two identical 4-operator switches that must
+agree. If they ever diverge a `"" + (arg)` quick-fix could mis-parenthesize. The fix is
+*deduplication* (share one helper), not a `Record<AstNodeKind>`. Low priority — the operator set
+(`Binary`/`Logical`/`Conditional`/`Assignment`) is stable and both default to `false`.
+
+**Conclusion:** the exhaustive-node-kind-switch work is complete. `getChildNodes` and `BaseVisitor`
+are guarded; `SCOPE_ROLE` is total; two phantoms removed. The classifiers are intentionally partial.

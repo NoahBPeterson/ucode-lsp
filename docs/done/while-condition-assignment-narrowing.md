@@ -5,13 +5,18 @@
 > enclosing lexical scope (function params + body decls, blocks, loop headers). So a local
 > reassigned in a `while`-condition (`let chunk; while ((chunk = read()) && length(chunk)) …`) is
 > no longer a false UC8004, WHILE a real implicit global (a bare `x =` where x isn't declared in
-> scope — even if another function has its own `let x`) still flags. 6 tests
-> (`tests/diagnostics/test-while-condition-assignment-local.test.js`). **Finding #2 remains a
-> non-issue** in the dev build (the `&&` narrowing works) — no action unless it resurfaces with a
-> user repro.
+> scope — even if another function has its own `let x`) still flags.
+>
+> ✅ **Finding #2 FIXED 0.7.64.** It DID reproduce — but only under `'use strict'` (the length()
+> nullable-argument diagnostic is strict-gated, so non-strict masked it). Root cause: the `&&`
+> assignment-idiom `(chunk = read()) && length(chunk)` narrowed the assigned target only when the
+> `&&` LHS was a plain identifier (`chunk && …`), not an assignment. `collectGuards` (condition
+> position) + `collectPositiveTestGuards` (loop/if body) now unwrap an `=` assignment LHS to its
+> target and apply the truthy guard — so `(x = expr) && …` narrows `x` exactly like `x && …`.
+> Verified sound: an unguarded nullable still fires, and `||` / other variables are NOT narrowed.
+> 12 tests (`tests/diagnostics/test-while-condition-assignment-local.test.js`).
 
-Status: **NOT STARTED.** Reported 2026-07-05. Two related findings; #1 is reproduced, #2 (the
-originally-reported symptom) is not yet reproducible in the dev build — see below.
+Status: **DONE (both findings fixed).** Reported 2026-07-05; #1 fixed 0.7.63, #2 fixed 0.7.64.
 
 ## Motivating code
 
@@ -57,7 +62,13 @@ assignment expression the way it does for a statement-position assignment. Fix: 
 `while`/`for`/`do` **condition** assignment resolves its target against the enclosing scope (and
 feeds SSA) exactly like a statement assignment.
 
-## Finding #2 (NOT REPRODUCED in dev) — the reported "length() may be null"
+## Finding #2 (REPRODUCED under `'use strict'` — FIXED 0.7.64) — the reported "length() may be null"
+
+> Re-investigation (2026-07-06): it reproduces ONLY under `'use strict'`. The culprit is the `&&`
+> LHS being an ASSIGNMENT, not while-vs-if-vs-value context: `chunk && length(chunk)` narrows,
+> `(chunk = read()) && length(chunk)` did not. The guard extractors now unwrap the `=` assignment
+> to its target. Original (pre-fix) investigation notes below.
+
 
 The original report was `length(chunk)` → "Argument 1 of length() may be null. Use a type guard to
 narrow to string | array | object." In the dev build this does **not** reproduce for a typed

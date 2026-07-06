@@ -24,6 +24,8 @@ import {
   type LogicalExpressionNode,
   type ExpressionStatementNode,
   type CallExpressionNode,
+  type VariableDeclarationNode,
+  type AssignmentExpressionNode,
 } from '../../ast/nodes';
 import { type ControlFlowGraph, type BasicBlock, type Edge } from './types';
 
@@ -227,21 +229,31 @@ export class CFGBuilder {
         this.visitLogicalExpression(node as LogicalExpressionNode);
         break;
 
-      // Expression statements: check for terminator calls and callback builtins
+      // Expression statements: a terminator call cuts the flow — `die();` directly, or as an
+      // assignment RHS `x = die();` (the assignment never completes because die() throws).
       case 'ExpressionStatement': {
         const exprStmt = node as ExpressionStatementNode;
         this.addStatement(node);
-        if (exprStmt.expression.type === 'CallExpression') {
-          const call = exprStmt.expression as CallExpressionNode;
-          const calleeName = call.callee.type === 'Identifier' ? (call.callee as any).name : null;
-          if (calleeName && this.terminatorNames.has(calleeName)) {
-            this.connect(this.currentBlock, this.cfg.exit);
-            this.currentBlock = this.createBlock('after.die');
-          }
-          // Note: map/filter/sort callbacks are analyzed per-function separately.
-          // FunctionExpression/ArrowFunctionExpression bodies are NOT visited here
-          // (they're handled by the default case as opaque statements), so callback
-          // returns don't affect the outer function's control flow.
+        const expr = exprStmt.expression;
+        const asnRhs = expr.type === 'AssignmentExpression' && (expr as AssignmentExpressionNode).operator === '='
+          ? (expr as AssignmentExpressionNode).right : null;
+        if (this.isTerminatorCall(expr) || this.isTerminatorCall(asnRhs)) {
+          this.cutToExit();
+        }
+        // Note: map/filter/sort callbacks are analyzed per-function separately.
+        // FunctionExpression/ArrowFunctionExpression bodies are NOT visited here
+        // (they're handled by the default case as opaque statements), so callback
+        // returns don't affect the outer function's control flow.
+        break;
+      }
+
+      // A terminator in a declarator init (`let x = die();`) cuts the flow exactly like `die();` —
+      // die() throws before the binding is ever made, so anything after is unreachable.
+      case 'VariableDeclaration': {
+        this.addStatement(node);
+        const decl = node as VariableDeclarationNode;
+        if ((decl.declarations || []).some((d) => this.isTerminatorCall(d?.init))) {
+          this.cutToExit();
         }
         break;
       }
@@ -251,6 +263,22 @@ export class CFGBuilder {
         this.addStatement(node);
         break;
     }
+  }
+
+  /** A direct, unconditional terminator call (`die(…)` / `exit(…)`): callee is a bare Identifier in
+   *  terminatorNames. Conservative by design — only the direct form, NOT `die() || x` / `cond ?
+   *  die() : y`, where termination isn't unconditional (a wrong cut would be a false "unreachable"). */
+  private isTerminatorCall(expr: AstNode | null | undefined): boolean {
+    if (!expr || expr.type !== 'CallExpression') return false;
+    const call = expr as CallExpressionNode;
+    const calleeName = call.callee.type === 'Identifier' ? (call.callee as any).name : null;
+    return !!calleeName && this.terminatorNames.has(calleeName);
+  }
+
+  /** Cut the current block to the CFG exit and open a fresh (unreachable) block after it. */
+  private cutToExit(): void {
+    this.connect(this.currentBlock, this.cfg.exit);
+    this.currentBlock = this.createBlock('after.die');
   }
 
   // ========== VISITOR METHODS ==========
