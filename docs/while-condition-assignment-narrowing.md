@@ -1,5 +1,15 @@
 # Assignment inside a `while (...)` condition — scope + narrowing gaps
 
+> ✅ **Finding #1 FIXED 0.7.63.** `collectImplicitGlobalNames` is now SCOPE-AWARE: a bare `x = …`
+> / `x++` / `for (x in …)` enters the implicit-global set only when `x` is declared in NO
+> enclosing lexical scope (function params + body decls, blocks, loop headers). So a local
+> reassigned in a `while`-condition (`let chunk; while ((chunk = read()) && length(chunk)) …`) is
+> no longer a false UC8004, WHILE a real implicit global (a bare `x =` where x isn't declared in
+> scope — even if another function has its own `let x`) still flags. 6 tests
+> (`tests/diagnostics/test-while-condition-assignment-local.test.js`). **Finding #2 remains a
+> non-issue** in the dev build (the `&&` narrowing works) — no action unless it resurfaces with a
+> user repro.
+
 Status: **NOT STARTED.** Reported 2026-07-05. Two related findings; #1 is reproduced, #2 (the
 originally-reported symptom) is not yet reproducible in the dev build — see below.
 

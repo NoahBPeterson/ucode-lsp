@@ -19,6 +19,7 @@
  */
 
 import { type AstNode } from '../ast/nodes';
+import { enclosingBindings, functionOwnBindings } from '../ast/scopeRoles';
 
 /** A node viewed as an open record, for dynamic traversal/property access. AST nodes carry
  *  many type-specific fields that the base `AstNode` interface does not enumerate; this alias
@@ -355,20 +356,14 @@ export function computeFreeVariables(ast: AstNode | null | undefined): Set<strin
 
   const collectDecls = (n: unknown): void => {
     if (!isNode(n)) return;
-    if (n.type === 'VariableDeclarator') addId(n.id);
-    if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') {
-      addId(n.id);
-      const params = Array.isArray(n.params) ? n.params : [];
-      for (const p of params) {
-        // ucode function params are plain Identifiers (rest params live on a separate
-        // `restParam` field, never as a 'RestElement' param node), so this is the only case.
-        if (isNode(p) && p.type === 'Identifier') addId(p);
-      }
-    }
-    if (n.type === 'ImportDeclaration') {
-      const specifiers = Array.isArray(n.specifiers) ? n.specifiers : [];
-      for (const s of specifiers) addId(isNode(s) ? (s.local ?? s.id) : undefined);
-    }
+    // Bindings via the shared, compiler-enforced classifier (let/const, fn names, params + rest,
+    // catch params, import locals). This is file-WIDE (over-approximates the declared set across
+    // nested functions too — safe: it can only UNDER-report frees), so we DO descend into nested
+    // functions and collect their own params/rest as well.
+    for (const nm of enclosingBindings(n as AstNode)) declared.add(nm);
+    for (const nm of functionOwnBindings(n as AstNode)) declared.add(nm);
+    // A bare `for (x in …)` loop var is an implicit global (an assignment, not a declaration, so
+    // it's not a SCOPE_ROLE binding) — but for free-variable purposes it's assigned, so count it.
     if (n.type === 'ForInStatement' && isNode(n.left) && n.left.type === 'Identifier') addId(n.left);
     for (const k of Object.keys(n)) {
       if (k === 'leadingJsDoc') continue;

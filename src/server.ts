@@ -1343,15 +1343,37 @@ function generateDeclareGlobalQuickFix(diagnostic: Diagnostic, document: TextDoc
 // (the conditional site then merely reassigns it). Inserts `global.X = null;` at the top of
 // the file (after shebang / 'use strict').
 function generateSeedGlobalDefaultQuickFix(diagnostic: Diagnostic, document: TextDocument, uri: string): CodeAction[] {
-    const name = (diagnostic.data as { globalName?: string } | undefined)?.globalName;
+    const data = diagnostic.data as { globalName?: string; implicit?: boolean } | undefined;
+    const name = data?.globalName;
     if (!name) return [];
     const at = topInsertPosition(document);
     return [{
         title: `Assign a default at top level (global.${name} = null;)`,
         kind: CodeActionKind.QuickFix,
-        isPreferred: true,
+        // Preferred for an explicit `global.x = …` (a real global); for a bare `x = …` the
+        // declare-local fix is the preferred one instead.
+        ...(data?.implicit === false ? { isPreferred: true } : {}),
         diagnostics: [diagnostic],
         edit: { changes: { [uri]: [TextEdit.insert(at, `global.${name} = null;\n`)] } },
+    }];
+}
+
+// UC8004/UC8005: usually the name was meant to be a module-scoped LOCAL and the `let` was
+// forgotten — a bare `x = …` then leaks an implicit global. Offer to declare it: `let <name>;`
+// at the top of the file (after shebang / 'use strict'), making it a real module-local shared by
+// the file's functions. Preferred over the explicit-global options (the common intent).
+function generateDeclareLocalQuickFix(diagnostic: Diagnostic, document: TextDocument, uri: string): CodeAction[] {
+    const data = diagnostic.data as { globalName?: string; implicit?: boolean } | undefined;
+    const name = data?.globalName;
+    // Only for a bare `x = …` (a forgotten `let`); an explicit `global.x = …` is a real global.
+    if (!name || data?.implicit === false) return [];
+    const at = topInsertPosition(document);
+    return [{
+        title: `Declare '${name}' as a local (let ${name};)`,
+        kind: CodeActionKind.QuickFix,
+        isPreferred: true,
+        diagnostics: [diagnostic],
+        edit: { changes: { [uri]: [TextEdit.insert(at, `let ${name};\n`)] } },
     }];
 }
 
@@ -1565,6 +1587,9 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             if (diagnostic.code === 'UC1001' || diagnostic.code === 'UC1002'
                 || diagnostic.code === 'UC8004' || diagnostic.code === 'UC8005') {
                 if (diagnostic.code === 'UC8004' || diagnostic.code === 'UC8005') {
+                    // Declare-as-local first (preferred: usually a forgotten `let`), then the
+                    // explicit-global options.
+                    codeActions.push(...generateDeclareLocalQuickFix(diagnostic, document, params.textDocument.uri));
                     codeActions.push(...generateSeedGlobalDefaultQuickFix(diagnostic, document, params.textDocument.uri));
                 }
                 codeActions.push(...generateDeclareGlobalQuickFix(diagnostic, document, params.textDocument.uri));

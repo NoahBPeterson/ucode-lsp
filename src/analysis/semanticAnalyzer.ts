@@ -35,6 +35,7 @@ import { KNOWN_HOST_GLOBALS, isHostEntryPointCallback } from './hostGlobals';
 import { THROWING_BUILTINS } from './throwingBuiltins';
 import { KNOWN_MODULES } from './moduleTypes';
 import { type JsDocCommentNode } from '../ast/nodes';
+import { collectScopeBindings, enclosingBindings, functionOwnBindings } from '../ast/scopeRoles';
 import { Either, Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, validateImport } from './moduleDispatch';
 import { NETIFD_DAEMON_ONLY_MEMBERS } from './netifdTypes';
@@ -627,15 +628,11 @@ export class SemanticAnalyzer extends BaseVisitor {
     const walk = (n: unknown): void => {
       if (!isAstNodeLike(n)) return;
       const t = n.type;
-      if (t === 'VariableDeclarator' || t === 'FunctionDeclaration') {
-        const id = (n as unknown as { id?: AstNode }).id;
-        if (id?.type === 'Identifier' && candidates.has((id as IdentifierNode).name)) tainted.add((id as IdentifierNode).name);
-      }
-      if ((t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression')) {
-        for (const p of ((n as unknown as { params?: AstNode[] }).params || [])) {
-          if (p?.type === 'Identifier' && candidates.has((p as IdentifierNode).name)) tainted.add((p as IdentifierNode).name);
-        }
-      }
+      // Any local binding (let/const, fn name, params + rest, catch param, import local) that
+      // shadows a candidate name makes bare references to it ambiguous → taint. Uses the shared
+      // classifier so no binding construct is missed.
+      for (const nm of enclosingBindings(n as AstNode)) if (candidates.has(nm)) tainted.add(nm);
+      for (const nm of functionOwnBindings(n as AstNode)) if (candidates.has(nm)) tainted.add(nm);
       if (t === 'AssignmentExpression') {
         const a = n as unknown as AssignmentExpressionNode;
         const left = a.left;
@@ -1272,13 +1269,15 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Everything the top level MUST assign (incl. exhaustive branches, unconditional calls)
     // definitely exists → all its sites are silent.
     const hasDeterministicDef = seqAssigns(node.body);
-    const sites: { name: string; start: number; end: number; ctx: Exclude<Ctx, null> }[] = [];
+    const sites: { name: string; start: number; end: number; ctx: Exclude<Ctx, null>; implicit: boolean }[] = [];
 
     const record = (left: AstNode, right: AstNode | undefined, ctx: Ctx) => {
       const name = globalTargetName(left);
       if (!name || localNames.has(name)) return;
       if (ctx === null) hasDeterministicDef.add(name);
-      else sites.push({ name, start: left.start, end: (right ?? left).end, ctx });
+      // `implicit` = a bare `x = …` (a forgotten `let` → declarable as a local); vs an explicit
+      // `global.x = …` (intentional global, only the seed/@global fixes apply).
+      else sites.push({ name, start: left.start, end: (right ?? left).end, ctx, implicit: left.type === 'Identifier' });
     };
 
     const recurseChildren = (n: AnyNode, ctx: Ctx): void => {
@@ -1406,13 +1405,6 @@ export class SemanticAnalyzer extends BaseVisitor {
       group.push(s);
     }
     for (const s of flagged) {
-      const fix = s.ctx.kind === 'function'
-        ? `Call ${s.ctx.detail ? `'${s.ctx.detail}'` : 'the function'} unconditionally at top level, ` +
-          `assign a default at top level (e.g. \`global.${s.name} = null;\`), or declare ` +
-          `\`/** @global ${s.name} */\` if the environment guarantees it.`
-        : `Make the definition deterministic — assign a default at top level (e.g. ` +
-          `\`global.${s.name} = null;\`) before the conditional assignment — or declare ` +
-          `\`/** @global ${s.name} */\` if the environment guarantees it.`;
       const siblings = byName.get(s.name)!.filter(o => o !== s);
       const related: DiagnosticRelatedInformation[] = siblings.map(o => ({
         location: {
@@ -1421,12 +1413,18 @@ export class SemanticAnalyzer extends BaseVisitor {
         },
         message: `'${o.name}' is also assigned non-deterministically here (${label(o.ctx)})`,
       }));
+      // Concise message; the detailed fixes live in quick-fixes. A bare `x = …` reads as a
+      // forgotten `let`; an explicit `global.x = …` is an intentional-but-shaky global.
+      const message = s.implicit
+        ? `'${s.name}' is assigned only ${label(s.ctx)} but never declared, so it becomes an ` +
+          `implicit global whose existence at a later read isn't guaranteed. Declare it with ` +
+          `\`let ${s.name};\` at the top level (see quick-fixes).`
+        : `Global '${s.name}' is assigned only ${label(s.ctx)}, so its existence at a later read ` +
+          `isn't guaranteed (null non-strict, Reference error under strict). Seed a default at ` +
+          `top level or declare \`/** @global ${s.name} */\` (see quick-fixes).`;
       this.addDiagnostic(
-        `Global '${s.name}' is assigned only ${label(s.ctx)}, so whether it exists at any later ` +
-        `read cannot be statically determined. A read of a missing global is null (non-strict) ` +
-        `or throws a Reference error ('use strict'). ${fix}`,
-        s.start, s.end, severity, UcodeErrorCode.GLOBAL_DEFINED_NONDETERMINISTICALLY,
-        { globalName: s.name }, related,
+        message, s.start, s.end, severity, UcodeErrorCode.GLOBAL_DEFINED_NONDETERMINISTICALLY,
+        { globalName: s.name, implicit: s.implicit }, related,
       );
     }
 
@@ -1466,33 +1464,10 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Names lexically bound within a function (params, let/const, nested fn decls, catch
     // params) — reads of those are locals, not globals. Doesn't descend into nested
     // functions (their locals are their own).
-    const fnLocalNames = (fn: { params?: unknown[]; restParam?: unknown; body?: unknown }): Set<string> => {
-      const out = new Set<string>();
-      for (const p of (fn.params || [])) if (isAstNodeLike(p) && p.type === 'Identifier') out.add((p as unknown as IdentifierNode).name);
-      if (isAstNodeLike(fn.restParam) && fn.restParam.type === 'Identifier') out.add((fn.restParam as unknown as IdentifierNode).name);
-      const scan = (n: unknown): void => {
-        if (!isAstNodeLike(n)) return;
-        const t = n.type;
-        if (t === 'FunctionExpression' || t === 'ArrowFunctionExpression') return;
-        if (t === 'FunctionDeclaration') { const id = (n as unknown as FunctionDeclarationNode).id; if (id?.name) out.add(id.name); return; }
-        if (t === 'VariableDeclaration') {
-          for (const d of ((n as unknown as VariableDeclarationNode).declarations || [])) {
-            if (d?.id?.type === 'Identifier') out.add((d.id as IdentifierNode).name);
-            scan((d as unknown as Record<string, unknown>)['init']);
-          }
-          return;
-        }
-        if (t === 'CatchClause') { const p = (n as unknown as CatchClauseNode).param; if (p?.name) out.add(p.name); }
-        for (const k of Object.keys(n)) {
-          if (k === 'leadingJsDoc') continue;
-          const v = (n as Record<string, unknown>)[k];
-          if (Array.isArray(v)) { for (const it of v) scan(it); }
-          else scan(v);
-        }
-      };
-      scan(fn.body);
-      return out;
-    };
+    // A function's own locals (params/rest + body decls, catch params, nested-fn names; not
+    // descending into nested functions) — from the shared, compiler-enforced classifier.
+    const fnLocalNames = (fn: { params?: unknown[]; restParam?: unknown; body?: unknown }): Set<string> =>
+      collectScopeBindings(fn as unknown as AstNode);
     // Walk a statement SEQUENCE tracking what's definitely assigned so far: reads in
     // statement N are suppressed by must-assigns of statements 1..N-1 (they provably ran
     // if N runs). Within one statement the pre-statement set applies (an RHS read happens
@@ -2170,64 +2145,60 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (this.strictMode) return;
     const names = this.implicitGlobalNames;
 
-    // A name declared with `let`/`const` in a loop HEADER (`for (let i…)`, `for (let x in…)`)
-    // is block-scoped to that loop, never a global — even though its `i++` update looks like
-    // a bare assignment. Collect those names so the heuristic below doesn't mark them implicit
-    // globals (which would wrongly suppress the "out of scope" diagnostic when the loop var is
-    // read after the loop). Finding #17.
-    const loopHeaderLocals = new Set<string>();
-    const collectLoopLocals = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
-      const header: unknown = (n.type === 'ForStatement') ? n.init
-        : (n.type === 'ForInStatement') ? n.left : null;
-      if (isAstNodeLike(header) && header.type === 'VariableDeclaration') {
-        const decls = (header as unknown as VariableDeclarationNode).declarations ?? [];
-        for (const d of decls) {
-          if (d?.id?.type === 'Identifier' && (d.id as IdentifierNode).name) loopHeaderLocals.add((d.id as IdentifierNode).name);
-        }
-      }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) collectLoopLocals(it); }
-        else if (isAstNodeLike(v)) collectLoopLocals(v);
-      }
-    };
-    collectLoopLocals(node);
+    // An implicit global is a name assigned WITHOUT a declaration IN SCOPE. The walk is
+    // SCOPE-AWARE (a stack of lexical scopes): a bare `x = …` / `x++` / `for (x in …)` only
+    // enters the set when `x` is declared in none of the enclosing scopes. This is what lets
+    // `let chunk; while ((chunk = 1)) …` stay a local (no false UC8004) WHILE `x = 1` in a
+    // function where `x` isn't declared is still an implicit global — even if some OTHER function
+    // has its own `let x`. A `let`/`const` in a loop HEADER is block-scoped to that loop
+    // (Finding #17: the loop var read after the loop still flags "out of scope").
 
-    const walk = (n: unknown): void => {
+    // Function-scope bindings (params/rest + every let/const/nested-fn-name/catch-param through
+    // blocks/switch/try, not descending into nested functions) come from the shared, compiler-
+    // enforced classifier — see src/ast/scopeRoles.ts. That totality is what keeps this collector
+    // from silently forgetting a binding construct (as it once did for switch-case `let`).
+    const declaredIn = (scopes: Set<string>[], nm: string): boolean => scopes.some(s => s.has(nm));
+
+    const walk = (n: unknown, scopes: Set<string>[]): void => {
       if (!isAstNodeLike(n)) return;
+
+      // A function opens a new scope (its params + every declaration in its body).
+      let inner = scopes;
+      if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') {
+        inner = [...scopes, collectScopeBindings(n as AstNode)];
+      }
+
       if (n.type === 'AssignmentExpression') {
         const a = n as unknown as AssignmentExpressionNode;
         if (a.left?.type === 'Identifier' && (a.left as IdentifierNode).name) {
           const nm = (a.left as IdentifierNode).name;
-          if (!loopHeaderLocals.has(nm)) names.add(nm);
+          if (!declaredIn(inner, nm)) names.add(nm);
         }
       } else if (n.type === 'UnaryExpression') {
         const u = n as unknown as UnaryExpressionNode;
         if ((u.operator === '++' || u.operator === '--')
             && u.argument?.type === 'Identifier' && (u.argument as IdentifierNode).name) {
-          // `x++` / `--x` on an undeclared name also auto-creates the implicit global.
           const nm = (u.argument as IdentifierNode).name;
-          if (!loopHeaderLocals.has(nm)) names.add(nm);
+          if (!declaredIn(inner, nm)) names.add(nm);
         }
       } else if (n.type === 'ForInStatement') {
         const f = n as unknown as ForInStatementNode;
         if (f.left?.type === 'Identifier' && (f.left as IdentifierNode).name) {
-          // A bare `for (x in …)` loop variable (no `let`) is an implicit global that
-          // persists after the loop (verified vs the interpreter). Strict mode flags it
-          // separately (visitForInStatement).
-          names.add((f.left as IdentifierNode).name);
+          // A bare `for (x in …)` loop variable (no `let`) is an implicit global that persists
+          // after the loop (verified vs the interpreter), unless x is declared in an outer scope.
+          const nm = (f.left as IdentifierNode).name;
+          if (!declaredIn(inner, nm)) names.add(nm);
         }
       }
+
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc') continue;
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it, inner); }
+        else if (isAstNodeLike(v)) walk(v, inner);
       }
     };
-    walk(node);
+    walk(node, [collectScopeBindings(node)]); // seed with the top-level (program) scope
   }
 
   /**

@@ -26,10 +26,10 @@ test("global defined only inside an uncalled function → flagged, with the new 
   const d = u4("function init() { global.CFG = {}; }\n");
   expect(d.length).toBe(1);
   expect(/inside function 'init'/.test(d[0].message)).toBe(true);
-  expect(/cannot be statically determined/.test(d[0].message)).toBe(true);
-  expect(/global\.CFG = null;/.test(d[0].message)).toBe(true);   // concrete seed-default fix
+  expect(/isn't guaranteed/.test(d[0].message)).toBe(true);      // shaky-existence, concise wording
   expect(/@global CFG/.test(d[0].message)).toBe(true);           // sanctioned escape named
   expect(d[0].data?.globalName).toBe("CFG");                     // quick-fix payload
+  expect(d[0].data?.implicit).toBe(false);                       // `global.CFG =` is an explicit global
 });
 
 test("if WITHOUT else → flagged", () => {
