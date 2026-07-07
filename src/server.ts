@@ -942,7 +942,7 @@ connection.onHover(async (params) => {
         return null;
     }
 
-    return handleHover(params, documents, cacheEntry.result, cacheEntry.tokens);
+    return handleHover(params, documents, cacheEntry.result, cacheEntry.tokens, cacheEntry.comments);
 });
 
 connection.onCompletion(async (params) => {

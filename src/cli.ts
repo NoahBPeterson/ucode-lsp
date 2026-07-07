@@ -8,13 +8,18 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { DiagnosticSeverity } from 'vscode-languageserver/node';
-import type { Diagnostic } from 'vscode-languageserver/node';
-import { UcodeLexer, detectTemplateMode, bridgeTemplateTokens } from './lexer';
+import { DiagnosticSeverity, MarkupKind } from 'vscode-languageserver/node';
+import type { Diagnostic, TextDocuments } from 'vscode-languageserver/node';
+import { UcodeLexer, detectTemplateMode, bridgeTemplateTokens, type Token } from './lexer';
 import { UcodeParser } from './parser';
-import { SemanticAnalyzer } from './analysis';
+import { SemanticAnalyzer, type SemanticAnalysisResult } from './analysis';
 import { UcodeErrorCode } from './analysis/errorConstants';
 import { UCODE_TARGET_VERSIONS, DEFAULT_TARGET_VERSION, type UcodeTargetVersion } from './analysis/ucodeVersions';
+import { handleHover } from './hover';
+import type {
+    AstNode, IdentifierNode, MemberExpressionNode, PropertyNode,
+    ImportSpecifierNode, ExportSpecifierNode, ExportAllDeclarationNode,
+} from './ast/nodes';
 
 // Read the version from package.json at build time so `--version` never drifts
 // from the published version. Bundled by webpack into dist/cli.js.
@@ -34,6 +39,9 @@ Options:
   --target-version <v>  Target OpenWrt/ucode release for version-gated checks
   -t <v>                (alias of --target-version)
                         One of: ${UCODE_TARGET_VERSIONS.join(', ')} (default: ${DEFAULT_TARGET_VERSION})
+  --type-coverage       Instead of diagnostics, report every variable that has
+                        no hover or whose hover type contains 'unknown'
+                        (file(line,startCol-endCol) per occurrence + a summary)
   --help                Show this help message
   --help-types          Show the type annotation guide
   --version             Show version
@@ -44,6 +52,7 @@ Examples:
   ucode-lsp file.uc               Check a specific file
   ucode-lsp --verbose             Include info-level diagnostics
   ucode-lsp --target-version 23.05 file.uc   Check against OpenWrt 23.05's ucode
+  ucode-lsp --type-coverage src/  Audit hover/type coverage of variables in src/
 `;
 
 const HELP_TYPES = `Type Annotations for ucode-lsp
@@ -208,7 +217,7 @@ const SKIP_DIRS = new Set([
     'build', 'target',
 ]);
 
-const KNOWN_FLAGS = new Set(['--verbose', '--help', '--help-types', '--version', '--stdio', '--pipe', '--node-ipc']);
+const KNOWN_FLAGS = new Set(['--verbose', '--help', '--help-types', '--version', '--stdio', '--pipe', '--node-ipc', '--type-coverage']);
 
 function collectUcFiles(dir: string): string[] {
     const files: string[] = [];
@@ -241,7 +250,16 @@ function severityLabel(s: DiagnosticSeverity): string {
     }
 }
 
-function analyzeFile(filePath: string, targetVersion: UcodeTargetVersion): Diagnostic[] {
+interface FileAnalysis {
+    diagnostics: Diagnostic[];
+    document: TextDocument;
+    tokens: Token[];
+    comments: Token[];
+    /** null when the file failed to parse (no AST to analyze). */
+    result: SemanticAnalysisResult | null;
+}
+
+function analyzeFile(filePath: string, targetVersion: UcodeTargetVersion): FileAnalysis {
     const content = fs.readFileSync(filePath, 'utf8');
     const uri = 'file://' + encodeURIComponent(path.resolve(filePath)).replace(/%2F/g, '/');
     const textDocument = TextDocument.create(uri, 'ucode', 1, content);
@@ -270,6 +288,7 @@ function analyzeFile(filePath: string, targetVersion: UcodeTargetVersion): Diagn
         code: err.code ?? UcodeErrorCode.SYNTAX_ERROR,
     }));
 
+    let result: SemanticAnalysisResult | null = null;
     if (parseResult.ast) {
         const analyzer = new SemanticAnalyzer(textDocument, {
             enableTypeChecking: true,
@@ -280,11 +299,148 @@ function analyzeFile(filePath: string, targetVersion: UcodeTargetVersion): Diagn
             workspaceRoot: process.cwd(),
             targetVersion,
         });
-        const result = analyzer.analyze(parseResult.ast);
+        result = analyzer.analyze(parseResult.ast);
         diagnostics.push(...result.diagnostics);
     }
 
-    return diagnostics;
+    return { diagnostics, document: textDocument, tokens, comments: lexer.comments, result };
+}
+
+/**
+ * Collect every Identifier node that reads or binds a VARIABLE — i.e. every
+ * position where hovering asks "what is this name?". Excludes identifiers that
+ * are not variables:
+ *   - `.prop` of a non-computed member expression (property name, not a variable)
+ *   - `key` of a non-computed object-literal property
+ *   - the module-side name of an aliased import/export (`import { X as y }` — X);
+ *     for the non-aliased form the parser shares ONE node for both sides, which
+ *     stays included as the local binding
+ * Deduped by start offset (shared imported/local nodes are reachable twice).
+ */
+function collectVariableIdentifiers(root: AstNode): IdentifierNode[] {
+    const out: IdentifierNode[] = [];
+    const seen = new Set<number>();
+
+    const visit = (node: AstNode): void => {
+        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+
+        if (node.type === 'Identifier') {
+            const id = node as IdentifierNode;
+            if (typeof id.start === 'number' && !seen.has(id.start)) {
+                seen.add(id.start);
+                out.push(id);
+            }
+            return;
+        }
+
+        // Children that are NOT variable positions (identity-based, so the shared
+        // imported===local node of a non-aliased import is never skipped).
+        const skip = new Set<unknown>();
+        switch (node.type) {
+            case 'MemberExpression': {
+                const m = node as MemberExpressionNode;
+                if (!m.computed) skip.add(m.property);
+                break;
+            }
+            case 'Property': {
+                const p = node as PropertyNode;
+                if (!p.computed) skip.add(p.key);
+                break;
+            }
+            case 'ImportSpecifier': {
+                const s = node as ImportSpecifierNode;
+                if (s.imported !== s.local) skip.add(s.imported);
+                break;
+            }
+            case 'ExportSpecifier': {
+                const s = node as ExportSpecifierNode;
+                if (s.exported !== s.local) skip.add(s.exported);
+                break;
+            }
+            case 'ExportAllDeclaration': {
+                const s = node as ExportAllDeclarationNode;
+                if (s.exported) skip.add(s.exported);
+                break;
+            }
+        }
+
+        for (const key of Object.keys(node)) {
+            if (key === 'type' || key === 'start' || key === 'end' || key === 'leadingJsDoc') continue;
+            const value = (node as unknown as Record<string, unknown>)[key];
+            if (Array.isArray(value)) {
+                for (const item of value) {
+                    if (item && typeof item === 'object' && !skip.has(item)) visit(item as AstNode);
+                }
+            } else if (value && typeof value === 'object' && !skip.has(value)) {
+                visit(value as AstNode);
+            }
+        }
+    };
+
+    visit(root);
+    return out;
+}
+
+/** Pull the displayed type out of a hover's FIRST line (`… **name**: \`type\``).
+ *  Returns null when the hover has no such type display (builtin docs, keywords,
+ *  module documentation…) — those are typed/documented, not coverage gaps. */
+function hoverDisplayedType(markdown: string): string | null {
+    const firstLine = markdown.split('\n', 1)[0] ?? '';
+    const m = firstLine.match(/\*\*\s*:\s*`([^`]+)`/);
+    return m ? m[1]! : null;
+}
+
+interface CoverageIssue {
+    kind: 'no-hover' | 'unknown-type';
+    name: string;
+    start: number;
+    end: number;
+    typeStr?: string;
+}
+
+/**
+ * Probe every variable identifier in the file through the REAL editor hover
+ * path (handleHover), so the report can never disagree with what VS Code
+ * shows. Returns the issues plus how many identifiers were probed.
+ */
+function auditTypeCoverage(analysis: FileAnalysis): { issues: CoverageIssue[]; probed: number } {
+    const { document, tokens, comments, result } = analysis;
+    if (!result?.ast) return { issues: [], probed: 0 };
+
+    // handleHover only needs `.get(uri)` from the documents collection.
+    const documents = {
+        get: (uri: string) => (uri === document.uri ? document : undefined),
+    } as unknown as TextDocuments<TextDocument>;
+
+    const identifiers = collectVariableIdentifiers(result.ast)
+        .sort((a, b) => a.start - b.start);
+
+    const issues: CoverageIssue[] = [];
+    for (const id of identifiers) {
+        const hover = handleHover(
+            { textDocument: { uri: document.uri }, position: document.positionAt(id.start) },
+            documents,
+            result,
+            tokens,
+            comments,
+        );
+
+        const markdown = hover && typeof hover.contents === 'object' && 'kind' in hover.contents
+            && hover.contents.kind === MarkupKind.Markdown ? hover.contents.value : null;
+
+        if (!hover || markdown === '') {
+            issues.push({ kind: 'no-hover', name: id.name, start: id.start, end: id.end });
+            continue;
+        }
+        if (markdown) {
+            const typeStr = hoverDisplayedType(markdown);
+            if (typeStr && /\bunknown\b/.test(typeStr)) {
+                issues.push({ kind: 'unknown-type', name: id.name, start: id.start, end: id.end, typeStr });
+            }
+        }
+    }
+
+    return { issues, probed: identifiers.length };
 }
 
 // Extract `--target-version <v>` / `--target-version=<v>` / `-t <v>` from the args,
@@ -316,6 +472,68 @@ function parseTargetVersion(args: string[]): { targetVersion: UcodeTargetVersion
         targetVersion = val as UcodeTargetVersion;
     }
     return { targetVersion, rest };
+}
+
+/**
+ * `--type-coverage` mode: instead of diagnostics, print every variable
+ * occurrence whose hover is missing or whose displayed type contains
+ * `unknown`, as `file(line,startCol-endCol)` (1-based, end column inclusive),
+ * then a coverage summary. Informational — always exits 0.
+ */
+function runTypeCoverage(files: string[], targetVersion: UcodeTargetVersion): void {
+    const cwd = process.cwd();
+    let totalProbed = 0;
+    let totalNoHover = 0;
+    let totalUnknown = 0;
+    let skipped = 0;
+
+    for (const file of files.sort()) {
+        let analysis: FileAnalysis;
+        try {
+            analysis = analyzeFile(file, targetVersion);
+        } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message : String(e);
+            process.stderr.write(`ucode-lsp: error analyzing ${file}: ${msg}\n`);
+            skipped++;
+            continue;
+        }
+
+        const relPath = path.relative(cwd, file);
+        if (!analysis.result?.ast) {
+            process.stderr.write(`ucode-lsp: skipping ${relPath}: file does not parse\n`);
+            skipped++;
+            continue;
+        }
+
+        const { issues, probed } = auditTypeCoverage(analysis);
+        totalProbed += probed;
+
+        for (const issue of issues) {
+            const start = analysis.document.positionAt(issue.start);
+            const end = analysis.document.positionAt(issue.end);
+            const loc = `${relPath}(${start.line + 1},${start.character + 1}-${end.character})`;
+            if (issue.kind === 'no-hover') {
+                totalNoHover++;
+                process.stdout.write(`${loc}: no-hover: '${issue.name}' produces no hover\n`);
+            } else {
+                totalUnknown++;
+                process.stdout.write(`${loc}: unknown-type: '${issue.name}' shows as \`${issue.typeStr}\`\n`);
+            }
+        }
+    }
+
+    const flagged = totalNoHover + totalUnknown;
+    const covered = totalProbed - flagged;
+    const pct = totalProbed > 0 ? ((covered / totalProbed) * 100).toFixed(1) : '100.0';
+    const checkedFiles = files.length - skipped;
+    process.stderr.write(
+        `\nType coverage: ${pct}% — ${covered}/${totalProbed} variable occurrences typed`
+        + ` (${totalUnknown} unknown-type, ${totalNoHover} no-hover)`
+        + ` in ${checkedFiles} file${checkedFiles !== 1 ? 's' : ''}`
+        + (skipped > 0 ? ` (${skipped} skipped)` : '')
+        + `.\n`,
+    );
+    process.exit(0);
 }
 
 function runCheck() {
@@ -350,6 +568,7 @@ function runCheck() {
     }
 
     const verbose = args.includes('--verbose');
+    const typeCoverage = args.includes('--type-coverage');
     const minSeverity = verbose ? DiagnosticSeverity.Hint : DiagnosticSeverity.Warning;
 
     let targets = args.filter(a => !a.startsWith('-'));
@@ -381,6 +600,11 @@ function runCheck() {
         process.exit(0);
     }
 
+    if (typeCoverage) {
+        runTypeCoverage(files, targetVersion);
+        return;
+    }
+
     let totalErrors = 0;
     let totalWarnings = 0;
     const cwd = process.cwd();
@@ -388,7 +612,7 @@ function runCheck() {
     for (const file of files.sort()) {
         let diagnostics: Diagnostic[];
         try {
-            diagnostics = analyzeFile(file, targetVersion);
+            diagnostics = analyzeFile(file, targetVersion).diagnostics;
         } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : String(e);
             process.stderr.write(`ucode-lsp: error analyzing ${file}: ${msg}\n`);

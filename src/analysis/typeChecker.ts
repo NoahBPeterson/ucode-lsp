@@ -1432,6 +1432,11 @@ export class TypeChecker {
     };
     const walk = (n: unknown): void => {
       if (result || !isAstNodeLike(n)) return;
+      // Span pruning: scanList only matches a list with an element CONTAINING the
+      // read, and children lie within their parent's span — so a subtree that
+      // doesn't contain read.start can't contribute.
+      if (typeof n.start === 'number' && typeof n.end === 'number'
+        && (read.start < n.start || read.start >= n.end)) return;
       // Any array-valued child is a potential statement list (body/consequent/…).
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc') continue;

@@ -36,6 +36,22 @@ function appendBuiltinNote(doc: string): string {
     return doc + BUILTIN_METHOD_NOTE;
 }
 
+/** Binary search for the token whose [pos, end) span contains `offset`.
+ *  Tokens are position-sorted and non-overlapping, so this replaces the
+ *  linear from-zero scans that made each hover O(all tokens). Returns -1
+ *  when no token contains the offset (e.g. whitespace). */
+function tokenIndexAtOffset(tokens: Token[], offset: number): number {
+    let lo = 0, hi = tokens.length - 1;
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const t = tokens[mid]!;
+        if (offset < t.pos) hi = mid - 1;
+        else if (offset >= t.end) lo = mid + 1;
+        else return mid;
+    }
+    return -1;
+}
+
 function detectMemberHoverContext(position: Position, tokens: Token[], document: TextDocument): { objectName: string, memberName: string, memberTokenPos: number, memberTokenEnd: number, resolvedObjectType?: KnownObjectType } | undefined {
     // Look for pattern: LABEL DOT LABEL (where cursor is over the second LABEL)
     // Also handles call chains: LABEL(...) DOT LABEL, LABEL DOT LABEL(...) DOT LABEL
@@ -43,15 +59,7 @@ function detectMemberHoverContext(position: Position, tokens: Token[], document:
     const offset = document.offsetAt(position);
 
     // Find the token at the hover position
-    let hoverTokenIndex = -1;
-    for (let i = 0; i < tokens.length; i++) {
-        const token = tokens[i];
-        if (token && token.pos <= offset && offset < token.end) {
-            hoverTokenIndex = i;
-            break;
-        }
-    }
-
+    const hoverTokenIndex = tokenIndexAtOffset(tokens, offset);
     if (hoverTokenIndex === -1) {
         return undefined;
     }
@@ -596,6 +604,9 @@ function getFormatSpecifierHover(token: Token, tokenIndex: number, tokens: Token
 /** Find the object-literal Property whose KEY identifier spans `offset`. */
 function findPropertyKeyAtOffset(node: AstNode, offset: number): PropertyNode | null {
     if (!node || typeof node !== 'object' || typeof node.type !== 'string') return null;
+    // Span pruning: a subtree that doesn't contain the offset can't hold the key.
+    if (typeof node.start === 'number' && typeof node.end === 'number'
+        && (offset < node.start || offset > node.end)) return null;
     if (node.type === 'Property') {
         const prop = node as PropertyNode;
         if (prop.key && typeof prop.key.start === 'number'
@@ -622,6 +633,9 @@ function findPropertyKeyAtOffset(node: AstNode, offset: number): PropertyNode | 
  */
 function findImportedNameAtOffset(node: AstNode, offset: number): { moduleName: string; importedName: string } | null {
     if (!node || typeof node !== 'object' || typeof node.type !== 'string') return null;
+    // Span pruning: a subtree that doesn't contain the offset can't hold the name.
+    if (typeof node.start === 'number' && typeof node.end === 'number'
+        && (offset < node.start || offset > node.end)) return null;
     if (node.type === 'ImportDeclaration') {
         const imp = node as ImportDeclarationNode;
         if (Array.isArray(imp.specifiers) && imp.source) {
@@ -710,9 +724,10 @@ const mdCode = (s: string): string => (s.includes('`') ? `\`\` ${s} \`\`` : `\`$
  * escapes are regex semantics like \d, not character escapes).
  */
 function escapeSequenceHover(text: string, offset: number, tokens: Token[], document: TextDocument): Hover | undefined {
-    for (const tok of tokens) {
-        if (tok.type !== TokenType.TK_STRING && tok.type !== TokenType.TK_TEMPLATE) continue;
-        if (offset < tok.pos || offset >= tok.end) continue;
+    // Only the (unique) token containing the offset can match — find it directly.
+    const tokIdx = tokenIndexAtOffset(tokens, offset);
+    const tok = tokIdx >= 0 ? tokens[tokIdx] : undefined;
+    if (tok && (tok.type === TokenType.TK_STRING || tok.type === TokenType.TK_TEMPLATE)) {
 
         // Scan the token's RAW source for escapes; exact offsets fall out of decodeEscape's
         // span lengths, and tracking the previous escape lets a hovered LOW surrogate half
@@ -787,7 +802,8 @@ export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
     documents: TextDocuments<TextDocument>,
     analysisResult?: SemanticAnalysisResult,
-    cachedTokens?: Token[]
+    cachedTokens?: Token[],
+    cachedComments?: Token[]
 ): Hover | undefined {
     const document = documents.get(textDocumentPositionParams.textDocument.uri);
     if (!document) {
@@ -799,14 +815,20 @@ export function handleHover(
     const offset = document.offsetAt(position);
 
     try {
-        // Use cached tokens when available to avoid re-lexing the entire document
+        // Use cached tokens/comments when available to avoid re-lexing the entire
+        // document — without cachedComments every hover pays a full re-lex just to
+        // learn where the comments are (quadratic when probing many positions).
         let tokens: Token[];
         let comments: Token[] = [];
         if (cachedTokens && cachedTokens.length > 0) {
             tokens = cachedTokens;
-            const cl = new UcodeLexer(text, { rawMode: true });
-            cl.tokenize();
-            comments = (cl as any).comments || [];
+            if (cachedComments !== undefined) {
+                comments = cachedComments;
+            } else {
+                const cl = new UcodeLexer(text, { rawMode: true });
+                cl.tokenize();
+                comments = (cl as any).comments || [];
+            }
         } else {
             const lexer = new UcodeLexer(text, { rawMode: true });
             tokens = lexer.tokenize();
@@ -1021,8 +1043,8 @@ export function handleHover(
             }
         }
         
-        const token = tokens.find(t => t.pos <= offset && offset < t.end);
-        const tokenIndex = token ? tokens.indexOf(token) : -1;
+        const tokenIndex = tokenIndexAtOffset(tokens, offset);
+        const token = tokenIndex >= 0 ? tokens[tokenIndex] : undefined;
 
         // Check for printf/sprintf format specifier hover
         if (token && token.type === TokenType.TK_STRING && tokenIndex >= 0) {
@@ -1449,7 +1471,7 @@ export function handleHover(
             // like `best[k].signal` or `f().signal`, where detectMemberExpression's
             // LABEL.LABEL pattern doesn't match — must NOT fall back to a same-named
             // global builtin (e.g. the `signal` builtin). Show a minimal property hover.
-            const tokIdx = tokens.findIndex((t) => t.pos <= offset && offset < t.end);
+            const tokIdx = tokenIndexAtOffset(tokens, offset);
             if (tokIdx > 0 && isMemberAccessDot(tokens[tokIdx - 1]?.type)) {
                 // `nl80211.const` / `rtnl.const` — `const` lexes as a KEYWORD token, so
                 // detectMemberExpression never matches it; resolve the container here.
@@ -1637,7 +1659,7 @@ export function handleHover(
 
 function detectFunctionCall(offset: number, tokens: Token[]): boolean {
     // Find the token at the current position
-    const currentTokenIndex = tokens.findIndex(t => t.pos <= offset && offset < t.end);
+    const currentTokenIndex = tokenIndexAtOffset(tokens, offset);
     if (currentTokenIndex === -1) return false;
     
     const currentToken = tokens[currentTokenIndex];
@@ -1667,7 +1689,7 @@ function detectFunctionCall(offset: number, tokens: Token[]): boolean {
 
 function detectMemberExpression(offset: number, tokens: Token[]): { objectName: string; propertyName: string; cursorOnObject: boolean; chain?: string[] } | undefined {
     // Find the token at the current position
-    const currentTokenIndex = tokens.findIndex(t => t.pos <= offset && offset < t.end);
+    const currentTokenIndex = tokenIndexAtOffset(tokens, offset);
     if (currentTokenIndex === -1) return undefined;
 
     const currentToken = tokens[currentTokenIndex];
