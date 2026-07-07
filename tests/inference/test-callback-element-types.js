@@ -109,5 +109,62 @@ function check(label, actual, expected) {
     check('filter(split, (l) => length(l)) nested no warning', getArgDiags(result).length, 0);
 }
 
+// 7. sort's SECOND comparator parameter also gets the element type (finding #110).
+//    `uc(b)` would warn if b were unknown; it must be string here.
+{
+    const code = `function test() {
+  let parts = split("c,a,b", ",");
+  let sorted = sort(parts, (a, b) => length(uc(a)) - length(uc(b)));
+  print(sorted);
+}`;
+    const result = analyze(code);
+    check('sort 2nd param typed as element (uc(b) no warning)', getArgDiags(result).length, 0);
+}
+
+// 7b. sort comparator as a FUNCTION EXPRESSION also types both params (finding #110/#178).
+{
+    const code = `function test() {
+  let parts = split("c,a,b", ",");
+  let sorted = sort(parts, function(a, b) { return length(uc(b)) - length(uc(a)); });
+  print(sorted);
+}`;
+    const result = analyze(code);
+    check('sort function-expression comparator types params', getArgDiags(result).length, 0);
+}
+
+// 8. replace() callback params are strings (finding #178). Both arrow and function form.
+{
+    const code = `function test(s) {
+  return replace(s, /(l)/, (full, g1) => uc(g1) + substr(full, 0));
+}`;
+    const result = analyze(code);
+    check('replace arrow callback params are strings', getArgDiags(result).length, 0);
+}
+{
+    const code = `function test(s) {
+  return replace(s, /(l)/, function(full, g1) { return uc(g1) + substr(full, 0); });
+}`;
+    const result = analyze(code);
+    check('replace function-expression callback params are strings', getArgDiags(result).length, 0);
+}
+
+// 8b. replace with a non-function 3rd arg must NOT type anything as a callback (no crash).
+{
+    const code = `function test(s) { return replace(s, "a", "b"); }`;
+    const result = analyze(code);
+    check('replace string replacement no crash', getArgDiags(result).length, 0);
+}
+
+// 9. uci cursor foreach callback param is typed as an object (finding #131).
+//    length(sec) would warn if sec were unknown; an object is a valid length() arg.
+{
+    const code = `import { cursor } from 'uci';
+let c = cursor();
+c.foreach('network', 'interface', (sec) => { let n = length(sec); return n; });`;
+    const result = analyze(code);
+    const diags = getArgDiags(result).filter(d => d.message.includes('length'));
+    check('uci foreach callback param typed object (length(sec) no warning)', diags.length, 0);
+}
+
 console.log(`\n${passed}/${passed + failed} tests passed`);
 if (failed > 0) process.exit(1);

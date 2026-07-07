@@ -80,7 +80,9 @@ warn("This is a warning");`;
       assert(hover, 'Should return hover information');
       assert(hover.contents && hover.contents.value, 'Should have hover content');
       assert(hover.contents.value.includes('trace'), 'Should mention trace function');
-      assert(hover.contents.value.includes('stack trace'), 'Should describe stack trace');
+      // trace() sets the VM execution trace level and returns the previous level; it is NOT a
+      // stack-trace printer (the old doc string was fabricated — see fix #147).
+      assert(hover.contents.value.includes('trace level'), 'Should describe the VM trace level');
     });
 
     it('should provide hover information for warn() function', async function() {

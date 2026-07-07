@@ -49,9 +49,16 @@ const socketMethods = new Map<string, FunctionSignature>([
       { name: 'value', type: 'integer | string | object', optional: false },
     ], returnType: 'boolean | null', description: 'Set a socket option. Returns true on success, null on error.' }],
   ['getopt', { name: 'getopt', parameters: [
-      { name: 'level', type: 'integer', optional: false },
-      { name: 'option', type: 'integer', optional: false },
-    ], returnType: 'integer | string | object | null', description: 'Get a socket option value, or null on error.' }],
+      { name: 'level', type: 'integer', optional: false, constantPrefixes: ['SOL_', 'IPPROTO_'] },
+      { name: 'option', type: 'integer', optional: false, constantPrefixes: ['SO_', 'TCP_', 'IP_', 'IPV6_'] },
+      // uc_socket_inst_getopt (socket.c) looks up (level, option) in the `sockopts[]` table and
+      // returns a value whose type is the option's SV_* class: SV_INT/SV_INT_RO → integer,
+      // SV_BOOL → boolean, SV_STRING → string, SV_IFNAME → string-or-integer, and the struct
+      // classes (ucred/timeval/…) → object; null on error. Per-constant return narrowing is NOT
+      // implemented: it would require constant-propagating BOTH args and porting the full
+      // ~200-entry two-key table with 6+ distinct value shapes — no clean mechanism exists
+      // (constantPrefixes only drives completion). The honest union is kept.
+    ], returnType: 'integer | boolean | string | object | null', description: 'Get a socket option value, or null on error. The concrete type depends on the (level, option) pair: integer for numeric options, boolean for flag options, string for name/string options, or an object for struct-valued options (e.g. credentials).' }],
   ['fileno', { name: 'fileno', parameters: [], returnType: 'integer | null', description: 'Return the underlying file descriptor number of the socket.' }],
   ['shutdown', { name: 'shutdown', parameters: [
       { name: 'how', type: 'integer', optional: false, constantPrefixes: ['SHUT_'] },

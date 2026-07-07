@@ -46,6 +46,23 @@ export function provideFoldingRanges(
         if (BLOCK_NODE_TYPES.has(node.type) && typeof node.start === 'number' && typeof node.end === 'number') {
             add(lineAt(node.start), lineAt(node.end - 1));
         }
+        // Per-case folds inside a switch: each case/default clause folds from its
+        // own start line to just before the next clause (or the switch's closing
+        // brace for the last clause).
+        if (node.type === 'SwitchStatement') {
+            const sw = node as unknown as { cases?: AstNode[]; end?: number };
+            const cases = Array.isArray(sw.cases) ? sw.cases : [];
+            for (let ci = 0; ci < cases.length; ci++) {
+                const cur = cases[ci];
+                const next = cases[ci + 1];
+                if (!cur || typeof cur.start !== 'number') continue;
+                const endOffset = (next && typeof next.start === 'number')
+                    ? next.start - 1
+                    : (typeof sw.end === 'number' ? sw.end - 1 : (typeof cur.end === 'number' ? cur.end : undefined));
+                if (typeof endOffset !== 'number') continue;
+                add(lineAt(cur.start), lineAt(endOffset));
+            }
+        }
         for (const k of Object.keys(node)) {
             if (k === 'leadingJsDoc') continue; // JSDoc is folded via the comment pass
             const v = (node as unknown as Record<string, unknown>)[k];

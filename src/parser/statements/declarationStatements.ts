@@ -33,10 +33,17 @@ export abstract class DeclarationStatements extends ExpressionParser {
     const hadSemicolon = this.check(TokenType.TK_SCOL);
     if (hadSemicolon) {
       this.advance();
+    } else if (this.check(TokenType.TK_ERROR)) {
+      // The lexer already flagged this token (e.g. a non-ASCII identifier char like
+      // `café`, which lexes as `caf` + an error token). Adding "Expected ';'" here
+      // just cascades a misleading second error. Leave the error token for the normal
+      // recovery path, which surfaces the lexer's own message — matching real ucode,
+      // which reports a single "Unexpected character" for `let café = 1;`.
+      this.panicMode = false;
     } else {
       // Record error but continue parsing
-      this.errorAt("Expected ';' after variable declaration", 
-                   this.previous()?.end || start, 
+      this.errorAt("Expected ';' after variable declaration",
+                   this.previous()?.end || start,
                    this.previous()?.end || start);
       // Reset panic mode for missing semicolon
       this.panicMode = false;
@@ -66,18 +73,37 @@ export abstract class DeclarationStatements extends ExpressionParser {
     const id = this.parseIdentifierName();
     if (!id) return null;
 
-    let init: AstNode | null = null;
-    if (this.match(TokenType.TK_ASSIGN)) {
-      init = this.parseExpression();
+    // A lexer TK_ERROR right after the name (`let café = 1;` lexes as `caf` + an
+    // error token for `é`): report the character error and SKIP the token, then
+    // continue the declarator normally, so the `= 1` still attaches to `caf`
+    // instead of orphaning into a misleading "Unexpected token" statement.
+    while (this.check(TokenType.TK_ERROR)) {
+      const errTok = this.advance()!;
+      this.lexerErrorAt(errTok.value ? String(errTok.value) : 'Unexpected token', errTok.pos, errTok.end);
     }
 
-    return {
+    let init: AstNode | null = null;
+    let initHadParseError = false;
+    if (this.match(TokenType.TK_ASSIGN)) {
+      const errorCountBefore = this.errors.length;
+      init = this.parseExpression();
+      // `=` was present but the initializer is broken — either parseExpression bailed
+      // (`let x = (1 +;`, `let z = ;`) or it recovered a partial node while recording a
+      // syntax error (`let a = {b: };`). Either way, record it so the analyzer can tell
+      // this apart from a bare `let x;` and skip the misleading "declared but never used"
+      // (UC1006) piled on top of the real parse error.
+      if (!init || this.errors.length > errorCountBefore) initHadParseError = true;
+    }
+
+    const declarator: VariableDeclaratorNode = {
       type: 'VariableDeclarator',
       start,
       end: this.previous()!.end,
       id,
       init
     };
+    if (initHadParseError) declarator.initHadParseError = true;
+    return declarator;
   }
 
   protected parseFunctionDeclaration(isExported: boolean = false, jsdocAnchorPos?: number): FunctionDeclarationNode | FunctionExpressionNode | null {

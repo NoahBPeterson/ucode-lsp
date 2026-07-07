@@ -359,6 +359,20 @@ export class CFGBuilder {
    *     |            |
    *     +------------+
    */
+  /**
+   * A loop test that is a literal truthy constant (`while (true)`, `while (1)`) — the loop
+   * never exits via the condition, only via a `break` (mirrors how `for (;;)` is handled).
+   * Kept deliberately narrow to literals we're certain are truthy, so we never wrongly
+   * treat a fallible condition as infinite.
+   */
+  private isConstantTruthyTest(node: AstNode): boolean {
+    if (node.type !== 'Literal') return false;
+    const value = (node as { value?: unknown }).value;
+    if (value === true) return true;
+    if (typeof value === 'number' && value !== 0) return true;
+    return false;
+  }
+
   private visitWhileStatement(node: WhileStatementNode): void {
     const conditionBlock = this.createBlock('while.condition');
     const bodyBlock = this.createBlock('while.body');
@@ -373,7 +387,13 @@ export class CFGBuilder {
 
     // Edges from condition
     this.connect(conditionBlock, bodyBlock, node.test, false); // Loop continues
-    this.connect(conditionBlock, afterLoopBlock, node.test, true); // Loop exits
+    // `while (true)` / `while (1)` never falls out of the condition — the only path to the
+    // after-loop block is a `break` in the body (its break edge is added when visited). Omit
+    // the condition→after edge so code following a break-less infinite loop is correctly
+    // unreachable (UC4001) and the function is seen as never-returning. Mirrors `for (;;)`.
+    if (!this.isConstantTruthyTest(node.test)) {
+      this.connect(conditionBlock, afterLoopBlock, node.test, true); // Loop exits
+    }
 
     // Push loop context for break/continue
     this.loopStack.push({
@@ -449,13 +469,23 @@ export class CFGBuilder {
     // Body
     this.currentBlock = bodyBlock;
     this.visitNode(node.body);
-    if (this.currentBlock.successors.length === 0) {
+    // Fall through from the body end to the update — but only if that end is genuinely
+    // reachable. When the body ends in an unconditional jump (`break`/`continue`/`return`/
+    // …), visitNode leaves us in a fresh `after.*` block with no predecessors; wiring that
+    // dead block into the update would make the update spuriously look reachable.
+    if (this.currentBlock.successors.length === 0 && this.currentBlock.predecessors.length > 0) {
       this.connect(this.currentBlock, updateBlock);
     }
 
     // Update
     this.currentBlock = updateBlock;
-    if (node.update) {
+    // The update block is reached from the body's fall-through (above) and from any
+    // `continue` (whose edges were added while visiting the body). If it has NO predecessors,
+    // the body always exits (e.g. `for (…; …; i++) { break; }`) and the update never runs.
+    // Adding `i++` as a statement there would make it get flagged UC4001 "unreachable" —
+    // a false positive on ordinary loop syntax. Leave the block empty in that case (the
+    // unreachable-code pass skips empty blocks) rather than nagging about the update clause.
+    if (node.update && updateBlock.predecessors.length > 0) {
       this.addStatement(node.update);
     }
     this.connect(this.currentBlock, conditionBlock);

@@ -80,7 +80,10 @@ const functions = new Map<string, FunctionSignature>([
       { name: "a", type: "number", optional: true },
       { name: "b", type: "number", optional: true }
     ],
-    returnType: "number",
+    // uc_rand (math.c): with 0 args returns ucv_int64_new(rand()) → integer; with any args
+    // returns ucv_double_new(...) → double. rand() DOES take optional args, so the honest
+    // return is the union (arg-count-based narrowing has no clean module-function hook here).
+    returnType: "integer | double",
     description: "Without arguments, returns a pseudo-random integer 0..RAND_MAX. With one argument a, returns a random double 0..a. With two arguments a,b, returns a random double a..b."
   }],
   ["srand", {

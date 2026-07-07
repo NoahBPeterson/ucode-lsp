@@ -42,7 +42,7 @@ import { ubusModule, ubusConnectionObjectType, ubusChannelObjectType, ubusDeferr
 import { zlibModule, zlibDeflateObjectType, zlibInflateObjectType } from './zlibTypes';
 import { ioModule, ioHandleObjectType } from './ioTypes';
 import { nl80211Module, nl80211ListenerObjectType } from './nl80211Types';
-import { uciModule, uciCursorObjectType } from './uciTypes';
+import { uciModule, uciCursorObjectType, uciSectionObjectType } from './uciTypes';
 import { uloopModule, uloopTimerObjectType, uloopHandleObjectType, uloopProcessObjectType, uloopTaskObjectType, uloopIntervalObjectType, uloopSignalObjectType, uloopPipeObjectType } from './uloopTypes';
 import { fsProcObjectType, fsDirObjectType, fsFileObjectType } from './fsTypes';
 import { htmlModule } from './htmlTypes';
@@ -101,6 +101,7 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'uloop.signal': createObjectTypeRegistry(uloopSignalObjectType),
   'uloop.pipe': createObjectTypeRegistry(uloopPipeObjectType),
   'uci.cursor': createObjectTypeRegistry(uciCursorObjectType),
+  'uci.section': createObjectTypeRegistry(uciSectionObjectType),
   'nl80211.listener': createObjectTypeRegistry(nl80211ListenerObjectType),
   'ubus.connection': createObjectTypeRegistry(ubusConnectionObjectType),
   'ubus.channel': createObjectTypeRegistry(ubusChannelObjectType),

@@ -80,6 +80,10 @@
           "match": "//.*$"
         },
         {
+          "name": "comment.block.empty.ucode",
+          "match": "/\\*/(?!/)"
+        },
+        {
           "name": "comment.block.ucode",
           "begin": "/\\*",
           "end": "\\*/"
@@ -97,11 +101,15 @@
           "name": "string.regexp.ucode",
           "begin": "(?<=[=(,:;!?\\[])\\s*(/(?![/*]))",
           "beginCaptures": {
-            "1": { "name": "string.regexp.ucode" }
+            "1": {
+              "name": "string.regexp.ucode"
+            }
           },
           "end": "(/[gis]*)|((?<!\\\\)$)",
           "endCaptures": {
-            "1": { "name": "string.regexp.ucode" }
+            "1": {
+              "name": "string.regexp.ucode"
+            }
           },
           "patterns": [
             {
@@ -196,14 +204,18 @@
           "comment": "`default` as an import/export specifier name (`import { default as X }`, `export { x as default }`) — a binding name, not the switch/case keyword. Must precede keyword.control so it isn't mis-colored.",
           "match": "\\b(default)\\s+(?=as\\b)",
           "captures": {
-            "1": { "name": "variable.other.ucode" }
+            "1": {
+              "name": "variable.other.ucode"
+            }
           }
         },
         {
           "comment": "`x as default` — the aliased-to-default specifier name.",
           "match": "\\bas\\s+(default)\\b",
           "captures": {
-            "1": { "name": "variable.other.ucode" }
+            "1": {
+              "name": "variable.other.ucode"
+            }
           }
         },
         {

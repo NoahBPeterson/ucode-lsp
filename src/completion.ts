@@ -16,7 +16,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { URL } from 'url';
 import { discoverAvailableModules, getModuleMembers, type DiscoveredModule, type ModuleMember } from './moduleDiscovery';
-import { UcodeLexer, TokenType, isMemberAccessDot, type Token } from './lexer';
+import { UcodeLexer, TokenType, Keywords, isMemberAccessDot, type Token } from './lexer';
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { UcodeParser } from './parser';
 import { allBuiltinFunctions } from './builtins';
@@ -187,6 +187,17 @@ export function handleCompletion(
             return createFileSystemCompletions(loadfilePathContext.currentPath, textDocumentPositionParams.textDocument.uri, connection);
         }
 
+        // require("…"): a bare name resolves to a module (require('fs')), a relative
+        // path to a file. Offer module names for the former, file paths for the latter. (#97)
+        const requirePathContext = detectRequireCompletionContext(offset, tokens);
+        if (requirePathContext) {
+            const p = requirePathContext.currentPath;
+            if (p.startsWith('./') || p.startsWith('../')) {
+                return createFileSystemCompletions(p, textDocumentPositionParams.textDocument.uri, connection);
+            }
+            return createModuleNameCompletions();
+        }
+
         // Suppress completion inside a string literal or a (non-JSDoc) comment — a `.` in
         // prose / a path / a URL must NOT pop the builtin list. Placed AFTER the import-path
         // and JSDoc-comment contexts above (which legitimately complete inside a string /
@@ -346,6 +357,20 @@ export function handleCompletion(
             return [];
         }
 
+        // Don't offer completions while NAMING a `let`/`const`/`for`-init variable
+        // (`let pri|`, `const |`, `for (let |`). Like the function-name case, any
+        // fuzzy-matched builtin could be committed with `=`/`;` and silently name the
+        // variable after a builtin. The init expression (`let x = lo|`) is unaffected. (#98)
+        if (isDeclaratorNameContext(offset, tokens)) {
+            return [];
+        }
+
+        // Don't flood the builtin list in an object-literal KEY position (`let o = { p| }`).
+        // The user is inventing a property name, not referencing a global. (#99)
+        if (isObjectLiteralKeyPosition(offset, tokens)) {
+            return [];
+        }
+
         // Argument-position constant completion: inside a call to a module function whose
         // active parameter accepts a constant family (pair(│)→SOCK_*, recv(10,│)→MSG_*, …),
         // surface those constants (high priority) alongside the general list. Empty otherwise.
@@ -376,6 +401,81 @@ function isFunctionNameContext(offset: number, tokens: Token[]): boolean {
     if (cur.type === TokenType.TK_FUNC) return true;
     // `function lo|` — typing the name; the keyword is the previous token.
     if (cur.type === TokenType.TK_LABEL && prev && prev.type === TokenType.TK_FUNC) return true;
+    return false;
+}
+
+// True when the cursor is in the NAME position of a `let`/`const`/`for`-init
+// declarator (`let |`, `const pri|`, `for (let x|`) — the identifier is brand new,
+// so completing it risks committing a builtin as the variable name. The init
+// expression side (`let x = lo|`) is deliberately NOT matched. (#98)
+function isDeclaratorNameContext(offset: number, tokens: Token[]): boolean {
+    let cur: Token | null = null, prev: Token | null = null;
+    for (const t of tokens) {
+        if (t.type === TokenType.TK_EOF || t.type === TokenType.TK_NEWLINE) continue;
+        if (t.pos < offset) { prev = cur; cur = t; }
+        else break;
+    }
+    if (!cur) return false;
+    // `let |` / `const |` — cursor right after the keyword, no name typed yet.
+    if (cur.type === TokenType.TK_LOCAL || cur.type === TokenType.TK_CONST) return true;
+    // `let pri|` / `const pri|` — typing the name; the keyword is the previous token.
+    if (cur.type === TokenType.TK_LABEL && prev
+        && (prev.type === TokenType.TK_LOCAL || prev.type === TokenType.TK_CONST)) return true;
+    return false;
+}
+
+/** True when the `{` at `braceIdx` opens an OBJECT LITERAL (expression position),
+ *  as opposed to a statement block. Conservative: only the clear expression-context
+ *  predecessors count, so a block `{` never suppresses completion. (#99) */
+function isObjectLiteralBrace(tokens: Token[], braceIdx: number): boolean {
+    let j = braceIdx - 1;
+    while (j >= 0 && (tokens[j]!.type === TokenType.TK_NEWLINE)) j--;
+    if (j < 0) return false;
+    const p = tokens[j]!.type;
+    return p === TokenType.TK_ASSIGN || p === TokenType.TK_LPAREN || p === TokenType.TK_LBRACK
+        || p === TokenType.TK_COMMA || p === TokenType.TK_COLON || p === TokenType.TK_RETURN
+        || p === TokenType.TK_QMARK;
+}
+
+// True when the cursor is in an object-literal KEY position (`{ p| }`, `{ a:1, b| }`).
+// Walks back to the innermost enclosing bracket: an object-literal `{` with no `:`
+// between the cursor and the property boundary (`{`/`,`) means we're typing a key. (#99)
+function isObjectLiteralKeyPosition(offset: number, tokens: Token[]): boolean {
+    let idx = -1;
+    for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i]!;
+        if (t.type === TokenType.TK_EOF) continue;
+        if (t.pos < offset) idx = i; else break;
+    }
+    if (idx < 0) return false;
+    let depth = 0;
+    let sawColon = false;
+    let delimited = false; // passed the current property's leading `,` → prior colons are irrelevant
+    for (let i = idx; i >= 0; i--) {
+        const tt = tokens[i]!.type;
+        if (tt === TokenType.TK_RPAREN || tt === TokenType.TK_RBRACK || tt === TokenType.TK_RBRACE) {
+            depth++;
+            continue;
+        }
+        if (tt === TokenType.TK_LPAREN || tt === TokenType.TK_LBRACK) {
+            if (depth === 0) return false; // enclosing is a call/array, not an object
+            depth--;
+            continue;
+        }
+        if (tt === TokenType.TK_LBRACE) {
+            if (depth === 0) {
+                if (sawColon) return false; // cursor is in a property VALUE
+                return isObjectLiteralBrace(tokens, i);
+            }
+            depth--;
+            continue;
+        }
+        if (depth === 0 && !delimited) {
+            if (tt === TokenType.TK_COLON) sawColon = true;
+            else if (tt === TokenType.TK_COMMA) delimited = true;
+            else if (tt === TokenType.TK_SCOL) return false; // statement separator → block, not object
+        }
+    }
     return false;
 }
 
@@ -937,9 +1037,13 @@ function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, conne
         });
     }
     
-    // Add common keywords. NOTE: ucode has NO `throw` (raise exceptions with `die()`);
-    // `try`/`catch` exist but `throw` is not a reserved word — do not suggest it.
-    const keywords = ['let', 'const', 'function', 'if', 'else', 'for', 'while', 'return', 'break', 'continue', 'try', 'catch'];
+    // Add keywords, derived from the lexer's Keywords map so the set can't drift.
+    // NOTE: ucode has NO `throw` (raise exceptions with `die()`); it is not in the
+    // Keywords map. Template-mode-only keywords (elif/endif/endwhile/endfor/
+    // endfunction) and the import-context `from` are filtered out of plain-mode
+    // statement completion.
+    const KEYWORD_COMPLETION_EXCLUDE = new Set(['elif', 'endif', 'endwhile', 'endfor', 'endfunction', 'from']);
+    const keywords = Object.keys(Keywords).filter(k => !KEYWORD_COMPLETION_EXCLUDE.has(k));
     for (const keyword of keywords) {
         completions.push({
             label: keyword,
@@ -1020,12 +1124,18 @@ function createGeneralCompletions(analysisResult?: SemanticAnalysisResult, conne
                 detail = 'constant';
             }
 
+            // #100: compiler-injected ambient globals (ARGV/NaN/Infinity/
+            // REQUIRE_SEARCH_PATH/modules/global) are seeded at scope 0 with
+            // declaredAt 0. Real user locals share the `0` variable tier but must
+            // outrank the ambients, so sub-tier them: locals `0a_`, ambients `0b_`.
+            const isAmbientGlobal = symbol.scope === 0 && symbol.declaredAt === 0;
+            const varSortText = isAmbientGlobal ? `0b_${varName}` : `0a_${varName}`;
             completions.push({
                 label: varName,
                 kind: kind,
                 detail: detail,
                 insertText: varName,
-                sortText: `0${varName}`, // Sort variables first (before builtins)
+                sortText: varSortText, // Sort variables first (before builtins)
                 filterText: varName
             });
             if (connection) {
@@ -1763,6 +1873,26 @@ function detectLoadfilePathContext(offset: number, tokens: Token[]): { currentPa
             return { currentPath: str.value !== undefined ? (str.value as string).slice(0, Math.max(0, offset - start)) : '' };
         }
         return undefined; // cursor is in a string that isn't a path-builtin arg
+    }
+    return undefined;
+}
+
+/** Cursor inside the string argument of `require("…")`. Returns the partial path
+ *  typed up to the cursor (bare name or relative path). (#97) */
+function detectRequireCompletionContext(offset: number, tokens: Token[]): { currentPath: string } | undefined {
+    for (let i = 0; i < tokens.length; i++) {
+        const str = tokens[i];
+        if (!str || str.type !== TokenType.TK_STRING) continue;
+        if (offset < str.pos || offset > str.end) continue;          // cursor inside this string
+        const lparen = tokens[i - 1];
+        const callee = tokens[i - 2];
+        if (lparen?.type === TokenType.TK_LPAREN
+            && callee?.type === TokenType.TK_LABEL
+            && callee.value === 'require') {
+            const start = str.pos + 1;                                 // skip opening quote
+            return { currentPath: str.value !== undefined ? (str.value as string).slice(0, Math.max(0, offset - start)) : '' };
+        }
+        return undefined; // cursor is in a string that isn't a require() arg
     }
     return undefined;
 }

@@ -100,6 +100,33 @@ let connListener = listener(function(msg) {
 export { functions as nl80211Functions };
 
 export const nl80211Constants: Map<string, ConstantDefinition> = new Map([
+  // Additional NL80211 command
+  ["NL80211_CMD_ABORT_SCAN", { name: "NL80211_CMD_ABORT_SCAN", value: 114, type: "integer", description: "Stop an ongoing scan" }],
+  // BSS status (nl80211_bss_status)
+  ["NL80211_BSS_STATUS_AUTHENTICATED", { name: "NL80211_BSS_STATUS_AUTHENTICATED", value: 0, type: "integer", description: "Authenticated with this BSS" }],
+  ["NL80211_BSS_STATUS_ASSOCIATED", { name: "NL80211_BSS_STATUS_ASSOCIATED", value: 1, type: "integer", description: "Associated with this BSS" }],
+  ["NL80211_BSS_STATUS_IBSS_JOINED", { name: "NL80211_BSS_STATUS_IBSS_JOINED", value: 2, type: "integer", description: "Joined to this IBSS" }],
+  // BSS usability flags (nl80211_bss_use_for)
+  ["NL80211_BSS_USE_FOR_NORMAL", { name: "NL80211_BSS_USE_FOR_NORMAL", value: 1, type: "integer", description: "Use this BSS for normal connection" }],
+  ["NL80211_BSS_USE_FOR_MLD_LINK", { name: "NL80211_BSS_USE_FOR_MLD_LINK", value: 2, type: "integer", description: "This BSS can be used as a link in an MLD" }],
+  ["NL80211_BSS_CANNOT_USE_NSTR_NONPRIMARY", { name: "NL80211_BSS_CANNOT_USE_NSTR_NONPRIMARY", value: 1, type: "integer", description: "NSTR nonprimary links aren't usable" }],
+  ["NL80211_BSS_CANNOT_USE_6GHZ_PWR_MISMATCH", { name: "NL80211_BSS_CANNOT_USE_6GHZ_PWR_MISMATCH", value: 2, type: "integer", description: "STA is not supporting the AP's power settings on 6 GHz" }],
+  // Scan flags (nl80211_scan_flags)
+  ["NL80211_SCAN_FLAG_LOW_PRIORITY", { name: "NL80211_SCAN_FLAG_LOW_PRIORITY", value: 1, type: "integer", description: "Scan request has low priority" }],
+  ["NL80211_SCAN_FLAG_FLUSH", { name: "NL80211_SCAN_FLAG_FLUSH", value: 2, type: "integer", description: "Flush cache before scanning" }],
+  ["NL80211_SCAN_FLAG_AP", { name: "NL80211_SCAN_FLAG_AP", value: 4, type: "integer", description: "Allow scanning even if AP interface is active" }],
+  ["NL80211_SCAN_FLAG_RANDOM_ADDR", { name: "NL80211_SCAN_FLAG_RANDOM_ADDR", value: 8, type: "integer", description: "Use a random MAC address for this scan" }],
+  ["NL80211_SCAN_FLAG_FILS_MAX_CHANNEL_TIME", { name: "NL80211_SCAN_FLAG_FILS_MAX_CHANNEL_TIME", value: 16, type: "integer", description: "Fill the dwell time in the FILS request parameters" }],
+  ["NL80211_SCAN_FLAG_ACCEPT_BCAST_PROBE_RESP", { name: "NL80211_SCAN_FLAG_ACCEPT_BCAST_PROBE_RESP", value: 32, type: "integer", description: "Accept broadcast probe responses" }],
+  ["NL80211_SCAN_FLAG_OCE_PROBE_REQ_HIGH_TX_RATE", { name: "NL80211_SCAN_FLAG_OCE_PROBE_REQ_HIGH_TX_RATE", value: 64, type: "integer", description: "Send probe requests at high TX rate (OCE)" }],
+  ["NL80211_SCAN_FLAG_OCE_PROBE_REQ_DEFERRAL_SUPPRESSION", { name: "NL80211_SCAN_FLAG_OCE_PROBE_REQ_DEFERRAL_SUPPRESSION", value: 128, type: "integer", description: "Allow probe request tx deferral suppression (OCE)" }],
+  ["NL80211_SCAN_FLAG_LOW_SPAN", { name: "NL80211_SCAN_FLAG_LOW_SPAN", value: 256, type: "integer", description: "Perform a low span scan" }],
+  ["NL80211_SCAN_FLAG_LOW_POWER", { name: "NL80211_SCAN_FLAG_LOW_POWER", value: 512, type: "integer", description: "Perform a low power scan" }],
+  ["NL80211_SCAN_FLAG_HIGH_ACCURACY", { name: "NL80211_SCAN_FLAG_HIGH_ACCURACY", value: 1024, type: "integer", description: "Perform a high accuracy scan" }],
+  ["NL80211_SCAN_FLAG_RANDOM_SN", { name: "NL80211_SCAN_FLAG_RANDOM_SN", value: 2048, type: "integer", description: "Randomize the sequence number in probe requests" }],
+  ["NL80211_SCAN_FLAG_MIN_PREQ_CONTENT", { name: "NL80211_SCAN_FLAG_MIN_PREQ_CONTENT", value: 4096, type: "integer", description: "Minimize probe request content" }],
+  ["NL80211_SCAN_FLAG_FREQ_KHZ", { name: "NL80211_SCAN_FLAG_FREQ_KHZ", value: 8192, type: "integer", description: "Report scan results with frequencies in kHz" }],
+  ["NL80211_SCAN_FLAG_COLOCATED_6GHZ", { name: "NL80211_SCAN_FLAG_COLOCATED_6GHZ", value: 16384, type: "integer", description: "Scan for colocated APs reported by 2.4/5 GHz APs" }],
   // Netlink Message Flags
   ["NLM_F_ACK", { name: "NLM_F_ACK", value: 4, type: "integer", description: "Request an acknowledgment on errors" }],
   ["NLM_F_ACK_TLVS", { name: "NLM_F_ACK_TLVS", value: 512, type: "integer", description: "Extended ACK TLVs were included" }],
@@ -273,6 +300,16 @@ const listenerMethods = new Map<string, FunctionSignature>([
     ],
     returnType: 'null',
     description: 'Set the list of NL80211_CMD_* commands to listen for.'
+  }],
+  ['request', {
+    name: 'request',
+    parameters: [
+      { name: 'cmd', type: 'integer', optional: false },
+      { name: 'flags', type: 'integer', optional: true },
+      { name: 'payload', type: 'object', optional: true }
+    ],
+    returnType: 'object | array | boolean | null',
+    description: 'Sends a netlink request over the listener\'s event socket. The cmd parameter specifies the NL80211_CMD_* command to execute. Optional flags can modify the request behavior (NLM_F_*). The payload object contains command-specific attributes.'
   }],
   ['close', {
     name: 'close',

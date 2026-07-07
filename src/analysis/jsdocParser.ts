@@ -7,11 +7,97 @@ import { UcodeType, type UcodeDataType, type SingleType, createUnionType, create
 import { isKnownModule, isKnownObjectType } from './moduleDispatch';
 
 export interface JsDocTag {
-  tag: string;            // 'param', 'returns', 'type'
-  name?: string | undefined;          // parameter name (for @param)
+  tag: string;            // 'param', 'returns', 'type', 'typedef', 'property', 'global', 'callback', 'template'
+  name?: string | undefined;          // parameter/property name (for @param/@property); may be dotted (`pos.x`) for @property
   typeExpression: string; // 'module:fs', 'string|number', etc.
   description?: string | undefined;   // trailing description after ' - '
-  optional?: boolean | undefined;     // @param declared optional: `[name]` / `[name=default]` (brackets already stripped from `name`)
+  optional?: boolean | undefined;     // @param/@property declared optional: `[name]` / `[name=default]` (brackets already stripped from `name`)
+  missingBraces?: boolean | undefined; // bare `@param string x` where the "type" was actually a type name — braces were omitted
+}
+
+// ---------------------------------------------------------------------------
+// Small JSDoc tokenizer helpers. These replace the earlier one-shot regexes that
+// used a non-nesting `[^}]+` brace capture (so `{{a: string}}` and inline object
+// shapes broke) and a `(\w+)` name capture (so `[optional]` and dotted `pos.x`
+// names were silently dropped).
+// ---------------------------------------------------------------------------
+
+/** Read a balanced `{…}` type span at the start of `s`. Handles nested braces
+ *  (`{{a: string}}`). Returns the inner text (without the outer braces) and the
+ *  remainder after the closing brace, or null if `s` doesn't start with `{` or the
+ *  braces never balance (malformed). */
+function readBracedType(s: string): { type: string; rest: string } | null {
+  const t = s.replace(/^\s+/, '');
+  if (!t.startsWith('{')) return null;
+  let depth = 0;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        return { type: t.slice(1, i).trim(), rest: t.slice(i + 1).replace(/^\s+/, '') };
+      }
+    }
+  }
+  return null; // unbalanced
+}
+
+/** Read a JSDoc name token at the start of `s`: `[name]` / `[name=default]` (optional),
+ *  a dotted path `pos.x`, or a plain identifier. Returns the bare name, whether it was
+ *  bracket-optional, and the remainder. Null if no name is present. */
+function readName(s: string): { name: string; optional: boolean; rest: string } | null {
+  const t = s.replace(/^\s+/, '');
+  if (t.startsWith('[')) {
+    const close = t.indexOf(']');
+    if (close < 0) return null;
+    const inner = t.slice(1, close);
+    const name = inner.split('=')[0]!.trim();
+    if (!name) return null;
+    return { name, optional: true, rest: t.slice(close + 1).replace(/^\s+/, '') };
+  }
+  const m = /^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/.exec(t);
+  if (!m) return null;
+  return { name: m[1]!, optional: false, rest: t.slice(m[1]!.length).replace(/^\s+/, '') };
+}
+
+/** A trailing tag description; a leading `-` separator is stripped. */
+function readDescription(s: string): string | undefined {
+  let t = s.trim();
+  if (t.startsWith('-')) t = t.slice(1).trim();
+  return t.length ? t : undefined;
+}
+
+/** Split `s` on `sep` at bracket/brace/angle/paren depth 0 (so `{a: string, b: int}`
+ *  and `array<a|b>` don't split on inner commas/pipes). */
+function splitTopLevel(s: string, sep: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!;
+    if (ch === '{' || ch === '[' || ch === '(' || ch === '<') depth++;
+    else if (ch === '}' || ch === ']' || ch === ')' || ch === '>') depth--;
+    else if (ch === sep && depth === 0) { out.push(s.slice(start, i)); start = i + 1; }
+  }
+  out.push(s.slice(start));
+  return out;
+}
+
+/** Scan a JSDoc body (lines already `*`-stripped and joined) into line-anchored tags.
+ *  Each entry is the tag word and the raw text up to the next line-anchored `@tag`. */
+function scanRawTags(fullText: string): { tag: string; body: string; tagStart: number }[] {
+  const re = /(^|\n)[ \t]*@([A-Za-z]+)\b/g;
+  const marks: { tag: string; bodyStart: number; tagStart: number }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(fullText)) !== null) {
+    marks.push({ tag: m[2]!, bodyStart: re.lastIndex, tagStart: m.index + m[1]!.length });
+  }
+  return marks.map((mk, i) => ({
+    tag: mk.tag,
+    body: fullText.slice(mk.bodyStart, i + 1 < marks.length ? marks[i + 1]!.tagStart : fullText.length).trim(),
+    tagStart: mk.tagStart,
+  }));
 }
 
 export interface ParsedJsDoc {
@@ -25,115 +111,165 @@ export interface ParsedJsDoc {
  */
 export function parseJsDocComment(value: string): ParsedJsDoc {
   const tags: JsDocTag[] = [];
-  let description: string | undefined;
 
   // Strip leading * on each line and normalize
-  const lines = value.split('\n').map(line => {
-    let trimmed = line.replace(/^\s*\*\s?/, '');
-    return trimmed;
-  });
-
+  const lines = value.split('\n').map(line => line.replace(/^\s*\*\s?/, ''));
   const fullText = lines.join('\n').trim();
 
-  // Extract description (text before first @tag)
-  const firstTagIndex = fullText.search(/@(?:param|returns?|type(?:def)?|property)\b/);
-  if (firstTagIndex > 0) {
-    description = fullText.substring(0, firstTagIndex).trim() || undefined;
-  } else if (firstTagIndex === -1) {
-    description = fullText || undefined;
-  }
+  const rawTags = scanRawTags(fullText);
 
-  // Parse @param tags
-  // Supports: @param {type} name, @param {type} name - description, @param name type, @param name type - description.
-  // The name may use standard JSDoc optional syntax: `[name]` or `[name=default]`
-  // (brackets/default are stripped; the tag is marked `optional`).
-  const paramRegexBraces = /@param\s+\{([^}]+)\}\s+(\w+|\[\w+(?:\s*=[^\]]*)?\])(?:\s+-\s+(.*))?/g;
-  const paramRegexBare = /@param\s+(\w+)\s+(\S+)(?:\s+-\s+(.*))?/g;
+  // Leading description = everything before the first tag.
+  const firstTagStart = rawTags.length ? rawTags[0]!.tagStart : -1;
+  const description = firstTagStart === -1
+    ? (fullText || undefined)
+    : (fullText.slice(0, firstTagStart).trim() || undefined);
 
-  let match: RegExpExecArray | null;
+  let returnsSeen = false;
 
-  // Try brace syntax first: @param {type} name
-  while ((match = paramRegexBraces.exec(fullText)) !== null) {
-    const rawName = match[2]!;
-    const optional = rawName.startsWith('[');
-    const name = optional
-      ? rawName.slice(1, -1).split('=')[0]!.trim()
-      : rawName;
-    tags.push({
-      tag: 'param',
-      typeExpression: match[1]!.trim(),
-      name,
-      description: match[3]?.trim(),
-      ...(optional ? { optional: true } : {})
-    });
-  }
-
-  // If no brace-style params found, try bare syntax: @param name type
-  if (tags.filter(t => t.tag === 'param').length === 0) {
-    while ((match = paramRegexBare.exec(fullText)) !== null) {
-      tags.push({
-        tag: 'param',
-        name: match[1]!,
-        typeExpression: match[2]!.trim(),
-        description: match[3]?.trim()
-      });
+  for (const { tag, body } of rawTags) {
+    switch (tag) {
+      case 'param': {
+        parseParamTag(body, tags);
+        break;
+      }
+      case 'return':
+      case 'returns': {
+        if (returnsSeen) break; // keep only the first @returns (legacy behaviour)
+        returnsSeen = true;
+        const braced = readBracedType(body);
+        if (braced) {
+          tags.push({ tag: 'returns', typeExpression: braced.type, description: readDescription(braced.rest) });
+        } else {
+          // Bare `@returns type - desc`
+          const first = body.split(/\s+/)[0] ?? '';
+          const rest = body.slice(first.length);
+          tags.push({ tag: 'returns', typeExpression: first.trim(), description: readDescription(rest) });
+        }
+        break;
+      }
+      case 'typedef': {
+        // Both orders: `@typedef {Type} Name` and `@typedef Name {Type}`.
+        const braced = readBracedType(body);
+        if (braced) {
+          const nm = readName(braced.rest);
+          tags.push({ tag: 'typedef', typeExpression: braced.type, name: nm ? nm.name : undefined });
+        } else {
+          const nm = readName(body);
+          if (nm) {
+            const braced2 = readBracedType(nm.rest);
+            tags.push({ tag: 'typedef', typeExpression: braced2 ? braced2.type : '', name: nm.name });
+          } else {
+            tags.push({ tag: 'typedef', typeExpression: '', name: undefined });
+          }
+        }
+        break;
+      }
+      case 'property': {
+        const braced = readBracedType(body);
+        if (!braced) break; // malformed @property (no `{type}`) — nothing usable
+        const nm = readName(braced.rest);
+        if (!nm) break;
+        tags.push({
+          tag: 'property',
+          typeExpression: braced.type,
+          name: nm.name,
+          description: readDescription(nm.rest),
+          ...(nm.optional ? { optional: true } : {}),
+        });
+        break;
+      }
+      case 'callback': {
+        // `@callback Name` — declares a function type name.
+        const nm = readName(body);
+        if (nm) tags.push({ tag: 'callback', typeExpression: 'function', name: nm.name });
+        break;
+      }
+      case 'template': {
+        // `@template T` or `@template T, U - desc` — generic type params.
+        const head = body.split('\n')[0] ?? body;
+        for (const part of head.split(',')) {
+          const nm = readName(part);
+          if (nm) tags.push({ tag: 'template', typeExpression: 'unknown', name: nm.name });
+        }
+        break;
+      }
+      case 'enum': {
+        // `@enum {type}` — attaches to the following const/let declaration; the
+        // referenceable name is the declaration's identifier (resolved by the caller).
+        const braced = readBracedType(body);
+        tags.push({ tag: 'enum', typeExpression: braced ? braced.type : 'integer' });
+        break;
+      }
+      case 'global': {
+        // `@global {type} name`, `@global name {type}`, or `@global name`.
+        const braced = readBracedType(body);
+        if (braced) {
+          const nm = readName(braced.rest);
+          if (nm) tags.push({ tag: 'global', typeExpression: braced.type, name: nm.name });
+        } else {
+          const nm = readName(body);
+          if (nm) {
+            const braced2 = readBracedType(nm.rest);
+            tags.push({ tag: 'global', name: nm.name, typeExpression: braced2 ? braced2.type : '' });
+          }
+        }
+        break;
+      }
+      default:
+        break; // unrecognized tag — ignore
     }
   }
 
-  // Parse @returns / @return tags
-  const returnsRegexBraces = /@returns?\s+\{([^}]+)\}(?:\s+-?\s*(.*))?/;
-  const returnsRegexBare = /@returns?\s+(\S+)(?:\s+-?\s*(.*))?/;
-
-  const returnsMatch = returnsRegexBraces.exec(fullText) || returnsRegexBare.exec(fullText);
-  if (returnsMatch) {
-    // Only add if not already captured as a param
-    tags.push({
-      tag: 'returns',
-      typeExpression: returnsMatch[1]!.trim(),
-      description: returnsMatch[2]?.trim()
-    });
-  }
-
-  // Parse @typedef tag: @typedef {type} Name or @typedef {object} Name
-  const typedefRegex = /@typedef\s+\{([^}]+)\}\s+(\w+)/;
-  const typedefMatch = typedefRegex.exec(fullText);
-  if (typedefMatch) {
-    tags.push({
-      tag: 'typedef',
-      typeExpression: typedefMatch[1]!.trim(),
-      name: typedefMatch[2]!
-    });
-  }
-
-  // Parse @property tags: @property {type} name or @property {type} name - description
-  const propertyRegex = /@property\s+\{([^}]+)\}\s+(\w+)(?:\s+-\s+(.*))?/g;
-  while ((match = propertyRegex.exec(fullText)) !== null) {
-    tags.push({
-      tag: 'property',
-      typeExpression: match[1]!.trim(),
-      name: match[2]!,
-      description: match[3]?.trim()
-    });
-  }
-
-  // Parse @global tags: `@global name`, `@global {type} name`, or `@global name {type}`.
-  // Declares a name as an injected/host global so a read isn't flagged UC1001 (and, when a
-  // type is given, types it). Multiple tags allowed.
-  const globalBraces = /@global\s+\{([^}]+)\}\s+(\w+)/g;        // @global {object} uhttpd
-  const globalNameType = /@global\s+(\w+)\s+\{([^}]+)\}/g;       // @global uhttpd {object}
-  const globalBare = /@global\s+(\w+)\s*(?=$|[\r\n*])/gm;        // @global uhttpd
-  while ((match = globalBraces.exec(fullText)) !== null) {
-    tags.push({ tag: 'global', typeExpression: match[1]!.trim(), name: match[2]! });
-  }
-  while ((match = globalNameType.exec(fullText)) !== null) {
-    tags.push({ tag: 'global', name: match[1]!, typeExpression: match[2]!.trim() });
-  }
-  const typedGlobals = new Set(tags.filter(t => t.tag === 'global').map(t => t.name));
-  while ((match = globalBare.exec(fullText)) !== null) {
-    if (!typedGlobals.has(match[1]!)) tags.push({ tag: 'global', name: match[1]!, typeExpression: '' });
-  }
-
   return { tags, description };
+}
+
+/** Parse a single `@param` tag body into a JsDocTag. Supports:
+ *   `{type} name`, `{type} [name]`, `{type} name - desc`, and the brace-less legacy
+ *   forms `name type` and the missing-braces mistake `type name` (flagged). */
+function parseParamTag(body: string, tags: JsDocTag[]): void {
+  const braced = readBracedType(body);
+  if (braced) {
+    const nm = readName(braced.rest);
+    tags.push({
+      tag: 'param',
+      typeExpression: braced.type,
+      name: nm ? nm.name : undefined,
+      description: nm ? readDescription(nm.rest) : undefined,
+      ...(nm && nm.optional ? { optional: true } : {}),
+    });
+    return;
+  }
+
+  // No braces. Two brace-less shapes are supported:
+  //   `@param name type [- desc]`  (legacy bare form — first token is the NAME)
+  //   `@param type name`           (braces were forgotten — first token is a real TYPE)
+  const first = body.split(/\s+/)[0] ?? '';
+  const afterFirst = body.slice(first.length).replace(/^\s+/, '');
+  const second = afterFirst.split(/\s+/)[0] ?? '';
+  const afterSecond = afterFirst.slice(second.length);
+
+  const firstIsType = first !== '' && resolveTypeExpression(first) !== null;
+  const secondIsType = second !== '' && resolveTypeExpression(second) !== null;
+
+  if (firstIsType && !secondIsType && second !== '') {
+    // `@param string x` — braces were omitted around the type.
+    tags.push({
+      tag: 'param',
+      typeExpression: first,
+      name: second,
+      description: readDescription(afterSecond),
+      missingBraces: true,
+    });
+    return;
+  }
+
+  // Legacy bare `@param name type [- desc]`.
+  tags.push({
+    tag: 'param',
+    name: first || undefined,
+    typeExpression: second.trim(),
+    description: readDescription(afterSecond),
+  });
 }
 
 /**
@@ -142,6 +278,12 @@ export function parseJsDocComment(value: string): ParsedJsDoc {
  */
 export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
   typeExpr = typeExpr.trim();
+
+  // Closure-style function type: `function(integer): string`, `function()`.
+  // Parameter/return modeling is not carried; the value is a callable.
+  if (/^function\s*\(/.test(typeExpr)) {
+    return UcodeType.FUNCTION as UcodeDataType;
+  }
 
   // Handle nullable/optional type sugar — all mean `type|null` (in ucode an
   // omitted argument IS null, so optional and nullable collapse):
@@ -240,36 +382,132 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
 }
 
 /**
+ * Resolve a type expression, keeping the resolvable part of a union even when some
+ * members are unknown. `unresolved` lists the member strings that couldn't be resolved
+ * (so the caller can still warn), while `type` carries the union of the resolvable ones
+ * (null only when nothing resolved). For non-union expressions this is just a thin
+ * wrapper over resolveTypeExpression.
+ */
+export function resolveTypeExpressionDetailed(typeExpr: string): { type: UcodeDataType | null; unresolved: string[] } {
+  const trimmed = typeExpr.trim();
+  // Only split a TOP-LEVEL union (not `|` nested inside `<>`/`{}`); a leading nullable
+  // sugar (`?T`) or object shape is handled by resolveTypeExpression directly.
+  if (trimmed.includes('|') && !trimmed.startsWith('{') && !trimmed.startsWith('?') && !/^[Aa]rray</.test(trimmed)) {
+    const parts = splitTopLevel(trimmed, '|').map(p => p.trim()).filter(Boolean);
+    if (parts.length > 1) {
+      const types: SingleType[] = [];
+      const unresolved: string[] = [];
+      for (const part of parts) {
+        const r = resolveTypeExpression(part);
+        if (r === null) { unresolved.push(part); continue; }
+        if (typeof r === 'string') types.push(r as UcodeType);
+        else if (typeof r === 'object' && r.type === UcodeType.UNION) types.push(...(r as UnionTypeLike).types);
+        else if (isObjectType(r) || isArrayType(r)) types.push(r);
+        else types.push(r.type);
+      }
+      return { type: types.length === 0 ? null : createUnionType(types), unresolved };
+    }
+  }
+  const r = resolveTypeExpression(trimmed);
+  return { type: r, unresolved: r === null ? [trimmed] : [] };
+}
+
+interface UnionTypeLike { types: SingleType[]; }
+
+/** Parse an inline object-shape type `{ a: string, b: integer }` into a property map.
+ *  Returns null when `expr` isn't a `{…}` object shape. Nested inline shapes collapse to
+ *  `object` (the LSP carries only one nesting level of property types on a symbol). */
+export function parseInlineObjectShape(expr: string): Map<string, UcodeDataType> | null {
+  const t = expr.trim();
+  if (!t.startsWith('{') || !t.endsWith('}')) return null;
+  const inner = t.slice(1, -1).trim();
+  const props = new Map<string, UcodeDataType>();
+  if (inner === '') return props; // `{}` — empty object
+  for (const rawPart of splitTopLevel(inner, ',')) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    const parts = splitTopLevel(part, ':');
+    if (parts.length < 2) return null; // not `key: type`
+    const key = parts[0]!.trim().replace(/^['"]|['"]$/g, '');
+    const valExpr = parts.slice(1).join(':').trim();
+    if (!key) return null;
+    props.set(key, resolveTypeExpression(valExpr) ?? (UcodeType.UNKNOWN as UcodeDataType));
+  }
+  return props;
+}
+
+/**
+ * A single parsed @property inside a @typedef. `type` is the resolved leaf type, or null
+ * when it couldn't be resolved standalone (e.g. it names another @typedef) — the consumer
+ * resolves those against the typedef registry. `children` holds dotted sub-properties
+ * (`pos.x`, `pos.y` → `pos` with children `x`, `y`).
+ */
+export interface ParsedTypedefProperty {
+  typeExpression: string;
+  type: UcodeDataType | null;
+  optional: boolean;
+  description?: string | undefined;
+  children?: Map<string, ParsedTypedefProperty> | undefined;
+}
+
+/**
  * Represents a parsed @typedef with its properties.
  */
 export interface ParsedTypedef {
   name: string;
   baseType: string;  // The type in @typedef {type} Name
-  properties: Map<string, { type: UcodeDataType; description?: string | undefined }>;
+  properties: Map<string, ParsedTypedefProperty>;
+  duplicateProperties?: string[] | undefined; // property names declared more than once
 }
 
 /**
  * Extract a @typedef from a parsed JSDoc comment.
- * Returns null if the comment doesn't contain a @typedef.
+ * Returns null if the comment doesn't contain a (named) @typedef.
  */
 export function extractTypedef(parsed: ParsedJsDoc): ParsedTypedef | null {
   const typedefTag = parsed.tags.find(t => t.tag === 'typedef');
   if (!typedefTag || !typedefTag.name) return null;
 
-  const properties = new Map<string, { type: UcodeDataType; description?: string | undefined }>();
+  const properties = new Map<string, ParsedTypedefProperty>();
+  const duplicates: string[] = [];
+
   for (const tag of parsed.tags) {
-    if (tag.tag === 'property' && tag.name) {
-      const resolved = resolveTypeExpression(tag.typeExpression);
-      if (resolved !== null) {
-        properties.set(tag.name, { type: resolved, description: tag.description });
+    if (tag.tag !== 'property' || !tag.name) continue;
+    const path = tag.name.split('.').map(s => s.trim()).filter(Boolean);
+    if (path.length === 0) continue;
+
+    // Walk/create nested container maps for a dotted path (`pos.x`).
+    let map = properties;
+    for (let i = 0; i < path.length - 1; i++) {
+      const seg = path[i]!;
+      let node = map.get(seg);
+      if (!node) {
+        node = { typeExpression: '', type: UcodeType.OBJECT as UcodeDataType, optional: false, children: new Map() };
+        map.set(seg, node);
+      } else if (!node.children) {
+        node.children = new Map();
       }
+      node.type = UcodeType.OBJECT as UcodeDataType;
+      map = node.children!;
     }
+
+    const leaf = path[path.length - 1]!;
+    const existing = map.get(leaf);
+    if (existing && existing.typeExpression !== '') duplicates.push(tag.name);
+    map.set(leaf, {
+      typeExpression: tag.typeExpression,
+      type: resolveTypeExpression(tag.typeExpression),
+      optional: !!tag.optional,
+      description: tag.description,
+      ...(existing?.children ? { children: existing.children } : {}),
+    });
   }
 
   return {
     name: typedefTag.name,
     baseType: typedefTag.typeExpression,
-    properties
+    properties,
+    ...(duplicates.length ? { duplicateProperties: duplicates } : {}),
   };
 }
 

@@ -105,6 +105,14 @@ export const VERSION_MODULE_FUNCTIONS: Record<string, UcodeTargetVersion> = {
   'socket.open': '25.12',
   'socket.pair': '25.12',
 
+  // --- fs ioctl direction constants: ucode commit 18a2ffa (2024-10-11), first feed 24.10 ---
+  // (container-verified: `import { IOC_DIR_READ } from 'fs'` is a Reference error on 23.05,
+  // works on 24.10/25.12/main. The fs.file.ioctl METHOD is gated in VERSION_OBJECT_METHODS.)
+  'fs.IOC_DIR_NONE': '24.10',
+  'fs.IOC_DIR_READ': '24.10',
+  'fs.IOC_DIR_WRITE': '24.10',
+  'fs.IOC_DIR_RW': '24.10',
+
   // --- 23.05 → 24.10 additions (module-level functions; absent at the 23.05 hash) ---
   // NOTE: socket.* and zlib.* function gates are covered by the MODULE gates above
   // (socket → 24.10, zlib → 25.12 by feed availability); a function gate at or below

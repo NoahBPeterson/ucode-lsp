@@ -200,7 +200,8 @@ function check(label, actual, expected) {
 // --- values(obj): arg is object -> array; otherwise array | null ---
 {
     const r = analyze(`let a = values({x: 1});`);
-    check('values(object) -> array', getType(r, 'a'), 'array');
+    // values(obj) carries the object's value types as the array element type (auto-docs #123)
+    check('values(object) -> array<integer>', getType(r, 'a'), 'array<integer>');
 }
 {
     const r = analyze(`function _u(x) { return values(x); }`);
@@ -435,7 +436,8 @@ function check(label, actual, expected) {
 }
 {
     const r = analyze(`let a = sort({a:1, b:2});`);
-    check('sort(object) -> object | null', getType(r, 'a'), 'object | null');
+    // sort(object) returns the object itself — no phantom null (matches the array branch) (auto-docs #122)
+    check('sort(object) -> object', getType(r, 'a'), 'object');
 }
 
 // sort: wrong types → null

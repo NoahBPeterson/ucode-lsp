@@ -44,5 +44,9 @@ test('NOT offered for a replace()-callback argument (the pbr shape)', async () =
     return masked;
 }
 `;
-  expect(await jsdocOffered(c, 'pbr', 'ip')).toBe('not-offered');
+  // The JSDoc quick fix must never be offered for a replace() inline callback (no
+  // attachment point). Since finding #178, replace's callback params are correctly typed
+  // as strings, so `substr(ip, 0)` no longer even produces a spurious "unknown argument"
+  // diagnostic — hence 'no-trigger'. Either way the fix is not offered.
+  expect(await jsdocOffered(c, 'pbr', 'ip')).not.toBe('offered');
 });

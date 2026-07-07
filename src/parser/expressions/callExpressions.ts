@@ -45,7 +45,7 @@ export abstract class CallExpressions extends OperatorExpressions {
       } while (this.match(TokenType.TK_COMMA));
     }
 
-    this.consume(TokenType.TK_RPAREN, "Expected ')' after arguments");
+    const rparen = this.consume(TokenType.TK_RPAREN, "Expected ')' after arguments");
 
     return {
       type: 'CallExpression',
@@ -53,7 +53,11 @@ export abstract class CallExpressions extends OperatorExpressions {
       end: this.previous()!.end,
       callee: left,
       arguments: args,
-      optional
+      optional,
+      // No closing paren consumed → the call is unterminated (error recovery). Its
+      // recorded `end` stops at the last token seen (e.g. a trailing comma), so
+      // signature help must treat its argument region as running to EOF (#85).
+      unclosed: rparen === null
     };
   }
 

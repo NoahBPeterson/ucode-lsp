@@ -24,28 +24,49 @@ describe('Builtin Function Shadowing Tests', function() {
 
   describe('Builtin Function Shadowing', function() {
     it('should show WARNING for builtin function shadowing', async function() {
+      // Uses non-idiomatic builtins (signal/printf/sprintf) — shadowing these is unusual
+      // and still warns. Everyday-idiomatic names (index/type/length/…) are intentionally
+      // suppressed (finding #12) and are covered by the dedicated suppression test below.
       const testContent = `
 let signal = "custom signal handler";
 let printf = function(fmt, ...args) { return fmt; };
-let length = 42;
+let sprintf = 42;
 `;
 
       const diagnostics = await getDiagnostics(testContent, '/tmp/builtin-shadowing.uc');
-      const shadowingDiagnostics = diagnostics.filter(d => 
+      const shadowingDiagnostics = diagnostics.filter(d =>
         d.message.includes('shadows builtin function') && d.severity === 2 // Warning
       );
-      
-      assert.strictEqual(shadowingDiagnostics.length, 3, 
+
+      assert.strictEqual(shadowingDiagnostics.length, 3,
         `Expected 3 builtin shadowing warnings, got ${shadowingDiagnostics.length}. Messages: ${shadowingDiagnostics.map(d => d.message).join(', ')}`);
-      
+
       // Verify specific builtins are detected
       const signalWarning = shadowingDiagnostics.find(d => d.message.includes("'signal'"));
       const printfWarning = shadowingDiagnostics.find(d => d.message.includes("'printf'"));
-      const lengthWarning = shadowingDiagnostics.find(d => d.message.includes("'length'"));
-      
+      const sprintfWarning = shadowingDiagnostics.find(d => d.message.includes("'sprintf'"));
+
       assert(signalWarning, 'Should show warning for signal builtin shadowing');
       assert(printfWarning, 'Should show warning for printf builtin shadowing');
-      assert(lengthWarning, 'Should show warning for length builtin shadowing');
+      assert(sprintfWarning, 'Should show warning for sprintf builtin shadowing');
+    });
+
+    it('should NOT warn when shadowing idiomatic everyday builtin names (finding #12)', async function() {
+      const testContent = `
+let index = 0;
+let type = "wan";
+let length = 42;
+let values = [1, 2, 3];
+let keys = {};
+`;
+
+      const diagnostics = await getDiagnostics(testContent, '/tmp/builtin-idiomatic-shadowing.uc');
+      const shadowingDiagnostics = diagnostics.filter(d =>
+        d.message.includes('shadows builtin function')
+      );
+
+      assert.strictEqual(shadowingDiagnostics.length, 0,
+        `Idiomatic builtin names should not emit UC1008. Got: ${shadowingDiagnostics.map(d => d.message).join(', ')}`);
     });
 
     it('should NOT show ERROR for builtin function shadowing', async function() {

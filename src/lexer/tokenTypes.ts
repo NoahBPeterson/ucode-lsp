@@ -127,6 +127,9 @@ export interface LexerError {
     start: number;
     end: number;
     code?: string;
+    /** Default is 'error'; 'warning' for legal-but-suspicious constructs (e.g. the
+     *  `/*​/` empty-comment quirk, which the interpreter accepts silently). */
+    severity?: 'warning' | 'error';
 }
 
 export interface LexerState {

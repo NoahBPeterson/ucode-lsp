@@ -48,7 +48,7 @@ const snippetForType = (t) => Match.value(t).pipe(
     Match.when(UcodeType.ARRAY,    () => ({ assign: 'x = [1, 2];', expected: 'array<integer>' })),
     Match.when(UcodeType.OBJECT,   () => ({ assign: 'x = { a: 1 };', expected: 'object' })),
     Match.when(UcodeType.FUNCTION, () => ({ assign: 'x = () => 1;', expected: 'function' })),
-    Match.when(UcodeType.REGEX,    () => ({ assign: 'x = /test/;', expected: 'regex' })),
+    Match.when(UcodeType.REGEX,    () => ({ assign: 'x = /test/;', expected: 'regexp' })),
     Match.when(UcodeType.NULL,     () => ({ assign: 'x = null;', expected: 'null' })),
     Match.when(UcodeType.UNKNOWN,  () => null), // can't assign "unknown"
     Match.when(UcodeType.UNION,    () => null),

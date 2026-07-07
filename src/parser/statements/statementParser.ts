@@ -14,7 +14,7 @@ export abstract class StatementParser extends BasicStatements {
     if (this.check(TokenType.TK_ERROR)) {
       const errorToken = this.advance()!;
       const message = errorToken.value ? String(errorToken.value) : "Unexpected token";
-      this.errorAt(message, errorToken.pos, errorToken.end);
+      this.lexerErrorAt(message, errorToken.pos, errorToken.end);
       return null;
     }
 

@@ -16,3 +16,13 @@ Verified: `'use strict'; length(null || [])` → `0`, exit 0. The `|| []` fallba
 ## Fix
 
 Narrow `a || b` to drop the falsy-eliminable left type when the right operand is a concrete collection (so `x || []` is `array`), and/or extend the length-in-test-context exemption to the `length(...) > 0` comparison form.
+
+---
+
+## Resolution (2026-07-06): fixed for the ticket repro; one variant remains
+
+The union arg-validation branch now honors safeInTestContext + inTruthinessContext when the
+only disallowed member is `unknown` — the ticket's repro no longer flags. Residual limitation:
+a called-function variant (`print(f([]))` where f's return is inferred) still flags through a
+separate return-inference path; the broad checkBinaryExpression truthiness fix for it regressed
+test-oneliner-guard and was reverted.

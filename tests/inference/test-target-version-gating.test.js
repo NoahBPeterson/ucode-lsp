@@ -202,7 +202,8 @@ describe('source cross-check: registry introducedIn vs ucode source at pinned ha
       expect(file, `no MODULE_FILE mapping for '${mod}'`).toBeDefined();
       const atPrev = gitShow(HASH[prev], file) || '';
       const atIntro = gitShow(HASH[intro], file) || '';
-      const registered = (src) => new RegExp(`\\{\\s*"${fn}"`).test(src); // { "fn", uc_… }
+      // Functions register as `{ "fn", uc_… }`; constants as `ADD_CONST(NAME)`.
+      const registered = (src) => new RegExp(`\\{\\s*"${fn}"`).test(src) || new RegExp(`ADD_CONST\\(${fn}\\)`).test(src);
       expect(registered(atPrev), `${key} should be ABSENT in ${file} at ${prev}`).toBe(false);
       expect(registered(atIntro), `${key} should be PRESENT in ${file} at ${intro}`).toBe(true);
     }

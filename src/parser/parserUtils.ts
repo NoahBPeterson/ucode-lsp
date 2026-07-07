@@ -42,6 +42,9 @@ export class ParserUtils {
       if (this.sourceText) {
         const between = this.sourceText.substring(c.end, gapEnd);
         if (between.trim().length > 0) break;
+        // A blank line (2+ newlines of pure whitespace) severs the attachment: a doc comment
+        // separated from the node by an empty line is not that node's JSDoc.
+        if ((between.match(/\n/g) || []).length > 1) break;
       }
       const val = String(c.value);
       if (val.startsWith('*')) { // /** ... */ — the leading JSDoc
@@ -169,6 +172,19 @@ export class ParserUtils {
 
     this.panicMode = true;
     this.errors.push({ message, start: pos, end, severity: 'error', code });
+  }
+
+  /** Report a lexer-produced TK_ERROR token's message. A lexer error is
+   *  SELF-CONTAINED — the caller consumes exactly the offending token and the
+   *  position is precise — so unlike parse errors it carries no cascade risk.
+   *  It therefore (a) always reports, even mid-panic, and (b) clears panicMode,
+   *  so EVERY bad character in a file gets its own diagnostic (matching the
+   *  interpreter, which reports each occurrence). Without this, one character
+   *  error latched panicMode across statement boundaries and silently swallowed
+   *  the next error anywhere in the file. */
+  protected lexerErrorAt(message: string, pos: number, end: number): void {
+    this.errors.push({ message, start: pos, end, severity: 'error', code: UcodeErrorCode.SYNTAX_ERROR });
+    this.panicMode = false;
   }
 
   protected warningAt(message: string, pos: number, end: number, code: string = UcodeErrorCode.SYNTAX_ERROR): void {

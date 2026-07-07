@@ -123,6 +123,7 @@ export interface CallExpressionNode extends AstNode {
   callee: AstNode;
   arguments: AstNode[];
   optional?: boolean; // for optional chaining ?.()
+  unclosed?: boolean; // true when no closing `)` was consumed (error recovery) — its arg region runs to EOF (signature help #85)
 }
 
 // Spread elements: ...args
@@ -224,6 +225,13 @@ export interface VariableDeclaratorNode extends AstNode {
   type: 'VariableDeclarator';
   id: IdentifierNode;
   init: AstNode | null;
+  /**
+   * True when an `=` was present but the initializer expression failed to parse
+   * (e.g. `let x = (1 +;`). Distinguishes a broken initializer from a legitimate
+   * no-initializer `let x;`, so downstream diagnostics (UC1006 unused-variable)
+   * don't cascade on top of the real parse error.
+   */
+  initHadParseError?: boolean;
 }
 
 // If statements: if (test) consequent else alternate

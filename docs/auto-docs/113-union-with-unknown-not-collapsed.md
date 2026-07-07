@@ -17,3 +17,14 @@ The union builder doesn't absorb `unknown` — `unknown | T` should simplify to 
 ## Fix
 
 In the union constructor/normalizer, collapse any union containing `unknown` to `unknown` (and dedupe/simplify members generally). Low severity, but it makes hovers and downstream displays cleaner and avoids confusing `unknown | X` types.
+
+---
+
+## Deferral note (2026-07-06)
+
+Collapsing `unknown | T` → `unknown` in createUnionType conflicts with explicit tested
+conventions: tests/inference/test-union-type-ordering.test.js asserts
+`createUnionType([NULL, UNKNOWN])` renders "unknown | null" (with a defined ordering slot for
+unknown), and test-unknown-return-types.js deliberately constructs `string | unknown`.
+A global collapse contradicts that maintainer intent; needs a product decision on whether the
+union display convention should change before implementing.

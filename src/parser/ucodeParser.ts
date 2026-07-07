@@ -43,6 +43,10 @@ export class UcodeParser extends StatementParser {
         const stmt = this.parseStatement();
         if (stmt) {
           body.push(stmt);
+          // A completed statement is a cascade boundary: whatever error latched
+          // panicMode inside a PREVIOUS statement must not suppress diagnostics
+          // in the statements that follow.
+          this.panicMode = false;
         }
       } catch (error) {
         // Error recovery at statement level

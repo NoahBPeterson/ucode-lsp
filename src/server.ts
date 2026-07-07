@@ -51,7 +51,6 @@ import * as path from 'path';
 import { isUcodeSourceFile, isUcodeSourceFileAsync } from './shebang';
 import { collectCodeLensFunctions, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
 import { findFunctionReferences, findNamespaceMemberReferences, findFactoryMethodReferences, formatReferencesTitle, getImportBindings, type ImportBinding } from './references';
-// import { validateDocument, createValidationConfig } from './validations/hybrid-validator';
 import { handleHover } from './hover';
 import { handleCompletion, handleCompletionResolve } from './completion';
 import { handleDefinition } from './definition';
@@ -60,7 +59,8 @@ import { provideSignatureHelp, resolveMemberCallParameterTypes } from './signatu
 import { computeRawInlayHints, shiftRawHints, materializeRawHints, type RawInlayHint } from './inlayHints';
 import { provideFoldingRanges } from './foldingRanges';
 import { provideDocumentLinks } from './documentLinks';
-import { computeImportInsertEdit } from './importEdit';
+import { computeImportInsertEdit, computeNamedImportEdit } from './importEdit';
+import { parseDisableDirectives, anyDirectiveCovers } from './analysis/disableDirectives';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalyzer, type SemanticAnalysisResult, SymbolType, type SymbolTable, type Symbol } from './analysis';
 import type {
@@ -72,6 +72,11 @@ import type {
     FunctionExpressionNode,
     ArrowFunctionExpressionNode,
     ImportDeclarationNode,
+    JsDocCommentNode,
+    ObjectExpressionNode,
+    PropertyNode,
+    VariableDeclarationNode,
+    LiteralNode,
 } from './ast/nodes';
 import { UCODE_TARGET_VERSIONS, type UcodeTargetVersion, DEFAULT_TARGET_VERSION } from './analysis/ucodeVersions';
 import { UcodeErrorCode } from './analysis/errorConstants';
@@ -621,26 +626,6 @@ documents.onDidOpen(async (change: TextDocumentChangeEvent<TextDocument>) => {
     await validateAndAnalyzeDocument(change.document);
 });
 
-// Helper function to check if a diagnostic should be converted to lower severity by disable comments
-function shouldReduceDiagnosticSeverity(textDocument: TextDocument, diagnostic: Diagnostic): boolean {
-    const text = textDocument.getText();
-    const lines = text.split(/\r?\n/);
-    const startLine = diagnostic.range.start.line;
-    const endLine = diagnostic.range.end.line;
-    
-    // Check if any line in the diagnostic range has a disable comment
-    for (let lineIndex = startLine; lineIndex <= endLine; lineIndex++) {
-        if (lineIndex < lines.length) {
-            const line = lines[lineIndex];
-            if (line && line.includes('// ucode-lsp disable')) {
-                return true;
-            }
-        }
-    }
-    
-    return false;
-}
-
 /** True for a native stack overflow (deeply-nested input) or our analyzer's depth-guard bail.
  *  Used to degrade gracefully instead of crashing the server. (#117) */
 function isStackOverflow(e: unknown): boolean {
@@ -693,9 +678,13 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
 
     // Lexer side-channel errors (e.g. unsupported regex flag, #56) are surfaced here alongside
     // parser errors — the lexer emits a valid token for them so the AST/arg-count stays intact.
+    // Disable directives (`// ucode-lsp disable[-next-line] [UC####...]`) parsed once for this
+    // document. A directive REMOVES (not demotes) a covered diagnostic — ticket 08 — and the
+    // semantic analyzer applies the same directives to its own diagnostics via the shared module.
+    const disableDirectives = parseDisableDirectives(textDocument.getText());
     let diagnostics: Diagnostic[] = [...lexer.errors, ...parseResult.errors].map(err => {
         const diagnostic: Diagnostic = {
-            severity: DiagnosticSeverity.Error,
+            severity: (err as { severity?: string }).severity === 'warning' ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error,
             range: {
                 start: textDocument.positionAt(err.start),
                 end: textDocument.positionAt(err.end),
@@ -706,18 +695,8 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
             // umbrella fallback if an emission site didn't set a more specific one.
             code: err.code ?? UcodeErrorCode.SYNTAX_ERROR,
         };
-        
-        // Convert to lower severity if there's a disable comment
-        if (shouldReduceDiagnosticSeverity(textDocument, diagnostic)) {
-            if (diagnostic.severity === DiagnosticSeverity.Error) {
-                diagnostic.severity = DiagnosticSeverity.Warning;
-            } else if (diagnostic.severity === DiagnosticSeverity.Warning) {
-                diagnostic.severity = DiagnosticSeverity.Information;
-            }
-        }
-        
         return diagnostic;
-    });
+    }).filter(d => !anyDirectiveCovers(disableDirectives, d.range.start.line, d.code));
 
     if (parseResult.ast) {
         // One analysis pass with a given skip set; reused by runIncremental (which may invoke
@@ -803,6 +782,8 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
             const selfEntry = getWorkspaceIncludeScopeIndex().get(includerPath);
             const includerScope = selfEntry ? { names: selfEntry.injectedNames, complete: selfEntry.complete } : undefined;
             for (const d of checkIncludeScopes(parseResult.ast, includerPath, getTargetFreeVars, (n) => allBuiltinFunctions.has(n), includerScope)) {
+                const startLine = textDocument.positionAt(d.start).line;
+                if (anyDirectiveCovers(disableDirectives, startLine, UcodeErrorCode.UNDEFINED_VARIABLE)) continue;
                 diagnostics.push({
                     severity: DiagnosticSeverity.Warning,
                     range: { start: textDocument.positionAt(d.start), end: textDocument.positionAt(d.end) },
@@ -1039,13 +1020,15 @@ function appendCrossFileAutoImports(
         let rel = path.relative(currentDir, entry.filePath).replace(/\\/g, '/');
         if (!rel.startsWith('.')) rel = './' + rel;
         const importText = `import { ${entry.name} } from '${rel}';`;
+        // Merge into an existing `import { … } from '${rel}'` when present (ticket 93).
+        const importEdit = computeNamedImportEdit(ast, document, rel, entry.name);
         additions.push({
             label: entry.name,
             kind: entry.isFunction ? CompletionItemKind.Function : CompletionItemKind.Variable,
             detail: `Auto-import from ${rel}`,
             documentation: { kind: MarkupKind.Markdown, value: `Named export from \`${rel}\`. Selecting this adds:\n\n\`\`\`\n${importText}\n\`\`\`` },
             sortText: `8${entry.name}`, // rank below locals/builtins/keywords
-            additionalTextEdits: [computeImportInsertEdit(ast, document, importText)],
+            ...(importEdit ? { additionalTextEdits: [importEdit] } : {}),
         });
         if (additions.length >= MAX) {
             connection.console.log(`auto-import: capped at ${MAX} candidates`);
@@ -1532,6 +1515,21 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                         edit: { changes: { [params.textDocument.uri]: edits } },
                     });
                 }
+            }
+
+            // UC6017: `/*/` lexes as a complete empty comment, not a regex matching '*'.
+            // Offer to escape the star so it becomes the regex the author almost
+            // certainly meant. The diagnostic's range IS the 3-char `/*/` span.
+            if (diagnostic.code === UcodeErrorCode.SUSPICIOUS_EMPTY_COMMENT) {
+                codeActions.push({
+                    title: `Escape the '*' to make this a regex: /\\*/`,
+                    kind: CodeActionKind.QuickFix,
+                    diagnostics: [diagnostic],
+                    isPreferred: true,
+                    edit: { changes: { [params.textDocument.uri]: [
+                        TextEdit.replace(diagnostic.range, `/\\*/`),
+                    ] } },
+                });
             }
 
             // UC8012 (FN-1): a handler registered outside a `{%` template → offer to wrap the
@@ -2291,10 +2289,133 @@ function resolveMemberCanonical(uri: string, position: { line: number; character
     return null;
 }
 
+/** The KEY node of a function-valued property `methodName` on an object-literal node,
+ *  or null when the node isn't an object literal or has no such function-valued member.
+ *  Mirrors signatureHelp's localObjectLiteralMethodParams but returns the key span so
+ *  references can surface the definition site. */
+function objectLiteralMethodKey(objLit: AstNode | undefined, methodName: string): { start: number; end: number } | null {
+    if (!objLit || objLit.type !== 'ObjectExpression') return null;
+    for (const p of (objLit as ObjectExpressionNode).properties || []) {
+        if (!p || p.type !== 'Property' || (p as PropertyNode).computed) continue;
+        const key = (p as PropertyNode).key;
+        const keyName = key?.type === 'Identifier' ? (key as IdentifierNode).name
+            : key?.type === 'Literal' && typeof (key as LiteralNode).value === 'string' ? (key as LiteralNode).value as string
+            : null;
+        if (keyName !== methodName) continue;
+        const val = (p as PropertyNode).value;
+        if ((val?.type === 'FunctionExpression' || val?.type === 'ArrowFunctionExpression') && key) {
+            return { start: key.start, end: key.end };
+        }
+        return null;
+    }
+    return null;
+}
+
+/** Cursor on an object-literal property KEY (`run:` in `let o = { run: fn }`): find the
+ *  local variable the object literal is bound to and the method name, so references on
+ *  the definition site resolve just like a call-site click. Handles `let/const o = {…}`
+ *  and `o = {…}` bindings. Null when the key isn't a function-valued member of a
+ *  directly-bound object literal. */
+function findObjectMethodKeyBinding(ast: AstNode | null | undefined, offset: number): { objName: string; methodName: string } | null {
+    let found: { objName: string; methodName: string } | null = null;
+    const check = (objName: string, init: AstNode | null | undefined): boolean => {
+        if (!init || init.type !== 'ObjectExpression') return false;
+        for (const p of (init as ObjectExpressionNode).properties || []) {
+            if (!p || p.type !== 'Property' || (p as PropertyNode).computed) continue;
+            const key = (p as PropertyNode).key;
+            if (!key || offset < key.start || offset > key.end) continue;
+            const val = (p as PropertyNode).value;
+            const keyName = key.type === 'Identifier' ? (key as IdentifierNode).name
+                : key.type === 'Literal' && typeof (key as LiteralNode).value === 'string' ? (key as LiteralNode).value as string
+                : null;
+            if (keyName && (val?.type === 'FunctionExpression' || val?.type === 'ArrowFunctionExpression')) {
+                found = { objName, methodName: keyName };
+                return true;
+            }
+        }
+        return false;
+    };
+    const visit = (node: AstNode): void => {
+        if (found || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        if (node.type === 'VariableDeclaration') {
+            for (const d of (node as VariableDeclarationNode).declarations || []) {
+                if (d?.id?.type === 'Identifier' && check((d.id as IdentifierNode).name, d.init)) return;
+            }
+        }
+        if (node.type === 'AssignmentExpression') {
+            const asn = node as { operator?: string; left?: AstNode; right?: AstNode };
+            if (asn.operator === '=' && asn.left?.type === 'Identifier'
+                && check((asn.left as IdentifierNode).name, asn.right)) return;
+        }
+        for (const k of Object.keys(node)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = asWalkable(node)[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
+            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode);
+        }
+    };
+    if (ast) visit(ast);
+    return found;
+}
+
+/** Find-references for a plain local object's method (`let o = { run: fn }; o.run()`):
+ *  the definition key + every `o.run` call-site. Fires on a call-site member click OR
+ *  the object-literal key click; null when the receiver isn't a local object literal
+ *  with this function-valued member (so real module/factory/import cases fall through). */
+function collectLocalObjectMethodReferences(uri: string, position: { line: number; character: number }): Location[] | null {
+    const entry = analysisCache.get(uri);
+    const document = documents.get(uri);
+    if (!entry || !document) return null;
+    const ast = entry.result.ast;
+    if (!ast) return null;
+    const offset = document.offsetAt(position);
+
+    let objName: string | undefined;
+    let methodName: string | undefined;
+    const member = findMemberPropertyAt(ast, offset);
+    if (member && member.object.type === 'Identifier') {
+        objName = (member.object as IdentifierNode).name;
+        methodName = member.property.name;
+    } else {
+        const hit = findObjectMethodKeyBinding(ast, offset);
+        if (hit) { objName = hit.objName; methodName = hit.methodName; }
+    }
+    if (!objName || !methodName) return null;
+
+    const objSym: Symbol | null | undefined = entry.result.symbolTable?.lookupAtPosition?.(objName, offset)
+        ?? entry.result.symbolTable?.lookup?.(objName);
+    const keySpan = objectLiteralMethodKey(objSym?.initNode, methodName);
+    if (!keySpan) return null;
+
+    const out: Location[] = [];
+    const seen = new Set<string>();
+    const add = (start: number, end: number) => {
+        const range = { start: document.positionAt(start), end: document.positionAt(end) };
+        const key = `${range.start.line}:${range.start.character}:${range.end.line}:${range.end.character}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(Location.create(uri, range));
+    };
+    add(keySpan.start, keySpan.end); // definition (the `run:` key)
+    for (const r of findNamespaceMemberReferences(ast, objName, methodName)) add(r.start, r.end);
+    return out;
+}
+
 function collectReferences(uri: string, position: { line: number; character: number }, includeDeclaration: boolean): Location[] {
     const entry = analysisCache.get(uri);
     const document = documents.get(uri);
     if (!entry || !document) return [];
+
+    // Plain local object method (`let o = { run: fn }; o.run()`): resolve it against the
+    // object literal directly — the definition key plus every `o.run` call-site. Tried
+    // FIRST because a local object may also carry propertyDefinitionLocations, which would
+    // otherwise route the resolveMemberCanonical branch below to a name-only fan-out that
+    // finds nothing. This branch only fires for a genuine object-literal receiver.
+    const localObjRefs = collectLocalObjectMethodReferences(uri, position);
+    if (localObjRefs) {
+        if (!includeDeclaration && localObjRefs.length > 1) return localObjRefs.slice(1);
+        return localObjRefs;
+    }
 
     // Member-property click on an importer side (`lib.foo` / `sh.exec`): route to the
     // file that declares it, then fan out. The bare property name isn't an imported
@@ -2459,12 +2580,67 @@ connection.onSignatureHelp(async (params: SignatureHelpParams): Promise<Signatur
     return provideSignatureHelp(entry.result.ast, entry.result.symbolTable, allBuiltinFunctions, offset, resolveMemberParamsAt);
 });
 
+/**
+ * Start offsets of every identifier that is a WRITE target — a declaration id, a
+ * function/rest/catch parameter binding, an assignment LHS, a `++`/`--` operand, or
+ * a `for (x in …)` loop binding. Used to tag document highlights Write vs Read
+ * (ticket 87). AST-derived so it's independent of the surface text.
+ */
+function collectWriteTargetOffsets(ast: AstNode | null | undefined): Set<number> {
+    const writes = new Set<number>();
+    const markIfIdent = (n: unknown): void => {
+        const node = n as WalkableNode | null | undefined;
+        if (node && typeof node === 'object' && node.type === 'Identifier' && typeof node.start === 'number') {
+            writes.add(node.start);
+        }
+    };
+    const walk = (nodeArg: unknown): void => {
+        const node = nodeArg as WalkableNode | null | undefined;
+        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        switch (node.type) {
+            case 'VariableDeclarator': markIfIdent(node.id); break;
+            case 'AssignmentExpression': markIfIdent(node.left); break;
+            case 'UnaryExpression':
+                if (node.operator === '++' || node.operator === '--') markIfIdent(node.argument);
+                break;
+            case 'ForInStatement': markIfIdent(node.left); break;
+            case 'FunctionDeclaration':
+            case 'FunctionExpression':
+            case 'ArrowFunctionExpression':
+                if (Array.isArray(node.params)) node.params.forEach(markIfIdent);
+                markIfIdent(node.restParam);
+                break;
+            case 'CatchClause':
+                // catch (e) — the bound exception identifier.
+                markIfIdent(node.param);
+                break;
+        }
+        for (const key of Object.keys(node)) {
+            if (key === 'leadingJsDoc') continue;
+            const v = node[key];
+            if (Array.isArray(v)) v.forEach(walk);
+            else if (v && typeof v === 'object') walk(v);
+        }
+    };
+    if (ast) walk(ast);
+    return writes;
+}
+
 connection.onDocumentHighlight((params: DocumentHighlightParams): DocumentHighlight[] => {
     // Same-file occurrences of the symbol under the cursor (scope-aware), for the
     // editor's "highlight all occurrences". Reuses the in-file reference set.
     const locs = collectReferences(params.textDocument.uri, params.position, true)
         .filter(loc => loc.uri === params.textDocument.uri);
-    return locs.map(loc => DocumentHighlight.create(loc.range, DocumentHighlightKind.Text));
+    // Tag each occurrence Write (declaration / assignment target) or Read (ticket 87).
+    const entry = analysisCache.get(params.textDocument.uri);
+    const document = documents.get(params.textDocument.uri);
+    const writeOffsets = entry && document ? collectWriteTargetOffsets(entry.result.ast) : new Set<number>();
+    return locs.map(loc => {
+        const kind = document && writeOffsets.has(document.offsetAt(loc.range.start))
+            ? DocumentHighlightKind.Write
+            : DocumentHighlightKind.Read;
+        return DocumentHighlight.create(loc.range, kind);
+    });
 });
 
 connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => {
@@ -3166,14 +3342,36 @@ const MODULE_ARG_CONSTRAINTS: Record<string, (string[] | null)[]> = (() => {
 type ParamInference = Map<string, string>;
 type AllInferences = Map<FunctionLikeNode, ParamInference>;
 
-/** DFS-collect every unannotated function declaration/expression from the AST. */
+/** JSDoc `@param` names already documented in a JSDoc block's raw text. */
+function documentedParamNames(jsDocValue: string): Set<string> {
+    const names = new Set<string>();
+    // @param {type} name  |  @param name  |  @param {type} [name]  |  @param [name=default]
+    const re = /@param\s+(?:\{[^}]*\}\s*)?\[?\s*([A-Za-z_$][\w$]*)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(jsDocValue)) !== null) names.add(m[1]!);
+    return names;
+}
+
+/** Params of a function-like node that its leading JSDoc (if any) does not document. */
+function undocumentedParams(fn: FunctionLikeNode): IdentifierNode[] {
+    const params = (fn.params as IdentifierNode[] | undefined) ?? [];
+    const jsDoc = (fn as { leadingJsDoc?: { value: string } }).leadingJsDoc;
+    if (!jsDoc) return params;
+    const documented = documentedParamNames(jsDoc.value);
+    return params.filter(p => !documented.has(p.name));
+}
+
+/** DFS-collect every function declaration/expression that has at least one UNDOCUMENTED
+ *  parameter — including partially-documented functions (ticket 95), so cross-function
+ *  param-usage inference still sees them. */
 function collectUnannotatedFunctions(ast: AstNode | null | undefined): FunctionLikeNode[] {
     const out: FunctionLikeNode[] = [];
     const walk = (node: AstNode): void => {
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
         const n = asWalkable(node);
         if ((node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression')
-            && n.params && (n.params as unknown[]).length > 0 && !n.leadingJsDoc) {
+            && n.params && (n.params as unknown[]).length > 0
+            && undocumentedParams(node as FunctionLikeNode).length > 0) {
             out.push(node as FunctionLikeNode);
         }
         for (const k of Object.keys(node)) {
@@ -3559,7 +3757,48 @@ function generateJsDocQuickFix(
     const funcNode = found.fn;
     const parent = found.parent;
     if (!funcNode.params || funcNode.params.length === 0) return null;
-    if (funcNode.leadingJsDoc) return null; // Already has JSDoc
+
+    // Shared param-type inference (cross-function usage, with single-shot fallback).
+    const inferredTypes = (): Map<string, string> =>
+        inferAllParamTypesFromUsage(ast, analysisResult.diagnostics || [], analysisResult.symbolTable).get(funcNode)
+        ?? inferParamTypesFromUsage(funcNode, analysisResult.diagnostics || [], undefined, undefined, analysisResult.symbolTable);
+
+    // ── Partial JSDoc: append the missing @param lines into the EXISTING block ──
+    // (ticket 95 — the fix used to bail whenever any leading JSDoc was present).
+    const existingJsDoc = (funcNode as { leadingJsDoc?: JsDocCommentNode }).leadingJsDoc;
+    if (existingJsDoc) {
+        const missing = undocumentedParams(funcNode);
+        if (missing.length === 0) return null; // fully documented — nothing to add
+        const inferred = inferredTypes();
+
+        // Insert new ` * @param` lines just before the block's closing `*/`, matching the
+        // block's own indentation. AST-offset based (block range), never line-string surgery.
+        const blockStart = existingJsDoc.start;
+        const blockText = document.getText({ start: document.positionAt(blockStart), end: document.positionAt(existingJsDoc.end) });
+        const closeIdx = blockText.lastIndexOf('*/');
+        if (closeIdx < 0) return null;
+        const closeOffset = blockStart + closeIdx;
+        const startLine = document.positionAt(blockStart).line;
+        const closePos = document.positionAt(closeOffset);
+        const indentText = (document.getText({ start: { line: startLine, character: 0 }, end: { line: startLine + 1, character: 0 } }).match(/^[ \t]*/) || [''])[0];
+        const paramLines = missing.map(p => `${indentText} * @param {${inferred.get(p.name) || 'unknown'}} ${p.name}`);
+
+        let edit: TextEdit;
+        if (closePos.line !== startLine) {
+            // Multi-line block: insert whole lines before the `*/` line.
+            const lineStartOffset = document.offsetAt({ line: closePos.line, character: 0 });
+            edit = TextEdit.insert(document.positionAt(lineStartOffset), paramLines.join('\n') + '\n');
+        } else {
+            // Single-line `/** … */`: promote to multi-line by inserting before `*/`.
+            edit = TextEdit.insert(document.positionAt(closeOffset), `\n${paramLines.join('\n')}\n${indentText} `);
+        }
+        const n = missing.length;
+        return {
+            title: `Complete JSDoc (add ${n} missing @param${n > 1 ? 's' : ''})`,
+            kind: CodeActionKind.QuickFix,
+            edit: { changes: { [uri]: [edit] } },
+        };
+    }
 
     // A leading JSDoc block only binds to a function in a statement-leading position:
     // a `function foo()` declaration, or a function expression that's the value of a
@@ -3589,11 +3828,7 @@ function generateJsDocQuickFix(
     }
     if (unknownParams.length === 0) return null;
 
-    const allInferences = inferAllParamTypesFromUsage(ast, analysisResult.diagnostics || [], analysisResult.symbolTable);
-    const inferred = allInferences.get(funcNode)
-        // Fallback: if the function wasn't collected (e.g., different AST handle),
-        // do a single-shot inference without cross-function propagation.
-        ?? inferParamTypesFromUsage(funcNode, analysisResult.diagnostics || [], undefined, undefined, analysisResult.symbolTable);
+    const inferred = inferredTypes();
     const inferredCount = [...inferred.values()].filter(t => t !== 'unknown').length;
 
     // Build JSDoc comment text. Indent with the line's LEADING WHITESPACE only —
@@ -3709,8 +3944,7 @@ function generateAddImportQuickFix(
     const m = /^\s*\.\s*([A-Za-z_]\w*)/.exec(tail);
     const methodName = m ? m[1] : null;
 
-    const mkAction = (title: string, importText: string, preferred: boolean, extraEdits: TextEdit[] = []): CodeAction => {
-        const edit = computeImportInsertEdit(ast, document, importText);
+    const mkAction = (title: string, edit: TextEdit, preferred: boolean, extraEdits: TextEdit[] = []): CodeAction => {
         return {
             title,
             kind: CodeActionKind.QuickFix,
@@ -3721,19 +3955,24 @@ function generateAddImportQuickFix(
     };
     const actions: CodeAction[] = [];
     const nsImport = `import * as ${moduleName} from '${moduleName}';`;
+    // Namespace import is always a fresh line (it isn't a named-list form to merge into).
+    const nsEdit = computeImportInsertEdit(ast, document, nsImport);
     if (methodName) {
         // `module.method(...)` form. The namespace import makes `module.method()` work as-is
         // (and covers every other `module.x` use), so it's the safe default. (#92)
-        actions.push(mkAction(`Add ${nsImport}`, nsImport, true));
+        actions.push(mkAction(`Add ${nsImport}`, nsEdit, true));
         // Named-import alternative: ALSO rewrite this call `module.method(` → `method(`, so it
         // doesn't reference an unbound `module` (the old preferred fix left the call broken).
+        // Merge into an existing `import { … } from '${moduleName}'` when present (ticket 93).
         const methodNameStart = tailStart + m![0].length - methodName.length;
         const dropReceiver = TextEdit.del({ start: diagnostic.range.start, end: document.positionAt(methodNameStart) });
+        const namedEdit = computeNamedImportEdit(ast, document, moduleName, methodName)
+            ?? computeImportInsertEdit(ast, document, `import { ${methodName} } from '${moduleName}';`);
         actions.push(mkAction(
             `Add import { ${methodName} } from '${moduleName}' and use ${methodName}()`,
-            `import { ${methodName} } from '${moduleName}';`, false, [dropReceiver]));
+            namedEdit, false, [dropReceiver]));
     } else {
-        actions.push(mkAction(`Add ${nsImport}`, nsImport, true));
+        actions.push(mkAction(`Add ${nsImport}`, nsEdit, true));
     }
     return actions;
 }
@@ -3819,6 +4058,22 @@ function indentOf(document: TextDocument, offset: number): string {
     return text.match(/^([ \t]*)/)?.[1] || '';
 }
 
+/**
+ * One indentation level for `document`, inferred from the file's own style so
+ * generated code (guard bodies, wrapped statements) matches it instead of a
+ * hardcoded tab (ticket 45). The first indented line decides: a leading tab →
+ * `'\t'`; otherwise that line's leading space run (2/4/8…); default 4 spaces.
+ */
+function indentUnit(document: TextDocument): string {
+    const lines = document.getText().split(/\r?\n/);
+    for (const line of lines) {
+        if (line.startsWith('\t')) return '\t';
+        const m = line.match(/^( +)\S/);
+        if (m) return m[1]!;
+    }
+    return '    ';
+}
+
 /** Verbatim source text of an AST node. */
 function nodeSource(document: TextDocument, node: { start: number; end: number }): string {
     return document.getText({ start: document.positionAt(node.start), end: document.positionAt(node.end) });
@@ -3874,9 +4129,10 @@ function makeBracelessGuardAction(
     // for a multi-line braceless body it's the (deeper) body indent — either way
     // the block's contents and closing `}` line up with where the body was.
     const base = indentOf(document, body.start);
+    const unit = indentUnit(document);
     const bodySrc = nodeSource(document, body);
     const bodyText = bodyTransform ? bodyTransform(bodySrc) : bodySrc;
-    const inner = `${prelude}${base}\t${guardStmt}\n${base}\t${bodyText}`;
+    const inner = `${prelude}${base}${unit}${guardStmt}\n${base}${unit}${bodyText}`;
     const newText = `{\n${inner}\n${base}}`;
     return {
         title,
@@ -3943,6 +4199,9 @@ function generateTypeNarrowingQuickFixes(
 
     // Indentation = the leading whitespace of the diagnostic's line (whitespace only).
     const indent = indentOf(document, diagOffset);
+    // One indent level in the FILE's style, for the extra nesting inside guard bodies
+    // (ticket 45 — was a hardcoded tab regardless of the file's indent style).
+    const unit = indentUnit(document);
 
     // Diagnostic on a later line than its enclosing statement → it sits inside a
     // multi-line expression (object literal, array, nested call); guards go before
@@ -4016,12 +4275,12 @@ function generateTypeNarrowingQuickFixes(
         if (needsStatementRedirect) {
             const tlIndent = indentOf(document, document.offsetAt({ line: stmtLine, character: 0 }));
             actions.push(makeInsertBeforeAction(title,
-                `${tlIndent}if (${guardCond})\n${tlIndent}\t${keyword};\n`, stmtLine, uri, diagnostic, document));
+                `${tlIndent}if (${guardCond})\n${tlIndent}${unit}${keyword};\n`, stmtLine, uri, diagnostic, document));
         } else if (ctx.inCondition) {
             const targetLine = ctx.conditionOwnerLine >= 0 ? ctx.conditionOwnerLine : line;
             const targetIndent = indentOf(document, document.offsetAt({ line: targetLine, character: 0 }));
             actions.push(makeInsertBeforeAction(title,
-                `${targetIndent}if (${guardCond})\n${targetIndent}\t${keyword};\n`, targetLine, uri, diagnostic, document));
+                `${targetIndent}if (${guardCond})\n${targetIndent}${unit}${keyword};\n`, targetLine, uri, diagnostic, document));
         } else if (declCase1End != null) {
             actions.push({
                 title, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
@@ -4033,7 +4292,7 @@ function generateTypeNarrowingQuickFixes(
             actions.push(makeInlineFunctionGuardAction(title, inlineFn, guardStmt, uri, diagnostic, document));
         } else if (ctx.inLoop || ctx.inFunction) {
             actions.push(makeInsertBeforeAction(title,
-                `${indent}if (${guardCond})\n${indent}\t${keyword};\n`, line, uri, diagnostic, document));
+                `${indent}if (${guardCond})\n${indent}${unit}${keyword};\n`, line, uri, diagnostic, document));
         } else {
             return false;
         }
@@ -4050,7 +4309,7 @@ function generateTypeNarrowingQuickFixes(
             title, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
             edit: { changes: { [uri]: [TextEdit.replace(
                 { start: document.positionAt(declStmt.start), end: document.positionAt(declStmt.end) },
-                `if (${cond}) {\n${base}\t${nodeSource(document, declStmt)}\n${base}}`)] } }
+                `if (${cond}) {\n${base}${unit}${nodeSource(document, declStmt)}\n${base}}`)] } }
         });
     };
     // Wrap is offered only at the statement's own scope (not redirected, not in a
@@ -4075,7 +4334,7 @@ function generateTypeNarrowingQuickFixes(
         const base = indentOf(document, declStmt.start);
         const kw = (declStmtW.kind as string) || 'let';
         const initSrc = document.getText({ start: document.positionAt(init.start), end: document.positionAt(init.end) });
-        const replacement = `${kw} ${id};\n${base}if (${cond})\n${base}\t${id} = ${initSrc};`;
+        const replacement = `${kw} ${id};\n${base}if (${cond})\n${base}${unit}${id} = ${initSrc};`;
         actions.push({
             title, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
             edit: { changes: { [uri]: [TextEdit.replace(
@@ -4139,7 +4398,7 @@ function generateTypeNarrowingQuickFixes(
                     kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
                     edit: { changes: { [uri]: [
                         TextEdit.insert({ line: tl, character: 0 },
-                            `${tlIndent}let ${vn} = ${leftExprText};\n${tlIndent}if (${guardCond})\n${tlIndent}\t${vn} = ${fallbackText};\n`),
+                            `${tlIndent}let ${vn} = ${leftExprText};\n${tlIndent}if (${guardCond})\n${tlIndent}${unit}${vn} = ${fallbackText};\n`),
                         TextEdit.replace(
                             { start: document.positionAt(data.fullExprStart), end: document.positionAt(data.fullExprEnd) }, vn)
                     ] } }
@@ -4209,7 +4468,7 @@ function generateTypeNarrowingQuickFixes(
                 actions.push({
                     title: `Add type guard with default`, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
                     edit: { changes: { [uri]: [
-                        TextEdit.insert({ line: stmtLine, character: 0 }, `${tlIndent}let ${vn} = ${exprText};\n${tlIndent}if (${defaultGuardCond})\n${tlIndent}\t${vn} = ${fallbackText};\n`),
+                        TextEdit.insert({ line: stmtLine, character: 0 }, `${tlIndent}let ${vn} = ${exprText};\n${tlIndent}if (${defaultGuardCond})\n${tlIndent}${unit}${vn} = ${fallbackText};\n`),
                         TextEdit.replace(rRange, vn)
                     ] } }
                 });
@@ -4217,7 +4476,7 @@ function generateTypeNarrowingQuickFixes(
             actions.push({
                 title: actionLabel, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
                 edit: { changes: { [uri]: [
-                    TextEdit.insert({ line: stmtLine, character: 0 }, `${tlIndent}let ${vn} = ${exprText};\n${tlIndent}if (${exEarlyGuard})\n${tlIndent}\t${keyword};\n`),
+                    TextEdit.insert({ line: stmtLine, character: 0 }, `${tlIndent}let ${vn} = ${exprText};\n${tlIndent}if (${exEarlyGuard})\n${tlIndent}${unit}${keyword};\n`),
                     TextEdit.replace(rRange, vn)
                 ] } }
             });
@@ -4228,7 +4487,7 @@ function generateTypeNarrowingQuickFixes(
             actions.push(makeBracelessGuardAction(actionLabel, braceless.body,
                 `if (${exEarlyGuard}) ${keyword};`,
                 () => nodeSourceWith(document, braceless.body, flagStart, flagEnd, vn),
-                `${base}\tlet ${vn} = ${exprText};\n`,
+                `${base}${unit}let ${vn} = ${exprText};\n`,
                 uri, diagnostic, document));
         } else if (inlineFn) {
             // The flagged expression sits in an inline function body; extracting to a
@@ -4237,7 +4496,7 @@ function generateTypeNarrowingQuickFixes(
             actions.push({
                 title: actionLabel, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],
                 edit: { changes: { [uri]: [
-                    TextEdit.insert({ line, character: 0 }, `${indent}let ${vn} = ${exprText};\n${indent}if (${exEarlyGuard})\n${indent}\t${keyword};\n`),
+                    TextEdit.insert({ line, character: 0 }, `${indent}let ${vn} = ${exprText};\n${indent}if (${exEarlyGuard})\n${indent}${unit}${keyword};\n`),
                     TextEdit.replace(diagnostic.range, vn)
                 ] } }
             });
@@ -4260,7 +4519,7 @@ function generateTypeNarrowingQuickFixes(
                 newText = `${prelude}${declStmtNode.kind as string} ${declrId.name as string} = ${wrapCond} ? ${initSrc} : null;`;
             } else {
                 const stmtSrc = nodeSourceWith(document, declStmt, flagStart, flagEnd, vn);
-                newText = `${prelude}if (${wrapCond}) {\n${base}\t${stmtSrc}\n${base}}`;
+                newText = `${prelude}if (${wrapCond}) {\n${base}${unit}${stmtSrc}\n${base}}`;
             }
             actions.push({
                 title: actionLabel, kind: CodeActionKind.QuickFix, diagnostics: [diagnostic],

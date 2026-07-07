@@ -295,12 +295,13 @@ function getSymbolDefinition(symbol: Symbol, currentDocument: TextDocument, file
         symbol.type === SymbolType.VARIABLE || 
         symbol.type === SymbolType.PARAMETER) {
         
-        const position = currentDocument.positionAt(symbol.declaredAt);
+        const start = currentDocument.positionAt(symbol.declaredAt);
+        const end = currentDocument.positionAt(symbol.declaredAt + symbol.name.length);
         const range: Range = {
-            start: position,
-            end: position
+            start,
+            end
         };
-        
+
         return {
             uri: currentDocument.uri,
             range: range

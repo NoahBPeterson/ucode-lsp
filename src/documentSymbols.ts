@@ -21,6 +21,7 @@ import type {
     ExportDefaultDeclarationNode,
     FunctionExpressionNode,
     ArrowFunctionExpressionNode,
+    ReturnStatementNode,
 } from './ast/nodes';
 
 type PosAt = (offset: number) => { line: number; character: number };
@@ -32,6 +33,54 @@ const FUNCTIONISH = new Set(['FunctionDeclaration', 'FunctionExpression', 'Arrow
 
 function range(a: number, b: number, posAt: PosAt): Range {
     return { start: posAt(a), end: posAt(b) };
+}
+
+/** Parameter symbols (incl. a `...rest`) of a function, for the outline (#47). */
+function paramSymbols(fn: FunctionishNode, posAt: PosAt): DocumentSymbol[] {
+    const out: DocumentSymbol[] = [];
+    const push = (id: IdentifierNode | undefined, isRest: boolean): void => {
+        if (id?.type !== 'Identifier') return;
+        out.push({
+            name: isRest ? `...${id.name}` : id.name,
+            kind: SymbolKind.Variable,
+            range: range(id.start, id.end, posAt),
+            selectionRange: range(id.start, id.end, posAt),
+            children: [],
+        });
+    };
+    for (const p of (fn.params || [])) push(p, false);
+    if (fn.restParam) push(fn.restParam, true);
+    return out;
+}
+
+/** Members of an object literal returned by a top-level `return {…}` in a function
+ *  body — surfaces a factory's inline-returned API in the outline (#47). */
+function returnedObjectMembers(body: AstNode | null | undefined, posAt: PosAt): DocumentSymbol[] {
+    if (!body || body.type !== 'BlockStatement') return [];
+    const out: DocumentSymbol[] = [];
+    for (const stmt of ((body as BlockStatementNode).body || [])) {
+        if (stmt?.type === 'ReturnStatement') {
+            const arg = (stmt as ReturnStatementNode).argument;
+            if (arg?.type === 'ObjectExpression') out.push(...objectMembers(arg as ObjectExpressionNode, posAt));
+        }
+    }
+    return out;
+}
+
+/** Full child-symbol set for a function: its parameters, the symbols declared in
+ *  its body, and the members of any inline `return {…}` object (#47). */
+function functionChildren(fn: FunctionishNode, posAt: PosAt): DocumentSymbol[] {
+    const children = [
+        ...paramSymbols(fn, posAt),
+        ...symbolsInBody(fn.body, posAt),
+        ...returnedObjectMembers(fn.body, posAt),
+    ];
+    // Arrow with a concise object body: `(q) => ({ … })` returns the object directly.
+    if (fn.type === 'ArrowFunctionExpression' && (fn as ArrowFunctionExpressionNode).expression
+        && fn.body?.type === 'ObjectExpression') {
+        children.push(...objectMembers(fn.body as ObjectExpressionNode, posAt));
+    }
+    return children;
 }
 
 /** Symbols for the members of an object literal `{ a, b, method() {} }` —
@@ -53,7 +102,7 @@ function objectMembers(obj: ObjectExpressionNode | null | undefined, posAt: PosA
             kind: valueIsFn ? SymbolKind.Method : SymbolKind.Property,
             range: range(prop.start, prop.end, posAt),
             selectionRange: range(key.start, key.end, posAt),
-            children: valueIsFn ? symbolsInBody((prop.value as FunctionishNode).body, posAt) : [],
+            children: valueIsFn ? functionChildren(prop.value as FunctionishNode, posAt) : [],
         });
     }
     return out;
@@ -68,7 +117,7 @@ function declaratorSymbol(d: VariableDeclaratorNode, isConst: boolean, posAt: Po
     let children: DocumentSymbol[] = [];
     if (init && FUNCTIONISH.has(init.type)) {
         kind = SymbolKind.Function;
-        children = symbolsInBody((init as FunctionishNode).body, posAt);
+        children = functionChildren(init as FunctionishNode, posAt);
     } else if (init?.type === 'ObjectExpression') {
         kind = SymbolKind.Object;
         children = objectMembers(init as ObjectExpressionNode, posAt);
@@ -103,7 +152,7 @@ function symbolsInBody(body: AstNode | AstNode[] | null | undefined, posAt: PosA
                 kind: SymbolKind.Function,
                 range: range(fn.start, fn.end, posAt),
                 selectionRange: range(fn.id.start, fn.id.end, posAt),
-                children: symbolsInBody(fn.body, posAt),
+                children: functionChildren(fn, posAt),
             });
         } else if (stmt.type === 'VariableDeclaration') {
             const varDecl = stmt as VariableDeclarationNode;

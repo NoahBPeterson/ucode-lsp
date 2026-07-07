@@ -9,12 +9,31 @@ export class RegexTypeRegistry {
    */
   getRegexDocumentation(pattern: string, flags?: string): string {
     const flagsText = flags ? ` with flags \`${flags}\`` : '';
-    
+
+    // Escapes in a regex LITERAL are regex-level (there is no string-escape layer —
+    // the backslash reaches the engine). Decode them so `/\*/` says what it matches.
+    const CLASS_ESCAPES: Record<string, string> = {
+      d: 'a digit', D: 'a non-digit', w: 'a word character', W: 'a non-word character',
+      s: 'whitespace', S: 'non-whitespace', b: 'a word boundary', B: 'a non-word-boundary',
+      n: 'a newline', t: 'a tab', r: 'a carriage return',
+    };
+    const decoded: string[] = [];
+    const seen = new Set<string>();
+    for (const m of pattern.matchAll(/\\(.)/g)) {
+      const c = m[1]!;
+      if (seen.has(c)) continue;
+      seen.add(c);
+      decoded.push(CLASS_ESCAPES[c] ? `\`\\${c}\` = ${CLASS_ESCAPES[c]}` : `\`\\${c}\` = a literal \`${c}\``);
+    }
+    const escapeNote = decoded.length > 0
+      ? `\n\nEscapes here are part of the PATTERN (a regex literal has no string-escape layer): ${decoded.join(', ')}.`
+      : '';
+
     return `**Regular Expression**${flagsText}
 
-Pattern: \`${pattern}\`
+Pattern: \`${pattern}\`${escapeNote}
 
-**Type:** \`regex\`
+**Type:** \`regexp\`
 
 Regular expressions are independent objects used for pattern matching and text processing. They support standard regex syntax including:
 

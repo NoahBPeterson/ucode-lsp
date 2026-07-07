@@ -30,7 +30,7 @@ export type KnownObjectType =
   | 'io.handle'
   | 'uloop.timer' | 'uloop.handle' | 'uloop.process'
   | 'uloop.task' | 'uloop.interval' | 'uloop.signal' | 'uloop.pipe'
-  | 'uci.cursor'
+  | 'uci.cursor' | 'uci.section'
   | 'nl80211.listener'
   | 'ubus.connection' | 'ubus.channel' | 'ubus.deferred' | 'ubus.object'
   | 'ubus.request' | 'ubus.notify' | 'ubus.listener' | 'ubus.subscriber'
@@ -61,6 +61,14 @@ export interface FunctionSignature {
      *  ['AF_'] for a socket domain). Drives argument-position value completion: an empty/
      *  partial arg slot offers the module's constants matching any of these prefixes. */
     constantPrefixes?: string[];
+    /** When this parameter is a callback (type: "function"), the inferred types of the
+     *  callback's own parameters, positionally (e.g. uci `foreach`'s callback receives a
+     *  single section object → ['object']). Drives callback param-type inference at call
+     *  sites so the callback body can resolve member access / hover on its arguments. */
+    callbackParamTypes?: string[];
+    /** When true, this is a rest/variadic parameter absorbing all remaining arguments
+     *  (e.g. fs.glob's `...patterns`). Surfaced in signature help as `...name`. */
+    isRest?: boolean;
   }>;
   returnType: string;
   description: string;

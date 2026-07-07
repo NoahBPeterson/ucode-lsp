@@ -27,7 +27,7 @@ const EXPECTED_TYPE = {
   require: 'null', loadfile: 'null',
   // → non-null dead value
   int: 'integer', hex: 'double', uc: 'string', lc: 'string',
-  exists: 'boolean', sleep: 'boolean', regexp: 'regex', loadstring: 'function',
+  exists: 'boolean', sleep: 'boolean', regexp: 'regexp', loadstring: 'function',
 };
 const THROWS = ['json', 'include', 'system', 'render'];
 

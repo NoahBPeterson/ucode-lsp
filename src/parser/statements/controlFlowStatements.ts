@@ -363,7 +363,11 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
         }
         init = this.parseVariableDeclaration();
       } else {
-        init = this.parseExpression();
+        // COMMA precedence — `for (i = 0, j = 0; …)` is valid ucode: the initializer is a
+        // full expression, sequence operator included (uc_compiler_compile_for calls
+        // uc_compiler_compile_expression, which parses at comma precedence — verified vs
+        // the vendored ucode/ucode binary). Mirrors the update clause below.
+        init = this.parseExpression(Precedence.COMMA);
         this.consume(TokenType.TK_SCOL, "Expected ';' after for loop initializer", UcodeErrorCode.MISSING_SEMICOLON);
       }
     } else {
@@ -403,13 +407,24 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     const start = this.previous()!.pos;
     
     let argument: AstNode | null = null;
-    // A return value's terminating `;` is optional immediately before a block close `}`
-    // (or EOF) — that's valid ucode, verified vs the interpreter, strict and non-strict —
-    // but still required between two statements. Mirror the general statement-terminator
-    // rule so `return expr` before `}` isn't a false UC6004, while `return expr` followed
-    // by another statement still is. Also skip parsing an expression for bare `return }`.
-    if (!this.check(TokenType.TK_SCOL) && !this.check(TokenType.TK_RBRACE) && !this.isAtEnd()) {
-      argument = this.parseExpression();
+    // ucode's `return` compiles via uc_compiler_compile_expstmt (compiler.c): a bare `;` is
+    // an empty return (implicit null), but for ANY other next token it parses an expression.
+    // So `return }` and a `return` at EOF are genuine syntax errors ("Expecting expression",
+    // verified vs the vendored ucode/ucode binary). Flag those directly WITHOUT consuming the
+    // `}`/EOF — letting parseExpression run there would consume the block-closing `}` and
+    // cascade the following code into the function body. A value's trailing `;` may still be
+    // omitted before `}`/EOF (handled by the terminator rule below), so `return 1 }` is clean.
+    if (!this.check(TokenType.TK_SCOL)) {
+      if (this.check(TokenType.TK_RBRACE) || this.isAtEnd()) {
+        const tok = this.peek();
+        const pos = tok?.pos ?? this.previous()!.end;
+        const end = tok?.end ?? pos;
+        this.errorAt("Expected an expression after 'return' (or ';' for a value-less return)",
+                     pos, end, UcodeErrorCode.MISSING_SEMICOLON);
+        this.panicMode = false;
+      } else {
+        argument = this.parseExpression();
+      }
     }
 
     if (this.check(TokenType.TK_RBRACE) || this.isAtEnd()) {

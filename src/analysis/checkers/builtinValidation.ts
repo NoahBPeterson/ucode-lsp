@@ -3,9 +3,10 @@
  */
 
 import { type AstNode, type CallExpressionNode, type LiteralNode, type ObjectExpressionNode, type PropertyNode, type IdentifierNode } from '../../ast/nodes';
-import { UcodeType, type UcodeDataType, createUnionType, createArrayType, isArrayType, getArrayElementType } from '../symbolTable';
+import { UcodeType, type UcodeDataType, createUnionType, createArrayType, isArrayType, getArrayElementType, extractModuleType, getObjectTypeName, isUnionType, getUnionTypes } from '../symbolTable';
 import { type TypeError, type TypeWarning } from '../types';
 import { UcodeErrorCode } from '../errorConstants';
+import { isKnownObjectType, OBJECT_REGISTRIES } from '../moduleDispatch';
 
 export interface FormatSpecifier {
   specifier: string;
@@ -568,8 +569,21 @@ export class BuiltinValidator {
         this.errors.push({ message, start: diagStart, end: diagEnd, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
         return false;
       } else if (disallowedTypes.length > 0) {
+        // A union whose ONLY disallowed member is `unknown` (e.g. `array | unknown` from
+        // `x || []`) is unverifiable, not proven wrong. In a test context for a total
+        // test-idiom builtin (`length(x || []) > 0`) it reads correctly, so suppress the
+        // nag the same way the plain-UNKNOWN branch does (ticket 143). A concrete
+        // disallowed member (string, integer, …) still warns.
+        if (disallowedTypes.every(t => t === UcodeType.UNKNOWN)
+            && !((this.strictMode && !safeInTestContext) || !this.inTruthinessContext)) {
+          return true;
+        }
         // Some types are allowed, some are not - WARNING (error in strict mode)
-        const message = customErrorMessage ||
+        // NOTE: `customErrorMessage` is deliberately NOT applied here. It describes a
+        // DEFINITE, whole-union type mismatch (see the hard-error branches above/below);
+        // in this nullable/partly-allowed case the null-aware default ("may be null. Use
+        // a type guard...") is more accurate. (auto-docs #13)
+        const message =
           `Argument ${argPosition} of ${funcName}() may be ${disallowedTypes.join(' | ')}. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
 
         // For || fallback, get the variable name from the left operand
@@ -615,7 +629,9 @@ export class BuiltinValidator {
       // return behavior, so length()-in-a-predicate is just as safe in strict. A bare
       // value use (`let n = length(x)`) is non-truthiness, so it's still flagged.
       if ((this.strictMode && !safeInTestContext) || !this.inTruthinessContext) {
-        const message = customErrorMessage ||
+        // `customErrorMessage` is not applied here either — it describes a definite
+        // whole-union mismatch, not an unverifiable unknown. (auto-docs #13)
+        const message =
           `Argument ${argPosition} of ${funcName}() is unknown. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
 
         const variableName = fallbackStart != null ? this.getVariableName((arg as any).left) : this.getVariableName(arg);
@@ -1444,15 +1460,44 @@ export class BuiltinValidator {
 
   validateJsonFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'json', 1)) return true;
+    // ucode's uc_json (lib.c uc_json / uc_json_from_object) accepts a STRING, a
+    // plain OBJECT/ARRAY, OR any resource/object exposing a callable read() method
+    // (it streams chunks from read() into the tokener). So a readable handle such as
+    // an fs.file / fs.proc / io.handle returned by open()/popen() is a valid argument
+    // — don't flag it. (auto-docs #141)
+    if (this.argIsReadableHandle(node.arguments[0])) {
+      return true;
+    }
     this.validateArgumentType(
       node.arguments[0],
       'json',
       1,
       [UcodeType.STRING, UcodeType.OBJECT],
       undefined,
-      `Function 'json' expects string or object as argument`
+      `Function 'json' expects a string or a readable handle as argument`
     );
     return true;
+  }
+
+  /** True when the argument's resolved type is (or includes) a known handle object
+   *  type that exposes a callable read() method — the shape uc_json_from_object
+   *  streams from. Used so json(open(...)) / json(popen(...)) are not false-flagged. */
+  private argIsReadableHandle(arg: CallExpressionNode['arguments'][0] | undefined): boolean {
+    if (!arg) return false;
+    const fullType = this.getNodeFullType(arg);
+    if (!fullType) return false;
+    const names: string[] = [];
+    const mod = extractModuleType(fullType);
+    if (mod) names.push(mod.moduleName);
+    const objName = getObjectTypeName(fullType);
+    if (objName) names.push(objName);
+    if (isUnionType(fullType)) {
+      for (const member of getUnionTypes(fullType)) {
+        const n = getObjectTypeName(member as UcodeDataType);
+        if (n) names.push(n);
+      }
+    }
+    return names.some(n => isKnownObjectType(n) && OBJECT_REGISTRIES[n].getMethodNames().includes('read'));
   }
 
   validateCallFunction(node: CallExpressionNode): boolean {
@@ -2298,6 +2343,10 @@ export class BuiltinValidator {
           }
         }
       }
+    } else {
+      // push(arr) with no value pushes nothing and returns NULL — uc_push returns
+      // ucv_get(item) where item stays NULL when no value args are given (lib.c). (auto-docs #121)
+      this.narrowedReturnType = UcodeType.NULL;
     }
     return true;
   }
@@ -2342,6 +2391,10 @@ export class BuiltinValidator {
           }
         }
       }
+    } else {
+      // unshift(arr) with no value returns NULL — uc_unshift returns
+      // `(nargs > 1) ? ucv_get(uc_fn_arg(nargs - 1)) : NULL` (lib.c). (auto-docs #121)
+      this.narrowedReturnType = UcodeType.NULL;
     }
     return true;
   }
@@ -2401,7 +2454,11 @@ export class BuiltinValidator {
       this.narrowedReturnType = UcodeType.ARRAY;
       this.preserveArrayElementType(node.arguments[0]);
     } else if (argType === 'object') {
-      this.narrowedReturnType = createUnionType([UcodeType.OBJECT, UcodeType.NULL]);
+      // uc_sort returns the sorted object itself for an object arg (returns NULL only
+      // for a non-array/non-object arg, or if a comparator raises — the same exception
+      // case that the array branch does not model either). Match the array branch: no
+      // phantom null. (auto-docs #122)
+      this.narrowedReturnType = UcodeType.OBJECT;
     } else if (argType !== UcodeType.UNKNOWN && !argType.includes(' | ')) {
       this.narrowedReturnType = UcodeType.NULL;
     }

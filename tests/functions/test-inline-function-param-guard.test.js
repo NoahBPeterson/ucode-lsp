@@ -48,7 +48,11 @@ describe('#91 inline-function param type-guard placement', () => {
     'expression-body arrow': `'use strict';\nconst f = (x) => substr(x, 0);\n`,
     'single-line function expression': `'use strict';\nconst f = function(x) { return substr(x, 0); };\n`,
     'object-literal method': `'use strict';\nlet o = { m: function(x) { return substr(x, 0); } };\n`,
-    'callback argument': `'use strict';\nmap([1], function(x) { return substr(x, 0); });\n`,
+    // Empty-array source: map() is satisfied (it IS an array) but the element type is
+    // unknown, so the callback param `x` stays unknown (a typed array like `[1]` would now
+    // type the callback param — see finding #178 — turning substr's diagnostic into a hard
+    // type error rather than the unknown-arg guard case this test exercises).
+    'callback argument': `'use strict';\nmap([], function(x) { return substr(x, 0); });\n`,
   };
 
   for (const [name, code] of Object.entries(cases)) {
@@ -95,7 +99,8 @@ describe('#91 inline-function param type-guard placement', () => {
   });
 
   test('multi-line callback still inserts inside the block (no regression)', async () => {
-    const code = `'use strict';\nmap([1], function(x) {\n    return substr(x, 0);\n});\n`;
+    // Empty-array source keeps the callback param unknown (see finding #178).
+    const code = `'use strict';\nmap([], function(x) {\n    return substr(x, 0);\n});\n`;
     const { diag, action } = await guardFor(code, '/tmp/qf91-multiline.uc');
     expect(diag).toBeDefined();
     expect(action).toBeDefined();

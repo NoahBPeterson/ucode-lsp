@@ -61,6 +61,9 @@ export interface FsModuleFunctionSignature {
     type: string;
     optional: boolean;
     defaultValue?: string | number | boolean | null;
+    /** When true, this is a rest/variadic parameter absorbing all remaining arguments
+     *  (e.g. glob's `...patterns`). Surfaced in signature help as `...name`. */
+    isRest?: boolean;
   }>;
   returnType: string;
   description: string;
@@ -216,11 +219,11 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
   ["glob", {
     name: "glob",
     parameters: [
-      { name: "pattern", type: "string", optional: false }
+      { name: "patterns", type: "string", optional: false, isRest: true }
     ],
     returnType: "array<string> | null",
     nullMeansWrongType: true,
-    description: "Finds files matching a pattern using shell wildcards"
+    description: "Finds files matching one or more shell wildcard patterns. Accepts any number of pattern arguments; results are the union of matches across all patterns"
   }],
   ["dirname", {
     name: "dirname",
@@ -244,10 +247,11 @@ export const fsModuleFunctions: Map<string, FsModuleFunctionSignature> = new Map
   ["lsdir", {
     name: "lsdir",
     parameters: [
-      { name: "path", type: "string", optional: false }
+      { name: "path", type: "string", optional: false },
+      { name: "pattern", type: "string | regexp", optional: true }
     ],
     returnType: "array<string> | null",
-    description: "Lists directory contents as an array of filenames"
+    description: "Lists directory contents as an array of filenames. An optional second argument filters entries by an fnmatch wildcard string or a regular expression"
   }],
   ["mkstemp", {
     name: "mkstemp",
@@ -362,6 +366,10 @@ export const fsConstants: Map<string, number> = new Map([
   ["ST_NODIRATIME", 2048],
   ["ST_RELATIME", 4096],
   ["ST_NOSYMFOLLOW", 256],
+  ["IOC_DIR_NONE", 0],
+  ["IOC_DIR_READ", 2],
+  ["IOC_DIR_WRITE", 1],
+  ["IOC_DIR_RW", 3],
 ]);
 
 export const fsConstantDocumentation: Map<string, string> = new Map([
@@ -375,6 +383,10 @@ export const fsConstantDocumentation: Map<string, string> = new Map([
   ["ST_NODIRATIME", `**(constant) ST_NODIRATIME** = 2048\n\nDo not update directory access times (Linux only)`],
   ["ST_RELATIME", `**(constant) ST_RELATIME** = 4096\n\nUpdate access times relative to modification time (Linux only)`],
   ["ST_NOSYMFOLLOW", `**(constant) ST_NOSYMFOLLOW** = 256\n\nDo not follow symbolic links (Linux only)`],
+  ["IOC_DIR_NONE", `**(constant) IOC_DIR_NONE** = 0\n\nioctl direction: neither userspace nor kernel is writing; the ioctl is executed without passing data. NOTE: this is the asm-generic (x86/ARM/RISC-V) value; MIPS, PowerPC, SPARC and Alpha use different direction bits (NONE=1, READ=2, WRITE=4) — compare against the imported constant, never a hardcoded number. Requires OpenWrt 24.10+.`],
+  ["IOC_DIR_READ", `**(constant) IOC_DIR_READ** = 2\n\nioctl direction: kernel is writing and userspace is reading. NOTE: this is the asm-generic (x86/ARM/RISC-V) value; MIPS, PowerPC, SPARC and Alpha use different direction bits (NONE=1, READ=2, WRITE=4) — compare against the imported constant, never a hardcoded number. Requires OpenWrt 24.10+.`],
+  ["IOC_DIR_WRITE", `**(constant) IOC_DIR_WRITE** = 1\n\nioctl direction: userspace is writing and kernel is reading. NOTE: this is the asm-generic (x86/ARM/RISC-V) value; MIPS, PowerPC, SPARC and Alpha use different direction bits (NONE=1, READ=2, WRITE=4) — compare against the imported constant, never a hardcoded number. Requires OpenWrt 24.10+.`],
+  ["IOC_DIR_RW", `**(constant) IOC_DIR_RW** = 3\n\nioctl direction: userspace is writing and kernel is writing back into the data structure. NOTE: this is the asm-generic (x86/ARM/RISC-V) value; MIPS, PowerPC, SPARC and Alpha use different direction bits (NONE=1, READ=2, WRITE=4) — compare against the imported constant, never a hardcoded number. Requires OpenWrt 24.10+.`],
 ]);
 
 export class FsModuleTypeRegistry {

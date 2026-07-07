@@ -18,3 +18,13 @@ The arg-validation path reports "is unknown" for any type it can't directly sati
 ## Fix
 
 When the argument type is a known union containing `null` (not literally `unknown`), use the "may be null" wording/code; reserve "is unknown" for genuinely unknown values. (Relates to findings 13 and 107.)
+
+---
+
+## Resolution (2026-07-06, v0.7.67 triage): premise disproven — closed as not-a-bug
+
+`json()` returning `UNKNOWN` is correct: `uc_json` (ucode/lib.c) returns `ucv_from_json`,
+which can be ANY JSON value kind (string/number/bool/array/object/null), not `object | null`.
+Modeling it as a nullable union would drop the non-null scalar kinds. The "is unknown"
+wording is therefore accurate for this callsite. The related message-clarity complaint was
+fixed separately via ticket 13 (json argument messages now null-aware).

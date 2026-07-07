@@ -53,6 +53,16 @@ test('mutating a different array, or an element, is not flagged', () => {
   expect(count(`function f(){ let b=[1,2,3]; for (let x in b){ print(x); } }`)).toBe(0);
 });
 
+// finding #59: a bare-identifier alias of the iteratee touches the same array object.
+test('aliased iteratee: mutating the source array is flagged', () => {
+  expect(count(`function f(){ let a=[1,2,3]; let c=a; for (let x in c){ push(a, x); } }`)).toBe(1);
+  expect(count(`function f(){ let a=[1,2,3]; let c=a; for (let x in c){ pop(a); } }`)).toBe(1);
+  // reassigning the iteratee before the loop breaks the alias → NOT flagged
+  expect(count(`function f(){ let a=[1,2,3]; let c=a; c=[4,5,6]; for (let x in c){ push(a, x); } }`)).toBe(0);
+  // reassigning the source before the loop breaks the alias → NOT flagged
+  expect(count(`function f(){ let a=[1,2,3]; let c=a; a=[4,5,6]; for (let x in c){ push(a, x); } }`)).toBe(0);
+});
+
 // severity: an UNCONDITIONAL growth in a loop with NO exit is a provable infinite loop.
 function severities(code) {
   const doc = {

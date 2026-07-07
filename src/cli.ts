@@ -260,7 +260,7 @@ function analyzeFile(filePath: string, targetVersion: UcodeTargetVersion): Diagn
 
     // Lexer side-channel errors (#56) surface alongside parser errors.
     const diagnostics: Diagnostic[] = [...lexer.errors, ...parseResult.errors].map(err => ({
-        severity: DiagnosticSeverity.Error,
+        severity: (err as { severity?: string }).severity === 'warning' ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error,
         range: {
             start: textDocument.positionAt(err.start),
             end: textDocument.positionAt(err.end),

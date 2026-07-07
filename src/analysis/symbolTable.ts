@@ -229,8 +229,18 @@ export function effectiveSymbolType(symbol: Symbol, position: number): UcodeData
 }
 
 /** Convert a SingleType to its display string */
+// Display-name overrides for plain UcodeType enum values. The internal enum value
+// stays 'regex' (so every UcodeType.REGEX comparison site is untouched), but it
+// renders as 'regexp' to match ucode's own type() output (ucv_typename → "regexp").
+const TYPE_DISPLAY_NAMES: Record<string, string> = {
+  [UcodeType.REGEX]: 'regexp',
+};
+function displayEnumName(s: string): string {
+  return TYPE_DISPLAY_NAMES[s] ?? s;
+}
+
 export const singleTypeToString: (t: SingleType) => string = Match.type<SingleType>().pipe(
-  Match.when(Match.string, (s) => s),
+  Match.when(Match.string, (s) => displayEnumName(s)),
   Match.when({ type: 'objectKind' as const }, (o) => o.name),
   Match.when({ type: UcodeType.ARRAY }, (a) => `array<${typeToString(a.elementType)}>`),
   Match.orElse((t) => {
@@ -300,8 +310,12 @@ export function typeToString(type: UcodeDataType): string {
     // ModuleType — only bare ModuleType reaches here (unions caught above)
     if ('moduleName' in type) {
       const moduleType = type as ModuleType;
-      // For actual fs objects, return the specific type (fs.file, fs.dir, fs.proc)
-      if (moduleType.moduleName.startsWith('fs.') || moduleType.moduleName.startsWith('uci.') || moduleType.moduleName.startsWith('io.')) {
+      // For handle/object types (fs.file, uci.cursor, struct.buffer, zlib.deflate, socket, …)
+      // return the specific type name bare; only genuine module references get the " module"
+      // suffix. Lazy require avoids a static import cycle (symbolTable → moduleDispatch → fsTypes
+      // → symbolTable); isKnownObjectType is only called here at runtime, after init completes.
+      const { isKnownObjectType } = require('./moduleDispatch') as typeof import('./moduleDispatch');
+      if (isKnownObjectType(moduleType.moduleName)) {
         return moduleType.moduleName;
       }
       // For module references, return a more descriptive format
@@ -322,7 +336,7 @@ export function typeToString(type: UcodeDataType): string {
   }
 
   // Plain UcodeType enum value (string)
-  return type as string;
+  return displayEnumName(type as string);
 }
 
 export function isTypeCompatible(actual: UcodeDataType, expected: UcodeDataType): boolean {
@@ -405,6 +419,12 @@ export interface Symbol {
     jsdocDescription?: string; // Description from @param JSDoc tag
     jsdocOptionalParam?: boolean; // True when the @param declared this parameter optional (`[name]`, `{T=}`, `{?T}`) — threaded into ParamInfo.optional for call-site arity checking
     isRestParam?: boolean; // True if this parameter was declared with ...spread syntax
+    /** True for a SCREAMING_SNAKE name that resolved to nothing and is ASSUMED to be a
+     *  host/CLI-injected global (`ucode -D NAME=<json>`). Declared post-analysis (typed
+     *  unknown) so hover shows the injected-global story WITH flow narrowing, completion
+     *  offers the name after first use, and type() guards narrow it like any variable.
+     *  The tiered UC1001 for the unresolved read is emitted BEFORE this declaration. */
+    isAssumedInjectedGlobal?: boolean;
     isExceptionParam?: boolean; // True if this is a catch-clause parameter (exception object)
     /** When set, this variable's value is provably a key of the named object —
      *  i.e. it came from `keys(NAME)`, from iterating NAME via for-in, or was

@@ -18,11 +18,9 @@ export enum UcodeErrorCode {
   VARIABLE_USED_BEFORE_DECLARATION = 'UC1011',
 
   // Type checking errors (2000-2999)
-  TYPE_MISMATCH = 'UC2001',
   INVALID_OPERATION = 'UC2002',
   INVALID_PARAMETER_COUNT = 'UC2003',
   INVALID_PARAMETER_TYPE = 'UC2004',
-  INVALID_RETURN_TYPE = 'UC2005',
   FORMAT_ARG_COUNT_MISMATCH = 'UC2006',
   FORMAT_TYPE_MISMATCH = 'UC2007',
   NAN_ARITHMETIC = 'UC2008',
@@ -41,13 +39,13 @@ export enum UcodeErrorCode {
   MODULE_NOT_IMPORTED = 'UC3006',
   IMPORT_NOT_TOP_LEVEL = 'UC3007',
   REQUIRE_PATH_NOT_MODULE_NAME = 'UC3008',
+  MODULE_PARSE_ERROR = 'UC3009',      // the imported dependency itself fails to parse — its export list is unreliable, so report the parse failure instead of a per-name "does not export"
+  SELF_IMPORT = 'UC3010',             // a file imports from itself
 
   // Control flow errors (4000-4999)
   UNREACHABLE_CODE = 'UC4001',
-  INVALID_BREAK = 'UC4002',
-  INVALID_CONTINUE = 'UC4003',
-  INVALID_RETURN = 'UC4004',
   COLLECTION_MUTATED_DURING_ITERATION = 'UC4005',
+  EMPTY_INFINITE_LOOP = 'UC4006',     // while(true){} / for(;;){} with an empty body: busy-spins forever
 
   // Object and property errors (5000-5999)
   INVALID_PROPERTY_ACCESS = 'UC5001',
@@ -74,6 +72,8 @@ export enum UcodeErrorCode {
   INVALID_ESCAPE_SEQUENCE = 'UC6013', // `\u` without 4 hex digits / `\x` without 2 / octal >255 — ucode: "Invalid escape sequence"
   DECLARATION_AS_CONTROL_BODY = 'UC6014', // `let`/`const` as the non-block body of if/while/for/else — ucode: declarations aren't statements ("Expecting expression"); wrap in a block
   STRAY_COLON_BLOCK_KEYWORD = 'UC6015', // `elif`/`endif`/`endfor`/`endwhile`/`endfunction` in statement position — the matching opener is missing its `:` (colon-block alt syntax); replaces the cryptic "unexpected token"
+  INVALID_NUMBER_LITERAL = 'UC6016', // bare `0x`, invalid digit for the base (`0o9`, `0b2`), or trailing garbage (`123abc`, `1.2.3`, `1e`) — ucode: "Invalid number literal"
+  SUSPICIOUS_EMPTY_COMMENT = 'UC6017', // `/*/` lexes as a complete EMPTY comment; almost always an unescaped regex for '*'
 
   // JSDoc annotation errors (7000-7999)
   JSDOC_UNKNOWN_TYPE = 'UC7001',
@@ -81,6 +81,9 @@ export enum UcodeErrorCode {
   JSDOC_MISSING_ANNOTATIONS = 'UC7003',
   JSDOC_UNKNOWN_MEMBER = 'UC7004',
   JSDOC_TYPE_CONTRADICTS = 'UC7005',
+  JSDOC_DUPLICATE_PARAM = 'UC7006',   // two @param tags name the same parameter — the last type silently wins
+  JSDOC_MALFORMED_TYPEDEF = 'UC7007',  // @typedef with no name, a duplicate @property, or an orphan @property (no @typedef)
+  JSDOC_MISSING_BRACES = 'UC7008',     // `@param string x` — the type must be wrapped in braces: `@param {string} x`
 
   // Robustness / defensive-coding hints (8000-8999)
   UNGUARDED_THROWING_CALL = 'UC8001', // call to a throwing builtin (json/loadfile/…) outside try/catch
@@ -98,6 +101,5 @@ export enum UcodeErrorCode {
   HANDLER_ENTRY_WRONG_FORM = 'UC8013',            // in a handler template, handle_request defined as a local/export/let form — uhttpd looks it up on the global scope, so only `global.handle_request = …` is found.
 
   // System and internal errors (9000-9999)
-  INTERNAL_ERROR = 'UC9001',
   ANALYSIS_ERROR = 'UC9002'
 }

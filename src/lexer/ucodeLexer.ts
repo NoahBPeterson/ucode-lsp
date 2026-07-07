@@ -5,8 +5,7 @@
 
 import { TokenType, type Token, type LexerError, Keywords, Operators,
          isKeyword, isIdentifierStart, isIdentifierPart, isDigit,
-         isHexDigit, isWhitespace, isLineBreak,
-         isBinaryDigit} from './tokenTypes';
+         isHexDigit, isWhitespace, isLineBreak} from './tokenTypes';
 import { UcodeErrorCode } from '../analysis/errorConstants';
 
 export enum LexState {
@@ -507,83 +506,186 @@ export class UcodeLexer {
             return operator;
         }
 
-        // Unknown character
-        this.nextChar();
-        return this.emitToken(TokenType.TK_ERROR, `Unexpected character: ${ch}`);
+        // Unknown character. Capture the start BEFORE advancing so the diagnostic range covers
+        // the character itself (not the position past it), and read a full Unicode code point so
+        // an astral character (a surrogate pair) is reported as one character with a correct range
+        // rather than a lone-surrogate replacement glyph over a single UTF-16 unit.
+        const startPos = this.pos;
+        const cp = this.source.codePointAt(this.pos);
+        const charStr = cp !== undefined ? String.fromCodePoint(cp) : ch;
+        this.pos += charStr.length;
+        return this.emitToken(TokenType.TK_ERROR, `Unexpected character: ${charStr}`, startPos);
     }
 
     private parseNumber(): Token | null {
         const startPos = this.pos;
-        let value = '';
-        let isFloat = false;
 
-        // Handle hex numbers
-        if (this.peekChar() === '0' && (this.peekChar(1) === 'x' || this.peekChar(1) === 'X')) {
-            value += this.nextChar(); // '0'
-            value += this.nextChar(); // 'x' or 'X'
-            
-            while (isHexDigit(this.peekChar())) {
-                value += this.nextChar();
-            }
-            
-            return this.emitToken(TokenType.TK_NUMBER, parseInt(value, 16), startPos);
-        }
-
-        // Handle binary numbers
-        if (this.peekChar() === '0' && (this.peekChar(1) === 'b' || this.peekChar(1) === 'B')) {
-            value += this.nextChar(); // '0'
-            value += this.nextChar(); // 'b' or 'B'
-            
-            while (isBinaryDigit(this.peekChar())) {
-                value += this.nextChar();
-            }
-            
-            return this.emitToken(TokenType.TK_NUMBER, parseInt(value, 2), startPos);
-        }
-
-        // Handle octal numbers
-        if (this.peekChar() === '0' && (this.peekChar(1) === 'o' || this.peekChar(1) === 'O')) {
-            value += this.nextChar(); // '0'
-            value += this.nextChar(); // 'o' or 'O'
-            
-            while (isDigit(this.peekChar()) && parseInt(this.peekChar()) < 8) {
-                value += this.nextChar();
-            }
-            
-            return this.emitToken(TokenType.TK_NUMBER, parseInt(value, 8), startPos);
-        }
-
-        // Handle decimal numbers
-        while (isDigit(this.peekChar())) {
+        // ucode lexes a number by greedily consuming every character that could be part of a
+        // numeric literal (is_numeric_char, ucode/lexer.c:577) and then handing the whole lexeme
+        // to a strtoull/strtod-style parser (uc_number_parse_octal, ucode/vallist.c:49). We
+        // replicate that here so the LSP agrees with the interpreter on:
+        //   - hex floats:            0xFF.5 -> 255.3125, 0x1.8 -> 1.5   (C99 hex float via strtod)
+        //   - leading-zero octals:   0777 -> 511, 08 -> 8
+        //   - bare prefixes:         0x is an error, but 0b/0o parse to 0
+        //   - invalid trailing:      0o9 / 0b2 / 123abc / 1.2.3 -> "Invalid number literal"
+        //   - incomplete exponents:  1e -> "Invalid number literal"
+        // All values verified against the vendored ucode binary. A malformed literal is reported
+        // via the side-channel (like an invalid escape, #56) while still emitting a numeric token
+        // so the argument survives and downstream arg-count checks stay intact.
+        let value = this.nextChar(); // first digit (parseNumber is only entered on a digit)
+        while (this.pos < this.source.length && this.isNumericChar(this.peekChar(), value)) {
             value += this.nextChar();
         }
 
-        // Handle float
-        if (this.peekChar() === '.') {
-            isFloat = true;
-            value += this.nextChar();
-            
-            while (isDigit(this.peekChar())) {
-                value += this.nextChar();
-            }
+        const parsed = this.classifyNumber(value);
+        if (parsed === null || 'error' in parsed) {
+            const reason = parsed && 'error' in parsed ? `: ${parsed.error}` : '';
+            this.errors.push({
+                message: `Invalid number literal${reason}`,
+                start: startPos,
+                end: this.pos,
+                code: UcodeErrorCode.INVALID_NUMBER_LITERAL,
+            });
+            return this.emitToken(TokenType.TK_NUMBER, NaN, startPos);
+        }
+        return this.emitToken(
+            parsed.kind === 'double' ? TokenType.TK_DOUBLE : TokenType.TK_NUMBER,
+            parsed.value,
+            startPos
+        );
+    }
+
+    /** Mirror is_numeric_char (ucode/lexer.c:577). `prev` is the last char already in the lexeme. */
+    private isNumericChar(c: string, prev: string): boolean {
+        if (c >= '0' && c <= '9') return true;
+        if (c === '.') return true;
+        const lc = c.toLowerCase();
+        if (lc === 'a' || lc === 'b' || lc === 'c' || lc === 'd' || lc === 'e'
+            || lc === 'f' || lc === 'o' || lc === 'x') {
+            // A number literal cannot start with these; require a preceding char.
+            return prev !== '';
+        }
+        if (c === '+' || c === '-') {
+            // A sign is only part of the number right after an exponent char.
+            return prev.toLowerCase() === 'e';
+        }
+        return false;
+    }
+
+    private isXDigit(c: string): boolean {
+        return c !== '' && ((c >= '0' && c <= '9')
+            || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
+    }
+
+    private digitValue(c: string): number {
+        if (c >= '0' && c <= '9') return c.charCodeAt(0) - 48;
+        const lc = c.toLowerCase();
+        if (lc >= 'a' && lc <= 'f') return lc.charCodeAt(0) - 87; // 'a' (97) -> 10
+        return -1;
+    }
+
+    /**
+     * Classify a fully-consumed numeric lexeme, mirroring uc_number_parse_octal /
+     * uc_number_parse_common(buf, octal=true) (ucode/vallist.c:49). Returns null for a malformed
+     * literal (the interpreter's TK_ERROR "Invalid number literal" case).
+     */
+    private classifyNumber(buf: string): { kind: 'int' | 'double'; value: number } | { error: string } | null {
+        let p = 0;
+        let neg = false;
+        if (buf[p] === '-') { neg = true; p++; }
+        else if (buf[p] === '+') { p++; }
+
+        // if (*p != 0 && !isxdigit(*p)) return NULL;
+        if (p < buf.length && !this.isXDigit(buf[p]!)) return null;
+
+        let base = 10;
+        if (buf[p] === '0') {
+            const c = (buf[p + 1] ?? '').toLowerCase();
+            if (c >= '0' && c <= '7') base = 8;         // octal=true: a leading zero is octal
+            else if (c === 'x') base = 16;
+            else if (c === 'b') { base = 2; p += 2; }
+            else if (c === 'o') { base = 8; p += 2; }
         }
 
-        // Handle scientific notation
-        if (this.peekChar() === 'e' || this.peekChar() === 'E') {
-            isFloat = true;
-            value += this.nextChar();
-            
-            if (this.peekChar() === '+' || this.peekChar() === '-') {
-                value += this.nextChar();
+        const u = this.strtoull(buf, p, base);
+        const stop = buf[u.end] ?? '';
+
+        // Floating point: base >= 10 and the integer scan stopped on '.' or 'e'.
+        if (base >= 10 && (stop === '.' || stop.toLowerCase() === 'e')) {
+            const d = this.strtod(buf, p, base);
+            if (Number.isNaN(d.value) || (stop.toLowerCase() === 'e' && d.end <= u.end + 1)) {
+                return { error: `the exponent needs at least one digit after the '${stop}'` };
             }
-            
-            while (isDigit(this.peekChar())) {
-                value += this.nextChar();
+            if (d.end !== buf.length) {
+                return { error: `unexpected '${buf[d.end]}' after the number (a literal can hold only one '.' and one exponent)` };
             }
+            return { kind: 'double', value: neg ? -d.value : d.value };
         }
 
-        const numValue = isFloat ? parseFloat(value) : parseInt(value, 10);
-        return this.emitToken(isFloat ? TokenType.TK_DOUBLE : TokenType.TK_NUMBER, numValue, startPos);
+        // Integer: any leftover character means the literal was malformed. Say WHY:
+        // which character broke it and what digits the base actually allows.
+        if (u.end !== buf.length) {
+            const c = buf[u.end]!;
+            if (base === 16 && u.end === p + 1 && (buf[p + 1] === 'x' || buf[p + 1] === 'X')) {
+                return { error: `'0x' must be followed by at least one hex digit (0-9, a-f)` };
+            }
+            const BASE_INFO: Record<number, { name: string; digits: string }> = {
+                2: { name: 'binary (0b)', digits: '0 and 1' },
+                8: { name: 'octal (0o or leading 0)', digits: '0-7' },
+                10: { name: 'decimal', digits: '0-9' },
+                16: { name: 'hexadecimal (0x)', digits: '0-9, a-f' },
+            };
+            const info = BASE_INFO[base]!;
+            if (/[0-9a-fA-F]/.test(c)) {
+                return { error: `'${c}' is not a valid digit in a ${info.name} literal — allowed digits are ${info.digits}` };
+            }
+            return { error: `unexpected '${c}' in a ${info.name} literal` };
+        }
+        return { kind: 'int', value: neg ? -u.value : u.value };
+    }
+
+    /** strtoull(3)-style scan: returns the parsed value and the index of the first unparsed char. */
+    private strtoull(buf: string, start: number, base: number): { value: number; end: number } {
+        let i = start;
+        if (base === 16 && buf[i] === '0' && (buf[i + 1] === 'x' || buf[i + 1] === 'X')) {
+            // strtoull only consumes the "0x" prefix when a hex digit follows; otherwise it parses
+            // just the leading '0' and stops at 'x' (this is why bare `0x` is an error).
+            if (this.isXDigit(buf[i + 2] ?? '')) {
+                i += 2;
+            } else {
+                return { value: 0, end: i + 1 };
+            }
+        }
+        const digStart = i;
+        let value = 0;
+        while (i < buf.length) {
+            const d = this.digitValue(buf[i]!);
+            if (d < 0 || d >= base) break;
+            value = value * base + d;
+            i++;
+        }
+        if (i === digStart) {
+            // No digits consumed. strtoull returns 0 with the end pointer at the start, e.g. the
+            // stripped-prefix `0b`/`0o` lexemes (end at string terminator) parse to 0.
+            return { value: 0, end: start };
+        }
+        return { value, end: i };
+    }
+
+    /** strtod(3)-style scan (decimal and C99 hex floats). ucode never lexes a 'p' binary exponent. */
+    private strtod(buf: string, start: number, base: number): { value: number; end: number } {
+        if (base === 16) {
+            const m = /^0[xX]([0-9a-fA-F]*)(?:\.([0-9a-fA-F]*))?/.exec(buf.slice(start));
+            if (!m) return { value: NaN, end: start };
+            const intHex = m[1] ?? '';
+            const fracHex = m[2] ?? '';
+            let value = intHex ? parseInt(intHex, 16) : 0;
+            if (fracHex) value += parseInt(fracHex, 16) / Math.pow(16, fracHex.length);
+            return { value, end: start + m[0].length };
+        }
+        const m = /^[0-9]*(?:\.[0-9]*)?(?:[eE][+-]?[0-9]+)?/.exec(buf.slice(start));
+        const text = m ? m[0] : '';
+        return { value: parseFloat(text), end: start + text.length };
     }
 
     /**
@@ -672,11 +774,13 @@ export class UcodeLexer {
 
         this.nextChar(); // consume opening /
         value += '/';
+        const bodyStart = this.pos;
 
         while (this.pos < this.source.length) {
             const ch = this.peekChar();
 
             if (ch === '/' && !inCharClass) {
+                const bodyEnd = this.pos;
                 value += this.nextChar(); // consume closing /
 
                 // Handle regex flags (ucode supports: g, i, s). An unsupported flag is a real
@@ -699,6 +803,8 @@ export class UcodeLexer {
                         });
                     }
                 }
+
+                this.validateRegexBody(this.source.slice(bodyStart, bodyEnd), bodyStart);
 
                 return this.emitToken(TokenType.TK_REGEXP, value, startPos);
             }
@@ -729,6 +835,59 @@ export class UcodeLexer {
         return this.emitToken(TokenType.TK_ERROR, 'Unterminated regex', startPos);
     }
 
+    private isRegexRangeAtom(c: string): boolean {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    }
+
+    /**
+     * Conservatively validate a regex literal body. ucode compiles patterns with POSIX ERE
+     * (regcomp) at runtime, so a broken pattern is a real error — but POSIX ERE and JS RegExp
+     * diverge on many constructs (`[[:alpha:]]`, `\d`, an unmatched `)` which glibc treats as a
+     * literal, ...). To avoid false positives we flag ONLY constructs that are definitely invalid
+     * in BOTH engines: an unclosed group, and a character range whose endpoints are out of order.
+     */
+    private validateRegexBody(body: string, bodyStart: number): void {
+        let parenDepth = 0;
+        let inClass = false;
+        let classLen = 0; // body chars seen in the current class (a leading '^' is not counted)
+        for (let i = 0; i < body.length; i++) {
+            const ch = body[i]!;
+            if (ch === '\\') { i++; continue; } // escaped char: skip it and its operand
+            if (inClass) {
+                if (ch === '^' && classLen === 0) { continue; }       // negation marker
+                if (ch === ']' && classLen > 0) { inClass = false; continue; } // ']' first is literal
+                if (ch === '-' && classLen > 0 && i + 1 < body.length) {
+                    const a = body[i - 1]!;
+                    const b = body[i + 1]!;
+                    const aEscaped = i >= 2 && body[i - 2] === '\\';
+                    if (!aEscaped && this.isRegexRangeAtom(a) && this.isRegexRangeAtom(b)
+                        && a.charCodeAt(0) > b.charCodeAt(0)) {
+                        this.errors.push({
+                            message: 'Invalid character range in regular expression: range endpoints are out of order',
+                            start: bodyStart,
+                            end: bodyStart + body.length,
+                            code: UcodeErrorCode.SYNTAX_ERROR,
+                        });
+                        return;
+                    }
+                }
+                classLen++;
+                continue;
+            }
+            if (ch === '[') { inClass = true; classLen = 0; continue; }
+            if (ch === '(') parenDepth++;
+            else if (ch === ')' && parenDepth > 0) parenDepth--;
+        }
+        if (parenDepth > 0) {
+            this.errors.push({
+                message: 'Unbalanced parenthesis in regular expression',
+                start: bodyStart,
+                end: bodyStart + body.length,
+                code: UcodeErrorCode.SYNTAX_ERROR,
+            });
+        }
+    }
+
     private parseLineComment(): Token | null {
         const startPos = this.pos;
         let value = '';
@@ -746,22 +905,40 @@ export class UcodeLexer {
     private parseBlockComment(): Token | null {
         const startPos = this.pos;
         let value = '';
-        
-        this.nextChar(); // consume /
-        this.nextChar(); // consume *
-        
-        while (this.pos < this.source.length - 1) {
-            if (this.peekChar() === '*' && this.peekChar(1) === '/') {
-                this.nextChar(); // consume *
-                this.nextChar(); // consume /
+
+        this.nextChar(); // consume opening '/'
+        this.nextChar(); // consume opening '*'
+
+        // ucode's parse_comment (ucode/lexer.c:177) reads the opening '*' inside its scan loop,
+        // where it may immediately double as the closing '*' of a '*/'. As a result ucode treats
+        // `/*/` as a complete (empty) block comment, not an unterminated one (verified against
+        // the vendored ucode binary: `let x = /*/;` reports "Expecting expression" at the `;`).
+        // Token `value` must stay "everything after /*" (a leading '*' marks a JSDoc comment for
+        // findLeadingJsDoc), so keep the up-front consume and special-case the immediate closer.
+        if (this.peekChar() === '/') {
+            this.nextChar(); // the opening '*' doubles as the closer: empty comment
+            // Almost always an attempted regex matching '*'. Legal (the interpreter
+            // accepts it silently), so warning severity — with a quick fix (server.ts)
+            // that escapes the star.
+            this.errors.push({
+                message: "'/*/' is a complete EMPTY comment in ucode, not a regex matching '*'. To match a literal '*', escape it: /\\*/",
+                start: startPos,
+                end: this.pos,
+                code: UcodeErrorCode.SUSPICIOUS_EMPTY_COMMENT,
+                severity: 'warning',
+            });
+            return this.emitToken(TokenType.TK_COMMENT, value, startPos);
+        }
+        while (this.pos < this.source.length) {
+            const ch = this.nextChar();
+            this.updatePosition(ch);
+            if (ch === '*' && this.peekChar() === '/') {
+                this.nextChar(); // consume closing '/'
                 return this.emitToken(TokenType.TK_COMMENT, value, startPos);
             }
-            
-            const ch = this.nextChar();
             value += ch;
-            this.updatePosition(ch);
         }
-        
+
         return this.emitToken(TokenType.TK_ERROR, 'Unterminated comment', startPos);
     }
 
@@ -929,7 +1106,9 @@ export class UcodeLexer {
         
         return {
             type,
-            value: value || '',
+            // `??`, not `||`: a numeric 0 token value (any zero literal, incl. bare 0b/0o)
+            // must survive — `||` collapsed it to '' and hover lost the decimal value.
+            value: value ?? '',
             pos: startPos,
             end: endPos,
             line: this.line,

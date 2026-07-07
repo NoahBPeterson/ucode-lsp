@@ -136,6 +136,82 @@ export class FileResolver {
         return this.readFileContent(fileUri);
     }
 
+    // Content-keyed cache of whether a module's PARSE produced syntax errors, so an
+    // importer can distinguish "the dependency is broken" from "the dependency
+    // genuinely lacks this export". Re-parses only when the file content changes.
+    private parseErrorCache = new Map<string, { content: string; hadErrors: boolean }>();
+
+    /** True when parsing `fileUri` yields syntax errors. The error-tolerant parser
+     *  still returns a partial AST for a broken file, so its export list is
+     *  unreliable — callers use this to report the parse failure instead of a
+     *  misleading per-name "does not export" error. Builtin/unreadable files → false. */
+    moduleHasParseErrors(fileUri: string): boolean {
+        try {
+            if (fileUri.startsWith('builtin://')) return false;
+            const content = this.readFileContent(fileUri);
+            if (content === null) return false;
+            const cached = this.parseErrorCache.get(fileUri);
+            if (cached && cached.content === content) return cached.hadErrors;
+            const lexer = new UcodeLexer(content, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, content);
+            parser.setComments(lexer.comments);
+            const result = parser.parse();
+            const hadErrors = Array.isArray(result.errors) && result.errors.length > 0;
+            this.parseErrorCache.set(fileUri, { content, hadErrors });
+            return hadErrors;
+        } catch {
+            return false;
+        }
+    }
+
+    /** The file:// URIs this file imports from (resolved import edges). */
+    private getFileImportEdges(fileUri: string): string[] {
+        try {
+            const content = this.readFileContent(fileUri);
+            if (content === null) return [];
+            const ast = this.getCachedAst(fileUri, content);
+            const body = (ast as { body?: unknown[] } | null)?.body;
+            if (!Array.isArray(body)) return [];
+            const edges: string[] = [];
+            for (const stmt of body as Array<{ type?: string; source?: { value?: unknown } }>) {
+                if (!stmt || stmt.type !== 'ImportDeclaration') continue;
+                const rawSrc = stmt.source?.value;
+                if (typeof rawSrc !== 'string') continue;
+                const src = rawSrc.replace(/^['"]|['"]$/g, '');
+                const resolved = this.resolveImportPath(src, fileUri);
+                if (resolved && resolved.startsWith('file://')) edges.push(resolved);
+            }
+            return edges;
+        } catch {
+            return [];
+        }
+    }
+
+    /** If the import edge `fromUri` → `targetUri` participates in a cycle — i.e. the
+     *  import graph reachable from `targetUri` leads back to `fromUri` — return the
+     *  cycle as a URI path `[fromUri, targetUri, …, fromUri]`; otherwise null. The
+     *  visited set makes the walk terminate on a DAG (a diamond re-converges but has
+     *  no back-edge, so no cycle is reported) and guards against infinite recursion.
+     *  Self-imports (`targetUri === fromUri`) are handled by the caller separately. */
+    findImportCycle(fromUri: string, targetUri: string): string[] | null {
+        if (targetUri === fromUri) return null; // self-import: caller's concern
+        const visited = new Set<string>();
+        const stack: string[] = [];
+        const dfs = (uri: string): boolean => {
+            if (uri === fromUri) return true; // closed the loop back to the importer
+            if (visited.has(uri)) return false;
+            visited.add(uri);
+            stack.push(uri);
+            for (const dep of this.getFileImportEdges(uri)) {
+                if (dfs(dep)) return true;
+            }
+            stack.pop();
+            return false;
+        };
+        return dfs(targetUri) ? [fromUri, ...stack, fromUri] : null;
+    }
+
     /**
      * Names a file injects into its CALLER's global scope when run via `loadfile(path)()`
      * (the poor-man's-import idiom) — `rawPath` is resolved relative to `currentFileUri`'s
@@ -185,7 +261,8 @@ export class FileResolver {
                     if (typeof v === 'string') return 'string';
                     if (typeof v === 'boolean') return 'bool';
                     if (v === null) return 'null';
-                    if (typeof v === 'number') return Number.isInteger(v) ? 'integer' : 'double';
+                    // Exponent notation (`1e5`) is a double literal (ticket 115).
+                    if (typeof v === 'number') return ((rhs as any).literalType === 'double' || !Number.isInteger(v)) ? 'double' : 'integer';
                     return 'unknown';
                 }
                 default: return 'unknown';
@@ -241,6 +318,111 @@ export class FileResolver {
             }
         }
         return out;
+    }
+
+    /**
+     * Resolve an `include(<path>)` target to a file URI, or null if it can't be found.
+     * Runtime `include()` resolves relative paths against the including file's directory and
+     * uses absolute paths verbatim. On a dev box the corpus's absolute runtime paths
+     * (`/usr/lib/uvol/uci.uc`) won't exist, so an absent absolute path falls back to a
+     * caller-adjacent lookup (`dirname(includer)/basename(path)`), which resolves the corpus
+     * layout where the includer sits beside the included file. See docs/include-scope-resolution.md.
+     */
+    private resolveIncludePath(rawPath: string, currentFileUri: string): string | null {
+        const curPath = this.uriToFilePath(currentFileUri);
+        if (!curPath) return null;
+        const dir = path.dirname(curPath);
+        const candidates: string[] = [];
+        if (rawPath.startsWith('/')) {
+            candidates.push(path.normalize(rawPath));
+            candidates.push(path.normalize(path.join(dir, path.basename(rawPath))));
+        } else {
+            candidates.push(path.normalize(path.join(dir, rawPath)));
+        }
+        for (const cand of candidates) {
+            try {
+                const uri = this.filePathToUri(cand);
+                // Accept when a live buffer or the disk has it.
+                if (getOpenDocumentContent(uri) !== undefined || fs.existsSync(cand)) return uri;
+            } catch { /* try next candidate */ }
+        }
+        return null;
+    }
+
+    /**
+     * Names that `include(rawPath)` leaks into the INCLUDING file's global scope. Verified vs
+     * the interpreter (docs/include-scope-resolution.md): `include()` evaluates the target in a
+     * shared scope, and ONLY the child's TOP-LEVEL implicit globals become visible in the caller
+     * — a bare assignment `foo = …` (and an explicit `global.foo = …`). Child `let`/`const`/
+     * `function` declarations stay child-locals and do NOT leak. The 2-arg `include(path, scope)`
+     * form does NOT sandbox those leaks (the scope arg only feeds names TO the child). Follows a
+     * child's own top-level `include()`s transitively, with a cycle/self-include guard and a
+     * depth cap. Empty when the path is unresolvable or the file can't be parsed (→ no suppression,
+     * no false diagnostics).
+     */
+    /** Resolvability/health of the DIRECT include() target (transitive children are
+     *  best-effort and stay silent): 'not-found' when no candidate file exists in the
+     *  workspace, 'parse-error' when it exists but has syntax errors (its leaked-global
+     *  list is unreliable), 'ok' otherwise. */
+    getIncludeTargetStatus(rawPath: string, currentFileUri: string): 'ok' | 'not-found' | 'parse-error' {
+        const targetUri = this.resolveIncludePath(rawPath, currentFileUri);
+        if (!targetUri) return 'not-found';
+        if (this.moduleHasParseErrors(targetUri)) return 'parse-error';
+        return 'ok';
+    }
+
+    getIncludeGlobals(rawPath: string, currentFileUri: string): string[] {
+        const out = new Set<string>();
+        const visited = new Set<string>([currentFileUri]);
+        const collect = (fromUri: string, includePath: string, depth: number): void => {
+            if (depth > MAX_ANALYSIS_DEPTH) return;
+            const targetUri = this.resolveIncludePath(includePath, fromUri);
+            if (!targetUri || visited.has(targetUri)) return; // unresolvable or cycle → skip
+            visited.add(targetUri);
+            const content = this.readFileContent(targetUri);
+            if (content === null) return;
+            const ast = this.getCachedAst(targetUri, content) as { type?: string; body?: unknown[] } | null;
+            if (!ast || ast.type !== 'Program' || !Array.isArray(ast.body)) return;
+
+            // Top-level declared names (let/const/function) are child-locals — they must NOT
+            // count as leaked implicit globals.
+            const declared = new Set<string>();
+            for (const stmt of ast.body) {
+                const s = stmt as { type?: string; id?: { name?: string }; declarations?: { id?: { type?: string; name?: string } }[] };
+                if (s?.type === 'FunctionDeclaration' && s.id?.name) declared.add(s.id.name);
+                if (s?.type === 'VariableDeclaration') {
+                    for (const d of (s.declarations ?? [])) {
+                        if (d?.id?.type === 'Identifier' && d.id.name) declared.add(d.id.name);
+                    }
+                }
+            }
+            for (const stmt of ast.body) {
+                const s = stmt as { type?: string; expression?: any };
+                const expr = s?.type === 'ExpressionStatement' ? s.expression : null;
+                if (expr?.type === 'AssignmentExpression' && expr.operator === '=') {
+                    const left = expr.left;
+                    if (left?.type === 'Identifier' && left.name && !declared.has(left.name)) {
+                        out.add(left.name); // bare implicit-global assignment X = …
+                    } else if (left?.type === 'MemberExpression' && !left.computed
+                               && left.object?.type === 'Identifier' && left.object.name === 'global'
+                               && left.property?.type === 'Identifier' && left.property.name) {
+                        out.add(left.property.name); // explicit global.X = …
+                    } else if (left?.type === 'MemberExpression' && left.computed
+                               && left.object?.type === 'Identifier' && left.object.name === 'global'
+                               && left.property?.type === 'Literal' && typeof left.property.value === 'string') {
+                        out.add(left.property.value);
+                    }
+                } else if (expr?.type === 'CallExpression'
+                           && expr.callee?.type === 'Identifier' && expr.callee.name === 'include'
+                           && expr.arguments?.[0]?.type === 'Literal'
+                           && typeof expr.arguments[0].value === 'string') {
+                    // A child's own top-level include leaks into the child's scope, hence ours.
+                    collect(targetUri, expr.arguments[0].value as string, depth + 1);
+                }
+            }
+        };
+        collect(currentFileUri, rawPath, 0);
+        return [...out];
     }
 
     /**
@@ -330,7 +512,8 @@ export class FileResolver {
                 if (typeof v === 'boolean') return { dataType: UcodeType.BOOLEAN as UcodeDataType };
                 if (v === null) return { dataType: UcodeType.NULL as UcodeDataType };
                 if (typeof v === 'number') {
-                    return { dataType: (Number.isInteger(v) ? UcodeType.INTEGER : UcodeType.DOUBLE) as UcodeDataType };
+                    // Exponent notation (`1e5`) is a double literal (ticket 115).
+                    return { dataType: ((retNode.literalType === 'double' || !Number.isInteger(v)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType };
                 }
                 return null;
             }
@@ -1024,6 +1207,7 @@ export class FileResolver {
         types: Map<string, UcodeDataType>;
         nested: Map<string, Map<string, UcodeDataType>>;
         functionReturnTypes: Map<string, string>;
+        defLocations: Map<string, { start: number; end: number }>;
     }>();
 
     getNamespaceExportPropertyTypes(fileUri: string): Map<string, UcodeDataType> | null {
@@ -1073,13 +1257,14 @@ export class FileResolver {
         types: Map<string, UcodeDataType>;
         nested: Map<string, Map<string, UcodeDataType>>;
         functionReturnTypes: Map<string, string>;
+        defLocations: Map<string, { start: number; end: number }>;
     } | null {
         try {
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
             const content = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
             const cached = this.namespaceTypesCache.get(fileUri);
-            if (cached && cached.content === content) return { types: cached.types, nested: cached.nested, functionReturnTypes: cached.functionReturnTypes };
+            if (cached && cached.content === content) return { types: cached.types, nested: cached.nested, functionReturnTypes: cached.functionReturnTypes, defLocations: cached.defLocations };
 
             const lexer = new UcodeLexer(content, { rawMode: true });
             const tokens = lexer.tokenize();
@@ -1089,6 +1274,9 @@ export class FileResolver {
             const types = new Map<string, UcodeDataType>();
             const nested = new Map<string, Map<string, UcodeDataType>>();
             const functionReturnTypes = new Map<string, string>();
+            // Def node start/end per exported function, so `ns.fn(` signature help can
+            // resolve the function's params via the cross-file resolver. (#171)
+            const defLocations = new Map<string, { start: number; end: number }>();
 
             const recordExport = (name: string, init: AstBag | undefined) => {
                 types.set(name, this.inferShallowType(init));
@@ -1104,6 +1292,10 @@ export class FileResolver {
                 if (init?.type === 'FunctionExpression' || init?.type === 'ArrowFunctionExpression') {
                     const retStr = this.functionReturnTypeString(init as unknown as AstNode);
                     if (retStr) functionReturnTypes.set(name, retStr);
+                    // The function VALUE node's start is what findFunctionNodeAt matches (#171).
+                    if (typeof init.start === 'number' && typeof init.end === 'number') {
+                        defLocations.set(name, { start: init.start, end: init.end });
+                    }
                 }
             };
 
@@ -1119,6 +1311,9 @@ export class FileResolver {
                             // instead of `unknown`.
                             const retStr = this.functionReturnTypeString(decl);
                             if (retStr) functionReturnTypes.set(decl.id.name, retStr);
+                            if (typeof decl.start === 'number' && typeof decl.end === 'number') {
+                                defLocations.set(decl.id.name, { start: decl.start, end: decl.end });
+                            }
                         } else if (decl?.type === 'VariableDeclaration') {
                             for (const d of (decl.declarations || [])) {
                                 if (d?.id?.name) recordExport(d.id.name, d.init);
@@ -1130,8 +1325,8 @@ export class FileResolver {
                 }
             }
 
-            this.namespaceTypesCache.set(fileUri, { content, types, nested, functionReturnTypes });
-            return { types, nested, functionReturnTypes };
+            this.namespaceTypesCache.set(fileUri, { content, types, nested, functionReturnTypes, defLocations });
+            return { types, nested, functionReturnTypes, defLocations };
         } catch (error) {
             console.error('Error loading namespace export property types:', error);
             return null;
@@ -1317,13 +1512,18 @@ export class FileResolver {
      * Get the type info for a named export (export const foo = ..., export function foo() {}).
      * Returns the type and property types if the export is an object.
      */
-    getNamedExportTypeInfo(fileUri: string, exportName: string): {
+    getNamedExportTypeInfo(fileUri: string, exportName: string, _visited: Set<string> = new Set()): {
         type: UcodeDataType;
         propertyTypes?: Map<string, UcodeDataType>;
         nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>;
         propertyFunctionReturnTypes?: Map<string, string>;
     } | null {
         try {
+            // Cycle guard for re-export / const-alias chains.
+            const visitKey = `${fileUri}#${exportName}`;
+            if (_visited.has(visitKey)) return null;
+            _visited.add(visitKey);
+
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
 
@@ -1369,6 +1569,14 @@ export class FileResolver {
 
                             const init = declarator.init;
                             if (!init) return { type: UcodeType.UNKNOWN as UcodeDataType };
+
+                            // `export const VAL2 = VAL;` where VAL is an import binding in
+                            // this file — follow the import chain into the source module
+                            // (mirrors getNamedExportFunctionParameters' re-export handling).
+                            if (init.type === 'Identifier') {
+                                const chained = this.resolveReexportedIdentifierType(fileUri, (init as IdentifierNode).name, _visited);
+                                if (chained) return chained;
+                            }
 
                             const nodeType = this.inferNodeType(init);
                             if (init.type === 'ObjectExpression') {
@@ -1417,6 +1625,18 @@ export class FileResolver {
 
                         // Check if it's a variable with an initializer
                         const init = varInits.get(localName);
+                        // `const VAL2 = VAL; export { VAL2 };` where VAL is an import
+                        // binding — follow the chain to the module that really declares it.
+                        if (init && init.type === 'Identifier') {
+                            const chained = this.resolveReexportedIdentifierType(fileUri, (init as IdentifierNode).name, _visited);
+                            if (chained) return chained;
+                        }
+                        // Direct re-export: `import { x } from './a'; export { x };` — the
+                        // name isn't a local var here, it's forwarded from the source module.
+                        if (!init && !funcNames.has(localName)) {
+                            const chained = this.resolveReexportedIdentifierType(fileUri, localName, _visited);
+                            if (chained) return chained;
+                        }
                         if (init) {
                             const nodeType = this.inferNodeType(init);
                             if (init.type === 'ObjectExpression') {
@@ -1437,6 +1657,24 @@ export class FileResolver {
         } catch {
             return null;
         }
+    }
+
+    /**
+     * If `name` is an import binding in `fileUri`, follow the import chain to the
+     * module that declares it and resolve its export type there. Returns null if
+     * `name` isn't an import in this file (so the caller falls back to local
+     * inference). Used to type a transitive re-export like
+     * `import { VAL } from './c'; const VAL2 = VAL; export { VAL2 };`.
+     */
+    private resolveReexportedIdentifierType(fileUri: string, name: string, _visited: Set<string>): {
+        type: UcodeDataType;
+        propertyTypes?: Map<string, UcodeDataType>;
+        nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>;
+        propertyFunctionReturnTypes?: Map<string, string>;
+    } | null {
+        const reexp = this.findReexportedSource(fileUri, name);
+        if (!reexp) return null;
+        return this.getNamedExportTypeInfo(reexp.uri, reexp.importedName, _visited);
     }
 
     /**
@@ -1950,7 +2188,8 @@ export class FileResolver {
                 }
             } else if (val.type === 'Literal') {
                 if (typeof val.value === 'number') {
-                    propertyTypes.set(key, (Number.isInteger(val.value) ? UcodeType.INTEGER : UcodeType.DOUBLE) as UcodeDataType);
+                    // Exponent notation (`1e5`) is a double literal (ticket 115).
+                    propertyTypes.set(key, (((val as any).literalType === 'double' || !Number.isInteger(val.value)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType);
                 } else if (typeof val.value === 'string') {
                     propertyTypes.set(key, UcodeType.STRING as UcodeDataType);
                 } else if (typeof val.value === 'boolean') {
@@ -2073,7 +2312,8 @@ export class FileResolver {
         if (node.type === 'Literal') {
             const val = (node as any).value;
             if (typeof val === 'string') return 'string';
-            if (typeof val === 'number') return Number.isInteger(val) ? 'integer' : 'double';
+            // Exponent notation (`1e5`) is a double literal (ticket 115).
+            if (typeof val === 'number') return ((node as any).literalType === 'double' || !Number.isInteger(val)) ? 'double' : 'integer';
             if (typeof val === 'boolean') return 'boolean';
             if (val === null) return 'null';
             return null;
@@ -2318,7 +2558,8 @@ export class FileResolver {
             case 'Literal': {
                 const val = (node as any).value;
                 if (typeof val === 'string') return UcodeType.STRING as UcodeDataType;
-                if (typeof val === 'number') return (Number.isInteger(val) ? UcodeType.INTEGER : UcodeType.DOUBLE) as UcodeDataType;
+                // Exponent notation (`1e5`) is a double literal (ticket 115).
+                if (typeof val === 'number') return (((node as any).literalType === 'double' || !Number.isInteger(val)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType;
                 if (typeof val === 'boolean') return UcodeType.BOOLEAN as UcodeDataType;
                 if (val === null) return UcodeType.NULL as UcodeDataType;
                 return UcodeType.UNKNOWN as UcodeDataType;

@@ -260,15 +260,33 @@ switch (TRACE_CALLS) {
         expect(errors.length).toBe(0);
     });
 
-    test('truly undefined variable should still error', () => {
+    test('truly undefined lowercase variable should still warn', () => {
         const code = `
-print(NEVER_DEFINED);
+print(never_defined);
 `;
         const result = analyze(code);
         const errors = result.diagnostics.filter(d =>
-            d.message.includes('Undefined variable: NEVER_DEFINED')
+            d.message.includes('Undefined variable: never_defined')
         );
         expect(errors.length).toBeGreaterThan(0);
+    });
+
+    test('truly undefined SCREAMING_SNAKE read gets the injected-global treatment', () => {
+        // All-caps unresolved reads are the ucode convention for CLI/host-injected globals.
+        // An UNGUARDED value use (function argument) stays a WARNING with runtime-check
+        // advice; only a bare truthiness test downgrades to a hint (the test doubles as
+        // the runtime existence check). See docs/done/cli-defined-globals.md.
+        const code = `
+print(NEVER_DEFINED);
+if (NEVER_DEFINED_2) print(1);
+`;
+        const result = analyze(code);
+        const byName = (n) => result.diagnostics.find(d => d.code === 'UC1001' && d.message.includes(n));
+        const valueUse = byName('NEVER_DEFINED');
+        const guarded = byName('NEVER_DEFINED_2');
+        expect(valueUse.severity).toBe(2); // Warning — unguarded value use
+        expect(valueUse.message).toContain('host/CLI-injected');
+        expect(guarded.severity).toBe(4);  // Hint — the if() IS the runtime check
     });
 });
 

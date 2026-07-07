@@ -1,4 +1,8 @@
-> 🟡 **PARTIAL** (2026-06-15 triage). Done: `writefile` returnType `integer | null` (fsModuleTypes.ts:270, was boolean); `validateOrdFunction`/`validateB64decFunction`/`validateTrimFunction` with narrowForArgType (builtinValidation.ts:1478/1547/1959). STILL OPEN: `rand` 0-vs-1-arg narrowing (mathTypes.ts:83), `getopt` constant-based narrowing (socketTypes.ts:54).
+> 🟡 **PARTIAL** (2026-06-15 triage). Done: `writefile` returnType `integer | null` (fsModuleTypes.ts:270, was boolean); `validateOrdFunction`/`validateB64decFunction`/`validateTrimFunction` with narrowForArgType (builtinValidation.ts:1478/1547/1959).
+>
+> **2026-07 update (batch L2).** `rand` and `getopt` resolved as honest unions (arg-count / per-constant narrowing has no clean module-function mechanism):
+> - `rand` → returnType `integer | double` (mathTypes.ts). Verified `uc_rand` (math.c): rand() DOES take optional args (`a`, `b`) — 0 args → `ucv_int64_new(rand())` (integer), any args → `ucv_double_new(...)` (double). The prior `number` collapsed to integer (wrong for the with-args double case). Per-arg-count narrowing DEFERRED: module functions resolve return type via `parseReturnType`/`narrowFsReturnType`, which only does null-elimination — there is no arg-count→return-type hook without a bespoke special-case.
+> - `getopt` → returnType `integer | boolean | string | object | null` (socketTypes.ts; added missing `boolean` + `constantPrefixes` for completion parity with setopt). Verified `uc_socket_inst_getopt` (socket.c): the type is the option's `SV_*` class from a (level, option) lookup in `sockopts[]` — SV_INT/SV_INT_RO→integer, SV_BOOL→boolean, SV_STRING→string, SV_IFNAME→string|integer, struct classes (ucred/timeval/…)→object. Per-constant narrowing DEFERRED: requires constant-propagating BOTH args and porting the full ~200-entry two-key table with 6+ value shapes; `constantPrefixes` only drives completion, not return typing — no clean mechanism.
 
 # Builtin Return Type Audit
 
@@ -234,7 +238,7 @@ The math module is exceptionally clean. **No narrowing needed.**
 | `math.sin` | `double` | never null |
 | `math.sqrt` | `double` | never null |
 | `math.pow` | `double` | never null |
-| `math.rand` | `number` | 0 args: integer, 1+ args: double. Never null |
+| `math.rand` | `integer \| double` | 0 args: integer, 1+ args: double. Never null. Honest union (per-arg-count narrowing deferred) |
 | `math.srand` | `null` | void function, always null |
 | `math.isnan` | `boolean` | never null |
 
@@ -328,8 +332,8 @@ Key return type notes:
 - `ord(str, offset)` — offset within string length
 - `b64dec(str)` — valid base64 content
 - `iptoarr(str)` — valid IP format
-- `math.rand()` — 0 args returns integer, 1+ args returns double
-- `socket.getopt()` — return type depends on option constant (constant propagation)
+- ~~`math.rand()` — 0 args returns integer, 1+ args returns double~~ — resolved as honest union `integer | double` (batch L2); precise arg-count narrowing deferred, see header note.
+- ~~`socket.getopt()` — return type depends on option constant (constant propagation)~~ — resolved as honest union `integer | boolean | string | object | null` (batch L2); per-constant narrowing deferred, see header note.
 
 ---
 

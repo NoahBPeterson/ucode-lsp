@@ -245,6 +245,14 @@ const TYPE_STRING_FIX: Record<string, string[]> = {
 const REF_EQ_BASES = new Set<UcodeType>([
   UcodeType.ARRAY, UcodeType.OBJECT, UcodeType.FUNCTION, UcodeType.REGEX, UcodeType.NULL,
 ]);
+/** Scalar base types whose values are compared by VALUE. Under STRICT equality
+ *  (`===`/`!==`) ucode never coerces between distinct types (vm.c
+ *  uc_vm_test_strict_equality: `t1 != t2` → false), so two distinct scalar bases
+ *  are always unequal — even integer vs double (`5 === 5.0` is false). Loose
+ *  `==`/`!=` DO coerce scalars, so this set only drives the strict-operator check. */
+const SCALAR_EQ_BASES = new Set<UcodeType>([
+  UcodeType.INTEGER, UcodeType.DOUBLE, UcodeType.STRING, UcodeType.BOOLEAN,
+]);
 const REF_BASE_DISPLAY: Partial<Record<UcodeType, string>> = {
   [UcodeType.ARRAY]: 'array', [UcodeType.OBJECT]: 'object', [UcodeType.FUNCTION]: 'function',
   [UcodeType.REGEX]: 'regexp', [UcodeType.NULL]: 'null',
@@ -292,6 +300,10 @@ export class TypeChecker {
    *  `_fullType` exactly (last checkNode call wins). WeakMap → no leak across
    *  ASTs (nodes are per-parse). */
   private nodeTypes = new WeakMap<AstNode, CheckResult>();
+  /** Member-expression nodes that are the callee of a CallExpression (`p.read` in
+   *  `p.read()`). Used to tell a method CALL from a plain property READ when an
+   *  unknown member is accessed on a known object handle (ticket 145). */
+  private calleeMemberNodes = new WeakSet<AstNode>();
   private constantAssignmentProperties = new Map<string, Set<string>>();
   private strictMode = false;
   // Names that are non-strict implicit globals (bare-assigned somewhere). Shared from
@@ -611,6 +623,39 @@ export class TypeChecker {
     return createUnionType(members);
   }
 
+  /** The element type for `values(arg)`: the union of the source object's property
+   *  value types. Handles an object literal directly and a bare Identifier bound to a
+   *  known object (via its `propertyTypes`). Returns null when unknown. (auto-docs #123) */
+  private valuesElementType(arg: AstNode | undefined): UcodeDataType | null {
+    if (!arg) return null;
+    if (arg.type === 'ObjectExpression') {
+      const props = (arg as ObjectExpressionNode).properties;
+      if (!props || props.length === 0) return null;
+      const members: SingleType[] = [];
+      for (const p of props) {
+        // A spread property makes the value set unknowable → bail.
+        if ((p.type as string) === 'SpreadElement' || (p.type as string) === 'RestElement') return null;
+        const valNode = (p as PropertyNode).value;
+        if (!valNode) return null;
+        const vt = this.checkNode(valNode);
+        if (isUnionType(vt)) { for (const m of vt.types) members.push(m); }
+        else if (typeof vt === 'string') members.push(vt as UcodeType);
+        else if (isObjectType(vt) || isArrayType(vt)) members.push(vt as SingleType);
+        else members.push(UcodeType.OBJECT);
+      }
+      if (members.length === 0) return null;
+      return createUnionType(members);
+    }
+    if (arg.type === 'Identifier') {
+      const sym = this.symbolTable.lookupAtPosition((arg as IdentifierNode).name, arg.start)
+                ?? this.symbolTable.lookup((arg as IdentifierNode).name);
+      if (sym?.propertyTypes && sym.propertyTypes.size > 0) {
+        return this.computePropertyValueUnion(sym.propertyTypes);
+      }
+    }
+    return null;
+  }
+
   private recordConstantAssignment(objectName: string, propertyName: string): void {
     let properties = this.constantAssignmentProperties.get(objectName);
     if (!properties) {
@@ -788,7 +833,9 @@ export class TypeChecker {
         });
       }
     }
-    return UcodeType.UNKNOWN;
+    // `delete obj.k` / `delete obj[k]` evaluates to a boolean in ucode
+    // (vm.c uc_vm_insn_delete pushes ucv_boolean_new(rv) on the success path).
+    return UcodeType.BOOLEAN;
   }
 
   getResult(): TypeCheckResult {
@@ -857,6 +904,15 @@ export class TypeChecker {
     return effectiveSymbolType(symbol, position);
   }
 
+  /** True when `node` is a numeric literal whose value is exactly 0 (int `0` or
+   *  double `0.0`). Used to detect division/modulo by a literal zero. */
+  private isLiteralZero(node: AstNode): boolean {
+    if (node.type !== 'Literal') return false;
+    const lit = node as LiteralNode;
+    return typeof lit.value === 'number' && lit.value === 0
+      && (lit.literalType === 'number' || lit.literalType === 'double');
+  }
+
   private checkBinaryExpression(node: BinaryExpressionNode): CheckResult {
     const leftType = this.checkNode(node.left);
     const rightType = this.checkNode(node.right);
@@ -871,7 +927,20 @@ export class TypeChecker {
       case '**': {
         // Lint operations that provably evaluate to NaN (array/object/function/
         // regex operand). Result type is unaffected — this is just a warning.
-        this.checkNaNArithmetic(node, node.operator, this.dataTypeToUcodeType(leftType), this.dataTypeToUcodeType(rightType));
+        this.checkNaNArithmetic(node, node.operator, this.dataTypeToUcodeType(leftType), this.dataTypeToUcodeType(rightType), node.left, node.right);
+
+        // Modulo by a literal zero is always NaN — uc_vm_value_arith's I_MOD returns
+        // ucv_double_new(NAN) when the divisor is 0 (integer path) and fmod(x,0)=NaN
+        // (double path), vm.c. Only `%` is flagged: `/ 0` yields Infinity, not NaN. (auto-docs #79)
+        if (node.operator === '%' && this.numericLiteralValue(node.right) === 0) {
+          this.errors.push({
+            message: `This operation always produces NaN: modulo by zero`,
+            start: node.start,
+            end: node.end,
+            severity: 'error',
+            code: UcodeErrorCode.NAN_ARITHMETIC,
+          });
+        }
 
         // leftType/rightType are already the rich types (checkNode returns them).
         let leftFullType: UcodeDataType = leftType;
@@ -883,6 +952,15 @@ export class TypeChecker {
         if (node.operator !== '+') {
           leftFullType = this.coerceStringForArithmetic(node.left, leftFullType);
           rightFullType = this.coerceStringForArithmetic(node.right, rightFullType);
+        }
+
+        // Division/modulo by a literal zero is always `double` in ucode: the
+        // integer path yields Infinity (I_DIV) / NaN (I_MOD), both doubles, and
+        // the double path yields Infinity / NaN too (vm.c uc_vm_value_arith,
+        // n2==0 / d2==0.0 cases). ucode does NOT raise — so type it double rather
+        // than the integer the promotion rules would otherwise pick.
+        if ((node.operator === '/' || node.operator === '%') && this.isLiteralZero(node.right)) {
+          return UcodeType.DOUBLE;
         }
 
         // Distribute over union members so e.g. `(integer | string) + 1` yields
@@ -916,8 +994,13 @@ export class TypeChecker {
           return rightType; // always null → always falls back to b
         }
         const leftNonNull = this.typeNarrowing.removeNullFromType(leftType);
-        if (leftNonNull.excludedTypes.length === 0) {
-          return leftType; // a can't be null → b unreachable
+        // UNKNOWN can be null — removeNullFromType excludes nothing from it, which
+        // must NOT be read as "can't be null". `X ?? 1` on unknown X falls through
+        // to the union below → `integer | unknown` (union-with-unknown convention).
+        const leftHasUnknown = dataTypeToBase(leftType) === UcodeType.UNKNOWN
+          || getUnionTypes(leftType).some(t => singleTypeToBase(t) === UcodeType.UNKNOWN);
+        if (leftNonNull.excludedTypes.length === 0 && !leftHasUnknown) {
+          return leftType; // a provably can't be null → b unreachable
         }
         // `a ?? []` with an EMPTY array literal as the fallback: the empty array
         // contributes no elements, so the result is exactly a-without-null. This keeps
@@ -957,8 +1040,8 @@ export class TypeChecker {
         // Collapse to base enum for the singleton checks + readable message.
         const leftBase = this.dataTypeToUcodeType(leftType);
         const rightBase = this.dataTypeToUcodeType(rightType);
-        const isLeftExpected = leftBase === UcodeType.BOOLEAN || leftBase === UcodeType.INTEGER || leftBase === UcodeType.UNKNOWN;
-        const isRightExpected = rightBase === UcodeType.BOOLEAN || rightBase === UcodeType.INTEGER || rightBase === UcodeType.UNKNOWN;
+        const isLeftExpected = this.bitwiseOperandExpected(node.left, leftBase);
+        const isRightExpected = this.bitwiseOperandExpected(node.right, rightBase);
 
         if (!isLeftExpected || !isRightExpected) {
           this.warnings.push({
@@ -989,7 +1072,7 @@ export class TypeChecker {
     // Numeric unary operators on a value that can't convert to a number always
     // yield NaN (e.g. -[1], ++{}). ucode doesn't throw, so warn rather than error.
     if (node.operator === '+' || node.operator === '-' || node.operator === '++' || node.operator === '--') {
-      this.checkNaNArithmetic(node, node.operator, this.dataTypeToUcodeType(argType), null);
+      this.checkNaNArithmetic(node, node.operator, this.dataTypeToUcodeType(argType), null, node.argument, undefined);
       // A string coerces to a number; negation/increment preserve int vs double,
       // so the result type IS the coercion type (e.g. -"42" → integer).
       if (argType === UcodeType.STRING) {
@@ -999,6 +1082,38 @@ export class TypeChecker {
     }
 
     return this.typeCompatibility.getUnaryResultType(this.dataTypeToUcodeType(argType), node.operator);
+  }
+
+  /**
+   * Is an operand acceptable to a bitwise operator (& | ^ << >>) without a warning?
+   * ucode's uc_vm_value_bitop (vm.c) runs BOTH operands through ucv_to_number():
+   *   - boolean/integer/unknown: fine.
+   *   - double: coerced to an integer (int64 truncation) — a valid, common idiom
+   *     (`x | 0`), so accept it. (auto-docs #77)
+   *   - string: parsed via uc_number_parse; a NUMERIC string literal (`"5" | 2`)
+   *     coerces cleanly, so accept it. A non-numeric string still warns since it
+   *     coerces to NaN. Only literals are trusted — a plain string variable's value
+   *     is unknown, so keep flagging it. (auto-docs #134)
+   */
+  private bitwiseOperandExpected(node: AstNode, base: UcodeType): boolean {
+    if (base === UcodeType.BOOLEAN || base === UcodeType.INTEGER ||
+        base === UcodeType.UNKNOWN || base === UcodeType.DOUBLE) {
+      return true;
+    }
+    if (base === UcodeType.STRING && node.type === 'Literal' &&
+        typeof (node as LiteralNode).value === 'string') {
+      return this.isNumericStringValue((node as LiteralNode).value as string);
+    }
+    return false;
+  }
+
+  /** Does a string parse to a finite number under ucode's uc_number_parse? Accepts an
+   *  integer in any base (dec/hex/bin/octal) or a decimal/scientific float, with an
+   *  optional sign and surrounding whitespace. Empty/non-numeric strings are false. */
+  private isNumericStringValue(value: string): boolean {
+    const t = value.trim();
+    if (t === '') return false;
+    return /^[+-]?(0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)$/.test(t);
   }
 
   /** array/object/function/regex can never convert to a finite number → NaN in arithmetic. */
@@ -1060,11 +1175,32 @@ export class TypeChecker {
     };
     const walk = (node: unknown): void => {
       if (proven || !isAstNodeLike(node)) return;
+      // Prune: every node that does useful work here (an IfStatement whose consequent
+      // holds `position`, or a block whose body has an early-exit guard dominating a
+      // later sibling containing `position`) must itself span `position`. Skipping
+      // subtrees that don't contain `position` cannot drop any match — it only avoids
+      // the whole-AST walk, turning this from O(nodes) into O(path-to-position).
+      if (typeof node.start === 'number' && typeof node.end === 'number'
+          && (position < node.start || position > node.end)) return;
       if (node.type === 'IfStatement') {
         const ifNode = node as unknown as IfStatementNode;
         if (ifNode.consequent
             && position >= ifNode.consequent.start && position <= ifNode.consequent.end) {
           checkTest(ifNode.test);
+        }
+      }
+      // A `while`/`for` loop test holds at the TOP of every iteration, so it narrows
+      // the array bound for an access inside the body — but only up to a
+      // length-reducing mutation (`shift`/`pop`/`splice`) or reassignment of arrName:
+      // `while (length(a) > 0) { a[0]; shift(a); }` is in-bounds at `a[0]`, but an
+      // access AFTER the shift is not. Skip `do-while` (its test runs AFTER the first
+      // iteration, so it doesn't hold on entry). Ticket: array-index-narrowing-loops.
+      if (node.type === 'WhileStatement' || node.type === 'ForStatement') {
+        const loop = node as unknown as { test?: AstNode | null; body?: AstNode };
+        if (loop.body && loop.test
+            && position >= loop.body.start && position <= loop.body.end
+            && !this.arrLengthInvalidatedBetween(arrName, loop.body.start, position)) {
+          checkTest(loop.test);
         }
       }
       // Scan a statement list for an early-exit guard that dominates `position` (a preceding
@@ -1184,6 +1320,11 @@ export class TypeChecker {
     let hit = false;
     const walk = (n: unknown): void => {
       if (hit || !isAstNodeLike(n)) return;
+      // Prune: a matching node is fully contained in [from, to], so any node whose span
+      // doesn't overlap [from, to] has no descendant that could match. Skipping those
+      // subtrees is sound (a contained node's ancestors all overlap the span).
+      if (typeof n.start === 'number' && typeof n.end === 'number'
+          && (n.end < from || n.start > to)) return;
       if (n.start >= from && n.end <= to) {
         if (n.type === 'CallExpression') {
           const c = n as unknown as CallExpressionNode;
@@ -1206,6 +1347,188 @@ export class TypeChecker {
     };
     walk(ast);
     return hit;
+  }
+
+  /** A stable token identifying a computed member key: `base[key]`. Only an
+   *  Identifier or a string/number Literal key is trackable (a dynamic expression
+   *  key can't be matched across statements). Returns null for anything else. */
+  private bucketKeyToken(prop: AstNode): string | null {
+    if (prop.type === 'Identifier') return `id:${(prop as IdentifierNode).name}`;
+    if (prop.type === 'Literal') {
+      const v = (prop as LiteralNode).value;
+      if (typeof v === 'string' || typeof v === 'number') return `lit:${String(v)}`;
+    }
+    return null;
+  }
+
+  /** The group-by / bucket idiom: `m[k] ??= []; push(m[k], v)` (or `||= []`).
+   *  A computed read `base[key]` is provably a (non-null) `array` when BOTH hold:
+   *   1. It is preceded, in the SAME straight-line statement list, by a
+   *      `base[sameKey] ??= <array literal>` (or `||= <array literal>`) on the
+   *      same base+key path, with no intervening wholesale reassignment of `base`
+   *      or the key variable between that assignment and this read (so the `??=`
+   *      dominates the read on its path — this is why we require same-block, not
+   *      just source-order-before: a conditional `??=` wouldn't dominate).
+   *   2. Value-shape gate: `base` has exactly one declarator, an empty `{}`/`[]`
+   *      literal, is never reassigned wholesale, and EVERY member write to it
+   *      (`base[*] = / ??= / ||= …`, `base.p = …`) has an ARRAY-literal RHS — so
+   *      every value it can hold is `array | null`. The `??=` drops the null.
+   *  Declines otherwise, so `push(base[k], …)` stays honest for the unsafe case.
+   *  See docs/nullish-assign-bucket-narrowing.md (design B, the sound minimal slice). */
+  private isBucketArrayAccess(node: MemberExpressionNode): boolean {
+    if (!node.computed || node.object.type !== 'Identifier') return false;
+    const baseName = (node.object as IdentifierNode).name;
+    const keyTok = this.bucketKeyToken(node.property);
+    if (keyTok === null) return false;
+    const ast = this.currentAST;
+    if (!ast) return false;
+
+    // (1) A dominating preceding `base[key] ??=/||= [array]` in the same block.
+    const assign = this.findDominatingNullishArrayAssign(ast, node, baseName, keyTok);
+    if (!assign) return false;
+
+    // No wholesale reassignment of `base` or the key var between the assign & read.
+    const keyVar = node.property.type === 'Identifier' ? (node.property as IdentifierNode).name : null;
+    if (this.identifierReassignedBetween(ast, assign.end, node.start, baseName, keyVar)) return false;
+
+    // (2) Value-shape gate: base is a uniformly array-valued local map.
+    return this.mapIsUniformlyArrayValued(ast, baseName);
+  }
+
+  /** Find the nearest `base[keyTok] ??=/||= <ArrayExpression>` that appears in the
+   *  same statement list as (and before) `read`, guaranteeing straight-line
+   *  domination. Returns the AssignmentExpression node, or null. */
+  private findDominatingNullishArrayAssign(ast: ProgramNode, read: AstNode, baseName: string, keyTok: string): AssignmentExpressionNode | null {
+    let result: AssignmentExpressionNode | null = null;
+    const matchAssign = (n: unknown): AssignmentExpressionNode | null => {
+      if (!isAstNodeLike(n)) return null;
+      // Unwrap an ExpressionStatement to its assignment.
+      const inner = n.type === 'ExpressionStatement' ? (n as unknown as ExpressionStatementNode).expression : n;
+      if (!isAstNodeLike(inner) || inner.type !== 'AssignmentExpression') return null;
+      const a = inner as unknown as AssignmentExpressionNode;
+      if (a.operator !== '??=' && a.operator !== '||=') return null;
+      const left = a.left;
+      if (!isAstNodeLike(left) || left.type !== 'MemberExpression') return null;
+      const m = left as unknown as MemberExpressionNode;
+      if (!m.computed || m.object.type !== 'Identifier' || (m.object as IdentifierNode).name !== baseName) return null;
+      if (this.bucketKeyToken(m.property) !== keyTok) return null;
+      if (!isAstNodeLike(a.right) || a.right.type !== 'ArrayExpression') return null;
+      return a;
+    };
+    const scanList = (stmts: unknown): void => {
+      if (result || !Array.isArray(stmts)) return;
+      // The statement (element) whose span contains the read.
+      let containerIdx = -1;
+      for (let i = 0; i < stmts.length; i++) {
+        const s = stmts[i];
+        if (isAstNodeLike(s) && s.start <= read.start && read.start < s.end) { containerIdx = i; break; }
+      }
+      if (containerIdx < 0) return;
+      // Nearest preceding sibling that is the matching `??=`/`||=` assign.
+      for (let j = containerIdx - 1; j >= 0; j--) {
+        const cand = matchAssign(stmts[j]);
+        if (cand) { result = cand; return; }
+      }
+    };
+    const walk = (n: unknown): void => {
+      if (result || !isAstNodeLike(n)) return;
+      // Any array-valued child is a potential statement list (body/consequent/…).
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { scanList(v); for (const it of v) walk(it); }
+        else if (isAstNodeLike(v)) walk(v);
+      }
+    };
+    walk(ast);
+    return result;
+  }
+
+  /** Between `from` and `to`, is `name` (or `keyVar`, if given) reassigned via a
+   *  wholesale `x = …` or a `let/const x` declaration? Either breaks the
+   *  base/key-unchanged precondition for bucket narrowing. */
+  private identifierReassignedBetween(ast: ProgramNode, from: number, to: number, name: string, keyVar: string | null): boolean {
+    if (from >= to) return false;
+    const names = new Set<string>([name]);
+    if (keyVar) names.add(keyVar);
+    let hit = false;
+    const walk = (n: unknown): void => {
+      if (hit || !isAstNodeLike(n)) return;
+      if (n.start >= from && n.end <= to) {
+        if (n.type === 'AssignmentExpression') {
+          const a = n as unknown as AssignmentExpressionNode;
+          if (a.left?.type === 'Identifier' && names.has((a.left as IdentifierNode).name)) { hit = true; return; }
+        }
+        if (n.type === 'VariableDeclaration') {
+          for (const d of (n as unknown as VariableDeclarationNode).declarations || []) {
+            if (d?.id?.type === 'Identifier' && names.has((d.id as IdentifierNode).name)) { hit = true; return; }
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (isAstNodeLike(v)) walk(v);
+      }
+    };
+    walk(ast);
+    return hit;
+  }
+
+  /** Value-shape gate for bucket narrowing: is `baseName` a local map whose every
+   *  value is `array | null`? True iff it has exactly ONE declarator, initialized
+   *  to an empty `{}`/`[]` literal, is never reassigned wholesale, and every member
+   *  write to it has an ArrayExpression RHS. Over-approximates writes across the
+   *  whole file (any same-named non-array member write anywhere → decline), which
+   *  is only ever MORE conservative, so it stays sound. */
+  private mapIsUniformlyArrayValued(ast: ProgramNode, baseName: string): boolean {
+    let declCount = 0;
+    let emptyLiteralDecl = false;
+    let ok = true;
+    let sawArrayWrite = false;
+    const isEmptyLiteral = (init: unknown): boolean =>
+      isAstNodeLike(init) &&
+      ((init.type === 'ObjectExpression' && ((init as unknown as ObjectExpressionNode).properties || []).length === 0) ||
+       (init.type === 'ArrayExpression' && ((init as unknown as ArrayExpressionNode).elements || []).length === 0));
+    const walk = (n: unknown): void => {
+      if (!ok || !isAstNodeLike(n)) return;
+      if (n.type === 'VariableDeclaration') {
+        for (const d of (n as unknown as VariableDeclarationNode).declarations || []) {
+          if (d?.id?.type === 'Identifier' && (d.id as IdentifierNode).name === baseName) {
+            declCount++;
+            if (isEmptyLiteral(d.init)) emptyLiteralDecl = true;
+          }
+        }
+      } else if (n.type === 'AssignmentExpression') {
+        const a = n as unknown as AssignmentExpressionNode;
+        const left = a.left;
+        // Wholesale reassignment `base = …` → not a stable map.
+        if (isAstNodeLike(left) && left.type === 'Identifier' && (left as unknown as IdentifierNode).name === baseName) {
+          ok = false; return;
+        }
+        // Member write `base[*] = / ??= / ||= …` (computed or `base.p`) → RHS must be an array literal.
+        if (isAstNodeLike(left) && left.type === 'MemberExpression'
+            && (left as unknown as MemberExpressionNode).object?.type === 'Identifier'
+            && ((left as unknown as MemberExpressionNode).object as IdentifierNode).name === baseName) {
+          if (a.operator === '=' || a.operator === '??=' || a.operator === '||=') {
+            if (isAstNodeLike(a.right) && a.right.type === 'ArrayExpression') { sawArrayWrite = true; }
+            else { ok = false; return; }
+          } else {
+            // `base[k] += …` and friends can introduce a non-array → decline.
+            ok = false; return;
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (isAstNodeLike(v)) walk(v);
+      }
+    };
+    walk(ast);
+    return ok && declCount === 1 && emptyLiteralDecl && sawArrayWrite;
   }
 
   /** Does a computed array access `obj[prop]` resolve to an in-bounds element
@@ -1295,6 +1618,10 @@ export class TypeChecker {
     let proven = false;
     const walk = (node: unknown): void => {
       if (proven || !isAstNodeLike(node)) return;
+      // Prune: the only match is a ForStatement whose body holds `position`, so it (and
+      // all its ancestors) span `position`. Subtrees not containing `position` can't match.
+      if (typeof node.start === 'number' && typeof node.end === 'number'
+          && (position < node.start || position > node.end)) return;
       if (node.type === 'ForStatement') {
         const forNode = node as unknown as ForStatementNode;
         if (forNode.body
@@ -1503,6 +1830,11 @@ export class TypeChecker {
    *  could only `==` another scalar under ucode coercion. */
   private isScalarLiteral(n: AstNode): boolean {
     if (n?.type !== 'Literal') return false;
+    // A regexp literal's parsed `.value` is `String(pattern)` (primaryExpressions.ts), so
+    // `typeof v === 'string'` would misclassify it as a scalar string — but a regexp is a
+    // reference value that can never == a scalar. Exclude it so it's treated as the
+    // reference operand on EITHER side of ==/!= (fixes asymmetric UC2009). (auto-docs #135)
+    if ((n as LiteralNode).literalType === 'regexp') return false;
     const v = (n as LiteralNode).value;
     return typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean';
   }
@@ -1536,6 +1868,31 @@ export class TypeChecker {
     const members = this.baseMembers(otherType);
     if (members.length === 0) return;
     if (members.some(m => m === UcodeType.UNKNOWN)) return;      // not confident → bail
+
+    // Strict equality between two DISTINCT scalar base types is always false (`5 === "5"`,
+    // `true === 1`, `5 === 5.0`) — `===`/`!==` never coerce (vm.c uc_vm_test_strict_equality
+    // bails on `t1 != t2`). Loose `==`/`!=` DO coerce scalars, so only flag strict here.
+    // Skipped when the other side admits the literal's own base (e.g. `5 === x` with x
+    // typed `integer | double` could hold at runtime). Ticket 78.
+    if (op === '===' || op === '!==') {
+      const litBase = dataTypeToBase(this.checkLiteral(litNode as LiteralNode));
+      if (SCALAR_EQ_BASES.has(litBase)
+          && members.every(m => SCALAR_EQ_BASES.has(m))
+          && !members.includes(litBase)) {
+        const always = op === '===' ? 'false' : 'true';
+        const typeList = [...new Set(members.map(m => String(m)))].join(' | ');
+        const litRepr = JSON.stringify((litNode as LiteralNode).value);
+        this.errors.push({
+          message: `a value of type ${typeList} can never be ${op} ${litRepr} in ucode (strict equality does not coerce between distinct types), so this comparison is always ${always}.`,
+          start: node.start,
+          end: node.end,
+          severity: 'error',
+          code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
+        });
+        return;
+      }
+    }
+
     if (!members.every(m => REF_EQ_BASES.has(m))) return;        // a scalar member could match
 
     const always = (op === '==' || op === '===') ? 'false' : 'true';
@@ -1592,15 +1949,30 @@ export class TypeChecker {
    * deterministic bug in both modes — strict only governs undeclared-variable
    * access, not arithmetic.
    */
-  private checkNaNArithmetic(node: AstNode, operator: string, leftType: UcodeType, rightType: UcodeType | null): void {
+  private checkNaNArithmetic(node: AstNode, operator: string, leftType: UcodeType, rightType: UcodeType | null,
+                             leftNode?: AstNode, rightNode?: AstNode): void {
     if (operator === '+' && (leftType === UcodeType.STRING || rightType === UcodeType.STRING)) {
       return; // string concatenation, not arithmetic
     }
-    const offenders: UcodeType[] = [];
-    if (this.producesNaNInArithmetic(leftType)) offenders.push(leftType);
-    if (rightType !== null && this.producesNaNInArithmetic(rightType) && !offenders.includes(rightType)) {
-      offenders.push(rightType);
-    }
+    const offenders: string[] = [];
+    const consider = (type: UcodeType | null, opNode: AstNode | undefined): void => {
+      if (type !== null && this.producesNaNInArithmetic(type)) {
+        if (!offenders.includes(type)) offenders.push(type);
+        return;
+      }
+      // A non-numeric string LITERAL (`"abc"`, `"5px"`) coerces to NaN in a non-`+`
+      // arithmetic context — uc_number_parse (vallist.c) returns NULL for it, and
+      // uc_vm_value_arith turns a null-coercion into ucv_double_new(NAN). A numeric
+      // string literal ("42", "4.5") is fine; a non-literal string's value is unknown
+      // so it's never flagged (value-dependent). (auto-docs #133)
+      if (opNode && opNode.type === 'Literal' && typeof (opNode as LiteralNode).value === 'string'
+          && !this.isNumericStringValue((opNode as LiteralNode).value as string)) {
+        const desc = `the string ${JSON.stringify((opNode as LiteralNode).value)}`;
+        if (!offenders.includes(desc)) offenders.push(desc);
+      }
+    };
+    consider(leftType, leftNode);
+    consider(rightType, rightNode);
     if (offenders.length === 0) return;
     const base = {
       message: `This operation always produces NaN: ${offenders.join(' and ')} cannot be converted to a number`,
@@ -1613,7 +1985,7 @@ export class TypeChecker {
     this.errors.push({ ...base, severity: 'error' });
   }
 
-  private checkInOperator(node: BinaryExpressionNode, _leftType: UcodeType, rightType: UcodeType): CheckResult {
+  private checkInOperator(node: BinaryExpressionNode, leftType: UcodeType, rightType: UcodeType): CheckResult {
     // Get the full type data for the right operand
     let rightTypeData = this.getFullTypeFromNode(node.right) || this.getTypeAsDataType(rightType);
 
@@ -1669,6 +2041,25 @@ export class TypeChecker {
         severity: 'error',
         code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
       });
+    } else if (rightTypeData === UcodeType.OBJECT) {
+      // `in` over a plain object matches ONLY string keys: uc_vm_insn_in (vm.c) does
+      // `if (ucv_type(r1) == UC_STRING) ucv_object_get(...)` for the UC_OBJECT case —
+      // a non-string key is never coerced and never matches. So a statically
+      // non-string scalar key against an object is always false. (auto-docs #89)
+      const leftTypeData = this.getFullTypeFromNode(node.left) ?? this.getTypeAsDataType(leftType);
+      const leftMembers = this.baseMembers(leftTypeData);
+      const nonStringScalar = leftMembers.length > 0 && leftMembers.every(m =>
+        m === UcodeType.INTEGER || m === UcodeType.DOUBLE ||
+        m === UcodeType.BOOLEAN || m === UcodeType.NULL);
+      if (nonStringScalar) {
+        this.errors.push({
+          message: `'in' on an object matches only string keys, so a key of type ${this.getTypeDescription(leftTypeData)} is always false`,
+          start: node.left.start,
+          end: node.left.end,
+          severity: 'error',
+          code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
+        });
+      }
     }
 
     return UcodeType.BOOLEAN;
@@ -2121,6 +2512,10 @@ export class TypeChecker {
     // Handle member expression calls (e.g., fs.open, obj.method)
     if (node.callee.type === 'MemberExpression') {
       const memberCallee = node.callee as MemberExpressionNode;
+      // Mark this member as a call callee so checkMemberExpression treats an
+      // unknown member as a method call (runtime error) rather than a property
+      // read (returns null) — ticket 145.
+      this.calleeMemberNodes.add(memberCallee);
       // Local object-literal method calls: `obj.method()` and `this.method()` resolve to the
       // method's inferred return type (recorded on the receiver symbol's propertyReturnTypes).
       // Checked before the string-hint map below so rich types (object, unions) are preserved.
@@ -2293,6 +2688,14 @@ export class TypeChecker {
           const refined = this.narrowFilterElementType(node, curElem);
           if (refined !== null) narrowed = createArrayType(refined);
         }
+      }
+      // values(obj) returns an array of the object's VALUES, so its element type is
+      // the union of the source object's property value types (mirrors how keys()
+      // hardcodes array<string>). Only refines when validateValuesFunction produced a
+      // bare `array` and we can read the source's value types. (auto-docs #123)
+      if (signature.name === 'values' && narrowed === UcodeType.ARRAY) {
+        const elem = this.valuesElementType(node.arguments[0]);
+        if (elem !== null) narrowed = createArrayType(elem);
       }
       if (narrowed !== null) {
         // Return the narrowed rich type directly.
@@ -2499,20 +2902,23 @@ export class TypeChecker {
     // Emit at warning severity, escalated to error under `'use strict'`. The
     // range defaults to the callee (not the whole call — flagging every
     // argument for a MISSING one reads as if the present args were wrong).
-    const emit = (message: string, start = node.callee.start, end = node.callee.end) => {
+    const emit = (message: string, start = node.callee.start, end = node.callee.end, forceWarning = false) => {
       const d = { message, start, end, code: UcodeErrorCode.INVALID_PARAMETER_COUNT };
-      if (this.strictMode) this.errors.push({ ...d, severity: 'error' });
+      if (this.strictMode && !forceWarning) this.errors.push({ ...d, severity: 'error' });
       else this.warnings.push({ ...d, severity: 'warning' });
     };
 
     // Too many arguments — only meaningful when non-variadic (no `...rest`), and
     // ucode has no `arguments` object so the extra args are provably dead.
-    // Anchor on the extra arguments themselves.
+    // Anchor on the extra arguments themselves. This NEVER escalates to an error
+    // under `'use strict'`: ucode silently ignores extra args in BOTH modes (there
+    // is no arity check at the call site), so a superfluous arg is legal-but-useless,
+    // not a hard error. Keep it a warning always. (auto-docs #142)
     if (!variadic && argCount > positional.length) {
       const firstExtra = node.arguments[positional.length]!;
       const lastArg = node.arguments[argCount - 1]!;
       emit(`Function '${fnName}' expects at most ${positional.length} argument${positional.length === 1 ? '' : 's'}, got ${argCount} (extra arguments are ignored)`,
-        firstExtra.start, lastArg.end);
+        firstExtra.start, lastArg.end, /*forceWarning*/ true);
     }
 
     // Too few arguments — only for missing params with a declared, NON-optional
@@ -2807,13 +3213,24 @@ export class TypeChecker {
   }
 
   private checkMemberExpression(node: MemberExpressionNode): CheckResult {
-    // Member-path type narrowing: a `type(o.x) == "str"` guard in scope narrows the
-    // member path `o.x` itself. getNarrowedTypeAtPosition resolves a dotted path with
-    // no symbol via the guards alone, so this only fires inside such a guard's branch.
-    if (!node.computed && node.property.type === 'Identifier') {
+    // Member-path type narrowing: a `type(o.x) == "str"` or truthiness guard in scope
+    // narrows the member path itself — both dotted (`o.x`) and constant-index computed
+    // (`a[0]`) forms. getNarrowedTypeAtPosition resolves a symbol-less path via the
+    // guards alone, so this only fires inside such a guard's branch. Constant-index
+    // support extends the narrowing beyond call-argument position (ticket 138).
+    if ((!node.computed && node.property.type === 'Identifier')
+        || (node.computed && node.property.type === 'Literal')) {
       const dotted = this.getDottedPath(node);
-      if (dotted && dotted.includes('.')) {
-        const narrowed = this.getNarrowedTypeAtPosition(dotted, node.start);
+      if (dotted && (dotted.includes('.') || dotted.includes('['))) {
+        // For a constant-index access the element type is the base a truthiness/null
+        // guard removes null FROM (`if (a[0]) { let y = a[0] }` → `y` non-null). Positive
+        // type() guards don't need it, but null-removal does (ticket 138).
+        let baseHint: UcodeDataType | undefined;
+        if (node.computed) {
+          const objType = this.checkNodeQuietly(node.object);
+          if (isArrayType(objType)) baseHint = getArrayElementType(objType);
+        }
+        const narrowed = this.getNarrowedTypeAtPosition(dotted, node.start, baseHint);
         if (narrowed !== null) return narrowed;
       }
     }
@@ -2865,6 +3282,24 @@ export class TypeChecker {
           if (Option.isSome(m)) {
             return this.parseReturnType(m.value.returnType);
           }
+        }
+      }
+
+      // Gap 2 (registry value-shape): `get_interface(x).chain_name` — member access
+      // directly on a call result. When the callee is a user function whose symbol
+      // carries `returnPropertyTypes` (populated for `return {..}` literals and, via
+      // Gap 1, for `return map[k]` getters), resolve the accessed property from
+      // there. Mirrors the `let v = call(); v.prop` binding-copy path for the
+      // direct-chain case. See docs/registry-value-shape-inference.md Gap 2.
+      if (node.object.type === 'CallExpression'
+          && (node.object as CallExpressionNode).callee.type === 'Identifier') {
+        const calleeName = ((node.object as CallExpressionNode).callee as IdentifierNode).name;
+        const calleeSym = this.symbolTable.lookupAtPosition(calleeName, node.object.start)
+                       ?? this.symbolTable.lookup(calleeName);
+        const propName = this.getStaticPropertyName(node.property);
+        if (calleeSym?.returnPropertyTypes && propName) {
+          const t = calleeSym.returnPropertyTypes.get(propName);
+          if (t !== undefined) return t;
         }
       }
     }
@@ -2961,13 +3396,28 @@ export class TypeChecker {
         if (OBJECT_REGISTRIES[detectedObjectType].openMembers) {
           return UcodeType.UNKNOWN;
         }
-        this.errors.push({
-          message: `Method '${methodName}' does not exist on ${detectedObjectType}`,
-          start: node.start,
-          end: node.end,
-          severity: 'error',
-          code: UcodeErrorCode.METHOD_NOT_FOUND,
-        });
+        // A method CALL of a non-existent member is a "Method" error (calling the
+        // resulting null crashes). A plain property READ is a "Property" error — it
+        // was previously mislabeled "Method" even for reads (ticket 145). Severity
+        // stays error for both: a typo'd field on a known object shape (e.g. fs.stat)
+        // is a bug worth flagging, matching the existing closed-shape contract.
+        if (this.calleeMemberNodes.has(node)) {
+          this.errors.push({
+            message: `Method '${methodName}' does not exist on ${detectedObjectType}`,
+            start: node.start,
+            end: node.end,
+            severity: 'error',
+            code: UcodeErrorCode.METHOD_NOT_FOUND,
+          });
+        } else {
+          this.errors.push({
+            message: `Property '${methodName}' does not exist on ${detectedObjectType}`,
+            start: node.start,
+            end: node.end,
+            severity: 'error',
+            code: UcodeErrorCode.PROPERTY_NOT_FOUND,
+          });
+        }
         return UcodeType.UNKNOWN;
       }
 
@@ -2978,6 +3428,12 @@ export class TypeChecker {
       const modName = moduleInfo?.moduleName;
       if (modName && isKnownModule(modName) && !node.computed) {
         const memberName = this.getStaticPropertyName(node.property);
+        // `nl80211.const` / `rtnl.const` on a namespace import → the constants
+        // object (same type the aliased `import { 'const' as C }` form gets), so
+        // the chained `mod.const.NL80211_*` member types as integer below.
+        if (memberName === 'const' && (modName === 'nl80211' || modName === 'rtnl')) {
+          return { type: UcodeType.OBJECT, moduleName: `${modName}-const` } as UcodeDataType;
+        }
         if (memberName && MODULE_REGISTRIES[modName].getFunctionNames().includes(memberName)) {
           return UcodeType.FUNCTION;
         }
@@ -3052,6 +3508,14 @@ export class TypeChecker {
         }
         return UcodeType.INTEGER; // NL80211 constants are integers
       }
+    }
+
+    // Bucket idiom (`m[k] ??= []; push(m[k], v)`): a computed read that is
+    // dominated by a same-block `m[k] ??= [array]` on a uniformly-array-valued
+    // local map is provably a (non-null) array. Checked before the dictionary
+    // value-shape branch so the group-by/bucket pattern stops false-flagging.
+    if (node.object.type === 'Identifier' && node.computed && this.isBucketArrayAccess(node)) {
+      return UcodeType.ARRAY as UcodeDataType;
     }
 
     // Dictionary value-type FIRST: `O[expr]` where O is a string-keyed map whose
@@ -3147,6 +3611,30 @@ export class TypeChecker {
     }
 
     const objectType = this.checkNode(node.object);
+
+    // Chained const-namespace access (`nl80211.const.X` — the object is itself a
+    // MemberExpression typed as the constants object, so the Identifier-symbol
+    // branches above never see it). Constants are integers; unknown names flag.
+    if (!node.computed) {
+      const richObj = this.getTypeOf(node.object) ?? objectType;
+      const constMod = extractModuleType(richObj as UcodeDataType)?.moduleName;
+      if (constMod === 'nl80211-const' || constMod === 'rtnl-const') {
+        const propertyName = this.getStaticPropertyName(node.property);
+        if (!propertyName) return UcodeType.UNKNOWN;
+        const isConst = constMod === 'nl80211-const'
+          ? nl80211TypeRegistry.isNl80211Constant(propertyName)
+          : rtnlTypeRegistry.isRtnlConstant(propertyName);
+        if (isConst) return UcodeType.INTEGER;
+        this.errors.push({
+          message: `Property '${propertyName}' does not exist on the ${constMod === 'nl80211-const' ? 'nl80211' : 'rtnl'} constants object.`,
+          start: node.property.start,
+          end: node.property.end,
+          severity: 'error',
+          code: UcodeErrorCode.PROPERTY_NOT_FOUND,
+        });
+        return UcodeType.UNKNOWN;
+      }
+    }
 
     // Computed access on a UNION that contains an array (e.g. `array<string> | null`
     // from split() on a nullable arg, or `parts[i]` where parts is array|null):
@@ -3343,6 +3831,23 @@ export class TypeChecker {
         code: UcodeErrorCode.PROPERTY_NOT_FOUND,
       });
 
+      return UcodeType.UNKNOWN;
+    }
+
+    // Computed indexing of a string (`s[0]`) is a RUNTIME ERROR in ucode — it does
+    // NOT return a substring or character code. The VM's value-load instruction only
+    // accepts array/object/resource receivers and raises a reference exception for
+    // anything else (vm.c uc_vm_insn_load_val, default case). Array/object computed
+    // access was already handled and returned above, so reaching here with a receiver
+    // whose type is definitely STRING means genuine string indexing (ticket 119).
+    if (node.computed && (objectBase === UcodeType.STRING || narrowedBase === UcodeType.STRING)) {
+      this.errors.push({
+        message: `Strings cannot be indexed in ucode; 's[i]' raises a runtime error. Use substr(s, i, 1) to get a character.`,
+        start: node.start,
+        end: node.end,
+        severity: 'error',
+        code: UcodeErrorCode.PROPERTY_NOT_FOUND,
+      });
       return UcodeType.UNKNOWN;
     }
 
@@ -3790,7 +4295,7 @@ export class TypeChecker {
    * Public method to get the narrowed type for a variable at a specific position
    * Used by hover functionality to show flow-sensitive types
    */
-  getNarrowedTypeAtPosition(variableName: string, position: number): UcodeDataType | null {
+  getNarrowedTypeAtPosition(variableName: string, position: number, baseTypeHint?: UcodeDataType): UcodeDataType | null {
     // Symbol base (needed by both the engine refinement check and the legacy path).
     // Try both lookup (current scope) and lookupAtPosition (exited scopes like callbacks).
     let symbol = this.symbolTable.lookup(variableName);
@@ -3816,7 +4321,7 @@ export class TypeChecker {
       }
     }
 
-    const legacyResult = this.legacyNarrowedTypeAtPosition(variableName, position, symbol);
+    const legacyResult = this.legacyNarrowedTypeAtPosition(variableName, position, symbol, baseTypeHint);
 
     if (engineResult === undefined) return legacyResult;
     if (legacyResult === null) return engineResult;
@@ -3839,13 +4344,20 @@ export class TypeChecker {
   /** The pre-C1 per-query narrowing: the position guard walk (incl. ternary /
    *  `&&` forms) applied to the SSA-effective base. One of the two inputs to
    *  `getNarrowedTypeAtPosition` (the other is the engine). */
-  private legacyNarrowedTypeAtPosition(variableName: string, position: number, symbol: UcodeSymbol | null | undefined): UcodeDataType | null {
+  private legacyNarrowedTypeAtPosition(variableName: string, position: number, symbol: UcodeSymbol | null | undefined, baseTypeHint?: UcodeDataType): UcodeDataType | null {
     const guards = this.getGuardsForPosition(this.currentAST, variableName, position);
 
     if (!symbol) {
-      // If the variable isn't in the symbol table (e.g., callback parameter),
-      // try to infer its narrowed type purely from guard information.
+      // If the variable isn't in the symbol table (e.g., a member path `o.x` or a
+      // callback parameter), narrow from guards. With a caller-supplied base type
+      // (the member's known propertyType) we can apply null-removal / type guards to
+      // it — so `if (o.x) { o.x }` hovers as `string`, not `string | null` (ticket 139).
       if (guards.length > 0) {
+        if (baseTypeHint !== undefined) {
+          let narrowed = baseTypeHint;
+          for (const g of guards) narrowed = this.applyTypeGuard(narrowed, g);
+          return narrowed;
+        }
         const narrowedFromGuards = this.inferTypeFromGuardsWithoutBase(guards);
         if (narrowedFromGuards) {
           return narrowedFromGuards;
@@ -3914,7 +4426,8 @@ export class TypeChecker {
     if (node.type === 'Literal') {
       const v = (node as LiteralNode).value;
       if (typeof v === 'string') return UcodeType.STRING;
-      if (typeof v === 'number') return Number.isInteger(v) ? UcodeType.INTEGER : UcodeType.DOUBLE;
+      // Exponent notation (`1e5`) is a double literal even when integer-valued (ticket 115).
+      if (typeof v === 'number') return ((node as LiteralNode).literalType === 'double' || !Number.isInteger(v)) ? UcodeType.DOUBLE : UcodeType.INTEGER;
       if (typeof v === 'boolean') return UcodeType.BOOLEAN;
       if (v === null) return UcodeType.NULL;
     }
@@ -4058,6 +4571,21 @@ export class TypeChecker {
     return createUnionType(uniqueTypes);
   }
 
+  /** Intersect an equality/comparison-guard's narrow type with the base type.
+   *  Keeps only base members whose base kind is admitted by `narrowType`, so the
+   *  refined base members (`array<T>`, object shapes) survive and we never widen.
+   *  - base `unknown` carries no info → take `narrowType` verbatim (e.g. an untyped
+   *    param compared `< 0` narrows to `integer | double`, the prior behavior).
+   *  - no overlap → keep `baseType` unchanged rather than fabricate a type the value
+   *    provably isn't. */
+  private intersectNarrowType(baseType: UcodeDataType, narrowType: UcodeDataType): UcodeDataType {
+    if (baseType === UcodeType.UNKNOWN) return narrowType;
+    const narrowBases = new Set(getUnionTypes(narrowType).map(t => singleTypeToBase(t)));
+    const kept = getUnionTypes(baseType).filter(t => narrowBases.has(singleTypeToBase(t)));
+    if (kept.length === 0) return baseType;
+    return createUnionType(kept);
+  }
+
   /**
    * Apply a type guard to narrow a type
    */
@@ -4065,7 +4593,15 @@ export class TypeChecker {
     // Handle variable-to-variable equality narrowing
     if (guard.equalityNarrowType !== undefined) {
       if (!guard.isNegative) {
-        // Positive: x == y proved, so x has y's type
+        // A variable-to-variable equality guard (`x == y`, carries equalitySymbol)
+        // REPLACES x with y's type — chained guards are last-wins, so it must NOT
+        // intersect with the prior result. A numeric-comparison guard (`e > 1`, no
+        // equalitySymbol) REFINES the base instead, so intersect it to narrow rather
+        // than widen: `array<integer>` filtered by `e > 1` stays `integer`, not
+        // `integer | double` (ticket 111).
+        if (guard.equalitySymbol === undefined) {
+          return this.intersectNarrowType(baseType, guard.equalityNarrowType);
+        }
         return guard.equalityNarrowType;
       }
       // Negative: x != y, can't meaningfully narrow
@@ -4238,6 +4774,37 @@ export class TypeChecker {
     return found;
   }
 
+  /** Is `name` reassigned to a DEFINITE null (`name = null`) between `after` and `before`?
+   *  Used to invalidate a positive (non-null) guard when the guarded value is overwritten
+   *  with null inside the branch — `if (x) { x = null; use(x) }` (ticket 140). Only a
+   *  literal-null RHS counts: a general reassignment (`x = f()`) keeps the guard so we
+   *  don't surface imprecision in a producer's return type as a false positive. */
+  private isVariableAssignedNullBetween(root: AstNode | null, name: string, after: number, before: number): boolean {
+    let found = false;
+    const targetsName = (t: unknown): boolean => isAstNodeLike(t) && t.type === 'Identifier' && t.name === name;
+    const isNullLiteral = (t: unknown): boolean => isAstNodeLike(t) && t.type === 'Literal'
+      && ((t as unknown as LiteralNode).value === null || (t as unknown as LiteralNode).literalType === 'null');
+    const walk = (n: unknown): void => {
+      if (found || !isAstNodeLike(n)) return;
+      if (typeof n.start === 'number' && n.start > after && n.start < before
+          && n.type === 'AssignmentExpression'
+          && (n as unknown as AssignmentExpressionNode).operator === '='
+          && targetsName((n as unknown as AssignmentExpressionNode).left)
+          && isNullLiteral((n as unknown as AssignmentExpressionNode).right)) {
+        found = true;
+        return;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'parent' || k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (isAstNodeLike(v)) walk(v);
+      }
+    };
+    walk(root);
+    return found;
+  }
+
   private collectGuards(node: AstNode | null, variableName: string, position: number, guards: TypeGuardInfo[]): void {
     if (!node) {
       return;
@@ -4288,8 +4855,13 @@ export class TypeChecker {
           position >= ifNode.consequent.start &&
           position <= ifNode.consequent.end) {
         // Collect the positive-branch guards from the test (type guards + truthiness
-        // of an identifier / constant member path / null-propagating call).
-        this.collectPositiveTestGuards(ifNode.test, variableName, guards);
+        // of an identifier / constant member path / null-propagating call) — UNLESS the
+        // variable was reassigned between the branch start and the query position: a
+        // `if (x) { x = null; use(x) }` must NOT keep the stale non-null guard, so the
+        // reassigned (nullable) type is what gets checked (ticket 140).
+        if (!this.isVariableAssignedNullBetween(ifNode.consequent, variableName, ifNode.consequent.start, position)) {
+          this.collectPositiveTestGuards(ifNode.test, variableName, guards);
+        }
         this.collectGuards(ifNode.consequent, variableName, position, guards);
         return;
       }
@@ -4333,7 +4905,11 @@ export class TypeChecker {
       if (whileNode.body &&
           position >= whileNode.body.start &&
           position <= whileNode.body.end) {
-        this.collectPositiveTestGuards(whileNode.test, variableName, guards);
+        // Skip the stale top-of-iteration guard if the subject was reassigned before
+        // the query position within the body (ticket 140).
+        if (!this.isVariableAssignedNullBetween(whileNode.body, variableName, whileNode.body.start, position)) {
+          this.collectPositiveTestGuards(whileNode.test, variableName, guards);
+        }
         this.collectGuards(whileNode.body, variableName, position, guards);
         return;
       }
@@ -4346,7 +4922,11 @@ export class TypeChecker {
       if (forNode.test && forNode.body &&
           position >= forNode.body.start &&
           position <= forNode.body.end) {
-        this.collectPositiveTestGuards(forNode.test, variableName, guards);
+        // Skip the stale top-of-iteration guard if the subject was reassigned before
+        // the query position within the body (ticket 140).
+        if (!this.isVariableAssignedNullBetween(forNode.body, variableName, forNode.body.start, position)) {
+          this.collectPositiveTestGuards(forNode.test, variableName, guards);
+        }
         this.collectGuards(forNode.body, variableName, position, guards);
         return;
       }
@@ -4358,7 +4938,11 @@ export class TypeChecker {
     if (node.type === 'ConditionalExpression') {
       const cond = node as ConditionalExpressionNode;
       if (position >= cond.consequent.start && position <= cond.consequent.end) {
-        this.collectPositiveTestGuards(cond.test, variableName, guards);
+        // Skip the stale guard if the subject was reassigned before the position in
+        // the consequent (ticket 140). Rare in a ternary but kept for consistency.
+        if (!this.isVariableAssignedNullBetween(cond.consequent, variableName, cond.consequent.start, position)) {
+          this.collectPositiveTestGuards(cond.test, variableName, guards);
+        }
         this.collectGuards(cond.consequent, variableName, position, guards);
         return;
       }

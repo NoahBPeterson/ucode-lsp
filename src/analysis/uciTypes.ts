@@ -4,7 +4,7 @@
  */
 
 import type { FunctionSignature } from './moduleTypes';
-import type { ModuleDefinition, ObjectTypeDefinition } from './registryFactory';
+import type { ModuleDefinition, ObjectTypeDefinition, PropertyDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 
 // Backwards-compat type alias
@@ -66,8 +66,12 @@ const cursorMethods = new Map<string, FunctionSignature>([
       { name: "config", type: "string", optional: false },
       { name: "section", type: "string", optional: true }
     ],
-    returnType: "object | null",
-    description: "Query a complete section or configuration. When invoked with two arguments, returns all values of the specified section. When invoked with one argument, returns a nested dictionary of all sections."
+    // Two-arg form returns one `uci.section` (see section_to_uval, uci.c). One-arg form
+    // returns a package: an object keyed by section name whose values are `uci.section`
+    // (package_to_uval, uci.c). The arg-count distinction is not modeled at the type level,
+    // so the union carries both shapes conservatively rather than over-committing.
+    returnType: "uci.section | object | null",
+    description: "Query a complete section or configuration. When invoked with two arguments, returns all values of the specified section as a uci.section object (with `.type`, `.name`, `.anonymous` meta keys plus one key per option). When invoked with one argument, returns a nested dictionary of all sections keyed by section name (each value a uci.section, additionally carrying `.index`)."
   }],
   ["get_first", {
     name: "get_first",
@@ -181,15 +185,24 @@ const cursorMethods = new Map<string, FunctionSignature>([
     parameters: [
       { name: "config", type: "string", optional: true }
     ],
+    // Shape (changes_to_uval / change_to_uval, uci.c): object keyed by config name → array of
+    // change records, each record an array `[cmd, section, name?, value?]`. `cmd` is one of
+    // "order"/"remove"/"rename"/"add"/"list-add"/"list-del"/"set". Elements are strings, EXCEPT
+    // a "order" record's value is an integer. So the precise value shape is
+    // `object<string, array<array<string|integer>>>`. The type system has no inline object
+    // value-type representation reachable from a return-type string (dict-value typing is
+    // inferred from assignments onto a symbol, not from module return strings), so the return
+    // stays `object | null` and the structure is documented here rather than modeled unsoundly.
     returnType: "object | null",
-    description: "Enumerate pending changes. Returns a dictionary of change record arrays, keyed by configuration name."
+    description: "Enumerate pending changes. Returns an object keyed by configuration name; each value is an array of change records. Each record is an array of the form [cmd, section, name?, value?] where cmd is one of \"order\", \"remove\", \"rename\", \"add\", \"list-add\", \"list-del\", \"set\". Record elements are strings, except an \"order\" record's value is an integer."
   }],
   ["foreach", {
     name: "foreach",
     parameters: [
       { name: "config", type: "string", optional: false },
       { name: "type", type: "string", optional: true },
-      { name: "callback", type: "function", optional: false }
+      // The callback is invoked once per section with a single section object argument.
+      { name: "callback", type: "function", optional: false, callbackParamTypes: ["object"] }
     ],
     returnType: "boolean | null",
     description: "Iterate configuration sections. The callback is invoked for each encountered section, optionally filtered by type."
@@ -286,6 +299,33 @@ export const uciCursorObjectType: ObjectTypeDefinition = {
     doc += `**Returns:** \`${sig.returnType}\``;
     return doc;
   },
+};
+
+// UCI section object shape, produced by `get_all` (and the `foreach` callback argument).
+// Verified against ucode/lib/uci.c `section_to_uval` (and `package_to_uval` for the .index key):
+//   - `.anonymous` (boolean) — whether the section is unnamed
+//   - `.type`      (string)  — the section type
+//   - `.name`      (string)  — the section name
+//   - `.index`     (integer) — 0-based position; present ONLY in the 1-arg package form
+//                              (section_to_uval is called with index -1 for a single section,
+//                              which omits the key; package_to_uval passes a real index)
+// Plus one key per option: a string for UCI_TYPE_STRING, an array<string> for UCI_TYPE_LIST
+// (option_to_uval). Option keys are config-defined and open-ended, so the type is openMembers:
+// an unknown member resolves to `unknown` (NOT UC5004) rather than being flagged.
+const sectionMetaKeys = new Map<string, PropertyDefinition>([
+  [".anonymous", { name: ".anonymous", type: "boolean", description: "True when the section is anonymous (unnamed)." }],
+  [".type", { name: ".type", type: "string", description: "The UCI section type (e.g. \"interface\", \"rule\")." }],
+  [".name", { name: ".name", type: "string", description: "The UCI section name. For anonymous sections this is the autogenerated identifier (e.g. \"cfg0392a5\")." }],
+  [".index", { name: ".index", type: "integer", description: "The 0-based position of the section within its configuration. Only present when the section is obtained via the 1-argument package form of get_all()." }],
+]);
+
+export const uciSectionObjectType: ObjectTypeDefinition = {
+  typeName: 'uci.section',
+  isPropertyBased: true,
+  methods: new Map<string, FunctionSignature>(),
+  properties: sectionMetaKeys,
+  // Option values are config-defined (string | array<string>); unknown members must not error.
+  openMembers: true,
 };
 
 export const uciTypeRegistry = {

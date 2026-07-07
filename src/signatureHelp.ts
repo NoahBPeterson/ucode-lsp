@@ -11,6 +11,8 @@ import { extractModuleType, SymbolType, type SymbolTable, type UcodeDataType } f
 import { isKnownModule, isKnownObjectType, MODULE_REGISTRIES, OBJECT_REGISTRIES } from './analysis/moduleDispatch';
 import type {
     AstNode, CallExpressionNode, MemberExpressionNode, IdentifierNode, LiteralNode,
+    ObjectExpressionNode, PropertyNode, FunctionExpressionNode, ArrowFunctionExpressionNode,
+    VariableDeclaratorNode,
 } from './ast/nodes';
 import { Option } from 'effect';
 
@@ -25,7 +27,13 @@ function findEnclosingCall(ast: AstNode | null | undefined, offset: number): { c
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
         if (node.type === 'CallExpression') {
             const call = node as CallExpressionNode;
-            if (call.callee && offset > call.callee.end && offset <= call.end) {
+            // An unterminated call (no closing `)`) has its `end` truncated to the
+            // last token seen; its argument region really runs to EOF, so accept any
+            // cursor past the callee for it (#85).
+            const inArgRegion = call.callee
+                && offset > call.callee.end
+                && (offset <= call.end || call.unclosed === true);
+            if (inArgRegion) {
                 // innermost wins (smallest span)
                 if (!best || (call.end - call.start) < (best.end - best.start)) best = call;
             }
@@ -175,12 +183,135 @@ export interface CalleeSignature {
  *  param list. Supplied by the server (which can parse the source file). */
 export type MemberParamResolver = (uri: string, fnStart: number) => CalleeParam[] | null;
 
+/** Build a CalleeParam[] from an object-literal method's function/arrow value. */
+function paramsFromFunctionNode(fn: FunctionExpressionNode | ArrowFunctionExpressionNode): CalleeParam[] {
+    const params: CalleeParam[] = (fn.params || []).map(p => ({ name: p.name, label: p.name, isRest: false }));
+    if (fn.restParam) params.push({ name: fn.restParam.name, label: '...' + fn.restParam.name, isRest: true });
+    return params;
+}
+
+/** Find `method` in an object literal's properties when its value is a function. */
+function objectLiteralMethodSignature(obj: ObjectExpressionNode, method: string, displayName: string): CalleeSignature | null {
+    for (const prop of obj.properties || []) {
+        if (prop.type !== 'Property') continue;
+        const p = prop as PropertyNode;
+        if (p.computed) continue;
+        const keyName = p.key?.type === 'Identifier' ? (p.key as IdentifierNode).name
+            : (p.key?.type === 'Literal' && typeof (p.key as LiteralNode).value === 'string') ? String((p.key as LiteralNode).value)
+            : undefined;
+        if (keyName !== method) continue;
+        const v = p.value;
+        if (v && (v.type === 'FunctionExpression' || v.type === 'ArrowFunctionExpression')) {
+            return { displayName, params: paramsFromFunctionNode(v as FunctionExpressionNode | ArrowFunctionExpressionNode) };
+        }
+        return null;
+    }
+    return null;
+}
+
+/** Param list of a function-valued property `methodName` on a plain LOCAL object
+ *  literal reachable from a receiver symbol's `initNode`
+ *  (`let o = { m: function(a, b){} }` → `o.m(…)`). Works without an ast/offset pair,
+ *  so callers that lack them (inlay hints) still resolve the method. */
+export function localObjectLiteralMethodParams(initNode: AstNode | undefined, methodName: string): CalleeParam[] | null {
+    if (!initNode || initNode.type !== 'ObjectExpression') return null;
+    for (const p of (initNode as ObjectExpressionNode).properties || []) {
+        if (!p || p.type !== 'Property' || (p as PropertyNode).computed) continue;
+        const key = (p as PropertyNode).key;
+        const keyName = key?.type === 'Identifier' ? (key as IdentifierNode).name
+            : key?.type === 'Literal' && typeof (key as LiteralNode).value === 'string' ? (key as LiteralNode).value as string
+            : null;
+        if (keyName !== methodName) continue;
+        const val = (p as PropertyNode).value;
+        if (val?.type === 'FunctionExpression' || val?.type === 'ArrowFunctionExpression') {
+            return paramsFromFunctionNode(val as FunctionExpressionNode | ArrowFunctionExpressionNode);
+        }
+        return null; // member exists but isn't a function
+    }
+    return null;
+}
+
+/** The object literal assigned to `let <name> = {…}` most recently before `offset`
+ *  (#83, local object-literal method calls resolved straight from the AST). */
+function findVarInitObjectLiteral(ast: AstNode | null | undefined, name: string, offset: number): ObjectExpressionNode | null {
+    let best: ObjectExpressionNode | null = null;
+    let bestStart = -1;
+    const visit = (node: AstNode | null | undefined): void => {
+        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        if (node.type === 'VariableDeclarator') {
+            const d = node as VariableDeclaratorNode;
+            if (d.id?.type === 'Identifier' && d.id.name === name
+                && d.init?.type === 'ObjectExpression'
+                && typeof d.id.start === 'number' && d.id.start <= offset && d.id.start > bestStart) {
+                best = d.init as ObjectExpressionNode;
+                bestStart = d.id.start;
+            }
+        }
+        for (const k of Object.keys(node)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = (node as unknown as Record<string, unknown>)[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
+            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode);
+        }
+    };
+    visit(ast);
+    return best;
+}
+
+/** The object literal whose method body most tightly contains `offset` — the
+ *  receiver of a `this.…` call (#84). */
+function findThisReceiverObject(ast: AstNode | null | undefined, offset: number): ObjectExpressionNode | null {
+    let best: ObjectExpressionNode | null = null;
+    let bestSpan = Infinity;
+    const visit = (node: AstNode | null | undefined): void => {
+        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+        if (node.type === 'ObjectExpression') {
+            const obj = node as ObjectExpressionNode;
+            for (const prop of obj.properties || []) {
+                if (prop.type !== 'Property') continue;
+                const v = (prop as PropertyNode).value;
+                if (v && (v.type === 'FunctionExpression' || v.type === 'ArrowFunctionExpression')
+                    && typeof v.start === 'number' && typeof v.end === 'number'
+                    && v.start <= offset && offset <= v.end) {
+                    const span = v.end - v.start;
+                    if (span < bestSpan) { bestSpan = span; best = obj; }
+                }
+            }
+        }
+        for (const k of Object.keys(node)) {
+            if (k === 'leadingJsDoc') continue;
+            const v = (node as unknown as Record<string, unknown>)[k];
+            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
+            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode);
+        }
+    };
+    visit(ast);
+    return best;
+}
+
 export function resolveCalleeParameters(
     callee: AstNode | null | undefined,
     symbolTable: SymbolTable | undefined,
     builtins: Map<string, string>,
     resolveMemberParams?: MemberParamResolver,
+    ast?: AstNode | null,
+    offset?: number,
 ): CalleeSignature | null {
+    // `this.method(…)` inside an object-literal method — resolve the sibling
+    // property's function params straight from the AST (#84).
+    if (callee?.type === 'MemberExpression'
+        && !(callee as MemberExpressionNode).computed
+        && (callee as MemberExpressionNode).property?.type === 'Identifier'
+        && (callee as MemberExpressionNode).object?.type === 'ThisExpression'
+        && ast && typeof offset === 'number') {
+        const method = ((callee as MemberExpressionNode).property as IdentifierNode).name;
+        const obj = findThisReceiverObject(ast, offset);
+        if (obj) {
+            const sig = objectLiteralMethodSignature(obj, method, `this.${method}`);
+            if (sig) return sig;
+        }
+        return null;
+    }
     if (callee?.type === 'MemberExpression'
         && !(callee as MemberExpressionNode).computed
         && (callee as MemberExpressionNode).property?.type === 'Identifier'
@@ -190,16 +321,30 @@ export function resolveCalleeParameters(
         const obj = mem.object as IdentifierNode;
         const objSym = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
         const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
-        if (!mt) {
-            // Not a module/object-registry receiver. It may be a factory-returned
-            // object (`let sh = create_sys(…); sh.exec(…)`) — resolve the method's
-            // params from its recorded cross-file definition location.
+        // Factory-object / namespace-import / local-object fallback: resolve the method's
+        // params from its recorded cross-file def location (#83 factory, #171 namespace
+        // import) or, failing that, straight from a local object literal's AST (#83).
+        const factoryFallback = (): CalleeSignature | null => {
             const loc = objSym?.propertyDefinitionLocations?.get?.(method);
             if (loc && resolveMemberParams) {
                 const params = resolveMemberParams(loc.uri, loc.start);
                 if (params) return { displayName: `${obj.name}.${method}`, params };
             }
+            if (ast && typeof offset === 'number') {
+                const objLit = findVarInitObjectLiteral(ast, obj.name, offset);
+                if (objLit) {
+                    const sig = objectLiteralMethodSignature(objLit, method, `${obj.name}.${method}`);
+                    if (sig) return sig;
+                }
+            }
+            // Plain local object literal without an ast/offset pair (inlay hints):
+            // the method's params come straight from the recorded initializer node.
+            const localParams = localObjectLiteralMethodParams(objSym?.initNode, method);
+            if (localParams) return { displayName: `${obj.name}.${method}`, params: localParams };
             return null;
+        };
+        if (!mt) {
+            return factoryFallback();
         }
         const tn = mt.moduleName;
         // `socket` names both a module and its handle object-type; a namespace-import receiver
@@ -209,11 +354,14 @@ export function resolveCalleeParameters(
             : isKnownObjectType(tn) ? OBJECT_REGISTRIES[tn].getMethod(method)
             : isKnownModule(tn) ? MODULE_REGISTRIES[tn].getFunction(method)
             : Option.none();
-        if (Option.isNone(sigOpt)) return null;
+        // A receiver typed as a ModuleType whose module isn't a known builtin (e.g. a
+        // namespace import of a USER file) — fall through to the factory/def-location
+        // resolver rather than giving up. (#171)
+        if (Option.isNone(sigOpt)) return factoryFallback();
         const sig = sigOpt.value;
         const res: CalleeSignature = {
             displayName: `${obj.name}.${method}`,
-            params: sig.parameters.map(p => ({ name: p.name, label: p.optional ? `${p.name}?` : p.name, isRest: false })),
+            params: sig.parameters.map(p => ({ name: p.name, label: p.isRest ? `...${p.name}` : (p.optional ? `${p.name}?` : p.name), isRest: !!p.isRest })),
         };
         if (sig.description) res.documentation = sig.description;
         return res;
@@ -245,7 +393,7 @@ export function resolveCalleeParameters(
             const sig = sigOpt.value;
             const res: CalleeSignature = {
                 displayName: name,
-                params: sig.parameters.map(p => ({ name: p.name, label: p.optional ? `${p.name}?` : p.name, isRest: false })),
+                params: sig.parameters.map(p => ({ name: p.name, label: p.isRest ? `...${p.name}` : (p.optional ? `${p.name}?` : p.name), isRest: !!p.isRest })),
             };
             if (sig.description) res.documentation = sig.description;
             return res;
@@ -310,7 +458,7 @@ export function provideSignatureHelp(
 ): SignatureHelp | null {
     const enclosing = findEnclosingCall(ast, offset);
     if (!enclosing) return null;
-    const sig = resolveCalleeParameters(enclosing.call.callee, symbolTable, builtins, resolveMemberParams);
+    const sig = resolveCalleeParameters(enclosing.call.callee, symbolTable, builtins, resolveMemberParams, ast, offset);
     if (!sig) return null;
     if (sig.overloadParams && sig.overloadParams.length > 1) {
         const arg0 = enclosing.call.arguments?.[0];

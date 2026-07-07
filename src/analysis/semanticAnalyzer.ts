@@ -12,6 +12,7 @@ import { type AstNode, type ProgramNode, type VariableDeclarationNode, type Vari
          type ExportNamedDeclarationNode, type ExportDefaultDeclarationNode, type ArrowFunctionExpressionNode,
          type SpreadElementNode, type TemplateLiteralNode, type SwitchStatementNode, type LiteralNode, type IfStatementNode, type ObjectExpressionNode, type ConditionalExpressionNode, type ExpressionStatementNode, type DeleteExpressionNode,
          type ForInStatementNode, type ForStatementNode, type WhileStatementNode,
+         type ArrayExpressionNode,
          type AstNodeKind } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, widenWithNull, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, type TypeCheckResult } from './types';
@@ -30,7 +31,7 @@ import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
 import { type UcodeTargetVersion, type VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, VERSION_GLOBAL_BUILTINS, PLATFORM_GATED_SYMBOLS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
-import { parseJsDocComment, resolveTypeExpression, parseImportTypeExpression, extractTypedef, type ParsedTypedef } from './jsdocParser';
+import { parseJsDocComment, resolveTypeExpression, resolveTypeExpressionDetailed, parseInlineObjectShape, parseImportTypeExpression, extractTypedef, type ParsedTypedef, type ParsedTypedefProperty } from './jsdocParser';
 import { KNOWN_HOST_GLOBALS, isHostEntryPointCallback } from './hostGlobals';
 import { THROWING_BUILTINS } from './throwingBuiltins';
 import { KNOWN_MODULES } from './moduleTypes';
@@ -39,6 +40,7 @@ import { collectScopeBindings, enclosingBindings, functionOwnBindings } from '..
 import { Either, Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, validateImport } from './moduleDispatch';
 import { NETIFD_DAEMON_ONLY_MEMBERS } from './netifdTypes';
+import { parseDisableDirectives, directiveCovers, type DisableDirective } from './disableDirectives';
 
 /** An AST node viewed as an open record, for dynamic traversal/field access. The base
  *  `AstNode` interface only enumerates `type`/`start`/`end`; the generic walkers read
@@ -111,6 +113,9 @@ export interface SemanticAnalysisResult {
    *  file's URI + the definition's offset range there + a coarse type. Powers go-to-definition
    *  and hover for those names (which have no in-file symbol). */
   loadfileGlobals?: Map<string, LoadfileGlobal>;
+  /** Names that become implicit globals in this file (bare `X = …` assignments in
+   *  non-strict mode). Powers hover for reads of those names from other functions. */
+  implicitGlobalNames?: Set<string>;
   /** In-file global definition sites, keyed by name: every `global.X = …` property span,
    *  every bare implicit-global assignment target, and every JSDoc `@global X` tag name.
    *  Powers go-to-definition for globals that have no declared symbol (scalars, @global). */
@@ -147,8 +152,10 @@ export class SemanticAnalyzer extends BaseVisitor {
     Object.entries(MODULE_REGISTRIES).map(([name, reg]) => [name, () => reg.getFunctionNames()])
   );
   private disabledLines: Set<number> = new Set(); // Track lines with disable comments
-  private disabledRanges: Array<{ start: number; end: number }> = []; // Track disabled multi-line ranges
   private linesWithSuppressedDiagnostics: Set<number> = new Set(); // Track lines where diagnostics were suppressed
+  // Parsed `// ucode-lsp disable[-next-line] [UC####...]` directives (ticket 08). Suppression now
+  // REMOVES diagnostics (in checkUnnecessaryDisableComments) rather than demoting their severity.
+  private disableDirectives: DisableDirective[] = [];
   private assignmentLeftDepth = 0;
   private fileResolver: FileResolver;
   private currentASTRoot: ProgramNode | null = null;
@@ -195,7 +202,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
   private truthinessDepth = 0; // Track when we're inside a truthiness context (if test, !, ternary test)
-  private callbackElementType: UcodeDataType | null = null; // Element type to pass to callback parameters (filter/map/sort)
+  private callbackElementType: UcodeDataType | null = null; // Type to pass to leading callback parameters (filter/map/sort/replace/uci.foreach)
+  private callbackParamCount = 1; // How many leading callback params receive callbackElementType (sort→2, replace→all)
   private typedefRegistry: Map<string, ParsedTypedef> = new Map(); // File-level @typedef definitions
   // File-level `@global [{type}] name` declarations: name → type string ('' if untyped).
   // Plus the built-in host-globals registry — both "explain" a name so a read isn't UC1001.
@@ -334,7 +342,6 @@ export class SemanticAnalyzer extends BaseVisitor {
     this.functionReturnPropertyTypes.clear();
     this.functionReturnPropertyLocations.clear();
     this.disabledLines.clear();
-    this.disabledRanges = [];
     this.linesWithSuppressedDiagnostics.clear();
     this.resolvedImports = new Set();
     this.pendingUndefinedRefs = [];
@@ -455,6 +462,10 @@ export class SemanticAnalyzer extends BaseVisitor {
       result.globalDefSites = this.globalDefSites;
     }
 
+    if (this.implicitGlobalNames.size > 0) {
+      result.implicitGlobalNames = this.implicitGlobalNames;
+    }
+
     if (this.isUhttpdHandler) {
       result.isUhttpdHandler = true;
     }
@@ -523,6 +534,11 @@ export class SemanticAnalyzer extends BaseVisitor {
     // `global.X = …` + bare implicit-global assignments) so bare `X(...)`/`X` here isn't a
     // false UC1002/UC1001. (Verified vs the interpreter: those leak; fn-decls/let/const don't.)
     this.collectLoadfileGlobals(node);
+    // `include("file.uc")` evaluates the target in a shared scope — its top-level implicit
+    // globals (bare `X = …` / `global.X = …`) leak into THIS file's scope, so a reference to
+    // one here isn't a false UC1001. Names only, typed `unknown` (no unsound RHS-shape merge).
+    // See docs/include-scope-resolution.md.
+    this.collectIncludeGlobals(node);
     // Known/declared host globals (built-in registry + JSDoc `@global`). Runs AFTER
     // collectGlobalPropertyNames (which clears the set) so the names survive; merges into
     // the same globalPropertyNames set the type checker shares below.
@@ -1577,7 +1593,9 @@ export class SemanticAnalyzer extends BaseVisitor {
           if (typeof v === 'string') return 'string';
           if (typeof v === 'boolean') return 'boolean';
           if (v === null) return 'null';
-          if (typeof v === 'number') return Number.isInteger(v) ? 'integer' : 'double';
+          // Exponent notation (`1e5`) is a double literal even though its value is
+          // integer-valued — honor the parser's literalType (ticket 115).
+          if (typeof v === 'number') return ((n as LiteralNode).literalType === 'double' || !Number.isInteger(v)) ? 'double' : 'integer';
           return 'unknown';
         }
         default: return 'unknown';
@@ -2279,6 +2297,65 @@ export class SemanticAnalyzer extends BaseVisitor {
     walk(node);
   }
 
+  /** `include("file.uc")` evaluates the target file in a shared scope, leaking its top-level
+   *  implicit globals (bare `X = …` / `global.X = …`) into THIS file's global scope — `let`/
+   *  `const`/`function` decls stay child-locals (verified vs the interpreter; see
+   *  docs/include-scope-resolution.md). Harvest those leaked names for every literal-path
+   *  include() so bare `X`/`X(...)` here isn't a false UC1001/UC1002. Declared typed `unknown`
+   *  (sound: the child RHS shape isn't merged). Non-literal paths are skipped silently. */
+  private collectIncludeGlobals(node: ProgramNode): void {
+    // Surface the include target's health at the callsite (mirrors the import-side
+    // taxonomy: missing file → UC3002 warning; parse-broken → UC3009 error, since its
+    // leaked-global list is unreliable and downstream UC1001s would be misleading).
+    const flagTarget = (rawPath: string, argStart: number, argEnd: number) => {
+      const status = this.fileResolver.getIncludeTargetStatus(rawPath, this.textDocument.uri);
+      if (status === 'not-found') {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.MODULE_NOT_FOUND,
+          `Cannot find include target '${rawPath}' (resolved relative to this file; at runtime include() raises if the file is absent)`,
+          argStart, argEnd,
+          DiagnosticSeverity.Warning
+        );
+      } else if (status === 'parse-error') {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.MODULE_PARSE_ERROR,
+          `Include target '${rawPath}' could not be parsed — it has syntax errors (include() would fail at runtime, and its leaked globals cannot be determined)`,
+          argStart, argEnd,
+          DiagnosticSeverity.Error
+        );
+      }
+    };
+    const merge = (rawPath: string) => {
+      for (const name of this.fileResolver.getIncludeGlobals(rawPath, this.textDocument.uri)) {
+        this.globalPropertyNames.add(name); // suppress UC1001/UC1002 for the leaked name
+        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType);
+        const sym = this.symbolTable.lookup(name);
+        if (sym) { sym.dataType = UcodeType.UNKNOWN as UcodeDataType; sym.used = true; }
+      }
+    };
+    const walk = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (n.type === 'CallExpression') {
+        const call = n as unknown as CallExpressionNode;
+        if (call.callee?.type === 'Identifier' && (call.callee as IdentifierNode).name === 'include'
+            && call.arguments?.length >= 1
+            && call.arguments[0]?.type === 'Literal'
+            && typeof (call.arguments[0] as LiteralNode).value === 'string') {
+          const arg = call.arguments[0] as LiteralNode;
+          flagTarget(arg.value as string, arg.start, arg.end);
+          merge(arg.value as string);
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (isAstNodeLike(v)) walk(v);
+      }
+    };
+    walk(node);
+  }
+
   /** The coarse scalar type of a literal RHS, or null when it isn't a statically-typed
    *  scalar (calls, identifiers, objects, …). Used by the scalar-global SSA gate. */
   private scalarCoarseType(n: AstNode | undefined): UcodeType | null {
@@ -2289,7 +2366,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (typeof v === 'string') return UcodeType.STRING;
       if (typeof v === 'boolean') return UcodeType.BOOLEAN;
       if (v === null) return UcodeType.NULL;
-      if (typeof v === 'number') return Number.isInteger(v) ? UcodeType.INTEGER : UcodeType.DOUBLE;
+      // Exponent notation (`1e5`) is a double literal (ticket 115).
+      if (typeof v === 'number') return ((n as LiteralNode).literalType === 'double' || !Number.isInteger(v)) ? UcodeType.DOUBLE : UcodeType.INTEGER;
       return null;
     }
     if (n.type === 'UnaryExpression') {
@@ -2485,6 +2563,9 @@ export class SemanticAnalyzer extends BaseVisitor {
               dataType = UcodeType.REGEX as UcodeDataType;
             } else if (typeof literal.value === 'string') {
               dataType = UcodeType.STRING as UcodeDataType;
+            } else if (literal.literalType === 'double') {
+              // Exponent notation (`1e5`) is a double literal even when integer-valued (ticket 115).
+              dataType = UcodeType.DOUBLE as UcodeDataType;
             } else if (typeof literal.value === 'number') {
               // Check if it's an integer or double
               dataType = Number.isInteger(literal.value) ? UcodeType.INTEGER as UcodeDataType : UcodeType.DOUBLE as UcodeDataType;
@@ -2647,14 +2728,18 @@ export class SemanticAnalyzer extends BaseVisitor {
         const shadowedSymbol = this.symbolTable.lookup(name);
         
         if (shadowedSymbol && shadowedSymbol.type === SymbolType.BUILTIN) {
-          // Shadowing builtin function - show warning but allow it
-          this.addDiagnosticErrorCode(
-            UcodeErrorCode.SHADOWING_BUILTIN,
-            `Variable '${name}' shadows builtin function '${name}()'`,
-            node.id.start,
-            node.id.end,
-            DiagnosticSeverity.Warning,
-          );
+          // Shadowing builtin function - show warning but allow it. Suppress the warning
+          // for idiomatic everyday names (index/type/length/…) where the shadow is legal
+          // and almost always intentional, to cut noise (finding #12).
+          if (!SemanticAnalyzer.IDIOMATIC_SHADOW_NAMES.has(name)) {
+            this.addDiagnosticErrorCode(
+              UcodeErrorCode.SHADOWING_BUILTIN,
+              `Variable '${name}' shadows builtin function '${name}()'`,
+              node.id.start,
+              node.id.end,
+              DiagnosticSeverity.Warning,
+            );
+          }
         } else if (shadowedSymbol && this.options.enableShadowingWarnings) {
           // Shadowing variable/function from outer scope - show warning
           this.addDiagnosticErrorCode(
@@ -2670,6 +2755,12 @@ export class SemanticAnalyzer extends BaseVisitor {
         this.symbolTable.declare(name, symbolType, dataType, node.id, node.init || undefined);
 
         const declaredSymbol = this.symbolTable.lookup(name);
+        // If the initializer had a parse error (`let x = (1 +;`), the declaration is
+        // already broken — don't pile a misleading "declared but never used" (UC1006)
+        // on top of the real syntax error. Treat the binding as used to suppress it.
+        if (declaredSymbol && node.initHadParseError) {
+          declaredSymbol.used = true;
+        }
         if (declaredSymbol && kind === 'const') {
           // Mark const bindings so a later assignment/increment is flagged (UC1010).
           declaredSymbol.isConstant = true;
@@ -2708,7 +2799,16 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Process initializer
       if (node.init) {
+        // Attribute a function-valued initializer to its variable name so the arrow/
+        // function-expression visitor can emit the UC7003 "add JSDoc" hint (mirrors the
+        // AssignmentExpression and object-property paths). `let f = (x) => …` / `let f =
+        // function(x){…}` otherwise never reached the hint (ticket 94).
+        const initType = node.init.type;
+        if (initType === 'FunctionExpression' || initType === 'ArrowFunctionExpression') {
+          this.pendingFunctionExprName = name;
+        }
         this.visit(node.init);
+        this.pendingFunctionExprName = null;
 
         // Type inference if type checking is enabled
         if (this.options.enableTypeChecking) {
@@ -2759,9 +2859,13 @@ export class SemanticAnalyzer extends BaseVisitor {
             if (fullType !== undefined && fullType !== null && fullType !== UcodeType.UNKNOWN) {
               sym.dataType = fullType;
               // For module object types (fs.file, io.handle, uci.cursor, etc.),
-              // force global declaration so method resolution works across scopes
+              // force global declaration so method resolution works across scopes.
+              // Guard: only when this declaration is genuinely at global scope. A
+              // function-local module-typed var must NOT pollute global scope — a
+              // same-named local in an unrelated function would otherwise alias
+              // through the global entry (false UC5004 leak, ticket 05).
               const mt = extractModuleType(fullType);
-              if (mt && isKnownObjectType(mt.moduleName)) {
+              if (mt && isKnownObjectType(mt.moduleName) && this.symbolTable.getCurrentScope() === 0) {
                 this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, fullType);
               }
             }
@@ -2860,7 +2964,9 @@ export class SemanticAnalyzer extends BaseVisitor {
           const sym = this.symbolTable.lookup(name);
           if (sym) {
             const propTypes = this.inferObjectLiteralPropertyTypes(node.init as ObjectExpressionNode);
-            if (propTypes) sym.propertyTypes = propTypes;
+            if (propTypes) {
+              sym.propertyTypes = propTypes;
+            }
             // Dictionary value-shape inference for an EMPTY object literal used as
             // a string-keyed map (`let m = {}; … m[k] = {…}`). Populates
             // sym.valuePropertyTypes so `m[k]` / `let v = m[k]` resolve to the
@@ -2870,6 +2976,11 @@ export class SemanticAnalyzer extends BaseVisitor {
               const scopeRoot = this.currentFunctionNode ?? this.currentASTRoot;
               if (scopeRoot) this.inferMapValueShape(sym, scopeRoot as AstNode);
             }
+            // One-level-deeper shapes so a two-hop `a.b.c` on a same-file local object
+            // literal resolves (typeChecker.checkMemberExpression reads nestedPropertyTypes;
+            // previously only cross-file imports populated it). (#173)
+            const nested = this.inferObjectLiteralNestedPropertyTypes(node.init as ObjectExpressionNode);
+            if (nested) sym.nestedPropertyTypes = nested;
             // The whole init was visited above (line ~877), so every function property's
             // return type is stamped — record them so `obj.method()` resolves.
             const fnReturns = this.inferObjectLiteralFunctionReturnTypes(node.init as ObjectExpressionNode);
@@ -2881,10 +2992,97 @@ export class SemanticAnalyzer extends BaseVisitor {
             }
           }
         }
+        // Case 1b: `let result = opts || {}` / `cond ? a : b` / `x ?? y` — union the
+        // property shapes of the reachable operands so member completion works on the
+        // result (plain object-literal shapes live only in symbol.propertyTypes). The
+        // parser emits BinaryExpression (not LogicalExpression) for `||`/`??`/`&&`. (#174)
+        else if (node.init.type === 'ConditionalExpression'
+          || (node.init.type === 'BinaryExpression'
+              && ['||', '??', '&&'].includes((node.init as BinaryExpressionNode).operator))) {
+          const sym = this.symbolTable.lookup(name);
+          // Only when EVERY reachable branch is object-like — a mixed `obj|array`
+          // result must keep its union so the "possibly array" member-access warning
+          // still fires (don't mask it by stamping an object shape). (#174)
+          if (sym && (!sym.propertyTypes || sym.propertyTypes.size === 0) && this.isObjectLikeInit(node.init)) {
+            const merged = this.resolvePropertyTypesFromInitExpr(node.init);
+            if (merged && merged.size > 0) sym.propertyTypes = merged;
+          }
+        }
       }
     } else {
       super.visitVariableDeclarator(node);
     }
+  }
+
+  /** True only when EVERY reachable branch of a `||`/`??`/`&&`/ternary initializer is
+   *  object-like (an object literal, or an identifier with an object type/shape). A
+   *  mixed object|array result returns false so its union survives. (#174) */
+  private isObjectLikeInit(expr: AstNode): boolean {
+    switch (expr.type) {
+      case 'ObjectExpression':
+        return true;
+      case 'Identifier': {
+        const sym = this.symbolTable.lookup((expr as IdentifierNode).name);
+        if (!sym) return false;
+        return dataTypeToBase(sym.dataType) === UcodeType.OBJECT
+          || (!!sym.propertyTypes && sym.propertyTypes.size > 0);
+      }
+      case 'BinaryExpression': {
+        const be = expr as BinaryExpressionNode;
+        if (be.operator === '||' || be.operator === '??' || be.operator === '&&') {
+          return this.isObjectLikeInit(be.left) && this.isObjectLikeInit(be.right);
+        }
+        return false;
+      }
+      case 'ConditionalExpression': {
+        const ce = expr as ConditionalExpressionNode;
+        return this.isObjectLikeInit(ce.consequent) && this.isObjectLikeInit(ce.alternate);
+      }
+      default:
+        return false;
+    }
+  }
+
+  /** Property-type map for a variable initializer, unioning across `||`/`??`/`&&`
+   *  operands and ternary branches (each of which may be an object literal or an
+   *  identifier with a known shape). (#174) */
+  private resolvePropertyTypesFromInitExpr(expr: AstNode): Map<string, UcodeDataType> | null {
+    switch (expr.type) {
+      case 'ObjectExpression':
+        return this.inferObjectLiteralPropertyTypes(expr as ObjectExpressionNode);
+      case 'Identifier': {
+        const sym = this.symbolTable.lookup((expr as IdentifierNode).name);
+        return sym?.propertyTypes && sym.propertyTypes.size > 0 ? new Map(sym.propertyTypes) : null;
+      }
+      case 'BinaryExpression': {
+        const be = expr as BinaryExpressionNode;
+        if (be.operator === '||' || be.operator === '??' || be.operator === '&&') {
+          return this.mergePropertyTypeMaps(
+            this.resolvePropertyTypesFromInitExpr(be.left),
+            this.resolvePropertyTypesFromInitExpr(be.right));
+        }
+        return null;
+      }
+      case 'ConditionalExpression': {
+        const ce = expr as ConditionalExpressionNode;
+        return this.mergePropertyTypeMaps(
+          this.resolvePropertyTypesFromInitExpr(ce.consequent),
+          this.resolvePropertyTypesFromInitExpr(ce.alternate));
+      }
+      default:
+        return null;
+    }
+  }
+
+  /** Union two property-type maps (first-writer wins on key conflicts). (#174) */
+  private mergePropertyTypeMaps(
+    a: Map<string, UcodeDataType> | null,
+    b: Map<string, UcodeDataType> | null,
+  ): Map<string, UcodeDataType> | null {
+    if (!a && !b) return null;
+    const out = new Map<string, UcodeDataType>(a ?? []);
+    if (b) for (const [k, t] of b) { if (!out.has(k)) out.set(k, t); }
+    return out.size > 0 ? out : null;
   }
        
   override visitImportDeclaration(node: ImportDeclarationNode): void {
@@ -3115,6 +3313,15 @@ export class SemanticAnalyzer extends BaseVisitor {
             if (nsInfo.functionReturnTypes.size > 0) {
               symbol.propertyFunctionReturnTypes = nsInfo.functionReturnTypes;
             }
+            // Def locations of exported functions so `ns.fn(` signature help resolves
+            // the function's params via the cross-file member-param resolver. (#171)
+            if (nsInfo.defLocations.size > 0 && !symbol.propertyDefinitionLocations) {
+              const locs = new Map<string, { uri: string; start: number; end: number }>();
+              for (const [fn, loc] of nsInfo.defLocations) {
+                locs.set(fn, { uri: effectiveUri, start: loc.start, end: loc.end });
+              }
+              symbol.propertyDefinitionLocations = locs;
+            }
           }
         }
 
@@ -3123,6 +3330,12 @@ export class SemanticAnalyzer extends BaseVisitor {
           const exportInfo = this.fileResolver.getDefaultExportPropertyTypes(effectiveUri);
           if (exportInfo) {
             symbol.propertyTypes = exportInfo.propertyTypes;
+            // A provably-closed shape (an inline `export default { … }` literal — no
+            // name to mutate later) lets checkClosedShapeMember flag unknown members
+            // (`D.nope`). Mirrors the JSDoc import() path (see ~line 3465/3658).
+            if (exportInfo.closedShape === true) {
+              symbol.closedPropertyShape = true;
+            }
             if (exportInfo.nestedPropertyTypes) {
               symbol.nestedPropertyTypes = exportInfo.nestedPropertyTypes;
             }
@@ -3229,6 +3442,53 @@ export class SemanticAnalyzer extends BaseVisitor {
       // the importer's diagnostics when the export is added later.
       if (resolvedUri.startsWith('file://')) this.resolvedImports.add(resolvedUri);
 
+      // Self-import: the file imports from itself. Its own exports are already in
+      // scope, so a per-name check would misfire (a locally-declared export draws a
+      // confusing UC3001 "already declared"). Report the self-import and stop —
+      // don't re-declare the specifier over the local binding.
+      if (resolvedUri === this.textDocument.uri) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.SELF_IMPORT,
+          `File imports from itself ('${modulePath}') — its own declarations are already in scope`,
+          sourceNode.start,
+          sourceNode.end,
+          DiagnosticSeverity.Warning
+        );
+        return;
+      }
+
+      // The dependency itself fails to parse: its export list (from the partial AST
+      // the tolerant parser emits) is unreliable. Report the parse failure once on
+      // the import path instead of a misleading per-name "does not export", and
+      // declare the specifiers anyway so use sites don't cascade "Undefined …".
+      if (this.fileResolver.moduleHasParseErrors(resolvedUri)) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.MODULE_PARSE_ERROR,
+          `Module '${modulePath}' could not be parsed — it has syntax errors`,
+          sourceNode.start,
+          sourceNode.end,
+          DiagnosticSeverity.Error
+        );
+        this.processImportSpecifier(specifier, modulePath, false, resolvedUri);
+        return;
+      }
+
+      // Circular import: this import edge participates in a cycle that leads back to
+      // this file (A→B→A). A DAG diamond re-converges without a back-edge, so it is
+      // NOT reported. Warn on the import path (ucode can resolve cycles at runtime,
+      // but they're a design smell and an init-order hazard) and keep processing.
+      const cycle = this.fileResolver.findImportCycle(this.textDocument.uri, resolvedUri);
+      if (cycle) {
+        const cyclePath = cycle.map(u => u.split('/').pop() || u).join(' -> ');
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.CIRCULAR_DEPENDENCY,
+          `Circular import detected: ${cyclePath}`,
+          sourceNode.start,
+          sourceNode.end,
+          DiagnosticSeverity.Warning
+        );
+      }
+
       const moduleExports = this.fileResolver.getModuleExports(resolvedUri);
 
       if (moduleExports && specifier.type === 'ImportSpecifier') {
@@ -3301,7 +3561,8 @@ export class SemanticAnalyzer extends BaseVisitor {
   private resolveJsDocDeclaredType(typeExpr: string, jsDocNode: JsDocCommentNode, tagLabel: string): UcodeDataType | null {
     const resolved = resolveTypeExpression(typeExpr);
     if (resolved !== null) return resolved;
-    if (this.typedefRegistry.get(typeExpr)) return UcodeType.OBJECT as UcodeDataType;
+    const typedef = this.typedefRegistry.get(typeExpr);
+    if (typedef) return this.typedefToParamInfo(typedef).type;
     this.addDiagnosticErrorCode(
       UcodeErrorCode.JSDOC_UNKNOWN_TYPE,
       `Unknown type '${typeExpr}' in @${tagLabel} annotation`,
@@ -3407,6 +3668,89 @@ export class SemanticAnalyzer extends BaseVisitor {
     return inferredReturnType; // keep the body type; don't poison call sites with the unsound annotation
   }
 
+  /**
+   * Convert a registered @typedef into the type + property shape used to declare a
+   * parameter symbol. Handles: object typedefs (a @property list — the closed shape),
+   * alias typedefs (`@typedef {string|integer} ID` / `@typedef {Point} Coord` — resolve the
+   * base type, following typedef→typedef aliases), and inline object base types
+   * (`@typedef {{x: integer}} Point`). `seen` guards against alias cycles.
+   */
+  private typedefToParamInfo(
+    typedef: ParsedTypedef,
+    seen: Set<string> = new Set()
+  ): {
+    type: UcodeDataType;
+    propertyTypes?: Map<string, UcodeDataType> | undefined;
+    nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>> | undefined;
+    closedPropertyShape?: boolean | undefined;
+  } {
+    if (seen.has(typedef.name)) return { type: UcodeType.OBJECT as UcodeDataType };
+    seen.add(typedef.name);
+
+    // Alias typedef: no @property list → resolve the base type.
+    if (typedef.properties.size === 0) {
+      const base = typedef.baseType.trim();
+      const shape = parseInlineObjectShape(base);
+      if (shape) {
+        return {
+          type: UcodeType.OBJECT as UcodeDataType,
+          propertyTypes: shape.size > 0 ? shape : undefined,
+          closedPropertyShape: shape.size > 0 ? true : undefined,
+        };
+      }
+      const resolved = resolveTypeExpression(base);
+      // A concrete alias (primitive/union/array/module) is used directly; a bare `object`
+      // falls through so a typedef-name base can be looked up below.
+      if (resolved !== null && resolved !== (UcodeType.OBJECT as UcodeDataType)) {
+        return { type: resolved };
+      }
+      const aliased = this.typedefRegistry.get(base);
+      if (aliased) return this.typedefToParamInfo(aliased, seen);
+      return { type: resolved ?? (UcodeType.OBJECT as UcodeDataType) };
+    }
+
+    // Object typedef with an explicit @property shape.
+    const propertyTypes = new Map<string, UcodeDataType>();
+    const nestedPropertyTypes = new Map<string, Map<string, UcodeDataType>>();
+    for (const [name, prop] of typedef.properties) {
+      if (prop.children && prop.children.size > 0) {
+        // Dotted `pos.x`/`pos.y` → `pos` is an object whose members are the children.
+        propertyTypes.set(name, UcodeType.OBJECT as UcodeDataType);
+        const nested = new Map<string, UcodeDataType>();
+        for (const [cname, cprop] of prop.children) nested.set(cname, this.resolveTypedefPropType(cprop, seen));
+        nestedPropertyTypes.set(name, nested);
+        continue;
+      }
+      // A property whose type names another @typedef: carry that typedef's shape nested.
+      const ref = prop.type === null ? this.typedefRegistry.get(prop.typeExpression.trim()) : undefined;
+      if (ref) {
+        const refInfo = this.typedefToParamInfo(ref, seen);
+        propertyTypes.set(name, prop.optional ? widenWithNull(refInfo.type) : refInfo.type);
+        if (refInfo.propertyTypes && refInfo.propertyTypes.size > 0) nestedPropertyTypes.set(name, refInfo.propertyTypes);
+        continue;
+      }
+      propertyTypes.set(name, this.resolveTypedefPropType(prop, seen));
+    }
+    return {
+      type: UcodeType.OBJECT as UcodeDataType,
+      propertyTypes,
+      nestedPropertyTypes: nestedPropertyTypes.size > 0 ? nestedPropertyTypes : undefined,
+      closedPropertyShape: true,
+    };
+  }
+
+  /** Resolve a single @typedef leaf property's declared type (following a typedef-name
+   *  reference against the registry) and widen with null when the property is optional. */
+  private resolveTypedefPropType(prop: ParsedTypedefProperty, seen: Set<string>): UcodeDataType {
+    let t: UcodeDataType | null = prop.type;
+    if (t === null) {
+      const ref = this.typedefRegistry.get(prop.typeExpression.trim());
+      if (ref) t = this.typedefToParamInfo(ref, seen).type;
+    }
+    if (t === null) t = UcodeType.UNKNOWN as UcodeDataType;
+    return prop.optional ? widenWithNull(t) : t;
+  }
+
   private applyJsDocToParams(
     jsDocNode: JsDocCommentNode | undefined,
     params: IdentifierNode[]
@@ -3433,9 +3777,35 @@ export class SemanticAnalyzer extends BaseVisitor {
       closedPropertyShape?: boolean | undefined;
       optional?: boolean | undefined;
     }
+    // A parameter named by two @param tags: the last type silently wins. Flag it (UC7006).
+    const seenParamNames = new Set<string>();
+    for (const tag of paramTags) {
+      if (!tag.name) continue;
+      if (seenParamNames.has(tag.name)) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.JSDOC_DUPLICATE_PARAM,
+          `Duplicate @param '${tag.name}'; the last type annotation wins`,
+          jsDocNode.start, jsDocNode.end - 1,
+          DiagnosticSeverity.Warning
+        );
+      }
+      seenParamNames.add(tag.name);
+    }
+
     const jsdocParams = new Map<string, JsDocParamInfo>();
     for (const tag of paramTags) {
       if (!tag.name) continue;
+
+      // `@param string x` — braces were forgotten. Flag once (UC7008), then treat the token
+      // as the intended type (so we don't ALSO emit a spurious UC7001+UC7002 pair).
+      if (tag.missingBraces) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.JSDOC_MISSING_BRACES,
+          `@param type must be wrapped in braces: {${tag.typeExpression}}`,
+          jsDocNode.start, jsDocNode.end - 1,
+          DiagnosticSeverity.Warning
+        );
+      }
 
       // Try import() type expression first: @param {import('pkg').property} name
       const importExpr = parseImportTypeExpression(tag.typeExpression);
@@ -3448,34 +3818,56 @@ export class SemanticAnalyzer extends BaseVisitor {
         // Fall through to unknown type diagnostic
       }
 
-      const resolved = resolveTypeExpression(tag.typeExpression);
-      if (resolved === null) {
-        // Check typedef registry before emitting UC7001
-        const typedef = this.typedefRegistry.get(tag.typeExpression);
-        if (typedef) {
-          const propTypes = new Map<string, UcodeDataType>();
-          for (const [propName, propInfo] of typedef.properties) {
-            propTypes.set(propName, propInfo.type);
-          }
-          jsdocParams.set(tag.name, {
-            type: UcodeType.OBJECT as UcodeDataType,
-            description: tag.description,
-            propertyTypes: propTypes.size > 0 ? propTypes : undefined,
-            // A @typedef's @property list is the declared, complete shape.
-            closedPropertyShape: propTypes.size > 0 ? true : undefined,
-            optional: tag.optional,
-          });
-          continue;
-        }
-        this.addDiagnosticErrorCode(
-          UcodeErrorCode.JSDOC_UNKNOWN_TYPE,
-          `Unknown type '${tag.typeExpression}' in @param annotation`,
-          jsDocNode.start, jsDocNode.end - 1,
-          DiagnosticSeverity.Warning
-        );
+      // Inline object shape: @param {{a: string, b: integer}} x
+      const inlineShape = parseInlineObjectShape(tag.typeExpression);
+      if (inlineShape) {
+        jsdocParams.set(tag.name, {
+          type: UcodeType.OBJECT as UcodeDataType,
+          description: tag.description,
+          propertyTypes: inlineShape.size > 0 ? inlineShape : undefined,
+          closedPropertyShape: inlineShape.size > 0 ? true : undefined,
+          optional: tag.optional,
+        });
         continue;
       }
-      jsdocParams.set(tag.name, { type: resolved, description: tag.description, optional: tag.optional });
+
+      // Resolve, keeping the resolvable part of a union even if a member is unknown.
+      const detail = resolveTypeExpressionDetailed(tag.typeExpression);
+      if (detail.type !== null) {
+        if (detail.unresolved.length > 0) {
+          // A union like `string|Bogus`: keep `string`, but still warn about the unknown arm.
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.JSDOC_UNKNOWN_TYPE,
+            `Unknown type '${tag.typeExpression}' in @param annotation`,
+            jsDocNode.start, jsDocNode.end - 1,
+            DiagnosticSeverity.Warning
+          );
+        }
+        jsdocParams.set(tag.name, { type: detail.type, description: tag.description, optional: tag.optional });
+        continue;
+      }
+
+      // Unresolved standalone type — a @typedef name resolves via the registry (no warning).
+      const typedef = this.typedefRegistry.get(tag.typeExpression);
+      if (typedef) {
+        const info = this.typedefToParamInfo(typedef);
+        jsdocParams.set(tag.name, {
+          type: info.type,
+          description: tag.description,
+          propertyTypes: info.propertyTypes,
+          nestedPropertyTypes: info.nestedPropertyTypes,
+          closedPropertyShape: info.closedPropertyShape,
+          optional: tag.optional,
+        });
+        continue;
+      }
+
+      this.addDiagnosticErrorCode(
+        UcodeErrorCode.JSDOC_UNKNOWN_TYPE,
+        `Unknown type '${tag.typeExpression}' in @param annotation`,
+        jsDocNode.start, jsDocNode.end - 1,
+        DiagnosticSeverity.Warning
+      );
     }
 
     // Check for @param names that don't match any actual parameter
@@ -3525,10 +3917,22 @@ export class SemanticAnalyzer extends BaseVisitor {
     name: string,
     params: IdentifierNode[],
     rangeStart: number,
-    rangeEnd: number
+    rangeEnd: number,
+    jsDocValue?: string
   ): void {
     if (!this.strictMode) return;
+    // With a partial JSDoc, only params with NO @param tag at all count as missing —
+    // a documented-but-unresolvable type is UC7001's complaint, not UC7003's.
+    let documented: Set<string> | null = null;
+    if (jsDocValue) {
+      documented = new Set(
+        parseJsDocComment(jsDocValue).tags
+          .filter(t => t.tag === 'param' && t.name)
+          .map(t => t.name as string)
+      );
+    }
     const unknownParams = params.filter(p => {
+      if (documented && documented.has(p.name)) return false;
       const sym = this.symbolTable.lookup(p.name);
       return !sym || sym.dataType === UcodeType.UNKNOWN;
     });
@@ -3724,8 +4128,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.applyJsDocToParams(node.leadingJsDoc, node.params);
 
       // Emit diagnostic for unknown-typed params (strict mode only)
-      if (!node.leadingJsDoc && node.params.length > 0) {
-        this.emitMissingParamAnnotations(name, node.params, node.id.start, node.id.end);
+      if (node.params.length > 0) {
+        this.emitMissingParamAnnotations(name, node.params, node.id.start, node.id.end, node.leadingJsDoc?.value);
       }
 
       // Declare rest parameter if present (as array type)
@@ -4015,14 +4419,23 @@ export class SemanticAnalyzer extends BaseVisitor {
         this.symbolTable.declare(node.id.name, SymbolType.FUNCTION, UcodeType.UNKNOWN as UcodeDataType, node.id);
       }
 
-      // Declare parameters in the function scope (with JSDoc type annotations if present)
-      this.applyJsDocToParams(node.leadingJsDoc, node.params);
+      // Declare parameters in the function scope. JSDoc annotations win; otherwise, if
+      // this function expression is a typed callback argument (filter/map/sort/replace/
+      // uci.foreach), infer its params from the enclosing call context; else UNKNOWN.
+      if (!node.leadingJsDoc && this.callbackElementType) {
+        for (let i = 0; i < node.params.length; i++) {
+          const param = node.params[i]!;
+          this.symbolTable.declare(param.name, SymbolType.PARAMETER, this.callbackParamTypeAt(i), param);
+        }
+      } else {
+        this.applyJsDocToParams(node.leadingJsDoc, node.params);
+      }
 
       // UC7003 for method-style function expressions (those with a derivable
       // name from their assignment target). Anonymous callbacks have no name and
       // are skipped, so `map(x => …)` etc. don't get noisy hints.
-      if (exprName && !node.leadingJsDoc && node.params.length > 0) {
-        this.emitMissingParamAnnotations(exprName, node.params, node.params[0]!.start, node.params[node.params.length - 1]!.end);
+      if (exprName && node.params.length > 0) {
+        this.emitMissingParamAnnotations(exprName, node.params, node.params[0]!.start, node.params[node.params.length - 1]!.end, node.leadingJsDoc?.value);
       }
 
       // Declare rest parameter if present (as array type)
@@ -4120,18 +4533,18 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (node.leadingJsDoc) {
         this.applyJsDocToParams(node.leadingJsDoc, node.params);
       } else {
-        // For callback parameters (filter/map/sort), infer first param type from array element type
+        // For callback parameters (filter/map/sort/replace/uci.foreach), infer param types
+        // from the enclosing call context.
         for (let i = 0; i < node.params.length; i++) {
           const param = node.params[i]!;
-          const paramType = (i === 0 && this.callbackElementType) ? this.callbackElementType : UcodeType.UNKNOWN as UcodeDataType;
-          this.symbolTable.declare(param.name, SymbolType.PARAMETER, paramType, param);
+          this.symbolTable.declare(param.name, SymbolType.PARAMETER, this.callbackParamTypeAt(i), param);
         }
       }
 
       // UC7003 only for arrows with a derivable name (assigned to a member/var),
       // never for bare callbacks.
-      if (exprName && !node.leadingJsDoc && node.params.length > 0) {
-        this.emitMissingParamAnnotations(exprName, node.params, node.params[0]!.start, node.params[node.params.length - 1]!.end);
+      if (exprName && node.params.length > 0) {
+        this.emitMissingParamAnnotations(exprName, node.params, node.params[0]!.start, node.params[node.params.length - 1]!.end, node.leadingJsDoc?.value);
       }
 
       // Declare rest parameter if present (as array type)
@@ -4434,7 +4847,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Look up the object symbol
     const symbol = this.symbolTable.lookup(objectName);
     if (!symbol) {
-      if (this.isKnownModuleName(objectName)) {
+      // A provable implicit global (bare `fs = ctx.fs;` in some function) shadows the
+      // module namespace: `fs` here is a local-ish variable holding a value, NOT an
+      // unimported module. Firing UC3006 ("import fs") would be self-contradictory
+      // (we already accept the assignment / suppress UC1001) and unactionable.
+      // See docs/implicit-global-type-inference.md Finding 1.
+      if (this.isKnownModuleName(objectName) && !this.implicitGlobalNames.has(objectName)) {
         this.addDiagnosticErrorCode(
           UcodeErrorCode.MODULE_NOT_IMPORTED,
           `Cannot use '${objectName}' module without importing it first. Add: import { ${methodName} } from '${objectName}'; or import * as ${objectName} from '${objectName}';`,
@@ -4761,19 +5179,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     this.visit(node.callee);
     this.processingFunctionCallCallee = false;
 
-    // For filter/map/sort, infer callback parameter types from array element type
+    // Infer callback parameter types from the enclosing call (filter/map/sort element
+    // type, replace's string match/group params, uci cursor foreach's section object).
     const savedCallbackElementType = this.callbackElementType;
-    if (node.callee.type === 'Identifier' &&
-        node.arguments.length >= 2) {
-      const funcName = (node.callee as IdentifierNode).name;
-      if (funcName === 'filter' || funcName === 'map' || funcName === 'sort') {
-        const arrArg = node.arguments[0]!;
-        const arrType = this.resolveNodeFullType(arrArg);
-        if (arrType && isArrayType(arrType)) {
-          this.callbackElementType = getArrayElementType(arrType);
-        }
-      }
-    }
+    const savedCallbackParamCount = this.callbackParamCount;
+    this.setCallbackParamContext(node);
 
     // Visit arguments normally
     for (const arg of node.arguments) {
@@ -4782,8 +5192,86 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
     // Restore callback element type
     this.callbackElementType = savedCallbackElementType;
+    this.callbackParamCount = savedCallbackParamCount;
 
     // DON'T call super.visitCallExpression() to avoid double traversal
+  }
+
+  /** Set callbackElementType / callbackParamCount for a call whose function argument is a
+   *  callback with inferable parameter types: filter/map (element type on param 0), sort
+   *  (element type on params 0 and 1), replace (string on every match/group param), and
+   *  module-object method callbacks carrying `callbackParamTypes` metadata (uci cursor
+   *  foreach). Only overwrites the context when the call matches — an unmatched call keeps
+   *  the caller-saved values, preserving the existing save/restore nesting semantics. */
+  private setCallbackParamContext(node: CallExpressionNode): void {
+    if (node.arguments.length < 2) return;
+
+    if (node.callee.type === 'Identifier') {
+      const funcName = (node.callee as IdentifierNode).name;
+      if (funcName === 'filter' || funcName === 'map' || funcName === 'sort') {
+        const arrType = this.resolveNodeFullType(node.arguments[0]!);
+        if (arrType && isArrayType(arrType)) {
+          this.callbackElementType = getArrayElementType(arrType);
+          // sort's comparator receives TWO elements; filter/map receive one.
+          this.callbackParamCount = funcName === 'sort' ? 2 : 1;
+        }
+      } else if (funcName === 'replace' && node.arguments.length >= 3) {
+        // replace(subject, pattern, replacement-fn): the callback is invoked with the full
+        // match followed by capture groups — all strings. Capture-group count is not known
+        // statically, so type every callback parameter as string.
+        this.callbackElementType = UcodeType.STRING as UcodeDataType;
+        this.callbackParamCount = Number.MAX_SAFE_INTEGER;
+      }
+      return;
+    }
+
+    if (node.callee.type === 'MemberExpression') {
+      const cb = this.resolveMemberCallbackParamTypes(node.callee as MemberExpressionNode);
+      if (cb) {
+        this.callbackElementType = cb.type;
+        this.callbackParamCount = cb.count;
+      }
+    }
+  }
+
+  /** Resolve a module-object method's callback parameter typing from its signature's
+   *  `callbackParamTypes` metadata (e.g. `cursor().foreach(cfg, type, cb)` → cb's sole
+   *  param is a section object). Returns the leading param type + how many leading params
+   *  it covers, or null when the call isn't a known typed-callback method. */
+  private resolveMemberCallbackParamTypes(memberNode: MemberExpressionNode): { type: UcodeDataType; count: number } | null {
+    if (memberNode.property.type !== 'Identifier') return null;
+    const methodName = (memberNode.property as IdentifierNode).name;
+
+    let objType: string | null = null;
+    if (memberNode.object.type === 'Identifier') {
+      const symbol = this.symbolTable.lookup((memberNode.object as IdentifierNode).name);
+      if (symbol) {
+        const mt = extractModuleType(symbol.dataType);
+        if (mt) objType = mt.moduleName;
+      }
+    } else if (memberNode.object.type === 'CallExpression') {
+      objType = this.resolveCallExpressionObjectType(memberNode.object as CallExpressionNode);
+    }
+    if (!objType || !isKnownObjectType(objType)) return null;
+
+    const methodSig = OBJECT_REGISTRIES[objType].getMethod(methodName);
+    if (Option.isNone(methodSig)) return null;
+
+    for (const p of methodSig.value.parameters) {
+      if (p.type === 'function' && p.callbackParamTypes && p.callbackParamTypes.length > 0) {
+        // Uniform-type callbacks only (all covered params share callbackParamTypes[0]);
+        // sufficient for uci foreach's single section-object parameter.
+        const parsed = this.typeChecker.parseReturnTypePublic(p.callbackParamTypes[0]!);
+        return { type: parsed, count: p.callbackParamTypes.length };
+      }
+    }
+    return null;
+  }
+
+  /** Type to declare a callback parameter at position `i` under the current call context. */
+  private callbackParamTypeAt(i: number): UcodeDataType {
+    if (this.callbackElementType && i < this.callbackParamCount) return this.callbackElementType;
+    return UcodeType.UNKNOWN as UcodeDataType;
   }
 
   override visitSpreadElement(node: SpreadElementNode): void {
@@ -4822,12 +5310,35 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     );
   }
 
+  /** Flag a write to a member of a namespace import (`import * as m; m.K = 9` or
+   *  `m[k] = v`). Module namespace objects are immutable in ucode — such writes fail
+   *  at runtime with "Type error: object value is immutable". */
+  private checkNamespaceMemberAssignment(target: AstNode): void {
+    if (!target || target.type !== 'MemberExpression') return;
+    const base = (target as MemberExpressionNode).object;
+    if (!base || base.type !== 'Identifier') return;
+    const name = (base as IdentifierNode).name;
+    const symbol = this.symbolTable.lookup(name);
+    if (!symbol || symbol.type !== SymbolType.IMPORTED || symbol.importSpecifier !== '*') return;
+    this.addDiagnosticErrorCode(
+      UcodeErrorCode.CONST_REASSIGNMENT,
+      `Invalid assignment to a member of '${name}': a module namespace object is immutable in ucode.`,
+      target.start,
+      target.end,
+      DiagnosticSeverity.Error
+    );
+  }
+
   override visitAssignmentExpression(node: AssignmentExpressionNode): void {
     this.assignmentLeftDepth++;
     this.visit(node.left);
     this.assignmentLeftDepth--;
     // `const x = 1; x = 2;` (and every compound form `x += 1`, …) is a ucode error.
     this.checkConstReassignment(node.left, false);
+    // `import * as m …; m.x = 1` — module namespace objects are immutable in ucode
+    // ("object value is immutable" at runtime), so ANY member write through a
+    // namespace import is an error, dotted or computed.
+    this.checkNamespaceMemberAssignment(node.left);
     // Attribute a method-style function expression to its assignment target so it
     // gets the UC7003 hint (`nft_file.init = function(target){…}` → name "init").
     const rt = node.right.type;
@@ -5054,9 +5565,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             symbol.currentType = dataType;
             symbol.currentTypeEffectiveFrom = node.end;
             this.recordTypeHistory(symbol, node.end, dataType);
-            // Force global declaration for module object types (cross-scope visibility)
+            // Force global declaration for module object types (cross-scope visibility),
+            // but only when the reassigned variable is itself a global. Force-declaring a
+            // function-local's module type into global scope leaks it into same-named
+            // locals in unrelated functions (false UC5004, ticket 05).
             const mt = extractModuleType(dataType);
-            if (mt && isKnownObjectType(mt.moduleName)) {
+            if (mt && isKnownObjectType(mt.moduleName) && symbol.scope === 0) {
               this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
             }
           } else if (!symbol) {
@@ -5236,6 +5750,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // `const x = 1; x++;` / `--x;` is a ucode error ("Invalid increment/decrement of constant").
     if (node.operator === '++' || node.operator === '--') {
       this.checkConstReassignment(node.argument, true);
+      this.checkNamespaceMemberAssignment(node.argument);
     }
 
     if (this.options.enableTypeChecking) {
@@ -5348,6 +5863,21 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             if (locs.size > 0) this.functionReturnPropertyLocations.get(this.currentFunctionNode)?.push(locs);
           }
         }
+        // Gap 1 (registry value-shape): `return map[k]` where `map` is a locally
+        // built dictionary whose VALUE shape was inferred (valuePropertyTypes,
+        // incl. the setter-hop path). The getter then carries that shape as its
+        // returnPropertyTypes, so `let v = get(x); v.prop` and `get(x).prop`
+        // resolve instead of `unknown`. See docs/registry-value-shape-inference.md.
+        else if (node.argument?.type === 'MemberExpression'
+                 && (node.argument as MemberExpressionNode).computed
+                 && (node.argument as MemberExpressionNode).object.type === 'Identifier') {
+          const baseName = ((node.argument as MemberExpressionNode).object as IdentifierNode).name;
+          const baseSym = this.symbolTable.lookupAtPosition(baseName, node.argument.start)
+                       ?? this.symbolTable.lookup(baseName);
+          if (baseSym?.valuePropertyTypes && baseSym.valuePropertyTypes.size > 0) {
+            this.functionReturnPropertyTypes.get(this.currentFunctionNode)?.push(new Map(baseSym.valuePropertyTypes));
+          }
+        }
       }
     }
   }
@@ -5421,11 +5951,33 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   // Override loop visitors to track loop scopes
+  /** UC4006: `while (true) {}` / `for (;;) {}` with an EMPTY body busy-spins the CPU
+   *  forever — there is nothing inside that could break, return, or block. Loops with a
+   *  non-empty body are left alone (exit-less daemon loops around a blocking call are a
+   *  legitimate pattern). `test` null means `for(;;)`. */
+  private checkEmptyInfiniteLoop(test: AstNode | null | undefined, body: AstNode | null | undefined, start: number, headerEnd: number): void {
+    if (!body) return;
+    const bodyEmpty = body.type === 'EmptyStatement'
+      || (body.type === 'BlockStatement' && ((body as BlockStatementNode).body?.length ?? 0) === 0);
+    if (!bodyEmpty) return;
+    const lit = test as LiteralNode | null | undefined;
+    const alwaysTrue = test == null
+      || (test.type === 'Literal' && (lit!.value === true || (typeof lit!.value === 'number' && lit!.value !== 0)));
+    if (!alwaysTrue) return;
+    this.addDiagnosticErrorCode(
+      UcodeErrorCode.EMPTY_INFINITE_LOOP,
+      `Empty infinite loop: the condition is always true and the body is empty, so this busy-spins the CPU forever.`,
+      start, headerEnd,
+      DiagnosticSeverity.Warning
+    );
+  }
+
   override visitWhileStatement(node: WhileStatementNode): void {
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
 
+    this.checkEmptyInfiniteLoop(node.test, node.body, node.start, node.body?.start ?? node.end);
     if (node.body) this.checkIterateeMutation(node.body, this.lengthBoundedArrayName(node.test));
 
     super.visitWhileStatement(node);
@@ -5440,8 +5992,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
 
+    this.checkEmptyInfiniteLoop(node.test ?? null, node.body, node.start, node.body?.start ?? node.end);
     if (node.body) this.checkIterateeMutation(node.body, this.lengthBoundedArrayName(node.test));
-    
+
     if (this.options.enableScopeAnalysis) {
       // Create a new scope for the for loop to properly handle loop variable declarations
       // This ensures that 'for (let i = 0; ...)' variables don't conflict between different loops
@@ -5477,9 +6030,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
     }
 
-    // The iteree is the for-in collection (`for (x in C)` → C).
+    // The iteree is the for-in collection (`for (x in C)` → C), plus any bare-identifier
+    // alias it was declared from (`let c = a; for (x in c) push(a, …)`, finding #59).
     if (node.body && node.right?.type === 'Identifier') {
-      this.checkIterateeMutation(node.body, (node.right as IdentifierNode).name);
+      this.checkIterateeMutation(node.body, this.resolveIterateeAliasNames((node.right as IdentifierNode).name));
     }
 
     if (this.options.enableScopeAnalysis) {
@@ -5591,6 +6145,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
             this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, iterType, iteratorNode);
             this.symbolTable.markUsed(iteratorName, iteratorNode.start);
+
+            // `for (let v in arr)` where arr's elements are object literals: carry the
+            // element's property shape onto v so `v.` completes its members. (#176)
+            if (dataTypeToBase(iterType) === UcodeType.OBJECT) {
+              const elemShape = this.inferForInElementObjectShape(node.right);
+              const vSym = this.symbolTable.lookup(iteratorName);
+              if (vSym && elemShape) vSym.propertyTypes = elemShape;
+            }
 
             // Hide from completion until the body starts — see the bare-iterator
             // branch above for rationale.
@@ -5779,7 +6341,111 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    * declaration used so it doesn't also draw a contradictory UC1006 "never used".
    * Otherwise the name is genuinely undefined here (out of scope / never declared) → UC1001.
    */
+  /** True when the identifier read starting at `refStart` is itself the guarded
+   *  expression of a truthiness test: the bare test of if/while/for/ternary, the
+   *  operand of `!`, or the LHS of `||` / `&&` / `??` (parsed as BinaryExpression).
+   *  Used to downgrade the injected-global warning — in non-strict mode that read
+   *  IS the runtime existence check (an uninjected global reads as null). */
+  private refIsBareTruthinessTest(refStart: number): boolean {
+    if (!this.currentASTRoot) return false;
+    const isRefIdent = (n: unknown): boolean =>
+      isAstNodeLike(n) && n.type === 'Identifier' && (n as unknown as AstNode).start === refStart;
+    let found = false;
+    const walk = (node: unknown): void => {
+      if (found || !isAstNodeLike(node)) return;
+      const n = node as unknown as AstNode & { test?: AstNode; argument?: AstNode; left?: AstNode; operator?: string };
+      if (n.start > refStart || n.end <= refStart) {
+        // Spans are ordered; a node not containing the ref can't parent it.
+        if (n.start > refStart) return;
+      }
+      if ((n.type === 'IfStatement' || n.type === 'WhileStatement' || n.type === 'ForStatement'
+           || n.type === 'ConditionalExpression') && isRefIdent(n.test)) { found = true; return; }
+      if (n.type === 'UnaryExpression' && n.operator === '!' && isRefIdent(n.argument)) { found = true; return; }
+      if (n.type === 'BinaryExpression' && (n.operator === '||' || n.operator === '&&' || n.operator === '??')
+          && isRefIdent(n.left)) { found = true; return; }
+      for (const key of Object.keys(n)) {
+        if (key === 'leadingJsDoc') continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (isAstNodeLike(v)) walk(v);
+        if (found) return;
+      }
+    };
+    walk(this.currentASTRoot);
+    return found;
+  }
+
+  /** True when the identifier read starting at `refStart` is an argument of a
+   *  bare `type(...)` call — the read that PERFORMS the runtime type check, which
+   *  never raises in non-strict mode and is exactly the guard the injected-global
+   *  warning asks for. */
+  private refIsTypeCallArgument(refStart: number): boolean {
+    if (!this.currentASTRoot) return false;
+    let found = false;
+    const walk = (node: unknown): void => {
+      if (found || !isAstNodeLike(node)) return;
+      const n = node as unknown as AstNode & { callee?: AstNode; arguments?: AstNode[] };
+      if (n.start > refStart) return;
+      if (n.type === 'CallExpression' && n.callee?.type === 'Identifier'
+          && (n.callee as IdentifierNode).name === 'type'
+          && (n.arguments ?? []).some(a => a?.type === 'Identifier' && a.start === refStart)) {
+        found = true;
+        return;
+      }
+      for (const key of Object.keys(n)) {
+        if (key === 'leadingJsDoc') continue;
+        const v = (n as unknown as Record<string, unknown>)[key];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (isAstNodeLike(v)) walk(v);
+        if (found) return;
+      }
+    };
+    walk(this.currentASTRoot);
+    return found;
+  }
+
   private resolvePendingUndefinedRefs(): void {
+    // Names ever assigned or declared anywhere in this file — computed lazily so the
+    // SCREAMING_SNAKE injected-global heuristic below only fires for genuinely read-only
+    // names (a name the author also assigns/declares somewhere is a scope bug or typo, NOT
+    // an injected constant, so it keeps the plain UC1001).
+    let assignedOrDeclaredNames: Set<string> | null = null;
+    const isReadOnlyInjectedGlobal = (name: string): boolean => {
+      // SCREAMING_SNAKE_CASE (`/^[A-Z][A-Z0-9_]*$/`, length >= 2) is the ucode convention for
+      // constants and CLI/host-injected globals (`ucode -D QUIET=1`). An UNRESOLVED read of
+      // such a name that is never assigned/declared in the file is very likely an external
+      // injected global, not a typo — downgrade UC1001 to a hint. See docs/cli-defined-globals.md.
+      if (!/^[A-Z][A-Z0-9_]*$/.test(name) || name.length < 2) return false;
+      if (assignedOrDeclaredNames === null) {
+        assignedOrDeclaredNames = this.collectAssignedOrDeclaredNames();
+      }
+      return !assignedOrDeclaredNames.has(name);
+    };
+
+    // Give every assumed-injected global a REAL symbol (typed unknown) UP FRONT, so
+    // hover, completion, and type()-guard narrowing work — and so the tier decision
+    // below can ask the narrowing engine whether a runtime check dominates a read.
+    // This runs after the main analysis pass, so it cannot suppress the UC1001s.
+    for (const ref of this.pendingUndefinedRefs) {
+      if (!isReadOnlyInjectedGlobal(ref.name)) continue;
+      if (this.symbolTable.lookup(ref.name)) continue;
+      this.symbolTable.forceGlobalDeclaration(ref.name, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType);
+      const sym = this.symbolTable.lookup(ref.name);
+      if (sym) {
+        sym.isAssumedInjectedGlobal = true;
+        sym.used = true;
+      }
+    }
+    // A read is SELF-GUARDING (hint, not warning) when it is a bare truthiness test,
+    // the argument of a type() call (the read that PERFORMS the runtime check), or
+    // dominated by an earlier guard (the narrowing engine resolves a concrete type
+    // there — e.g. after `if (type(X) != 'string') die();`).
+    const readIsGuarded = (ref: { name: string; start: number }): boolean => {
+      if (this.refIsBareTruthinessTest(ref.start)) return true;
+      if (this.refIsTypeCallArgument(ref.start)) return true;
+      const narrowed = this.typeChecker.getNarrowedTypeAtPosition(ref.name, ref.start);
+      return narrowed != null && dataTypeToBase(narrowed) !== UcodeType.UNKNOWN;
+    };
     for (const ref of this.pendingUndefinedRefs) {
       const decl = this.symbolTable.findInScopeLaterDeclaration(ref.name, ref.start);
       if (decl) {
@@ -5793,6 +6459,47 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         decl.used = true;
         decl.usedAt = decl.usedAt || [];
         decl.usedAt.push(ref.start);
+      } else if (isReadOnlyInjectedGlobal(ref.name)) {
+        // Likely a host/CLI-injected global (`ucode -D NAME=<json>` — the value can be any
+        // JSON type; unparseable text becomes a string). We cannot statically prove the
+        // injection, so runtime behavior depends on it: keep a WARNING unless the code
+        // demonstrably handles absence itself. Interpreter-verified semantics:
+        //   strict:     a bare read RAISES "access to undeclared variable" when not
+        //               injected — even inside `if (NAME)`. Only `global.NAME` (property
+        //               read, null when absent) or a @global declaration is safe.
+        //   non-strict: a bare read yields null, so a truthiness test IS the runtime
+        //               existence check → that usage downgrades to a hint.
+        if (this.strictMode) {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.UNDEFINED_VARIABLE,
+            `'${ref.name}' is undefined — likely a host/CLI-injected global (ucode -D ${ref.name}=<json>). `
+            + `This file is strict-mode, so this bare read raises "access to undeclared variable" whenever `
+            + `${ref.name} is NOT injected. Read it as global.${ref.name} (null when absent) or declare it: /** @global ${ref.name} */.`,
+            ref.start,
+            ref.end,
+            DiagnosticSeverity.Warning,
+          );
+        } else if (readIsGuarded(ref)) {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.UNDEFINED_VARIABLE,
+            `'${ref.name}' is undefined — assuming a host/CLI-injected global (ucode -D ${ref.name}=<json>). `
+            + `This read is runtime-guarded (a truthiness test, a type() check, or a dominating earlier guard), `
+            + `so an uninjected null is handled. Declare it to silence this: /** @global ${ref.name} */.`,
+            ref.start,
+            ref.end,
+            DiagnosticSeverity.Hint,
+          );
+        } else {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.UNDEFINED_VARIABLE,
+            `'${ref.name}' is undefined — likely a host/CLI-injected global (ucode -D ${ref.name}=<json>). `
+            + `An uninjected read is null here: add a runtime check before using the value `
+            + `(if (${ref.name}) …, or ${ref.name} ?? <default>) or declare it: /** @global ${ref.name} */.`,
+            ref.start,
+            ref.end,
+            DiagnosticSeverity.Warning,
+          );
+        }
       } else {
         // A read of an undeclared variable is a hard `Reference error` ONLY under
         // 'use strict'; in non-strict ucode it silently evaluates to null (verified
@@ -5809,6 +6516,62 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
     }
     this.pendingUndefinedRefs = [];
+  }
+
+  /** Every identifier name that is an assignment target (`X = …`, `X++`, `for (X in …)`) or a
+   *  declaration (`let`/`const`/`function`/param/rest/catch) ANYWHERE in the file. Used only to
+   *  gate the SCREAMING_SNAKE injected-global heuristic — a name assigned/declared somewhere is
+   *  not a purely-external constant. */
+  private collectAssignedOrDeclaredNames(): Set<string> {
+    const names = new Set<string>();
+    const root = this.currentASTRoot;
+    if (!root) return names;
+    const walk = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (n.type === 'AssignmentExpression') {
+        const a = n as unknown as AssignmentExpressionNode;
+        if (a.left?.type === 'Identifier' && (a.left as IdentifierNode).name) {
+          names.add((a.left as IdentifierNode).name);
+        }
+      } else if (n.type === 'UnaryExpression') {
+        const u = n as unknown as UnaryExpressionNode;
+        if ((u.operator === '++' || u.operator === '--')
+            && u.argument?.type === 'Identifier' && (u.argument as IdentifierNode).name) {
+          names.add((u.argument as IdentifierNode).name);
+        }
+      } else if (n.type === 'ForInStatement') {
+        const f = n as unknown as ForInStatementNode;
+        if (f.left?.type === 'Identifier' && (f.left as IdentifierNode).name) {
+          names.add((f.left as IdentifierNode).name);
+        }
+      } else if (n.type === 'VariableDeclaration') {
+        const vd = n as unknown as { declarations?: { id?: { type?: string; name?: string } }[] };
+        for (const d of (vd.declarations ?? [])) {
+          if (d?.id?.type === 'Identifier' && d.id.name) names.add(d.id.name);
+        }
+      } else if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression'
+                 || n.type === 'ArrowFunctionExpression') {
+        const fn = n as unknown as {
+          id?: { type?: string; name?: string };
+          params?: { type?: string; name?: string; argument?: { type?: string; name?: string } }[];
+        };
+        if (fn.id?.type === 'Identifier' && fn.id.name) names.add(fn.id.name);
+        for (const p of (fn.params ?? [])) {
+          if (p?.type === 'Identifier' && p.name) names.add(p.name);
+          else if (p?.type === 'RestElement' && p.argument?.type === 'Identifier' && p.argument.name) {
+            names.add(p.argument.name);
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc') continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (isAstNodeLike(v)) walk(v);
+      }
+    };
+    walk(root);
+    return names;
   }
 
   private checkUnusedVariables(): void {
@@ -5834,12 +6597,21 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         continue;
       }
 
+      // Imported-but-unused symbols get an import-specific message anchored on the
+      // import specifier (symbol.node is the local Identifier of the import
+      // specifier), so the diagnostic reads as an unused import, not a "Variable".
+      const isImport = symbol.type === SymbolType.IMPORTED;
+      const message = isImport
+        ? `Import '${symbol.name}' is unused`
+        : `Variable '${symbol.name}' is declared but never used`;
+
       this.addDiagnosticErrorCode(
         UcodeErrorCode.UNUSED_VARIABLE,
-        `Variable '${symbol.name}' is declared but never used`,
+        message,
         symbol.node.start,
         symbol.node.end,
         DiagnosticSeverity.Warning,
+        { unnecessary: true },
       );
     }
   }
@@ -6086,7 +6858,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         if (typeof lit.value === 'string') valType = UcodeType.STRING as UcodeDataType;
         else if (typeof lit.value === 'boolean') valType = UcodeType.BOOLEAN as UcodeDataType;
         else if (typeof lit.value === 'number') {
-          valType = (Number.isInteger(lit.value) ? UcodeType.INTEGER : UcodeType.DOUBLE) as UcodeDataType;
+          // Exponent notation (`1e5`) is a double literal (ticket 115).
+          valType = ((lit.literalType === 'double' || !Number.isInteger(lit.value)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType;
         } else if (lit.value === null) valType = UcodeType.NULL as UcodeDataType;
         else valType = UcodeType.UNKNOWN as UcodeDataType;
       } else if (val.type === 'ObjectExpression') {
@@ -6099,6 +6872,67 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       propTypes.set(key, valType);
     }
     return propTypes.size > 0 ? propTypes : null;
+  }
+
+  /** For `for (let v in <right>)`, resolve `right` to an array literal and return the
+   *  property shape of its first object-literal element — so the loop var's members
+   *  complete. Handles a direct `[…]` and an `Identifier` bound to one. (#176) */
+  private inferForInElementObjectShape(right: AstNode): Map<string, UcodeDataType> | null {
+    let arrNode: AstNode | null = null;
+    if (right.type === 'ArrayExpression') {
+      arrNode = right;
+    } else if (right.type === 'Identifier') {
+      const sym = this.symbolTable.lookup((right as IdentifierNode).name);
+      if (sym?.initNode?.type === 'ArrayExpression') arrNode = sym.initNode;
+    }
+    if (!arrNode) return null;
+    for (const el of ((arrNode as ArrayExpressionNode).elements || [])) {
+      if (el?.type === 'ObjectExpression') {
+        const shape = this.inferObjectLiteralPropertyTypes(el as ObjectExpressionNode);
+        if (shape && shape.size > 0) return shape;
+      }
+    }
+    return null;
+  }
+
+  /** One-level nested property shapes for an object literal: for each property whose
+   *  value is itself an object literal (or an identifier bound to a known object shape),
+   *  record its inner property types. Enables two-hop `a.b.c` resolution on same-file
+   *  local literals (see typeChecker.checkMemberExpression). (#173) */
+  private inferObjectLiteralNestedPropertyTypes(node: ObjectExpressionNode): Map<string, Map<string, UcodeDataType>> | null {
+    const nested = new Map<string, Map<string, UcodeDataType>>();
+    for (const prop of node.properties) {
+      if (prop.type !== 'Property') continue;
+      const key = this.resolveObjectLiteralKey(prop);
+      if (!key) continue;
+      const val = prop.value;
+      if (val.type === 'ObjectExpression') {
+        // Drop nullable leaves: a two-hop `o.a.b` typed `T | null` would surface a
+        // nullable-argument diagnostic whose null-guard quick-fix can't yet narrow a
+        // two-level path — so we only carry concrete (non-null) nested shapes, leaving
+        // nullable leaves to the base member-resolution. (#173)
+        const sub = this.dropNullableEntries(this.inferObjectLiteralPropertyTypes(val as ObjectExpressionNode));
+        if (sub && sub.size > 0) nested.set(key, sub);
+      } else if (val.type === 'Identifier') {
+        const sym = this.symbolTable.lookup((val as IdentifierNode).name);
+        const sub = this.dropNullableEntries(sym?.propertyTypes ?? null);
+        if (sub && sub.size > 0) nested.set(key, sub);
+      }
+    }
+    return nested.size > 0 ? nested : null;
+  }
+
+  /** Copy a property-type map without any entry whose type is nullable (NULL or a
+   *  union containing NULL). Used to keep nested member shapes concrete. (#173) */
+  private dropNullableEntries(map: Map<string, UcodeDataType> | null | undefined): Map<string, UcodeDataType> | null {
+    if (!map || map.size === 0) return null;
+    const out = new Map<string, UcodeDataType>();
+    for (const [k, t] of map) {
+      const nullable = t === (UcodeType.NULL as UcodeDataType)
+        || getUnionTypes(t).some(m => m === (UcodeType.NULL as UcodeDataType));
+      if (!nullable) out.set(k, t);
+    }
+    return out.size > 0 ? out : null;
   }
 
   /**
@@ -6430,7 +7264,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       const fsType = this.inferFsType(node.init!);
       if (fsType) {
         symbol.dataType = fsType;
-        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, fsType);
+        // Only surface a function-local fs handle (e.g. `let p = popen(...)`) into
+        // global scope when it is genuinely a global declaration; otherwise a
+        // same-named local elsewhere aliases through it (false UC5004, ticket 05).
+        if (this.symbolTable.getCurrentScope() === 0) {
+          this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, fsType);
+        }
         this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
         return;
       }
@@ -6613,6 +7452,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (data !== undefined) {
         (diagnostic as { data?: unknown }).data = data;
       }
+      // Mirror addDiagnostic: a `{ unnecessary: true }` data payload fades the range
+      // in the editor (e.g. an unused import/variable) via DiagnosticTag.Unnecessary.
+      if (data && typeof data === 'object' && (data as { unnecessary?: unknown }).unnecessary) {
+        diagnostic.tags = [DiagnosticTag.Unnecessary];
+      }
 
       this.diagnostics.push(diagnostic);
     }
@@ -6744,6 +7588,17 @@ private addDiagnostic(
 
   private static readonly ARRAY_MUTATORS = new Set(['pop', 'shift', 'splice', 'push', 'unshift']);
 
+  /** Builtins with everyday English names that are idiomatic, collision-prone local
+   *  variable names (loop counters, config fields, temporaries). Shadowing one of these
+   *  is legal ucode and almost always intentional, so UC1008 is suppressed for them to
+   *  avoid warning noise (finding #12). Shadowing a less-common builtin (e.g. `printf`,
+   *  `signal`, `sprintf`) still warns — that shadow is far more likely a mistake. The
+   *  shadowed-builtin call-resolution soundness machinery is independent of this warning. */
+  private static readonly IDIOMATIC_SHADOW_NAMES = new Set([
+    'index', 'type', 'length', 'values', 'keys', 'json',
+    'split', 'time', 'system', 'push', 'print', 'min', 'max', 'localtime',
+  ]);
+
   /** For a loop test comparing an INDEX VARIABLE to `length(C)` — `i < length(C)`
    *  / `length(C) > i` (or `<=`/`>=`) — the array `C`. Requires the non-length
    *  operand to be an identifier (the independently-advancing index): that's what
@@ -6874,10 +7729,42 @@ private addDiagnostic(
     return rebinds;
   }
 
-  private checkIterateeMutation(loopBody: AstNode, itereeName: string | null): void {
-    if (!itereeName || !loopBody) return;
+  /** Names that refer to the same array object as the for-in iteratee at loop entry:
+   *  the iteratee itself plus, one hop, its declaration source when it was aliased with a
+   *  bare identifier (`let c = a; for (x in c) push(a, x)`). Arrays are references in ucode,
+   *  so mutating either name touches the iterated array (UC4005 alias FN, finding #59). */
+  private resolveIterateeAliasNames(name: string): string[] {
+    const names = [name];
+    const sym = this.symbolTable.lookup(name);
+    // Only alias when the iteratee has NOT been reassigned since its declaration — a
+    // reassignment (`let c=a; c=[…]; for(x in c)`) makes its `let c = a` init stale, so
+    // the source no longer references the iterated array. typeHistory holds reassignments
+    // visited so far (in source order, i.e. those before this loop).
+    if (!sym || (sym.typeHistory && sym.typeHistory.length > 0)) return names;
+    const init = sym.initNode;
+    if (init && init.type === 'Identifier') {
+      const src = (init as IdentifierNode).name;
+      if (src && src !== name) {
+        // Likewise skip if the source itself was reassigned before the loop.
+        const srcSym = this.symbolTable.lookup(src);
+        if (srcSym && (!srcSym.typeHistory || srcSym.typeHistory.length === 0)) {
+          names.push(src);
+        }
+      }
+    }
+    return names;
+  }
+
+  private checkIterateeMutation(loopBody: AstNode, iteree: string | string[] | null): void {
+    if (!iteree || !loopBody) return;
+    const itereeNames = Array.isArray(iteree) ? iteree : [iteree];
+    if (itereeNames.length === 0) return;
+    const primaryName = itereeNames[0]!;
+    const nameSet = new Set(itereeNames);
     const bodyHasExit = this.bodyContainsLoopExit(loopBody);
-    const rebinds = this.collectIterateeRebinds(loopBody, itereeName);
+    // A rebind of ANY alias name before a mutator makes that mutator touch a different
+    // object (conservative: de-escalates rather than over-reports).
+    const rebinds = itereeNames.flatMap(n => this.collectIterateeRebinds(loopBody, n));
     const walk = (node: unknown, enclosingBlock: AstNode, conditional: boolean): void => {
       if (!isAstNodeLike(node)) return;
       const block: AstNode = node.type === 'BlockStatement' ? node : enclosingBlock;
@@ -6885,7 +7772,7 @@ private addDiagnostic(
       const call = node as unknown as CallExpressionNode;
       if (node.type === 'CallExpression' && call.callee?.type === 'Identifier'
           && SemanticAnalyzer.ARRAY_MUTATORS.has((call.callee as IdentifierNode).name)
-          && call.arguments?.[0]?.type === 'Identifier' && (call.arguments[0] as IdentifierNode).name === itereeName) {
+          && call.arguments?.[0]?.type === 'Identifier' && nameSet.has((call.arguments[0] as IdentifierNode).name)) {
         if (!this.blockExitsLoop(enclosingBlock)) {
           // A rebind of the iteratee name BEFORE this call means the call operates
           // on a different array object than the one being iterated (finding #58).
@@ -6898,10 +7785,10 @@ private addDiagnostic(
           const grows = fn === 'push' || fn === 'unshift';
           const provablyInfinite = grows && !conditional && !bodyHasExit && !conditionallyRebound;
           const message = provablyInfinite
-            ? `'${fn}()' grows '${itereeName}' every iteration and the loop has no exit — infinite loop.`
+            ? `'${fn}()' grows '${primaryName}' every iteration and the loop has no exit — infinite loop.`
             : grows
-              ? `'${fn}()' grows '${itereeName}' while iterating it — ucode iterates by live index, so this may not terminate.`
-              : `'${fn}()' removes from '${itereeName}' while iterating it — ucode iterates by live index, so elements are skipped.`;
+              ? `'${fn}()' grows '${primaryName}' while iterating it — ucode iterates by live index, so this may not terminate.`
+              : `'${fn}()' removes from '${primaryName}' while iterating it — ucode iterates by live index, so elements are skipped.`;
           this.addDiagnosticErrorCode(
             UcodeErrorCode.COLLECTION_MUTATED_DURING_ITERATION,
             message, node.start, node.end,
@@ -6960,15 +7847,68 @@ private addDiagnostic(
   private scanTypedefs(): void {
     this.typedefRegistry.clear();
     const text = this.textDocument.getText();
-    // Match /** ... */ blocks containing @typedef
+    // Match /** ... */ blocks containing a type-declaring tag.
     const jsdocRegex = /\/\*\*([\s\S]*?)\*\//g;
     let match: RegExpExecArray | null;
     while ((match = jsdocRegex.exec(text)) !== null) {
       const commentBody = match[1]!;
-      if (!commentBody.includes('@typedef')) continue;
+      if (!/@(?:typedef|callback|template|property|enum)\b/.test(commentBody)) continue;
       const parsed = parseJsDocComment(commentBody);
+      const commentStart = match.index;
+      const commentEnd = match.index + match[0].length;
+
+      // `@callback Name` / `@template T` register a known type name (so `@param {Name}` /
+      // `@returns {Name}` don't false-warn UC7001). @callback → function, @template → unknown.
+      for (const tag of parsed.tags) {
+        if ((tag.tag === 'callback' || tag.tag === 'template') && tag.name && !this.typedefRegistry.has(tag.name)) {
+          this.typedefRegistry.set(tag.name, { name: tag.name, baseType: tag.typeExpression, properties: new Map() });
+        }
+        // `@enum {T}` — the referenceable name is the identifier of the const/let
+        // declaration the comment is attached to; a `@param {Name}` means "one of
+        // the enum's values", i.e. the enum's value type T.
+        if (tag.tag === 'enum') {
+          const after = text.slice(commentEnd, commentEnd + 200);
+          const declMatch = after.match(/^\s*(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)/);
+          if (declMatch && !this.typedefRegistry.has(declMatch[1]!)) {
+            this.typedefRegistry.set(declMatch[1]!, { name: declMatch[1]!, baseType: tag.typeExpression, properties: new Map() });
+          }
+        }
+      }
+
+      const hasNamedTypedef = parsed.tags.some(t => t.tag === 'typedef' && t.name);
+      const hasNamelessTypedef = parsed.tags.some(t => t.tag === 'typedef' && !t.name);
+      const hasCallback = parsed.tags.some(t => t.tag === 'callback');
+      const hasProperty = parsed.tags.some(t => t.tag === 'property');
+
+      // A nameless `@typedef {Object}` — the shape can never be referenced.
+      if (hasNamelessTypedef) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.JSDOC_MALFORMED_TYPEDEF,
+          `@typedef is missing a name; expected '@typedef {type} Name'`,
+          commentStart, commentEnd,
+          DiagnosticSeverity.Warning
+        );
+      }
+      // @property tags with no owning @typedef/@callback — they attach to nothing.
+      if (hasProperty && !hasNamedTypedef && !hasNamelessTypedef && !hasCallback) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.JSDOC_MALFORMED_TYPEDEF,
+          `@property has no enclosing @typedef`,
+          commentStart, commentEnd,
+          DiagnosticSeverity.Warning
+        );
+      }
+
       const typedef = extractTypedef(parsed);
       if (typedef) {
+        if (typedef.duplicateProperties && typedef.duplicateProperties.length > 0) {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.JSDOC_MALFORMED_TYPEDEF,
+            `Duplicate @property '${typedef.duplicateProperties[0]}' in @typedef '${typedef.name}'; the last type wins`,
+            commentStart, commentEnd,
+            DiagnosticSeverity.Warning
+          );
+        }
         this.typedefRegistry.set(typedef.name, typedef);
       }
     }
@@ -7018,131 +7958,63 @@ private addDiagnostic(
   }
 
   /**
-   * Parse disable comments from the document
+   * Parse disable comments from the document (ticket 08). Recognises same-line
+   * `// ucode-lsp disable`, `// ucode-lsp disable-next-line`, and an optional
+   * `UC####` rule-code list. Suppression itself (REMOVING matched diagnostics)
+   * happens in checkUnnecessaryDisableComments, which runs after every diagnostic
+   * has been collected.
    */
   private parseDisableComments(): void {
-    const text = this.textDocument.getText();
-    const lines = text.split(/\r?\n/);
-
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-      const line = lines[lineIndex];
-      
-      // Check if line contains "// ucode-lsp disable" comment
-      if (line && line.includes('// ucode-lsp disable')) {
-        this.disabledLines.add(lineIndex);
-        
-        // For multi-line statements, we need to find the statement boundaries
-        // This is a simplified approach - look for statements that start on this line
-        // and extend to multiple lines (like function calls with multiple arguments)
-        const statementEnd = this.findStatementEnd(text, lineIndex);
-        
-        if (statementEnd > lineIndex) {
-          this.disabledRanges.push({
-            start: lineIndex,
-            end: statementEnd
-          });
-        }
-      }
-    }
+    this.disableDirectives = parseDisableDirectives(this.textDocument.getText());
   }
 
   /**
-   * Find the end line of a multi-line statement starting at the given line
+   * Legacy hook (ticket 08): disable comments used to DEMOTE a diagnostic's severity
+   * here. They now REMOVE the diagnostic entirely in a post-collection pass
+   * (checkUnnecessaryDisableComments), so severity is never reduced at emit time.
    */
-  private findStatementEnd(text: string, startLine: number): number {
-    let braceDepth = 0;
-    let parenDepth = 0;
-    let currentLine = startLine;
-    
-    // Get the line with the disable comment
-    const lines = text.split(/\r?\n/);
-    const commentLine = lines[startLine];
-    
-    if (!commentLine) {
-      return startLine;
-    }
-    
-    // Look for opening braces or parentheses on the comment line
-    for (const char of commentLine) {
-      if (char === '(') parenDepth++;
-      if (char === ')') parenDepth--;
-      if (char === '{') braceDepth++;
-      if (char === '}') braceDepth--;
-    }
-    
-    // If we have unclosed parentheses or braces, find where they close
-    if (parenDepth > 0 || braceDepth > 0) {
-      for (let i = startLine + 1; i < lines.length; i++) {
-        const line = lines[i];
-        if (!line) continue;
-        
-        for (const char of line) {
-          if (char === '(') parenDepth++;
-          if (char === ')') parenDepth--;
-          if (char === '{') braceDepth++;
-          if (char === '}') braceDepth--;
-        }
-        
-        currentLine = i;
-        
-        // If all parentheses and braces are closed, we found the end
-        if (parenDepth <= 0 && braceDepth <= 0) {
-          break;
-        }
-      }
-    }
-    
-    return currentLine;
-  }
-
-  /**
-   * Check if a diagnostic should be converted to lower severity based on disable comments
-   */
-  private shouldReduceSeverity(start: number, end: number): boolean {
-    const startPos = this.textDocument.positionAt(start);
-    const endPos = this.textDocument.positionAt(end);
-    
-    // Check if the diagnostic is on a disabled line
-    if (this.disabledLines.has(startPos.line)) {
-      return true;
-    }
-    
-    // Check if the diagnostic is within a disabled range
-    for (const range of this.disabledRanges) {
-      if (startPos.line >= range.start && endPos.line <= range.end) {
-        return true;
-      }
-    }
-    
+  private shouldReduceSeverity(_start: number, _end: number): boolean {
     return false;
   }
-  
+
   /**
-   * Check for disable comments that don't suppress any diagnostics
+   * Apply disable directives: remove every diagnostic a directive covers, then flag
+   * genuinely-stale directives with "No diagnostic disabled by this comment" (ticket 08).
+   *
+   * Only a CODE-TARGETED directive (`// ucode-lsp disable UC1001`) that matched none of
+   * its listed codes is flagged — that is a stale/wrong suppression the author should
+   * clean up. A BARE `// ucode-lsp disable` is legitimate defensive use, so it is never
+   * flagged even when it suppresses nothing; this removes the self-inflicted "No diagnostic
+   * disabled" noise the old check produced on every defensive comment (and the spurious
+   * report a disable-next-line used to trigger on its own line).
    */
   private checkUnnecessaryDisableComments(): void {
-    for (const lineNumber of this.disabledLines) {
-      // If this line has a disable comment but no diagnostics were suppressed on it
-      if (!this.linesWithSuppressedDiagnostics.has(lineNumber)) {
-        const lineText = this.textDocument.getText({
-          start: { line: lineNumber, character: 0 },
-          end: { line: lineNumber + 1, character: 0 }
-        }).replace(/\r?\n$/, ''); // Remove trailing newline
+    if (this.disableDirectives.length === 0) return;
 
-        // Find the position of the disable comment
-        const commentIndex = lineText.indexOf('// ucode-lsp disable');
-        if (commentIndex >= 0) {
-          const start = this.textDocument.offsetAt({ line: lineNumber, character: commentIndex });
-          const end = this.textDocument.offsetAt({ line: lineNumber, character: commentIndex + '// ucode-lsp disable'.length });
-
-          this.addDiagnostic(
-            'No diagnostic disabled by this comment',
-            start,
-            end,
-            DiagnosticSeverity.Error
-          );
+    const used = new Set<DisableDirective>();
+    this.diagnostics = this.diagnostics.filter((d) => {
+      const line = d.range.start.line;
+      let covered = false;
+      for (const directive of this.disableDirectives) {
+        if (directiveCovers(directive, line, d.code)) {
+          used.add(directive);
+          covered = true;
         }
       }
+      return !covered; // drop it if any directive suppresses it
+    });
+
+    for (const directive of this.disableDirectives) {
+      if (used.has(directive)) continue;
+      if (directive.codes === null) continue; // bare defensive disable — never "unnecessary"
+      const start = this.textDocument.offsetAt({ line: directive.commentLine, character: directive.commentCol });
+      const end = this.textDocument.offsetAt({ line: directive.commentLine, character: directive.markerEndCol });
+      this.addDiagnostic(
+        'No diagnostic disabled by this comment',
+        start,
+        end,
+        DiagnosticSeverity.Warning
+      );
     }
   }
 

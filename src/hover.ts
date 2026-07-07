@@ -16,6 +16,8 @@ import { type SemanticAnalysisResult, SymbolType, type Symbol as UcodeSymbol } f
 import { typeToString, type UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt } from './analysis/symbolTable';
 import { exceptionTypeRegistry, exceptionObjectType } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
+import { nl80211TypeRegistry } from './analysis/nl80211Types';
+import { rtnlTypeRegistry } from './analysis/rtnlTypes';
 import { Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, getModuleMemberDocumentation, getImportedSymbolDocumentation, getObjectMethodDocumentation, resolveReturnObjectType, type KnownObjectType } from './analysis/moduleDispatch';
 import { parseFormatSpecifiers } from './analysis/checkers/builtinValidation';
@@ -312,12 +314,16 @@ function detectObjectTypeFromDataType(dataType: UcodeDataType): KnownObjectType 
         const name = getObjectTypeName(dataType);
         if (name && isKnownObjectType(name)) return name;
     }
-    // Check union types — find the first ObjectType member
+    // Check union types — find the first known-object member. Members come in two
+    // spellings: ObjectType ({name}) and module-typed objects ({moduleName}, e.g.
+    // get_all()'s `uci.section | object | null`).
     if (isUnionType(dataType)) {
         for (const member of getUnionTypes(dataType)) {
             if (isObjectType(member) && isKnownObjectType(member.name)) {
                 return member.name as KnownObjectType;
             }
+            const mt = extractModuleType(member as UcodeDataType);
+            if (mt && isKnownObjectType(mt.moduleName)) return mt.moduleName as KnownObjectType;
         }
     }
     // Legacy: ModuleType with known object type name
@@ -333,7 +339,8 @@ function detectObjectTypeFromDataType(dataType: UcodeDataType): KnownObjectType 
 function getUnifiedMemberHover(
     memberInfo: { objectName: string; propertyName: string; chain?: string[] },
     analysisResult: SemanticAnalysisResult,
-    documentUri?: string
+    documentUri?: string,
+    offset?: number
 ): string | null {
     const { objectName, propertyName, chain } = memberInfo;
 
@@ -343,8 +350,23 @@ function getUnifiedMemberHover(
     // fail to find A and return null. Only one extra hop is supported (matches
     // the nestedPropertyTypes shape — `Map<name, Map<inner, type>>`).
     if (chain && chain.length >= 3) {
-        const baseSym = analysisResult.symbolTable.lookup(chain[0]!);
+        // Position-aware lookup: the base is often a function PARAM or local, which a
+        // bare global lookup never finds (scope-correct API is lookupAtPosition).
+        const baseSym = (offset !== undefined ? analysisResult.symbolTable.lookupAtPosition(chain[0]!, offset) : null)
+            ?? analysisResult.symbolTable.lookup(chain[0]!);
         if (baseSym) {
+            // `nl80211.const.NL80211_*` / `rtnl.const.*` on a namespace import:
+            // the leaf is an integer constant with registry documentation.
+            const nsModule = baseSym.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*'
+                ? baseSym.importedFrom : null;
+            if ((nsModule === 'nl80211' || nsModule === 'rtnl') && chain[chain.length - 2] === 'const') {
+                const constName = chain[chain.length - 1]!;
+                const reg = nsModule === 'nl80211' ? nl80211TypeRegistry : rtnlTypeRegistry;
+                const isConst = nsModule === 'nl80211'
+                    ? nl80211TypeRegistry.isNl80211Constant(constName)
+                    : rtnlTypeRegistry.isRtnlConstant(constName);
+                if (isConst) return appendBuiltinNote(reg.getConstantDocumentation(constName));
+            }
             // Builtin handle shapes: walk the chain through the object-type registry
             // (`info.dev.major` on a stat result: fs.stat → fs.stat.dev → major).
             // Takes precedence only when the base is a known handle type.
@@ -378,15 +400,21 @@ function getUnifiedMemberHover(
     }
 
     // Look up the object in the symbol table
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = (offset !== undefined ? analysisResult.symbolTable.lookupAtPosition(objectName, offset) : null)
+        ?? analysisResult.symbolTable.lookup(objectName);
 
     if (!symbol) return null;
 
     // 1. Check if it's a known object type (fs.file, io.handle, uloop.timer, etc.)
     const objType = detectObjectTypeFromDataType(symbol.dataType);
-    if (objType) {
+        if (objType) {
         const methodDoc = getObjectMethodDocumentation(objType, propertyName);
         if (Option.isSome(methodDoc)) return appendBuiltinNote(methodDoc.value);
+        // Open-membership object types (uci.section, netifd daemon object): unknown
+        // members are legal runtime-defined values — say so instead of no hover at all.
+        if (OBJECT_REGISTRIES[objType].openMembers) {
+            return `**${propertyName}**: \`unknown\`\n\nRuntime-defined member on \`${objType}\` (open shape — its members are not statically known; e.g. uci option values are config-defined).`;
+        }
     }
 
     // 2. Check if it's a module namespace import (import * as fs from 'fs') or require('fs')
@@ -399,6 +427,13 @@ function getUnifiedMemberHover(
     }
 
     if (moduleName && isKnownModule(moduleName)) {
+        // `nl80211.const` / `rtnl.const`: the constants-container object.
+        if (propertyName === 'const' && (moduleName === 'nl80211' || moduleName === 'rtnl')) {
+            const n = moduleName === 'nl80211'
+                ? nl80211TypeRegistry.getConstantNames().length
+                : rtnlTypeRegistry.getConstantNames().length;
+            return `**const**: \`object\`\n\nContainer for the ${n} ${moduleName} module constants (all integers). Access as \`${moduleName}.const.NAME\`.`;
+        }
         const doc = getModuleMemberDocumentation(moduleName, propertyName);
         if (Option.isSome(doc)) return doc.value;
     }
@@ -826,7 +861,14 @@ export function handleHover(
                     // Flow-sensitive: show the most-recent write at/before the hovered position,
                     // so `rv.days` reads `object` before `rv.days = keys(rv.days)` and
                     // `array<string>` after — not one type for every occurrence.
-                    const propertyType = propertyTypeAt(symbol, memberName, offset) ?? symbol.propertyTypes.get(memberName)!;
+                    const baseProperty = propertyTypeAt(symbol, memberName, offset) ?? symbol.propertyTypes.get(memberName)!;
+                    // Prefer a guard-narrowed type for the member path inside a guarded
+                    // branch (`if (o.x) { o.x… }` → `string`, not `string | null`) — the
+                    // known propertyType seeds the narrowing (ticket 139).
+                    const narrowedMember = analysisResult.typeChecker
+                        ? analysisResult.typeChecker.getNarrowedTypeAtPosition(`${objectName}.${memberName}`, offset, baseProperty)
+                        : null;
+                    const propertyType = narrowedMember ?? baseProperty;
                     const typeString = typeToString(propertyType);
                     const scopeLabel = objectName === 'global'
                         ? `Global property on \`${objectName}\``
@@ -902,6 +944,21 @@ export function handleHover(
                                 }
                             };
                         }
+                        // Open-membership object types (uci.section, netifd daemon object):
+                        // unknown members are legal runtime-defined values — say so rather
+                        // than showing no hover at all.
+                        if (OBJECT_REGISTRIES[objType].openMembers) {
+                            return {
+                                contents: {
+                                    kind: MarkupKind.Markdown,
+                                    value: `**${memberName}**: \`unknown\`\n\nRuntime-defined member on \`${objType}\` (open shape — its members are not statically known; e.g. uci option values are config-defined).`
+                                },
+                                range: {
+                                    start: document.positionAt(memberContext.memberTokenPos),
+                                    end: document.positionAt(memberContext.memberTokenEnd)
+                                }
+                            };
+                        }
                     }
                     // Check if it's a module type (e.g., let _fs = require('fs'); _fs.readfile)
                     let moduleName: string | undefined;
@@ -971,6 +1028,42 @@ export function handleHover(
         if (token && token.type === TokenType.TK_STRING && tokenIndex >= 0) {
             const fmtHover = getFormatSpecifierHover(token, tokenIndex, tokens, offset, document);
             if (fmtHover) return fmtHover;
+        }
+
+        // Scalar literal hover: number/double/string/true/false/null. These have no
+        // symbol-table entry, so without this branch hovering them returns nothing.
+        // Show the ucode type() name plus the literal's source value.
+        if (token) {
+            let litType: string | undefined;
+            switch (token.type) {
+                case TokenType.TK_NUMBER: litType = 'integer'; break;
+                case TokenType.TK_DOUBLE: litType = 'double'; break;
+                case TokenType.TK_STRING: litType = 'string'; break;
+                case TokenType.TK_TRUE:
+                case TokenType.TK_FALSE:  litType = 'boolean'; break;
+                case TokenType.TK_NULL:   litType = 'null'; break;
+                default: litType = undefined;
+            }
+            if (litType) {
+                const rawValue = document.getText().substring(token.pos, token.end);
+                // Non-decimal / exotic numeric spellings (0x1F, 0b, 0o7, 1e5, 0xFF.5):
+                // show the decimal value the interpreter sees next to the source text.
+                let valueNote = '';
+                if ((litType === 'integer' || litType === 'double') && typeof token.value === 'number'
+                    && String(token.value) !== rawValue) {
+                    valueNote = ` = ${token.value}`;
+                }
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: `(literal) \`${rawValue}\`${valueNote}: \`${litType}\``
+                    },
+                    range: {
+                        start: document.positionAt(token.pos),
+                        end: document.positionAt(token.end)
+                    }
+                };
+            }
         }
 
         // Check for rest parameters (like ...args)
@@ -1095,7 +1188,7 @@ export function handleHover(
                 }
 
                 // Unified member hover: check object types and module namespaces
-                const memberHoverDoc = getUnifiedMemberHover(memberExpressionInfo, analysisResult, document.uri);
+                const memberHoverDoc = getUnifiedMemberHover(memberExpressionInfo, analysisResult, document.uri, offset);
                 if (memberHoverDoc) {
                     return {
                         contents: {
@@ -1268,20 +1361,49 @@ export function handleHover(
                                     }
                                 }
                                 hoverText = `(${symbol.type}) **${symbol.name}**: \`${effectiveTypeStr}\``;
+                                // An assumed host/CLI-injected global (unresolved SCREAMING_SNAKE):
+                                // keep the flow-narrowed type (a `type(X) != …` + die() guard narrows
+                                // it like any variable) and explain where the value comes from.
+                                if (symbol.isAssumedInjectedGlobal) {
+                                    hoverText = `(injected global, assumed) **${symbol.name}**: \`${effectiveTypeStr}\`\n\nNot defined in this file — expected to be provided by the host, e.g. \`ucode -D ${symbol.name}=<json>\` (the value can be ANY JSON type; unparseable text becomes a string). An uninjected read is \`null\` in non-strict mode and RAISES under \`'use strict'\`. Declare a JSDoc @global annotation to type it and silence UC1001.`;
+                                }
+                                // A bare-assignment implicit global: note the global-ness — the
+                                // plain "(variable)" label hides that this name escapes the function.
+                                if (analysisResult?.implicitGlobalNames?.has(symbol.name)) {
+                                    hoverText = `(implicit global) **${symbol.name}**: \`${effectiveTypeStr}\`\n\nCreated by a bare assignment (\`${symbol.name} = …\`) — in non-strict ucode that makes it a GLOBAL, visible everywhere once the assignment has run (null before).`;
+                                }
                             }
                             if (symbol.jsdocDescription) {
                                 hoverText += `\n\n${symbol.jsdocDescription}`;
                             }
                             break;
-                        case SymbolType.FUNCTION:
+                        case SymbolType.FUNCTION: {
+                            // Render the parameter signature when known: `name(a: T, b: T)`.
+                            // Rest params render as `...name`; optional as `name?`; a
+                            // param's type is appended only when it is known (not `unknown`).
+                            const params = symbol.parameters;
+                            let sigStr = symbol.name;
+                            if (params && params.length > 0) {
+                                const paramLabels = params.map((p) => {
+                                    const prefix = p.isRest ? '...' : '';
+                                    const opt = p.optional && !p.isRest ? '?' : '';
+                                    const tStr = typeToString(p.type);
+                                    const tAnno = (tStr && tStr !== 'unknown') ? `: ${tStr}` : '';
+                                    return `${prefix}${p.name}${opt}${tAnno}`;
+                                });
+                                sigStr = `${symbol.name}(${paramLabels.join(', ')})`;
+                            } else if (params) {
+                                sigStr = `${symbol.name}()`;
+                            }
                             // Show function type with return type information
                             if (symbol.returnType) {
                                 const returnTypeStr = typeToString(symbol.returnType);
-                                hoverText = `(function) **${symbol.name}**: \`function\`\n\nReturns: \`${returnTypeStr}\``;
+                                hoverText = `(function) **${sigStr}**: \`function\`\n\nReturns: \`${returnTypeStr}\``;
                             } else {
-                                hoverText = `(function) **${symbol.name}**: \`function\``;
+                                hoverText = `(function) **${sigStr}**: \`function\``;
                             }
                             break;
+                        }
                         case SymbolType.MODULE:
                             hoverText = `(module) **${symbol.name}**: \`${typeToString(symbol.dataType)}\``;
                             break;
@@ -1329,9 +1451,55 @@ export function handleHover(
             // global builtin (e.g. the `signal` builtin). Show a minimal property hover.
             const tokIdx = tokens.findIndex((t) => t.pos <= offset && offset < t.end);
             if (tokIdx > 0 && isMemberAccessDot(tokens[tokIdx - 1]?.type)) {
+                // `nl80211.const` / `rtnl.const` — `const` lexes as a KEYWORD token, so
+                // detectMemberExpression never matches it; resolve the container here.
+                if (word === 'const' && tokIdx >= 2) {
+                    const baseTok = tokens[tokIdx - 2];
+                    const baseName = baseTok?.type === TokenType.TK_LABEL ? String(baseTok.value) : null;
+                    const baseSym = baseName ? analysisResult?.symbolTable.lookup(baseName) : null;
+                    const nsModule = baseSym?.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*'
+                        ? baseSym.importedFrom : null;
+                    if (nsModule === 'nl80211' || nsModule === 'rtnl') {
+                        const n = nsModule === 'nl80211'
+                            ? nl80211TypeRegistry.getConstantNames().length
+                            : rtnlTypeRegistry.getConstantNames().length;
+                        return {
+                            contents: { kind: MarkupKind.Markdown, value: `**const**: \`object\`\n\nContainer for the ${n} ${nsModule} module constants (all integers). Access as \`${nsModule}.const.NAME\`.` },
+                            range: { start: document.positionAt(token.pos), end: document.positionAt(token.end) }
+                        };
+                    }
+                }
                 return {
                     contents: { kind: MarkupKind.Markdown, value: `**${word}**: \`unknown\`` },
                     range: { start: document.positionAt(token.pos), end: document.positionAt(token.end) }
+                };
+            }
+
+            // An implicit global (bare `X = …` assignment, possibly in another function):
+            // there may be no scope-visible symbol at this position, but the name IS a
+            // runtime global after the assignment runs.
+            if (analysisResult?.implicitGlobalNames?.has(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: `(implicit global) **${word}**: \`unknown\`\n\nCreated by a bare assignment (\`${word} = …\`) in this file — in non-strict ucode that makes it a GLOBAL, visible everywhere once the assignment has run (null before).`,
+                    },
+                    range: { start: document.positionAt(token.pos), end: document.positionAt(token.end) },
+                };
+            }
+
+            // An unresolved SCREAMING_SNAKE read — the ucode convention for host/CLI-
+            // injected globals (`ucode -D NAME=<json>`). No symbol exists, but a bare
+            // "no hover" leaves the user guessing; explain where the value comes from.
+            if (/^[A-Z][A-Z0-9_]*$/.test(word) && word.length >= 2
+                && !analysisResult?.symbolTable.lookupAtPosition(word, offset)
+                && !analysisResult?.symbolTable.lookup(word)) {
+                return {
+                    contents: {
+                        kind: MarkupKind.Markdown,
+                        value: `(injected global, assumed) **${word}**: \`unknown\`\n\nNot defined in this file — expected to be provided by the host, e.g. \`ucode -D ${word}=<json>\` (the value can be ANY JSON type; unparseable text becomes a string). An uninjected read is \`null\` in non-strict mode and RAISES under \`'use strict'\`. Declare \`/** @global {boolean} ${word} */\` (with the right type) to type it and silence UC1001.`,
+                    },
+                    range: { start: document.positionAt(token.pos), end: document.positionAt(token.end) },
                 };
             }
 
