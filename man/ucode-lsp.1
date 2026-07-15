@@ -1,9 +1,12 @@
-.TH UCODE-LSP 1 "2026-06-03" "0.6.137" "ucode-lsp manual"
+.TH UCODE-LSP 1 "2026-07-11" "0.7.68" "ucode-lsp manual"
 .SH NAME
 ucode-lsp \- language server and static checker for ucode
 .SH SYNOPSIS
 .B ucode-lsp
 [\fIoptions\fR] [\fIpaths\fR...]
+.br
+.B ucode-lsp \-\-type-coverage
+[\fIpaths\fR...]
 .br
 .B ucode-lsp \-\-stdio
 .SH DESCRIPTION
@@ -23,12 +26,31 @@ directory) and prints diagnostics. Exits with code 1 if errors are found.
 .TP
 .B \-\-stdio
 LSP server mode. Communicates over stdin/stdout using the Language Server
-Protocol. Used by editors.
+Protocol. Used by editors. \fB\-\-pipe\fR and \fB\-\-node\-ipc\fR select the
+other LSP transports.
 .SH OPTIONS
 .TP
 .B \-\-verbose
 Show all diagnostics including info and hints. By default, only errors and
 warnings are shown.
+.TP
+.B \-\-target-version \fIv\fR, \fB\-t \fIv\fR
+Target OpenWrt/ucode release for version\-gated diagnostics. Language features
+and module functions that a given release lacks are flagged when it is the
+target (e.g. a module added in a later feed, or newer syntax). One of
+\fB22.03\fR, \fB23.05\fR, \fB24.10\fR, \fB25.12\fR, or \fBmain\fR
+(default: \fB25.12\fR). Choose \fBmain\fR to disable the version checks.
+.TP
+.B \-\-type-coverage
+Instead of printing diagnostics, audit type coverage: report every variable
+that has no hover or whose inferred type contains \fBunknown\fR. See
+.B TYPE COVERAGE
+below.
+.TP
+.B \-\-help-types
+Print the type\-annotation guide (the JSDoc syntax described under
+.B TYPE ANNOTATIONS )
+and exit.
 .TP
 .B \-\-help
 Show a brief help message and exit.
@@ -53,6 +75,24 @@ Diagnostic lines are printed to stdout in the format:
 .RE
 .PP
 Summary and error messages are printed to stderr.
+.SH TYPE COVERAGE
+With \fB\-\-type-coverage\fR the tool does not print diagnostics. Instead it
+probes every variable identifier through the same hover machinery an editor
+uses and reports the ones the analyzer could not fully type \(em variables with
+no hover, or whose inferred type still contains \fBunknown\fR. Each finding is
+one line:
+.PP
+.RS
+.nf
+\fIfile\fR(\fIline\fR,\fIstartCol\fR\-\fIendCol\fR): unknown\-type: '\fIname\fR' shows as `\fItype\fR`
+\fIfile\fR(\fIline\fR,\fIstartCol\fR\-\fIendCol\fR): no\-hover: '\fIname\fR'
+.fi
+.RE
+.PP
+A trailing summary reports the percentage of variable occurrences that are
+fully typed. Unlike check mode, this always exits \fB0\fR \(em it is an audit,
+not a pass/fail gate. Use it to find code that would benefit from
+\fB@param\fR/\fB@typedef\fR annotations, or to surface gaps in inference.
 .SH TYPE ANNOTATIONS
 .B ucode-lsp
 uses JSDoc comments to provide type information for static analysis.
@@ -121,7 +161,8 @@ Typedefs are scoped to the file they are defined in.
 Builtin modules can be used directly as types:
 \fBfs\fR, \fBuci\fR, \fBubus\fR, \fBuloop\fR, \fBmath\fR, \fBio\fR, \fBlog\fR,
 \fBdebug\fR, \fBdigest\fR, \fBnl80211\fR, \fBresolv\fR, \fBrtnl\fR, \fBsocket\fR,
-\fBstruct\fR, \fBzlib\fR.
+\fBstruct\fR, \fBzlib\fR, \fBbpf\fR, \fBhtml\fR, \fBlua\fR, \fBlucihttp\fR,
+\fBpkgen\fR, \fBuclient\fR, \fBudebug\fR, \fBuline\fR.
 The \fBmodule:\fR prefix is also accepted: \fB{module:fs}\fR.
 .TP
 .B Object types
@@ -218,16 +259,56 @@ When a file contains \fB'use strict'\fR, the analyzer emits info\-level
 diagnostics (UC7003) for function parameters that lack \fB@param\fR
 annotations. Use \fB\-\-verbose\fR in check mode to see these.
 .SH DIAGNOSTIC CODES
+Codes are grouped by family. The list below is representative, not exhaustive.
 .SS Parser Errors
 Syntax errors detected during parsing.
-.SS Semantic Diagnostics (ucode-semantic)
+.SS Names and scope (UC1xxx)
+.TP
+.B UC1001
+Undefined variable: a read of a name with no visible declaration.
+.TP
+.B UC1002
+Undefined function: a call to a name that is not a callable in scope.
 .TP
 .B UC1005
 Variable shadows a variable from an outer scope.
 .TP
+.B UC1006
+Variable is declared but never used.
+.TP
+.B UC1009
+Used before its declaration. ucode does not hoist function or variable
+declarations, so a use above the declaration is a runtime error.
+.SS Values and calls (UC2xxx)
+.TP
+.B UC2004
+A builtin or module function is passed an argument of a provably wrong type.
+.TP
 .B UC2006, UC2007
-printf/sprintf format string errors: wrong number of arguments or
-incompatible argument types.
+printf/sprintf format string errors: wrong number of arguments, or an
+argument whose type does not match its conversion specifier.
+.TP
+.B UC2009
+Impossible comparison: a value whose type makes the comparison always true or
+always false.
+.TP
+.B UC2010
+A value that is not callable is called like a function.
+.SS Imports and modules (UC3xxx)
+.TP
+.B UC3002
+Cannot find the imported module.
+.TP
+.B UC3006
+Call to a module function that is not imported, or not a member of the module.
+.TP
+.B UC3007
+An \fBimport\fR statement that is not at the top level of the file.
+.TP
+.B UC3008
+\fBrequire()\fR with a relative path (\fB"./x"\fR). ucode's \fBrequire\fR
+resolves only search\-path names; a relative path throws at runtime.
+.SS Control flow (UC4xxx)
 .TP
 .B UC4001
 Unreachable code after return, break, continue, or die()/exit().
@@ -237,18 +318,42 @@ A loop mutates the collection it iterates. ucode iterates arrays by a live
 index, so shrinking (pop/shift/splice) silently skips elements and growing
 (push/unshift) may not terminate. An unconditional growth in a loop with no
 exit is a provable infinite loop and is reported as an error.
+.SS Null safety (UC5xxx)
+.TP
+.B UC5004
+Access to a property that is not a known member of the object.
+.TP
+.B UC5005
+Property access or indexing on a value that is provably null here.
+.TP
+.B UC5006
+Property access or indexing on a value that may be null here.
+.SS JSDoc annotations (UC7xxx)
 .TP
 .B UC7001
-Unknown type in @param annotation.
+Unknown type in a @param annotation.
 .TP
 .B UC7002
-@param name does not match any function parameter.
+A @param name does not match any function parameter.
 .TP
 .B UC7003
 Function parameters missing @param annotations (strict mode only).
+.SS Global\-scope soundness and risky calls (UC8xxx)
+.TP
+.B UC8001
+Unguarded call to a builtin that throws on bad input (json(), loadfile(),
+loadstring(), require(), render()) outside a try/catch.
+.TP
+.B UC8002
+Read of a global before it is assigned in this file.
+.TP
+.B UC8004, UC8005
+A global whose existence at a later read cannot be statically determined
+(every assignment sits on a path that may not run), and reads of such a global.
+.SS Argument checks
 .TP
 .B incompatible\-function\-argument
-Argument type does not match what the builtin function expects.
+Argument type does not match what the function expects.
 .TP
 .B nullable\-argument
 Argument may be null where a non\-null value is required.
@@ -288,6 +393,18 @@ Check a single file with verbose output:
 .PP
 .RS
 .B ucode-lsp \-\-verbose router.uc
+.RE
+.PP
+Check against a specific OpenWrt release's ucode:
+.PP
+.RS
+.B ucode-lsp \-\-target-version 23.05 router.uc
+.RE
+.PP
+Audit how much of the code is fully typed:
+.PP
+.RS
+.B ucode-lsp \-\-type-coverage src/
 .RE
 .PP
 Pipe diagnostics to count errors:
