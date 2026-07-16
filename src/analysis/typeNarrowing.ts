@@ -3,7 +3,22 @@
  * Handles union type narrowing and flow-sensitive typing
  */
 
-import { UcodeType, type UcodeDataType, type SingleType, isUnionType, getUnionTypes, createUnionType, singleTypeToBase, isObjectType, isArrayType } from './symbolTable';
+import { UcodeType, type UcodeDataType, type SingleType, isUnionType, getUnionTypes, createUnionType, singleTypeToBase, isObjectType, isArrayType, NEVER_TYPE } from './symbolTable';
+
+/** Base types that are ALWAYS truthy in ucode (`ucv_is_truish`'s `default: return
+ *  true` — objects, arrays, functions, regexes, resources). Everything else
+ *  (integer 0, double 0/NaN, boolean false, string "", null) has a falsy inhabitant,
+ *  so on the FALSY edge of a truthiness test only these are eliminated. */
+const ALWAYS_TRUTHY_BASES: ReadonlySet<UcodeType> = new Set([
+  UcodeType.OBJECT, UcodeType.ARRAY, UcodeType.FUNCTION, UcodeType.REGEX,
+]);
+
+/** Is a single (possibly refined) type always truthy — so it cannot appear on the
+ *  falsy edge of `if (x)`? Refined object/array shapes and module/handle objects
+ *  all collapse to OBJECT/ARRAY, i.e. always truthy. */
+function isAlwaysTruthy(t: SingleType): boolean {
+  return ALWAYS_TRUTHY_BASES.has(singleTypeToBase(t));
+}
 
 /** Check if a SingleType matches any entry in a list (by base type for refined types) */
 function singleTypeIn(t: SingleType, list: SingleType[]): boolean {
@@ -98,8 +113,10 @@ export class TypeNarrowingEngine {
           excludedTypes: []
         };
       }
-      // UNKNOWN means "could be anything" — a type guard narrows it to the tested type
-      if (type === UcodeType.UNKNOWN && typesToKeep.length > 0) {
+      // UNKNOWN (or the display-only ANY sentinel — json()/call() contract-any,
+      // which behaves exactly like UNKNOWN in every check) means "could be
+      // anything" — a type guard narrows it to the tested type.
+      if ((type === UcodeType.UNKNOWN || type === UcodeType.ANY) && typesToKeep.length > 0) {
         return {
           narrowedType: typesToKeep.length === 1 ? typesToKeep[0]! as UcodeDataType : createUnionType(typesToKeep),
           excludedTypes: []
@@ -119,6 +136,33 @@ export class TypeNarrowingEngine {
       narrowedType: createUnionType(keptTypes),
       excludedTypes
     };
+  }
+
+  /**
+   * Narrow a type to its FALSY-capable subset — the type on the false/else edge of
+   * a bare truthiness test `if (x)`. Per ucode's `ucv_is_truish`, only null, false
+   * (boolean), 0 (integer), 0.0/NaN (double) and "" (string) are falsy, so a scalar
+   * base keeps its type (`boolean → boolean`, `integer → integer`, …) while the
+   * ALWAYS-truthy bases (object/array/function/regex) are eliminated — they can
+   * NEVER be reached on the falsy edge. When every member is always-truthy (`if
+   * (obj) …` for a non-null object), the falsy edge is impossible → BOTTOM/`never`,
+   * which the join treats as the identity so it doesn't poison the merge.
+   *
+   * `unknown` (TOP) carries no member info and includes falsy possibilities, so it
+   * is returned unchanged (never refined away).
+   */
+  narrowToFalsy(type: UcodeDataType): TypeNarrowingResult {
+    if (type === UcodeType.UNKNOWN) {
+      return { narrowedType: type, excludedTypes: [] };
+    }
+    const members = getUnionTypes(type);
+    const kept = members.filter(t => !isAlwaysTruthy(t));
+    const excluded = members.filter(isAlwaysTruthy);
+    if (kept.length === 0) {
+      // Every member is always-truthy → the falsy edge is unreachable → BOTTOM.
+      return { narrowedType: NEVER_TYPE, excludedTypes: excluded };
+    }
+    return { narrowedType: createUnionType(kept), excludedTypes: excluded };
   }
 
   /**
@@ -163,6 +207,10 @@ export class TypeNarrowingEngine {
     if (actualBase === expectedType) return true;
     if (expectedType === UcodeType.UNKNOWN) return true;
     if (actualBase === UcodeType.UNKNOWN) return true;
+    // ANY is never produced as a DECLARED/expected type in practice (only json()/
+    // call() return VALUES are ANY), but treat it symmetrically with UNKNOWN here
+    // too — it's the same top type for check purposes, just display-distinct.
+    if (expectedType === UcodeType.ANY) return true;
 
     // Allow integer to double conversion
     if (actualBase === UcodeType.INTEGER && expectedType === UcodeType.DOUBLE) return true;

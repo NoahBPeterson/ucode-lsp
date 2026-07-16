@@ -1,6 +1,55 @@
 # Forward `this.method()` calls inside an object literal keep the shallow pre-pass return type
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** Record-and-patch
+back-fill: forward `this.X()` call sites resolved from the shallow pre-pass are recorded per
+object literal and patched to the accurate type once every sibling has been visited.
+
+## Fix
+
+Mechanism chosen: **record-and-patch, one pass per object literal** (the ticket's proposed
+approach, phase 1 — no diagnostic re-run, no fixpoint/second hop), implemented entirely in
+`src/analysis/semanticAnalyzer.ts` plus one small addition to `src/analysis/typeChecker.ts`:
+
+1. **Mark which return-type entries are shallow.** `inferObjectLiteralFunctionReturnTypes` now
+   takes an optional `shallowOut?: Set<string>` and adds a key to it whenever it fell back to
+   the scope-less pre-pass value (i.e. `_inferredReturnType` wasn't set yet — the sibling
+   hadn't been visited). At each method's `this`-declaration site (`visitFunctionExpression`),
+   the resulting set is stamped onto the new `this` symbol as `propertyReturnTypesShallow`
+   (new optional field on `Symbol`, `src/analysis/symbolTable.ts`).
+2. **Record a dependency when a shallow entry is actually consumed.** In
+   `visitVariableDeclarator`'s CallExpression/MemberExpression rich-type upgrade (right after
+   `sym.dataType = fullType` — `fullType` came from `typeChecker.checkNode`, which resolves
+   `this.X()` via the same `propertyReturnTypes` map), `registerForwardCallDependencyIfShallow`
+   checks whether the initializer is `this.X(...)` and `X` is in the current `this` symbol's
+   `propertyReturnTypesShallow`. If so, it pushes `{ methodName, symbol, callNode }` onto a
+   per-object-literal list (`pendingForwardCallDeps`, keyed by the enclosing
+   `ObjectExpressionNode`, tracked in parallel with the existing `thisObjectNodeStack`).
+3. **Patch after the literal is fully visited.** `visitObjectExpression` initializes an empty
+   dependency list for the node before visiting its properties and, right after
+   `super.visitObjectExpression(node)` returns (every method's body — and therefore every
+   `_inferredReturnType` — is now accurate), calls `patchForwardCallDependencies(node)`: it
+   recomputes the accurate return-type map and, for each recorded dependency, overwrites the
+   consumer's `symbol.dataType` (and `currentType` if set) AND the call node's cached type via
+   a new `TypeChecker.setTypeOf(node, type)` (mirrors the existing `getTypeOf`).
+4. **Why the type-checker cache also needed patching:** patching `symbol.dataType` alone
+   fixed direct hover/coverage reads of the declarator, but `TypeChecker.buildFlowEngines`
+   (called once, AFTER the whole file's visit) reads the CACHED type of the declarator's
+   INIT NODE (not `symbol.dataType`) to seed its per-function dataflow — so the forward
+   call's flow-tracked type stayed shallow even after the symbol was patched, until the cache
+   was patched too. Verified the ordering is safe: `buildFlowEngines` runs strictly after the
+   full-program traversal, so the patch (made during the traversal) is always in place first.
+5. Bounded exactly as scoped: one patch pass per object literal, no fixpoint — a chain of two
+   forward hops would only get the first hop patched (not present in the fw4 corpus; not
+   specifically re-measured).
+
+Verified end-to-end via the real consumer path (`handleHover`, through the `--type-coverage`
+CLI's `auditTypeCoverage`, which calls `handleHover` per identifier) — not just internal state.
+Minimal repro (`zzzz/probe-forward-ref.uc`): `rvEarly = this.late(v)` (forward call, `late`'s
+return reads a local `rv`) went from `unknown | null` to matching `rvAfter`'s (already-working)
+`object | null`. Corpus (combined with docs/tc-fn-reference-property-returns.md's shapes 1a/1b,
+run together — fw4.uc is dominated by this ticket's `parse_invert`/`parse_enum` family):
+`firewall4/root/usr/share/ucode/fw4.uc` 59.4% → 63.8% typed (1323 → 1182 unknown-type
+findings, -141), close to the ticket's ~100-120 estimate for this cluster alone.
 
 ## The gap
 
@@ -109,3 +158,15 @@ plumbing (record + patch), with an explicit bound of one pass per literal. No ne
 invented, so no unsoundness: the patched type is exactly what a later caller already gets today.
 Estimated impact: ~100–120 direct occurrences (fw4 `parse_invert`/`parse_enum` family dominate), plus
 secondary wins wherever the stuck `unknown` propagated into the calling method's own return type.
+
+## Limitations (audit-confirmed, 2026-07)
+
+- **One patch pass per object literal — no fixpoint.** `patchForwardCallDependencies` recomputes each
+  method's return type from its `_inferredReturnType` (stamped during that method's own body visit) and
+  overwrites the consumer `let`-symbols, but it does **not** re-derive the methods' own cached returns.
+  So a **two-hop forward chain** — method `A` reads `this.B()`, and `B`'s body reads `this.C()` where
+  `C` is *also* defined later — corrects only `A`'s view of `B`. `B`'s dependence on `C` stays at the
+  shallow pre-pass estimate. Single forward hops (the overwhelming majority in the corpus) are covered;
+  chains are not. Sound in both cases — the uncorrected hop just stays `unknown`, never wrong.
+- **`this` in a plain `FunctionDeclaration` is out of scope** (unbound receiver) — only object-literal
+  methods participate. Shares this boundary with `docs/tc-fn-reference-property-returns.md`.

@@ -1,6 +1,24 @@
 # Falsy branch of a truthiness guard narrows non-nullable scalars to `unknown` and poisons every post-if read
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** Falsy edge of `if (v)` now narrows to the falsy-capable subset (scalars keep their type; always-truthy objects → a new BOTTOM/`never` that the join treats as identity), so post-guard scalar reads stay typed instead of collapsing to `unknown`.
+
+## Fix
+
+Three coordinated changes across the narrowing lattice:
+
+1. **A real BOTTOM/`never`** (`src/analysis/symbolTable.ts`): `NEVER_TYPE` (an empty union — the only empty-union value) + `isNeverType()`. It is the lattice complement of `UNKNOWN` (TOP): TOP absorbs everything in a join, BOTTOM is the join IDENTITY. `typeToString(NEVER_TYPE) === 'never'` (never surfaced to hover — see step 4).
+
+2. **Falsy-capable narrowing** (`src/analysis/typeNarrowing.ts` `narrowToFalsy`): per ucode's `ucv_is_truish` (types.c — false/null/0/0.0/NaN/"" falsy, everything else truthy), keeps null/boolean/integer/double/string and eliminates the ALWAYS-truthy bases (object/array/function/regex). Empty result → `NEVER_TYPE`.
+
+3. **Distinguish truthiness from `!= null`** (`typeChecker.ts`): a bare `if (x)` guard is tagged `isTruthiness` in `extractTypeGuard` (checked before `isNullGuardCondition`). `applyTypeGuard`'s falsy branch (the flipped `{NULL, isNegative:false}`) now calls `narrowToFalsy` for a truthiness guard instead of `keepOnlyTypes([NULL])` (which returned UNKNOWN=top → the poison). An explicit `x == null` is unchanged (still keeps only null). `joinTypes` (`flowTypeEngine.ts`) gains `isNeverType` identity handling **before** the UNKNOWN/top rule.
+
+4. **Never leaks to hover** (`typeChecker.ts getNarrowedTypeAtPosition`): a BOTTOM engine/legacy result is treated as "no refinement" → hover falls back to the declared type (so `if (obj) return; obj;` shows `object`, not `never`).
+
+The existing null-guard and `type()`-guard machinery is untouched (both suites green). Repro: `zzzz/demo-tc-falsy-narrowing.uc`; tests: `tests/test-tc-falsy-narrowing.test.js`.
+
+---
+
+Status (original): **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
 
 ## The gap
 

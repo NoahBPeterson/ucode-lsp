@@ -1,6 +1,56 @@
 # Methods that are function *references* (not inline literals) carry no return type
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** Identifier-valued
+properties, post-hoc `obj.prop = fn` assignment, and the export-default post-hoc-reference
+shape (mwan4.uc) all now resolve through the same `propertyReturnTypes` channel the consumer
+already read.
+
+## Fix
+
+- `src/analysis/semanticAnalyzer.ts`:
+  - `inferObjectLiteralFunctionReturnTypes` / `precomputeObjectMethodReturnTypes`
+    (object-literal property scan): a property whose value is an `Identifier` is now
+    resolved through a new `resolveIdentifierFunctionReturnType(id)` helper — looks the name
+    up in the symbol table and, if it's a function (`FunctionDeclaration` symbol or a
+    function-VALUED variable stamped by the 0.6.193 mechanism) with a known `returnType`,
+    records it. Covers shape (a), the "proto table" idiom (`{ select: context_select }`).
+  - `visitAssignmentExpression`'s member-write branches (`obj.prop = …` on an Identifier
+    receiver, and `this.prop = …`): added a new `functionReturnTypeOfRhs(rhs)` helper (reads
+    `_inferredReturnType` off an inline `function(){}`/arrow RHS, or delegates to
+    `resolveIdentifierFunctionReturnType` for an Identifier RHS) and a deferred write of the
+    result into the receiver symbol's (or `this`'s) `propertyReturnTypes`. Covers shape (b),
+    post-hoc method attachment (`nft_file.append = function(…){…}` / `= someHelper`).
+  - `resolveIdentifierFunctionReturnType` / `functionReturnTypeOfRhs` are shared by both call
+    sites — no duplicated resolution logic.
+- `src/analysis/fileResolver.ts`, `getDefaultExportPropertyTypes`: after building
+  `propertyTypes`/`functionReturnTypes` from the exported object's LITERAL properties, added a
+  second scan over the file's top-level statements for `exportedName.prop = <value>;`
+  assignments (only when the default export resolves through a named variable — an inline
+  `export default {...}` has nothing to assign to before the export). Reuses the exact same
+  per-value-shape resolution (`FunctionExpression`/`Identifier`-to-function/literal/object/
+  array) already used for literal properties. Covers shape (c), mwan4.uc's dominant idiom
+  (`mwan4.get_iface_id = get_iface_id; … export default mwan4;`) — flows through the EXISTING
+  `propertyFunctionReturnTypes` cross-file channel (semanticAnalyzer.ts ~3444-3452), so no
+  importer-side change was needed.
+
+Verified via `--type-coverage` (corpus numbers include ticket 2's fix, run together):
+- `firewall4/root/usr/share/ucode/fw4.uc`: 59.4% → 63.8% (1940/3264 → 2081/3264 typed;
+  1323 → 1182 unknown-type findings).
+- `openwrt/package/utils/cli/files/usr/share/ucode/cli/context.uc`: 42.9% → 43.2%
+  (433/1009 → 436/1009 typed). Smaller than the ticket's ~40-occurrence estimate because
+  `this.select(...)` in context.uc is called through the `proto(obj, protoObj)` prototype
+  chain (`model.context_proto` is a SPREAD-merged copy of `context_proto`, and the caller is a
+  plain `FunctionDeclaration`, not a method inside the object literal) — exactly the
+  "proto()-chained receiver" / "`this` inside a plain FunctionDeclaration" cases the ticket
+  calls out as a separate, partially-solvable follow-up. Shape (a)'s fix is confirmed correct
+  (verified directly in the minimal repro and in `zzzz/demo-tc-method-returns.uc`); it simply
+  doesn't reach context.uc's actual call sites without that follow-up.
+- `pbr/files/lib/pbr/nft.uc`: 76.9% → 78.1% (1305/1698 → 1326/1698 typed; 393 → 372 unknown).
+- `mwan4/files/lib/mwan4/mwan4rtmon.uc` (shape c importer): 70.4% → 75.6%
+  (190/270 → 204/270 typed; 80 → 66 unknown).
+
+Out of scope, unchanged (as classified): `proto()`-chained receivers and `this` inside a
+plain `FunctionDeclaration`.
 
 ## The gap
 

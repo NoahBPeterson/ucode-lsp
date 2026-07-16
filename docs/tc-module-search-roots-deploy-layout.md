@@ -1,6 +1,68 @@
 # Module resolution misses deploy-layout roots — utest `src/`, hostap absolute imports, cross-package siblings
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** Tier 1
+(files/root deploy-root mapping for absolute imports) and tier 2's zero-config
+`X/src/X.uc` package-src-mirror detection are both built in
+`src/analysis/fileResolver.ts`'s `resolveImportPath`. Tier 3 (cross-package
+deploy-time siblings) is DELIBERATELY NOT built — see "## Fix" below.
+
+## Fix
+
+- **Tier 1 (absolute imports, hostap case) — `resolveImportPath`'s absolute
+  branch** (fileResolver.ts, in the `importPath.startsWith('/')` block): after
+  the literal-path and workspace-root-relative probes fail, walk the
+  importer's ancestors; at any ancestor named `files` or `root` (the OpenWrt
+  package-payload convention — both occur in this workspace), probe
+  `<ancestor>/<absolute-path>`. Same-package only, existence-gated (sound).
+  Clears `/usr/share/hostap/common.uc` from `wifi-scripts/files/usr/share/hostap/wdev.uc`.
+
+- **Tier 2 zero-config detection (utest case) — same function's dotted/bare
+  branch, ancestor-walk loop**: alongside the pre-existing `share/ucode` /
+  `lib/ucode` mirror-root check, two NEW checks run at every ancestor level:
+  (a) `isPackageDeployRoot` — a `root`/`files`-named ancestor additionally
+  probes `<ancestor>/usr/{share,lib}/ucode/<dottedPath>` (and the `usr/local`
+  pair) — this is tier 2 from `docs/tc-module-root-mapping.md`, built here
+  since both tickets touch the same loop; (b) `packageSrcMirror` — an
+  ancestor `D` whose `D/src/<basename(D)>.uc` (or `D/src/<basename(D)>/`)
+  exists on disk is treated as a search-root mirror at `D/src` (the
+  ticket's proposed zero-config heuristic: verified against utest.sh
+  `UTEST_SRC=/usr/share/ucode` + the package Makefile, which install `src/*`
+  flattened to that path — so `utest/src/utest.uc` existing is same-package
+  evidence that `utest/src/` mirrors the install root). Existence-gated both
+  ways (the marker file AND the resolved target must exist), so it can't
+  manufacture a resolution absent on-disk evidence.
+  Clears `import { describe, it, assert, contains } from 'utest'` (and the
+  intra-package dotted names like `utest.mock.engine`).
+
+- **NOT built — tier 3 (cross-package deploy-time siblings, e.g.
+  `wifi-scripts/files/lib/netifd/wireless-device.uc` importing `./utils.uc`
+  which really lives in `netifd/files/lib/netifd/utils.uc`).** Left as
+  UC3002. A workspace-wide deploy-path index (mapping every `files/`/`root/`
+  subtree's payload path to a repo file, then re-resolving relative imports
+  against the DEPLOYED directory instead of the repo directory) is the right
+  shape per the ticket's own tier-3 sketch, but it's a materially bigger,
+  riskier piece of machinery (a NEW workspace-scan cache, ambiguity handling
+  when two packages ship the same deploy path) than tiers 1/2's local,
+  existence-gated ancestor probes — deferred rather than rushed into this
+  pass. Verified still UC3002 after the fix (no accidental over-resolution).
+
+Before/after (`--type-coverage`, this repo's real corpus):
+- `utest/examples/unit/` (41 files): 15.5% (348/2248) → 71.4% (1604/2248),
+  +1256 occurrences typed. Remaining 644 unknown are deeper body-inference
+  limits (e.g. property-based generators, not resolution).
+- `openwrt/.../wifi-scripts/files/usr/share/hostap/` (3 files): 60.1%
+  (627/1044) → 63.1% (659/1044), +32. Smaller than the ~70-100 estimate
+  because many hostap functions' bodies still don't infer a return type
+  (untyped params, complex control flow) even once the import resolves —
+  the RESOLUTION gap is fully closed; remaining unknowns are inference depth.
+
+Tests: `tests/imports/test-deploy-root-module-resolution.test.js` (6 cases:
+package-src-mirror bare + dotted resolution, a package WITHOUT the src/name.uc
+marker staying unresolved, the hostap absolute-path case, the firewall4
+sibling-root case via `require()`, and the cross-package-sibling case staying
+UC3002). Existing `tests/imports/test-dotted-module-search-root.test.js` and
+`tests/imports/test-file-resolver.test.js` re-verified green (no regression
+to 0.7.48's mirror-root walk).
 
 ## The gap
 

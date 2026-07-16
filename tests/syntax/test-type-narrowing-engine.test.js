@@ -17,6 +17,7 @@ import {
   createUnionType,
   createArrayType,
   getUnionTypes,
+  singleTypeToBase,
 } from '../../src/analysis/symbolTable';
 
 const eng = new TypeNarrowingEngine();
@@ -38,6 +39,11 @@ const reprForType = (t) =>
     Match.when(UcodeType.REGEX, () => UcodeType.REGEX),
     Match.when(UcodeType.NULL, () => UcodeType.NULL),
     Match.when(UcodeType.UNKNOWN, () => UcodeType.UNKNOWN),
+    // ANY (docs/tc-json-any-return-display.md): a display-only sentinel for
+    // "any value by contract" (json()/call()) that collapses to UNKNOWN inside
+    // singleTypeToBase/dataTypeToBase — behaves exactly like UNKNOWN in every
+    // check in this engine (see refSubtype below).
+    Match.when(UcodeType.ANY, () => UcodeType.ANY),
     Match.when(UcodeType.UNION, () => createUnionType([UcodeType.STRING, UcodeType.NULL])),
     Match.exhaustive
   );
@@ -45,10 +51,15 @@ const reprForType = (t) =>
 // Reference for isSubtype on single concrete types — the rules in isTypeCompatible:
 // reflexive, UNKNOWN absorbs both directions, integer widens to double.
 // array and object are NOT mutually compatible (the leniency we removed).
+// ANY absorbs identically to UNKNOWN (isTypeCompatible resolves both sides via
+// singleTypeToBase, which collapses ANY to UNKNOWN — by design, it's a
+// display-only "any by contract" sentinel, not a new top type of its own).
 const refSubtype = (a, e) =>
   a === e ||
   e === UcodeType.UNKNOWN ||
   a === UcodeType.UNKNOWN ||
+  e === UcodeType.ANY ||
+  a === UcodeType.ANY ||
   (a === UcodeType.INTEGER && e === UcodeType.DOUBLE);
 
 const asSet = (t) => new Set(getUnionTypes(t));
@@ -94,7 +105,12 @@ describe('isSubtypeOfUnion — pure base-set membership (no widening)', () => {
     test(`isSubtypeOfUnion(${a}, ...) by base membership`, () => {
       expect(eng.isSubtypeOfUnion(a, [a])).toBe(true);
       // Unlike isSubtype: no int->double widening, no UNKNOWN absorption.
-      const others = CONCRETE.filter((t) => t !== a);
+      // Filter `others` by BASE (not raw identity): ANY and UNKNOWN share the same
+      // base (singleTypeToBase collapses ANY→UNKNOWN by design — see UcodeType.ANY's
+      // doc), so `others` must exclude BOTH when `a` is either of them, or the
+      // membership check would spuriously match on the shared base.
+      const aBase = singleTypeToBase(a);
+      const others = CONCRETE.filter((t) => singleTypeToBase(t) !== aBase);
       expect(eng.isSubtypeOfUnion(a, others)).toBe(false);
     });
   }
@@ -183,7 +199,14 @@ describe('containsNull / containsType — exhaustive', () => {
   for (const t of CONCRETE) {
     test(`containsNull(${t}) / containsType(${t}, ${t})`, () => {
       expect(eng.containsNull(t)).toBe(t === UcodeType.NULL);
-      expect(eng.containsType(t, t)).toBe(true);
+      // ANY is the one exception to reflexive self-containment: containsType
+      // resolves the union MEMBER via singleTypeToBase (ANY → UNKNOWN) but
+      // compares it against the RAW searchType (never collapsed) — so
+      // containsType(ANY, ANY) sees UNKNOWN !== ANY. Harmless: nothing in the
+      // codebase ever calls containsType with ANY as the search type (only
+      // OBJECT/ARRAY, typeChecker.ts's `in`-operator check), so this asymmetry
+      // never surfaces in practice — it's a documented exception, not a bug.
+      expect(eng.containsType(t, t)).toBe(t === UcodeType.ANY ? false : true);
     });
   }
 

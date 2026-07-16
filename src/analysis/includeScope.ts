@@ -156,7 +156,7 @@ export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSit
     }
 
     for (const k of Object.keys(n)) {
-      if (k === 'leadingJsDoc') continue;
+      if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc.)
       const v = n[k];
       if (Array.isArray(v)) { for (const it of v) walk(it); }
       else if (isNode(v)) walk(v);
@@ -366,7 +366,7 @@ export function computeFreeVariables(ast: AstNode | null | undefined): Set<strin
     // it's not a SCOPE_ROLE binding) — but for free-variable purposes it's assigned, so count it.
     if (n.type === 'ForInStatement' && isNode(n.left) && n.left.type === 'Identifier') addId(n.left);
     for (const k of Object.keys(n)) {
-      if (k === 'leadingJsDoc') continue;
+      if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc.)
       const v = n[k];
       if (Array.isArray(v)) { for (const it of v) collectDecls(it); }
       else if (isNode(v)) collectDecls(v);
@@ -381,7 +381,7 @@ export function computeFreeVariables(ast: AstNode | null | undefined): Set<strin
       read.add(n.name);
     }
     for (const k of Object.keys(n)) {
-      if (k === 'leadingJsDoc') continue;
+      if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc.)
       // Skip non-read identifier positions.
       if (n.type === 'MemberExpression' && k === 'property' && !n.computed) continue;
       if (n.type === 'Property' && k === 'key' && !n.computed) continue;

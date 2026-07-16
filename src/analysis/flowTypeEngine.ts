@@ -17,7 +17,7 @@
 
 import { type BasicBlock, type ControlFlowGraph } from './cfg/types';
 import { type AstNode } from '../ast/nodes';
-import { UcodeType, type UcodeDataType, createUnionType, getUnionTypes } from './symbolTable';
+import { UcodeType, type UcodeDataType, createUnionType, getUnionTypes, isNeverType, singleTypeToBase } from './symbolTable';
 
 /** An lvalue key is an identifier name or a constant member path ("parts[5]",
  *  "o.name") — the same key space getDottedPath produces. */
@@ -62,6 +62,11 @@ export type EdgeGuardFn = (condition: AstNode, isNegative: boolean, env: Map<LVa
 export function makeAssignmentTransfer(typeOf: (node: AstNode) => UcodeDataType | undefined): StmtTransferFn {
   return (stmt, env) => {
     if (stmt.type === 'VariableDeclaration') {
+      // For-in loop vars (stamped by cfgBuilder.visitForInStatement): initless in
+      // the AST but iterator-assigned on every body iteration — recording `null`
+      // here would poison every body read once the loop join carries it. Skip; the
+      // symbol's element/key type is the fallback the reads should resolve to.
+      if ((stmt as { _forInLoopVar?: boolean })._forInLoopVar) return;
       for (const d of ((stmt as any).declarations ?? [])) {
         if (d?.id?.type !== 'Identifier') continue;
         if (d.init) {
@@ -73,9 +78,20 @@ export function makeAssignmentTransfer(typeOf: (node: AstNode) => UcodeDataType 
       }
     } else if (stmt.type === 'ExpressionStatement') {
       const expr = (stmt as any).expression;
-      if (expr?.type === 'AssignmentExpression' && expr.operator === '=' && expr.left?.type === 'Identifier') {
-        const t = typeOf(expr.right);
-        if (t !== undefined) env.set(expr.left.name, t);
+      if (expr?.type === 'AssignmentExpression' && expr.left?.type === 'Identifier') {
+        if (expr.operator === '=') {
+          const t = typeOf(expr.right);
+          if (t !== undefined) env.set(expr.left.name, t);
+        } else {
+          // Compound assignment (`+=`, `??=`, …): the assignment EXPRESSION's own
+          // checked type (cached by TypeChecker.checkAssignmentExpression, which
+          // now computes `typeof(x_old op y)` — docs/tc-compound-assign-operator-typing.md)
+          // is the correct new type. Previously this branch didn't match `operator
+          // === '='`, so a compound assign left the flow env holding the STALE
+          // pre-assignment type instead of invalidating/updating it.
+          const t = typeOf(expr);
+          if (t !== undefined) env.set(expr.left.name, t);
+        }
       }
     }
   };
@@ -87,11 +103,26 @@ export function makeAssignmentTransfer(typeOf: (node: AstNode) => UcodeDataType 
  *  singleton, so join is idempotent and commutative. */
 export function joinTypes(a: UcodeDataType, b: UcodeDataType): UcodeDataType {
   if (typesEqual(a, b)) return a;
+  // BOTTOM/`never` is the join IDENTITY: a path that is IMPOSSIBLE (e.g. the falsy
+  // edge of `if (obj)` where `obj` is an always-truthy object) contributes nothing
+  // to the merge, so `join(T, ⊥) = T`. This MUST precede the `unknown` (TOP) rule —
+  // otherwise `join(object, ⊥)` would fall through and, because `⊥` is an empty
+  // union, widen back to `object|…`/unknown and poison the sibling path.
+  if (isNeverType(a)) return b;
+  if (isNeverType(b)) return a;
   // `unknown` is the lattice TOP ("could be anything"): if one incoming path is
   // unknown, the merge is unknown — NOT `T|unknown`. Without this, an `if` that
   // narrows on one path and falls through unguarded on the other would surface a
   // spurious `string|unknown` instead of collapsing back to the declared type.
-  if (a === UcodeType.UNKNOWN || b === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
+  // `any` (json()/call() contract-any — see docs/tc-json-any-return-display.md) is
+  // the same lattice TOP for check purposes, so it absorbs identically — no
+  // `T|any` union is formed at a merge point either. DISPLAY choice: when `any`
+  // is one of the two incoming types, prefer it over a bare `unknown` result (it's
+  // strictly more informative — "provably any by contract" vs "no information");
+  // when both sides are the generic `unknown` TOP, keep returning `unknown`.
+  if (a === UcodeType.UNKNOWN || b === UcodeType.UNKNOWN || a === UcodeType.ANY || b === UcodeType.ANY) {
+    return (a === UcodeType.ANY || b === UcodeType.ANY) ? UcodeType.ANY : UcodeType.UNKNOWN;
+  }
   return createUnionType([...getUnionTypes(a), ...getUnionTypes(b)]);
 }
 
@@ -139,6 +170,61 @@ function envsEqual(a: FlowEnvironment, b: FlowEnvironment): boolean {
     if (bv === undefined || !typesEqual(v, bv)) return false;
   }
   return true;
+}
+
+/**
+ * Widening operator (▽) for the loop back-edge. The type lattice is NOT
+ * finite-height in practice: a rich `ArrayType`/`ObjectType` carries an element/
+ * shape type, and joining tuples with DIFFERENT element shapes on each loop
+ * iteration (`['args',[]]` vs `['code','']` vs `['file',…]`) produces an
+ * ever-growing union (`array<string|array> | array<string|object> | …`) that the
+ * fixpoint never closes on — it churns until the iteration cap and leaves nested
+ * loop-body blocks stale. Widening collapses each union member to its BASE enum
+ * once a variable's type is still changing on a loop revisit, bounding the height
+ * at the finite set of base kinds (so `array<A>|array<B>|null` ▽ … = `array|null`).
+ * That coarser type is exactly what the null-tracking diagnostic consumers need
+ * (is it null / may-null / non-null); precise element types for hover come from
+ * the symbol table, not the engine. Applied ONLY when old≠new on a revisit, so
+ * straight-line (visited-once) code is never widened.
+ */
+function widenType(oldT: UcodeDataType, newT: UcodeDataType): UcodeDataType {
+  if (typesEqual(oldT, newT)) return newT;
+  // Union the BASE-collapsed members of both sides: bounded by the finite set of
+  // base kinds, and monotone (the result only ever gains base members), so a key
+  // widened this way settles within ~(#base-kinds) revisits regardless of how many
+  // distinct rich shapes flowed through it.
+  return createUnionType([...getUnionTypes(oldT).map(singleTypeToBase), ...getUnionTypes(newT).map(singleTypeToBase)]);
+}
+
+/**
+ * MONOTONE accumulator for a block's out-env across loop revisits. Two invariants
+ * make the fixpoint converge on loops (docs/tc-loop-carried-flow-join.md):
+ *
+ *  - KEYS NEVER DROP. A key present in the previous out is retained even if this
+ *    pass's in-env (an intersection over predecessors) didn't carry it — otherwise
+ *    a key flaps present/absent as upstream predecessors get (re)visited, and the
+ *    block is re-queued forever. Monotone key growth is bounded by the variable
+ *    count. (Sound for the null-tracking consumers: a retained key can only widen
+ *    the type — an over-approximation of the values that reach here.)
+ *  - CHANGED TYPES WIDEN. A key whose type changed collapses to the base-union of
+ *    old ⊔ new (widenType), bounding lattice height so the churn from ever-growing
+ *    rich `array<…>` element unions terminates.
+ *
+ * A key appearing for the FIRST time is kept as-is (its precise type); it only
+ * widens once it actually changes on a later revisit.
+ */
+function widenEnv(oldEnv: FlowEnvironment, newEnv: FlowEnvironment): FlowEnvironment {
+  const out = new Map<LValueKey, UcodeDataType>();
+  const keys = new Set<LValueKey>([...oldEnv.keys(), ...newEnv.keys()]);
+  for (const k of keys) {
+    const o = oldEnv.get(k);
+    const n = newEnv.get(k);
+    if (o === undefined) out.set(k, n!);            // first appearance — keep precise
+    else if (n === undefined) out.set(k, o);        // retained (monotone: never drop)
+    else if (typesEqual(o, n)) out.set(k, o);
+    else out.set(k, widenType(o, n));               // changed — widen to bounded base-union
+  }
+  return out;
 }
 
 export class FlowTypeEngine {
@@ -224,24 +310,45 @@ export class FlowTypeEngine {
     const cap = Math.max(64, this.cfg.blocks.length * this.cfg.blocks.length);
     let guard = 0;
 
+    // OPTIMISTIC INITIALIZATION for the intersection meet. joinEnvironments keeps a
+    // key only when ALL incoming paths carry it (available-expressions-style meet).
+    // The identity for that meet is the UNIVERSAL set, not the empty map — so a
+    // predecessor whose out-env has not been computed yet (`outEnv` still the empty
+    // placeholder) must NOT constrain the join, or it permanently zeroes the
+    // intersection. This is exactly the loop back-edge: on the loop head's first
+    // visit the back-edge predecessor (the loop body's tail) is unvisited and empty;
+    // treating that empty as a real path drops every loop-carried variable and the
+    // fixpoint starves at ∅ (docs/tc-loop-carried-flow-join.md). Skip unvisited
+    // predecessors; once the body has run and the tail block is visited, the head is
+    // re-queued and joins the real end-of-body state (the loop-carried join). At the
+    // final fixpoint every reachable block is visited, so the answer is the true meet.
+    const visited = new Set<number>();
+
     while (worklist.length > 0) {
       if (++guard > cap) break; // widening backstop — should never trigger in practice
       this.iterations = guard;
       const block = worklist.shift()!;
 
       // Entry seeds with parameters; every other reachable block joins its
-      // REACHABLE predecessors (an unreachable pred contributes nothing — and
-      // must not, or joinEnvironments' "present on all paths" rule would drop a
-      // variable the real paths agree on).
-      const reachablePreds = block.predecessors.filter(p => reachable.has(p.id));
+      // REACHABLE, ALREADY-VISITED predecessors (an unreachable pred contributes
+      // nothing — and must not, or joinEnvironments' "present on all paths" rule
+      // would drop a variable the real paths agree on; an unvisited pred is the
+      // back-edge whose end-of-body state is not yet known — see above).
+      const joinPreds = block.predecessors.filter(p => reachable.has(p.id) && visited.has(p.id));
       const newIn = block === this.cfg.entry
         ? this.entryEnv // entry: seed with parameters
-        : joinEnvironments(reachablePreds.map(p => this.edgeInEnv(p, block, empty)));
+        : joinEnvironments(joinPreds.map(p => this.edgeInEnv(p, block, empty)));
       this.inEnv.set(block.id, newIn);
 
-      const newOut = this.runBlock(block, newIn);
-      if (!envsEqual(newOut, this.outEnv.get(block.id) ?? empty)) {
+      let newOut = this.runBlock(block, newIn);
+      const prevOut = this.outEnv.get(block.id) ?? empty;
+      // On a REVISIT (loop back-edge re-processing), widen the growing keys so the
+      // fixpoint closes in bounded steps instead of churning to the iteration cap.
+      if (visited.has(block.id)) newOut = widenEnv(prevOut, newOut);
+      const changed = !envsEqual(newOut, prevOut);
+      if (changed || !visited.has(block.id)) {
         this.outEnv.set(block.id, newOut);
+        visited.add(block.id);
         for (const edge of block.successors) {
           if (reachable.has(edge.target.id) && !worklist.includes(edge.target)) worklist.push(edge.target);
         }

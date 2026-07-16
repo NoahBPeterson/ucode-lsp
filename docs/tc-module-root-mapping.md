@@ -1,6 +1,43 @@
 # Bare/dotted module names don't find in-package deploy roots (`require("fw4")` / `import 'fw4'` from firewall4)
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** Built
+in the SAME ancestor-walk loop as the peer ticket's tier 1
+(`docs/tc-module-search-roots-deploy-layout.md`) since both extend
+`resolveImportPath`'s dotted/bare branch.
+
+## Fix
+
+`src/analysis/fileResolver.ts`, `resolveImportPath`'s dotted/bare-name
+ancestor-walk loop: a new `isPackageDeployRoot(dir)` check (`root` or `files`
+basename) additionally probes `<dir>/usr/share/ucode/<dottedPath>`,
+`<dir>/usr/lib/ucode/<dottedPath>`, and the `usr/local` pair — i.e. treats the
+deploy root as `/` and expands ucode's own default `REQUIRE_SEARCH_PATH`
+templates under it. Same-package-only (the check only fires on an ancestor of
+the IMPORTER), deterministic, existence-gated.
+
+Verified: `import fw4 from 'fw4'` and `require("fw4")` from
+`firewall4/root/usr/share/firewall4/main.uc` now resolve to
+`firewall4/root/usr/share/ucode/fw4.uc` (confirmed via a probe file placed at
+that path — UC3002 cleared). A name that only exists in ANOTHER package's
+`root/usr/share/ucode` stays unresolved (not tested cross-package here, since
+that's exactly the tier-3 case the peer ticket declines). Pre-existing
+ancestor-mirror (`share/ucode`/`lib/ucode`) behavior re-verified unchanged via
+`tests/imports/test-dotted-module-search-root.test.js` (still green).
+
+Note: `import fw4 from 'fw4'` ALSO separately hits a pre-existing, unrelated
+gap once the path resolves — firewall4's `fw4.uc` has no `export` statements
+at all (a bare top-level `return {...}`, ucode's "legacy" module shape), so
+the ES6-import-specific `hasDefaultExport` check in
+`validateAndProcessImportSpecifier` still reports "does not have a default
+export" (a `import`-only diagnostic; `firewall4` actually uses `require()`,
+which has no such check — see `docs/tc-require-user-module-typing.md`).
+Recognizing a bare top-level return as an `import`-default-export-equivalent
+is a small, separate, deliberately-NOT-built follow-up (the corpus's real
+usage is `require()`, which already works end-to-end).
+
+Tests: `tests/imports/test-deploy-root-module-resolution.test.js` (root/-deploy-root
+describe block) plus `tests/imports/test-require-user-module-typing.test.js`
+(the same shape via `require()`, which is the real corpus idiom).
 **Delta ticket** on `docs/tc-module-search-roots-deploy-layout.md` (filed the same day by a parallel
 audit slice): that ticket's tier 1 maps **absolute** import paths onto ancestor `files/`/`root/`
 deploy roots, and its tier 2 adds configured search roots. This ticket covers the remaining shape:

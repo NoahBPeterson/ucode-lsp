@@ -3,6 +3,163 @@
  * Based on ucode regex literal support
  */
 
+/** Per-pattern capture-group static shape, computed by `analyzeCaptureGroups` for
+ *  a regex LITERAL. `groupCount` is the number of capturing groups (`re_nsub`);
+ *  `optional[i]` (0-based, group `i+1`) is true when group `i+1` may fail to
+ *  participate even on an overall successful match. See docs/tc-match-capture-group-typing.md. */
+export interface CaptureGroupInfo {
+  groupCount: number;
+  optional: boolean[];
+}
+
+/** Tree node for one capturing group discovered while scanning a POSIX ERE pattern. */
+interface GroupNode {
+  index: number;           // 0-based group number (group id = index + 1)
+  children: GroupNode[];
+  ownQuantifierOptional: boolean; // directly followed by `?`, `*`, or `{0,...}`
+  bodyHasAlt: boolean;     // this group's OWN body contains a top-level `|`
+}
+
+/** Scanning frame: either the top-level pattern (node === null) or a currently-open
+ *  group's body. `hasAlt` becomes true the moment an unescaped `|` is seen at this
+ *  frame's own nesting depth (not inside a nested group) — a top-level `|` in a
+ *  frame means every group opened DIRECTLY in that frame is optional (only one
+ *  alternation branch actually runs), regardless of whether the `|` appears before
+ *  or after the group textually. */
+interface Frame {
+  node: GroupNode | null;
+  hasAlt: boolean;
+  children: GroupNode[];
+}
+
+/** Parse the `{n}` / `{n,}` / `{n,m}` interval quantifier starting at `pattern[pos]`
+ *  (which must be `{`). Returns null if it doesn't look like a valid interval (then
+ *  the `{` is just a literal character in POSIX ERE — no capture-group impact). */
+function parseInterval(pattern: string, pos: number): { minZero: boolean; length: number } | null {
+  const m = /^\{(\d*)(,(\d*))?\}/.exec(pattern.slice(pos));
+  if (!m) return null;
+  const minStr = m[1] ?? '';
+  if (minStr === '' && !m[2]) return null; // `{}` / `{,}` — not a real POSIX interval
+  const min = minStr === '' ? 0 : parseInt(minStr, 10);
+  return { minZero: min === 0, length: m[0].length };
+}
+
+/** Does the quantifier (if any) immediately at `pattern[pos]` make the PRECEDING
+ *  atom (here, the group that just closed) optional — i.e. a repetition whose
+ *  minimum is 0 (`?`, `*`, `{0,...}`)? `+` and `{n,...}` with n>=1 keep the atom
+ *  mandatory (still subject to enclosing alternation/optionality separately). */
+function quantifierMakesOptional(pattern: string, pos: number): boolean {
+  const c = pattern[pos];
+  if (c === '?' || c === '*') return true;
+  if (c === '+') return false;
+  if (c === '{') {
+    const interval = parseInterval(pattern, pos);
+    if (interval) return interval.minZero;
+  }
+  return false;
+}
+
+/** Compute the static capture-group shape of a POSIX ERE pattern (ucode regexes
+ *  compile straight through `regcomp(..., REG_EXTENDED)` — verified against
+ *  ucode/types.c:1397-1415 — with no preprocessing, so there is no `(?:...)`
+ *  non-capturing group: a literal `(?` is a regcomp error ("repetition-operator
+ *  operand invalid"), confirmed against the runtime). Every unescaped `(` outside
+ *  a bracket expression opens a NEW capturing group, counted left-to-right.
+ *
+ *  A group is OPTIONAL (may be null even on a successful overall match) iff, on
+ *  the path from the pattern root to that group:
+ *   - it is directly followed by a 0-minimum quantifier (`?`, `*`, `{0,...}`), OR
+ *   - its ENCLOSING frame (the top-level pattern, or an ancestor group's body)
+ *     contains a top-level `|` — i.e. the group sits in one branch of an
+ *     alternation and the other branch might run instead (`(a)|(b)`: both
+ *     optional). Alternation INSIDE a group's own body does NOT make that group
+ *     itself optional — `(stdout|stderr|exitcode)` is a single mandatory group;
+ *     the `|` only affects what string it captures — OR
+ *   - any ANCESTOR group is itself optional (if the outer group doesn't
+ *     participate, nothing nested in it does either).
+ *  Anything the scanner can't cleanly prove mandatory defaults to optional (sound
+ *  over-approximation, per the ticket's conservative-when-unsure directive).
+ */
+export function analyzeCaptureGroups(pattern: string): CaptureGroupInfo {
+  const optional: boolean[] = [];
+  let groupCount = 0;
+
+  const root: Frame = { node: null, hasAlt: false, children: [] };
+  const stack: Frame[] = [root];
+
+  try {
+    let i = 0;
+    const len = pattern.length;
+    while (i < len) {
+      const c = pattern[i];
+
+      if (c === '\\') { i += 2; continue; } // escape: skip the escaped char entirely
+
+      if (c === '[') {
+        // Bracket expression: '(' ')' '|' etc. inside are literal. Handle the
+        // POSIX "leading ']' is literal" rule and skip to the matching ']'.
+        let j = i + 1;
+        if (pattern[j] === '^') j++;
+        if (pattern[j] === ']') j++; // literal ']' as first (post-'^') member
+        while (j < len && pattern[j] !== ']') j++;
+        i = j < len ? j + 1 : len;
+        continue;
+      }
+
+      if (c === '(') {
+        const node: GroupNode = { index: groupCount++, children: [], ownQuantifierOptional: false, bodyHasAlt: false };
+        stack[stack.length - 1]!.children.push(node);
+        stack.push({ node, hasAlt: false, children: [] });
+        i++;
+        continue;
+      }
+
+      if (c === ')') {
+        const closed = stack.length > 1 ? stack.pop()! : stack[0]!; // tolerate stray ')'
+        if (closed.node) {
+          closed.node.children = closed.children;
+          closed.node.bodyHasAlt = closed.hasAlt;
+          closed.node.ownQuantifierOptional = quantifierMakesOptional(pattern, i + 1);
+        }
+        i++;
+        continue;
+      }
+
+      if (c === '|') {
+        stack[stack.length - 1]!.hasAlt = true;
+        i++;
+        continue;
+      }
+
+      i++;
+    }
+
+    // Finalize the (possibly still-open, on unbalanced input) root frame.
+    root.hasAlt = stack[0]!.hasAlt;
+    root.children = stack[0]!.children;
+
+    const walk = (children: GroupNode[], frameHasAlt: boolean, parentOptional: boolean): void => {
+      for (const node of children) {
+        const isOptional = parentOptional || frameHasAlt || node.ownQuantifierOptional;
+        optional[node.index] = isOptional;
+        walk(node.children, node.bodyHasAlt, isOptional);
+      }
+    };
+    walk(root.children, root.hasAlt, false);
+
+    // Any group the walk didn't reach (unbalanced parens left it off-tree) —
+    // conservative default: optional.
+    for (let g = 0; g < groupCount; g++) {
+      if (optional[g] === undefined) optional[g] = true;
+    }
+
+    return { groupCount, optional };
+  } catch {
+    // Scanner bug/unexpected input: fail safe — every group optional.
+    return { groupCount, optional: Array.from({ length: groupCount }, () => true) };
+  }
+}
+
 export class RegexTypeRegistry {
   /**
    * Get documentation for a regex pattern

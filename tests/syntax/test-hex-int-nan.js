@@ -40,6 +40,12 @@ function applied(builtinCall) {
     // builtinCall is e.g. 'hex(v)' / 'int(v)' — wrap so `v` is a genuine unknown param.
     return analyze(`function _u(v) { return ${builtinCall}; }`);
 }
+// ANY (docs/tc-json-any-return-display.md) is likewise not literal-assignable — it
+// only ever comes from json()/call()'s return. Mirror `applied` but bind `x` to a
+// json()-derived ANY value before invoking the builtin under test on `x`.
+function appliedAny(builtinCallOnX) {
+    return analyze(`function _u(v) { let x = json(v); return ${builtinCallOnX}; }`);
+}
 
 let passed = 0, failed = 0;
 function check(label, actual, expected) {
@@ -59,6 +65,7 @@ const snippetForType = (t) => Match.value(t).pipe(
     Match.when(UcodeType.REGEX,    () => 'let v = /test/;'),
     Match.when(UcodeType.NULL,     () => 'let v = null;'),
     Match.when(UcodeType.UNKNOWN,  () => null), // UNKNOWN is special-cased via a fn-param (a top-level binding can't be genuinely unknown)
+    Match.when(UcodeType.ANY,      () => null), // ANY is special-cased via appliedAny (json()'s return — no literal assigns it)
     Match.when(UcodeType.UNION,    () => null),
     Match.exhaustive
 );
@@ -94,6 +101,10 @@ const hexExpected = (t) => Match.value(t).pipe(
     Match.when(UcodeType.NULL,     () => 'double'),
     // Unknown: could be string or not — full union
     Match.when(UcodeType.UNKNOWN,  () => 'integer | double'),
+    // ANY behaves exactly like UNKNOWN in every check (docs/tc-json-any-return-display.md
+    // — dataTypeToBase/singleTypeToBase collapse it to UNKNOWN before hex()'s own
+    // param-type dispatch ever sees it), so it gets the same full union.
+    Match.when(UcodeType.ANY,      () => 'integer | double'),
     Match.when(UcodeType.UNION,    () => null),
     Match.exhaustive
 );
@@ -103,6 +114,10 @@ for (const ucType of CONCRETE_TYPES) {
     if (expected === null) continue;
     if (ucType === UcodeType.UNKNOWN) {
         check(`hex(${ucType}) -> ${expected}`, getRet(applied('hex(v)'), '_u'), expected);
+        continue;
+    }
+    if (ucType === UcodeType.ANY) {
+        check(`hex(${ucType}) -> ${expected}`, getRet(appliedAny('hex(x)'), '_u'), expected);
         continue;
     }
     const snippet = snippetForType(ucType);
@@ -147,6 +162,8 @@ const intExpected = (t) => Match.value(t).pipe(
     Match.when(UcodeType.REGEX,    () => 'double'),
     // Unknown: could be anything — full union
     Match.when(UcodeType.UNKNOWN,  () => 'integer | double'),
+    // ANY collapses to UNKNOWN before int()'s param-type dispatch (see hexExpected above).
+    Match.when(UcodeType.ANY,      () => 'integer | double'),
     Match.when(UcodeType.UNION,    () => null),
     Match.exhaustive
 );
@@ -156,6 +173,10 @@ for (const ucType of CONCRETE_TYPES) {
     if (expected === null) continue;
     if (ucType === UcodeType.UNKNOWN) {
         check(`int(${ucType}) -> ${expected}`, getRet(applied('int(v)'), '_u'), expected);
+        continue;
+    }
+    if (ucType === UcodeType.ANY) {
+        check(`int(${ucType}) -> ${expected}`, getRet(appliedAny('int(x)'), '_u'), expected);
         continue;
     }
     const snippet = snippetForType(ucType);

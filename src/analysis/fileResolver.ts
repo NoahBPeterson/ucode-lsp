@@ -449,8 +449,18 @@ export class FileResolver {
         if (content === null) return null;
         const ast = this.getCachedAst(targetUri, content) as { type?: string; body?: unknown[] } | null;
         if (!ast || ast.type !== 'Program' || !Array.isArray(ast.body)) return null;
-        const body = ast.body.map(asBag);
+        return this.topLevelReturnShape(ast.body.map(asBag));
+    }
 
+    /**
+     * Shared with `getRequireModuleShape`: given a program's top-level statement
+     * list, the value the runtime hands back when that program is run as a module
+     * (loadfile()() result, or a `require()`d file with no `export` statements at
+     * all — lib.c's uc_require_library runs the compiled program and returns
+     * whatever it top-level `return`s; `export` syntax is sugar for building that
+     * same value).
+     */
+    private topLevelReturnShape(body: (AstBag | undefined)[]): LoadfileProgramReturn | null {
         // The returned expression: first explicit top-level return, else a trailing bare
         // expression statement (undefined = "no explicit return found yet").
         let retNode: AstBag | null | undefined = undefined;
@@ -519,6 +529,80 @@ export class FileResolver {
             }
             default:
                 return null; // can't claim a type — caller stays unknown
+        }
+    }
+
+    /**
+     * Whether `resolvedUri`'s default export (or, for a "legacy" no-`export`-statements
+     * module, its implicit top-level-return value) is a FUNCTION — i.e. whether
+     * `require("<module>")` itself yields something callable, so the caller should use
+     * the factory-return machinery (`getDefaultExportFunctionReturnInfo` /
+     * `getDefaultExportFunctionParameters`, exactly like an ES6 default-import of a
+     * factory) rather than `getRequireModuleShape`'s object-shape info.
+     * docs/tc-require-user-module-typing.md
+     */
+    requireModuleIsFunction(resolvedUri: string): boolean {
+        try {
+            const exports = this.getModuleExports(resolvedUri);
+            if (exports && exports.length > 0) {
+                return exports.find(e => e.type === 'default')?.isFunction === true;
+            }
+            const filePath = this.uriToFilePath(resolvedUri);
+            if (!filePath || !fs.existsSync(filePath)) return false;
+            const source = getOpenDocumentContent(resolvedUri) ?? fs.readFileSync(filePath, 'utf-8');
+            const ast = this.getCachedAst(resolvedUri, source) as { type?: string; body?: unknown[] } | null;
+            if (!ast || ast.type !== 'Program' || !Array.isArray(ast.body)) return false;
+            return this.topLevelReturnShape(ast.body.map(asBag))?.dataType === UcodeType.FUNCTION;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * The OBJECT shape `require("<workspace module>")` resolves to — mirrors `import x
+     * from '<module>'`'s default-export-object semantics, but ALSO covers ucode's
+     * legacy "no `export` statements at all, just a bare top-level `return {...}`"
+     * module shape (verified in lib.c uc_require_library: require() runs the compiled
+     * program and returns whatever it top-level `return`s — `export` syntax is sugar
+     * for building that same value, so a file with zero export declarations and a bare
+     * `return {...}` is exactly as "default export"-shaped as `export default {...}`;
+     * firewall4's fw4.uc is exactly this shape). Callers must check
+     * `requireModuleIsFunction` FIRST — when the default export is itself a factory
+     * function, `require()`'s value is that function, not its (eventual) return shape,
+     * and the factory machinery below is the wrong shape for it. `resolvedUri` must
+     * already be resolved (via `resolveImportPath`) and is NOT a builtin — callers gate
+     * that separately. Returns null when nothing can be claimed (caller keeps
+     * `unknown`). docs/tc-require-user-module-typing.md
+     */
+    getRequireModuleShape(resolvedUri: string): LoadfileProgramReturn | null {
+        try {
+            const exports = this.getModuleExports(resolvedUri);
+            if (exports && exports.length > 0) {
+                const defaultExport = exports.find(e => e.type === 'default');
+                if (!defaultExport || defaultExport.isFunction) return null; // handled by requireModuleIsFunction path
+                const propInfo = this.getDefaultExportPropertyTypes(resolvedUri);
+                if (propInfo) {
+                    const out: LoadfileProgramReturn = { dataType: UcodeType.OBJECT as UcodeDataType, propertyTypes: propInfo.propertyTypes };
+                    if (propInfo.functionReturnTypes && propInfo.functionReturnTypes.size > 0) {
+                        const pfrt = new Map<string, string>();
+                        for (const [k, v] of propInfo.functionReturnTypes) pfrt.set(k, typeof v === 'string' ? v : 'unknown');
+                        if (pfrt.size > 0) out.propertyFunctionReturnTypes = pfrt;
+                    }
+                    return out;
+                }
+                return { dataType: UcodeType.OBJECT as UcodeDataType };
+            }
+
+            // No export syntax at all — legacy require()-only module: the value is
+            // whatever the top-level program returns.
+            const filePath = this.uriToFilePath(resolvedUri);
+            if (!filePath || !fs.existsSync(filePath)) return null;
+            const source = getOpenDocumentContent(resolvedUri) ?? fs.readFileSync(filePath, 'utf-8');
+            const ast = this.getCachedAst(resolvedUri, source) as { type?: string; body?: unknown[] } | null;
+            if (!ast || ast.type !== 'Program' || !Array.isArray(ast.body)) return null;
+            return this.topLevelReturnShape(ast.body.map(asBag));
+        } catch {
+            return null;
         }
     }
 
@@ -642,6 +726,28 @@ export class FileResolver {
                 if (fs.existsSync(workspaceRel)) {
                     return this.filePathToUri(workspaceRel);
                 }
+                // Package deploy-root mapping (tc-module-search-roots-deploy-layout.md
+                // tier 1): an OpenWrt package's payload tree (`files/` or `root/`, the
+                // convention both wifi-scripts and firewall4 use) mirrors the filesystem
+                // root once installed, so an absolute import written against the DEPLOYED
+                // path (`/usr/share/hostap/common.uc`) resolves inside the SAME package at
+                // `<ancestor>/usr/share/hostap/common.uc` when `<ancestor>` is named `files`
+                // or `root`. Same-package only (no cross-package guessing) and sound — it
+                // only ever returns a path that exists on disk.
+                let dir = currentDir;
+                while (true) {
+                    const base = path.basename(dir);
+                    if (base === 'files' || base === 'root') {
+                        const candidate = path.resolve(dir, importPath.substring(1));
+                        if (fs.existsSync(candidate)) {
+                            return this.filePathToUri(candidate);
+                        }
+                    }
+                    const parent = path.dirname(dir);
+                    if (parent === dir) break;
+                    if (dir === this.workspaceRoot) break;
+                    dir = parent;
+                }
                 return null;
             }
 
@@ -689,6 +795,18 @@ export class FileResolver {
                 const isSearchRootMirror = (d: string): boolean =>
                     d.endsWith(`${path.sep}share${path.sep}ucode`)
                     || d.endsWith(`${path.sep}lib${path.sep}ucode`);
+                // docs/tc-module-root-mapping.md: a package deploy root (`root/` or `files/`,
+                // same OpenWrt payload convention as the absolute-path branch above) mirrors
+                // the filesystem root once installed, so a bare/dotted search-path name
+                // (`require("fw4")` from `root/usr/share/firewall4/`) resolves under the
+                // SAME package's `<deployRoot>/usr/share/ucode/` or `.../usr/lib/ucode/` even
+                // though that directory is a SIBLING of the importer, not an ancestor — i.e.
+                // treat the deploy root as `/` and expand ucode's default REQUIRE_SEARCH_PATH
+                // templates under it. Same-package-only, deterministic, sound (existence-gated).
+                const isPackageDeployRoot = (d: string): boolean => {
+                    const base = path.basename(d);
+                    return base === 'root' || base === 'files';
+                };
                 let dir = currentDir;
                 const insideWorkspace = dir === this.workspaceRoot
                     || dir.startsWith(this.workspaceRoot + path.sep);
@@ -697,6 +815,14 @@ export class FileResolver {
                         const candidate = path.resolve(dir, dottedPath);
                         if (fs.existsSync(candidate)) {
                             return this.filePathToUri(candidate);
+                        }
+                    }
+                    if (isPackageDeployRoot(dir)) {
+                        for (const sub of ['usr/share/ucode', 'usr/lib/ucode', 'usr/local/share/ucode', 'usr/local/lib/ucode']) {
+                            const candidate = path.resolve(dir, sub, dottedPath);
+                            if (fs.existsSync(candidate)) {
+                                return this.filePathToUri(candidate);
+                            }
                         }
                     }
                     if (insideWorkspace && dir === this.workspaceRoot) break;
@@ -827,6 +953,56 @@ export class FileResolver {
         } catch {
             return null;
         }
+    }
+
+    /**
+     * If `name` in `fileUri` is bound by `import * as name from '<module>'`, resolve
+     * that module's URI. Returns null if `name` isn't a namespace import there. Used
+     * to chase a barrel re-export through a namespace alias
+     * (`import * as _mock from 'utest.mock'; export const mock = _mock;` —
+     * docs/tc-barrel-reexport-typing.md).
+     */
+    private findNamespaceImportSource(fileUri: string, name: string): string | null {
+        try {
+            const filePath = this.uriToFilePath(fileUri);
+            if (!filePath || !fs.existsSync(filePath)) return null;
+            const content = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf8');
+            const lexer = new UcodeLexer(content, { rawMode: true });
+            const tokens = lexer.tokenize();
+            const parser = new UcodeParser(tokens, content);
+            const parseResult = parser.parse();
+            const body = (parseResult.ast as any)?.body;
+            if (!Array.isArray(body)) return null;
+            for (const stmt of body) {
+                if (!stmt || stmt.type !== 'ImportDeclaration') continue;
+                for (const spec of (stmt.specifiers || [])) {
+                    if (spec.type === 'ImportNamespaceSpecifier' && spec.local?.name === name) {
+                        let src = stmt.source?.value;
+                        if (typeof src !== 'string') return null;
+                        src = src.replace(/^['"]|['"]$/g, '');
+                        return this.resolveImportPath(src, fileUri);
+                    }
+                }
+            }
+            return null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * If `init` is `<ns>.<member>` where `<ns>` is a namespace import in `fileUri`,
+     * return the target module's URI and the member name. Used to chase a barrel
+     * re-export through a namespace member (`export const describe = dsl.describe`
+     * where `dsl` is `import * as dsl from './leaf.uc'` — docs/tc-barrel-reexport-typing.md).
+     */
+    private resolveNamespaceMemberAlias(fileUri: string, init: AstNode | undefined): { uri: string; member: string } | null {
+        if (!init || (init as any).type !== 'MemberExpression') return null;
+        const mem = init as any;
+        if (mem.computed || mem.object?.type !== 'Identifier' || mem.property?.type !== 'Identifier') return null;
+        const nsUri = this.findNamespaceImportSource(fileUri, mem.object.name);
+        if (!nsUri || !nsUri.startsWith('file://')) return null;
+        return { uri: nsUri, member: mem.property.name };
     }
 
     /**
@@ -1279,6 +1455,43 @@ export class FileResolver {
             const defLocations = new Map<string, { start: number; end: number }>();
 
             const recordExport = (name: string, init: AstBag | undefined) => {
+                // Barrel re-export: `export const mock = _mock;` where `_mock` is a
+                // namespace import — chase into the namespace module and carry its full
+                // shape as this export's ONE-level-deeper shape, so a two-hop access
+                // (`ns.mock.member`) resolves. docs/tc-barrel-reexport-typing.md
+                if (init?.type === 'Identifier' && typeof init.name === 'string') {
+                    const nsUri = this.findNamespaceImportSource(fileUri, init.name);
+                    if (nsUri && nsUri.startsWith('file://')) {
+                        const nsInfo = this.getNamespaceExportInfo(nsUri);
+                        if (nsInfo && nsInfo.types.size > 0) {
+                            types.set(name, UcodeType.OBJECT as UcodeDataType);
+                            nested.set(name, nsInfo.types);
+                            return;
+                        }
+                    }
+                }
+                // `export const describe = dsl.describe;` — re-export through a
+                // namespace member. docs/tc-barrel-reexport-typing.md
+                if (init?.type === 'MemberExpression') {
+                    const memAny = init as unknown as { computed?: boolean; object?: AstBag; property?: AstBag };
+                    if (!memAny.computed && memAny.object?.type === 'Identifier' && memAny.property?.type === 'Identifier'
+                        && typeof memAny.object.name === 'string' && typeof memAny.property.name === 'string') {
+                        const nsUri = this.findNamespaceImportSource(fileUri, memAny.object.name);
+                        if (nsUri && nsUri.startsWith('file://')) {
+                            const memberName = memAny.property.name;
+                            const nsInfo = this.getNamespaceExportInfo(nsUri);
+                            const memberType = nsInfo?.types.get(memberName);
+                            if (memberType !== undefined) {
+                                types.set(name, memberType);
+                                const memberNested = nsInfo?.nested.get(memberName);
+                                if (memberNested) nested.set(name, memberNested);
+                                const memberFnReturn = nsInfo?.functionReturnTypes.get(memberName);
+                                if (memberFnReturn) functionReturnTypes.set(name, memberFnReturn);
+                                return;
+                            }
+                        }
+                    }
+                }
                 types.set(name, this.inferShallowType(init));
                 // For object-literal exports, walk one level deeper so chained
                 // access like `ns.NAME.PROP` can resolve. Deeper than one level
@@ -1491,6 +1704,71 @@ export class FileResolver {
                 }
             }
 
+            // Post-hoc property assignments on the exported object AFTER its literal
+            // declaration (`mwan4.get_iface_id = get_iface_id;` — mwan4.uc's dominant
+            // idiom, ~80 properties attached this way instead of inline in the
+            // literal). Only applies when the default export resolves through a named
+            // variable — an inline `export default { … }` has no name to assign to
+            // before the export statement (docs/tc-fn-reference-property-returns.md,
+            // shape 3).
+            if (!isInlineLiteral && defaultDecl.type === 'Identifier') {
+                const exportedName = (defaultDecl as IdentifierNode).name;
+                for (const stmt of body) {
+                    if (stmt.type !== 'ExpressionStatement') continue;
+                    const expr = (stmt as any).expression;
+                    if (!expr || expr.type !== 'AssignmentExpression' || expr.operator !== '=') continue;
+                    const left = expr.left;
+                    if (!left || left.type !== 'MemberExpression' || left.computed) continue;
+                    if (left.object?.type !== 'Identifier' || left.object.name !== exportedName) continue;
+                    if (left.property?.type !== 'Identifier') continue;
+                    const key = left.property.name as string;
+                    const val = expr.right;
+                    if (!val) continue;
+
+                    if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
+                        propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                        const retType = this.inferFunctionReturnType(val);
+                        if (retType) functionReturnTypes.set(key, retType);
+                    } else if (val.type === 'Identifier' && funcNames.has(val.name)) {
+                        propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                        const funcNode = funcNodes.get(val.name);
+                        if (funcNode) {
+                            const retType = this.inferFunctionReturnType(funcNode);
+                            if (retType) functionReturnTypes.set(key, retType);
+                        }
+                    } else if (val.type === 'Identifier') {
+                        const init = varInits.get(val.name);
+                        if (init) {
+                            propertyTypes.set(key, this.inferNodeType(init));
+                            if (init.type === 'ObjectExpression') {
+                                const nested = this.extractObjectPropertyTypes(init, funcNodes, varInits, new Map());
+                                if (nested.size > 0) nestedPropertyTypes.set(key, nested);
+                            }
+                        } else {
+                            propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                        }
+                    } else if (val.type === 'Literal' || val.type === 'StringLiteral') {
+                        if (typeof val.value === 'number') {
+                            propertyTypes.set(key, UcodeType.INTEGER as UcodeDataType);
+                        } else if (typeof val.value === 'string') {
+                            propertyTypes.set(key, UcodeType.STRING as UcodeDataType);
+                        } else if (typeof val.value === 'boolean') {
+                            propertyTypes.set(key, UcodeType.BOOLEAN as UcodeDataType);
+                        } else {
+                            propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                        }
+                    } else if (val.type === 'ObjectExpression') {
+                        propertyTypes.set(key, UcodeType.OBJECT as UcodeDataType);
+                        const nested = this.extractObjectPropertyTypes(val, funcNodes, varInits, new Map());
+                        if (nested.size > 0) nestedPropertyTypes.set(key, nested);
+                    } else if (val.type === 'ArrayExpression') {
+                        propertyTypes.set(key, UcodeType.ARRAY as UcodeDataType);
+                    } else {
+                        propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                    }
+                }
+            }
+
             if (propertyTypes.size === 0) return null;
             const exportResult: { propertyTypes: Map<string, UcodeDataType>; nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>; functionReturnTypes?: Map<string, UcodeDataType>; closedShape?: boolean } = { propertyTypes };
             if (nestedPropertyTypes.size > 0) {
@@ -1578,6 +1856,21 @@ export class FileResolver {
                                 if (chained) return chained;
                             }
 
+                            // `export const describe = dsl.describe;` (barrel re-export
+                            // through a namespace member) — chase into the namespace's
+                            // module and resolve the SAME named export there.
+                            // docs/tc-barrel-reexport-typing.md
+                            if (init.type === 'MemberExpression') {
+                                const nsAlias = this.resolveNamespaceMemberAlias(fileUri, init);
+                                if (nsAlias) {
+                                    const visitKey = `${nsAlias.uri}#${nsAlias.member}`;
+                                    if (!_visited.has(visitKey)) {
+                                        const chained = this.getNamedExportTypeInfo(nsAlias.uri, nsAlias.member, _visited);
+                                        if (chained) return chained;
+                                    }
+                                }
+                            }
+
                             const nodeType = this.inferNodeType(init);
                             if (init.type === 'ObjectExpression') {
                                 const propertyTypes = new Map<string, UcodeDataType>();
@@ -1631,6 +1924,15 @@ export class FileResolver {
                             const chained = this.resolveReexportedIdentifierType(fileUri, (init as IdentifierNode).name, _visited);
                             if (chained) return chained;
                         }
+                        // `const x = ns.member; export { x };` — barrel re-export through a
+                        // namespace member. docs/tc-barrel-reexport-typing.md
+                        if (init && init.type === 'MemberExpression') {
+                            const nsAlias = this.resolveNamespaceMemberAlias(fileUri, init);
+                            if (nsAlias) {
+                                const chained = this.getNamedExportTypeInfo(nsAlias.uri, nsAlias.member, _visited);
+                                if (chained) return chained;
+                            }
+                        }
                         // Direct re-export: `import { x } from './a'; export { x };` — the
                         // name isn't a local var here, it's forwarded from the source module.
                         if (!init && !funcNames.has(localName)) {
@@ -1672,6 +1974,25 @@ export class FileResolver {
         nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>;
         propertyFunctionReturnTypes?: Map<string, string>;
     } | null {
+        // Namespace re-export: `import * as _mock from 'utest.mock'; export const mock = _mock;`
+        // — the whole namespace's exports become `mock`'s property shape.
+        // docs/tc-barrel-reexport-typing.md
+        const nsUri = this.findNamespaceImportSource(fileUri, name);
+        if (nsUri && nsUri.startsWith('file://')) {
+            const nsInfo = this.getNamespaceExportInfo(nsUri);
+            if (nsInfo && nsInfo.types.size > 0) {
+                const nsResult: {
+                    type: UcodeDataType;
+                    propertyTypes?: Map<string, UcodeDataType>;
+                    nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>;
+                    propertyFunctionReturnTypes?: Map<string, string>;
+                } = { type: UcodeType.OBJECT as UcodeDataType, propertyTypes: nsInfo.types };
+                if (nsInfo.nested.size > 0) nsResult.nestedPropertyTypes = nsInfo.nested;
+                if (nsInfo.functionReturnTypes.size > 0) nsResult.propertyFunctionReturnTypes = nsInfo.functionReturnTypes;
+                return nsResult;
+            }
+            return { type: UcodeType.OBJECT as UcodeDataType };
+        }
         const reexp = this.findReexportedSource(fileUri, name);
         if (!reexp) return null;
         return this.getNamedExportTypeInfo(reexp.uri, reexp.importedName, _visited);
@@ -1760,8 +2081,13 @@ export class FileResolver {
      * Returns null unless the function provably returns an object literal in all
      * branches (so non-object-returning named functions are unaffected).
      */
-    getNamedExportFunctionReturnInfo(fileUri: string, exportName: string): FactoryReturnInfo | null {
+    getNamedExportFunctionReturnInfo(fileUri: string, exportName: string, _visited: Set<string> = new Set()): FactoryReturnInfo | null {
         try {
+            // Cycle guard for re-export / barrel-alias chains (docs/tc-barrel-reexport-typing.md).
+            const visitKey = `${fileUri}#${exportName}`;
+            if (_visited.has(visitKey)) return null;
+            _visited.add(visitKey);
+
             const filePath = this.uriToFilePath(fileUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
 
@@ -1804,6 +2130,17 @@ export class FileResolver {
                             const init = declarator.init;
                             if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) {
                                 funcNode = init;
+                            } else if (init && init.type === 'Identifier') {
+                                // `export const describe = someFn;` where someFn is an
+                                // imported named function — chase the import chain.
+                                // docs/tc-barrel-reexport-typing.md
+                                const reexp = this.findReexportedSource(fileUri, (init as IdentifierNode).name);
+                                if (reexp) return this.getNamedExportFunctionReturnInfo(reexp.uri, reexp.importedName, _visited);
+                            } else if (init && init.type === 'MemberExpression') {
+                                // `export const describe = dsl.describe;` (barrel re-export
+                                // through a namespace member). docs/tc-barrel-reexport-typing.md
+                                const nsAlias = this.resolveNamespaceMemberAlias(fileUri, init);
+                                if (nsAlias) return this.getNamedExportFunctionReturnInfo(nsAlias.uri, nsAlias.member, _visited);
                             }
                             break;
                         }
@@ -1821,6 +2158,13 @@ export class FileResolver {
                             const init = topLevelVarInits.get(localName);
                             if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) {
                                 funcNode = init;
+                            } else if (init && init.type === 'MemberExpression') {
+                                const nsAlias = this.resolveNamespaceMemberAlias(fileUri, init);
+                                if (nsAlias) return this.getNamedExportFunctionReturnInfo(nsAlias.uri, nsAlias.member, _visited);
+                            } else if (!init) {
+                                // Direct re-export: `import { x } from './a'; export { x };`
+                                const reexp = this.findReexportedSource(fileUri, localName);
+                                if (reexp) return this.getNamedExportFunctionReturnInfo(reexp.uri, reexp.importedName, _visited);
                             }
                         }
                         break;
@@ -1910,7 +2254,19 @@ export class FileResolver {
                         for (const declarator of varDecl.declarations || []) {
                             if (declarator.id?.name !== exportName) continue;
                             const init = declarator.init;
-                            if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) funcNode = init;
+                            if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) {
+                                funcNode = init;
+                            } else if (init && init.type === 'Identifier') {
+                                // `export const describe = someFn;` — chase an imported alias.
+                                // docs/tc-barrel-reexport-typing.md
+                                const reexp = this.findReexportedSource(fileUri, (init as IdentifierNode).name);
+                                if (reexp) return this.getNamedExportFunctionParameters(reexp.uri, reexp.importedName, _visited);
+                            } else if (init && init.type === 'MemberExpression') {
+                                // `export const describe = dsl.describe;` — barrel re-export
+                                // through a namespace member. docs/tc-barrel-reexport-typing.md
+                                const nsAlias = this.resolveNamespaceMemberAlias(fileUri, init);
+                                if (nsAlias) return this.getNamedExportFunctionParameters(nsAlias.uri, nsAlias.member, _visited);
+                            }
                             break;
                         }
                         if (funcNode) break;
@@ -1927,6 +2283,9 @@ export class FileResolver {
                             const init = topLevelVarInits.get(localName);
                             if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) {
                                 funcNode = init;
+                            } else if (init && init.type === 'MemberExpression') {
+                                const nsAlias = this.resolveNamespaceMemberAlias(fileUri, init);
+                                if (nsAlias) return this.getNamedExportFunctionParameters(nsAlias.uri, nsAlias.member, _visited);
                             } else {
                                 // Re-export: `import { x } from './impl'; export { x };` — the
                                 // name isn't declared here, it's forwarded. Follow the chain to

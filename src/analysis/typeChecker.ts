@@ -51,15 +51,24 @@ interface TypeGuardInfo {
   // These should NOT be negated in early-exit fall-through because the negation
   // (e.g., length(x) <= 0) doesn't imply x is null — x could just be empty.
   isNullPropagation?: boolean;
+  // Whether this guard is a BARE TRUTHINESS test `if (x)` (not an explicit `x != null`).
+  // The two are distinct on the FALSY edge: `x != null`'s false branch is EXACTLY null,
+  // but `if (x)`'s false branch is the falsy-CAPABLE subset (null, false, 0, 0.0, "") —
+  // i.e. a scalar stays its own type, only always-truthy objects/arrays are eliminated.
+  // Encoded like a null guard (`narrowToType: NULL, isNegative: true` = "removes null on
+  // the truthy branch"); this flag makes applyTypeGuard use falsy-subset narrowing on the
+  // flipped (falsy) branch instead of the wrong "keep only null" (which collapsed every
+  // guarded scalar to `unknown` past its `if`). See docs/tc-falsy-branch-narrow-to-unknown.md.
+  isTruthiness?: boolean;
 }
-import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, type SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, propertyTypeAt, type Symbol as UcodeSymbol } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, type SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, resolveTupleIndex, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, propertyTypeAt, isNeverType, NEVER_TYPE, type Symbol as UcodeSymbol } from './symbolTable';
 import { FlowTypeEngine, makeAssignmentTransfer, type FlowEnvironment, type EdgeGuardFn } from './flowTypeEngine';
 import { CFGBuilder } from './cfg/cfgBuilder';
 import type { CheckResult } from './checkResult';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
 import { UcodeErrorCode } from './errorConstants';
-import { BuiltinValidator, TypeCompatibilityChecker, coerceArgNeedsParens } from './checkers';
+import { BuiltinValidator, TypeCompatibilityChecker, coerceArgNeedsParens, moduleParamAllowedTypes, MODULES_WITHOUT_POSITIONAL_ARG_CONTRACT } from './checkers';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { allBuiltinFunctions } from '../builtins';
 import { rtnlTypeRegistry } from './rtnlTypes';
@@ -393,7 +402,9 @@ export class TypeChecker {
       { name: 'rindex', parameters: [UcodeType.UNKNOWN, UcodeType.UNKNOWN], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0] },
       { name: 'require', parameters: [UcodeType.STRING], returnType: UcodeType.UNKNOWN },
       { name: 'include', parameters: [UcodeType.STRING], returnType: UcodeType.UNKNOWN },
-      { name: 'json', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
+      // json() genuinely returns *any* JSON value by contract (ucode/lib.c:3619
+      // uc_json → ucv_from_json) — ANY, not UNKNOWN (docs/tc-json-any-return-display.md).
+      { name: 'json', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.ANY },
       { name: 'match', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]) },
       // replace() returns null ONLY when the subject (arg 0) is null — the search
       // arg accepts string OR regex (so a regex must not trip the null-narrowing),
@@ -425,15 +436,22 @@ export class TypeChecker {
       { name: 'wildcard', parameters: [UcodeType.STRING, UcodeType.STRING], returnType: createUnionType([UcodeType.BOOLEAN, UcodeType.NULL]), nullMeansWrongType: true },
       { name: 'regexp', parameters: [UcodeType.STRING], returnType: UcodeType.REGEX, minParams: 1, maxParams: 2 },
       { name: 'assert', parameters: [], returnType: UcodeType.UNKNOWN, variadic: true, minParams: 0 }, // Returns first argument (reflective) - accepts any truish types
-      { name: 'call', parameters: [UcodeType.FUNCTION], returnType: UcodeType.UNKNOWN, variadic: true },
+      // call(fn, this, scope, ...) returns whatever the invoked function returns
+      // (ucode/lib.c:5738 uc_callfunc) — a genuine reflective any, not UNKNOWN.
+      { name: 'call', parameters: [UcodeType.FUNCTION], returnType: UcodeType.ANY, variadic: true },
       { name: 'signal', parameters: [UcodeType.INTEGER], returnType: createUnionType([UcodeType.FUNCTION, UcodeType.STRING, UcodeType.NULL]), minParams: 1, maxParams: 2 },
       { name: 'clock', parameters: [UcodeType.BOOLEAN], returnType: UcodeType.ARRAY, minParams: 0, maxParams: 1 },
       
       { name: 'sourcepath', parameters: [UcodeType.INTEGER, UcodeType.BOOLEAN], minParams: 0, maxParams: 2, returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
       { name: 'gc', parameters: [], returnType: UcodeType.BOOLEAN, minParams: 0, maxParams: 2 },
-      { name: 'die', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },
+      // die()/exit() NEVER produce a value — they raise/terminate the VM (ucode/lib.c
+      // uc_die/uc_exit call uc_vm_raise_exception; the trailing `return NULL` is
+      // unreachable). Typed NEVER (bottom) so the "open or die" idiom `x ?? die()` /
+      // `x || die()` narrows away null (docs/tc-nullish-die-narrowing.md). NEVER never
+      // reaches hover (getNarrowedTypeAtPosition guards it).
+      { name: 'die', parameters: [], returnType: NEVER_TYPE, minParams: 0, maxParams: 1 },
       { name: 'exists', parameters: [UcodeType.OBJECT, UcodeType.STRING], returnType: UcodeType.BOOLEAN },
-      { name: 'exit', parameters: [], returnType: UcodeType.NULL, minParams: 0, maxParams: 1 },
+      { name: 'exit', parameters: [], returnType: NEVER_TYPE, minParams: 0, maxParams: 1 }, // NEVER — see die() above
       { name: 'getenv', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), minParams: 0, maxParams: 1 },
       { name: 'map', parameters: [UcodeType.ARRAY, UcodeType.FUNCTION], returnType: createUnionType([UcodeType.ARRAY, UcodeType.NULL]) },
       { name: 'reverse', parameters: [UcodeType.UNKNOWN], returnType: UcodeType.UNKNOWN },
@@ -751,6 +769,17 @@ export class TypeChecker {
     return this.nodeTypes.get(node);
   }
 
+  /** Overwrite the cached type for `node`. Used by the object-literal forward-call
+   *  back-fill (docs/tc-this-method-forward-ref-return.md): a `this.method()` call
+   *  resolved before its sibling method was visited caches the shallow pre-pass
+   *  type here; once the sibling's accurate return type is known, the analyzer
+   *  patches this entry so `buildFlowEngines` (which reads getTypeOf for its
+   *  assignment transfer) and any other post-analysis consumer see the corrected
+   *  type without needing to re-run checkNode in a stale scope. */
+  setTypeOf(node: AstNode, type: CheckResult): void {
+    this.nodeTypes.set(node, type);
+  }
+
   private dispatchCheck(node: AstNode): CheckResult {
     switch (node.type) {
       case 'Literal':
@@ -985,40 +1014,10 @@ export class TypeChecker {
         this.checkIncompatibleEquality(node);
         return this.typeCompatibility.getComparisonResultType();
 
-      case '??': {
-        // Nullish coalescing `a ?? b`: the result is `b` exactly when `a` is
-        // null, else `a`. So the result type is (a with null removed) ∪ b.
-        // leftType/rightType are rich now, so we handle nullable unions
-        // properly instead of returning the whole left union verbatim.
-        if (leftType === UcodeType.NULL) {
-          return rightType; // always null → always falls back to b
-        }
-        const leftNonNull = this.typeNarrowing.removeNullFromType(leftType);
-        // UNKNOWN can be null — removeNullFromType excludes nothing from it, which
-        // must NOT be read as "can't be null". `X ?? 1` on unknown X falls through
-        // to the union below → `integer | unknown` (union-with-unknown convention).
-        const leftHasUnknown = dataTypeToBase(leftType) === UcodeType.UNKNOWN
-          || getUnionTypes(leftType).some(t => singleTypeToBase(t) === UcodeType.UNKNOWN);
-        if (leftNonNull.excludedTypes.length === 0 && !leftHasUnknown) {
-          return leftType; // a provably can't be null → b unreachable
-        }
-        // `a ?? []` with an EMPTY array literal as the fallback: the empty array
-        // contributes no elements, so the result is exactly a-without-null. This keeps
-        // the common `lsdir(...) ?? []` idiom typed `array<string>` (and for-in over it
-        // `string`) instead of `array<string> | array` → element `unknown`. Sound: the
-        // fallback is provably empty. (Bare `[]` is typed UcodeType.ARRAY, which would
-        // otherwise dilute the typed-array element type to unknown in the union below.)
-        if (node.right.type === 'ArrayExpression'
-            && (node.right as ArrayExpressionNode).elements.length === 0
-            && isArrayType(leftNonNull.narrowedType)) {
-          return leftNonNull.narrowedType;
-        }
-        // a is nullable → (a without null) ∪ b
-        return createUnionType([
-          ...getUnionTypes(leftNonNull.narrowedType),
-          ...getUnionTypes(rightType),
-        ]);
-      }
+      case '??':
+        // Shared with the compound-assignment `??=` path (checkAssignmentExpression) —
+        // see computeNullishCoalescingResult.
+        return this.computeNullishCoalescingResult(leftType, rightType, node.right);
 
       case '&&':
       case '||': {
@@ -1064,6 +1063,56 @@ export class TypeChecker {
     }
   }
 
+  /**
+   * Nullish coalescing `a ?? b`: the result is `b` exactly when `a` is null,
+   * else `a`. So the result type is (a with null removed) ∪ b. Shared by the
+   * binary `??` operator (checkBinaryExpression) and the compound-assignment
+   * `??=` operator (checkAssignmentExpression) — verified against the compiler
+   * (`uc_compiler_compile_nullish_assignment`, ucode/compiler.c:1397-1413): `x
+   * ??= y` compiles to "if x !== null, result is x (no assignment); else x = y
+   * (result is y)" — exactly the same result-type shape as binary `??`.
+   */
+  private computeNullishCoalescingResult(leftType: CheckResult, rightType: CheckResult, rightNode: AstNode): CheckResult {
+    if (leftType === UcodeType.NULL) {
+      return rightType; // always null → always falls back to b
+    }
+    const leftNonNull = this.typeNarrowing.removeNullFromType(leftType);
+    // `T ?? die(...)` / `?? exit(...)`: the RHS never returns a value (NEVER — it
+    // raises/terminates the VM, verified in ucode/lib.c uc_die/uc_exit → both
+    // uc_vm_raise_exception before their unreachable `return NULL`), so the fallback
+    // branch is unreachable and the result is exactly T with null removed. This is
+    // THE "open or die" idiom (docs/tc-nullish-die-narrowing.md). `unknown ?? die()`
+    // stays unknown — removeNullFromType(unknown) = unknown, so nonNull(unknown) has
+    // no narrower representation, as intended.
+    if (isNeverType(rightType)) {
+      return leftNonNull.narrowedType;
+    }
+    // UNKNOWN can be null — removeNullFromType excludes nothing from it, which
+    // must NOT be read as "can't be null". `X ?? 1` on unknown X falls through
+    // to the union below → `integer | unknown` (union-with-unknown convention).
+    const leftHasUnknown = dataTypeToBase(leftType) === UcodeType.UNKNOWN
+      || getUnionTypes(leftType).some(t => singleTypeToBase(t) === UcodeType.UNKNOWN);
+    if (leftNonNull.excludedTypes.length === 0 && !leftHasUnknown) {
+      return leftType; // a provably can't be null → b unreachable
+    }
+    // `a ?? []` with an EMPTY array literal as the fallback: the empty array
+    // contributes no elements, so the result is exactly a-without-null. This keeps
+    // the common `lsdir(...) ?? []` idiom typed `array<string>` (and for-in over it
+    // `string`) instead of `array<string> | array` → element `unknown`. Sound: the
+    // fallback is provably empty. (Bare `[]` is typed UcodeType.ARRAY, which would
+    // otherwise dilute the typed-array element type to unknown in the union below.)
+    if (rightNode.type === 'ArrayExpression'
+        && (rightNode as ArrayExpressionNode).elements.length === 0
+        && isArrayType(leftNonNull.narrowedType)) {
+      return leftNonNull.narrowedType;
+    }
+    // a is nullable → (a without null) ∪ b
+    return createUnionType([
+      ...getUnionTypes(leftNonNull.narrowedType),
+      ...getUnionTypes(rightType),
+    ]);
+  }
+
   private checkUnaryExpression(node: UnaryExpressionNode): CheckResult {
     if (node.operator === '!') this.truthinessDepth++;
     const argType = this.checkNode(node.argument);
@@ -1073,15 +1122,39 @@ export class TypeChecker {
     // yield NaN (e.g. -[1], ++{}). ucode doesn't throw, so warn rather than error.
     if (node.operator === '+' || node.operator === '-' || node.operator === '++' || node.operator === '--') {
       this.checkNaNArithmetic(node, node.operator, this.dataTypeToUcodeType(argType), null, node.argument, undefined);
-      // A string coerces to a number; negation/increment preserve int vs double,
-      // so the result type IS the coercion type (e.g. -"42" → integer).
-      if (argType === UcodeType.STRING) {
-        // Return the rich coercion result directly (may be `integer | double`).
-        return this.coerceStringForArithmetic(node.argument, argType);
-      }
+      // Distribute over a union operand instead of collapsing it to a single
+      // base type first (dataTypeToBase's documented "unions collapse to
+      // UNKNOWN" behavior would otherwise throw away a perfectly well-defined
+      // per-member result — e.g. `integer | null` unary-minus is `integer` in
+      // EVERY case, not `unknown`). Mirrors arithmeticTypeInference.distribute
+      // for the binary-operator case. (docs/tc-unary-operator-union-collapse.md)
+      return this.distributeUnaryArithmetic(argType, node.argument, node.operator);
     }
 
     return this.typeCompatibility.getUnaryResultType(this.dataTypeToUcodeType(argType), node.operator);
+  }
+
+  /**
+   * Distribute a numeric unary operator (`+ - ++ --`) over each member of a
+   * union operand, then recombine. A string member coerces via
+   * coerceStringForArithmetic (value-dependent — may itself yield a union,
+   * `integer | double`, for a non-literal string); every other member goes
+   * through getUnaryResultType (which, after the unknown-operand fix, never
+   * needs to fall back to a blanket `unknown` — see typeCompatibility.ts).
+   * A non-union operand is unaffected: getUnionTypes returns `[argType]`, so
+   * this collapses to exactly the old single-type answer.
+   */
+  private distributeUnaryArithmetic(argType: UcodeDataType, argNode: AstNode, operator: string): CheckResult {
+    const results: UcodeDataType[] = [];
+    for (const member of getUnionTypes(argType)) {
+      const base = singleTypeToBase(member);
+      if (base === UcodeType.STRING) {
+        results.push(this.coerceStringForArithmetic(argNode, member));
+      } else {
+        results.push(this.typeCompatibility.getUnaryResultType(base, operator));
+      }
+    }
+    return createUnionType(results.flatMap(r => getUnionTypes(r)));
   }
 
   /**
@@ -1135,6 +1208,20 @@ export class TypeChecker {
     }
     if (n.type === 'Literal' && typeof (n as LiteralNode).value === 'number') return sign * ((n as LiteralNode).value as number);
     return null;
+  }
+
+  /** The propertyTypes lookup key for a computed array-index write/read
+   *  (`arr[N] = x` / `arr[N]`): the literal's raw value for a plain `Literal`
+   *  (numeric or string — unchanged), or the numeric value for a
+   *  unary-minus-wrapped literal (`arr[-1]`, parsed as `UnaryExpression`, NOT
+   *  `Literal`) so a negative literal index gets the same per-index tracking as
+   *  a positive one instead of being silently skipped (docs/
+   *  tc-negative-array-index.md). Returns null for anything else (variable
+   *  index, expression, …). */
+  private arrayIndexKeyOf(propNode: AstNode): string | null {
+    if (propNode.type === 'Literal') return String((propNode as LiteralNode).value);
+    const n = this.numericLiteralValue(propNode);
+    return n === null ? null : String(n);
   }
 
   private flipComparison(op: string): string {
@@ -1536,6 +1623,57 @@ export class TypeChecker {
     return ok && declCount === 1 && emptyLiteralDecl && sawArrayWrite;
   }
 
+  /** Is `arrName`'s tuple shape (established at `fromPos`, its most recent
+   *  assignment) still trustworthy at `toPos`? A tuple's exact length/per-slot
+   *  shape is a fact about the VALUE at assignment time — ucode arrays are
+   *  mutable, so a `shift`/`pop`/`splice` call (or a wholesale reassignment)
+   *  on the SAME array between the two positions invalidates it, exactly like
+   *  the length-guard reasoning's own staleness check (arrLengthInvalidatedBetween,
+   *  used by arrayIndexProvenInBounds) — reused here for the same soundness
+   *  reason: `let m = match(...); shift(m); lc(m[2])` must NOT resolve `m[2]`
+   *  through the pre-shift tuple. */
+  private tupleShapeStillValidAt(arrName: string, fromPos: number, toPos: number): boolean {
+    return !this.arrLengthInvalidatedBetween(arrName, fromPos, toPos);
+  }
+
+  /** Resolve a LITERAL (including negative — `numericLiteralValue` already unwraps
+   *  a unary-minus-wrapped literal) index against a tuple-shaped ArrayType (today,
+   *  only match()'s capture-group result — see ArrayType.tupleTypes /
+   *  resolveTupleIndex in symbolTable.ts, docs/tc-match-capture-group-typing.md).
+   *  Returns `null` when not applicable (non-literal index, `arrType` isn't
+   *  tuple-shaped, or — when `objNode` names a plain variable — the array may
+   *  have been mutated since its tuple-establishing assignment) so the caller
+   *  falls back to the general element-type-or-null handling. A provably
+   *  out-of-range literal index flags CAPTURE_GROUP_OUT_OF_RANGE and resolves to
+   *  `null` (UcodeType.NULL, not the JS-null "not applicable" sentinel). */
+  private tryResolveTupleAccess(arrType: UcodeDataType, propNode: AstNode, objNode?: AstNode): UcodeDataType | null {
+    if (!isArrayType(arrType) || !arrType.tupleTypes) return null;
+    if (objNode && objNode.type === 'Identifier') {
+      const name = (objNode as IdentifierNode).name;
+      const symbol = this.symbolTable.lookupAtPosition(name, objNode.start) ?? this.symbolTable.lookup(name);
+      if (symbol) {
+        const fromPos = symbol.currentTypeEffectiveFrom ?? symbol.declaredAt;
+        if (!this.tupleShapeStillValidAt(name, fromPos, propNode.start)) return null;
+      }
+    }
+    const idx = this.numericLiteralValue(propNode);
+    if (idx === null) return null;
+    const resolved = resolveTupleIndex(arrType, idx);
+    if (!resolved) return null;
+    if ('outOfRange' in resolved) {
+      const groupCount = resolved.length - 1;
+      this.warnings.push({
+        message: `match() result has ${resolved.length} element${resolved.length === 1 ? '' : 's'} (the full match plus ${groupCount} capture group${groupCount === 1 ? '' : 's'}); index ${idx} is always out of range and evaluates to null.`,
+        start: propNode.start,
+        end: propNode.end,
+        severity: 'warning',
+        code: UcodeErrorCode.CAPTURE_GROUP_OUT_OF_RANGE,
+      });
+      return UcodeType.NULL;
+    }
+    return resolved.type;
+  }
+
   /** Does a computed array access `obj[prop]` resolve to an in-bounds element
    *  (so the usual `| null` for out-of-bounds doesn't apply)? Covers a literal
    *  index proven by a `length(arr)` guard, and a variable index that is the
@@ -1903,12 +2041,25 @@ export class TypeChecker {
     const always = (op === '==' || op === '===') ? 'false' : 'true';
     const typeList = [...new Set(members.map(m => REF_BASE_DISPLAY[m] ?? String(m)))].join(' | ');
     const litRepr = JSON.stringify((litNode as LiteralNode).value);
-    const base = {
+    const base: {
+      message: string; start: number; end: number; code: UcodeErrorCode;
+      data?: { impossibleCompareBase: { name: string; offset: number } };
+    } = {
       message: `a value of type ${typeList} can never be == ${litRepr} in ucode, so this comparison is always ${always}.`,
       start: node.start,
       end: node.end,
       code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
     };
+    // When the compared value is an INDEX/MEMBER of a plain variable (`section[0]`,
+    // `o.x`), the all-reference (incl. null) conclusion rests on that variable's
+    // straight-line type. Record the receiver so the post-analysis flow filter can
+    // re-query the loop-carried JOIN: if the receiver is provably a (non-null)
+    // array/object there, the element could be a scalar and the "always false" claim
+    // is a false positive (docs/tc-loop-carried-flow-join.md).
+    if (other.type === 'MemberExpression' && (other as MemberExpressionNode).object.type === 'Identifier') {
+      const recv = (other as MemberExpressionNode).object as IdentifierNode;
+      base.data = { impossibleCompareBase: { name: recv.name, offset: recv.start } };
+    }
     // Fixed Error, independent of `'use strict'` (#106) — see checkConstantComparison.
     this.errors.push({ ...base, severity: 'error' });
   }
@@ -2082,6 +2233,15 @@ export class TypeChecker {
   }
 
   private getTypeDescription(type: UcodeDataType): string {
+    // This is an internal validation/gating string (argument-type checks, "in"-operator
+    // messages, fs-return narrowing) — NOT the user-facing hover string (that's
+    // typeToString in symbolTable.ts, which DOES render `any`). Every caller here treats
+    // the result as "unknown" meaning "no constraint / top type", so ANY (display-only,
+    // behaves exactly like UNKNOWN in every check) must collapse to the literal string
+    // 'unknown' — never let 'any' leak into this pipeline, or the dozens of
+    // `.includes(' | ')` / `=== UcodeType.UNKNOWN` string comparisons downstream
+    // (builtinValidation.ts et al.) would stop treating an any-typed value as permissive.
+    if (type === UcodeType.ANY) return UcodeType.UNKNOWN;
     if (isUnionType(type)) {
       const types = getUnionTypes(type);
       return types.map(t => this.getTypeDescription(t as UcodeDataType)).join(' | ');
@@ -2092,7 +2252,18 @@ export class TypeChecker {
     if (isArrayType(type)) {
       return UcodeType.ARRAY;
     }
-    return type as string;
+    if (typeof type === 'string') {
+      return type;
+    }
+    // Any other rich UcodeDataType that isn't a union/named-object/array — a ModuleType
+    // (`{ type: 'object', moduleName: … }`, e.g. require("fs") or the hostapd/wpas/netifd
+    // ambients) or a DefaultImportType. These have no `.name`/`.elementType` to read, so
+    // falling through used to return the raw object (callers then crash calling
+    // `.includes` on it, expecting a string). Collapse to the base kind instead — 'object'
+    // for both, matching what `type()` reports for these at runtime — via the single
+    // shared rich-type-to-base-kind collapse (kept in sync as new UcodeDataType variants
+    // are added; see dataTypeToBase's own doc comment).
+    return dataTypeToBase(type);
   }
 
   private getVariableName(node: AstNode): string | null {
@@ -2103,7 +2274,21 @@ export class TypeChecker {
     return null;
   }
 
+  /**
+   * Defense in depth: `getNodeTypeDescription` is declared to return `UcodeType` (a plain
+   * string), and every downstream caller (narrowBuiltinReturnType, narrowFsReturnType,
+   * builtinValidation.ts via setTypeChecker, …) does `.includes(' | ')` / string equality on
+   * the result without a runtime check. `getTypeDescriptionImpl` routes everything through
+   * `getTypeDescription`, which is now itself total (see its own fix), but a future call path
+   * that skips it (or a new rich `UcodeDataType` variant it doesn't yet know about) must not
+   * be able to hand a non-string back out to code that assumes strings — enforce it here, once.
+   */
   private getNodeTypeDescription(node: AstNode | undefined): UcodeType {
+    const result = this.getNodeTypeDescriptionImpl(node);
+    return (typeof result === 'string' ? result : UcodeType.UNKNOWN) as UcodeType;
+  }
+
+  private getNodeTypeDescriptionImpl(node: AstNode | undefined): UcodeType {
     // A missing argument (e.g. a builtin called with too few args) has no type → UNKNOWN.
     if (!node) return UcodeType.UNKNOWN;
     // For identifiers, check if there's a narrowed type in the current context.
@@ -2383,6 +2568,7 @@ export class TypeChecker {
             const moduleFunctionOpt = registry.getFunction(funcName);
             if (Option.isSome(moduleFunctionOpt)) {
               const moduleFunction = moduleFunctionOpt.value;
+              this.checkModuleArgumentTypes(node, moduleFunction.parameters, `${symbol.importedFrom}.${funcName}`);
               let returnTypeData = this.parseReturnType(moduleFunction.returnType);
 
               // Narrow return type based on argument types.
@@ -2413,9 +2599,11 @@ export class TypeChecker {
           // local variable name when aliased.
           if (symbol.importedFrom && isKnownModule(symbol.importedFrom)) {
             const registry = MODULE_REGISTRIES[symbol.importedFrom];
-            const moduleFunctionOpt = registry.getFunction(symbol.importSpecifier || funcName);
+            const specifier = symbol.importSpecifier || funcName;
+            const moduleFunctionOpt = registry.getFunction(specifier);
             if (Option.isSome(moduleFunctionOpt)) {
               const moduleFunction = moduleFunctionOpt.value;
+              this.checkModuleArgumentTypes(node, moduleFunction.parameters, `${symbol.importedFrom}.${specifier}`);
               let returnTypeData = this.parseReturnType(moduleFunction.returnType);
               returnTypeData = this.narrowFsReturnType(returnTypeData, moduleFunction, node);
               return returnTypeData;
@@ -2562,6 +2750,7 @@ export class TypeChecker {
           const registry = MODULE_REGISTRIES[modName as keyof typeof MODULE_REGISTRIES];
           const funcOpt = registry.getFunction(methodName);
           if (Option.isSome(funcOpt)) {
+            this.checkModuleArgumentTypes(node, funcOpt.value.parameters, `${modName}.${methodName}`);
             let returnTypeData = this.parseReturnType(funcOpt.value.returnType);
             returnTypeData = this.narrowFsReturnType(returnTypeData, funcOpt.value, node);
             return returnTypeData;
@@ -2580,6 +2769,31 @@ export class TypeChecker {
           && !this.symbolTable.lookup((memberCallee.object as IdentifierNode).name)
           && isKnownModule((memberCallee.object as IdentifierNode).name)) {
         return UcodeType.UNKNOWN;
+      }
+
+      // Chained module call: `require('ubus').connect()`, `require('fs').open(...)`.
+      // The receiver here isn't a bound Identifier (require() is itself a CallExpression),
+      // so the namespace-module-calls branch above never matches even though the receiver
+      // IS a module. Quietly check the receiver's type — the require() special case
+      // (validateSpecialBuiltins → "if (signature.name === 'require') …") already types it
+      // as `{ type: OBJECT, moduleName: '<mod>' }` — and dispatch through MODULE_REGISTRIES
+      // exactly like the identifier-receiver branch, including narrowFsReturnType argument
+      // narrowing. Not Identifier-gated: this also covers any other expression (not just a
+      // literal require() call) that happens to resolve to a module type.
+      if (memberCallee.object.type !== 'Identifier' && memberCallee.property.type === 'Identifier') {
+        const recvType = this.checkNodeQuietly(memberCallee.object);
+        const modInfo = extractModuleType(recvType);
+        if (modInfo && isKnownModule(modInfo.moduleName)) {
+          const methodName = (memberCallee.property as IdentifierNode).name;
+          const registry = MODULE_REGISTRIES[modInfo.moduleName as keyof typeof MODULE_REGISTRIES];
+          const funcOpt = registry.getFunction(methodName);
+          if (Option.isSome(funcOpt)) {
+            this.checkModuleArgumentTypes(node, funcOpt.value.parameters, `${modInfo.moduleName}.${methodName}`);
+            let returnTypeData = this.parseReturnType(funcOpt.value.returnType);
+            returnTypeData = this.narrowFsReturnType(returnTypeData, funcOpt.value, node);
+            return returnTypeData;
+          }
+        }
       }
 
       // Member expression calls — resolve the call's return type from the callee.
@@ -2773,6 +2987,133 @@ export class TypeChecker {
    * in non-strict mode; user functions don't (ucode permits the call) — they
    * warn, escalating to an error only under `'use strict'`.
    */
+
+  /**
+   * Validate a MODULE function call's arguments against the registry's declared
+   * parameter types (`fs.popen(command: string, …)`).
+   *
+   * Until now the registries declared parameter types that nothing ever read on
+   * the diagnostic path — the four module-member call paths in
+   * `checkCallExpression` resolved only a return type. See
+   * docs/tc-inferred-param-types-not-checked.md, Part 2.
+   *
+   * Deliberately narrower than `checkArgumentTypes`' builtin preset:
+   *
+   *   - NO UNKNOWN NAGGING. An `unknown`/`any` actual argument is skipped. The
+   *     builtin preset (`flagUnknownActual: true`) would fire on every
+   *     unannotated parameter passed to `fs.*` — the exact false-positive cliff
+   *     call-site inference exists to shrink. Flagging unknowns here should be a
+   *     follow-on gated behind `strictUnknownArguments`.
+   *   - WARNINGS ONLY, never errors. A wrong-typed argument to a module C
+   *     function generally `err_return(EINVAL)`s — verified in ucode/lib/fs.c
+   *     `uc_fs_popen`: `if (ucv_type(comm) != UC_STRING) err_return(EINVAL);`
+   *     — so the call RETURNS NULL rather than throwing. That is the same
+   *     "total, returns null on bad input" shape as the `gracefulNull` builtins,
+   *     which warn rather than error.
+   *   - Parameters with no checkable contract (`any`, handle names, unions
+   *     containing them) are skipped entirely (`moduleParamAllowedTypes` → null).
+   *   - An OPTIONAL parameter also accepts `null` (an omitted argument is NULL,
+   *     and the C code treats an explicit null the same way).
+   *   - Positional alignment: stop at a rest parameter or a spread argument.
+   */
+  private checkModuleArgumentTypes(
+    node: CallExpressionNode,
+    parameters: ReadonlyArray<{ name: string; type: string; optional?: boolean; isRest?: boolean }> | undefined,
+    fnDisplayName: string,
+  ): void {
+    if (!parameters || parameters.length === 0) return;
+    if (MODULES_WITHOUT_POSITIONAL_ARG_CONTRACT.has(fnDisplayName.split('.')[0]!)) return;
+
+    for (let i = 0; i < node.arguments.length; i++) {
+      const param = parameters[i];
+      if (!param) break;          // extra args: arity is not this check's business
+      if (param.isRest) break;    // never validate past a rest parameter
+
+      const arg = node.arguments[i];
+      if (!arg) break;
+      if (arg.type === 'SpreadElement') break; // positional alignment is lost
+
+      const allowed = moduleParamAllowedTypes(param.type);
+      if (!allowed) continue;     // `any` / handle type / unmodelled union
+      const effectiveAllowed = param.optional ? [...allowed, UcodeType.NULL] : allowed;
+
+      // Populate the arg's cached type WITHOUT emitting anything: nested calls are
+      // validated by the visitor's own visitCallExpression, not by us.
+      let actualTypeData = this.getFullTypeFromNode(arg);
+      if (actualTypeData === null || actualTypeData === undefined) {
+        actualTypeData = this.checkNodeQuietly(arg);
+      }
+      actualTypeData = this.applyArgumentGuards(arg, actualTypeData);
+
+      if (isNeverType(actualTypeData)) continue;   // dead code: no value flows
+
+      const allMembers = getUnionTypes(actualTypeData).map(t => dataTypeToBase(t));
+      if (allMembers.length === 0) continue;
+      // `flagUnknownActual: false` — ANY collapses to UNKNOWN via dataTypeToBase.
+      if (allMembers.some(m => m === UcodeType.UNKNOWN)) continue;
+
+      // NULL is not this check's business. A `null` member is either already covered by
+      // the null-safety diagnostics (UC5005/UC5006), or it is the FORWARD-DECLARATION
+      // idiom — `let cb; ... function schedule() { uloop.timer(ms, cb); } ... cb = fn;`
+      // where the SSA type at the read is `null` but the value at call time is a
+      // function (mwan4track.uc). Flagging it here reproduces the
+      // docs/forward-let-fn-uc1002.md false positive one layer down.
+      const members = allMembers.filter(m => m !== UcodeType.NULL);
+      if (members.length === 0) continue;
+
+      const disallowed = members.filter(m => !effectiveAllowed.includes(m));
+      if (disallowed.length === 0) continue;
+
+      const allowedStr = allowed.join(' | ');
+      const uniqueDisallowed = [...new Set(disallowed)];
+
+      if (disallowed.length === members.length) {
+        // Definite mismatch: no member can satisfy the contract.
+        this.warnings.push({
+          message: `Function '${fnDisplayName}' expects ${allowedStr} for argument ${i + 1}, got ${this.getTypeDescription(actualTypeData)} — it will return null`,
+          start: arg.start, end: arg.end, severity: 'warning',
+          code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
+        });
+      } else {
+        // Partially compatible (`string | integer | object` into a string param).
+        this.warnings.push({
+          message: `Argument ${i + 1} of ${fnDisplayName}() may be ${uniqueDisallowed.join(' | ')}. Use a type guard to narrow to ${allowedStr}.`,
+          start: arg.start, end: arg.end, severity: 'warning',
+          code: 'nullable-argument',
+          data: {
+            functionName: fnDisplayName,
+            argumentIndex: i,
+            expectedType: allowedStr,
+            expectedTypes: [...allowed],
+            actualType: actualTypeData,
+            variableName: this.getVariableName(arg),
+            argumentOffset: arg.start,
+          },
+        });
+      }
+    }
+  }
+
+  /** The AST-guard-narrowed type of a call argument (shared by builtin and module
+   *  argument validation): `if (type(x) == 'string') fs.open(x)` must not warn. */
+  private applyArgumentGuards(arg: AstNode, actualTypeData: UcodeDataType): UcodeDataType {
+    if (arg.type === 'Identifier' && (isUnionType(actualTypeData) || actualTypeData === UcodeType.UNKNOWN)) {
+      const guards = this.getGuardsForPosition(this.currentAST, (arg as IdentifierNode).name, arg.start);
+      let narrowed: UcodeDataType = actualTypeData;
+      for (const g of guards) narrowed = this.applyTypeGuard(narrowed, g);
+      return narrowed;
+    }
+    if (arg.type === 'MemberExpression') {
+      const dottedPath = this.getDottedPath(arg);
+      if (dottedPath) {
+        const guards = this.getGuardsForPosition(this.currentAST, dottedPath, arg.start);
+        let narrowed: UcodeDataType = actualTypeData;
+        for (const g of guards) narrowed = this.applyTypeGuard(narrowed, g);
+        return narrowed;
+      }
+    }
+    return actualTypeData;
+  }
 
   private checkArgumentTypes(node: CallExpressionNode, expectedTypes: UcodeType[], fnName: string, opts: { flagUnknownActual: boolean; softSeverity: boolean; coercesArgToString?: boolean }): void {
     const argCount = node.arguments.length;
@@ -3172,18 +3513,28 @@ export class TypeChecker {
     nullAccess: {
       objStart: number; objEnd: number; propStart: number;
       computed: boolean; isWrite: boolean; isIdentifier: boolean;
+      objName?: string; propName?: string;
     };
   } {
-    return {
-      nullAccess: {
-        objStart: node.object.start,
-        objEnd: node.object.end,
-        propStart: node.property.start,
-        computed: !!node.computed,
-        isWrite: this.isAssignmentTargetContext(),
-        isIdentifier: node.object.type === 'Identifier',
-      },
+    const nullAccess: {
+      objStart: number; objEnd: number; propStart: number;
+      computed: boolean; isWrite: boolean; isIdentifier: boolean;
+      objName?: string; propName?: string;
+    } = {
+      objStart: node.object.start,
+      objEnd: node.object.end,
+      propStart: node.property.start,
+      computed: !!node.computed,
+      isWrite: this.isAssignmentTargetContext(),
+      isIdentifier: node.object.type === 'Identifier',
     };
+    // Receiver identifier name + the accessed property name, so the post-analysis
+    // flow-sensitive filter can re-query the (now-built) flow engine's loop-carried
+    // JOIN for this receiver and downgrade/suppress a definite-null claim the
+    // straight-line emission made (docs/tc-loop-carried-flow-join.md).
+    if (node.object.type === 'Identifier') nullAccess.objName = (node.object as IdentifierNode).name;
+    if (!node.computed && node.property.type === 'Identifier') nullAccess.propName = (node.property as IdentifierNode).name;
+    return { nullAccess };
   }
 
   /** Tier 2: WARN (not error) on a non-optional `.prop` access whose receiver is a
@@ -3590,13 +3941,19 @@ export class TypeChecker {
         if (symbol.keysOfSymbol) {
           (node as any)._keysOfSymbol = symbol.keysOfSymbol;
         }
-        // Check for per-index property types first
-        if (node.property.type === 'Literal') {
-          const indexKey = String((node.property as LiteralNode).value);
-          if (symbol.propertyTypes && symbol.propertyTypes.has(indexKey)) {
-            // Return the rich per-index element type directly.
-            return symbol.propertyTypes.get(indexKey)!;
-          }
+        // Tuple-shaped array (match() capture groups): a literal index — including
+        // negative, `numericLiteralValue` unwraps a unary minus — resolves through
+        // the per-slot table before anything else (it already encodes exactly which
+        // slots are nullable, so it's more precise than the general fallback below).
+        const tupleResolved = this.tryResolveTupleAccess(symbol.dataType as UcodeDataType, node.property, node.object);
+        if (tupleResolved !== null) return tupleResolved;
+        // Check for per-index property types first (incl. a negative literal
+        // index — arrayIndexKeyOf resolves it to the same key a matching
+        // negative-indexed write used, see docs/tc-negative-array-index.md).
+        const indexKey = this.arrayIndexKeyOf(node.property);
+        if (indexKey !== null && symbol.propertyTypes && symbol.propertyTypes.has(indexKey)) {
+          // Return the rich per-index element type directly.
+          return symbol.propertyTypes.get(indexKey)!;
         }
         // Fall back to ArrayType element type (element | null since index may be out of bounds)
         if (isArrayType(symbol.dataType as UcodeDataType)) {
@@ -3650,17 +4007,36 @@ export class TypeChecker {
     if (node.computed && isUnionType(objectType)) {
       const arrMember = getUnionTypes(objectType).find(m => isArrayType(m) || singleTypeToBase(m) === UcodeType.ARRAY);
       if (arrMember) {
-        const elemType = isArrayType(arrMember) ? getArrayElementType(arrMember) : UcodeType.UNKNOWN;
-        // `arr[i]` on `array<T> | null` is `T | null` for two reasons: the receiver may be
-        // null, and the index may be out of bounds. When a guard has narrowed the receiver
-        // to a non-null array HERE (e.g. `if (!m || length(m) < N) continue; … m[k]`) AND the
-        // index is proven in bounds, NEITHER applies → the bare element type. (`match()` →
-        // `array<string> | null`; the capture-access idiom is exactly this shape.)
+        // Is the receiver narrowed non-null HERE (e.g. `if (!m || length(m) < N)
+        // continue; … m[k]`)? If so neither "receiver is null" nor (when also
+        // in-bounds) "index missed" applies. Reused below by both the tuple
+        // path and the general element-type fallback.
+        let narrowedNonNullArr: UcodeDataType | null = null;
         if (node.object.type === 'Identifier') {
           const nt = this.getNarrowedTypeAtPosition((node.object as IdentifierNode).name, node.object.start);
-          if (nt && isArrayType(nt) && this.computedAccessInBounds(node.object, node.property, node.start)) {
-            return getArrayElementType(nt);
-          }
+          if (nt && isArrayType(nt)) narrowedNonNullArr = nt;
+        }
+        // Tuple-shaped array member (match() capture groups — see ArrayType.tupleTypes):
+        // a literal index (incl. negative) resolves through the per-slot table, which
+        // encodes "group doesn't participate" nullability precisely — but NOT "the
+        // receiver itself is null" (the whole array may not exist — match() found no
+        // match at all). That second source of null is independent of which slot is
+        // being read, so it's unioned back in UNLESS the receiver is proven non-null
+        // at this position. This is what makes `m[1]` on a mandatory capture group
+        // resolve to bare `string` ONLY after an `m != null` guard, while an
+        // unguarded `m[1]` stays `string | null` (soundness — docs/
+        // tc-match-capture-group-typing.md).
+        const tupleResolved = this.tryResolveTupleAccess(narrowedNonNullArr ?? arrMember, node.property, node.object);
+        if (tupleResolved !== null) {
+          if (narrowedNonNullArr) return tupleResolved;
+          return createUnionType([...getUnionTypes(tupleResolved), UcodeType.NULL]);
+        }
+        const elemType = isArrayType(arrMember) ? getArrayElementType(arrMember) : UcodeType.UNKNOWN;
+        // `arr[i]` on `array<T> | null` is `T | null` for two reasons: the receiver may be
+        // null, and the index may be out of bounds. When the receiver is narrowed non-null
+        // AND the index is proven in bounds, NEITHER applies → the bare element type.
+        if (narrowedNonNullArr && this.computedAccessInBounds(node.object, node.property, node.start)) {
+          return getArrayElementType(narrowedNonNullArr);
         }
         // Preserve the rich element type (handle moduleName) in the union.
         return createUnionType([...((isUnionType(elemType) ? getUnionTypes(elemType) : [elemType]) as SingleType[]), UcodeType.NULL]);
@@ -3672,6 +4048,8 @@ export class TypeChecker {
     if (this.dataTypeToUcodeType(objectType) === UcodeType.ARRAY && node.computed) {
       const objFullType = this.getTypeOf(node.object);
       if (objFullType && isArrayType(objFullType)) {
+        const tupleResolved = this.tryResolveTupleAccess(objFullType, node.property, node.object);
+        if (tupleResolved !== null) return tupleResolved;
         const elemType = getArrayElementType(objFullType);
         // Index proven in bounds (literal under a `length` guard, or a `for`
         // induction var) → no null.
@@ -3894,9 +4272,13 @@ export class TypeChecker {
 
 
   private checkAssignmentExpression(node: AssignmentExpressionNode): CheckResult {
-    // Check the target for its side effects (populates _fullType, guards, etc.);
-    // its type isn't used — ucode assignment has no type-compatibility constraint.
-    this.checkNode(node.left);
+    // Check the target for its side effects (populates _fullType, guards, etc.).
+    // For a compound operator (`+=`, `??=`, …) the target's CURRENT type is also
+    // the left operand of the implied `x op y` — ucode's update opcodes route
+    // through the exact same uc_vm_value_arith as the binary operators
+    // (vm.c uc_vm_insn_update_var/_upval/_local/_val, :1862/:1884/:1917/:1940),
+    // so `x op= y` IS `x = x op y`. (docs/tc-compound-assign-operator-typing.md)
+    const leftType = this.checkNode(node.left);
     const rightType = this.checkNode(node.right);
 
     // Track array element types
@@ -3908,12 +4290,9 @@ export class TypeChecker {
 
         // If this is an array variable, track the element type
         if (symbol && (symbol.dataType === UcodeType.ARRAY || isArrayType(symbol.dataType as UcodeDataType))) {
-          // Get the index if it's a literal
-          let indexKey: string | null = null;
-          if (memberExpr.property.type === 'Literal') {
-            const literalProp = memberExpr.property as LiteralNode;
-            indexKey = String(literalProp.value);
-          }
+          // Get the index if it's a literal (incl. a negative literal — see
+          // arrayIndexKeyOf, docs/tc-negative-array-index.md).
+          const indexKey = this.arrayIndexKeyOf(memberExpr.property);
 
           if (indexKey !== null) {
             // Initialize propertyTypes map if it doesn't exist
@@ -3933,7 +4312,99 @@ export class TypeChecker {
     // constraint (a property or element may be reassigned to any type), so there
     // is no assignment type check here.
 
-    return rightType;
+    if (node.operator === '=') {
+      return rightType;
+    }
+    return this.computeCompoundAssignmentResultType(node.operator, leftType, rightType, node);
+  }
+
+  /**
+   * Result type of `x op= y`, computed as `typeof(x_old op y)` by reusing the
+   * exact binary-operator inference rules — routing, not new inference (all
+   * these rules already exist and are union-aware for the plain binary form).
+   * See docs/tc-compound-assign-operator-typing.md for the vm.c citations
+   * behind "x op= y is x = x op y", and ucode/compiler.c:1335-1461 for the
+   * `&&=`/`||=`/`??=` short-circuit compile shapes (verified: `x &&= y` /
+   * `x ||= y` produce exactly the same result as the binary `&&`/`||`, and
+   * `x ??= y` the same as binary `??` — see computeNullishCoalescingResult).
+   */
+  private computeCompoundAssignmentResultType(
+    operator: AssignmentExpressionNode['operator'],
+    leftType: CheckResult,
+    rightType: CheckResult,
+    node: AssignmentExpressionNode,
+  ): CheckResult {
+    switch (operator) {
+      case '+=':
+        return arithmeticTypeInference.inferAdditionFullType(leftType, rightType);
+
+      case '-=':
+      case '*=':
+      case '/=':
+      case '%=':
+      case '**=': {
+        const baseOp = operator.slice(0, -1);
+        // Same string→number coercion + literal-zero-division handling as the
+        // binary path (checkBinaryExpression): every non-`+` arithmetic
+        // operator coerces a string operand to a number (vm.c's
+        // uc_vm_value_arith runs both operands through ucv_to_number() for
+        // I_SUB/I_MUL/I_DIV/I_MOD/I_EXP; only I_ADD has the concat early-out).
+        const leftFullType = this.coerceStringForArithmetic(node.left, leftType);
+        const rightFullType = this.coerceStringForArithmetic(node.right, rightType);
+        if ((baseOp === '/' || baseOp === '%') && this.isLiteralZero(node.right)) {
+          return UcodeType.DOUBLE;
+        }
+        return arithmeticTypeInference.inferArithmeticFullType(leftFullType, rightFullType, baseOp);
+      }
+
+      case '&=':
+      case '|=':
+      case '^=':
+      case '<<=':
+      case '>>=':
+        // Bitwise update ops route through uc_vm_value_bitop (vm.c:1497) via
+        // uc_vm_value_arith's dispatch, which always returns an integer
+        // regardless of operand types.
+        return this.typeCompatibility.getBitwiseResultType();
+
+      case '??=':
+        return this.computeNullishCoalescingResult(leftType, rightType, node.right);
+
+      case '||=':
+        return logicalTypeInference.inferLogicalOrFullType(leftType, rightType);
+
+      case '&&=':
+        return logicalTypeInference.inferLogicalAndFullType(leftType, rightType);
+
+      default:
+        return rightType;
+    }
+  }
+
+  /**
+   * Public entry point for `computeCompoundAssignmentResultType`, used by
+   * SemanticAnalyzer.visitAssignmentExpression: that method already computes
+   * `leftType` (checkNode(node.left)) and the best-available right-hand type
+   * (checkNode(node.right), further refined by its own fs/method/function
+   * return-type inference) for its OWN symbol-table bookkeeping, so it passes
+   * both in here rather than letting a second `checkNode(node)` pass re-run
+   * (and re-diagnose) the whole subtree. For `=` this is just `rightType`.
+   */
+  computeAssignmentResultType(node: AssignmentExpressionNode, leftType: CheckResult, rightType: CheckResult): CheckResult {
+    const result = node.operator === '='
+      ? rightType
+      : this.computeCompoundAssignmentResultType(node.operator, leftType, rightType, node);
+    // Cache on the assignment expression node itself — checkAssignmentExpression
+    // (the dispatchCheck path) is only reached when an assignment appears as a
+    // SUB-expression (`a = (b += 1)`, `if ((x = f()))`, …); a top-level `x op= y;`
+    // ExpressionStatement never goes through checkNode(node) at all (semanticAnalyzer
+    // decomposes it into checkNode(node.left)/checkNode(node.right) instead), so without
+    // this the node would have no cached type and getTypeOf(node)/nodeTypeForFlow (used by
+    // the flow engine's makeAssignmentTransfer) could never see the compound-op result.
+    if (result !== UcodeType.UNKNOWN || !this.nodeTypes.has(node)) {
+      this.nodeTypes.set(node, result);
+    }
+    return result;
   }
 
   private checkArrayExpression(node: ArrayExpressionNode): CheckResult {
@@ -4321,12 +4792,18 @@ export class TypeChecker {
     let engineResult: UcodeDataType | undefined;
     if (symbol) {
       const flowFull = this.flowBaseAt(variableName, position);
-      if (flowFull !== undefined && !this.dataTypesCanonicalEqual(flowFull, symbol.dataType)) {
+      // A BOTTOM/`never` engine result means the read sits on a provably-impossible
+      // path (the falsy edge of `if (obj)` for an always-truthy object). Don't surface
+      // it — treat as "no refinement" so hover falls back to the declared type rather
+      // than showing `never`.
+      if (flowFull !== undefined && !isNeverType(flowFull)
+          && !this.dataTypesCanonicalEqual(flowFull, symbol.dataType)) {
         engineResult = flowFull;
       }
     }
 
-    const legacyResult = this.legacyNarrowedTypeAtPosition(variableName, position, symbol, baseTypeHint);
+    let legacyResult = this.legacyNarrowedTypeAtPosition(variableName, position, symbol, baseTypeHint);
+    if (legacyResult !== null && isNeverType(legacyResult)) legacyResult = null;
 
     if (engineResult === undefined) return legacyResult;
     if (legacyResult === null) return engineResult;
@@ -4422,6 +4899,19 @@ export class TypeChecker {
     return best?.engine.baseTypeAt(variableName, position);
   }
 
+  /** The ucode type of a literal node's VALUE (for strict-equality narrowing). Mirrors
+   *  nodeTypeForFlow's literal handling: exponent-notation numbers are doubles. */
+  private literalNodeType(node: LiteralNode): UcodeType | null {
+    const v = node.value;
+    if (typeof v === 'string') return UcodeType.STRING;
+    if (typeof v === 'boolean') return UcodeType.BOOLEAN;
+    if (typeof v === 'number') {
+      return (node.literalType === 'double' || !Number.isInteger(v)) ? UcodeType.DOUBLE : UcodeType.INTEGER;
+    }
+    if (v === null) return UcodeType.NULL;
+    return null;
+  }
+
   /** Side-effect-free type of an expression node, for the flow engine's transfer:
    *  the cached checked type (carries reassignment narrowing) with a literal
    *  fallback (literal inits aren't cached). */
@@ -4489,6 +4979,16 @@ export class TypeChecker {
    */
   private makeEdgeGuardTransfer(): EdgeGuardFn {
     return (condition: AstNode, isNegative: boolean, env: Map<string, UcodeDataType>) => {
+      // (b) An assignment embedded in the condition — `(x = rhs) != null`,
+      // `if ((x = rhs))`, `while ((x = rhs) != null)`, `(x = rhs) && …` — STORES to x
+      // regardless of the test outcome, so the flow env for x is the RHS's checked type
+      // on BOTH edges BEFORE the guard narrows it. Without this the guard would narrow
+      // x's stale loop-carried/declaration type instead of the freshly-assigned match()
+      // result (docs/tc-assignment-expression-guard-narrowing.md).
+      for (const asn of this.collectConditionAssignments(condition)) {
+        const t = this.getTypeOf(asn.rhs);
+        if (t !== undefined) env.set(asn.name, t);
+      }
       for (const varName of env.keys()) {
         const guards = this.guardsFromEdgeCondition(condition, isNegative, varName);
         if (guards.length === 0) continue;
@@ -4497,6 +4997,32 @@ export class TypeChecker {
         env.set(varName, t);
       }
     };
+  }
+
+  /** Plain `=` assignments embedded in a branch/loop condition (`(x = rhs) != null`,
+   *  `if ((x = rhs))`, `(x = rhs) && y`). Walks the boolean structure (binary/logical
+   *  operators, `!`) but does NOT descend into an assignment's RHS. Used by the edge
+   *  transfer to store the assigned type on both edges of the test. */
+  private collectConditionAssignments(node: AstNode): Array<{ name: string; rhs: AstNode }> {
+    const out: Array<{ name: string; rhs: AstNode }> = [];
+    const walk = (n: AstNode | null | undefined): void => {
+      if (!n || typeof n !== 'object') return;
+      if (n.type === 'AssignmentExpression') {
+        const a = n as AssignmentExpressionNode;
+        if (a.operator === '=' && a.left.type === 'Identifier') {
+          out.push({ name: (a.left as IdentifierNode).name, rhs: a.right });
+        }
+        return; // don't descend into the RHS
+      }
+      if (n.type === 'BinaryExpression') {
+        walk((n as BinaryExpressionNode).left);
+        walk((n as BinaryExpressionNode).right);
+        return;
+      }
+      if (n.type === 'UnaryExpression') { walk((n as UnaryExpressionNode).argument); return; }
+    };
+    walk(node);
+    return out;
   }
 
   /**
@@ -4582,9 +5108,10 @@ export class TypeChecker {
    *  - base `unknown` carries no info → take `narrowType` verbatim (e.g. an untyped
    *    param compared `< 0` narrows to `integer | double`, the prior behavior).
    *  - no overlap → keep `baseType` unchanged rather than fabricate a type the value
-   *    provably isn't. */
+   *    provably isn't.
+   *  - `any` (json()/call() contract-any) carries no info either — same as `unknown`. */
   private intersectNarrowType(baseType: UcodeDataType, narrowType: UcodeDataType): UcodeDataType {
-    if (baseType === UcodeType.UNKNOWN) return narrowType;
+    if (baseType === UcodeType.UNKNOWN || baseType === UcodeType.ANY) return narrowType;
     const narrowBases = new Set(getUnionTypes(narrowType).map(t => singleTypeToBase(t)));
     const kept = getUnionTypes(baseType).filter(t => narrowBases.has(singleTypeToBase(t)));
     if (kept.length === 0) return baseType;
@@ -4632,12 +5159,20 @@ export class TypeChecker {
 
     if (guard.narrowToType === UcodeType.NULL) {
       if (guard.isNegative) {
-        // Remove null from the union (non-null branch)
+        // Remove null from the union — the TRUTHY branch of a truthiness test, or the
+        // non-null branch of an explicit `x != null`. (Both remove null here; they only
+        // differ on the FALSY branch, handled below.)
         const narrowingResult = this.typeNarrowing.removeNullFromType(baseType);
         return narrowingResult.narrowedType;
       }
 
-      // Keep only null in the positive equality branch
+      // Positive/falsy branch. A BARE truthiness guard `if (x)` flipped onto the falsy
+      // edge narrows to the falsy-CAPABLE subset (scalars keep their type; only always-
+      // truthy objects/arrays are eliminated → BOTTOM when nothing survives). An explicit
+      // `x == null` (or the true branch of `x != null`) keeps ONLY null, unchanged.
+      if (guard.isTruthiness) {
+        return this.typeNarrowing.narrowToFalsy(baseType).narrowedType;
+      }
       const narrowingResult = this.typeNarrowing.keepOnlyTypes(baseType, [UcodeType.NULL]);
       return narrowingResult.narrowedType;
     }
@@ -4875,17 +5410,25 @@ export class TypeChecker {
           position >= ifNode.alternate.start &&
           position <= ifNode.alternate.end) {
         const guardInfo = this.extractTypeGuard(ifNode.test, variableName);
+        // A negated else guard ("x is null" from the false edge of `x != null`, or
+        // "x is non-null" from `x == null`) is STALE once x is reassigned before the
+        // query position in the else branch. This is acute for the assign-and-test
+        // idiom across an else-if chain — `else if ((x = f()) != null)` reassigns x in
+        // its OWN condition, so an inherited "x is null" from an earlier sibling's else
+        // edge is wrong (docs/tc-assignment-expression-guard-narrowing.md). Mirrors the
+        // consequent's reassignment check above; ANY reassignment invalidates it.
+        const reassignedInElse = this.isVariableAssignedBetween(ifNode.alternate, variableName, ifNode.alternate.start, position);
         // Don't negate a null-propagation guard into the else branch: a false
         // `substr(x,…) == 'wlan'` (i.e. the else) does NOT imply x is null — the
         // call also returns null when x isn't a string, so `!= 'wlan'` is true for
         // BOTH a null x and a non-matching string x. Negating it wrongly narrows x
         // to null, which compounds across an else-if chain (mirrors the early-exit
         // guard at the sibling scan above).
-        if (guardInfo && !guardInfo.isNullPropagation) {
+        if (guardInfo && !guardInfo.isNullPropagation && !reassignedInElse) {
           guards.push({ ...guardInfo, isNegative: !guardInfo.isNegative });
         }
         // Negated identifier: if (!x) { ... } else { ... } → x is non-null in else
-        if (ifNode.test.type === 'UnaryExpression') {
+        if (ifNode.test.type === 'UnaryExpression' && !reassignedInElse) {
           const unary = ifNode.test as any;
           if (unary.operator === '!' && unary.argument?.type === 'Identifier' &&
               unary.argument.name === variableName) {
@@ -5243,30 +5786,43 @@ export class TypeChecker {
   /**
    * Check if a condition is a null guard for the given variable (a != null)
    */
+  /** The identifier a comparison operand narrows, seeing THROUGH an assign-and-test
+   *  wrapper: a bare `x` yields `"x"`, and the assign-in-condition idiom `(x = rhs)`
+   *  (plain `=` with an identifier target) ALSO yields `"x"` — so `(m = match(…)) != null`
+   *  narrows `m` exactly as `m != null` would (docs/tc-assignment-expression-guard-narrowing.md).
+   *  Returns null for anything else. */
+  private guardedOperandName(node: AstNode): string | null {
+    if (node.type === 'Identifier') return (node as IdentifierNode).name;
+    if (node.type === 'AssignmentExpression') {
+      const asn = node as AssignmentExpressionNode;
+      if (asn.operator === '=' && asn.left.type === 'Identifier') return (asn.left as IdentifierNode).name;
+    }
+    return null;
+  }
+
   private isNullGuardCondition(condition: AstNode, variableName: string): boolean {
     if (condition.type === 'BinaryExpression') {
       const binaryExpr = condition as BinaryExpressionNode;
 
-      // Check for != null or !== null patterns (a != null)
+      // Check for != null or !== null patterns (a != null), incl. `(a = rhs) != null`
       if ((binaryExpr.operator === '!=' || binaryExpr.operator === '!==') &&
-          binaryExpr.left.type === 'Identifier' &&
-          (binaryExpr.left as IdentifierNode).name === variableName &&
+          this.guardedOperandName(binaryExpr.left) === variableName &&
           binaryExpr.right.type === 'Literal' &&
           (binaryExpr.right as any).value === null) {
         return true;
       }
 
-      // Check for reversed null checks (null != a)
+      // Check for reversed null checks (null != a) / `null != (a = rhs)`
       if ((binaryExpr.operator === '!=' || binaryExpr.operator === '!==') &&
-          binaryExpr.right.type === 'Identifier' &&
-          (binaryExpr.right as IdentifierNode).name === variableName &&
+          this.guardedOperandName(binaryExpr.right) === variableName &&
           binaryExpr.left.type === 'Literal' &&
           (binaryExpr.left as any).value === null) {
         return true;
       }
     }
 
-    // Check for truthy guard (if (a))
+    // Check for truthy guard (if (a)) — bare identifier only; the `if ((a = rhs))`
+    // truthiness form is handled by collectPositiveTestGuards.
     if (condition.type === 'Identifier' &&
         (condition as IdentifierNode).name === variableName) {
       return true;
@@ -5283,19 +5839,17 @@ export class TypeChecker {
     if (condition.type === 'BinaryExpression') {
       const binaryExpr = condition as BinaryExpressionNode;
 
-      // Check for == null or === null patterns (a == null)
+      // Check for == null or === null patterns (a == null), incl. `(a = rhs) == null`
       if ((binaryExpr.operator === '==' || binaryExpr.operator === '===') &&
-          binaryExpr.left.type === 'Identifier' &&
-          (binaryExpr.left as IdentifierNode).name === variableName &&
+          this.guardedOperandName(binaryExpr.left) === variableName &&
           binaryExpr.right.type === 'Literal' &&
           (binaryExpr.right as any).value === null) {
         return true;
       }
 
-      // Check for reversed null checks (null == a)
+      // Check for reversed null checks (null == a) / `null == (a = rhs)`
       if ((binaryExpr.operator === '==' || binaryExpr.operator === '===') &&
-          binaryExpr.right.type === 'Identifier' &&
-          (binaryExpr.right as IdentifierNode).name === variableName &&
+          this.guardedOperandName(binaryExpr.right) === variableName &&
           binaryExpr.left.type === 'Literal' &&
           (binaryExpr.left as any).value === null) {
         return true;
@@ -5634,6 +6188,35 @@ export class TypeChecker {
       };
     }
 
+    // Bare truthiness test `if (x)` — narrows null out of the TRUTHY branch (same as
+    // `x != null` there) but, unlike an explicit null guard, its FALSY branch is the
+    // falsy-CAPABLE subset (`boolean`/`integer`/`string` stay themselves; only always-
+    // truthy objects are eliminated), so it must be tagged isTruthiness so applyTypeGuard
+    // doesn't "keep only null" on the flip. Checked BEFORE isNullGuardCondition so the
+    // bare-identifier case is tagged rather than treated as `x != null`.
+    if (condition.type === 'Identifier' && (condition as IdentifierNode).name === variableName) {
+      return {
+        variableName,
+        narrowToType: UcodeType.NULL,
+        isNegative: true, // Remove null in truthy branch
+        isTruthiness: true
+      };
+    }
+    // Assign-and-test truthiness `if ((x = rhs))` — the assigned target `x` is the
+    // subject; same falsy-capable semantics as bare `if (x)`. (docs/tc-assignment-
+    // expression-guard-narrowing.md). The env already carries `x`'s assigned (RHS)
+    // type via the condition-assignment transfer, so this just removes null on the
+    // truthy edge / keeps the falsy subset on the else edge.
+    if (condition.type === 'AssignmentExpression'
+        && this.guardedOperandName(condition) === variableName) {
+      return {
+        variableName,
+        narrowToType: UcodeType.NULL,
+        isNegative: true,
+        isTruthiness: true
+      };
+    }
+
     // Check for a != null or null != a
     if (this.isNullGuardCondition(condition, variableName)) {
       return {
@@ -5673,6 +6256,37 @@ export class TypeChecker {
           const literalValue = (binaryExpr.left as any).value;
           if (this.comparisonExcludesNull(binaryExpr.operator, literalValue, false)) {
             return { variableName, narrowToType: UcodeType.NULL, isNegative: true, isNullPropagation: true };
+          }
+        }
+      }
+    }
+
+    // STRICT-equality against a literal: `x === <literal>` / `<literal> === x` (and the
+    // `!==` complement). ucode's `===`/`!==` (I_EQS/I_NES → uc_vm_test_strict_equality,
+    // `if (t1 != t2) return false`) are true ONLY between same-typed values, so the true
+    // edge PROVES `x` has the literal's type — a fully sound type guard. `==`/`!=` are
+    // EXCLUDED: they coerce (`1 == "1"` is true), so a match proves nothing about the type.
+    // Encoded via equalityNarrowType (no equalitySymbol → applyTypeGuard INTERSECTS with the
+    // base, so a refined base survives and `unknown` narrows to the literal's type); the
+    // branch machinery flips isNegative for the `!==`/else edges just like var-to-var equality.
+    if (condition.type === 'BinaryExpression') {
+      const binaryExpr = condition as BinaryExpressionNode;
+      if (binaryExpr.operator === '===' || binaryExpr.operator === '!==') {
+        const isEquality = binaryExpr.operator === '===';
+        const lit = binaryExpr.left.type === 'Literal' ? binaryExpr.left
+          : binaryExpr.right.type === 'Literal' ? binaryExpr.right : null;
+        const other = lit === binaryExpr.left ? binaryExpr.right : binaryExpr.left;
+        if (lit && (other.type === 'Identifier' || other.type === 'MemberExpression')
+            && this.getDottedPath(other) === variableName) {
+          const litType = this.literalNodeType(lit as LiteralNode);
+          // `=== null` is already handled by isNullCheckCondition above; skip null here.
+          if (litType !== null && litType !== UcodeType.NULL) {
+            return {
+              variableName,
+              narrowToType: null,
+              isNegative: !isEquality, // === → narrow true branch; !== → flipped by branch machinery
+              equalityNarrowType: litType
+            };
           }
         }
       }

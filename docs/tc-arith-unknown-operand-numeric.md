@@ -1,6 +1,22 @@
 # `-` `*` `/` `%` `**` (and unary `+`/`-`/`~`/`++`/`--`) with an `unknown` operand can soundly type `integer | double`
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** `- * / % **` (binary and unary) on an unknown operand now soundly narrow to `integer | double`; `+` (binary and unary) deliberately stays `unknown` (deferred, per this doc's own recommendation); `~` (binary bitwise position n/a) always resolves to `integer`.
+
+## Fix
+
+All three over-conservative arms identified in the ticket were fixed exactly as diagnosed, with no new inference — just widening the "unknown propagates as unknown" fallback to the sound `integer | double` (or `integer` for `~`) for the operators that have no string-concat escape hatch.
+
+- `ArithmeticTypeInference.inferNumericResultType` (`src/analysis/arithmeticTypeInference.ts`) now takes an `additionMayConcat: boolean` parameter (`inferAdditionType` passes `true`, `inferArithmeticType` passes `false`). Rule 4 (the final fallback, reached only when at least one operand is `UNKNOWN` — every other `UcodeType` combination is fully covered by Rules 1-3) returns `UcodeType.UNKNOWN` when `additionMayConcat` is true, else `createUnionType([UcodeType.INTEGER, UcodeType.DOUBLE])`.
+  - `inferAdditionType`/`inferArithmeticType`/`inferNumericResultType` return types widened from `UcodeType` to `UcodeDataType` to carry the new union result.
+  - `ArithmeticTypeInference.distribute` (the union-member cartesian-product helper used by both `inferAdditionFullType`/`inferArithmeticFullType`) now flattens each per-pair result via `getUnionTypes(...)` before pushing into the results array, since a single pair's result can now itself be a union — a no-op for every pre-existing single-type result.
+  - **Ground truth:** `uc_vm_value_arith` (vm.c ~1627-1702) has the string-concat special case ONLY for `I_ADD`; every other opcode (`I_SUB`/`I_MUL`/`I_DIV`/`I_MOD`/`I_EXP`) runs both operands through `ucv_to_number()` unconditionally and returns an integer or double on every path (div/mod-by-zero → `Infinity`/`NaN`, still doubles) — there is no non-numeric result and no exception path.
+- `TypeCompatibilityChecker.getUnaryResultType` (`src/analysis/checkers/typeCompatibility.ts`), return type widened `UcodeType` → `UcodeDataType`:
+  - `+ - ++ --` on `UNKNOWN` → `createUnionType([UcodeType.INTEGER, UcodeType.DOUBLE])` (was `UNKNOWN`). **Ground truth:** `I_PLUS`/`I_MINUS` share the same switch as `I_ADD`/`I_SUB` in `uc_vm_value_arith` with no concat case, and `++`/`--` route through the same `uc_vm_insn_update_*` → `uc_vm_value_arith` dispatch as the compound-assignment operators (see the compound-assign ticket) — so the guarantee is identical to the binary non-`+` case.
+  - `~` on `UNKNOWN` → `UcodeType.INTEGER` unconditionally (was `UNKNOWN`). **Ground truth:** `uc_vm_value_bitop` (vm.c:1497, dispatched from `uc_vm_value_arith` for `I_BAND`/`I_BXOR`/`I_BOR`/`I_LSHIFT`/`I_RSHIFT`) itself calls `ucv_to_number()` first — there is no operand shape, including a genuinely unknown one, that produces anything but an integer.
+- Deferred (per the ticket's own recommendation): `+` (binary or unary) with an unknown operand stays `UNKNOWN` — a genuinely unknown value might still be a string, which concatenates instead of adding, so narrowing it would be a guess, not a proof.
+- Test: `tests/test-tc-operator-typing.test.js` cases 12-18 (binary `- * % ** /` on an unknown param → `integer | double`; `+` stays `unknown`; `/ null` literal-divide-by-null rule unaffected) and 24-25 (unary `-`/`~` on an unknown param).
+- Also updated the pre-existing `tests/inference/test-arithmetic-inference.mocha.js` fallback case `fu2` (`unknown - int`), whose expectation encoded the OLD (buggy) behavior — now asserts `integer | double`.
+- Corpus: `adblock-fast/files/lib/adblock-fast/adblock-fast.uc` — 2 fewer `unknown-type` findings (724 → 722; 82.5% → 82.6%), both `task_cap` (declaration + read) from `let task_cap = +cfg.parallel_downloads;` (a unary-`+` case, ticket 3's mechanism, but the underlying unary-on-unknown widening in `getUnaryResultType` is this ticket's fix). `pbr/files/lib/pbr/pbr.uc` — no change (0 findings shifted); this ticket's main effect is on the WIDTH of an already-non-unknown union or on unary coercions, which this corpus file's flagged sites didn't happen to hit. Measured via a clean `git worktree add --detach HEAD` baseline build vs. the fixed working tree, both run against the same corpus files.
 
 ## The gap
 

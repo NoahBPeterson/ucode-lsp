@@ -4,3 +4,4 @@
 
 export * from './builtinValidation';
 export * from './typeCompatibility';
+export * from './moduleArgValidation';

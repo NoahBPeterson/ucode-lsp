@@ -3,10 +3,11 @@
  */
 
 import { type AstNode, type CallExpressionNode, type LiteralNode, type ObjectExpressionNode, type PropertyNode, type IdentifierNode } from '../../ast/nodes';
-import { UcodeType, type UcodeDataType, createUnionType, createArrayType, isArrayType, getArrayElementType, extractModuleType, getObjectTypeName, isUnionType, getUnionTypes } from '../symbolTable';
+import { UcodeType, type UcodeDataType, createUnionType, createArrayType, createTupleArrayType, isArrayType, getArrayElementType, extractModuleType, getObjectTypeName, isUnionType, getUnionTypes } from '../symbolTable';
 import { type TypeError, type TypeWarning } from '../types';
 import { UcodeErrorCode } from '../errorConstants';
 import { isKnownObjectType, OBJECT_REGISTRIES } from '../moduleDispatch';
+import { regexTypeRegistry, analyzeCaptureGroups, type CaptureGroupInfo } from '../regexTypes';
 
 export interface FormatSpecifier {
   specifier: string;
@@ -816,6 +817,19 @@ export class BuiltinValidator {
     return v.slice(lastSlash + 1).includes('g');
   }
 
+  /** For a regex LITERAL argument, extract its pattern and compute the static
+   *  capture-group shape (docs/tc-match-capture-group-typing.md). Returns null for
+   *  anything that isn't a literal regexp (dynamic `regexp(...)`, a variable, …) —
+   *  those keep today's un-narrowed `array<string>` shape, since the pattern isn't
+   *  statically known. */
+  private tryAnalyzeRegexLiteralGroups(node: AstNode | undefined): CaptureGroupInfo | null {
+    if (!node || node.type !== 'Literal') return null;
+    const lit = node as LiteralNode;
+    if (lit.literalType !== 'regexp') return null;
+    const { pattern } = regexTypeRegistry.extractPattern(String(lit.value));
+    return analyzeCaptureGroups(pattern);
+  }
+
   validateMatchFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'match', 2)) return true;
 
@@ -836,10 +850,30 @@ export class BuiltinValidator {
       || (typeof regexType === 'string' && regexType.includes(' | ')
           && regexType.split(' | ').some(t => t.trim() === UcodeType.REGEX || t.trim() === UcodeType.UNKNOWN));
     if (regexCouldBeValid) {
-      const elementType = this.regexLiteralHasGlobalFlag(regexArg)
-        ? createArrayType(UcodeType.STRING)   // g: array of match-arrays
-        : UcodeType.STRING;                   // no g: array of strings
-      this.narrowedReturnType = createUnionType([createArrayType(elementType), UcodeType.NULL]) as UcodeType;
+      const hasG = this.regexLiteralHasGlobalFlag(regexArg);
+      // Regex LITERAL (not a dynamic regexp() value/variable — those keep today's
+      // bare array<string> shape, per docs/tc-match-capture-group-typing.md): compute
+      // the static capture-group shape and type the per-match result as a
+      // fixed-length tuple. `uc_match` (ucode/lib.c:3126) always returns exactly
+      // `1 + re_nsub` elements on success — index 0 the full match (always a
+      // string), index k>=1 the k'th group (string, or string|null if optional).
+      const groupInfo = this.tryAnalyzeRegexLiteralGroups(regexArg);
+      let matchArrayType: UcodeDataType;
+      if (groupInfo) {
+        const tupleTypes: UcodeDataType[] = [UcodeType.STRING];
+        let anyOptional = false;
+        for (let g = 0; g < groupInfo.groupCount; g++) {
+          const opt = groupInfo.optional[g] ?? true;
+          if (opt) anyOptional = true;
+          tupleTypes.push(opt ? createUnionType([UcodeType.STRING, UcodeType.NULL]) : UcodeType.STRING);
+        }
+        const generalElem = anyOptional ? createUnionType([UcodeType.STRING, UcodeType.NULL]) : UcodeType.STRING;
+        matchArrayType = createTupleArrayType(generalElem, tupleTypes);
+      } else {
+        matchArrayType = createArrayType(UcodeType.STRING); // dynamic pattern: unchanged
+      }
+      const returnArrayType = hasG ? createArrayType(matchArrayType) : matchArrayType;
+      this.narrowedReturnType = createUnionType([returnArrayType, UcodeType.NULL]) as UcodeType;
     } else {
       // regex arg is definitely the wrong type → match() always returns null.
       this.narrowedReturnType = UcodeType.NULL;

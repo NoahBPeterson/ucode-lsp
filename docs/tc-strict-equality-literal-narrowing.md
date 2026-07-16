@@ -1,6 +1,14 @@
 # `x === <literal>` guards don't narrow `x` (strict equality is a sound type guard)
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** `x === <literal>` / `<literal> === x` narrows `x` to the literal's type on the true edge (and `!==` on the false edge); `==`/`!=` intentionally excluded (coercing → unsound).
+
+## Fix
+
+`extractTypeGuard` (`src/analysis/typeChecker.ts`) gains a strict-equality-literal case, gated on `===`/`!==` only, placed before the var-to-var equality block. When one side is a `Literal` and the other is the target identifier/member path (`getDottedPath`), it returns a guard with `equalityNarrowType` = the literal's type (new `literalNodeType` helper: string→STRING, number→INTEGER/DOUBLE, boolean→BOOLEAN; `=== null` is already handled earlier by `isNullCheckCondition`). No `equalitySymbol`, so `applyTypeGuard` INTERSECTS with the base (refined base members survive; `unknown` narrows to the literal type). `isNegative = !isEquality`, so the existing branch machinery flips the edge for `!==`/else exactly like var-to-var equality. `==`/`!=` are deliberately NOT matched (`1 == "1"` is true — a match proves nothing about the type; the non-numeric-literal carve-out remains a possible follow-on). Built on top of the falsy-narrowing work in the same guard-collection machinery. Repro: `zzzz/demo-tc-falsy-narrowing.uc` (strict_eq / loose_eq); tests: `tests/test-tc-falsy-narrowing.test.js`.
+
+---
+
+Status (original): **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
 
 ## The gap
 

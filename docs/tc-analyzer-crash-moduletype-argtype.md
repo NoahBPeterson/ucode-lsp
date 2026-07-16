@@ -1,6 +1,6 @@
 # Analyzer crash: module-typed value as builtin argument (`type(fs)`) kills whole-file analysis
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** `getTypeDescription` now collapses ModuleType/DefaultImportType (and any other non-union/named-object/array `UcodeDataType`) to its base kind via `dataTypeToBase` instead of falling through and returning the raw object; `getNodeTypeDescription` also gained a `typeof result === 'string'` guard as defense in depth.
 
 ## The gap
 
@@ -89,3 +89,45 @@ same way when handed a ModuleType.
 the crash is reachable from any user file that passes a module handle to a narrowing builtin,
 and it silently disables the flagship daemon-ambient typing (hostapd/wpas/netifd) in exactly
 the introspection scripts most likely to do so.
+
+## Fix
+
+Both hardenings from "Proposed approach" were implemented, in `src/analysis/typeChecker.ts`:
+
+1. **`getTypeDescription`** (the single point of truth): added a final branch after the existing
+   union/named-object/array/string checks — any other `UcodeDataType` (a bare `ModuleType`
+   `{ type: 'object', moduleName: … }`, a `DefaultImportType`, or a future variant) is collapsed
+   via `dataTypeToBase(type)` (imported from `symbolTable.ts`, already used elsewhere in this
+   file as `dataTypeToUcodeType`'s implementation) instead of falling through to `return type as
+   string`. `dataTypeToBase` maps module/object shapes to `UcodeType.OBJECT`, which is what
+   `type()` reports for these at runtime AND matches the base-kind comparisons
+   `narrowBuiltinReturnType`/`narrowFsReturnType` do against `acceptableTypes` (`'object'` is
+   already in that list for `length`/`index`/`rindex`) — so the fix is narrow-compat by
+   construction, not just crash-safe. Note: `DefaultImportType` had the exact same latent bug
+   (its `.type` is `UcodeType.OBJECT`, not `'objectKind'`, so it matched neither `isObjectType`
+   nor `isArrayType` either) — found and fixed by the same branch while sweeping the function.
+2. **`getNodeTypeDescription`** defense in depth: renamed the existing method's body to
+   `getNodeTypeDescriptionImpl` and added a thin `getNodeTypeDescription` wrapper that guards
+   `typeof result === 'string' ? result : UcodeType.UNKNOWN` before returning — every internal
+   recursive call (`this.getNodeTypeDescription(...)`) and every external caller (bound into
+   `builtinValidation.ts` via `setTypeChecker`) now gets the same guarantee even if a future call
+   path skips `getTypeDescription` entirely.
+
+Sibling call sites (`narrowBuiltinReturnType` at `typeChecker.ts:~2979`, `narrowFsReturnType` —
+the ticket's "narrowNullFromWrongType" — at `typeChecker.ts:~2277`, and every
+`builtinValidation.ts` validator wired through `setTypeChecker`) needed no separate fix: they all
+consume `getNodeTypeDescription`'s return value, so fixing it at the source fixes all of them.
+
+Verified before/after with a throwaway build (see crash 1's fix note for the stash/rebuild
+method): pre-fix, `node bin/ucode-lsp.js <file>` printed
+`error: Semantic analysis error: argType.includes is not a function` for
+`let fsx = require("fs"); printf("%s\n", type(fsx));` and for the real `blockdev_common.uc`/
+`uci.uc` corpus files (crash 1's files also exercise this path incidentally); post-fix the
+message is gone, `type(fsx)` narrows/types normally, and `--type-coverage` on the minimal repro
+goes from 1 `no-hover` finding (the trailing `let after2 = 1;`, lost because the crash aborts
+`analyze()` before the rest of the file is processed) to 0.
+
+Files touched: `src/analysis/typeChecker.ts` (`getTypeDescription`, `getNodeTypeDescription`).
+Regression tests: `tests/test-tc-analyzer-crashes.test.js` (describe block "crash 2: …", 3
+tests, run as a CLI subprocess, including a `--type-coverage` assertion). Demo:
+`zzzz/demo-tc-crashes.uc`.

@@ -13,13 +13,14 @@ let dir, file;
 
 const CODE = [
   "let greeting = 'hello';",       // string — well-typed, must NOT be reported
-  'function mangle(item) {',       // unannotated param — unknown
+  'function mangle(item) {',       // unannotated param — unknown (mangle escapes below)
   '    return item;',              // read of that param — unknown
   '}',
   'let outcome = mangle(greeting);', // unknown return — unknown
   'let sum = undeclared_thing + 1;', // read of an undeclared name — no hover
   'print(greeting, outcome, sum);',
-  '',
+  'let mangle_ref = mangle;',       // value use of `mangle` → it ESCAPES, so call-site
+  '',                               // param inference cannot type `item` (stays unknown)
 ].join('\n');
 
 function runCli(args) {

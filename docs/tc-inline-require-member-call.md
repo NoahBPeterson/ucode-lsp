@@ -1,6 +1,56 @@
 # Member call on an inline `require('mod')` result loses the module type
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** `checkCallExpression`
+now resolves a member call whose receiver is *any* expression (not just an Identifier) carrying
+a known module type through `MODULE_REGISTRIES`, same as the bound-variable path.
+
+## Fix
+
+`src/analysis/typeChecker.ts`, `checkCallExpression`'s "Handle member expression calls" section
+(~line 2645, right after the existing identifier-receiver "Namespace module calls" branch and the
+"Unimported known module" check): new branch —
+
+```ts
+if (memberCallee.object.type !== 'Identifier' && memberCallee.property.type === 'Identifier') {
+  const recvType = this.checkNodeQuietly(memberCallee.object);
+  const modInfo = extractModuleType(recvType);
+  if (modInfo && isKnownModule(modInfo.moduleName)) {
+    const methodName = (memberCallee.property as IdentifierNode).name;
+    const registry = MODULE_REGISTRIES[modInfo.moduleName as keyof typeof MODULE_REGISTRIES];
+    const funcOpt = registry.getFunction(methodName);
+    if (Option.isSome(funcOpt)) {
+      let returnTypeData = this.parseReturnType(funcOpt.value.returnType);
+      returnTypeData = this.narrowFsReturnType(returnTypeData, funcOpt.value, node);
+      return returnTypeData;
+    }
+  }
+}
+```
+
+This reuses the existing require() special case (`validateBuiltinCall`, ~line 2736-2742, which
+already types `require('mod')` as `{ type: OBJECT, moduleName: 'mod' }` via `extractModuleType`)
+rather than re-parsing the literal argument — so it isn't `require`-specific: any receiver
+expression that resolves to a module type is handled (not just a literal inline `require()`
+call), mirroring the ticket's "resolve the member through the module registry exactly as the
+variable path does" instruction. `checkMemberExpression`'s chained-receiver branch (the other
+site named in the root cause) was left untouched — the fix lives entirely in the call-resolution
+path, which is what the demonstrated bug (member *calls*) needs; a bare property read of a
+function-valued module member (`let fn = require('ubus').connect;`, no call) is a separate,
+narrower gap not covered by this ticket's repro.
+
+Verified via hover: `require('ubus').connect()` → `ubus.connection | null`;
+`require('fs').open("x")` → `fs.file | null` (narrowed); the mwan4 lazy-connect idiom
+(`if (!ubus_conn) ubus_conn = require('ubus').connect();`) now types `ubus_conn` as
+`ubus.connection | null` at both the assignment and later reads. Real corpus site:
+`mwan4/files/lib/mwan4/mwan4.uc:262`. Isolated (pristine-HEAD + only this patch) delta on that
+file: 71.6%→71.7% (1829/2553→1831/2553, 724→722 unknown) — small because the downstream
+`ubus_call()` return-type propagation to its callers (mwan4.uc:267 etc., `m.ubus_call` in cli.uc,
+hotplug_iface.uc) needs `tc-callsite-param-inference-crossfile.md` too, as originally noted.
+
+Tests: extended `tests/diagnostics/test-require-builtin-typing.test.js` with 5 new cases (13-17:
+`require('ubus').connect()`, `require('fs').open("x")` narrowing, the mwan4 idiom, a
+non-module call-result receiver unaffected, and an unknown member on a module receiver staying
+error-free) — all 17 tests in that file green. Full suite: 3129 pass / 0 fail across 261 files.
 
 ## The gap
 

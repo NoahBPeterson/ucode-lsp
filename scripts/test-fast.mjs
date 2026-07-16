@@ -37,11 +37,17 @@ console.log(`Running ${files.length} test files in ${SHARDS} sharded bun process
 const t0 = Date.now();
 
 const results = await Promise.all(shards.map((shardFiles, i) => new Promise((resolve) => {
-  const proc = spawn('bun', ['test', ...shardFiles], { stdio: ['ignore', 'pipe', 'pipe'] });
+  // Force plain output: FORCE_COLOR in the caller's env makes bun colorize the
+  // summary lines this runner parses ("N pass" wrapped in ANSI codes → 0/0).
+  const env = { ...process.env, NO_COLOR: '1' };
+  delete env.FORCE_COLOR;
+  const proc = spawn('bun', ['test', ...shardFiles], { stdio: ['ignore', 'pipe', 'pipe'], env });
   let out = '';
   proc.stdout.on('data', (d) => { out += d; });
   proc.stderr.on('data', (d) => { out += d; });
   proc.on('close', (code) => {
+    // Belt and braces: strip any ANSI escapes before parsing the summary.
+    out = out.replace(/\x1b\[[0-9;]*m/g, '');
     // Bun's run summary is the LAST "N pass"/"N fail" pair in the output
     // (earlier ones can come from nested runners' echoed output).
     const passes = [...out.matchAll(/^\s*(\d+) pass\s*$/gm)];

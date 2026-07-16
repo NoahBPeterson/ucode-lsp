@@ -1,6 +1,23 @@
 # Compound assignment (`+=`, `-=`, `??=`, `||=`, …) types the target as the bare RHS — wrong types, not just unknowns
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** `x op= y` now types as `typeof(x_old op y)` for every compound operator, routed through the existing union-aware binary-operator inference.
+
+## Fix
+
+- `TypeChecker.checkAssignmentExpression` (`src/analysis/typeChecker.ts`) now captures `leftType = this.checkNode(node.left)` (previously discarded) and, for `node.operator !== '='`, returns `computeCompoundAssignmentResultType(operator, leftType, rightType, node)` instead of the bare `rightType`. That new private method dispatches:
+  - `+=` → `arithmeticTypeInference.inferAdditionFullType(leftType, rightType)`
+  - `-= *= /= %= **=` → the same string-coercion + literal-zero-division handling `checkBinaryExpression` uses, then `arithmeticTypeInference.inferArithmeticFullType(leftType, rightType, baseOp)`
+  - `&= |= ^= <<= >>=` → `typeCompatibility.getBitwiseResultType()` (always integer)
+  - `??=` → a new shared helper `computeNullishCoalescingResult` (extracted verbatim from the binary `??` case, which now also calls it)
+  - `||=` / `&&=` → `logicalTypeInference.inferLogicalOrFullType` / `inferLogicalAndFullType`
+  - **Ground truth (vm.c):** every non-short-circuit update opcode (`uc_vm_insn_update_var`/`_upval`/`_local`/`_val`, vm.c:1862/1917/1940/1884) calls `uc_vm_value_arith(vm, vm->arg.u32 >> 24, val, inc)` — the exact same dispatch the binary `I_ADD`/`I_SUB`/… instructions use. So `x op= y` IS `x = x op y` for every arithmetic/bitwise operator.
+  - **Ground truth (compiler.c) for `??=`/`||=`/`&&=`:** `uc_compiler_compile_nullish_assignment`/`_or_assignment`/`_and_assignment` (compiler.c:1335-1413) compile to "if the short-circuit condition holds, result is the UNCHANGED left value (no assignment); else assign left = right (result is right)" — precisely the same result-type shape as the binary `??`/`||`/`&&` operators, so reusing their inference is exact, not an approximation.
+- `SemanticAnalyzer.visitAssignmentExpression` (`src/analysis/semanticAnalyzer.ts`) is the path that ACTUALLY drives hover/SSA for a top-level `x op= y;` statement (it decomposes into `checkNode(node.left)`/`checkNode(node.right)` rather than calling `checkNode(node)` on the whole assignment — so `checkAssignmentExpression` alone never fixed the primary bug). It now captures `leftTypeForCompoundOp` from the existing `checkNode(node.left)` call, and after computing the RHS-based `dataType` through its existing fs/method/function-return priority chain, applies `dataType = this.typeChecker.computeAssignmentResultType(node, leftTypeForCompoundOp, dataType)` for any non-`=` operator (a new public wrapper on `TypeChecker`, added specifically so semanticAnalyzer doesn't need a second, diagnostic-duplicating `checkNode(node)` pass). This is the change that fixes the `s += 1` → `string` hover bug.
+- `computeAssignmentResultType` also caches its result onto the `AssignmentExpressionNode` itself (`this.nodeTypes.set(node, result)`), because a top-level compound-assign statement never otherwise gets an entry in that cache — needed so `getTypeOf`/`nodeTypeForFlow` (used by the flow engine) can see it.
+- `flowTypeEngine.ts`'s `makeAssignmentTransfer` no longer requires `expr.operator === '='` to update its environment; for a compound operator it now reads `typeOf(expr)` (the whole assignment's cached type, populated by the point above) instead of leaving the flow env holding the stale pre-assignment type.
+- **Known remaining gap:** property-write compound assignment (`obj.prop += 1`, `this.prop -= 1`, `global.X.prop ??= 1`) still routes through `inferAssignmentDataType(node.right)` (RHS-only) — only the bare-identifier/parameter path (the ticket's repro) was fixed. Filed as follow-up, not blocking.
+- Test: `tests/test-tc-operator-typing.test.js` (new, 26 cases, all passing) — cases 01-11 cover every compound operator, including the ticket's exact repros (`s += 1` → `string`, `d -= 1` → `double`, `x ??= 5` → `string | integer`, plus `||=`/`&&=`/bitwise/literal-zero-division/unknown-operand compound cases).
+- Corpus: adblock-fast/pbr coverage deltas are near-zero (the coverage tool only counts genuinely `unknown`-shown hovers; this bug's main damage — silent WRONG types like `string`→`integer` — is invisible to that specific audit, exactly as the ticket predicted). The unary/arith-unknown fixes (tickets 2/3) are what moved the corpus numbers; see those tickets' Fix sections.
 
 ## The gap
 

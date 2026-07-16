@@ -1,6 +1,45 @@
 # Two-variable `for (k, v in …)`: key variable is `unknown` for union and unknown iterables
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** Added a union-aware
+`iterableKeyType` next to `iterableElementType` and used it at the two-var key-declarator site.
+
+## Fix
+
+`src/analysis/semanticAnalyzer.ts`:
+- New `private iterableKeyType(t: UcodeDataType | null): UcodeDataType` (next to
+  `iterableElementType`, ~line 6296): for each member of `getUnionTypes(t)`, `null` contributes
+  nothing (no-op, vm.c `default:` never pushes a key), `array<T>`/array contributes `integer`,
+  object contributes `string`, `unknown` contributes **both** `string` and `integer` (per vm.c
+  `uc_vm_insn_next`'s switch — only `UC_OBJECT`/`UC_ARRAY` iterate at all, so an unknown member
+  can only make the loop body run if it turns out to be one of those two, and either way its key
+  kind is fixed). Any other member (string/int/bool/double/function/regex/…) contributes nothing,
+  same as `null` — confirmed against `uc_vm_object_iterator_next` (vm.c:2338-2391, pushes
+  `ucv_string_new`) and `uc_vm_array_iterator_next` (vm.c:2393-2431, pushes `ucv_uint64_new`) —
+  never returns `null`; a provably-uniterable iterable makes the whole loop body dead, so
+  `unknown` there is harmless.
+- Two-var declaration branch (`declarations.length === 2`, ~line 6187): replaced the
+  `dataTypeToBase(checkNode(node.right)) === OBJECT/ARRAY/else-unknown` three-way switch with a
+  single `this.iterableKeyType(rightFullType)` call; `rightFullType` (from `getIterableFullType`)
+  is now computed once and shared with the value-var branch below it (previously computed
+  separately by each branch).
+
+Left the single-var/`iterableElementType` string-iterable question (noted in "Proposed approach")
+alone: `tests/inference/test-for-in-union-element-type.test.js` test 06 explicitly locks in
+"string chars are still string" as *preserved* behavior, so changing that would regress an
+existing, intentional test outside this ticket's scope — filed as a separate concern, not fixed
+here.
+
+Verified via hover: `k2` (two-var key over `object|null`) → `string`; `i2` (two-var key over
+`array<string>|null`) → `integer`; `k4` (two-var key over a fully unknown iterable) →
+`string | integer`. Isolated (pristine-HEAD + only this patch) corpus deltas:
+`firewall4/root/usr/share/ucode/fw4.uc` 59.4%→60.5% (1940/3264→1974/3264, 1323→1289 unknown);
+`openwrt/package/utils/cli/files/usr/share/ucode/cli/context.uc` 42.9%→43.5%
+(433/1009→439/1009, 573→567 unknown).
+
+Tests: `tests/test-tc-forin-keys.test.js` (10 new tests) + existing
+`tests/inference/test-for-in-union-element-type.test.js` (9, unchanged, still green) and the
+mocha-style `tests/inference/test-for-in-array-element.js` / `test-forin-bare-iterator.js` (12,
+still green). Full suite: 3129 pass / 0 fail across 261 files.
 
 ## The gap
 

@@ -26,6 +26,15 @@ export enum UcodeType {
   REGEX = 'regex',
   NULL = 'null',
   UNKNOWN = 'unknown',
+  /** "Any JSON/reflective value, BY CONTRACT" — distinct from UNKNOWN ("we
+   *  failed to infer"). Used only for builtin returns whose C implementation
+   *  genuinely hands back an arbitrary value (json(), call()) — see
+   *  docs/tc-json-any-return-display.md. Behaves EXACTLY like UNKNOWN in every
+   *  type check (dataTypeToBase/singleTypeToBase collapse it to UNKNOWN, so
+   *  compatibility/narrowing/argument-checking code is unaffected); the only
+   *  difference is DISPLAY — typeToString renders it `any` and the
+   *  --type-coverage audit counts it as typed, not a gap. */
+  ANY = 'any',
   UNION = 'union'
 }
 
@@ -56,6 +65,19 @@ export interface DefaultImportType {
 export interface ArrayType {
   type: UcodeType.ARRAY;
   elementType: UcodeDataType;
+  /** Per-index element types for an array whose SHAPE is statically known to be a
+   *  fixed-length tuple — currently only produced by match()/a regex LITERAL
+   *  (docs/tc-match-capture-group-typing.md): `uc_match` (ucode/lib.c:3126) returns
+   *  EXACTLY `1 + re_nsub` elements on success, index 0 the full match (always a
+   *  string) and index k>=1 the k'th capture group (string, or string|null if the
+   *  group doesn't participate in every successful match). `elementType` above stays
+   *  the general/fallback shape (used for non-literal-index access, iteration, etc.);
+   *  `tupleTypes` lets a LITERAL index (including a negative one — ucv_key_get,
+   *  ucode/types.c:2435-2440, `idx += length` for `|idx| <= length`) resolve to the
+   *  exact per-slot type instead of the general `elementType | null` union. Absent
+   *  for ordinary arrays (array literals, split(), etc.) — a minimal, single-purpose
+   *  addition, not a general tuple-type system. */
+  tupleTypes?: UcodeDataType[];
 }
 
 export type UcodeDataType = UcodeType | UnionType | ModuleType | DefaultImportType | ArrayType | ObjectType;
@@ -98,9 +120,12 @@ export function extractModuleType(dataType: UcodeDataType | undefined | null): M
   return null;
 }
 
-/** Convert a SingleType to the base UcodeType (for comparisons, type narrowing) */
+/** Convert a SingleType to the base UcodeType (for comparisons, type narrowing).
+ *  ANY collapses to UNKNOWN here — this is the single chokepoint that makes ANY
+ *  behave exactly like UNKNOWN in every compatibility/narrowing check that
+ *  consumes the base kind instead of the raw type (see UcodeType.ANY's doc). */
 export const singleTypeToBase: (t: SingleType) => UcodeType = Match.type<SingleType>().pipe(
-  Match.when(Match.string, (s) => s as UcodeType),
+  Match.when(Match.string, (s) => (s === UcodeType.ANY ? UcodeType.UNKNOWN : (s as UcodeType))),
   Match.when({ type: 'objectKind' as const }, () => UcodeType.OBJECT),
   Match.when({ type: UcodeType.ARRAY }, () => UcodeType.ARRAY),
   Match.orElse((t) => {
@@ -138,6 +163,22 @@ export function createUnionType(types: SingleType[]): UcodeDataType {
     type: UcodeType.UNION,
     types: uniqueTypes
   };
+}
+
+/**
+ * The BOTTOM / `never` type: "no value is possible on this path". It is the
+ * lattice complement of `UNKNOWN` (TOP): TOP absorbs everything in a join, BOTTOM
+ * is the join IDENTITY (`join(T, ⊥) = T`). We need a bottom distinct from UNKNOWN
+ * so an impossible narrowing (the falsy edge of `if (obj)`, where `obj` is an
+ * always-truthy object) does NOT poison a control-flow merge — `unknown` (top)
+ * would win the join and re-widen the sibling path. Represented as an empty union
+ * (no member is possible); `createUnionType([])` collapses to UNKNOWN, so this
+ * sentinel is the ONLY empty-union value and is detected structurally. */
+export const NEVER_TYPE: UnionType = Object.freeze({ type: UcodeType.UNION, types: [] as SingleType[] }) as UnionType;
+
+/** True for the BOTTOM/`never` sentinel (an empty union — no possible member). */
+export function isNeverType(type: UcodeDataType): boolean {
+  return isUnionType(type) && type.types.length === 0;
 }
 
 /** Widen a type with `null` (`T` → `T|null`). Used for optional/nullable JSDoc
@@ -194,6 +235,32 @@ export function getArrayElementType(type: UcodeDataType): UcodeDataType {
   return UcodeType.UNKNOWN;
 }
 
+/** Build a tuple-shaped ArrayType (see `ArrayType.tupleTypes` doc): `elementType` is
+ *  the general fallback shape, `tupleTypes[i]` is the exact type of index `i`. */
+export function createTupleArrayType(elementType: UcodeDataType, tupleTypes: UcodeDataType[]): ArrayType {
+  return { type: UcodeType.ARRAY, elementType, tupleTypes };
+}
+
+/** Resolve a literal (possibly negative) index against a tuple-shaped ArrayType,
+ *  mirroring ucv_key_get's negative-index handling (ucode/types.c:2435-2440:
+ *  `idx += ucv_array_length(...)` when `|idx| <= length`, then bounds-checked).
+ *  Returns:
+ *   - `null` when `type` isn't tuple-shaped (no `tupleTypes`) — caller should fall
+ *     back to the general element-type-or-null handling.
+ *   - `{ outOfRange: true, length }` when the index is provably out of range for
+ *     EVERY match (caller may want to flag this — see CAPTURE_GROUP_OUT_OF_RANGE).
+ *   - `{ type }` with the resolved per-slot type otherwise. */
+export function resolveTupleIndex(
+  type: UcodeDataType,
+  index: number
+): { type: UcodeDataType } | { outOfRange: true; length: number } | null {
+  if (!isArrayType(type) || !type.tupleTypes) return null;
+  const len = type.tupleTypes.length;
+  const real = index < 0 ? index + len : index;
+  if (real < 0 || real >= len) return { outOfRange: true, length: len };
+  return { type: type.tupleTypes[real] as UcodeDataType };
+}
+
 /**
  * Collapse any UcodeDataType (including the rich CheckResult shapes) down to a
  * single base UcodeType enum. This is the explicit, blessed way to consume a
@@ -202,9 +269,12 @@ export function getArrayElementType(type: UcodeDataType): UcodeDataType {
  * `dataTypeToBase(result) === UcodeType.X` instead.
  *
  * Unions collapse to UNKNOWN (no single base); arrays → ARRAY; object shapes
- * and module types → OBJECT; bare enums pass through.
+ * and module types → OBJECT; bare enums pass through — EXCEPT `ANY`, which
+ * collapses to UNKNOWN here (its display-only distinction from UNKNOWN must
+ * not leak into check code that gates on "is this the top type").
  */
 export function dataTypeToBase(type: UcodeDataType): UcodeType {
+  if (type === UcodeType.ANY) return UcodeType.UNKNOWN;
   if (typeof type === 'string') return type as UcodeType;
   if (isArrayType(type)) return UcodeType.ARRAY;
   if (isObjectType(type)) return UcodeType.OBJECT;
@@ -287,10 +357,11 @@ export function propertyTypeAt(
 }
 
 export function typeToString(type: UcodeDataType): string {
+  if (isNeverType(type)) return 'never';
   if (isUnionType(type)) {
-    // Display order: concrete types first (in their existing order), then `unknown`, then
-    // `null` last — so a union reads e.g. `integer | null`, `string | unknown | null`.
-    const rank = (s: string): number => (s === 'null' ? 2 : s === 'unknown' ? 1 : 0);
+    // Display order: concrete types first (in their existing order), then `unknown`/`any`, then
+    // `null` last — so a union reads e.g. `integer | null`, `string | unknown | null`, `any | null`.
+    const rank = (s: string): number => (s === 'null' ? 2 : s === 'unknown' || s === 'any' ? 1 : 0);
     return type.types
       .map(singleTypeToString)
       .sort((a, b) => rank(a) - rank(b)) // stable (ES2019+): equal-rank members keep their order
@@ -353,6 +424,9 @@ export function isTypeCompatible(actual: UcodeDataType, expected: UcodeDataType)
       actualType === expectedType ||
       expectedType === UcodeType.UNKNOWN ||
       actualType === UcodeType.UNKNOWN ||
+      // ANY behaves exactly like UNKNOWN here — it's a display-only sentinel.
+      expectedType === UcodeType.ANY ||
+      actualType === UcodeType.ANY ||
       // Allow integer to double conversion
       (actualType === UcodeType.INTEGER && expectedType === UcodeType.DOUBLE)
     )
@@ -401,6 +475,7 @@ export interface Symbol {
     valuePropertyTypes?: Map<string, UcodeDataType>; // For a dictionary-like object (Record<string,T>): the inferred shape of its VALUES, derived from computed assignments `O[k] = {…}` (directly or one setter hop). Copied to `propertyTypes` of `let v = O[k]` bindings.
     propertyFunctionReturnTypes?: Map<string, string>; // Return type hints for function-typed properties (e.g., "uci_ctx" -> "uci.cursor")
     propertyReturnTypes?: Map<string, UcodeDataType>; // Rich return types of function-valued properties on a LOCAL object literal, so `obj.method()` / `this.method()` resolve (define-before-use). Distinct from the string-hint map above (used for imported/factory shapes).
+    propertyReturnTypesShallow?: Set<string>; // Subset of propertyReturnTypes keys whose value came from the scope-less pre-pass (precomputeObjectMethodReturnTypes), not the sibling method's real per-body visit — i.e. a FORWARD reference. Consumers that resolve a call through one of these keys register a back-fill dependency (docs/tc-this-method-forward-ref-return.md) so the shallow type gets patched once the sibling is actually visited.
     propertyDefinitionLocations?: Map<string, { uri: string; start: number; end: number }>; // Cross-file source location of each member (e.g. factory-returned methods) for go-to-definition
     returnPropertyDefinitionLocations?: Map<string, { uri: string; start: number; end: number }>; // For a factory FUNCTION: source location of each member of its returned object. Copied to `propertyDefinitionLocations` of `let v = factory()` bindings so go-to-def on `v.member` lands in the factory's source.
     closedPropertyShape?: boolean; // True when propertyTypes is the COMPLETE set of members (object/typedef shapes) — enables "unknown member" diagnostics. NOT set for factory returns (intersection-merged, possibly incomplete).
@@ -491,7 +566,9 @@ export class SymbolTable {
       { name: 'index', returnType: UcodeType.INTEGER, params: [UcodeType.UNKNOWN, UcodeType.UNKNOWN] },
       { name: 'require', returnType: UcodeType.UNKNOWN, params: [UcodeType.STRING] },
       { name: 'include', returnType: UcodeType.UNKNOWN, params: [UcodeType.STRING] },
-      { name: 'json', returnType: UcodeType.UNKNOWN, params: [UcodeType.UNKNOWN] },
+      // json() genuinely returns *any* JSON value by contract (ucode/lib.c:3619
+      // uc_json → ucv_from_json) — ANY, not UNKNOWN (see docs/tc-json-any-return-display.md).
+      { name: 'json', returnType: UcodeType.ANY, params: [UcodeType.UNKNOWN] },
       { name: 'match', returnType: UcodeType.ARRAY, params: [UcodeType.STRING, UcodeType.REGEX] },
       { name: 'replace', returnType: UcodeType.STRING, params: [UcodeType.STRING, UcodeType.STRING, UcodeType.STRING] },
       { name: 'system', returnType: UcodeType.INTEGER, params: [UcodeType.STRING] },
@@ -518,7 +595,10 @@ export class SymbolTable {
       { name: 'wildcard', returnType: UcodeType.BOOLEAN, params: [UcodeType.STRING, UcodeType.STRING] },
       { name: 'regexp', returnType: UcodeType.REGEX, params: [UcodeType.STRING, UcodeType.STRING] },
       { name: 'assert', returnType: UcodeType.NULL, params: [UcodeType.UNKNOWN, UcodeType.STRING] },
-      { name: 'call', returnType: UcodeType.UNKNOWN, params: [UcodeType.FUNCTION, UcodeType.UNKNOWN] },
+      // call(fn, this, scope, ...) returns whatever the invoked function returns
+      // (ucode/lib.c:5738 uc_callfunc → `res = uc_vm_stack_pop(vm)`) — a genuine
+      // reflective any, not a modeling failure.
+      { name: 'call', returnType: UcodeType.ANY, params: [UcodeType.FUNCTION, UcodeType.UNKNOWN] },
       { name: 'signal', returnType: UcodeType.UNKNOWN, params: [UcodeType.INTEGER, UcodeType.FUNCTION] },
       { name: 'clock', returnType: UcodeType.DOUBLE, params: [] },
       { name: 'sourcepath', returnType: UcodeType.STRING, params: [UcodeType.INTEGER, UcodeType.BOOLEAN] },

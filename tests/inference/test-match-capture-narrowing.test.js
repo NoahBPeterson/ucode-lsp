@@ -4,6 +4,17 @@
 // establishes length >= N for later siblings; (3) `if (!m || …) continue` narrows m non-null
 // (a `!m` disjunct of an `||` early-exit). Sound: an unproven index / a length-reducing
 // mutation between guard and access keeps the `| null`.
+//
+// UPDATED for docs/tc-match-capture-group-typing.md + docs/tc-negative-array-index.md:
+// a match() result against a REGEX LITERAL now carries a STATIC tuple shape (element
+// count + per-group nullability) derived straight from the pattern — see
+// tests/test-tc-match-capture-typing.test.js and tests/test-tc-negative-array-index.test.js
+// for the dedicated coverage. That tuple can prove an index in-range (including a
+// negative one) WITHOUT any length() guard at all, once the receiver itself is
+// narrowed non-null — several cases below were updated accordingly (see the note
+// above the "must STAY nullable" block). It does NOT override the "receiver may be
+// null" / "mutated since assignment" soundness checks — those still apply exactly
+// as before (see the `shift()`/reassignment tests).
 const { test, expect, beforeAll, afterAll, setDefaultTimeout } = require('bun:test');
 const { createLSPTestServer } = require('../lsp-test-helpers');
 
@@ -34,8 +45,14 @@ test('an index at/above the proven bound stays nullable', async () => {
   expect(await nullable("  if (!m || length(m) < 4) continue;\n  lc(m[4]);")).toBe(true); // 4 < 4 is false
   expect(await nullable("  if (!m || length(m) < 4) continue;\n  lc(m[9]);")).toBe(true);
 });
-test('base narrowed but NO length guard → out-of-bounds keeps the null', async () => {
-  expect(await nullable("  if (!m) continue;\n  lc(m[0]);")).toBe(true);
+test('base narrowed, no length guard, but m[0] (the full match) needs none', async () => {
+  // UPDATED for docs/tc-match-capture-group-typing.md: `uc_match` (ucode/lib.c:3126)
+  // always pushes the full match as element 0 on ANY successful match, so once `m`
+  // is narrowed non-null (`!m` guard here), `m[0]` is statically known non-null —
+  // no length() guard needed. This used to require one (index-in-bounds was only
+  // provable via an explicit length() guard); now the regex-literal's static tuple
+  // shape proves it directly.
+  expect(await nullable("  if (!m) continue;\n  lc(m[0]);")).toBe(false);
 });
 test('no base narrowing (m still nullable) keeps the null', async () => {
   expect(await nullable("  lc(m[0]);")).toBe(true);
@@ -115,19 +132,37 @@ test('15 access in a nested block after the guard', async () => {
 });
 
 // ── must STAY nullable (soundness) ──────────────────────────────────────────
-test('16 `==` guard gives no lower bound', async () => {
-  expect(await hasNull(L("  if (!m || length(m) == 4) continue;\n  lc(m[3]);"))).toBe(true);
+// NOTE (docs/tc-match-capture-group-typing.md / tc-negative-array-index.md): the
+// pattern `/(\w+) (\w+) (\w+)/` has exactly 3 capture groups, ALL mandatory (no
+// `?`/`*`/`{0,}`, no alternation) — so its match-array tuple shape is *statically*
+// known to be EXACTLY 4 elements (index 0 the full match, 1-3 the groups) whenever
+// `m` itself is non-null. Several of these "stays nullable" cases below only
+// stayed nullable in the OLD model because in-bounds-ness required an EXPLICIT
+// `length(m)` guard with a provable lower bound — once `m` is narrowed non-null,
+// the new static tuple makes indices 0-3 (or -1..-4) provably in range with no
+// length() reasoning at all, so they've been moved to "narrows" below (16, 17, 18,
+// 20). 19 is unaffected: it never narrows `m` itself non-null (no `!m` disjunct),
+// so it correctly stays nullable regardless of tuple shape.
+test('16 `==` guard gives no lower bound, but m is non-null (`!m` disjunct) and index 3 is a mandatory tuple slot', async () => {
+  expect(await hasNull(L("  if (!m || length(m) == 4) continue;\n  lc(m[3]);"))).toBe(false);
 });
-test('17 `>=` guard negates to `<` → no lower bound', async () => {
-  expect(await hasNull(L("  if (!m || length(m) >= 4) continue;\n  lc(m[2]);"))).toBe(true);
+test('17 `>=` guard negates to `<` → no lower bound, but m is non-null and index 2 is a mandatory tuple slot', async () => {
+  expect(await hasNull(L("  if (!m || length(m) >= 4) continue;\n  lc(m[2]);"))).toBe(false);
 });
-test('18 negative index is never proven in bounds', async () => {
-  expect(await hasNull(L("  if (!m || length(m) < 4) continue;\n  lc(m[-1]);"))).toBe(true);
+test('18 negative index resolves through the tuple once m is non-null (m[-1] = last mandatory group)', async () => {
+  expect(await hasNull(L("  if (!m || length(m) < 4) continue;\n  lc(m[-1]);"))).toBe(false);
 });
 test('19 a positive early-exit `if (length(m) >= 4) continue` proves nothing after', async () => {
   // after it, length < 4; and m's base is not narrowed (no !m) → still nullable.
+  // Unaffected by the tuple fix — there's no `!m` disjunct here, so `m` itself
+  // (not just an index) is never proven non-null, and the tuple can't apply to a
+  // possibly-null receiver.
   expect(await hasNull(L("  if (length(m) >= 4) continue;\n  lc(m[2]);"))).toBe(true);
 });
-test('20 an `else` branch disables the early-exit narrowing (conservative)', async () => {
-  expect(await hasNull(L("  if (!m || length(m) < 4) continue;\n  else print('x');\n  lc(m[2]);"))).toBe(true);
+test('20 an `else` branch: control flow reaching m[2] implies the `if` was false (m non-null, index 2 mandatory)', async () => {
+  // `if (COND) continue; else print('x');` — the consequent unconditionally exits, so
+  // any code reached AFTER the whole if/else was only reachable via the else (COND
+  // false) → `!COND` = `m && length(m) >= 4` holds. Combined with the static tuple
+  // (index 2 mandatory for this pattern), `m[2]` is provably non-null.
+  expect(await hasNull(L("  if (!m || length(m) < 4) continue;\n  else print('x');\n  lc(m[2]);"))).toBe(false);
 });

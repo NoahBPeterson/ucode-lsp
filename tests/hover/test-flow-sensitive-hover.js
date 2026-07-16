@@ -51,11 +51,14 @@ const snippetForType = (t) => Match.value(t).pipe(
     Match.when(UcodeType.REGEX,    () => ({ assign: 'x = /test/;', expected: 'regexp' })),
     Match.when(UcodeType.NULL,     () => ({ assign: 'x = null;', expected: 'null' })),
     Match.when(UcodeType.UNKNOWN,  () => null), // can't assign "unknown"
+    // ANY (docs/tc-json-any-return-display.md) is a display-only sentinel from
+    // json()/call()'s return — like UNKNOWN, there's no literal that assigns it.
+    Match.when(UcodeType.ANY,      () => null),
     Match.when(UcodeType.UNION,    () => null),
     Match.exhaustive
 );
 
-const CONCRETE_TYPES = Object.values(UcodeType).filter(t => t !== UcodeType.UNION && t !== UcodeType.UNKNOWN);
+const CONCRETE_TYPES = Object.values(UcodeType).filter(t => t !== UcodeType.UNION && t !== UcodeType.UNKNOWN && t !== UcodeType.ANY);
 
 // ============================================================================
 // 1. Basic: uninitialized variable is `null` before assignment, typed after

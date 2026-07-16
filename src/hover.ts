@@ -13,7 +13,7 @@ import type {
 } from './ast/nodes';
 import { allBuiltinFunctions } from './builtins';
 import { type SemanticAnalysisResult, SymbolType, type Symbol as UcodeSymbol } from './analysis';
-import { typeToString, type UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt } from './analysis/symbolTable';
+import { typeToString, type UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt, isNeverType } from './analysis/symbolTable';
 import { exceptionTypeRegistry, exceptionObjectType } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
@@ -40,6 +40,50 @@ function appendBuiltinNote(doc: string): string {
  *  Tokens are position-sorted and non-overlapping, so this replaces the
  *  linear from-zero scans that made each hover O(all tokens). Returns -1
  *  when no token contains the offset (e.g. whitespace). */
+/** Token types after which a following `-` token is a UNARY minus (sign), never
+ *  binary subtraction — i.e. the position expects a new operand/expression to
+ *  start, not to continue one. Mirrors the ucodeLexer's own `noRegexp` operand
+ *  vs. operator-position classification (src/lexer/ucodeLexer.ts
+ *  updateNoRegexpFlag: the same distinction that disambiguates a leading `/` as
+ *  regex-literal-start vs. division), extended with the compound-assignment /
+ *  misc operators that classification list didn't need to cover. Used ONLY to
+ *  decide whether `-1` in source renders as one negative-literal hover token
+ *  (`a[-1]`) or two independent tokens (`x - 1`, where the `1` must NOT show a
+ *  sign) — see docs/tc-negative-array-index.md. Deliberately conservative: a
+ *  previous token NOT in this set (or an operand-producing one) means "assume
+ *  binary", so an unrecognized operator errs toward showing the bare literal
+ *  rather than inventing a sign. */
+const UNARY_MINUS_CONTEXT_TOKENS: ReadonlySet<TokenType> = new Set([
+    TokenType.TK_LPAREN, TokenType.TK_LBRACK, TokenType.TK_QLBRACK, TokenType.TK_LBRACE,
+    TokenType.TK_COMMA, TokenType.TK_SCOL, TokenType.TK_COLON, TokenType.TK_QMARK,
+    TokenType.TK_ASSIGN, TokenType.TK_ASADD, TokenType.TK_ASSUB, TokenType.TK_ASMUL,
+    TokenType.TK_ASDIV, TokenType.TK_ASMOD, TokenType.TK_ASEXP, TokenType.TK_ASLEFT,
+    TokenType.TK_ASRIGHT, TokenType.TK_ASBAND, TokenType.TK_ASBXOR, TokenType.TK_ASBOR,
+    TokenType.TK_ASAND, TokenType.TK_ASOR, TokenType.TK_ASNULLISH,
+    TokenType.TK_EQ, TokenType.TK_NE, TokenType.TK_EQS, TokenType.TK_NES,
+    TokenType.TK_LT, TokenType.TK_LE, TokenType.TK_GT, TokenType.TK_GE,
+    TokenType.TK_AND, TokenType.TK_OR, TokenType.TK_NOT, TokenType.TK_NULLISH,
+    TokenType.TK_BAND, TokenType.TK_BOR, TokenType.TK_BXOR, TokenType.TK_COMPL,
+    TokenType.TK_ADD, TokenType.TK_SUB, TokenType.TK_MUL, TokenType.TK_DIV, TokenType.TK_MOD, TokenType.TK_EXP,
+    TokenType.TK_LSHIFT, TokenType.TK_RSHIFT,
+    TokenType.TK_RETURN, TokenType.TK_IF, TokenType.TK_WHILE, TokenType.TK_FOR, TokenType.TK_CASE,
+    TokenType.TK_IN, TokenType.TK_DELETE, TokenType.TK_ARROW, TokenType.TK_ELLIP,
+]);
+
+/** Is the `-` token at `tokens[minusIdx]` a genuinely UNARY minus (so a directly
+ *  following number/double token is really "the negative literal `-N`", not
+ *  "subtract N")? True at the very start of the token stream (nothing to
+ *  subtract from) or when the PRECEDING token is one that expects a fresh
+ *  operand next (see UNARY_MINUS_CONTEXT_TOKENS). Conservative: anything else
+ *  (an identifier, number, string, `)`, `]`, `}`, postfix `++`/`--`, …) means
+ *  the minus continues an existing expression → binary. */
+function isUnaryMinusContext(tokens: Token[], minusIdx: number): boolean {
+    if (minusIdx <= 0) return true;
+    const prev = tokens[minusIdx - 1];
+    if (!prev) return true;
+    return UNARY_MINUS_CONTEXT_TOKENS.has(prev.type);
+}
+
 function tokenIndexAtOffset(tokens: Token[], offset: number): number {
     let lo = 0, hi = tokens.length - 1;
     while (lo <= hi) {
@@ -233,6 +277,20 @@ function isLikelyAssignmentTarget(tokens: Token[], tokenIndex: number): boolean 
 }
 
 function resolveVariableTypeForHover(
+    symbol: UcodeSymbol,
+    offset: number,
+    isAssignmentTarget: boolean,
+    analysisResult?: SemanticAnalysisResult
+): UcodeDataType {
+    const t = resolveVariableTypeForHoverRaw(symbol, offset, isAssignmentTarget, analysisResult);
+    // NEVER (bottom) must never surface to hover — it only arises from unreachable
+    // code such as `let x = die();` (die()/exit() are typed NEVER — docs/tc-nullish-
+    // die-narrowing.md). getNarrowedTypeAtPosition already guards the narrowed path;
+    // this covers the declared/SSA fallbacks too. Show `unknown` instead of `never`.
+    return isNeverType(t) ? UcodeType.UNKNOWN : t;
+}
+
+function resolveVariableTypeForHoverRaw(
     symbol: UcodeSymbol,
     offset: number,
     isAssignmentTarget: boolean,
@@ -1007,7 +1065,7 @@ export function handleHover(
                         const narrowed = analysisResult.typeChecker.getNarrowedTypeAtPosition(`${objectName}.${memberName}`, offset);
                         if (narrowed != null) {
                             const ts = typeToString(narrowed);
-                            if (ts && ts !== 'unknown') {
+                            if (ts && ts !== 'unknown' && ts !== 'any') {
                                 return {
                                     contents: { kind: MarkupKind.Markdown, value: `**${memberName}**: \`${ts}\`\n\nNarrowed on \`${objectName}.${memberName}\`` },
                                     range: { start: document.positionAt(memberContext.memberTokenPos), end: document.positionAt(memberContext.memberTokenEnd) }
@@ -1016,13 +1074,14 @@ export function handleHover(
                         }
                     }
 
-                    // Base is `unknown` (e.g. `let ctx = unknown_call(); ctx.get`) or a
-                    // generic `object` with no known shape (e.g. `@param {object} pkg;
-                    // pkg.rt_tables_file`). We can't resolve the member's type, but
-                    // returning nothing leaves the user no feedback on `.prop`. Surface
-                    // a minimal hover so the member still shows *something*.
+                    // Base is `unknown` (e.g. `let ctx = unknown_call(); ctx.get`), the
+                    // display-only `any` sentinel (e.g. `let d = json(x); d.get` — behaves
+                    // exactly like unknown here), or a generic `object` with no known shape
+                    // (e.g. `@param {object} pkg; pkg.rt_tables_file`). We can't resolve the
+                    // member's type, but returning nothing leaves the user no feedback on
+                    // `.prop`. Surface a minimal hover so the member still shows *something*.
                     const baseTypeStr = typeToString(symbol.dataType);
-                    if (baseTypeStr === 'unknown' || baseTypeStr === 'object') {
+                    if (baseTypeStr === 'unknown' || baseTypeStr === 'any' || baseTypeStr === 'object') {
                         return {
                             contents: {
                                 kind: MarkupKind.Markdown,
@@ -1043,8 +1102,21 @@ export function handleHover(
             }
         }
         
-        const tokenIndex = tokenIndexAtOffset(tokens, offset);
-        const token = tokenIndex >= 0 ? tokens[tokenIndex] : undefined;
+        const rawTokenIndex = tokenIndexAtOffset(tokens, offset);
+        const rawToken = rawTokenIndex >= 0 ? tokens[rawTokenIndex] : undefined;
+        // Hovering directly on a genuinely-unary `-` (`a[-1]`) should show the same
+        // negative-literal hover as hovering the digit right after it — redirect to
+        // that number/double token so the branch below sees one logical literal.
+        let tokenIndex = rawTokenIndex;
+        let token = rawToken;
+        if (rawToken && rawToken.type === TokenType.TK_SUB) {
+            const next = tokens[rawTokenIndex + 1];
+            if (next && (next.type === TokenType.TK_NUMBER || next.type === TokenType.TK_DOUBLE)
+                && isUnaryMinusContext(tokens, rawTokenIndex)) {
+                tokenIndex = rawTokenIndex + 1;
+                token = next;
+            }
+        }
 
         // Check for printf/sprintf format specifier hover
         if (token && token.type === TokenType.TK_STRING && tokenIndex >= 0) {
@@ -1067,13 +1139,28 @@ export function handleHover(
                 default: litType = undefined;
             }
             if (litType) {
-                const rawValue = document.getText().substring(token.pos, token.end);
+                // A numeric literal directly preceded by a genuinely UNARY `-`
+                // (`a[-1]`, not `x - 1`) lexes as two tokens (TK_SUB, TK_NUMBER/
+                // TK_DOUBLE) — the parser folds them into one negative-literal
+                // UnaryExpression, so hover should show the same thing: extend the
+                // range/text back to the minus and negate the decimal-value note.
+                // (docs/tc-negative-array-index.md)
+                let startPos = token.pos;
+                let displayValue: unknown = token.value;
+                if ((litType === 'integer' || litType === 'double') && tokenIndex > 0) {
+                    const prevToken = tokens[tokenIndex - 1];
+                    if (prevToken && prevToken.type === TokenType.TK_SUB && isUnaryMinusContext(tokens, tokenIndex - 1)) {
+                        startPos = prevToken.pos;
+                        if (typeof token.value === 'number') displayValue = -token.value;
+                    }
+                }
+                const rawValue = document.getText().substring(startPos, token.end);
                 // Non-decimal / exotic numeric spellings (0x1F, 0b, 0o7, 1e5, 0xFF.5):
                 // show the decimal value the interpreter sees next to the source text.
                 let valueNote = '';
-                if ((litType === 'integer' || litType === 'double') && typeof token.value === 'number'
-                    && String(token.value) !== rawValue) {
-                    valueNote = ` = ${token.value}`;
+                if ((litType === 'integer' || litType === 'double') && typeof displayValue === 'number'
+                    && String(displayValue) !== rawValue) {
+                    valueNote = ` = ${displayValue}`;
                 }
                 return {
                     contents: {
@@ -1081,7 +1168,7 @@ export function handleHover(
                         value: `(literal) \`${rawValue}\`${valueNote}: \`${litType}\``
                     },
                     range: {
-                        start: document.positionAt(token.pos),
+                        start: document.positionAt(startPos),
                         end: document.positionAt(token.end)
                     }
                 };
@@ -1200,7 +1287,7 @@ export function handleHover(
                     const narrowed = analysisResult.typeChecker.getNarrowedTypeAtPosition(dotted, offset);
                     if (narrowed != null) {
                         const ts = typeToString(narrowed);
-                        if (ts && ts !== 'unknown') {
+                        if (ts && ts !== 'unknown' && ts !== 'any') {
                             return {
                                 contents: { kind: MarkupKind.Markdown, value: `**${memberExpressionInfo.propertyName}**: \`${ts}\`` },
                                 range: { start: document.positionAt(token.pos), end: document.positionAt(token.end) }

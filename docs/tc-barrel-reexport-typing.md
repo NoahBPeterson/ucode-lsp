@@ -1,6 +1,73 @@
 # Barrel re-exports (`export const X = _ns.member` / `= _ns`) drop all typing across files
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** Alias
+chasing added to `fileResolver.ts`'s named-export resolvers (not via the
+`ModuleExport`/`findExports` provenance field the ticket sketched — a
+simpler, equally general approach turned out sufficient; see "## Fix").
+
+## Fix
+
+Rather than adding alias provenance to `ModuleExport` (which would need
+plumbing through `findExports`, `getModuleExports`, and every consumer), the
+fix chases the alias INLINE, at the point each named-export resolver already
+inspects the declarator's initializer — mirroring the existing
+`resolveReexportedIdentifierType`/`findReexportedSource` machinery this
+ticket's own root-cause section pointed at:
+
+- **New helpers** (`fileResolver.ts`): `findNamespaceImportSource(fileUri, name)`
+  — if `name` is bound by `import * as name from '<module>'` in `fileUri`,
+  resolves that module's URI; `resolveNamespaceMemberAlias(fileUri, init)` —
+  if `init` is `<ns>.<member>` where `<ns>` is a namespace import, returns the
+  target module's URI + member name.
+- **`resolveReexportedIdentifierType`**: now ALSO tries
+  `findNamespaceImportSource` first (namespace re-export: `export const mock
+  = _mock;` → `mock`'s property shape becomes the WHOLE namespace's exports,
+  via `getNamespaceExportInfo`), falling back to the pre-existing
+  named-import chase.
+- **`getNamedExportTypeInfo`** (both the direct-declarator and `export { x }`
+  specifier forms): added a `MemberExpression` branch alongside the existing
+  `Identifier` branch — chases `<ns>.<member>` into the namespace's module and
+  recurses into `getNamedExportTypeInfo` for that SAME member name (handles
+  `export const describe = dsl.describe;`).
+- **`getNamedExportFunctionReturnInfo`**: gained a `_visited` cycle-guard
+  param (it didn't have one before — needed once this function recurses on
+  aliases) and Identifier/MemberExpression alias chases in both the
+  direct-declarator and specifier forms, so a re-exported FUNCTION's
+  factory-return shape and simple return type both propagate.
+- **`getNamedExportFunctionParameters`**: same Identifier/MemberExpression
+  chases added to its direct-declarator form (the specifier form already had
+  re-export chasing).
+- **`getNamespaceExportInfo`'s `recordExport`**: chases Identifier
+  (namespace-import) and MemberExpression (namespace-member) initializers the
+  same way, so a NAMESPACE's own exports (not just a named-import's) carry
+  through — this is what makes the two-hop `mock.global.patch` case work:
+  `utest.mock.uc`'s `export const global = _global;` (itself a namespace
+  re-export) now records `global` as `OBJECT` with `nested` = `_global`'s full
+  export map, so `mock.global.patch` resolves via the existing one-level
+  `nestedPropertyTypes` mechanism (base symbol `mock`, one level deeper
+  `global`, whose nested shape has `patch`).
+
+Cycle guard: shared `_visited` keys (`${fileUri}#${exportName}`) thread
+through every recursive call, so `cycle_a.uc`/`cycle_b.uc` mutually
+re-exporting the same name terminates instead of hanging (tested).
+
+Non-import initializers (`export const x = 5;`) are untouched — the new
+branches only fire when the initializer is an `Identifier`/`MemberExpression`
+that resolves to an actual import binding; everything else falls through to
+the pre-existing literal-inference path unchanged.
+
+Before/after (`--type-coverage`):
+- Ticket's exact 3-file repro (`leaf2.uc`/`mid2.uc`/`main2.uc`): 0/7 → 3/3
+  identifiers typed (100%).
+- `utest/examples/unit/09_mock_state_test.uc` (the `mock.global.patch`
+  two-hop case): 11.4% (9/79) → 79.7% (63/79), +54.
+- `utest/examples/unit/` aggregate (41 files, gated together with the deploy-root
+  fix so `'utest'` resolves at all): 15.5% (348/2248) → 71.4% (1604/2248).
+
+Tests: `tests/imports/test-barrel-reexport-typing.test.js` (6 cases: function-member
+re-export incl. call-result typing, namespace re-export, the two-hop
+`mock.global.patch` chain, a mutually-re-exporting cycle terminating, and a
+non-import initializer staying literal-typed).
 
 ## The gap
 

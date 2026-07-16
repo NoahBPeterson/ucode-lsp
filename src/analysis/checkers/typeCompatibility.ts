@@ -23,7 +23,7 @@ export class TypeCompatibilityChecker {
     return UcodeType.INTEGER;
   }
 
-  getUnaryResultType(operandType: UcodeType, operator: string): UcodeType {
+  getUnaryResultType(operandType: UcodeType, operator: string): UcodeDataType {
     switch (operator) {
       case '+':
       case '-':
@@ -31,10 +31,14 @@ export class TypeCompatibilityChecker {
       case '--':
         // Numeric conversion (verified against the runtime — none of these throw,
         // and ++/-- coerce identically to unary +/-):
-        //   unknown → unknown; int/double keep their kind; bool → int (0/1);
-        //   null → int (coerces to 0); string → numeric (int for "42", double for
-        //   "abc" — approximated as double); array/object/etc → NaN → double.
-        if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
+        //   unknown → integer | double (vm.c's I_PLUS/I_MINUS have no concat
+        //   case, unlike binary `+` — see uc_vm_value_arith, so an unknown
+        //   operand is guaranteed numeric, never a guess: same rule as the
+        //   binary non-`+` operators, docs/tc-arith-unknown-operand-numeric.md);
+        //   int/double keep their kind; bool → int (0/1); null → int (coerces
+        //   to 0); string → numeric (int for "42", double for "abc" —
+        //   approximated as double); array/object/etc → NaN → double.
+        if (operandType === UcodeType.UNKNOWN) return createUnionType([UcodeType.INTEGER, UcodeType.DOUBLE]);
         if (this.isArithmeticType(operandType)) {
           return operandType === UcodeType.BOOLEAN ? UcodeType.INTEGER : operandType;
         }
@@ -47,9 +51,10 @@ export class TypeCompatibilityChecker {
         return UcodeType.BOOLEAN;
       case '~':
         // Bitwise complement forces an integer conversion for EVERY operand type
-        // (~null, ~"x", ~[1], ~{} all yield an integer at runtime), so the result
-        // is always integer. Only a genuinely unknown operand stays unknown.
-        if (operandType === UcodeType.UNKNOWN) return UcodeType.UNKNOWN;
+        // (~null, ~"x", ~[1], ~{} all yield an integer at runtime) via
+        // uc_vm_value_bitop, which itself calls ucv_to_number() first — so even
+        // a genuinely unknown operand is guaranteed to end up integer; there is
+        // no operand shape that produces anything else. (docs/tc-arith-unknown-operand-numeric.md)
         return UcodeType.INTEGER;
       default:
         return UcodeType.UNKNOWN;

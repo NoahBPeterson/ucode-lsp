@@ -1,6 +1,6 @@
 # Analyzer crash: `SCOPE_ROLE[node.type]` on a `_inferredParams` annotation kills whole-file analysis
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** `SCOPE_ROLE[node.type]` lookups are now total-safe (`?? NONE`), and the generic AST-walkers skip `_`-prefixed stashed-annotation keys, so a stamped `_inferredParams`/`_inferredReturnType` object can no longer be mistaken for an AST node.
 
 ## The gap
 
@@ -103,3 +103,40 @@ latent exposure to stamped annotations, even where it doesn't crash today.
 **Solvable** — a contained bug fix. 36 corpus occurrences directly (uvol uci.uc 26 +
 blockdev_common.uc 10), plus every future file using the extremely common
 `global.X = { method: function… }` module idiom.
+
+## Fix
+
+Both hardenings from "Proposed approach" were implemented:
+
+1. **`src/ast/scopeRoles.ts`** — added a private `roleOf(node)` helper that does
+   `SCOPE_ROLE[node.type] ?? NONE` instead of a bare `SCOPE_ROLE[node.type]` index, and routed
+   `enclosingBindings`, `functionOwnBindings`, and `opensFunctionScope` through it. `SCOPE_ROLE`
+   itself is untouched (still total over the real `AstNodeKind` union); the guard only protects
+   against a runtime value whose `.type` string isn't one of those kinds (a stamped annotation, a
+   rich `UcodeDataType`). This is the single point of protection — every caller of these three
+   helpers (the `checkNeverAssignedGlobalProperties` taint walk in `semanticAnalyzer.ts`,
+   `collectScopeBindings` in the same file, `computeFreeVariables` in `includeScope.ts`) is now
+   crash-proof without touching each call site individually.
+2. **Annotation-key skip** — every generic `Object.keys(node)` recursion loop that already had
+   `if (k === 'leadingJsDoc') continue;` (or the `key ===` variant) now also skips any key
+   starting with `_` (`k.startsWith('_')`), in `src/analysis/semanticAnalyzer.ts` (32 + 3 call
+   sites, `replace_all`), `src/analysis/includeScope.ts` (3 call sites), and
+   `src/ast/scopeRoles.ts`'s own `collectScopeBindings` walk. Verified the only runtime-stamped
+   `_`-prefixed fields in the codebase are `_inferredParams`, `_inferredReturnType`,
+   `_precomputedMethodReturns`, `_thisWrites` (grepped for `._\w+\s*=` assignments) — none of
+   these are real `AstNode` fields, so the skip cannot hide a legitimate AST child.
+
+Verified before/after with a throwaway build (`git stash` the four touched files, rebuild,
+reproduce, `git stash pop`, rebuild): pre-fix, `node bin/ucode-lsp.js <file>` printed
+`error: Semantic analysis error: Cannot read properties of undefined (reading 'binds')` for both
+corpus files and the minimal repro; post-fix the message is gone and diagnostics that used to be
+silently dropped (because the crash happens inside `analyze()`'s main try/catch, which aborts
+`this.visit(ast)` before `resolvePendingUndefinedRefs()`/unused-variable detection ever run) come
+back — e.g. `uci.uc` gained 10 `UC1001: Undefined variable: cursor` warnings and
+`blockdev_common.uc` gained an `incompatible-function-argument` warning on line 75 that were both
+previously swallowed by the crash.
+
+Files touched: `src/ast/scopeRoles.ts`, `src/analysis/semanticAnalyzer.ts`,
+`src/analysis/includeScope.ts`. Regression tests:
+`tests/test-tc-analyzer-crashes.test.js` (describe block "crash 1: …", 3 tests, run as a CLI
+subprocess). Demo: `zzzz/demo-tc-crashes.uc`.

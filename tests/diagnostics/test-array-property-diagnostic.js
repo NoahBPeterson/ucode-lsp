@@ -121,6 +121,9 @@ const snippetForType = (t) => Match.value(t).pipe(
     Match.when(UcodeType.REGEX,    () => ({ code: 'let v = /test/;\nlet x = v.prop;', shouldError: true })),
     Match.when(UcodeType.NULL,     () => null),
     Match.when(UcodeType.UNKNOWN,  () => null),
+    // ANY (docs/tc-json-any-return-display.md) behaves exactly like UNKNOWN here
+    // too (no concrete literal assigns it directly — only json()/call()'s return) — skip.
+    Match.when(UcodeType.ANY,      () => null),
     Match.when(UcodeType.UNION,    () => null),
     Match.exhaustive
 );

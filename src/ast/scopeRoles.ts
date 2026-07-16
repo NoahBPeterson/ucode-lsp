@@ -82,6 +82,18 @@ export const SCOPE_ROLE: Record<AstNodeKind, ScopeRole> = {
   Property: NONE,
 };
 
+/**
+ * Total-safe lookup: `SCOPE_ROLE` is exhaustive over `AstNodeKind`, but callers sometimes hand
+ * these helpers a value that merely *looks* AST-like (a stamped annotation such as
+ * `_inferredParams`'s `{ name, type, isRest }` entries, or a rich `UcodeDataType` object) — its
+ * `.type` is a string, but not one of our node kinds. Indexing `SCOPE_ROLE` with such a string is
+ * a lookup miss, not a type error at runtime — guard it so a miss degrades to "no scope role"
+ * instead of throwing `Cannot read properties of undefined`.
+ */
+function roleOf(node: AstNode): ScopeRole {
+  return SCOPE_ROLE[node.type] ?? NONE;
+}
+
 const idName = (n: unknown): string | null => {
   if (n && typeof n === 'object' && (n as { type?: unknown }).type === 'Identifier') {
     const nm = (n as IdentifierNode).name;
@@ -94,7 +106,7 @@ const idName = (n: unknown): string | null => {
  *  `catch` param, an import local). NOT a function's own params — see `functionOwnBindings`. */
 export function enclosingBindings(node: AstNode): string[] {
   const n = node as unknown as Record<string, unknown>;
-  switch (SCOPE_ROLE[node.type].binds) {
+  switch (roleOf(node).binds) {
     case 'none': return [];
     case 'id': { const nm = idName(n['id']); return nm ? [nm] : []; }
     case 'param': { const nm = idName(n['param']); return nm ? [nm] : []; }
@@ -104,7 +116,7 @@ export function enclosingBindings(node: AstNode): string[] {
 
 /** Names a FUNCTION binds into its OWN scope: params + rest param. `[]` for non-functions. */
 export function functionOwnBindings(node: AstNode): string[] {
-  if (!SCOPE_ROLE[node.type].opensFunctionScope) return [];
+  if (!roleOf(node).opensFunctionScope) return [];
   const fn = node as unknown as { params?: unknown[]; restParam?: unknown };
   const out: string[] = [];
   for (const p of (fn.params ?? [])) { const nm = idName(p); if (nm) out.push(nm); }
@@ -112,7 +124,7 @@ export function functionOwnBindings(node: AstNode): string[] {
   return out;
 }
 
-export const opensFunctionScope = (node: AstNode): boolean => SCOPE_ROLE[node.type].opensFunctionScope;
+export const opensFunctionScope = (node: AstNode): boolean => roleOf(node).opensFunctionScope;
 
 /**
  * All names bound in one function's (or the program's) OWN scope: its params/rest, plus every
@@ -129,7 +141,7 @@ export function collectScopeBindings(node: AstNode): Set<string> {
     for (const nm of enclosingBindings(cur)) out.add(nm);
     if (opensFunctionScope(cur)) return; // nested function — its own scope
     for (const k of Object.keys(cur)) {
-      if (k === 'leadingJsDoc') continue;
+      if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc.)
       const v = (cur as unknown as Record<string, unknown>)[k];
       if (Array.isArray(v)) { for (const it of v) walk(it); }
       else walk(v);

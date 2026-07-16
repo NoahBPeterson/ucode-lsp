@@ -519,6 +519,14 @@ export class CFGBuilder {
     // Setup
     this.connect(this.currentBlock, setupBlock);
     this.currentBlock = setupBlock;
+    // Mark the loop-var declaration so the flow engine's assignment transfer does
+    // NOT record it as `null` (`let k, v` has no init): the body only ever sees
+    // iterator-ASSIGNED values (compiler.c skips the var store on the terminating
+    // iteration), and the iterator's per-iteration writes are not CFG statements.
+    // Left untracked, body reads fall back to the symbol's stamped element/key
+    // type. The old intersection meet happened to drop the key; the widened loop
+    // fixpoint would make the stale `null` stick.
+    (node.left as { _forInLoopVar?: boolean })._forInLoopVar = true;
     this.addStatement(node.left);
     this.addStatement(node.right);
 

@@ -161,6 +161,12 @@ export class SemanticAnalyzer extends BaseVisitor {
   private currentASTRoot: ProgramNode | null = null;
   private thisPropertyStack: Map<string, UcodeDataType>[] = []; // Track `this` context for object method property types
   private thisObjectNodeStack: ObjectExpressionNode[] = []; // Parallel to thisPropertyStack: the object node, so `this.method()` return types resolve from sibling function properties (define-before-use)
+  // Forward `this.method()` call sites resolved from the shallow pre-pass (the sibling
+  // wasn't visited yet) — keyed by the enclosing object literal so they can be patched
+  // once every method's accurate return type is known (docs/tc-this-method-forward-ref-
+  // return.md). Populated by registerForwardCallDependencyIfShallow, drained by
+  // patchForwardCallDependencies right after the literal's `super.visitObjectExpression`.
+  private pendingForwardCallDeps: Map<ObjectExpressionNode, Array<{ methodName: string; symbol: SymbolEntry; callNode: AstNode }>> = new Map();
 
   // ── Function-level incremental analysis ──────────────────────────────────────────────
   // Bodies the caller determined are UNCHANGED and whose environment fingerprint is unchanged.
@@ -719,7 +725,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         return;
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else walk(v);
@@ -761,7 +767,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
       if (n.type === 'DeleteExpression') { escapeScan((n as unknown as { argument?: unknown }).argument, true); return; }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) escapeScan(it, false); }
         else escapeScan(v, false);
@@ -819,7 +825,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) collect(it); }
         else collect(v);
@@ -862,7 +868,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     //     non-computed member names, import/export specifiers) must NOT reach it.
     const walkChildren = (n: AnyNode): void => {
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else walk(v);
@@ -1097,7 +1103,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const nested = (t === 'WhileStatement' || t === 'ForStatement'
         || t === 'ForInStatement' || t === 'SwitchStatement') ? loopDepth + 1 : loopDepth;
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) if (mayDivert(it, nested)) return true; }
         else if (mayDivert(v, nested)) return true;
@@ -1133,7 +1139,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (a.left?.type === 'Identifier' && (a.left as IdentifierNode).name) reassignedNames.add((a.left as IdentifierNode).name);
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) scanReassigns(it); }
         else scanReassigns(v);
@@ -1302,7 +1308,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     const recurseChildren = (n: AnyNode, ctx: Ctx): void => {
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) walk(it, ctx); }
         else walk(v, ctx);
@@ -1546,7 +1552,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         return;
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) collectReads(it, locals, assigned); }
         else collectReads(v, locals, assigned);
@@ -1635,7 +1641,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) walk(it, inFunc || entering, nextFn); }
         else walk(v, inFunc || entering, nextFn);
@@ -1737,7 +1743,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) collectDefs(it, inFunc || entering); }
         else collectDefs(v, inFunc || entering);
@@ -1787,7 +1793,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (t === 'VariableDeclarator') { collectReads((n as Record<string, unknown>)['init'], inFunc); return; } // id is not a read
       if (t === 'Property' && !(n as Record<string, unknown>)['computed']) { collectReads((n as Record<string, unknown>)['value'], inFunc); return; } // key is not a read
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) collectReads(it, inFunc); }
         else collectReads(v, inFunc);
@@ -1848,7 +1854,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) { const f = firstThrowAtLevel(it); if (f) return f; } }
         else { const f = firstThrowAtLevel(v); if (f) return f; }
@@ -1911,7 +1917,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         return m.computed ? stmtRefsAny(m.property, names) : false;
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) if (stmtRefsAny(it, names)) return true; }
         else if (stmtRefsAny(v, names)) return true;
@@ -2029,7 +2035,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         return;
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) descend(it, insideTry); }
         else descend(v, insideTry);
@@ -2130,7 +2136,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (exp.declaration?.type === 'Identifier') exportedNames.add((exp.declaration as IdentifierNode).name);
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) collect(it); }
         else if (isAstNodeLike(v)) collect(v);
@@ -2214,7 +2220,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
 
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) walk(it, inner); }
         else if (isAstNodeLike(v)) walk(v, inner);
@@ -2288,7 +2294,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else if (isAstNodeLike(v)) walk(v);
@@ -2347,7 +2353,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else if (isAstNodeLike(v)) walk(v);
@@ -2435,7 +2441,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const keepsStraight = n.type === 'Program' || n.type === 'ExpressionStatement'
         || n.type === 'AssignmentExpression';
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) walk(it, straight && keepsStraight); }
         else if (isAstNodeLike(v)) walk(v, straight && keepsStraight);
@@ -2467,16 +2473,54 @@ export class SemanticAnalyzer extends BaseVisitor {
           const call = right as CallExpressionNode;
           if (call.callee?.type === 'Identifier' && (call.callee as IdentifierNode).name === 'require'
               && call.arguments?.length === 1
-              && call.arguments[0]?.type === 'Literal' && typeof (call.arguments[0] as LiteralNode).value === 'string'
-              && isKnownModule((call.arguments[0] as LiteralNode).value as string)) {
+              && call.arguments[0]?.type === 'Literal' && typeof (call.arguments[0] as LiteralNode).value === 'string') {
             const moduleName = (call.arguments[0] as LiteralNode).value as string;
-            const dataType = { type: UcodeType.OBJECT, moduleName } as UcodeDataType;
-            this.symbolTable.declare((left as IdentifierNode).name, SymbolType.MODULE, dataType, left);
+            if (isKnownModule(moduleName)) {
+              const dataType = { type: UcodeType.OBJECT, moduleName } as UcodeDataType;
+              this.symbolTable.declare((left as IdentifierNode).name, SymbolType.MODULE, dataType, left);
+            } else if (!moduleName.startsWith('./') && !moduleName.startsWith('../')) {
+              // Bare `name = require("user-module")` (no `let`/`const` — e.g. a
+              // `try { m4 = require('mwan4'); } catch(e) {}` feature probe). Mirrors
+              // the `let`-declarator require handling in visitVariableDeclarator, so
+              // a forward reference to `m4` before this assignment (or the assignment
+              // itself, which has no other type-inference path) is typed instead of
+              // `unknown`. Relative (`./`) requires are a hard error (UC3008) — left
+              // to that existing check, not resolved here.
+              // docs/tc-require-user-module-typing.md
+              const resolvedUri = this.fileResolver.resolveImportPath(moduleName, this.textDocument.uri);
+              if (resolvedUri) {
+                const dataType: UcodeDataType = { type: UcodeType.OBJECT, isDefaultImport: true };
+                this.symbolTable.declare((left as IdentifierNode).name, SymbolType.IMPORTED, dataType, left);
+                const sym = this.symbolTable.lookup((left as IdentifierNode).name);
+                if (sym) {
+                  sym.importedFrom = this.normalizeImportedFrom(moduleName, resolvedUri);
+                  sym.importSpecifier = 'default';
+                  if (resolvedUri.startsWith('file://')) {
+                    this.resolvedImports.add(resolvedUri);
+                    if (this.fileResolver.requireModuleIsFunction(resolvedUri)) {
+                      sym.dataType = UcodeType.FUNCTION as UcodeDataType;
+                      const returnInfo = this.fileResolver.getDefaultExportFunctionReturnInfo(resolvedUri);
+                      if (returnInfo) this.applyFactoryReturnInfo(sym, returnInfo, resolvedUri);
+                      const params = this.fileResolver.getDefaultExportFunctionParameters(resolvedUri);
+                      if (params) sym.parameters = params;
+                    } else {
+                      const shape = this.fileResolver.getRequireModuleShape(resolvedUri);
+                      if (shape) {
+                        if (shape.propertyTypes && shape.propertyTypes.size > 0) sym.propertyTypes = shape.propertyTypes;
+                        if (shape.propertyFunctionReturnTypes && shape.propertyFunctionReturnTypes.size > 0) {
+                          sym.propertyFunctionReturnTypes = shape.propertyFunctionReturnTypes;
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else if (isAstNodeLike(v)) walk(v);
@@ -2586,6 +2630,12 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
 
       // Special handling for require() calls
+      // Set whenever require() resolves to a WORKSPACE file (any of the branches
+      // below), so its default-export shape (object property types / factory return
+      // info) can be stamped onto the symbol after declaration — see the
+      // `requireResolvedUri` use near the `loadfileReturnShape` application below.
+      // docs/tc-require-user-module-typing.md
+      let requireResolvedUri: string | null = null;
       if (node.init && node.init.type === 'CallExpression') {
         const callExpr = node.init as any; // CallExpressionNode
         if (callExpr.callee && callExpr.callee.type === 'Identifier' && callExpr.callee.name === 'require') {
@@ -2607,6 +2657,7 @@ export class SemanticAnalyzer extends BaseVisitor {
                     type: UcodeType.OBJECT,
                     isDefaultImport: true  // CommonJS require gets the default export
                   };
+                  requireResolvedUri = resolvedUri;
 
                   // Store the import info to be added after declaration
                   this.commonjsImports.set(name, {
@@ -2625,10 +2676,37 @@ export class SemanticAnalyzer extends BaseVisitor {
                     type: UcodeType.OBJECT,
                     isDefaultImport: true  // CommonJS require gets the default export
                   };
+                  requireResolvedUri = resolvedUri;
 
                   // Store the import info to be added after declaration
                   this.commonjsImports.set(name, {
                     importedFrom: this.normalizeImportedFrom(filePath, resolvedUri),
+                    importSpecifier: 'default'
+                  });
+                  if (resolvedUri.startsWith('file://')) this.resolvedImports.add(resolvedUri);
+                }
+              } else {
+                // Bare/dotted search-path module name that isn't a known builtin and
+                // doesn't parse as classic multi-segment dot notation (e.g. a
+                // single-segment name like "fw4") — resolve it the same way
+                // `import … from '<name>'` does: fileResolver's dotted/bare branch,
+                // which also probes package deploy roots (root/usr/share/ucode, etc.
+                // — docs/tc-module-root-mapping.md). A name that fails to resolve
+                // stays unknown; require() has no UC3002-equivalent diagnostic, so a
+                // workspace-absent module used as a feature probe (`try { require(...) }
+                // catch {}`) keeps working exactly as before.
+                // docs/tc-require-user-module-typing.md
+                const resolvedUri = this.fileResolver.resolveImportPath(moduleName, this.textDocument.uri);
+                if (resolvedUri) {
+                  symbolType = SymbolType.IMPORTED;
+                  dataType = {
+                    type: UcodeType.OBJECT,
+                    isDefaultImport: true  // CommonJS require gets the default export
+                  };
+                  requireResolvedUri = resolvedUri;
+
+                  this.commonjsImports.set(name, {
+                    importedFrom: this.normalizeImportedFrom(moduleName, resolvedUri),
                     importSpecifier: 'default'
                   });
                   if (resolvedUri.startsWith('file://')) this.resolvedImports.add(resolvedUri);
@@ -2796,6 +2874,35 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
 
+      // require("user-module") — populate the module's default-export shape onto the
+      // symbol, the same way an ES6 default import does (processImportSpecifier), so
+      // `fw4.read_state()` resolves cross-file instead of `unknown`.
+      // docs/tc-require-user-module-typing.md
+      if (requireResolvedUri && requireResolvedUri.startsWith('file://')) {
+        const sym = this.symbolTable.lookup(name);
+        if (sym) {
+          if (this.fileResolver.requireModuleIsFunction(requireResolvedUri)) {
+            // The default export is itself a FACTORY FUNCTION — `fw4` is callable;
+            // mirror the ES6 default-import-function path (applyFactoryReturnInfo)
+            // so `fw4()`'s call result gets the factory's return shape, not `fw4`
+            // itself.
+            sym.dataType = UcodeType.FUNCTION as UcodeDataType;
+            const returnInfo = this.fileResolver.getDefaultExportFunctionReturnInfo(requireResolvedUri);
+            if (returnInfo) this.applyFactoryReturnInfo(sym, returnInfo, requireResolvedUri);
+            const params = this.fileResolver.getDefaultExportFunctionParameters(requireResolvedUri);
+            if (params) sym.parameters = params;
+          } else {
+            const shape = this.fileResolver.getRequireModuleShape(requireResolvedUri);
+            if (shape) {
+              if (shape.propertyTypes && shape.propertyTypes.size > 0) sym.propertyTypes = shape.propertyTypes;
+              if (shape.propertyFunctionReturnTypes && shape.propertyFunctionReturnTypes.size > 0) {
+                sym.propertyFunctionReturnTypes = shape.propertyFunctionReturnTypes;
+              }
+            }
+          }
+        }
+      }
+
 
       // Process initializer
       if (node.init) {
@@ -2858,6 +2965,12 @@ export class SemanticAnalyzer extends BaseVisitor {
             const fullType = this.typeChecker.checkNode(node.init);
             if (fullType !== undefined && fullType !== null && fullType !== UcodeType.UNKNOWN) {
               sym.dataType = fullType;
+              // Forward `this.method()` call inside an object literal, resolved from the
+              // shallow pre-pass (the sibling method wasn't visited yet) — register a
+              // back-fill dependency so `sym`'s dataType gets patched with the accurate
+              // type once every method in the literal has been visited (docs/
+              // tc-this-method-forward-ref-return.md).
+              this.registerForwardCallDependencyIfShallow(node.init, sym);
               // For module object types (fs.file, io.handle, uci.cursor, etc.),
               // force global declaration so method resolution works across scopes.
               // Guard: only when this declaration is genuinely at global scope. A
@@ -2925,7 +3038,11 @@ export class SemanticAnalyzer extends BaseVisitor {
         // (e.g., after equality guard: if (readfile != rf) return; let d = readfile;)
         if (node.init.type === 'Identifier') {
           const sym = this.symbolTable.lookup(name);
-          if (sym && sym.dataType === UcodeType.UNKNOWN) {
+          // ANY (json()/call() contract-any — behaves exactly like UNKNOWN in every
+          // check, docs/tc-json-any-return-display.md) is just as narrowable as a
+          // genuine UNKNOWN: `let x = json(y); if (type(x)=="object") { let z = x; }`
+          // must narrow `z` to `object`, not stay `any`.
+          if (sym && (sym.dataType === UcodeType.UNKNOWN || sym.dataType === UcodeType.ANY)) {
             const initName = (node.init as IdentifierNode).name;
             const narrowedType = this.typeChecker.getNarrowedTypeAtPosition(initName, node.init.start);
             if (narrowedType && narrowedType !== UcodeType.UNKNOWN) {
@@ -4283,6 +4400,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (propTypes) {
       this.thisPropertyStack.push(propTypes);
       this.thisObjectNodeStack.push(node);
+      this.pendingForwardCallDeps.set(node, []);
       // Pre-compute each method's return type BEFORE visiting any body, so a method can
       // resolve a sibling defined LATER in the object (`this.later()` from `early()`).
       // ucode supports this — `this` is resolved at call time, after the whole object is
@@ -4293,8 +4411,14 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
     super.visitObjectExpression(node);
     if (propTypes) {
+      // Every method has now been visited, so every function property's
+      // `_inferredReturnType` is accurate. Back-fill any forward `this.X()` call site
+      // that resolved from the shallow pre-pass while X hadn't been visited yet
+      // (docs/tc-this-method-forward-ref-return.md).
+      this.patchForwardCallDependencies(node);
       this.thisPropertyStack.pop();
       this.thisObjectNodeStack.pop();
+      this.pendingForwardCallDeps.delete(node);
     }
   }
 
@@ -4304,8 +4428,20 @@ export class SemanticAnalyzer extends BaseVisitor {
    * function property's `_inferredReturnType` (stamped by visitFunctionExpression once its
    * body is visited), so a sibling method only resolves if it was defined BEFORE the use
    * site (define-before-use); a forward reference is left unresolved rather than guessed.
+   *
+   * A property whose VALUE is an Identifier (the "proto table" idiom: `{ select:
+   * context_select }`, not an inline `function(){}`) is resolved through the symbol
+   * table to the referenced function's OWN `returnType` — reusing the same
+   * define-before-use stance (docs/tc-fn-reference-property-returns.md).
+   *
+   * `shallowOut`, when passed, collects the keys whose value came from the
+   * scope-less pre-pass rather than the sibling's real per-body visit — i.e. a
+   * forward reference that is only an ESTIMATE (docs/tc-this-method-forward-ref-
+   * return.md). Callers that stamp this map onto a `this` symbol also stash the
+   * shallow set (`propertyReturnTypesShallow`) so a consumer resolving a call
+   * through one of those keys can register a back-fill dependency.
    */
-  private inferObjectLiteralFunctionReturnTypes(node: ObjectExpressionNode): Map<string, UcodeDataType> | null {
+  private inferObjectLiteralFunctionReturnTypes(node: ObjectExpressionNode, shallowOut?: Set<string>): Map<string, UcodeDataType> | null {
     const out = new Map<string, UcodeDataType>();
     const pre: Map<string, UcodeDataType> | undefined = (node as any)._precomputedMethodReturns;
     for (const prop of node.properties) {
@@ -4313,15 +4449,117 @@ export class SemanticAnalyzer extends BaseVisitor {
       const key = this.resolveObjectLiteralKey(prop);
       if (!key) continue;
       const val = prop.value;
+      if (val.type === 'Identifier') {
+        const refRt = this.resolveIdentifierFunctionReturnType(val as IdentifierNode);
+        if (refRt !== null) out.set(key, refRt);
+        continue;
+      }
       if (val.type !== 'FunctionExpression' && val.type !== 'ArrowFunctionExpression') continue;
       // Prefer the accurate type stamped by the real visit (params/locals in scope); fall
       // back to the pre-pass type for siblings not yet visited (forward references).
-      let rt = (val as any)._inferredReturnType;
-      if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) rt = pre?.get(key);
+      const accurateRt = (val as any)._inferredReturnType;
+      let rt = accurateRt;
+      let isShallow = false;
+      if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) {
+        rt = pre?.get(key);
+        isShallow = true;
+      }
       if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) continue;
       out.set(key, rt as UcodeDataType);
+      if (isShallow) shallowOut?.add(key);
     }
     return out.size > 0 ? out : null;
+  }
+
+  /**
+   * Record-and-patch back-fill for forward `this.method()` calls inside an object
+   * literal (docs/tc-this-method-forward-ref-return.md). Called right after a `let`/
+   * plain-assignment declarator resolves its initializer's rich type when that
+   * initializer is `this.X(...)` and `X` was marked shallow on the CURRENT `this`
+   * symbol (i.e. `X` hadn't been visited yet — the type just baked into `symbol` is
+   * only the scope-less pre-pass estimate). Registers `{ methodName, symbol }` against
+   * the enclosing object literal so `patchForwardCallDependencies` can overwrite
+   * `symbol.dataType` with the accurate type once every sibling has been visited.
+   */
+  private registerForwardCallDependencyIfShallow(initNode: AstNode, symbol: SymbolEntry): void {
+    if (initNode.type !== 'CallExpression') return;
+    const callNode = initNode as CallExpressionNode;
+    if (callNode.callee.type !== 'MemberExpression') return;
+    const mem = callNode.callee as MemberExpressionNode;
+    if (mem.computed || mem.object.type !== 'ThisExpression' || mem.property.type !== 'Identifier') return;
+    const methodName = (mem.property as IdentifierNode).name;
+    const thisSym = this.symbolTable.lookup('this');
+    if (!thisSym?.propertyReturnTypesShallow?.has(methodName)) return;
+    const objNode = this.thisObjectNodeStack[this.thisObjectNodeStack.length - 1];
+    if (!objNode) return;
+    const deps = this.pendingForwardCallDeps.get(objNode);
+    if (!deps) return;
+    deps.push({ methodName, symbol, callNode: initNode });
+  }
+
+  /**
+   * Drain the forward-call dependencies recorded for `node` (via
+   * registerForwardCallDependencyIfShallow) and overwrite each consumer symbol's
+   * `dataType` with the now-accurate per-method return type. Bounded to one pass —
+   * no fixpoint/second hop (matches the ticket's explicit scope). Symbols are patched
+   * in place, so any later read (hover) sees the corrected type without needing to
+   * re-run the type checker. Also patches the typeChecker's cached type for the
+   * `this.method()` call node itself — `buildFlowEngines` runs AFTER this whole
+   * file's visit and reads that cache (not `symbol.dataType`) to seed a `let`
+   * declarator's flow-tracked type, so leaving it stale would keep any `if (!rv)`
+   * narrowing (and post-declaration reads inside the same method) on the shallow
+   * type even though the symbol itself was patched.
+   */
+  private patchForwardCallDependencies(node: ObjectExpressionNode): void {
+    const deps = this.pendingForwardCallDeps.get(node);
+    if (!deps || deps.length === 0) return;
+    const accurate = this.inferObjectLiteralFunctionReturnTypes(node);
+    if (!accurate) return;
+    for (const dep of deps) {
+      const rt = accurate.get(dep.methodName);
+      if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) continue;
+      dep.symbol.dataType = rt;
+      if (dep.symbol.currentType !== undefined) dep.symbol.currentType = rt;
+      this.typeChecker.setTypeOf(dep.callNode, rt);
+    }
+  }
+
+  /**
+   * Resolve an Identifier value (a property's or an assignment's RHS) to the return
+   * type of the function it names — a plain `FunctionDeclaration` symbol, OR a
+   * function-VALUED variable (`let f = function(){…}` / `let f = () => …`, which
+   * stamps `returnType` on its own symbol at declaration, see 0.6.193). Null when the
+   * identifier doesn't resolve to a function with a known return type (e.g. forward
+   * reference, or the identifier isn't callable) — callers fall back to unknown.
+   */
+  private resolveIdentifierFunctionReturnType(id: IdentifierNode): UcodeDataType | null {
+    const refSym = this.symbolTable.lookup(id.name);
+    if (!refSym) return null;
+    if (refSym.dataType !== UcodeType.FUNCTION && refSym.type !== SymbolType.FUNCTION) return null;
+    const rt = refSym.returnType;
+    if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) return null;
+    return rt;
+  }
+
+  /**
+   * Return type of an assignment's RHS when it makes the target a callable method —
+   * either an inline `function(){…}`/arrow (reads `_inferredReturnType`, stamped by
+   * the visitor once the RHS has been visited) or an Identifier naming a function
+   * (delegates to `resolveIdentifierFunctionReturnType`). Used by the post-hoc
+   * property-assignment path (`nft_file.append = function(…){…}` — docs/
+   * tc-fn-reference-property-returns.md shape 2) to populate `propertyReturnTypes`
+   * the same way the object-literal path does.
+   */
+  private functionReturnTypeOfRhs(rhs: AstNode): UcodeDataType | null {
+    if (rhs.type === 'FunctionExpression' || rhs.type === 'ArrowFunctionExpression') {
+      const rt = (rhs as any)._inferredReturnType;
+      if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) return null;
+      return rt as UcodeDataType;
+    }
+    if (rhs.type === 'Identifier') {
+      return this.resolveIdentifierFunctionReturnType(rhs as IdentifierNode);
+    }
+    return null;
   }
 
   /**
@@ -4358,6 +4596,11 @@ export class SemanticAnalyzer extends BaseVisitor {
       const key = this.resolveObjectLiteralKey(prop);
       if (!key) continue;
       const val = prop.value as any;
+      if (val.type === 'Identifier') {
+        const refRt = this.resolveIdentifierFunctionReturnType(val as IdentifierNode);
+        if (refRt !== null) out.set(key, refRt);
+        continue;
+      }
       if (val.type !== 'FunctionExpression' && val.type !== 'ArrowFunctionExpression') continue;
       const rt = this.collectReturnTypesQuiet(val);
       if (rt !== UcodeType.UNKNOWN) out.set(key, rt);
@@ -4456,8 +4699,10 @@ export class SemanticAnalyzer extends BaseVisitor {
           // visited (define-before-use). The enclosing object node is on the parallel stack.
           const objNode = this.thisObjectNodeStack[this.thisObjectNodeStack.length - 1];
           if (objNode) {
-            const fnReturns = this.inferObjectLiteralFunctionReturnTypes(objNode);
+            const shallowKeys = new Set<string>();
+            const fnReturns = this.inferObjectLiteralFunctionReturnTypes(objNode, shallowKeys);
             if (fnReturns) thisSym.propertyReturnTypes = fnReturns;
+            if (shallowKeys.size > 0) thisSym.propertyReturnTypesShallow = shallowKeys;
             const locs = this.inferObjectLiteralPropertyLocations(objNode);
             if (locs) thisSym.propertyDefinitionLocations = locs;
           }
@@ -5373,6 +5618,18 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                 }
 
                 deferredPropertyWrites.push(() => this.recordPropertyWrite(targetSymbol, propertyName, propertyType, node.end));
+
+                // Post-hoc method attachment (`nft_file.append = function(…){…}` /
+                // `nft_file.append = someHelper`) — record the function's return type so
+                // `nft_file.append(...)` resolves instead of `unknown` (docs/
+                // tc-fn-reference-property-returns.md shape 2).
+                const methodRt = this.functionReturnTypeOfRhs(node.right);
+                if (methodRt !== null) {
+                  deferredPropertyWrites.push(() => {
+                    if (!targetSymbol.propertyReturnTypes) targetSymbol.propertyReturnTypes = new Map<string, UcodeDataType>();
+                    targetSymbol.propertyReturnTypes.set(propertyName, methodRt);
+                  });
+                }
               }
 
               // `global.X = { … }`: also expose X as a first-class global object symbol
@@ -5440,6 +5697,18 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                     deferredPropertyWrites.push(() => topProps.set(propertyName, propertyType));
                   }
                 }
+
+                // Post-hoc method attachment (`this.append = function(…){…}`) — record
+                // the function's return type on `this`'s own symbol so a LATER read of
+                // `this.append(...)` within the same method resolves (docs/
+                // tc-fn-reference-property-returns.md shape 2).
+                const methodRt = this.functionReturnTypeOfRhs(node.right);
+                if (methodRt !== null) {
+                  deferredPropertyWrites.push(() => {
+                    if (!thisSym.propertyReturnTypes) thisSym.propertyReturnTypes = new Map<string, UcodeDataType>();
+                    thisSym.propertyReturnTypes.set(propertyName, methodRt);
+                  });
+                }
               }
             }
           }
@@ -5485,8 +5754,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         }
       }
       
-      // Now check assignment type compatibility after symbols are created
-      this.typeChecker.withAssignmentTarget(() => this.typeChecker.checkNode(node.left));
+      // Now check assignment type compatibility after symbols are created.
+      // Captured for compound assignment (`+=`, `??=`, …): the target's type
+      // BEFORE this assignment is the left operand of the implied `x op y`
+      // (docs/tc-compound-assign-operator-typing.md).
+      const leftTypeForCompoundOp = this.typeChecker.withAssignmentTarget(() => this.typeChecker.checkNode(node.left));
       // Capture the RHS type here — checkNode applies per-call builtin return narrowing
       // (e.g. max() -> null, uniq([1]) -> array<integer>) that the static return-type
       // inference below does not. Reused for the reassignment dataType so a builtin call's
@@ -5557,7 +5829,18 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // checkNode returns the rich type directly (preserves unions).
             dataType = rhsCheckedType;
           }
-          
+
+          // Compound assignment (`+=`, `-=`, `??=`, `||=`, `&&=`, bitwise `…=`):
+          // `dataType` above is the best-available type of the RIGHT operand
+          // alone (from the same priority chain `=` uses) — for `x op= y` the
+          // variable's new type is `typeof(x_old op y)`, not the bare right
+          // operand. Route through the shared, union-aware operator inference
+          // (docs/tc-compound-assign-operator-typing.md) rather than letting
+          // the right operand's type silently become the whole result.
+          if (node.operator !== '=') {
+            dataType = this.typeChecker.computeAssignmentResultType(node, leftTypeForCompoundOp, dataType);
+          }
+
           if (symbol && symbol.type === SymbolType.VARIABLE) {
             // SSA: track the new type with position so hover shows the correct
             // type at each point in the file. Preserve the original declared type
@@ -6185,39 +6468,36 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             }
           }
         } else if (declarations.length === 2) {
-          // Two variables: first gets the index (number), second gets the value
+          // Two variables: first gets the index/key, second gets the value.
           const indexDeclarator = declarations[0];
           const valueDeclarator = declarations[1];
-          
+
+          // Run type-checking on the iterable once so its rich (possibly union) type
+          // is cached before both the key and value branches read it.
+          this.typeChecker.checkNode(node.right);
+          const rightFullType = this.getIterableFullType(node.right);
+
           if (indexDeclarator && indexDeclarator.id && indexDeclarator.id.type === 'Identifier') {
             const indexName = indexDeclarator.id.name;
             const indexNode = indexDeclarator.id;
-            
-            // Index variable type depends on what's being iterated over
-            // For objects: key is string, for arrays: index is integer, for unknown: unknown.
-            // checkNode returns a rich type (e.g. ArrayType object for array<T>);
-            // collapse to base so `=== ARRAY` matches an array<T> result too.
-            const rightBase = dataTypeToBase(this.typeChecker.checkNode(node.right));
-            let keyType: UcodeDataType;
 
-            if (rightBase === UcodeType.OBJECT) {
-              keyType = UcodeType.STRING as UcodeDataType;  // Object keys are strings
-            } else if (rightBase === UcodeType.ARRAY) {
-              keyType = UcodeType.INTEGER as UcodeDataType; // Array indices are integers
-            } else {
-              keyType = UcodeType.UNKNOWN as UcodeDataType; // Unknown type being iterated
-            }
-            
+            // Index/key variable type, union-aware (vm.c `uc_vm_insn_next`: only
+            // UC_OBJECT and UC_ARRAY iterate at all — object iteration always pushes a
+            // string key, array iteration always pushes an integer index, every other
+            // value is a no-op). Unlike the value var, the key is sound even for a
+            // completely unknown iterable: if the loop body runs at all, X was an
+            // object or array, so the key can only be string|integer.
+            const keyType = this.iterableKeyType(rightFullType);
+
             this.symbolTable.declare(indexName, SymbolType.VARIABLE, keyType, indexNode);
             this.symbolTable.markUsed(indexName, indexNode.start);
           }
-          
+
           if (valueDeclarator && valueDeclarator.id && valueDeclarator.id.type === 'Identifier') {
             const valueName = valueDeclarator.id.name;
             const valueNode = valueDeclarator.id;
-            
+
             // Value variable type depends on the array element type
-            const rightFullType = this.getIterableFullType(node.right);
             // The value var of `for (k, v in …)` is the array element (union-aware:
             // array<T>|null → T); object values aren't strings, so object/string members
             // make this give up → value stays unknown (objectAndStringYieldString=false).
@@ -6280,6 +6560,41 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
     }
     return elems.length ? createUnionType(elems) : null;
+  }
+
+  /**
+   * The key/index type produced by the two-variable form `for (k, v in t)`, union-aware.
+   * Per vm.c (`uc_vm_insn_next`, plus `uc_vm_object_iterator_next` / `uc_vm_array_iterator_next`):
+   * the outer switch only has cases for `UC_OBJECT` and `UC_ARRAY` — every other value type hits
+   * `default: break` and no key (or value) is ever pushed, so the loop body never runs for it.
+   * Object iteration always pushes a string key (`ucv_string_new`); array iteration always pushes
+   * an integer index (`ucv_uint64_new`). So — unlike the *value*, which can genuinely be anything
+   * — the key is sound for every possible iterable, including a completely unknown one: if the
+   * loop body executes at all, the iterable was provably an object or an array, so the key can
+   * only ever be `string | integer`. A union member that can never make the loop run at all
+   * (string/int/bool/double/function/regex/…, same as `null`) contributes nothing, exactly like
+   * `iterableElementType`'s null handling — it just can't reach this key. Never returns null:
+   * a provably uniterable iterable makes the whole body dead, so `unknown` there is harmless.
+   */
+  private iterableKeyType(t: UcodeDataType | null): UcodeDataType {
+    if (!t) return UcodeType.UNKNOWN as UcodeDataType;
+    const keys: SingleType[] = [];
+    for (const member of getUnionTypes(t)) {
+      const base = singleTypeToBase(member);
+      if (base === UcodeType.NULL) continue; // for-in over null is a no-op
+      if (isArrayType(member)) {
+        keys.push(UcodeType.INTEGER);
+      } else if (base === UcodeType.OBJECT) {
+        keys.push(UcodeType.STRING);
+      } else if (base === UcodeType.UNKNOWN) {
+        // Whatever this member turns out to be, the body only runs if it was an
+        // object or an array — so its key can only be string or integer.
+        keys.push(UcodeType.STRING);
+        keys.push(UcodeType.INTEGER);
+      }
+      // else: string/int/bool/double/function/regex/… never iterates — no key, no-op.
+    }
+    return keys.length ? createUnionType(keys) : (UcodeType.UNKNOWN as UcodeDataType);
   }
 
   private getIterableFullType(node: AstNode): UcodeDataType | null {
@@ -6364,7 +6679,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (n.type === 'BinaryExpression' && (n.operator === '||' || n.operator === '&&' || n.operator === '??')
           && isRefIdent(n.left)) { found = true; return; }
       for (const key of Object.keys(n)) {
-        if (key === 'leadingJsDoc') continue;
+        if (key === 'leadingJsDoc' || key.startsWith('_')) continue; // skip runtime-stamped annotations
         const v = (n as unknown as Record<string, unknown>)[key];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else if (isAstNodeLike(v)) walk(v);
@@ -6393,7 +6708,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         return;
       }
       for (const key of Object.keys(n)) {
-        if (key === 'leadingJsDoc') continue;
+        if (key === 'leadingJsDoc' || key.startsWith('_')) continue; // skip runtime-stamped annotations
         const v = (n as unknown as Record<string, unknown>)[key];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else if (isAstNodeLike(v)) walk(v);
@@ -6564,7 +6879,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         }
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else if (isAstNodeLike(v)) walk(v);
@@ -6974,7 +7289,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           for (const d of (n as unknown as VariableDeclarationNode).declarations || []) if (d?.id?.name === nm) { found = true; return; }
         }
         for (const k of Object.keys(n)) {
-          if (k === 'leadingJsDoc') continue;
+          if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
           const v = n[k];
           if (Array.isArray(v)) { for (const it of v) scan(it); }
           else if (isAstNodeLike(v)) scan(v);
@@ -7013,7 +7328,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         }
       }
       for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = node[k];
         if (Array.isArray(v)) { for (const it of v) walk(it, curFn); }
         else if (isAstNodeLike(v)) walk(v, curFn);
@@ -7039,7 +7354,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           }
         }
         for (const k of Object.keys(node)) {
-          if (k === 'leadingJsDoc') continue;
+          if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
           const v = node[k];
           if (Array.isArray(v)) { for (const it of v) callWalk(it); }
           else if (isAstNodeLike(v)) callWalk(v);
@@ -7507,7 +7822,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       const { node, depth } = stack.pop()!;
       if (depth > max) max = depth;
       for (const key of Object.keys(node)) {
-        if (key === 'leadingJsDoc') continue;
+        if (key === 'leadingJsDoc' || key.startsWith('_')) continue; // skip runtime-stamped annotations
         const value = (node as unknown as Record<string, unknown>)[key];
         if (Array.isArray(value)) {
           for (const item of value) {
@@ -7679,7 +7994,7 @@ private addDiagnostic(
       if (n.type === 'BreakStatement' || n.type === 'ReturnStatement') { found = true; return; }
       if (n.type === 'CallExpression' && this.isExitingCall(n)) { found = true; return; }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = n[k];
         if (Array.isArray(v)) { for (const it of v) scan(it); }
         else if (isAstNodeLike(v)) scan(v);
@@ -7719,7 +8034,7 @@ private addDiagnostic(
       }
       const childConditional = conditional || SemanticAnalyzer.CONDITIONAL_CONTAINERS.has(node.type);
       for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = node[k];
         if (Array.isArray(v)) { for (const it of v) walk(it, childConditional); }
         else if (isAstNodeLike(v)) walk(v, childConditional);
@@ -7797,7 +8112,7 @@ private addDiagnostic(
         }
       }
       for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = node[k];
         if (Array.isArray(v)) { for (const it of v) walk(it, block, childConditional); }
         else if (isAstNodeLike(v)) walk(v, block, childConditional);
@@ -8045,7 +8360,7 @@ private addDiagnostic(
       if (!isAstNodeLike(n)) return;
       if (n.type === 'CallExpression') this.flagBlockingSocketpairRecv(n as unknown as CallExpressionNode);
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) visit(it); }
         else visit(v);
@@ -8208,7 +8523,7 @@ private addDiagnostic(
         }
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) visit(it); }
         else visit(v);
@@ -8256,7 +8571,7 @@ private addDiagnostic(
         }
       }
       for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) visit(it); }
         else visit(v);
@@ -8304,7 +8619,7 @@ private addDiagnostic(
         }
       }
       for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (node as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else if (v && typeof v === 'object') walk(v);
@@ -8392,7 +8707,7 @@ private addDiagnostic(
         }
       }
       for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc') continue;
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (node as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else if (v && typeof v === 'object') walk(v);
@@ -8895,6 +9210,46 @@ private addDiagnostic(
     this.typeChecker.setErrors(filteredErrors);
   }
 
+  /** Classify a flow-engine narrowed type for the definite-null consumers:
+   *  'nonNull'  — no null member (the definite/possible-null claim is a false positive),
+   *  'mayNull'  — union of null AND a concrete non-null member (downgrade to a warning),
+   *  'null'     — provably null (keep the error),
+   *  'unknown'  — no usable refinement (JS-null result, or a bare top) → keep the error. */
+  private classifyFlowNullability(joined: UcodeDataType | null): 'nonNull' | 'mayNull' | 'null' | 'unknown' {
+    if (joined === null) return 'unknown';
+    const members = getUnionTypes(joined).map(m => singleTypeToBase(m));
+    const hasNull = members.includes(UcodeType.NULL);
+    // A concrete non-null member is anything that is not null and not the bare TOP
+    // (unknown/any carry no proof of non-nullness on their own).
+    const hasConcreteNonNull = members.some(m => m !== UcodeType.NULL && m !== UcodeType.UNKNOWN && m !== UcodeType.ANY);
+    if (!hasNull) {
+      // Purely unknown/any → no proof either way; keep the original claim.
+      return hasConcreteNonNull ? 'nonNull' : 'unknown';
+    }
+    if (hasConcreteNonNull) return 'mayNull';
+    return 'null';
+  }
+
+  /** True when the flow-narrowed receiver can be a non-null indexable value (array or
+   *  object), so an index/member of it can yield a scalar — meaning a scalar-equality
+   *  "always false" (UC2009) conclusion built on a null-only receiver is unsound. */
+  private flowReceiverCanBeIndexable(joined: UcodeDataType): boolean {
+    return getUnionTypes(joined).map(m => singleTypeToBase(m))
+      .some(b => b === UcodeType.ARRAY || b === UcodeType.OBJECT || b === UcodeType.UNKNOWN || b === UcodeType.ANY);
+  }
+
+  /** Turn a hard UC5005 "is null here" error into a soft UC5006 "may be null here"
+   *  warning in place (the loop-carried join proved the receiver is only *sometimes*
+   *  null — a first-iteration crash is possible but not certain). */
+  private downgradeNullMemberToWarning(diagnostic: Diagnostic, na: { objName?: string; propName?: string; computed?: boolean; isWrite?: boolean }): void {
+    const who = na.objName ? `'${na.objName}'` : 'this value';
+    const verb = na.isWrite ? 'setting' : 'accessing';
+    const what = na.propName ? `${verb} property '${na.propName}'` : (na.isWrite ? 'setting an element' : 'indexing');
+    diagnostic.severity = DiagnosticSeverity.Warning;
+    (diagnostic as any).code = UcodeErrorCode.POSSIBLY_NULL_MEMBER_ACCESS;
+    diagnostic.message = `${who} may be null here — ${what} will fail at runtime if it is null. Guard against null${na.isWrite ? '' : ', or use optional chaining (?.)'}.`;
+  }
+
   /**
    * Re-check an expression with CFG-based type information.
    * Returns true if the diagnostic should be filtered (expression is valid with CFG types).
@@ -8951,6 +9306,38 @@ private addDiagnostic(
         if (calleeMatch && this.typeChecker.isDeferredCallableFalsePositive(
               calleeMatch[1]!, this.textDocument.offsetAt(diagnostic.range.start))) {
           return false;
+        }
+      }
+
+      // Loop-carried flow join (docs/tc-loop-carried-flow-join.md): a definite-null
+      // member access (UC5005) or an "always false" comparison (UC2009) is emitted
+      // during the main pass from STRAIGHT-LINE state, which for a variable assigned
+      // only on some loop iterations concludes "definitely null" (the declaration's
+      // seed). Now that the flow engine is built, re-query its loop-carried JOIN for
+      // the receiver: if it is NOT provably null there, the definite claim is wrong —
+      // suppress it (provably non-null) or downgrade it to a may-null WARNING (a real
+      // first-iteration null is still defensible as a warning, never a hard error).
+      if ((diagnostic as any).code === UcodeErrorCode.NULL_MEMBER_ACCESS) {
+        const na = (diagnostic as any).data?.nullAccess;
+        if (na?.objName && typeof na.objStart === 'number') {
+          const joined = this.typeChecker.getNarrowedTypeAtPosition(na.objName, na.objStart);
+          const verdict = this.classifyFlowNullability(joined);
+          if (verdict === 'nonNull') return false; // provably non-null → false positive
+          if (verdict === 'mayNull') {              // may-null → downgrade error → warning
+            this.downgradeNullMemberToWarning(diagnostic, na);
+            return true;
+          }
+          // 'null' / 'unknown' → keep the original error (genuinely/undeterminably null)
+        }
+      }
+      if ((diagnostic as any).code === UcodeErrorCode.IMPOSSIBLE_COMPARISON) {
+        const cb = (diagnostic as any).data?.impossibleCompareBase;
+        if (cb?.name && typeof cb.offset === 'number') {
+          const joined = this.typeChecker.getNarrowedTypeAtPosition(cb.name, cb.offset);
+          // If the receiver can be a non-null array/object here, indexing/member access
+          // can yield a scalar that matches the literal → the comparison is NOT always
+          // false. Only a provably-null receiver keeps the diagnostic.
+          if (joined !== null && this.flowReceiverCanBeIndexable(joined)) return false;
         }
       }
 

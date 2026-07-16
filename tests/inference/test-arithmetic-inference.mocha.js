@@ -131,7 +131,13 @@ describe('Arithmetic type inference (e2e, vs ucode oracle)', function () {
     });
   });
 
-  // Unknown operands propagate as `unknown` (don't guess). Union operands are
+  // `+` with an unknown operand still propagates as `unknown` (don't guess —
+  // it could turn out to be a string, which concatenates instead of adding).
+  // Every OTHER arithmetic operator has no such escape hatch in vm.c
+  // (uc_vm_value_arith only special-cases I_ADD; every other opcode runs both
+  // operands through ucv_to_number() and always returns integer/double) so an
+  // unknown operand there soundly narrows to `integer | double` rather than
+  // `unknown` (docs/tc-arith-unknown-operand-numeric.md). Union operands are
   // distributed over their members and collapsed — `(integer|string) + 1` is
   // `integer | string` (int+1=int, string+1=string), matching the set of values
   // the runtime can actually produce. `x` is an untyped parameter (unknown);
@@ -150,8 +156,8 @@ describe('Arithmetic type inference (e2e, vs ucode oracle)', function () {
     '  return [fu1, fu2, fu3, fu4, fn1, fn2, fn3, fn4];\n' +
     '}\n';
   const fbCases = [
-    ['fu1', 'unknown + int', 'unknown'],            // Rule 4 via addition's numeric path
-    ['fu2', 'unknown - int', 'unknown'],            // Rule 4
+    ['fu1', 'unknown + int', 'unknown'],            // Rule 4 via addition's numeric path (deferred, `+` may concat)
+    ['fu2', 'unknown - int', 'integer | double'],   // Rule 4: `-` always numeric, no unknown guess needed
     ['fu3', 'unknown + string', 'string'],          // addition's string-concat rule
     ['fu4', 'unknown / null', 'double'],            // divide-by-null, left operand ignored
     ['fn1', '(int|string) + int', 'integer | string'], // distributed: int+int=int, str+int=str

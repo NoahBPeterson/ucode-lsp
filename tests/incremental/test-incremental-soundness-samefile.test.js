@@ -133,10 +133,19 @@ describe('soundness · logic edits inside one body (no signature change)', () =>
     soundAndSkips([topFn('\tlet a = x + 1;\n\treturn a;'), topFn('\tlet b = x + 1;\n\treturn b;')]);
   });
   test('add a statement', () => {
-    soundAndSkips([topFn('\treturn x;'), topFn('\tlet t = x * 2;\n\treturn t;')]);
+    // `x + 2` (not `x * 2`): `+` on an untyped (unknown) param stays `unknown`
+    // (string concatenation is still a live possibility — deferred by design,
+    // docs/tc-arith-unknown-operand-numeric.md), so `helper`'s own inferred
+    // return type is unchanged across this edit and only the unrelated sibling
+    // `other` is exercised for skip-eligibility. A non-`+` operator here would
+    // legitimately narrow unknown → `integer | double`, changing `helper`'s own
+    // signature and correctly forcing the conservative full-reanalysis path —
+    // sound, but not what this test is about (see "change an arithmetic
+    // operator" below for that case).
+    soundAndSkips([topFn('\treturn x;'), topFn('\tlet t = x + 2;\n\treturn t;')]);
   });
   test('remove a statement', () => {
-    soundAndSkips([topFn('\tlet t = x * 2;\n\treturn t;'), topFn('\treturn x;')]);
+    soundAndSkips([topFn('\tlet t = x + 2;\n\treturn t;'), topFn('\treturn x;')]);
   });
   test('reorder independent statements', () => {
     soundAndSkips([topFn('\tlet a = 1;\n\tlet b = 2;\n\treturn a + b;'), topFn('\tlet b = 2;\n\tlet a = 1;\n\treturn a + b;')]);

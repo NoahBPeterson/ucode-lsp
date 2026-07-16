@@ -47,12 +47,17 @@ export class ArithmeticTypeInference {
   private distribute(
     leftFullType: UcodeDataType,
     rightFullType: UcodeDataType,
-    op: (l: UcodeType, r: UcodeType) => UcodeType
+    op: (l: UcodeType, r: UcodeType) => UcodeDataType
   ): UcodeDataType {
     const results: SingleType[] = [];
     for (const l of getUnionTypes(leftFullType)) {
       for (const r of getUnionTypes(rightFullType)) {
-        results.push(op(singleTypeToBase(l), singleTypeToBase(r)));
+        // op's result may itself be a union (Rule 4 below can now return
+        // `integer | double` for a genuinely-unknown operand) — flatten rather
+        // than pushing a UnionType object into a SingleType[]. getUnionTypes on
+        // a plain SingleType is a no-op ([type]), so this is a no-op for every
+        // pre-existing single-type result.
+        results.push(...getUnionTypes(op(singleTypeToBase(l), singleTypeToBase(r))));
       }
     }
     // createUnionType deduplicates and collapses a single member to that type.
@@ -63,21 +68,24 @@ export class ArithmeticTypeInference {
    * Infer the result type of addition (+) operation
    * Addition has special string concatenation behavior
    */
-  inferAdditionType(leftType: UcodeType, rightType: UcodeType): UcodeType {
+  inferAdditionType(leftType: UcodeType, rightType: UcodeType): UcodeDataType {
     // Rule 1: Any operation with string becomes string concatenation
     if (leftType === UcodeType.STRING || rightType === UcodeType.STRING) {
       return UcodeType.STRING;
     }
-    
-    // Rule 2: Pure numeric addition follows promotion rules
-    return this.inferNumericResultType(leftType, rightType);
+
+    // Rule 2: Pure numeric addition follows promotion rules. `+` keeps the
+    // UNKNOWN-propagates-as-UNKNOWN behavior for a genuinely unknown operand
+    // (string concatenation is still a live possibility the checker can't rule
+    // out) — see docs/tc-arith-unknown-operand-numeric.md, "Decide separately".
+    return this.inferNumericResultType(leftType, rightType, true);
   }
-  
+
   /**
    * Infer the result type of arithmetic operations (-, *, /, %)
    * These operations always attempt numeric conversion
    */
-  inferArithmeticType(leftType: UcodeType, rightType: UcodeType, operator: string): UcodeType {
+  inferArithmeticType(leftType: UcodeType, rightType: UcodeType, operator: string): UcodeDataType {
     // Division/modulo by null: a null divisor coerces to 0, so the operation is
     // always division-by-zero — ucode yields Infinity/NaN, both typed `double`
     // (verified against the runtime). This holds for every left operand, so it
@@ -86,14 +94,24 @@ export class ArithmeticTypeInference {
       return UcodeType.DOUBLE;
     }
 
-    // All other non-addition arithmetic operations follow numeric promotion rules
-    return this.inferNumericResultType(leftType, rightType);
+    // All other non-addition arithmetic operations follow numeric promotion
+    // rules. These operators have NO string-concatenation escape hatch — vm.c's
+    // uc_vm_value_arith only special-cases I_ADD; every other opcode runs both
+    // operands through ucv_to_number() and returns a numeric (int or double)
+    // result unconditionally (vm.c ~1627-1702). So an unknown operand here is
+    // NOT a guess: the runtime is guaranteed to produce integer|double.
+    return this.inferNumericResultType(leftType, rightType, false);
   }
-  
+
   /**
-   * Determine the numeric result type based on operand types
+   * Determine the numeric result type based on operand types.
+   * `additionMayConcat` distinguishes `+` (where a genuinely unknown operand
+   * could still turn out to be a string that concatenates, so Rule 4 must
+   * stay UNKNOWN) from every other arithmetic operator (where the runtime
+   * guarantees a numeric result regardless of operand type, so Rule 4 can
+   * soundly narrow to `integer | double`).
    */
-  private inferNumericResultType(leftType: UcodeType, rightType: UcodeType): UcodeType {
+  private inferNumericResultType(leftType: UcodeType, rightType: UcodeType, additionMayConcat: boolean): UcodeDataType {
     // Rule 1: If either operand is double, result is double
     if (leftType === UcodeType.DOUBLE || rightType === UcodeType.DOUBLE) {
       return UcodeType.DOUBLE;
@@ -109,11 +127,18 @@ export class ArithmeticTypeInference {
       return UcodeType.INTEGER;
     }
 
-    // Rule 4 (final): an UNKNOWN operand — or any combination not matched above
-    // — propagates as UNKNOWN rather than guessing. Unions never reach here:
-    // inferArithmeticFullType distributes them over their members first, mapping
-    // each to a base type, so there is no bare-union case left to coerce to double.
-    return UcodeType.UNKNOWN;
+    // Rule 4 (final): reaching here means at least one operand is UNKNOWN (every
+    // other UcodeType is fully covered by Rules 1-3 above). Unions never reach
+    // here either: inferArithmeticFullType distributes them over their members
+    // first, mapping each to a base type, so there is no bare-union case left.
+    //
+    // For `+`, an unknown operand might still be a string (concatenation), so it
+    // stays UNKNOWN (a guess would be unsound). For every other operator, vm.c
+    // guarantees a numeric result no matter what the operand is (see
+    // inferArithmeticType) — `integer | double` is sound and strictly more
+    // useful than UNKNOWN. (docs/tc-arith-unknown-operand-numeric.md)
+    if (additionMayConcat) return UcodeType.UNKNOWN;
+    return createUnionType([UcodeType.INTEGER, UcodeType.DOUBLE]);
   }
   
   /**

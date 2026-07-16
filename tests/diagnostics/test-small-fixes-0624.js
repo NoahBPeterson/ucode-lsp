@@ -52,6 +52,9 @@ const snippetForType = (t) => Match.value(t).pipe(
     Match.when(UcodeType.REGEX,    () => 'let v = /test/;'),
     Match.when(UcodeType.NULL,     () => 'let v = null;'),
     Match.when(UcodeType.UNKNOWN,  () => 'let v;'),
+    // ANY (docs/tc-json-any-return-display.md) is a display-only sentinel produced
+    // only by json()/call()'s return — there's no literal that assigns it directly — skip.
+    Match.when(UcodeType.ANY,      () => null),
     // UNION is not a concrete value type — skip
     Match.when(UcodeType.UNION,    () => null),
     Match.exhaustive

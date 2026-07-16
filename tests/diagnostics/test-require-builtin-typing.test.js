@@ -73,3 +73,27 @@ test('12 require("./file.uc") is not treated as a builtin module type', async ()
   const t = await typeOf('function f(){ let m = require("./other.uc"); let a = m; }\n', 'a');
   expect(t).not.toMatch(/\bfs module\b|\bmath module\b/);
 });
+
+// ── Inline require() member call: require('mod').method() chained directly ──
+// (docs/tc-inline-require-member-call.md) — the receiver is a CallExpression, not a
+// bound variable, so the identifier-receiver namespace-call branch never matched it;
+// checkCallExpression now also resolves a CallExpression receiver via MODULE_REGISTRIES
+// whenever checkNodeQuietly(receiver) carries a known moduleName.
+test('13 require("ubus").connect() → ubus.connection | null', async () => {
+  expect(await typeOf('function f(){ let z = require("ubus").connect(); }\n', 'z')).toContain('ubus.connection | null');
+});
+test('14 require("fs").open("x") → fs.file | null (narrowed)', async () => {
+  expect(await typeOf('function f(){ let z = require("fs").open("x"); }\n', 'z')).toContain('fs.file | null');
+});
+test('15 the mwan4 lazy-connect idiom: ubus_conn = require("ubus").connect() types the assignment target', async () => {
+  const code = 'let ubus_conn;\nfunction ubus_call(path, method, args) {\n  if (!ubus_conn) ubus_conn = require("ubus").connect();\n  return ubus_conn;\n}\n';
+  expect(await typeOf(code, 'ubus_conn')).toContain('ubus.connection | null');
+});
+test('16 non-module call-result receiver is unaffected (still resolves normally)', async () => {
+  // A user function returning an object literal, chained-called — unrelated to modules;
+  // must not be dragged into the new module branch (moduleName absent → falls through).
+  expect(await errs('function mk(){ return { go: function(){ return 1; } }; }\nfunction f(){ let z = mk().go(); }\n')).toEqual([]);
+});
+test('17 unknown member on a require() receiver stays conservative (no false error)', async () => {
+  expect(await errs('function f(){ let z = require("ubus").not_a_real_method(); }\n')).toEqual([]);
+});

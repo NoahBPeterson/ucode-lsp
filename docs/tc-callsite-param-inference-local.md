@@ -1,6 +1,10 @@
 # Call-site argument-union typing for non-escaping file-local functions
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the --type-coverage audit (31,445 findings; the
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** Whole-file post-pass types a
+non-escaping file-local function's still-UNKNOWN params from the union of its in-file call-site argument
+types; feeds symbol dataType + hover + signature help + flow-engine seeds. See `## Fix` below.
+
+Filed 2026-07-07 from the --type-coverage audit (31,445 findings; the
 `param-decl` + `read-of-param` bucket ≈ 16.8k occurrences — 5,566 param declarations + 11,046 reads
 that trace to a param + ~350 typed-union variants; **53% of all findings**, the single biggest
 bucket). This ticket covers the *file-local, non-escaping* sub-population.
@@ -109,3 +113,77 @@ argument at that position. Does **not** cover exported/cross-file callees (see
 leaves are themselves unknown params. Realistic reach of *this* ticket: roughly the leaf-helper slice
 of the bucket — order-of a quarter of the 16.8k — but it is the highest-confidence, lowest-blast-
 radius slice and it fixes both the decl and its reads together.
+
+## Fix
+
+**Implemented 2026-07-07** in `src/analysis/callsiteParamInference.ts` (new module), wired from
+`src/analysis/semanticAnalyzer.ts` `analyze()` right after `resolvePendingUndefinedRefs()` and BEFORE
+`buildFlowEngines()`. New e2e test `tests/test-tc-callsite-param-inference.test.js` (15 tests, all green).
+Demo: `zzzz/demo-tc-callsite-inference.uc`.
+
+### What it does (as built)
+
+A single whole-file AST walk collects (a) every candidate named `function foo(…) {}` (has ≥1 param, a
+body, not a forward declaration) and (b) every *variable-position* identifier reference with the parent
+context needed to distinguish a call callee from a value use. Non-variable identifier positions (a
+non-computed member `.prop`, a non-computed property key, an aliased import/export module-side name) are
+excluded so they can't masquerade as an escape. Then, per candidate:
+
+1. **Escape analysis.** For each name-matching reference, `lookupAtPosition` confirms it resolves to
+   *this* function's binding (`sym.node === fn.id`). A confirmed reference that is the callee of a call
+   is a call site; a confirmed reference that is *anything else* (value pass, reassignment, return,
+   stored in an object/array, `global.foo = …`, `&&`/`||`/ternary operand, …) bails the whole function.
+   A name-matching reference that resolves to a *different* binding (a shadow) is ignored; one that
+   resolves to *nothing* (an unattributable forward use) bails, conservatively.
+2. **Exported-declaration gate.** `export function foo(){}` / `export default function` / `export { foo }`
+   → reachable cross-file → bail (the export-declaration wrapper's `.declaration` child is flagged during
+   the walk; the specifier form is caught as a value-use escape).
+3. **Per-position union.** For param position `p`, union the argument types across all call sites:
+   `Identifier` args resolve through the LIVE symbol table (`effectiveSymbolType`) so a stamp from an
+   earlier fixpoint pass propagates; everything else reads `typeChecker.getTypeOf(node)`. A missing arg
+   contributes `null` (ucode pads an unpassed non-vararg with `NULL` — verified in
+   `ucode/vm.c` `uc_vm_call_function`, `uc_vm_stack_push(vm, NULL)`).
+4. **Any-unknown ⇒ stay unknown.** If any argument at a position is `unknown`/`any` (incl. an
+   ANY-by-contract value, which collapses to unknown here) or an unrepresentable type (module /
+   default-import object — conservatively declined), the position is left `UNKNOWN`. Only a fully-concrete
+   union is stamped.
+5. **Stamp.** Only params whose current dataType is *exactly* `UNKNOWN` are stamped (so a `@param`
+   annotation — or any other inference — is never overwritten). The inferred type is written to BOTH the
+   parameter symbol's `dataType` **and** the function symbol's `parameters[p].type`.
+
+### Escape gates (each bails the whole function)
+
+value-argument pass · name reassignment · named export (`export { foo }`) · exported declaration
+(`export function` / `export default function`) · stored as an object/array property · `global.foo = foo`
+· any other non-callee value use · a name-matching reference that can't be attributed to this function.
+
+### Design deltas from the original proposal
+
+- **Both channels stamped, not just the param symbol.** The proposal said "re-declare the param symbol".
+  In practice hover resolves a body param-read through the flow engine's narrowed type *first*
+  (`resolveVariableTypeForHover`), and the flow entry env is seeded from `sym.parameters`
+  (`typeChecker.functionParamEnv`) — so stamping only the param symbol leaves the flow engine re-seeding
+  the read as `unknown`, shadowing the stamp (measured: ~2 pts less coverage on adblock). The function
+  signature `parameters[p].type` is therefore updated too. A visible, intended consequence: signature
+  help and function hover now render the inferred `name: type` for these params — **exactly** as a
+  `@param` annotation already renders (`src/signatureHelp.ts` builds `name` + `: type` when the type is
+  not `unknown`). Three display tests were updated to the new output; the CLI type-coverage fixture was
+  changed to make its helper *escape* so its param legitimately stays unknown.
+- **Fixpoint bound = 3 passes.** Chains resolve because `Identifier` args read the live (stamped) symbol
+  table: once `alpha`'s param is typed from a literal call site, `alpha`'s body call `beta(alpha_param)`
+  types `beta`'s param on the next pass. Each pass is O(call sites); the loop stops early when a pass
+  makes no stamp.
+- **Self-referential positions bail.** A recursive `foo(own_param)` argument is forced to `unknown`
+  (the function's own param symbols are held in a set and short-circuited in arg resolution), so a
+  function can never justify its own param type circularly — even across fixpoint passes.
+- **Unclosed calls excluded.** An error-recovery unclosed call (`f(1,` at EOF) has an unreliable
+  argument list (its trailing "missing" args are just un-typed mid-edit, not runtime nulls) → it is not
+  counted as a call site (nor as an escape). Without this, editing `f(1,` inferred `b: null`.
+- **Diagnostics are neutral, by architecture.** The pass runs *after* the main visit (body diagnostics
+  are already emitted with the params still unknown) and the post-visit flow-sensitive filter only
+  *suppresses* — so no new diagnostic (true OR false) can arise from re-stamping. On the 5-file corpus
+  (adblock-fast, mwan4/cli, run_tests, fw4, pbr) a same-build inference-off-vs-on control showed **0
+  diagnostics added and 0 removed**. The measured win is entirely the decl+reads coverage tail (the 2:1
+  read-to-decl ratio the ticket targeted): adblock 82.8→86.0%, mwan4/cli 83.2→90.1%, run_tests
+  78.1→85.2%, fw4 69.6→69.9%, pbr 80.3→80.9%. Surfacing new *body* diagnostics from typed params would
+  require re-checking bodies (the rejected monomorphization) and is out of scope.

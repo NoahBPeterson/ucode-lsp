@@ -94,6 +94,23 @@ with `tc-json-any-return-display.md`).
 6. **Ambients/config** (ubus `req`, render-scope hover, scope-injection corpora, global-property
    cross-file) as appetite allows.
 
+## Post-audit additions (user-reported, 2026-07-07 — ucode/tests/custom/run_tests.uc FP sweep)
+
+Running the checker on ucode's own test runner surfaced 14 errors / 22 warnings, mostly false
+positives. Five additional tickets, all Bucket 1/2:
+
+- `tc-loop-carried-flow-join.md` — **Solvable, highest severity**: no loop back-edge join →
+  "definitely null" UC5005/UC2009 HARD ERRORS on loop-carried state (10 errors in this file).
+- `tc-assignment-expression-guard-narrowing.md` — **Solvable**: `(m = match(...)) != null`
+  doesn't narrow m; complementary to the back-edge ticket.
+- `tc-nullish-die-narrowing.md` — **Solvable**: `fs.open(...) ?? die(...)` still `| null`;
+  builds on the new NEVER_TYPE.
+- `tc-match-capture-group-typing.md` — **Partially solvable** (fully for regex literals):
+  uc_match returns exactly `1 + re_nsub` elements (lib.c), so length and per-group
+  nullability are static; kills nullable-arg FPs on mandatory groups.
+- `tc-negative-array-index.md` — **Solvable**: `a[-1]` is valid from-end access
+  (types.c:2435-2440); hover renders `-1` as `(literal) 1` (drops the unary minus).
+
 Falsification notes from the sweep (so nobody re-chases them): the template colon/`endif`
 alternative syntax parses fine (since 0.7.0) — the firewall4 no-hovers are render-scope injection,
 not parsing; `argv[0]` findings are a param named `argv`, not the `ARGV` global; `catch`-param

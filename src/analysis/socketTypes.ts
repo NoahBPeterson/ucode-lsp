@@ -139,7 +139,12 @@ const functions = new Map<string, FunctionSignature>([
     name: "addrinfo",
     parameters: [
       { name: "hostname", type: "string", optional: false },
-      { name: "service", type: "string", optional: true },
+      // `service` is declared UC_NULL (no type constraint) in ucode/lib/socket.c
+      // uc_socket_addrinfo — a numeric port is valid (`socket.addrinfo(h, 443)`).
+      // It was typed `string` here, which is documentation-accurate but wrong as a
+      // CONTRACT; now that module arguments are checked, that produced a false
+      // positive on luci-app-dockerman. (docs/tc-inferred-param-types-not-checked.md)
+      { name: "service", type: "any", optional: true },
       { name: "hints", type: "object", optional: true }
     ],
     returnType: "AddressInfo[] | null",

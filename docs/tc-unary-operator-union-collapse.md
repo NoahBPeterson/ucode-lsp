@@ -1,6 +1,15 @@
 # Unary `+`/`-`/`++`/`--`/`~` collapse any union operand to `unknown` instead of distributing
 
-Status: **NOT STARTED.** Filed 2026-07-07 from the `--type-coverage` audit.
+Status: **FIX IMPLEMENTED 2026-07-07 (uncommitted, awaiting user test).** Unary `+ - ++ --` now distribute over a union operand member-by-member instead of collapsing it to `unknown`; `~` needed no distribution at all once the arith-unknown-operand fix (docs/tc-arith-unknown-operand-numeric.md) made it always resolve to `integer` regardless of what `dataTypeToBase` collapses a union down to.
+
+## Fix
+
+- `TypeChecker.checkUnaryExpression` (`src/analysis/typeChecker.ts`) — the `+ - ++ --` branch now calls a new private helper, `distributeUnaryArithmetic(argType, node.argument, node.operator)`, instead of the old single `argType === UcodeType.STRING` special case + blanket `getUnaryResultType(dataTypeToBase(argType), …)` fallback.
+- `distributeUnaryArithmetic` mirrors `arithmeticTypeInference.distribute` exactly: for each member of `getUnionTypes(argType)`, a `STRING` member coerces via the existing `coerceStringForArithmetic` (value-dependent — a literal classifies by content, a non-literal string yields `integer | double`), every other member goes through `typeCompatibility.getUnaryResultType(singleTypeToBase(member), operator)`; the per-member results are flattened (`getUnionTypes`) and recombined with `createUnionType`. A non-union operand is unaffected (`getUnionTypes` on a plain type returns `[type]`), so every previously-correct single-type answer is unchanged.
+- `~` needed NO equivalent distribution: after the arith-unknown-operand fix (docs/tc-arith-unknown-operand-numeric.md) made `getUnaryResultType(UNKNOWN, '~')` return `INTEGER` unconditionally, the existing call site's `dataTypeToBase(argType)` collapse-to-`UNKNOWN`-for-any-union no longer matters — every real union collapses to `UNKNOWN` there, and `UNKNOWN` now maps to `INTEGER` too, so the answer is `INTEGER` either way. This ticket's `~` example is fixed as a side effect of the other ticket, not by new code here.
+- **Ground truth:** unchanged from the ticket's own analysis — every concrete `UcodeType` maps to a defined `+/-/++/--` result (verified in `getUnaryResultType`: numeric types keep their kind, boolean/null coerce to integer, string coerces per its content, everything else → NaN → double), so a union like `integer | null` should collapse to the single answer every member agrees on (`integer`) rather than losing that information to `unknown`.
+- Test: `tests/test-tc-operator-typing.test.js` cases 19-23, 26: `-x`/`+x`/`~x`/`++x` on `integer | null` → `integer`; `-x` on `string | null` → `integer | double`; `-x` on `integer | string` (two non-null members) → `integer | double`.
+- Corpus: this ticket's mechanism (unary distribute) is what turns the `adblock-fast` `task_cap` unary-`+` findings from `unknown` into a real type — see docs/tc-arith-unknown-operand-numeric.md's corpus section for the measured delta (2 fewer `unknown-type` findings; 82.5% → 82.6%). `pbr/files/lib/pbr/pbr.uc` had no matching sites (0 findings shifted).
 
 ## The gap
 
