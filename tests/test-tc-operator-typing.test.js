@@ -229,3 +229,81 @@ test('26 -x on integer|string (real union, both members non-null) → integer | 
   expect(t).toContain('integer');
   expect(t).toContain('double');
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// 4. `**` exponentiation: a NEGATIVE integer exponent yields a double.
+//    ucode/vm.c:1797 (I_EXP): two integers with exp < 0 → `1.0/base^|exp|`
+//    (double); exp >= 0 → integer. This is the one arithmetic op where
+//    int**int can be non-integer. docs/tc-exponent-negative-double.md
+// ─────────────────────────────────────────────────────────────────────────
+
+test('27 x ** -1 on an integer is double (negative exponent), not integer', async () => {
+  const code = 'let x = 2;\nlet r = x ** -1;\n';
+  expect(await typeAt(code, 'r =')).toBe('double');
+});
+
+test('28 x **= -1 on an integer becomes double (compound routes through the same fix)', async () => {
+  const code = 'let x = 2;\nx **= -1;\nlet xCheck = x;\n';
+  expect(await typeAt(code, 'xCheck =')).toBe('double');
+});
+
+test('29 x ** 2 on an integer stays integer (non-negative literal exponent)', async () => {
+  const code = 'let x = 2;\nlet r = x ** 2;\n';
+  expect(await typeAt(code, 'r =')).toBe('integer');
+});
+
+test('30 x ** y with an unknown-sign exponent → integer | double', async () => {
+  const code = 'function f(y) {\n  let x = 2;\n  let r = x ** y;\n}\n';
+  const t = await typeAt(code, 'r =');
+  expect(t).toContain('integer');
+  expect(t).toContain('double');
+});
+
+test('31 double base ** -1 stays double (unaffected by the fix)', async () => {
+  const code = 'let x = 2.0;\nlet r = x ** -1;\n';
+  expect(await typeAt(code, 'r =')).toBe('double');
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 5. UC2014 (Information): explain the `**` type inference. A warning would be
+//    wrong (`**` is valid for any operand), so the non-obvious "negative
+//    exponent -> double" inference is surfaced as an INFO note.
+//    docs/tc-exponent-negative-double.md
+// ─────────────────────────────────────────────────────────────────────────
+
+async function uc2014(code) {
+  const uri = `/tmp/tc-op-2014-${n++}.uc`;
+  const ds = await server.getDiagnostics(code, uri);
+  return ds.filter(d => d.code === 'UC2014');
+}
+
+test('32 UC2014 fires (Information) on x ** -1 — negative literal exponent', async () => {
+  const notes = await uc2014('let x = 2;\nlet r = x ** -1;\n');
+  expect(notes.length).toBe(1);
+  expect(notes[0].severity).toBe(3);                 // DiagnosticSeverity.Information
+  expect(notes[0].message).toContain('negative exponent');
+});
+
+test('33 UC2014 fires on x ** exp (unknown sign) — integer | double', async () => {
+  const notes = await uc2014('function f(exp) { let x = 2; return x ** exp; }\nlet e = f;\n');
+  expect(notes.length).toBe(1);
+  expect(notes[0].message).toContain('integer | double');
+});
+
+test('34 UC2014 fires on the compound form x **= -1', async () => {
+  const notes = await uc2014('let x = 2;\nx **= -1;\n');
+  expect(notes.length).toBe(1);
+  expect(notes[0].severity).toBe(3);
+});
+
+test('35 UC2014 stays SILENT on x ** 2 (obvious integer)', async () => {
+  expect((await uc2014('let x = 2;\nlet r = x ** 2;\n')).length).toBe(0);
+});
+
+test('36 UC2014 stays SILENT on a double base (2.0 ** 2) — no exponent surprise', async () => {
+  expect((await uc2014('let x = 2.0;\nlet r = x ** 2;\n')).length).toBe(0);
+});
+
+test('37 UC2014 stays SILENT on a double base with a negative exponent (2.0 ** -1) — double comes from the base, not the exponent', async () => {
+  expect((await uc2014('let x = 2.0;\nlet r = x ** -1;\n')).length).toBe(0);
+});

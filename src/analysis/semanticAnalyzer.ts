@@ -5779,7 +5779,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       for (const warning of result.warnings) {
         this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
       }
-      
+
+      // `**=` gets the same INFO note as binary `**` (UC2014). checkNode isn't
+      // called on the assignment node, so compute the compound result explicitly.
+      if (node.operator === '**=') {
+        const resType = this.typeChecker.computeAssignmentResultType(node, leftTypeForCompoundOp, rhsCheckedType);
+        this.maybeEmitExponentiationNote(node, node.right, resType, leftTypeForCompoundOp);
+      }
+
       // After type checking, update variable types for general function calls
       if (node.left.type === 'Identifier') {
         const variableName = (node.left as IdentifierNode).name;
@@ -6092,7 +6099,55 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       for (const warning of result.warnings) {
         this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
       }
+
+      // `**` can't warn (it's a valid operator for any operand), but its type is
+      // genuinely non-obvious — a negative exponent makes it a double. Surface an
+      // INFO note explaining the result. (UC2014)
+      if (node.operator === '**') this.maybeEmitExponentiationNote(node, node.right, this.typeChecker.getTypeOf(node), this.typeChecker.getTypeOf(node.left));
     }
+  }
+
+  /**
+   * INFO note (UC2014) explaining a `**` result type. Exponentiation is the one
+   * arithmetic operator where two integers can yield a double — ucode/vm.c:1797
+   * (I_EXP): a NEGATIVE exponent evaluates as `1.0 / base^|exp|`. A warning would
+   * be wrong (`**` is valid for any operand), so this explains the inference at an
+   * Information level. Emitted ONLY for the surprising cases (result involves a
+   * double); never for a plain `x ** 2 -> integer`.
+   */
+  private maybeEmitExponentiationNote(exprNode: AstNode, exponentNode: AstNode, result: UcodeDataType | undefined, baseType: UcodeDataType | undefined): void {
+    if (result === undefined) return;
+    const bases = getUnionTypes(result).map(t => dataTypeToBase(t));
+    const hasDouble = bases.includes(UcodeType.DOUBLE);
+    const hasInt = bases.includes(UcodeType.INTEGER);
+    const sign = this.exponentLiteralSign(exponentNode);
+    // A double base is already `double` for ANY exponent — the exponent's sign is
+    // not the interesting factor there, so don't explain it. Only note the genuine
+    // "int ** int can be a double" surprise (base could be integer/unknown).
+    const baseCouldBeInteger = baseType === undefined ||
+      getUnionTypes(baseType).some(t => dataTypeToBase(t) !== UcodeType.DOUBLE);
+
+    let message: string | null = null;
+    if (sign === 'neg' && hasDouble && !hasInt && baseCouldBeInteger) {
+      message = 'A negative exponent makes `**` a `double` (ucode evaluates it as 1.0 / base^|exp|).';
+    } else if (sign === 'unknown' && hasDouble && hasInt) {
+      message = 'This `**` is `integer | double`: it yields a `double` when the exponent is negative, and the exponent’s sign can’t be determined here.';
+    }
+    if (!message) return;
+    this.addDiagnostic(message, exprNode.start, exprNode.end, DiagnosticSeverity.Information, UcodeErrorCode.EXPONENT_TYPE_NOTE);
+  }
+
+  /** Static sign of a numeric-literal exponent (unwrapping a leading unary +/-),
+   *  or 'unknown' for a non-literal exponent. */
+  private exponentLiteralSign(node: AstNode): 'neg' | 'nonneg' | 'unknown' {
+    let n: AstNode = node, sign = 1;
+    if (n.type === 'UnaryExpression') {
+      const u = n as UnaryExpressionNode;
+      if (u.operator === '-' || u.operator === '+') { if (u.operator === '-') sign = -1; n = u.argument; }
+    }
+    const v = (n as { value?: unknown }).value;
+    if (n.type === 'Literal' && typeof v === 'number') return sign * v < 0 ? 'neg' : 'nonneg';
+    return 'unknown';
   }
 
   override visitReturnStatement(node: ReturnStatementNode): void {

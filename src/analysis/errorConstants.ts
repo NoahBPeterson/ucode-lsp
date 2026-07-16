@@ -29,6 +29,7 @@ export enum UcodeErrorCode {
   INVALID_FORMAT_SPECIFIER = 'UC2011', // a printf `%`-sequence ucode doesn't support (prints literally): `%*`, `%lld`, `%a`, …
   USELESS_CALL = 'UC2012',             // a call ucode runs but that provably has no effect (e.g. zero-arg printf())
   IGNORED_NUMERIC_INPUT = 'UC2013',    // part of a string literal is silently dropped by numeric parsing (e.g. int("10abc") → 10)
+  EXPONENT_TYPE_NOTE = 'UC2014',        // INFO: explains a `**` result type (a negative exponent yields a double; unknown sign → integer|double)
 
   // Import/Export errors (3000-3999)
   INVALID_IMPORT = 'UC3001',

@@ -996,9 +996,10 @@ export class TypeChecker {
         // `integer | string`. The full-type path also handles the plain
         // single-type case (it collapses to one member). Return the rich result
         // directly — unions flow through unchanged.
-        return node.operator === '+'
-          ? arithmeticTypeInference.inferAdditionFullType(leftFullType, rightFullType)
-          : arithmeticTypeInference.inferArithmeticFullType(leftFullType, rightFullType, node.operator);
+        if (node.operator === '+')
+          return arithmeticTypeInference.inferAdditionFullType(leftFullType, rightFullType);
+        const arith = arithmeticTypeInference.inferArithmeticFullType(leftFullType, rightFullType, node.operator);
+        return node.operator === '**' ? this.adjustExponentiationResult(arith, node.right) : arith;
       }
 
       case '==':
@@ -1208,6 +1209,33 @@ export class TypeChecker {
     }
     if (n.type === 'Literal' && typeof (n as LiteralNode).value === 'number') return sign * ((n as LiteralNode).value as number);
     return null;
+  }
+
+  /**
+   * `**` (I_EXP) is the one arithmetic operator where two INTEGER operands can
+   * yield a DOUBLE: ucode/vm.c:1797 returns `1.0 / base^|exp|` when the exponent
+   * is NEGATIVE, and an integer otherwise. The generic numeric-result rule types
+   * `int ** int` as integer (correct for + - * / %), so exponentiation needs this
+   * post-adjustment, keyed on the exponent's static sign:
+   *   - exponent provably >= 0  -> integer result is correct, kept as-is
+   *   - exponent provably  < 0  -> integer component becomes double  (`x ** -1`)
+   *   - exponent sign unknown   -> integer component becomes integer | double
+   * DOUBLE-typed results are already correct (pow -> double) and pass through.
+   */
+  private adjustExponentiationResult(result: UcodeDataType, exponentNode: AstNode): UcodeDataType {
+    const exp = this.numericLiteralValue(exponentNode);
+    if (exp !== null && exp >= 0) return result;      // non-negative exponent: integer stays integer
+    const provablyNegative = exp !== null;            // numericLiteralValue is < 0 here
+    const members: SingleType[] = [];
+    for (const m of getUnionTypes(result)) {
+      if (dataTypeToBase(m) === UcodeType.INTEGER) {
+        members.push(UcodeType.DOUBLE);
+        if (!provablyNegative) members.push(UcodeType.INTEGER);
+      } else {
+        members.push(m);
+      }
+    }
+    return createUnionType(members);
   }
 
   /** The propertyTypes lookup key for a computed array-index write/read
@@ -4354,7 +4382,8 @@ export class TypeChecker {
         if ((baseOp === '/' || baseOp === '%') && this.isLiteralZero(node.right)) {
           return UcodeType.DOUBLE;
         }
-        return arithmeticTypeInference.inferArithmeticFullType(leftFullType, rightFullType, baseOp);
+        const arith = arithmeticTypeInference.inferArithmeticFullType(leftFullType, rightFullType, baseOp);
+        return baseOp === '**' ? this.adjustExponentiationResult(arith, node.right) : arith;
       }
 
       case '&=':
