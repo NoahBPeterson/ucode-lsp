@@ -642,16 +642,19 @@ export class FileResolver {
      * release; this method covers only on-disk modules.
      */
     requireResolvesFile(name: string, currentFileUri: string): boolean {
-        const dirs = [
-            '/usr/local/lib/ucode', '/usr/local/share/ucode',
-            '/usr/lib/ucode', '/usr/share/ucode',
+        const rel = name.replace(/\./g, '/'); // dotted module → subdirectory path
+        // Per REQUIRE_SEARCH_PATH each install root pairs with ONE extension: `lib/ucode` is
+        // `*.so`-only, `share/ucode` is `*.uc`-only (verified on-device). Only the requiring file's
+        // own directory (the `./*` templates) resolves BOTH `.uc` and `.so`.
+        const roots: Array<[string, string[]]> = [
+            ['/usr/local/lib/ucode', ['.so']], ['/usr/local/share/ucode', ['.uc']],
+            ['/usr/lib/ucode', ['.so']], ['/usr/share/ucode', ['.uc']],
         ];
         const cur = this.uriToFilePath(currentFileUri);
-        if (cur) dirs.push(path.dirname(cur));
-        const rel = name.replace(/\./g, '/'); // dotted module → subdirectory path
-        for (const d of dirs) {
-            for (const ext of ['.uc', '.so']) {
-                try { if (fs.existsSync(path.join(d, rel + ext))) return true; } catch { /* skip */ }
+        if (cur) roots.push([path.dirname(cur), ['.uc', '.so']]);
+        for (const [d, exts] of roots) {
+            for (const ext of exts) {
+                try { if (this.isImportableFile(path.join(d, rel + ext))) return true; } catch { /* skip */ }
             }
         }
         return false;
@@ -673,6 +676,17 @@ export class FileResolver {
             full = path.resolve(path.dirname(cur), p);
         }
         try { return fs.existsSync(full); } catch { return false; }
+    }
+
+    /**
+     * A resolution target that exists AND is a regular file (statSync follows symlinks, so a
+     * symlink to a file still counts). Guards every `resolveImportPath` candidate: a bare
+     * `fs.existsSync` also accepts DIRECTORIES, so `import "/usr/share/foo"` where the mirrored
+     * path is a directory would otherwise resolve to that directory — suppressing UC3002 and
+     * handing an unreadable path to every downstream consumer. Import targets are always files.
+     */
+    private isImportableFile(p: string): boolean {
+        try { return fs.statSync(p).isFile(); } catch { return false; }
     }
 
     /**
@@ -707,7 +721,7 @@ export class FileResolver {
             if (importPath.startsWith('./') || importPath.startsWith('../') ||
                 (importPath.includes('/') && !importPath.startsWith('/'))) {
                 const resolvedPath = path.resolve(currentDir, importPath);
-                if (fs.existsSync(resolvedPath)) {
+                if (this.isImportableFile(resolvedPath)) {
                     return this.filePathToUri(resolvedPath);
                 }
                 return null;
@@ -719,11 +733,11 @@ export class FileResolver {
             // a dev convenience for runtime paths (e.g. /usr/share/ucode/…) mirrored
             // into the workspace.
             if (importPath.startsWith('/')) {
-                if (fs.existsSync(importPath)) {
+                if (this.isImportableFile(importPath)) {
                     return this.filePathToUri(importPath);
                 }
                 const workspaceRel = path.resolve(this.workspaceRoot, importPath.substring(1));
-                if (fs.existsSync(workspaceRel)) {
+                if (this.isImportableFile(workspaceRel)) {
                     return this.filePathToUri(workspaceRel);
                 }
                 // Package deploy-root mapping (tc-module-search-roots-deploy-layout.md
@@ -739,7 +753,7 @@ export class FileResolver {
                     const base = path.basename(dir);
                     if (base === 'files' || base === 'root') {
                         const candidate = path.resolve(dir, importPath.substring(1));
-                        if (fs.existsSync(candidate)) {
+                        if (this.isImportableFile(candidate)) {
                             return this.filePathToUri(candidate);
                         }
                     }
@@ -755,12 +769,12 @@ export class FileResolver {
             // ucode runtime searches the importing file's directory for bare names
             if (!importPath.includes('/') && !importPath.startsWith('.') && !importPath.includes('.')) {
                 const localPath = path.resolve(currentDir, importPath + '.uc');
-                if (fs.existsSync(localPath)) {
+                if (this.isImportableFile(localPath)) {
                     return this.filePathToUri(localPath);
                 }
                 // Also try exact name (no extension)
                 const exactPath = path.resolve(currentDir, importPath);
-                if (fs.existsSync(exactPath)) {
+                if (this.isImportableFile(exactPath)) {
                     return this.filePathToUri(exactPath);
                 }
             }
@@ -769,7 +783,7 @@ export class FileResolver {
             if (!importPath.includes('/') && !importPath.startsWith('.')) {
                 const dottedPath = importPath.replace(/\./g, '/') + '.uc';
                 const resolvedPath = path.resolve(this.workspaceRoot, dottedPath);
-                if (fs.existsSync(resolvedPath)) {
+                if (this.isImportableFile(resolvedPath)) {
                     return this.filePathToUri(resolvedPath);
                 }
                 // Importer-relative: faithful to ucode's default `./*.uc` search-path
@@ -777,7 +791,7 @@ export class FileResolver {
                 // directory (compiler.c uc_compiler_canonicalize_path; verified vs the
                 // interpreter: `cli.utils` resolves to <importer-dir>/cli/utils.uc).
                 const localDottedPath = path.resolve(currentDir, dottedPath);
-                if (fs.existsSync(localDottedPath)) {
+                if (this.isImportableFile(localDottedPath)) {
                     return this.filePathToUri(localDottedPath);
                 }
                 // ucode's other default templates are absolute install roots
@@ -792,9 +806,11 @@ export class FileResolver {
                 // ancestor: the runtime only searches configured roots, so a generic
                 // ancestor walk could resolve imports that fail on-device.
                 // (docs/dotted-module-search-root.md)
+                // Only `share/ucode` mirrors a `.uc` search root. `lib/ucode` is `*.so`-ONLY on
+                // ucode's REQUIRE_SEARCH_PATH (verified on-device: a `.uc` under /usr/lib/ucode is
+                // NOT found by require/import), so a `.uc` dotted name must never resolve there.
                 const isSearchRootMirror = (d: string): boolean =>
-                    d.endsWith(`${path.sep}share${path.sep}ucode`)
-                    || d.endsWith(`${path.sep}lib${path.sep}ucode`);
+                    d.endsWith(`${path.sep}share${path.sep}ucode`);
                 // docs/tc-module-root-mapping.md: a package deploy root (`root/` or `files/`,
                 // same OpenWrt payload convention as the absolute-path branch above) mirrors
                 // the filesystem root once installed, so a bare/dotted search-path name
@@ -813,14 +829,16 @@ export class FileResolver {
                 while (true) {
                     if (isSearchRootMirror(dir)) {
                         const candidate = path.resolve(dir, dottedPath);
-                        if (fs.existsSync(candidate)) {
+                        if (this.isImportableFile(candidate)) {
                             return this.filePathToUri(candidate);
                         }
                     }
                     if (isPackageDeployRoot(dir)) {
-                        for (const sub of ['usr/share/ucode', 'usr/lib/ucode', 'usr/local/share/ucode', 'usr/local/lib/ucode']) {
+                        // `.uc` dotted names resolve ONLY under a `share/ucode` root; `lib/ucode`
+                        // is `*.so`-only (verified on-device), so it is deliberately excluded here.
+                        for (const sub of ['usr/share/ucode', 'usr/local/share/ucode']) {
                             const candidate = path.resolve(dir, sub, dottedPath);
-                            if (fs.existsSync(candidate)) {
+                            if (this.isImportableFile(candidate)) {
                                 return this.filePathToUri(candidate);
                             }
                         }
