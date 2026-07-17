@@ -259,9 +259,6 @@ const REF_EQ_BASES = new Set<UcodeType>([
  *  uc_vm_test_strict_equality: `t1 != t2` → false), so two distinct scalar bases
  *  are always unequal — even integer vs double (`5 === 5.0` is false). Loose
  *  `==`/`!=` DO coerce scalars, so this set only drives the strict-operator check. */
-const SCALAR_EQ_BASES = new Set<UcodeType>([
-  UcodeType.INTEGER, UcodeType.DOUBLE, UcodeType.STRING, UcodeType.BOOLEAN,
-]);
 const REF_BASE_DISPLAY: Partial<Record<UcodeType, string>> = {
   [UcodeType.ARRAY]: 'array', [UcodeType.OBJECT]: 'object', [UcodeType.FUNCTION]: 'function',
   [UcodeType.REGEX]: 'regexp', [UcodeType.NULL]: 'null',
@@ -2027,69 +2024,279 @@ export class TypeChecker {
   private checkIncompatibleEquality(node: BinaryExpressionNode): void {
     const op = node.operator;
     if (op !== '==' && op !== '!=' && op !== '===' && op !== '!==') return;
-    let litNode: AstNode, other: AstNode;
-    if (this.isScalarLiteral(node.left)) { litNode = node.left; other = node.right; }
-    else if (this.isScalarLiteral(node.right)) { litNode = node.right; other = node.left; }
-    else return;
-    // Don't double-report a `type(x) == "..."` case handled above.
-    if (this.isTypeCall(other)) return;
+    // `type(x) == "..."` is handled by checkTypeStringComparison.
+    if (this.isTypeCall(node.left) || this.isTypeCall(node.right)) return;
+    // `x == null` / `x != null` is the canonical null check — owned by the flow /
+    // null-safety analysis (UC5005/5006 + guard narrowing), not this type-mismatch lint.
+    if (this.isNullLiteral(node.left) || this.isNullLiteral(node.right)) return;
 
-    const otherType = this.getTypeOf(other);
-    if (otherType === undefined) return;
-    const members = this.baseMembers(otherType);
-    if (members.length === 0) return;
-    if (members.some(m => m === UcodeType.UNKNOWN)) return;      // not confident → bail
+    // A fresh reference literal — `{…}`, `[…]`, `function(){}`, `/re/` — allocates a brand-new
+    // value whose reference (pointer) is shared with NOTHING else. Under ucode, two references are
+    // equal only when they are the same pointer (types.c ucv_compare: same non-scalar type → addr
+    // compare; vm.c uc_vm_test_strict_equality: `default: v1==v2`), and a fresh allocation can never
+    // be another operand's pointer — so ANY ==/=== against a fresh literal is always false (!=/!==
+    // always true), regardless of the other side (even unknown). Runtime-verified: `{a:1}=={a:1}`,
+    // `{a:1,b:2}=={b:2,a:1}` (key order is irrelevant), `[1]==[1]`, `/x/==/x/` are all false.
+    const freshL = this.isFreshReferenceLiteral(node.left);
+    const freshR = this.isFreshReferenceLiteral(node.right);
+    if (freshL || freshR) {
+      this.emitImpossibleReference(node, freshL ? node.left : node.right, this.wantsIsEqualFix(node));
+      return;
+    }
 
-    // Strict equality between two DISTINCT scalar base types is always false (`5 === "5"`,
-    // `true === 1`, `5 === 5.0`) — `===`/`!==` never coerce (vm.c uc_vm_test_strict_equality
-    // bails on `t1 != t2`). Loose `==`/`!=` DO coerce scalars, so only flag strict here.
-    // Skipped when the other side admits the literal's own base (e.g. `5 === x` with x
-    // typed `integer | double` could hold at runtime). Ticket 78.
-    if (op === '===' || op === '!==') {
-      const litBase = dataTypeToBase(this.checkLiteral(litNode as LiteralNode));
-      if (SCALAR_EQ_BASES.has(litBase)
-          && members.every(m => SCALAR_EQ_BASES.has(m))
-          && !members.includes(litBase)) {
-        const always = op === '===' ? 'false' : 'true';
-        const typeList = [...new Set(members.map(m => String(m)))].join(' | ');
-        const litRepr = JSON.stringify((litNode as LiteralNode).value);
-        this.errors.push({
-          message: `a value of type ${typeList} can never be ${op} ${litRepr} in ucode (strict equality does not coerce between distinct types), so this comparison is always ${always}.`,
-          start: node.start,
-          end: node.end,
-          severity: 'error',
-          code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
-        });
-        return;
+    const lt = this.getTypeOf(node.left), rt = this.getTypeOf(node.right);
+    if (lt === undefined || rt === undefined) return;
+    const L = this.baseMembers(lt), R = this.baseMembers(rt);
+    if (L.length === 0 || R.length === 0) return;
+    // Not confident about a side whose type is unknown/any → never mis-flag a dynamic value.
+    if (L.some(m => m === UcodeType.UNKNOWN) || R.some(m => m === UcodeType.UNKNOWN)) return;
+
+    // A scalar literal's raw value refines coercion (`== "5"` can match a number, `== "baz"`
+    // cannot). Non-literal / union operands carry no fixed value.
+    const litL = this.isScalarLiteral(node.left) ? (node.left as LiteralNode).value : undefined;
+    const litR = this.isScalarLiteral(node.right) ? (node.right as LiteralNode).value : undefined;
+
+    const strict = op === '===' || op === '!==';
+    const neg = op === '!=' || op === '!==';
+    const kind = this.classifyEquality(L, R, litL, litR, strict);
+    if (kind === 'ok') {
+      // Both operands are reference values (object/array/function/regexp) and neither is a fresh
+      // literal (those errored above) — this compares by REFERENCE (are they the same value?),
+      // never by value (do they have equal contents?), and the two could legitimately alias, so it
+      // is not always-false, only suspect. `==` and `===` are IDENTICAL for references in ucode
+      // (both do a pointer compare — runtime-verified), so all of `== != === !==` are flagged alike.
+      if (this.isReferenceIdentitySet(L) && this.isReferenceIdentitySet(R)) {
+        this.emitReferenceIdentityWarning(node, L, R, this.wantsIsEqualFix(node));
       }
+      return;
     }
 
-    if (!members.every(m => REF_EQ_BASES.has(m))) return;        // a scalar member could match
+    const descL = this.eqOperandDesc(node.left, L);
+    const descR = this.eqOperandDesc(node.right, R);
 
-    const always = (op === '==' || op === '===') ? 'false' : 'true';
-    const typeList = [...new Set(members.map(m => REF_BASE_DISPLAY[m] ?? String(m)))].join(' | ');
-    const litRepr = JSON.stringify((litNode as LiteralNode).value);
-    const base: {
-      message: string; start: number; end: number; code: UcodeErrorCode;
-      data?: { impossibleCompareBase: { name: string; offset: number } };
-    } = {
-      message: `a value of type ${typeList} can never be == ${litRepr} in ucode, so this comparison is always ${always}.`,
-      start: node.start,
-      end: node.end,
-      code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
+    if (kind === 'impossible') {
+      const always = neg ? 'true' : 'false';
+      const base: {
+        message: string; start: number; end: number; severity: 'error'; code: UcodeErrorCode;
+        data?: { impossibleCompareBase: { name: string; offset: number } };
+      } = {
+        message: `${descL} can never be ${op} ${descR} in ucode, so this comparison is always ${always}.`,
+        start: node.start, end: node.end, severity: 'error', code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
+      };
+      // Record a member-expression receiver so the loop-carried-join flow filter can
+      // re-query it and drop a false positive on an array/object element read in a loop
+      // (docs/tc-loop-carried-flow-join.md).
+      for (const side of [node.left, node.right]) {
+        if (side.type === 'MemberExpression' && (side as MemberExpressionNode).object.type === 'Identifier') {
+          base.data = { impossibleCompareBase: { name: ((side as MemberExpressionNode).object as IdentifierNode).name, offset: ((side as MemberExpressionNode).object as IdentifierNode).start } };
+          break;
+        }
+      }
+      this.errors.push(base);
+    } else { // 'coercing'
+      const strictOp = op === '==' ? '===' : '!==';
+      this.warnings.push({
+        message: `ucode \`${op}\` coerces here (${descL} vs ${descR}): this is a value comparison via numeric coercion, not strict equality — e.g. \`5 == "5"\` is true. \`${strictOp}\` would be always-false between these distinct types, so if the coercion is unintended, convert one operand to match.`,
+        start: node.start, end: node.end, severity: 'warning', code: UcodeErrorCode.COERCING_EQUALITY,
+      });
+    }
+  }
+
+  /** Is this AST node a `null` literal? */
+  private isNullLiteral(n: AstNode): boolean {
+    return n?.type === 'Literal' && (n as LiteralNode).literalType === 'null';
+  }
+
+  /**
+   * Is this node a *fresh* reference literal — an object/array literal, a function
+   * expression, or a regexp literal? Each such expression allocates a brand-new value
+   * on every evaluation, so its reference is shared with nothing (and thus can never
+   * `==`/`===` any other operand). A function DECLARATION is a statement, not an
+   * operand, so only the expression forms appear here.
+   */
+  private isFreshReferenceLiteral(n: AstNode): boolean {
+    if (!n) return false;
+    switch (n.type) {
+      case 'ObjectExpression':
+      case 'ArrayExpression':
+      case 'FunctionExpression':
+      case 'ArrowFunctionExpression':
+        return true;
+      case 'Literal':
+        return (n as LiteralNode).literalType === 'regexp';
+      default:
+        return false;
+    }
+  }
+
+  /** Do ALL of a type's base members denote a reference value compared by identity
+   *  (object / array / function / regexp)? Excludes null and every scalar, so a
+   *  nullable or mixed type (e.g. `object | null`) is NOT a pure identity comparison. */
+  private isReferenceIdentitySet(bases: UcodeType[]): boolean {
+    return bases.length > 0 && bases.every(m =>
+      m === UcodeType.OBJECT || m === UcodeType.ARRAY ||
+      m === UcodeType.FUNCTION || m === UcodeType.REGEX);
+  }
+
+  /** Is this operand something `is_equal` can actually deep-compare — an object, array, or
+   *  regexp (a literal, or a value so typed)? Regexps compare by their string form (`"" + re`
+   *  includes pattern + flags — verified sound). Functions are excluded: their string
+   *  coercion elides the body (`function() { … }`), so two distinct functions collide. */
+  private isDeepComparable(node: AstNode): boolean {
+    if (node.type === 'ObjectExpression' || node.type === 'ArrayExpression') return true;
+    const dt = this.getTypeOf(node);
+    if (dt === undefined) return false;
+    return this.baseMembers(dt).some(m => m === UcodeType.OBJECT || m === UcodeType.ARRAY ||
+      m === UcodeType.REGEX);
+  }
+
+  /** Is this operand definitely a scalar (every base a number/string/bool — no reference,
+   *  null, or unknown)? A deep-equal against such a value is pointless. */
+  private isPureScalarOperand(node: AstNode): boolean {
+    if (this.isFreshReferenceLiteral(node)) return false;
+    const dt = this.getTypeOf(node);
+    if (dt === undefined) return false;
+    const bases = this.baseMembers(dt);
+    return bases.length > 0 && bases.every(m => m === UcodeType.INTEGER || m === UcodeType.DOUBLE ||
+      m === UcodeType.STRING || m === UcodeType.BOOLEAN);
+  }
+
+  /** Should the `is_equal` structural quick fix be offered for this comparison? Only when at
+   *  least one operand is deep-comparable (an object/array) AND neither is a pure scalar — so
+   *  `{…} == 5` (nonsense to deep-compare) and `/x/ == /y/` (is_equal can't) get no fix, but
+   *  `cfg == {…}` and `x == {a:1}` (unknown vs an object literal) do. */
+  private wantsIsEqualFix(node: BinaryExpressionNode): boolean {
+    return (this.isDeepComparable(node.left) || this.isDeepComparable(node.right)) &&
+      !this.isPureScalarOperand(node.left) && !this.isPureScalarOperand(node.right);
+  }
+
+  /** The noun to describe a reference comparison: `object`, `array`, `regexp`, or a generic
+   *  `reference` (functions, or a mixed union of reference kinds). */
+  private refNoun(bases: UcodeType[]): 'object' | 'array' | 'regexp' | 'reference' {
+    const kinds = [UcodeType.OBJECT, UcodeType.ARRAY, UcodeType.REGEX].filter(k => bases.includes(k));
+    if (kinds.length !== 1) return 'reference';
+    return kinds[0] === UcodeType.OBJECT ? 'object' : kinds[0] === UcodeType.ARRAY ? 'array' : 'regexp';
+  }
+
+  /** Quick-fix payload for the value-comparison rewrite: operand + whole-expression source
+   *  offsets, negation, and whether it is a regexp comparison (→ in-place `"" +` coercion
+   *  rather than the `is_equal` helper). */
+  private referenceEqualityData(node: BinaryExpressionNode): unknown {
+    return { referenceEquality: {
+      negate: node.operator === '!=' || node.operator === '!==',
+      coerce: this.isRegexpComparison(node),
+      exprStart: node.start, exprEnd: node.end,
+      leftStart: node.left.start, leftEnd: node.left.end,
+      rightStart: node.right.start, rightEnd: node.right.end,
+    } };
+  }
+
+  /** Are BOTH operands regexps (a regexp literal, or a value typed regexp and not object/array)?
+   *  Such a comparison is fixed by coercing each side to its string form in place, not is_equal. */
+  private isRegexpComparison(node: BinaryExpressionNode): boolean {
+    const isRe = (n: AstNode): boolean => {
+      if (n.type === 'Literal' && (n as LiteralNode).literalType === 'regexp') return true;
+      const dt = this.getTypeOf(n);
+      if (dt === undefined) return false;
+      const bases = this.baseMembers(dt);
+      return bases.includes(UcodeType.REGEX) &&
+        !bases.includes(UcodeType.OBJECT) && !bases.includes(UcodeType.ARRAY);
     };
-    // When the compared value is an INDEX/MEMBER of a plain variable (`section[0]`,
-    // `o.x`), the all-reference (incl. null) conclusion rests on that variable's
-    // straight-line type. Record the receiver so the post-analysis flow filter can
-    // re-query the loop-carried JOIN: if the receiver is provably a (non-null)
-    // array/object there, the element could be a scalar and the "always false" claim
-    // is a false positive (docs/tc-loop-carried-flow-join.md).
-    if (other.type === 'MemberExpression' && (other as MemberExpressionNode).object.type === 'Identifier') {
-      const recv = (other as MemberExpressionNode).object as IdentifierNode;
-      base.data = { impossibleCompareBase: { name: recv.name, offset: recv.start } };
+    return isRe(node.left) && isRe(node.right);
+  }
+
+  /** Emit UC2009 for a comparison against a fresh reference literal: always false
+   *  (`!=`/`!==` → always true). A fresh allocation shares its reference with nothing.
+   *  The `is_equal` hint is added only when a structural deep-equal is meaningful (withFix). */
+  private emitImpossibleReference(node: BinaryExpressionNode, freshSide: AstNode, withFix: boolean): void {
+    const op = node.operator;
+    const neg = op === '!=' || op === '!==';
+    const noun = freshSide.type === 'ArrayExpression' ? 'array'
+      : freshSide.type === 'ObjectExpression' ? 'object'
+      : (freshSide.type === 'FunctionExpression' || freshSide.type === 'ArrowFunctionExpression') ? 'function'
+      : 'regexp';
+    const kindWord = noun === 'function' ? 'function value' : `${noun} literal`;
+    let message = `A freshly-created ${kindWord} has a unique reference, so \`${op}\` here compares ${noun} references against a value it can never be — always ${neg ? 'true' : 'false'}.`;
+    if (withFix)
+      message += ` In ucode \`==\`/\`===\` compare ${noun} references, not whether the ${noun} contents are equivalent;` +
+        (noun === 'regexp'
+          ? ` compare their string forms instead (e.g. \`("" + a) == ("" + b)\`).`
+          : ` use a structural deep-equal (e.g. \`is_equal(a, b)\`) to compare by value.`);
+    this.errors.push({
+      message, start: node.start, end: node.end, severity: 'error', code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
+      ...(withFix ? { data: this.referenceEqualityData(node) } : {}),
+    });
+  }
+
+  /** Emit UC2016 for a loose `==`/`!=` between two (non-literal) reference operands
+   *  that may alias: it compares references, not contents. `===`/`!==` is left alone.
+   *  The `is_equal` hint + quick-fix data are added only when a deep-equal is meaningful. */
+  private emitReferenceIdentityWarning(node: BinaryExpressionNode, L: UcodeType[], R: UcodeType[], withFix: boolean): void {
+    const op = node.operator;
+    const noun = this.refNoun([...L, ...R]);
+    const thing = noun === 'reference' ? 'value' : noun;
+    let message = `ucode \`${op}\` compares ${noun === 'reference' ? 'references' : `${noun} references`} here, not their contents — it is true only when both variables hold the same ${thing} (the same reference), not when two separate ${thing}s have equal contents. \`==\` and \`===\` behave identically on references in ucode.`;
+    if (withFix)
+      message += noun === 'regexp'
+        ? ` To compare by value, compare their string forms (e.g. \`("" + a) == ("" + b)\`).`
+        : ` To compare by value, use a structural deep-equal (e.g. \`is_equal(a, b)\`).`;
+    this.warnings.push({
+      message, start: node.start, end: node.end, severity: 'warning', code: UcodeErrorCode.REFERENCE_EQUALITY,
+      ...(withFix ? { data: this.referenceEqualityData(node) } : {}),
+    });
+  }
+
+  /**
+   * Classify `left <op> right` from both operand base-type sets, per ucode's comparison
+   * semantics (ucode/types.c ucv_compare, runtime-verified):
+   *   'ok'         — possible without a coercion surprise (`===` also holds, or a numeric pair)
+   *   'coercing'   — `==`/`!=` possible ONLY via coercion; `===` would be always-false
+   *   'impossible' — no value pair can satisfy it (always false, or always true for `!=`/`!==`)
+   */
+  private classifyEquality(L: UcodeType[], R: UcodeType[], litL: unknown, litR: unknown, strict: boolean): 'ok' | 'coercing' | 'impossible' {
+    const shares = L.some(a => R.includes(a));
+    if (strict) return shares ? 'ok' : 'impossible';    // `===` is true only between same-type values
+    const possible = L.some(a => R.some(b => this.pairCanEqual(a, b, litL, litR)));
+    if (!possible) return 'impossible';
+    if (shares) return 'ok';                            // a shared base → no coercion surprise
+    // Distinct bases but `==` possible via coercion. A pure numeric pair (integer vs double)
+    // is the correct value comparison, not a footgun — stay silent there.
+    const numeric = (m: UcodeType) => m === UcodeType.INTEGER || m === UcodeType.DOUBLE;
+    return (L.every(numeric) && R.every(numeric)) ? 'ok' : 'coercing';
+  }
+
+  /** Can a value of base `a` ever `==` a value of base `b` (with optional fixed literal
+   *  values)? Reference/null bases match only their own kind; distinct scalars coerce to number. */
+  private pairCanEqual(a: UcodeType, b: UcodeType, litL: unknown, litR: unknown): boolean {
+    if (a === b) return true;                                       // same base — value equality left to constant checks
+    if (REF_EQ_BASES.has(a) || REF_EQ_BASES.has(b)) return false;   // array/object/fn/regex/null vs a different base → NaN / never equal
+    return this.numSetsIntersect(this.numSet(a, litL), this.numSet(b, litR));   // distinct scalars coerce to number
+  }
+
+  /** The set of numbers a value of scalar base `base` (optionally a fixed literal) can coerce
+   *  to under ucode `==` (ucv_to_number). 'all' = any finite number, 'none' = ∅ (non-numeric). */
+  private numSet(base: UcodeType, lit: unknown): 'all' | 'none' | number[] {
+    if (base === UcodeType.INTEGER || base === UcodeType.DOUBLE)
+      return (typeof lit === 'number') ? [lit] : 'all';
+    if (base === UcodeType.STRING) {
+      if (typeof lit === 'string') { const n = this.scalarValueAsNumber(lit); return n === null ? 'none' : [n]; }
+      return 'all';                                                 // a string could coerce to any number
     }
-    // Fixed Error, independent of `'use strict'` (#106) — see checkConstantComparison.
-    this.errors.push({ ...base, severity: 'error' });
+    if (base === UcodeType.BOOLEAN)
+      return (typeof lit === 'boolean') ? [lit ? 1 : 0] : [0, 1];
+    return 'none';
+  }
+
+  private numSetsIntersect(a: 'all' | 'none' | number[], b: 'all' | 'none' | number[]): boolean {
+    if (a === 'none' || b === 'none') return false;
+    if (a === 'all' || b === 'all') return true;
+    return a.some(v => (b as number[]).includes(v));
+  }
+
+  /** Describe an equality operand for a diagnostic: a scalar literal's repr, else its type. */
+  private eqOperandDesc(node: AstNode, bases: UcodeType[]): string {
+    if (this.isScalarLiteral(node)) return JSON.stringify((node as LiteralNode).value);
+    return `a value of type \`${[...new Set(bases.map(m => REF_BASE_DISPLAY[m] ?? String(m)))].join(' | ')}\``;
   }
 
   /**
@@ -2119,6 +2326,26 @@ export class TypeChecker {
     const t = value.trim();
     if (t === '') return true;
     return /^[+-]?(0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|[0-9]+)$/.test(t);
+  }
+
+  /**
+   * The finite number a scalar literal coerces to under ucode's `==` (ucv_to_number
+   * → uc_number_parse for strings), or null when it is non-numeric (a non-numeric
+   * string parses to NaN, which `==` matches against nothing). Conservative: an
+   * empty/ambiguous string returns a number (never null), so we never ERROR on a
+   * loose comparison we're unsure about — the worst case is a UC2015 warning.
+   */
+  private scalarValueAsNumber(v: unknown): number | null {
+    if (typeof v === 'number') return v;
+    if (typeof v === 'boolean') return v ? 1 : 0;
+    if (typeof v === 'string') {
+      const t = v.trim();
+      if (t === '') return 0;                                                             // "" → 0 (conservative)
+      if (/^[+-]?(0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|[0-9]+)$/.test(t)) return Number(t);   // int (any base)
+      if (/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(t)) return Number(t);             // float / scientific
+      return null;                                                                        // clearly non-numeric → NaN
+    }
+    return null;
   }
 
   /**

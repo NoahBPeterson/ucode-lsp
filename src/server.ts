@@ -124,6 +124,15 @@ interface DiagnosticData {
      *  through the end of its enclosing block), plus the throwing builtin's name (drives a
      *  require-specific catch body listing the available modules). */
     wrapTryCatch?: { start: number; end: number; fn?: string };
+    /** UC2009 (fresh-literal) / UC2016 (reference identity): rewrite `a == b` on references to a
+     *  structural `is_equal(a, b)`. Carries the operand + whole-expression offsets and negation. */
+    referenceEquality?: {
+        negate: boolean;
+        coerce?: boolean;   // regexp comparison → rewrite in place as ("" + a) == ("" + b), no helper
+        exprStart: number; exprEnd: number;
+        leftStart: number; leftEnd: number;
+        rightStart: number; rightEnd: number;
+    };
 }
 
 /** Narrow a diagnostic's opaque `data` payload to our known shape. */
@@ -1360,6 +1369,88 @@ function generateDeclareLocalQuickFix(diagnostic: Diagnostic, document: TextDocu
     }];
 }
 
+// A structural recursive deep-equal for ucode, inserted by the reference-equality quick fix ONLY
+// when the file has no is_equal of its own. Bottoms out on loose `==` for scalars; compares objects
+// by key set and arrays element-wise. Verified against the ucode runtime (reordered keys equal;
+// nesting, arrays, type-strictness).
+const IS_EQUAL_HELPER =
+`/** Deep structural equality (recursive). @param {any} a @param {any} b @returns {boolean} */
+function is_equal(a, b) {
+\tif (type(a) != type(b))
+\t\treturn false;
+\tif (type(a) == "object") {
+\t\tif (length(a) != length(b))
+\t\t\treturn false;
+\t\tfor (let k in a)
+\t\t\tif (!exists(b, k) || !is_equal(a[k], b[k]))
+\t\t\t\treturn false;
+\t\treturn true;
+\t}
+\tif (type(a) == "array") {
+\t\tif (length(a) != length(b))
+\t\t\treturn false;
+\t\tfor (let i = 0; i < length(a); i++)
+\t\t\tif (!is_equal(a[i], b[i]))
+\t\t\t\treturn false;
+\t\treturn true;
+\t}
+\treturn a == b;
+}
+
+`;
+
+// Does the file already define/import an `is_equal` at module scope? (A leading-column
+// function/let/const/import/global declaration — not one nested inside a function.) If so, the
+// fix reuses it rather than injecting a second copy.
+function fileHasIsEqual(text: string): boolean {
+    return /(^|\n)(?:export\s+)?function\s+is_equal\b/.test(text) ||
+        /(^|\n)(?:let|const)\s+is_equal\b/.test(text) ||
+        /(^|\n)import\b[^;\n]*\bis_equal\b/.test(text) ||
+        /(^|\n)global\s*\.\s*is_equal\s*=/.test(text);
+}
+
+// UC2009 (fresh-literal reference compare) / UC2016 (reference-identity compare): the author is
+// almost certainly after value equality, which ucode's `==`/`===` never do on references. Rewrite
+// `a == b` → `is_equal(a, b)` (and `a != b` → `!is_equal(a, b)`). Inject the helper ONLY when the
+// file defines no is_equal of its own; if one exists we reuse it (and if it happens to sit below
+// the call, that is a plain forward reference — UC1009, which has its own "move it up" fix — not
+// this fix's job to work around by cloning the helper).
+function generateReferenceEqualityQuickFix(diagnostic: Diagnostic, document: TextDocument, uri: string): CodeAction[] {
+    const re = diagData(diagnostic).referenceEquality;
+    if (!re) return [];
+    const text = document.getText();
+    const left = text.slice(re.leftStart, re.leftEnd).trim();
+    const right = text.slice(re.rightStart, re.rightEnd).trim();
+    if (!left || !right) return [];
+
+    const exprRange = { start: document.positionAt(re.exprStart), end: document.positionAt(re.exprEnd) };
+
+    // A regexp comparison needs no deep-equal helper — coerce both sides to their string form
+    // (`"" + re` includes pattern + flags) and compare in place.
+    if (re.coerce) {
+        const cmp = re.negate ? '!=' : '==';
+        return [{
+            title: 'Compare regexps by value (string form)',
+            kind: CodeActionKind.QuickFix,
+            isPreferred: true,
+            diagnostics: [diagnostic],
+            edit: { changes: { [uri]: [TextEdit.replace(exprRange, `("" + ${left}) ${cmp} ("" + ${right})`)] } },
+        }];
+    }
+
+    const call = `${re.negate ? '!' : ''}is_equal(${left}, ${right})`;
+    const edits = [TextEdit.replace(exprRange, call)];
+    if (!fileHasIsEqual(text)) edits.push(TextEdit.insert(topInsertPosition(document), IS_EQUAL_HELPER));
+
+    return [{
+        title: 'Compare by value with is_equal(a, b)',
+        kind: CodeActionKind.QuickFix,
+        isPreferred: true,
+        diagnostics: [diagnostic],
+        edit: { changes: { [uri]: edits } },
+    }];
+}
+
 connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
     const document = documents.get(params.textDocument.uri);
     if (!document) {
@@ -1429,6 +1520,12 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // UC3006: a known module used without importing it → offer to add the import.
             if (diagnostic.code === 'UC3006' && ast) {
                 codeActions.push(...generateAddImportQuickFix(diagnostic, document, ast, params.textDocument.uri));
+            }
+
+            // UC2009 (fresh-literal reference compare) / UC2016 (reference identity): offer to
+            // rewrite the reference `==` into a structural `is_equal(a, b)`.
+            if ((diagnostic.code === 'UC2009' || diagnostic.code === 'UC2016') && diagData(diagnostic).referenceEquality) {
+                codeActions.push(...generateReferenceEqualityQuickFix(diagnostic, document, params.textDocument.uri));
             }
 
             // UC5005/UC5006: member access on a null / possibly-null receiver →

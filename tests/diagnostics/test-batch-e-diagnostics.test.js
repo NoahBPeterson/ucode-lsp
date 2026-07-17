@@ -34,15 +34,19 @@ describe('119: string indexing is flagged', () => {
   });
 });
 
-describe('78: strict scalar-mismatch equality is flagged (=== only)', () => {
-  test('5 === "5", true === 1, 5 === 5.0 all flagged; 5 === 5 and 5 == "5" not', async () => {
+describe('78 + UC2015: scalar-mismatch equality (=== impossible, == coerces or is a tautology)', () => {
+  test('5 === "5", true === 1, 5 === 5.0 impossible; 5 === 5 and 5 == "5" are not "always false"', async () => {
     const d = await diags('print(5 === "5");\nprint(true === 1);\nprint(5 === 5.0);\nprint(5 === 5);\nprint(5 == "5");\n');
     const impossible = d.filter((x) => x.code === 'UC2009' && /always false/.test(x.message));
     expect(impossible.length).toBe(3);
   });
-  test('== / != scalar mismatch is NOT flagged (coerces)', async () => {
+  test('== coerces → UC2015 (not UC2009); != to a non-numeric string is a tautology → UC2009', async () => {
     const d = await diags('print(5 == "5");\nprint(1 != "x");\n');
-    expect(d.filter((x) => x.code === 'UC2009').length).toBe(0);
+    // 5 == "5" coerces (5 == "5" is true at runtime) → UC2015 warning, NOT an impossible error
+    expect(d.filter((x) => x.code === 'UC2015').length).toBe(1);
+    expect(d.filter((x) => x.code === 'UC2009' && /always false/.test(x.message)).length).toBe(0);
+    // "x" coerces to NaN, so 1 is never == "x" → `1 != "x"` is ALWAYS TRUE (a tautology)
+    expect(d.filter((x) => x.code === 'UC2009' && /always true/.test(x.message)).length).toBe(1);
   });
 });
 

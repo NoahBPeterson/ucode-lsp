@@ -30,6 +30,8 @@ export enum UcodeErrorCode {
   USELESS_CALL = 'UC2012',             // a call ucode runs but that provably has no effect (e.g. zero-arg printf())
   IGNORED_NUMERIC_INPUT = 'UC2013',    // part of a string literal is silently dropped by numeric parsing (e.g. int("10abc") → 10)
   EXPONENT_TYPE_NOTE = 'UC2014',        // INFO: explains a `**` result type (a negative exponent yields a double; unknown sign → integer|double)
+  COERCING_EQUALITY = 'UC2015',         // `==`/`!=` between distinct types coerces (ucode `==` is relational, not strict); `===` would be always-false — likely meant `===` or an explicit convert
+  REFERENCE_EQUALITY = 'UC2016',        // `==`/`!=` between two reference values (object/array/function/regexp) compares IDENTITY, not contents — likely meant a structural deep-equal (is_equal)
 
   // Import/Export errors (3000-3999)
   INVALID_IMPORT = 'UC3001',
