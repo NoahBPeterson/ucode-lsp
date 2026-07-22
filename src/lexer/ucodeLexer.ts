@@ -818,6 +818,15 @@ export class UcodeLexer {
                 // Track character class brackets
                 if (ch === '[' && !inCharClass) {
                     inCharClass = true;
+                    value += this.nextChar(); // consume '['
+                    // ucode's lexer (lexer.c:386-393) reads an optional leading '^' and then an
+                    // optional leading ']' as *literal* members before it starts looking for the
+                    // class terminator, so `[]…]` and `[^]…]` do not close at that first ']'.
+                    // Without this, `/[]\/]/`'s class closes immediately and the following '/'
+                    // is mistaken for the regex terminator.
+                    if (this.peekChar() === '^') value += this.nextChar();
+                    if (this.peekChar() === ']') value += this.nextChar();
+                    continue;
                 } else if (ch === ']' && inCharClass) {
                     inCharClass = false;
                 }

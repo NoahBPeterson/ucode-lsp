@@ -117,3 +117,24 @@ test('plain division is not lexed as a regex', async () => {
 test('an ordinary single-line regex is clean', async () => {
   expect((await syntaxish('let re = /foo/;\nprint(match("foo", re));\n')).length).toBe(0);
 });
+
+// ── lexer: a leading ] (after an optional ^) is a literal class member ───────
+// ucode's lexer (lexer.c:386-393) reads an optional leading '^' and then an optional
+// leading ']' as literal members before it starts looking for the class terminator.
+// NB: /[]]/ and /[^]a]/ parsed clean even before the fix, by luck — the class closed
+// early but the real terminator still lined up. Probe with /[]/]/, not /[]]/.
+test('/[]\\/]/ — escaped slash in a leading-] class is clean', async () => {
+  expect((await syntaxish('let r = /[]\\/]/;\nprint(r);\n')).length).toBe(0);
+});
+test('/[]/]/ — bare slash inside a leading-] class does not end the regex', async () => {
+  expect((await syntaxish('let r = /[]/]/;\nprint(r);\n')).length).toBe(0);
+});
+test('/[^]/]/ — same, with a negated class', async () => {
+  expect((await syntaxish('let r = /[^]/]/;\nprint(r);\n')).length).toBe(0);
+});
+test('/[]]/ and /[^]a]/ stay clean', async () => {
+  expect((await syntaxish('let a = /[]]/, b = /[^]a]/;\nprint(a, b);\n')).length).toBe(0);
+});
+test('an ordinary class /[a-z]/ and a negated /[^0-9]/ stay clean', async () => {
+  expect((await syntaxish('let a = /[a-z]/, b = /[^0-9]+/g;\nprint(a, b);\n')).length).toBe(0);
+});
