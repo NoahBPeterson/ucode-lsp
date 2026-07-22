@@ -187,6 +187,17 @@ export class ParserUtils {
     this.panicMode = false;
   }
 
+  /** Report a PARSE diagnostic that carries no cascade risk, and keep reporting after it.
+   *  Same contract as {@link lexerErrorAt}, for the case where the construct is understood
+   *  well enough to keep parsing: the call site has consumed exactly the offending token(s)
+   *  and the parse continues in the same state a valid input would have reached, so nothing
+   *  downstream is a knock-on of this error. Use ONLY when that holds — the default
+   *  {@link errorAt} panic latch is what stops one bad token from spraying the file. */
+  protected selfContainedErrorAt(message: string, pos: number, end: number, code: string): void {
+    this.errors.push({ message, start: pos, end, severity: 'error', code });
+    this.panicMode = false;
+  }
+
   protected warningAt(message: string, pos: number, end: number, code: string = UcodeErrorCode.SYNTAX_ERROR): void {
     this.warnings.push({ message, start: pos, end, severity: 'warning', code });
   }

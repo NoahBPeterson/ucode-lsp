@@ -146,8 +146,18 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
             } as LiteralNode;
           }
         } else if (this.check(TokenType.TK_NUMBER) || this.check(TokenType.TK_DOUBLE)) {
-          // Accept numbers as property keys (they become string keys)
+          // A bare numeric key is a JS-ism ucode rejects at parse time: its object parser
+          // matches only TK_LABEL or TK_STRING here (compiler.c:2246-2250, "Expecting label"),
+          // with computed `[1]: …` as the escape hatch. Report it, but keep parsing the
+          // property as a string key so the rest of the literal still types and hovers.
           const token = this.advance()!;
+          this.selfContainedErrorAt(
+            `Numeric object key ${token.value} is not valid in ucode — object keys must be a label or a string. ` +
+            `Use a quoted key ("${token.value}": …) or a computed key ([${token.value}]: …).`,
+            token.pos,
+            token.end,
+            UcodeErrorCode.NUMERIC_OBJECT_KEY
+          );
           key = {
             type: 'Literal',
             start: token.pos,

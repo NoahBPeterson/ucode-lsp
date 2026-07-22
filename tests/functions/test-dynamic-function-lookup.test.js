@@ -13,8 +13,8 @@ test('should not report "Undefined function" for dynamically looked-up function 
     const code = `
 let codec = {
     decoder: {
-        1: function(buf, end) { return "decoded"; },
-        2: function(buf, end) { return "decoded2"; }
+        "1": function(buf, end) { return "decoded"; },
+        "2": function(buf, end) { return "decoded2"; }
     }
 };
 
