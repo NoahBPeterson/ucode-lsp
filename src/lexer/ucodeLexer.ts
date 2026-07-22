@@ -809,13 +809,6 @@ export class UcodeLexer {
                 return this.emitToken(TokenType.TK_REGEXP, value, startPos);
             }
 
-            // Check for unescaped newline - this indicates a stray slash, not a regex
-            if (isLineBreak(ch)) {
-                // Reset position to just after the initial slash
-                this.pos = startPos + 1;
-                return this.emitToken(TokenType.TK_ERROR, "Unexpected token '/'. Did you mean to use a comment '//'?", startPos);
-            }
-
             if (ch === '\\') {
                 value += this.nextChar(); // consume backslash
                 if (this.pos < this.source.length) {
@@ -832,7 +825,13 @@ export class UcodeLexer {
             }
         }
 
-        return this.emitToken(TokenType.TK_ERROR, 'Unterminated regex', startPos);
+        // Ran to EOF without a closing '/'. ucode only calls a regex unterminated at EOF too
+        // (parse_regexp → parse_string(lex, '/'), lexer.c:490-497), but reporting it *here*
+        // would hand back one giant error token spanning the rest of the file. Rewind to just
+        // past the opening slash and report it as a stray slash instead: same diagnosis, and
+        // the following lines still tokenize normally so recovery stays statement-by-statement.
+        this.pos = startPos + 1;
+        return this.emitToken(TokenType.TK_ERROR, "Unexpected token '/'. Did you mean to use a comment '//'?", startPos);
     }
 
     private isRegexRangeAtom(c: string): boolean {

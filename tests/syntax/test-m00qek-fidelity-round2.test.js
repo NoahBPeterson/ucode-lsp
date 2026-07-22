@@ -87,3 +87,33 @@ test('bare side-effect import stays clean', async () => {
 test('non-empty export list is clean', async () => {
   expect((await byCode('let v = 1;\nexport { v };\n', 'UC6019')).length).toBe(0);
 });
+
+// ── lexer: regex literals spanning newlines (valid ucode) ────────────────────
+// ucode lexes /…/ with parse_string(lex, '/') (lexer.c:490-497) — the same routine
+// as string literals — so raw newlines are ordinary pattern content and only EOF
+// leaves a regex unterminated.
+const syntaxish = async (code) =>
+  (await diags(code)).filter((d) => d.severity === 1 && String(d.code || '').startsWith('UC6'));
+
+test('a multi-line regex literal is clean', async () => {
+  expect((await syntaxish('let r = /foo\nbar/;\nprint(r);\n')).length).toBe(0);
+});
+test('a multi-line regex literal with flags is clean', async () => {
+  expect((await syntaxish('let r = /a\nb/g;\nprint(r);\n')).length).toBe(0);
+});
+test('a newline inside a character class is clean', async () => {
+  expect((await syntaxish('let r = /[a\nb]/;\nprint(r);\n')).length).toBe(0);
+});
+test('a stray slash is still reported, and recovery stays line-local', async () => {
+  // Allowing newlines must not let an unterminated '/' swallow the file: the
+  // following statement still parses, so `nope` is still reported undefined.
+  const ds = await diags('let x = 1;\nx = / oops\nprint(nope);\n');
+  expect(ds.some((d) => /Did you mean to use a comment/.test(d.message))).toBe(true);
+  expect(ds.some((d) => /Undefined variable: nope/.test(d.message))).toBe(true);
+});
+test('plain division is not lexed as a regex', async () => {
+  expect((await syntaxish('let a = 10, b = 2;\nprint(a / b);\n')).length).toBe(0);
+});
+test('an ordinary single-line regex is clean', async () => {
+  expect((await syntaxish('let re = /foo/;\nprint(match("foo", re));\n')).length).toBe(0);
+});
