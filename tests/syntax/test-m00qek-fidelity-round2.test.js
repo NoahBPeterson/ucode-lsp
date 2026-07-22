@@ -51,3 +51,39 @@ test('computed key {[1]: 2} is clean', async () => {
 test('label key {a: 1} is clean', async () => {
   expect((await byCode('let o = {a: 1};\nprint(o);\n', 'UC6018')).length).toBe(0);
 });
+
+// ── UC6019: empty import / export lists ──────────────────────────────────────
+// Both list parsers are do/while loops that consume a specifier before they ever
+// check for '}' (compiler.c:3300-3307 export, :3770-3790 import), so `{}` is a
+// syntax error rather than an inert no-op.
+test('import {} from "…" is an error', async () => {
+  const ds = await byCode('import {} from "./mod.uc";\n', 'UC6019');
+  expect(ds.length).toBe(1);
+  expect(ds[0].severity).toBe(1);
+  expect(ds[0].message).toContain('Empty import list');
+});
+test('export {} is an error', async () => {
+  const ds = await byCode('export {};\n', 'UC6019');
+  expect(ds.length).toBe(1);
+  expect(ds[0].message).toContain('Empty export list');
+});
+test('empty import list does not cascade into an undefined-variable report for `from`', async () => {
+  const ds = await diags('import {} from "./mod.uc";\n');
+  expect(ds.filter((d) => /Undefined variable: from/.test(d.message)).length).toBe(0);
+});
+test('empty named-import list after a default import is flagged', async () => {
+  expect((await byCode('import def, {} from "./mod.uc";\n', 'UC6019')).length).toBe(1);
+});
+test('an empty list does not swallow later diagnostics', async () => {
+  const ds = await diags('export {};\nprint(nope);\n');
+  expect(ds.some((d) => /Undefined variable: nope/.test(d.message))).toBe(true);
+});
+test('non-empty import list is clean', async () => {
+  expect((await byCode('import { cursor } from "uci";\nprint(cursor);\n', 'UC6019')).length).toBe(0);
+});
+test('bare side-effect import stays clean', async () => {
+  expect((await byCode('import "./mod.uc";\n', 'UC6019')).length).toBe(0);
+});
+test('non-empty export list is clean', async () => {
+  expect((await byCode('let v = 1;\nexport { v };\n', 'UC6019')).length).toBe(0);
+});

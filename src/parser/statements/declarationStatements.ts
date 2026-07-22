@@ -236,10 +236,17 @@ export abstract class DeclarationStatements extends ExpressionParser {
   protected parseImportDeclaration(): ImportDeclarationNode | null {
     const start = this.previous()!.pos;
     const specifiers: (ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode)[] = [];
+    // `import {} from "m"` produces no specifiers but IS a binding form, so it still expects
+    // `from`. Without this the empty-brace case falls through to the bare side-effect-import
+    // path and reports a misleading "Expected string literal after 'from'" on the `from`
+    // token itself, which then cascades into UC1001 "Undefined variable: from".
+    let sawBindingSyntax = false;
 
     // Parse import specifiers
     if (this.match(TokenType.TK_LBRACE)) {
       // Named imports: import { name1, name2 } from 'module'
+      const openBrace = this.previous()!;
+      sawBindingSyntax = true;
       if (!this.check(TokenType.TK_RBRACE)) {
         do {
           const imported = this.parseImportSpecifierName();
@@ -260,8 +267,10 @@ export abstract class DeclarationStatements extends ExpressionParser {
             local
           });
         } while (this.match(TokenType.TK_COMMA));
+      } else {
+        this.reportEmptySpecifierList(openBrace, 'import');
       }
-      
+
       this.consume(TokenType.TK_RBRACE, "Expected '}' after import specifiers");
     } else if (this.match(TokenType.TK_MUL)) {
       // Namespace import: import * as name from 'module'
@@ -319,6 +328,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
           });
         } else if (this.match(TokenType.TK_LBRACE)) {
           // Parse named imports after default
+          const openBrace = this.previous()!;
           if (!this.check(TokenType.TK_RBRACE)) {
             do {
               const imported = this.parseImportSpecifierName();
@@ -339,6 +349,8 @@ export abstract class DeclarationStatements extends ExpressionParser {
                 local: namedLocal
               });
             } while (this.match(TokenType.TK_COMMA));
+          } else {
+            this.reportEmptySpecifierList(openBrace, 'import');
           }
 
           this.consume(TokenType.TK_RBRACE, "Expected '}' after import specifiers");
@@ -351,7 +363,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
 
     // Parse 'from' keyword — present only when the import has bindings. A bare
     // side-effect import (`import "module";`, no specifiers) has no `from`.
-    if (specifiers.length > 0 && !this.match(TokenType.TK_FROM)) {
+    if ((specifiers.length > 0 || sawBindingSyntax) && !this.match(TokenType.TK_FROM)) {
       this.error("Expected 'from' after import specifiers");
       return null;
     }
@@ -501,9 +513,12 @@ export abstract class DeclarationStatements extends ExpressionParser {
 
   private parseExportNamedDeclaration(start: number): ExportNamedDeclarationNode | null {
     const specifiers: ExportSpecifierNode[] = [];
+    const openBrace = this.previous()!;
 
     // Parse export specifiers
-    if (!this.check(TokenType.TK_RBRACE)) {
+    if (this.check(TokenType.TK_RBRACE)) {
+      this.reportEmptySpecifierList(openBrace, 'export');
+    } else {
       do {
         const local = this.parseIdentifierName();
         if (!local) continue;
@@ -563,6 +578,29 @@ export abstract class DeclarationStatements extends ExpressionParser {
       specifiers,
       source
     };
+  }
+
+  /**
+   * `import {}` / `export {}` — an empty specifier list.
+   *
+   * ucode's list parsers are `do { consume(TK_LABEL) } while (match(TK_COMMA))`
+   * (`uc_compiler_compile_exportlist`, compiler.c:3300-3307; the import list at :3770-3790),
+   * so they demand a first specifier *before* they ever check for the closing brace — an
+   * empty list is a syntax error, not an inert no-op. Oracle-verified: `export {};` gives
+   * "Expecting Label", `import {} from "…"` gives "Expecting Label, String or 'default'".
+   */
+  private reportEmptySpecifierList(openBrace: Token, kind: 'import' | 'export'): void {
+    const closeBrace = this.peek();
+    const expected = kind === 'import' ? "a label, a string or 'default'" : 'a label';
+    this.errorAt(
+      `Empty ${kind} list — ucode requires at least one specifier between the braces (expecting ${expected}). ` +
+      (kind === 'import'
+        ? 'For a side-effect-only import, drop the braces and the `from`: import "module";'
+        : 'Remove the statement if nothing is exported.'),
+      openBrace.pos,
+      closeBrace ? closeBrace.end : openBrace.end,
+      UcodeErrorCode.EMPTY_IMPORT_EXPORT_LIST
+    );
   }
 
   // Abstract methods that must be implemented by subclasses

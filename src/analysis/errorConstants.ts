@@ -79,6 +79,7 @@ export enum UcodeErrorCode {
   INVALID_NUMBER_LITERAL = 'UC6016', // bare `0x`, invalid digit for the base (`0o9`, `0b2`), or trailing garbage (`123abc`, `1.2.3`, `1e`) — ucode: "Invalid number literal"
   SUSPICIOUS_EMPTY_COMMENT = 'UC6017', // `/*/` lexes as a complete EMPTY comment; almost always an unescaped regex for '*'
   NUMERIC_OBJECT_KEY = 'UC6018', // `{1: 2}` — ucode's object parser takes only a label, a string, or a computed `[expr]` key: "Expecting label"
+  EMPTY_IMPORT_EXPORT_LIST = 'UC6019', // `import {} from …` / `export {}` — ucode's list parser demands a first specifier before it checks for '}'
 
   // JSDoc annotation errors (7000-7999)
   JSDOC_UNKNOWN_TYPE = 'UC7001',

@@ -350,7 +350,8 @@ import { } from 'uci';
         d.message.includes('not exported by the uci module')
       );
       
-      // Empty imports should not cause errors
+      // An empty list is itself a ucode syntax error (UC6019), but that is orthogonal to
+      // what this case covers: it must not additionally claim some name isn't exported by uci.
       assert.strictEqual(importErrors.length, 0, 'Should handle empty import lists');
     });
 
