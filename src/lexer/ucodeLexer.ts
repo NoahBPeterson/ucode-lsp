@@ -643,7 +643,7 @@ export class UcodeLexer {
             };
             const info = BASE_INFO[base]!;
             if (/[0-9a-fA-F]/.test(c)) {
-                return { error: `'${c}' is not a valid digit in a ${info.name} literal — allowed digits are ${info.digits}` };
+                return { error: `'${c}' is not a valid digit in a ${info.name} literal - allowed digits are ${info.digits}` };
             }
             return { error: `unexpected '${c}' in a ${info.name} literal` };
         }

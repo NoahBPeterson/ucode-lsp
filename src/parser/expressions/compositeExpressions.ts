@@ -152,7 +152,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
           // property as a string key so the rest of the literal still types and hovers.
           const token = this.advance()!;
           this.selfContainedErrorAt(
-            `Numeric object key ${token.value} is not valid in ucode — object keys must be a label or a string. ` +
+            `Numeric object key ${token.value} is not valid in ucode - object keys must be a label or a string. ` +
             `Use a quoted key ("${token.value}": …) or a computed key ([${token.value}]: …).`,
             token.pos,
             token.end,

@@ -307,7 +307,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (!platform) return;
     this.addDiagnosticErrorCode(
       UcodeErrorCode.PLATFORM_GATED_SYMBOL,
-      `\`${moduleName}.${symbol}\` is ${platform}-only — it is compiled into ucode's ${moduleName} module only on ${platform} (e.g. OpenWrt), and is absent from a non-${platform} build (macOS/BSD). Safe for ${platform} targets; guard or avoid for portable code.`,
+      `\`${moduleName}.${symbol}\` is ${platform}-only - it is compiled into ucode's ${moduleName} module only on ${platform} (e.g. OpenWrt), and is absent from a non-${platform} build (macOS/BSD). Safe for ${platform} targets; guard or avoid for portable code.`,
       start, end, DiagnosticSeverity.Information,
     );
   }
@@ -340,7 +340,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     // dispatch can match the right edit — never a one-size-fits-all fix on UC6005.
     this.addDiagnosticErrorCode(
       UcodeErrorCode.TARGET_VERSION_UNSUPPORTED,
-      `${what.replace('{INTRO}', intro)}, but the configured target is OpenWrt ${this.targetVersion}. ${remedy} — or change \`ucode.targetVersion\`.`,
+      `${what.replace('{INTRO}', intro)}, but the configured target is OpenWrt ${this.targetVersion}. ${remedy} - or change \`ucode.targetVersion\`.`,
       start, end, severityOverride ?? (this.strictMode ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning),
       data,
     );
@@ -794,7 +794,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const sym = this.symbolTable.lookup(r.name);
       if (!sym || sym.propertyTypes?.has(r.prop)) continue; // assigned somewhere → fine
       this.addDiagnostic(
-        `Property '${r.prop}' is never assigned on global '${r.name}' in this file — its object ` +
+        `Property '${r.prop}' is never assigned on global '${r.name}' in this file - its object ` +
         `literal doesn't define it and nothing else writes it, so this read is always null. ` +
         `Add it to the literal, assign it somewhere, or check the spelling.`,
         r.start, r.end, severity, UcodeErrorCode.GLOBAL_PROPERTY_NEVER_ASSIGNED,
@@ -1007,7 +1007,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (!sym || sym.declaredAt !== r.key) continue;
       if (sym.propertyTypes?.has(r.prop)) continue; // assigned somewhere (incl. closures) → fine
       this.addDiagnostic(
-        `Property '${r.prop}' is never assigned on '${r.name}' — its object literal doesn't ` +
+        `Property '${r.prop}' is never assigned on '${r.name}' - its object literal doesn't ` +
         `define it and nothing else writes it, so this read is always null. Add it to the ` +
         `literal, assign it somewhere, or check the spelling.`,
         r.start, r.end, severity, UcodeErrorCode.LOCAL_PROPERTY_NEVER_ASSIGNED,
@@ -1023,7 +1023,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (!sym || sym.declaredAt !== d.key) continue;
       if (sym.propertyTypes?.has(d.prop)) continue; // assigned somewhere (incl. closures) → real delete
       this.addDiagnostic(
-        `'delete' has no effect: property '${d.prop}' is never assigned on '${d.name}' — its ` +
+        `'delete' has no effect: property '${d.prop}' is never assigned on '${d.name}' - its ` +
         `object literal doesn't define it and nothing else writes it, so this always returns ` +
         `false. Check the spelling.`,
         d.start, d.end, DiagnosticSeverity.Warning, UcodeErrorCode.DELETE_NEVER_ASSIGNED_PROPERTY,
@@ -1670,7 +1670,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (others.length === 0) continue;
         this.addDiagnostic(
           `Global '${name}' is assigned \`${s.type}\` here but \`${others.join('`/`')}\` elsewhere, and this ` +
-          `assignment is inside ${s.fnName ? `function '${s.fnName}'` : 'a function'} whose call timing is unknown — ` +
+          `assignment is inside ${s.fnName ? `function '${s.fnName}'` : 'a function'} whose call timing is unknown - ` +
           `the type of '${name}' at any read cannot be statically determined. Keep a global's type ` +
           `stable, or use distinct names.`,
           s.start, s.end, DiagnosticSeverity.Warning, UcodeErrorCode.GLOBAL_TYPE_REASSIGNED,
@@ -2003,8 +2003,8 @@ export class SemanticAnalyzer extends BaseVisitor {
           let message: string;
           if (resolvedArg === false && argVal !== null) {
             message = spec?.resolvable === 'module'
-              ? `Module '${argVal}' was not found on the require search path — \`require()\` throws at runtime when the module is missing. Guard it with try/catch, or fix the name.`
-              : `File '${argVal}' was not found — \`${throwName}()\` throws at runtime when the path is missing. Guard it with try/catch, or fix the path.`;
+              ? `Module '${argVal}' was not found on the require search path - \`require()\` throws at runtime when the module is missing. Guard it with try/catch, or fix the name.`
+              : `File '${argVal}' was not found - \`${throwName}()\` throws at runtime when the path is missing. Guard it with try/catch, or fix the path.`;
           } else if (resolvedArg === true) {
             message = `\`${throwName}("${argVal}")\` resolves, but can still throw on a compile/runtime error. Guard it with try/catch.`;
           } else {
@@ -2334,7 +2334,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       } else if (status === 'parse-error') {
         this.addDiagnosticErrorCode(
           UcodeErrorCode.MODULE_PARSE_ERROR,
-          `Include target '${rawPath}' could not be parsed — it has syntax errors (include() would fail at runtime, and its leaked globals cannot be determined)`,
+          `Include target '${rawPath}' could not be parsed - it has syntax errors (include() would fail at runtime, and its leaked globals cannot be determined)`,
           argStart, argEnd,
           DiagnosticSeverity.Error
         );
@@ -3575,7 +3575,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (resolvedUri === this.textDocument.uri) {
         this.addDiagnosticErrorCode(
           UcodeErrorCode.SELF_IMPORT,
-          `File imports from itself ('${modulePath}') — its own declarations are already in scope`,
+          `File imports from itself ('${modulePath}') - its own declarations are already in scope`,
           sourceNode.start,
           sourceNode.end,
           DiagnosticSeverity.Warning
@@ -3590,7 +3590,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (this.fileResolver.moduleHasParseErrors(resolvedUri)) {
         this.addDiagnosticErrorCode(
           UcodeErrorCode.MODULE_PARSE_ERROR,
-          `Module '${modulePath}' could not be parsed — it has syntax errors`,
+          `Module '${modulePath}' could not be parsed - it has syntax errors`,
           sourceNode.start,
           sourceNode.end,
           DiagnosticSeverity.Error
@@ -4665,7 +4665,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           const rest = /^[0-9a-fA-F]*/.exec(src.slice(node.end + 1))![0];
           const lexeme = `${text}${next}${rest}`;
           this.flagVersionMin('main',
-            `\`${lexeme}\` only parses on {INTRO}'s ucode — older ucode reads the \`${hexE}\` as an exponent marker and eats the \`${next}\` ("Invalid number literal")`,
+            `\`${lexeme}\` only parses on {INTRO}'s ucode - older ucode reads the \`${hexE}\` as an exponent marker and eats the \`${next}\` ("Invalid number literal")`,
             `Put a space before the \`${next}\`: \`${text} ${next}${rest ? ` ${rest}` : ' …'}\``,
             node.start, node.end + 1,
             // On any target below main this is a guaranteed LEX failure of the whole
@@ -6439,7 +6439,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         if (this.strictMode) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.UNDEFINED_VARIABLE,
-            `Loop variable '${iteratorName}' is not declared — under 'use strict', declare it with 'let' (for (let ${iteratorName} in …)).`,
+            `Loop variable '${iteratorName}' is not declared - under 'use strict', declare it with 'let' (for (let ${iteratorName} in …)).`,
             iteratorNode.start,
             iteratorNode.end,
             DiagnosticSeverity.Error,
@@ -6883,7 +6883,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         if (this.strictMode) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.UNDEFINED_VARIABLE,
-            `'${ref.name}' is undefined — likely a host/CLI-injected global (ucode -D ${ref.name}=<json>). `
+            `'${ref.name}' is undefined - likely a host/CLI-injected global (ucode -D ${ref.name}=<json>). `
             + `This file is strict-mode, so this bare read raises "access to undeclared variable" whenever `
             + `${ref.name} is NOT injected. Read it as global.${ref.name} (null when absent) or declare it: /** @global ${ref.name} */.`,
             ref.start,
@@ -6893,7 +6893,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         } else if (readIsGuarded(ref)) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.UNDEFINED_VARIABLE,
-            `'${ref.name}' is undefined — assuming a host/CLI-injected global (ucode -D ${ref.name}=<json>). `
+            `'${ref.name}' is undefined - assuming a host/CLI-injected global (ucode -D ${ref.name}=<json>). `
             + `This read is runtime-guarded (a truthiness test, a type() check, or a dominating earlier guard), `
             + `so an uninjected null is handled. Declare it to silence this: /** @global ${ref.name} */.`,
             ref.start,
@@ -6903,7 +6903,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         } else {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.UNDEFINED_VARIABLE,
-            `'${ref.name}' is undefined — likely a host/CLI-injected global (ucode -D ${ref.name}=<json>). `
+            `'${ref.name}' is undefined - likely a host/CLI-injected global (ucode -D ${ref.name}=<json>). `
             + `An uninjected read is null here: add a runtime check before using the value `
             + `(if (${ref.name}) …, or ${ref.name} ?? <default>) or declare it: /** @global ${ref.name} */.`,
             ref.start,
@@ -8196,10 +8196,10 @@ private addDiagnostic(
           const grows = fn === 'push' || fn === 'unshift';
           const provablyInfinite = grows && !conditional && !bodyHasExit && !conditionallyRebound;
           const message = provablyInfinite
-            ? `'${fn}()' grows '${primaryName}' every iteration and the loop has no exit — infinite loop.`
+            ? `'${fn}()' grows '${primaryName}' every iteration and the loop has no exit - infinite loop.`
             : grows
-              ? `'${fn}()' grows '${primaryName}' while iterating it — ucode iterates by live index, so this may not terminate.`
-              : `'${fn}()' removes from '${primaryName}' while iterating it — ucode iterates by live index, so elements are skipped.`;
+              ? `'${fn}()' grows '${primaryName}' while iterating it - ucode iterates by live index, so this may not terminate.`
+              : `'${fn}()' removes from '${primaryName}' while iterating it - ucode iterates by live index, so elements are skipped.`;
           this.addDiagnosticErrorCode(
             UcodeErrorCode.COLLECTION_MUTATED_DURING_ITERATION,
             message, node.start, node.end,
@@ -8485,7 +8485,7 @@ private addDiagnostic(
 
     const anchor = (callee as MemberExpressionNode).property;
     this.addDiagnostic(
-      `${method}() on a blocking socketpair waits until the peer sends — with nothing written to the other end this hangs forever (and buffered print() output never appears). Pass MSG_DONTWAIT (e.g. ${method}(len, MSG_DONTWAIT)), create the pair with SOCK_NONBLOCK, or send() on the other socket first.`,
+      `${method}() on a blocking socketpair waits until the peer sends - with nothing written to the other end this hangs forever (and buffered print() output never appears). Pass MSG_DONTWAIT (e.g. ${method}(len, MSG_DONTWAIT)), create the pair with SOCK_NONBLOCK, or send() on the other socket first.`,
       anchor.start, anchor.end, DiagnosticSeverity.Warning, UcodeErrorCode.BLOCKING_SOCKETPAIR_RECV,
       this.buildBlockingRecvFixData(node));
   }
@@ -8659,7 +8659,7 @@ private addDiagnostic(
               // in strict and non-strict. Detection needs all three signals (template +
               // global.handle_request + loadfile/include), so false positives are ~impossible.
               this.addDiagnostic(
-                `${name}() in a uhttpd handler aborts the request VM uncatchably — the client gets an empty response, nothing is logged, and try/catch does not help. Use a static \`import\` instead (loadstring() is also safe).`,
+                `${name}() in a uhttpd handler aborts the request VM uncatchably - the client gets an empty response, nothing is logged, and try/catch does not help. Use a static \`import\` instead (loadstring() is also safe).`,
                 c.callee.start, c.callee.end, DiagnosticSeverity.Error,
                 UcodeErrorCode.HANDLER_VM_ABORTING_CALL);
             }
@@ -8869,7 +8869,7 @@ private addDiagnostic(
         // nothing → "declares no handle_request() callback"). Shift the true positive to
         // edit-time rather than a post-deploy runtime failure.
         this.addDiagnostic(
-          `A uhttpd handler must be a \`{% … %}\` template — as written, uhttpd emits this file as the response body and runs no code. Wrap the handler in \`{% … %}\`.`,
+          `A uhttpd handler must be a \`{% … %}\` template - as written, uhttpd emits this file as the response body and runs no code. Wrap the handler in \`{% … %}\`.`,
           site.start, site.end, DiagnosticSeverity.Error,
           UcodeErrorCode.HANDLER_NOT_A_TEMPLATE, { handlerFormFix: { mode: 'wrap' } });
       }
@@ -9343,7 +9343,7 @@ private addDiagnostic(
     const what = na.propName ? `${verb} property '${na.propName}'` : (na.isWrite ? 'setting an element' : 'indexing');
     diagnostic.severity = DiagnosticSeverity.Warning;
     (diagnostic as any).code = UcodeErrorCode.POSSIBLY_NULL_MEMBER_ACCESS;
-    diagnostic.message = `${who} may be null here — ${what} will fail at runtime if it is null. Guard against null${na.isWrite ? '' : ', or use optional chaining (?.)'}.`;
+    diagnostic.message = `${who} may be null here - ${what} will fail at runtime if it is null. Guard against null${na.isWrite ? '' : ', or use optional chaining (?.)'}.`;
   }
 
   /**

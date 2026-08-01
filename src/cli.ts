@@ -25,7 +25,7 @@ import type {
 // from the published version. Bundled by webpack into dist/cli.js.
 const VERSION: string = require('../package.json').version;
 
-const HELP = `ucode-lsp v${VERSION} — ucode language server and checker
+const HELP = `ucode-lsp v${VERSION} - ucode language server and checker
 
 Usage:
   ucode-lsp [options] [paths...]
@@ -61,7 +61,7 @@ const HELP_TYPES = `Type Annotations for ucode-lsp
 ucode-lsp uses JSDoc comments (\`/** ... */\`) to provide type information
 for static analysis, hover info, and autocompletion.
 
-@param — Parameter Types
+@param - Parameter Types
 ------------------------
 Annotate function parameters with their expected types:
 
@@ -75,7 +75,7 @@ An alternative bare syntax is also supported:
 
     /** @param name string - The user's name */
 
-@returns — Return Types
+@returns - Return Types
 -----------------------
 Document the return type of a function:
 
@@ -85,7 +85,7 @@ Document the return type of a function:
 Note: return types are parsed for documentation but type inference
 uses the actual return statements.
 
-@typedef / @property — Custom Types
+@typedef / @property - Custom Types
 ------------------------------------
 Define named object types with typed properties:
 
@@ -128,10 +128,10 @@ Optional types (shorthand for type|null):
     {string?}, {boolean?}
 
 import() expressions:
-    {import('fs')}             — builtin module type
-    {import('fs').file}        — object type from module
-    {import('./config')}       — default export from local file
-    {import('./config').name}  — named export or default export property
+    {import('fs')}             - builtin module type
+    {import('fs').file}        - object type from module
+    {import('./config')}       - default export from local file
+    {import('./config').name}  - named export or default export property
 
 Cross-File Types with import()
 ------------------------------
@@ -162,7 +162,7 @@ Default exports:
         port: 8080,
     };
 
-    // main.uc — import the whole default export
+    // main.uc - import the whole default export
     /** @param {import('./lib/types')} config */
     function start(config) {
         config.host;  // type: string
@@ -200,7 +200,7 @@ UC2006    printf/sprintf: wrong number of format arguments
 UC2007    printf/sprintf: incompatible argument type
 UC4001    Unreachable code after return/break/continue/die()/exit()
 UC4005    A loop mutates the collection it iterates (skips elements, or
-          loops forever — an error when the infinite loop is provable)
+          loops forever - an error when the infinite loop is provable)
 UC7001    Unknown type in @param annotation
 UC7002    @param name does not match any function parameter
 UC7003    Missing @param annotations (strict mode, info severity)
@@ -527,7 +527,7 @@ function runTypeCoverage(files: string[], targetVersion: UcodeTargetVersion): vo
     const pct = totalProbed > 0 ? ((covered / totalProbed) * 100).toFixed(1) : '100.0';
     const checkedFiles = files.length - skipped;
     process.stderr.write(
-        `\nType coverage: ${pct}% — ${covered}/${totalProbed} variable occurrences typed`
+        `\nType coverage: ${pct}% - ${covered}/${totalProbed} variable occurrences typed`
         + ` (${totalUnknown} unknown-type, ${totalNoHover} no-hover)`
         + ` in ${checkedFiles} file${checkedFiles !== 1 ? 's' : ''}`
         + (skipped > 0 ? ` (${skipped} skipped)` : '')

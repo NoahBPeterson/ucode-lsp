@@ -176,7 +176,7 @@ type FunctionLikeNode = FunctionDeclarationNode | FunctionExpressionNode | Arrow
             orig.call(connection, (...args: unknown[]) => {
                 const onErr = (e: unknown) => {
                     if (isStackOverflow(e)) {
-                        connection.console.warn(`ucode-lsp: ${name} skipped — document too deeply nested to analyze`);
+                        connection.console.warn(`ucode-lsp: ${name} skipped - document too deeply nested to analyze`);
                         return fallback;
                     }
                     throw e;
@@ -1199,14 +1199,14 @@ function generateWrapTryCatchQuickFix(diagnostic: Diagnostic, document: TextDocu
         // Emit RUNTIME ucode that enumerates the modules actually on the require search path,
         // so the failure prints what IS available (needs `fs` in scope — import it if absent).
         catchBody =
-            `${baseIndent}${unit}// require() failed — module not found. Available modules on the search path:\n` +
+            `${baseIndent}${unit}// require() failed - module not found. Available modules on the search path:\n` +
             `${baseIndent}${unit}for (let searchdir in REQUIRE_SEARCH_PATH)\n` +
             `${baseIndent}${unit}${unit}for (let modpath in fs.glob(searchdir))\n` +
             `${baseIndent}${unit}${unit}${unit}warn(\`available module: \${modpath}\\n\`);\n` +
             `${baseIndent}${unit}warn(\`require failed: \${e}\\n\`);\n`;
     } else {
         catchBody =
-            `${baseIndent}${unit}// handle the exception — e.message / e.stacktrace\n` +
+            `${baseIndent}${unit}// handle the exception - e.message / e.stacktrace\n` +
             `${baseIndent}${unit}warn(\`caught: \${e}\\n\`);\n`;
     }
     const wrapped =
@@ -3026,23 +3026,23 @@ function analyzeRenameTarget(uri: string, position: { line: number; character: n
     const isDefault = !!exps?.some(e => e.type === 'default' && e.exportedName === canonical!.canonicalName);
     if (!isNamed) {
         return isDefault
-            ? { kind: 'blocked', reason: `'${name}' is a default export — importers bind it positionally; rename each import's local name individually` }
+            ? { kind: 'blocked', reason: `'${name}' is a default export - importers bind it positionally; rename each import's local name individually` }
             : { kind: 'blocked', reason: `'${name}' isn't a resolvable named export` };
     }
     if (hasAliasedImporter(canonical.canonicalUri, canonical.canonicalName)) {
-        return { kind: 'blocked', reason: `'${name}' is imported under an alias elsewhere — cross-file rename of aliased imports isn't supported` };
+        return { kind: 'blocked', reason: `'${name}' is imported under an alias elsewhere - cross-file rename of aliased imports isn't supported` };
     }
     // The export must correspond to a top-level declaration with the SAME name —
     // otherwise it's an export alias (`export { foo as bar }`) or re-export, where a
     // single-name rename would leave the source out of sync with importers.
     const srcAst = astAndDocFor(canonical.canonicalUri)?.ast;
     if (!srcAst || !findTopLevelDeclId(srcAst, canonical.canonicalName)) {
-        return { kind: 'blocked', reason: `'${name}' is exported under a different name (export alias/re-export) — rename its local declaration instead` };
+        return { kind: 'blocked', reason: `'${name}' is exported under a different name (export alias/re-export) - rename its local declaration instead` };
     }
     // A nested local of the same name in the source or any importer would be wrongly
     // rewritten by the name-based cross-file walk — refuse rather than corrupt it.
     if (renameHasShadowingConflict(canonical.canonicalUri, canonical.canonicalName)) {
-        return { kind: 'blocked', reason: `'${name}' is shadowed by a same-named local in another scope — cross-file rename could corrupt it` };
+        return { kind: 'blocked', reason: `'${name}' is shadowed by a same-named local in another scope - cross-file rename could corrupt it` };
     }
     return { kind: 'crossfile', canonicalUri: canonical.canonicalUri, canonicalName: canonical.canonicalName };
 }

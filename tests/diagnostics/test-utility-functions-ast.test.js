@@ -5,7 +5,9 @@ const { errorMonitor } = require('events');
 async function runTests() {
   let serverProcess;
   let requestId = 1;
-  let buffer = '';
+  // Buffer, not string: Content-Length is BYTES; multibyte diagnostic text desyncs
+  // string-based slicing (see test-uci-import-validation.js for the full story).
+  let buffer = Buffer.alloc(0);
   let pendingRequests = new Map();
 
   function createLSPMessage(obj) {
@@ -38,11 +40,11 @@ async function runTests() {
     });
 
     serverProcess.stdout.on('data', (data) => {
-      buffer += data.toString();
+      buffer = Buffer.concat([buffer, data]);
       while (true) {
         const headerEnd = buffer.indexOf('\r\n\r\n');
         if (headerEnd === -1) break;
-        const header = buffer.slice(0, headerEnd);
+        const header = buffer.slice(0, headerEnd).toString('utf8');
         const contentLengthMatch = header.match(/Content-Length: (\d+)/);
         if (!contentLengthMatch) {
           buffer = buffer.slice(headerEnd + 4);
@@ -51,7 +53,7 @@ async function runTests() {
         const contentLength = parseInt(contentLengthMatch[1]);
         const messageStart = headerEnd + 4;
         if (buffer.length < messageStart + contentLength) break;
-        const messageContent = buffer.slice(messageStart, messageStart + contentLength);
+        const messageContent = buffer.slice(messageStart, messageStart + contentLength).toString('utf8');
         buffer = buffer.slice(messageStart + contentLength);
         try {
           const message = JSON.parse(messageContent);

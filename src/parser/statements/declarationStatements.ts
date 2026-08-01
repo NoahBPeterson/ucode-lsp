@@ -593,7 +593,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     const closeBrace = this.peek();
     const expected = kind === 'import' ? "a label, a string or 'default'" : 'a label';
     this.errorAt(
-      `Empty ${kind} list — ucode requires at least one specifier between the braces (expecting ${expected}). ` +
+      `Empty ${kind} list - ucode requires at least one specifier between the braces (expecting ${expected}). ` +
       (kind === 'import'
         ? 'For a side-effect-only import, drop the braces and the `from`: import "module";'
         : 'Remove the statement if nothing is exported.'),

@@ -1980,7 +1980,7 @@ export class TypeChecker {
     let hint: string;
     if (fixes) hint = ` ucode's type() uses ${fixes.map(f => `"${f}"`).join(' / ')}.`;
     else if (lit === 'null' || lit === 'undefined' || lit === 'nil' || lit === 'none')
-      hint = ` ucode has no "${lit}" type — type(null) returns null; test \`x == null\` instead.`;
+      hint = ` ucode has no "${lit}" type - type(null) returns null; test \`x == null\` instead.`;
     else hint = ` Valid type() results: ${[...TYPE_RESULT_STRINGS].map(s => `"${s}"`).join(', ')}.`;
 
     const base = {
@@ -2096,7 +2096,7 @@ export class TypeChecker {
     } else { // 'coercing'
       const strictOp = op === '==' ? '===' : '!==';
       this.warnings.push({
-        message: `ucode \`${op}\` coerces here (${descL} vs ${descR}): this is a value comparison via numeric coercion, not strict equality — e.g. \`5 == "5"\` is true. \`${strictOp}\` would be always-false between these distinct types, so if the coercion is unintended, convert one operand to match.`,
+        message: `ucode \`${op}\` coerces here (${descL} vs ${descR}): this is a value comparison via numeric coercion, not strict equality - e.g. \`5 == "5"\` is true. \`${strictOp}\` would be always-false between these distinct types, so if the coercion is unintended, convert one operand to match.`,
         start: node.start, end: node.end, severity: 'warning', code: UcodeErrorCode.COERCING_EQUALITY,
       });
     }
@@ -2216,7 +2216,7 @@ export class TypeChecker {
       : (freshSide.type === 'FunctionExpression' || freshSide.type === 'ArrowFunctionExpression') ? 'function'
       : 'regexp';
     const kindWord = noun === 'function' ? 'function value' : `${noun} literal`;
-    let message = `A freshly-created ${kindWord} has a unique reference, so \`${op}\` here compares ${noun} references against a value it can never be — always ${neg ? 'true' : 'false'}.`;
+    let message = `A freshly-created ${kindWord} has a unique reference, so \`${op}\` here compares ${noun} references against a value it can never be - always ${neg ? 'true' : 'false'}.`;
     if (withFix)
       message += ` In ucode \`==\`/\`===\` compare ${noun} references, not whether the ${noun} contents are equivalent;` +
         (noun === 'regexp'
@@ -2235,7 +2235,7 @@ export class TypeChecker {
     const op = node.operator;
     const noun = this.refNoun([...L, ...R]);
     const thing = noun === 'reference' ? 'value' : noun;
-    let message = `ucode \`${op}\` compares ${noun === 'reference' ? 'references' : `${noun} references`} here, not their contents — it is true only when both variables hold the same ${thing} (the same reference), not when two separate ${thing}s have equal contents. \`==\` and \`===\` behave identically on references in ucode.`;
+    let message = `ucode \`${op}\` compares ${noun === 'reference' ? 'references' : `${noun} references`} here, not their contents - it is true only when both variables hold the same ${thing} (the same reference), not when two separate ${thing}s have equal contents. \`==\` and \`===\` behave identically on references in ucode.`;
     if (withFix)
       message += noun === 'regexp'
         ? ` To compare by value, compare their string forms (e.g. \`("" + a) == ("" + b)\`).`
@@ -2446,7 +2446,7 @@ export class TypeChecker {
       // message claimed `in` "requires" a collection, implying a throw — it doesn't;
       // the real defect is that the test can never succeed.)
       this.errors.push({
-        message: `'in' over a ${this.getTypeDescription(rightTypeData)} is always false — 'in' tests object keys or array elements`,
+        message: `'in' over a ${this.getTypeDescription(rightTypeData)} is always false - 'in' tests object keys or array elements`,
         start: node.right.start,
         end: node.right.end,
         severity: 'error',
@@ -3325,7 +3325,7 @@ export class TypeChecker {
       if (disallowed.length === members.length) {
         // Definite mismatch: no member can satisfy the contract.
         this.warnings.push({
-          message: `Function '${fnDisplayName}' expects ${allowedStr} for argument ${i + 1}, got ${this.getTypeDescription(actualTypeData)} — it will return null`,
+          message: `Function '${fnDisplayName}' expects ${allowedStr} for argument ${i + 1}, got ${this.getTypeDescription(actualTypeData)} - it will return null`,
           start: arg.start, end: arg.end, severity: 'warning',
           code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
         });
@@ -3809,7 +3809,7 @@ export class TypeChecker {
     const isWrite = this.isAssignmentTargetContext();
     const verb = isWrite ? 'setting' : 'accessing';
     const base = {
-      message: `${who} may be null here — ${verb} property '${(node.property as IdentifierNode).name}' will fail at runtime if it is null. Guard against null${isWrite ? '' : ', or use optional chaining (?.)'}.`,
+      message: `${who} may be null here - ${verb} property '${(node.property as IdentifierNode).name}' will fail at runtime if it is null. Guard against null${isWrite ? '' : ', or use optional chaining (?.)'}.`,
       start: node.property.start,
       end: node.property.end,
       code: UcodeErrorCode.POSSIBLY_NULL_MEMBER_ACCESS,
@@ -4362,10 +4362,10 @@ export class TypeChecker {
         let message: string;
         if (isWrite) {
           const what = prop ? `set property '${prop}' on` : 'set an element of';
-          message = `Cannot ${what} a null value${who} — this is a runtime error in ucode (attempt to set property on null). Assign a non-null value first, or guard against null.`;
+          message = `Cannot ${what} a null value${who} - this is a runtime error in ucode (attempt to set property on null). Assign a non-null value first, or guard against null.`;
         } else {
           const what = prop ? `access property '${prop}' of` : 'index into';
-          message = `Cannot ${what} a null value${who} — this is a runtime error in ucode. Use optional chaining (?.) if the value may be null.`;
+          message = `Cannot ${what} a null value${who} - this is a runtime error in ucode. Use optional chaining (?.) if the value may be null.`;
         }
         this.errors.push({
           message,
@@ -4430,7 +4430,7 @@ export class TypeChecker {
         // not derivable from the arguments — verified in nl80211.c.) Fall through so the
         // object member can still resolve the type.
         const base = {
-          message: `Property '${propertyName}' is accessed on a value that may be an array — arrays have no properties (the access returns null). Narrow the type or guard the array case.`,
+          message: `Property '${propertyName}' is accessed on a value that may be an array - arrays have no properties (the access returns null). Narrow the type or guard the array case.`,
           start: node.property.start,
           end: node.property.end,
           code: UcodeErrorCode.POSSIBLY_ARRAY_MEMBER_ACCESS,

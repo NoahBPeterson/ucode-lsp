@@ -59,7 +59,7 @@ describe('CLI --type-coverage', () => {
 
   test('prints a coverage summary and suppresses normal diagnostics', () => {
     const { stdout, stderr } = runCli(['--type-coverage', file]);
-    expect(stderr).toMatch(/Type coverage: \d+\.\d% — \d+\/\d+ variable occurrences typed/);
+    expect(stderr).toMatch(/Type coverage: \d+\.\d% - \d+\/\d+ variable occurrences typed/);
     expect(stderr).toContain('unknown-type');
     expect(stderr).toContain('no-hover');
     // audit mode replaces the diagnostics listing (undeclared_thing would be UC1001)

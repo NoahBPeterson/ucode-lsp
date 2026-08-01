@@ -9,7 +9,12 @@ describe('UCI Module Import Validation Tests', function() {
 
   let serverProcess;
   let requestId = 1;
-  let buffer = '';
+  // LSP wire buffer. MUST be a Buffer, not a string: Content-Length counts BYTES,
+  // and a diagnostic containing multibyte UTF-8 (e.g. UC6019's em dash) makes the
+  // byte length exceed the JS string length — string-based slicing over-consumes
+  // into the next message and desyncs the stream (this file's two Edge Case tests
+  // timed out exactly that way from 0.7.73 on).
+  let buffer = Buffer.alloc(0);
   let pendingRequests = new Map();
 
   // Helper function to create LSP message with Content-Length header
@@ -25,14 +30,14 @@ describe('UCI Module Import Validation Tests', function() {
     });
 
     serverProcess.stdout.on('data', (data) => {
-      buffer += data.toString();
-      
-      // Process complete LSP messages
+      buffer = Buffer.concat([buffer, data]);
+
+      // Process complete LSP messages (byte-accurate framing)
       while (true) {
         const headerEnd = buffer.indexOf('\r\n\r\n');
         if (headerEnd === -1) break;
-        
-        const header = buffer.slice(0, headerEnd);
+
+        const header = buffer.slice(0, headerEnd).toString('utf8');
         const contentLengthMatch = header.match(/Content-Length: (\d+)/);
         
         if (!contentLengthMatch) {
@@ -47,9 +52,9 @@ describe('UCI Module Import Validation Tests', function() {
           break; // Wait for more data
         }
         
-        const messageContent = buffer.slice(messageStart, messageStart + contentLength);
+        const messageContent = buffer.slice(messageStart, messageStart + contentLength).toString('utf8');
         buffer = buffer.slice(messageStart + contentLength);
-        
+
         try {
           const message = JSON.parse(messageContent);
           

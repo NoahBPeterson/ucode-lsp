@@ -559,7 +559,7 @@ export class BuiltinValidator {
         if (gracefulNull) {
           // Total builtin: the wrong type returns null, not a crash → warning, not error.
           this.warnings.push({
-            message: `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()} — it will return null`,
+            message: `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()} - it will return null`,
             start: diagStart, end: diagEnd, severity: 'warning', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
           });
           return false;
@@ -697,7 +697,7 @@ export class BuiltinValidator {
         // crash → warning in both modes, not a hard error (#36).
         if (gracefulNull) {
           this.warnings.push({
-            message: `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()} — it will return null`,
+            message: `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()} - it will return null`,
             start: diagStart, end: diagEnd, severity: 'warning', code: UcodeErrorCode.INVALID_PARAMETER_TYPE
           });
           return false;
@@ -1788,10 +1788,10 @@ export class BuiltinValidator {
     for (const inv of invalid) {
       const message =
         inv.kind === 'star'
-          ? `${funcName}(): ucode does not support '*' dynamic width/precision — '${inv.text}' prints literally and consumes no argument`
+          ? `${funcName}(): ucode does not support '*' dynamic width/precision - '${inv.text}' prints literally and consumes no argument`
           : inv.kind === 'length'
-          ? `${funcName}(): ucode has no printf length modifiers (l/h/z/j/t) — '${inv.text}' prints literally and consumes no argument`
-          : `${funcName}(): '${inv.text}' is not a ucode format conversion — it prints literally and consumes no argument`;
+          ? `${funcName}(): ucode has no printf length modifiers (l/h/z/j/t) - '${inv.text}' prints literally and consumes no argument`
+          : `${funcName}(): '${inv.text}' is not a ucode format conversion - it prints literally and consumes no argument`;
       this.warnings.push({ message, start: formatArg.start, end: formatArg.end, severity: 'warning', code: UcodeErrorCode.INVALID_FORMAT_SPECIFIER });
     }
 
@@ -2092,7 +2092,7 @@ export class BuiltinValidator {
         const name = (arg0 as LiteralNode).value as string;
         if (/[^A-Za-z0-9_.]/.test(name)) {
           this.errors.push({
-            message: `require() cannot load a path — module names may only contain letters, digits, `
+            message: `require() cannot load a path - module names may only contain letters, digits, `
               + `'_' and '.' ('.' maps to '/' against REQUIRE_SEARCH_PATH templates), so `
               + `'${name}' can never resolve and this call always throws. Use `
               + `import { … } from "${name}" (compile-time, importer-relative) or `
@@ -2192,7 +2192,7 @@ export class BuiltinValidator {
       if (!rawPath.startsWith('/')) {
         this.warnings.push({
           message: `loadfile() resolves '${rawPath}' against the ucode process's working `
-            + `directory (wherever ucode was launched), not this file's directory — under `
+            + `directory (wherever ucode was launched), not this file's directory - under `
             + `procd/init the CWD is typically '/', so this works in dev and breaks deployed. `
             + `Use an absolute path, or sourcepath(0, true) + "/${rawPath.replace(/^\.\//, '')}" `
             + `for file-relative loading.`,
