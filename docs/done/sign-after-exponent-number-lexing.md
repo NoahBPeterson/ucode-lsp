@@ -1,6 +1,17 @@
 # Sign-after-exponent number lexing: `1e+5` false positive + new upstream hex rule
 
-Status: **✅ SHIPPED 0.7.76 (user-tested).** `isNumericChar` now takes the
+Status: **✅ SHIPPED 0.7.76 (user-tested, committed eb5a411); 0.7.77 follow-up (uncommitted)
+upgraded the UC6005 to an unconditional ERROR below main** — a parse-level gate has no guard or
+fallback (the target's lexer rejects the file outright), unlike the availability-gate UC6005s
+that stay warnings in non-strict. `flagVersionMin` gained an optional severity override for
+this class. 0.7.77 also fixed the UC6005 QUICK FIX: the server offered one unconditional
+"Add ';'" for every UC6005 (built for `export-function-no-semicolon`), which mangled
+`0x1e+2` into `0x1e+;2`. UC6005 diagnostics now carry `data.feature` (stamped by
+`flagVersionFeature`/`flagVersionMin`) and the server dispatches per feature:
+`hex-literal-sign-split` inserts spaces around the sign (`0x1e+2` → `0x1e + 2`, via the
+analyzer-stamped `data.signOffset` = the AST literal's end), export-function keeps "Add ';'",
+and availability gates get only the retarget command. E2e:
+`tests/providers/test-hex-sign-quickfix.test.js`. `isNumericChar` now takes the
 last char of the lexeme (fixing the `1e+5` false positive) and exempts `0x` literals from sign
 consumption (upstream `65d41a1` rule); the analyzer's new `visitLiteral` flags UC6005 via a
 direct `flagVersionMin('main', …)` call (not a `VERSION_FEATURES` entry — the message embeds

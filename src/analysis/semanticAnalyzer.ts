@@ -294,7 +294,8 @@ export class SemanticAnalyzer extends BaseVisitor {
   private flagVersionFeature(feature: VersionGatedFeature, start: number, end: number): void {
     if (!targetLacksFeature(this.targetVersion, feature.introducedIn)) return;
     this.flagVersionMin(feature.introducedIn,
-      `${feature.label} requires {INTRO}'s ucode`, `To stay compatible, ${feature.remedy}`, start, end);
+      `${feature.label} requires {INTRO}'s ucode`, `To stay compatible, ${feature.remedy}`, start, end,
+      undefined, { feature: feature.id });
   }
 
   /** Emit UC6006 (Information) when `module.symbol` is compiled only on a specific
@@ -327,13 +328,21 @@ export class SemanticAnalyzer extends BaseVisitor {
    *  time), so under strict it's a hard error like the other strict escalations.
    *  Non-strict keeps it a warning since the gate is keyed on the configured
    *  `ucode.targetVersion` assumption rather than a defect in the source. */
-  private flagVersionMin(introducedIn: UcodeTargetVersion, what: string, remedy: string, start: number, end: number): void {
+  private flagVersionMin(introducedIn: UcodeTargetVersion, what: string, remedy: string, start: number, end: number,
+      severityOverride?: DiagnosticSeverity, data?: unknown): void {
     if (!targetLacksFeature(this.targetVersion, introducedIn)) return;
     const intro = introducedIn === 'main' ? 'OpenWrt main/snapshot' : `OpenWrt ${introducedIn}`;
+    // severityOverride: PARSE-level gates (the target's lexer/parser rejects the very
+    // token sequence, e.g. the `0x1e+2` hex-sign split) pass Error unconditionally —
+    // there is no guard, fallback, or runtime path that avoids a compile failure, unlike
+    // the availability gates (missing module/function) that stay soft in non-strict.
+    // data carries `{ feature }` (+ per-feature fix offsets) so the server's quick-fix
+    // dispatch can match the right edit — never a one-size-fits-all fix on UC6005.
     this.addDiagnosticErrorCode(
       UcodeErrorCode.TARGET_VERSION_UNSUPPORTED,
       `${what.replace('{INTRO}', intro)}, but the configured target is OpenWrt ${this.targetVersion}. ${remedy} — or change \`ucode.targetVersion\`.`,
-      start, end, this.strictMode ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning,
+      start, end, severityOverride ?? (this.strictMode ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning),
+      data,
     );
   }
 
@@ -4658,7 +4667,12 @@ export class SemanticAnalyzer extends BaseVisitor {
           this.flagVersionMin('main',
             `\`${lexeme}\` only parses on {INTRO}'s ucode — older ucode reads the \`${hexE}\` as an exponent marker and eats the \`${next}\` ("Invalid number literal")`,
             `Put a space before the \`${next}\`: \`${text} ${next}${rest ? ` ${rest}` : ' …'}\``,
-            node.start, node.end + 1);
+            node.start, node.end + 1,
+            // On any target below main this is a guaranteed LEX failure of the whole
+            // file — always an error, not a strict-gated warning. signOffset (the AST
+            // literal's end = the sign character) drives the space-insertion quick fix.
+            DiagnosticSeverity.Error,
+            { feature: 'hex-literal-sign-split', signOffset: node.end });
         }
       }
     }

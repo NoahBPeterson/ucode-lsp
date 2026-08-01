@@ -1,5 +1,6 @@
 {
   "lastSupportedCommit": "3ec4e5c",
-  "lastChecked": "2026-06-07",
-  "description": "Last ucode commit that LSP features have been updated to support"
+  "lastChecked": "2026-08-01",
+  "lastReviewedCommit": "81205a2",
+  "description": "lastSupportedCommit: last ucode commit that LSP features have been updated to support. lastReviewedCommit: last upstream commit reviewed for gaps (tickets in docs/: sign-after-exponent-number-lexing, slash-star-slash-comment-change, named-funcexpr-let-const-crash, for-loop-leading-declarator, popen-array-command, memdump-fd-and-fileno, nl80211-plink-constants, shorthand-method-declarations)."
 }

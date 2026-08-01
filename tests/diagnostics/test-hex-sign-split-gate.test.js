@@ -28,6 +28,16 @@ test('0x1e+2 on the default 25.12 target → UC6005 (invalid number literal ther
   expect(codesOf(diags)).toContain('UC6005');
 });
 
+test('the hex-sign UC6005 is an ERROR, full stop — strict mode is not consulted', () => {
+  // A parse-level gate has no guard or fallback (the target cannot lex the file), so
+  // unlike availability gates there is no strict/non-strict severity split: the
+  // severityOverride bypasses the strictMode check entirely. Same Error either way.
+  for (const src of ['let x = 0x1e+2;\nprint(x);\n', "'use strict';\nlet x = 0x1e+2;\nprint(x);\n"]) {
+    const gate = diagnostics(src, '25.12').find((d) => String(d.code) === 'UC6005');
+    expect(gate.severity).toBe(1); // DiagnosticSeverity.Error
+  }
+});
+
 test('0x1e+2 on target main → clean (master splits the token)', () => {
   const diags = diagnostics('let x = 0x1e+2;\nprint(x);\n', 'main');
   expect(codesOf(diags)).not.toContain('UC6005');

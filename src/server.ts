@@ -1690,21 +1690,51 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 codeActions.push(...generateDeclareGlobalQuickFix(diagnostic, document, params.textDocument.uri));
             }
 
-            // UC6005: syntax valid in newer ucode but not the configured target. Offer
-            // the compat fix (here: add the trailing `;`) plus a command to retarget.
+            // UC6005: syntax valid in newer ucode but not the configured target. The compat
+            // fix is dispatched per feature via diagnostic.data.feature — a UC6005 covers
+            // many divergences and each needs a different edit (the old unconditional
+            // "add ';'" spliced a semicolon into e.g. `0x1e+2` → `0x1e+;2`). Availability
+            // gates (missing module/function) have no syntax fix and only get the retarget.
             if (diagnostic.code === 'UC6005') {
+                const feature = (diagnostic as any).data?.feature;
+                if (feature === 'export-function-no-semicolon') {
+                    codeActions.push({
+                        title: `Add ';' (compatible with OpenWrt ${ucodeTargetVersion})`,
+                        kind: CodeActionKind.QuickFix,
+                        diagnostics: [diagnostic],
+                        isPreferred: true,
+                        edit: { changes: { [params.textDocument.uri]: [TextEdit.insert(diagnostic.range.end, ';')] } },
+                    });
+                }
+                if (feature === 'hex-literal-sign-split' && typeof (diagnostic as any).data?.signOffset === 'number') {
+                    // Un-bond the sign from the hex literal: ` ` before it, and after it too
+                    // unless whitespace already follows (`0x1e+2` → `0x1e + 2`). signOffset is
+                    // the AST literal's end offset, stamped by the analyzer.
+                    const signOffset: number = (diagnostic as any).data.signOffset;
+                    const text = document.getText();
+                    const sign = text[signOffset] ?? '';
+                    const edits = [TextEdit.insert(document.positionAt(signOffset), ' ')];
+                    if (!/\s/.test(text[signOffset + 1] ?? ' ')) {
+                        edits.push(TextEdit.insert(document.positionAt(signOffset + 1), ' '));
+                    }
+                    codeActions.push({
+                        title: `Separate the \`${sign}\` with spaces`,
+                        kind: CodeActionKind.QuickFix,
+                        diagnostics: [diagnostic],
+                        isPreferred: true,
+                        edit: { changes: { [params.textDocument.uri]: edits } },
+                    });
+                }
                 codeActions.push({
-                    title: `Add ';' (compatible with OpenWrt ${ucodeTargetVersion})`,
+                    // "Target a different OpenWrt release": the diagnostic message above it
+                    // already establishes that a target is an OpenWrt release whose pinned
+                    // ucode is what's checked — the title continues that sentence. ("ucode
+                    // version" would promise versions ucode doesn't have; the picker shows
+                    // OpenWrt release names.)
+                    title: 'Target a different OpenWrt release…',
                     kind: CodeActionKind.QuickFix,
                     diagnostics: [diagnostic],
-                    isPreferred: true,
-                    edit: { changes: { [params.textDocument.uri]: [TextEdit.insert(diagnostic.range.end, ';')] } },
-                });
-                codeActions.push({
-                    title: 'Change ucode target version…',
-                    kind: CodeActionKind.QuickFix,
-                    diagnostics: [diagnostic],
-                    command: { title: 'Change ucode target version', command: 'ucode.selectTargetVersion' },
+                    command: { title: 'Target a different OpenWrt release', command: 'ucode.selectTargetVersion' },
                 });
             }
 
