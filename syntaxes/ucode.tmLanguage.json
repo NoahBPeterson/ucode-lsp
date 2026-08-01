@@ -105,9 +105,9 @@
               "name": "string.regexp.ucode"
             }
           },
-          "end": "(/[gis]*)|((?<!\\\\)$)",
+          "end": "/[gis]*",
           "endCaptures": {
-            "1": {
+            "0": {
               "name": "string.regexp.ucode"
             }
           },
@@ -118,8 +118,8 @@
             },
             {
               "name": "constant.other.character-class.regexp.ucode",
-              "begin": "\\[",
-              "end": "\\]|((?<!\\\\)$)",
+              "begin": "\\[\\^?\\]?",
+              "end": "\\]",
               "patterns": [
                 {
                   "name": "constant.character.escape.regexp.ucode",
