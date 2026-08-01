@@ -224,3 +224,8 @@ export const VERSION_FEATURES = {
     remedy: 'add a `;` after the function',
   },
 } as const satisfies Record<string, VersionGatedFeature>;
+// NOTE: the `0x1e+2` hex-sign-split gate (docs/sign-after-exponent-number-lexing.md) is
+// deliberately NOT a VERSION_FEATURES entry: its message embeds the user's own lexeme, so
+// semanticAnalyzer.visitLiteral calls flagVersionMin('main', …) directly. Upstream 65d41a1
+// (2026-07-04, after every OpenWrt pin incl. main's 3ec4e5c) made the split legal; older
+// lexers eat the sign → "Invalid number literal". Verified on both oracles 2026-08-01.

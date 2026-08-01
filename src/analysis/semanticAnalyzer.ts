@@ -4637,6 +4637,33 @@ export class SemanticAnalyzer extends BaseVisitor {
     return this.typeChecker.getCommonReturnType(types);
   }
 
+  override visitLiteral(node: LiteralNode): void {
+    // `0x1e+2` portability (docs/sign-after-exponent-number-lexing.md): a hex literal
+    // whose text ends in `e`/`E` with a sign character bonded directly to it lexes as
+    // one invalid lexeme on every target below upstream 65d41a1 ("Invalid number
+    // literal") — only master splits it into `0x1e + 2`. Our lexer always splits, so
+    // the condition survives in the source text: sign char at exactly `node.end`.
+    if (node.literalType === 'number' || node.literalType === 'double') {
+      const src = this.textDocument.getText();
+      const next = src[node.end];
+      if ((next === '+' || next === '-')) {
+        const text = src.slice(node.start, node.end);
+        const hexE = text[text.length - 1];
+        if ((text[0] === '0' && (text[1] === 'x' || text[1] === 'X'))
+            && (hexE === 'e' || hexE === 'E')) {
+          // Show the user their own token as old ucode lexes it: literal + sign +
+          // whatever digits follow (`0x1e+2`), so the message names the exact code.
+          const rest = /^[0-9a-fA-F]*/.exec(src.slice(node.end + 1))![0];
+          const lexeme = `${text}${next}${rest}`;
+          this.flagVersionMin('main',
+            `\`${lexeme}\` only parses on {INTRO}'s ucode — older ucode reads the \`${hexE}\` as an exponent marker and eats the \`${next}\` ("Invalid number literal")`,
+            `Put a space before the \`${next}\`: \`${text} ${next}${rest ? ` ${rest}` : ' …'}\``,
+            node.start, node.end + 1);
+        }
+      }
+    }
+  }
+
   override visitFunctionExpression(node: FunctionExpressionNode): void {
     // Consume the pending name immediately so nested anonymous functions in the
     // body don't inherit it.

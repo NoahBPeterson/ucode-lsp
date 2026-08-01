@@ -143,3 +143,76 @@ test('astral character is reported as one code point over a two-unit range', () 
   expect(err.end).toBe(2); // surrogate pair spans two UTF-16 units
   expect(String(err.value)).toBe('Unexpected character: \u{1F600}');
 });
+
+// ── Sign-after-exponent lexing (docs/sign-after-exponent-number-lexing.md) ────
+// `1e+5` was a false "Invalid number literal": parseNumber passes the whole lexeme
+// as `prev`, and the sign check compared the WHOLE string to 'e', so a sign after a
+// decimal exponent was never consumed. Real ucode (old and master 81205a2) accepts
+// signed decimal exponents everywhere; only a `0x` literal exempts the sign
+// (upstream 65d41a1: in hex, `e` is a digit — `0x1e+2` splits into `0x1e + 2`).
+// Every expectation below verified against both binaries on 2026-08-01.
+test('1e+5 lexes to the double 100000 with no error', () => {
+  const { errors } = lex('let x = 1e+5;');
+  expect(errors.length).toBe(0);
+  const t = firstNumberToken('let x = 1e+5;');
+  expect(t.type).toBe(TokenType.TK_DOUBLE);
+  expect(t.value).toBe(100000);
+});
+test('1e-5 lexes to the double 0.00001 with no error', () => {
+  const { errors } = lex('let x = 1e-5;');
+  expect(errors.length).toBe(0);
+  expect(firstNumberToken('let x = 1e-5;').value).toBeCloseTo(1e-5, 10);
+});
+test('1E+5 (uppercase exponent) lexes with no error', () => {
+  const { errors } = lex('let x = 1E+5;');
+  expect(errors.length).toBe(0);
+  expect(firstNumberToken('let x = 1E+5;').value).toBe(100000);
+});
+test('1.5e+3 lexes to the double 1500 with no error', () => {
+  const { errors } = lex('let x = 1.5e+3;');
+  expect(errors.length).toBe(0);
+  expect(firstNumberToken('let x = 1.5e+3;').value).toBe(1500);
+});
+test('1e5 (no sign) still lexes fine', () => {
+  const { errors } = lex('let x = 1e5;');
+  expect(errors.length).toBe(0);
+  expect(firstNumberToken('let x = 1e5;').value).toBe(100000);
+});
+test('1e is still an Invalid number literal (UC6016)', () => {
+  const { errors } = lex('let x = 1e;');
+  expect(errors.length).toBe(1);
+  expect(errors[0].code).toBe('UC6016');
+});
+test('1e+ (sign but no digits) is an Invalid number literal, matching ucode', () => {
+  const { errors } = lex('let x = 1e+;');
+  expect(errors.length).toBe(1);
+  expect(errors[0].code).toBe('UC6016');
+});
+test('0o1e+2 consumes the sign (non-hex prefix) and errors, matching ucode', () => {
+  // old AND new ucode: "Invalid number literal" — only 0x literals exempt the sign
+  const { errors } = lex('let x = 0o1e+2;');
+  expect(errors.length).toBe(1);
+  expect(errors[0].code).toBe('UC6016');
+});
+test('0x1e+2 splits into 0x1e + 2 with no error (hex exemption, upstream 65d41a1)', () => {
+  const { tokens, errors } = lex('let x = 0x1e+2;');
+  expect(errors.length).toBe(0);
+  const nums = tokens.filter((t) => t.type === TokenType.TK_NUMBER || t.type === TokenType.TK_DOUBLE);
+  expect(nums.length).toBe(2);
+  expect(nums[0].value).toBe(0x1e);
+  expect(nums[1].value).toBe(2);
+  expect(tokens.some((t) => t.type === TokenType.TK_ADD)).toBe(true);
+});
+test('0X1E-2 (uppercase prefix) splits the same way', () => {
+  const { tokens, errors } = lex('let x = 0X1E-2;');
+  expect(errors.length).toBe(0);
+  const nums = tokens.filter((t) => t.type === TokenType.TK_NUMBER || t.type === TokenType.TK_DOUBLE);
+  expect(nums.length).toBe(2);
+  expect(nums[0].value).toBe(0x1e);
+  expect(tokens.some((t) => t.type === TokenType.TK_SUB)).toBe(true);
+});
+test('0xe+1 (bare e hex digit) splits with no error', () => {
+  const { errors } = lex('let x = 0xe+1;');
+  expect(errors.length).toBe(0);
+  expect(firstNumberToken('let x = 0xe+1;').value).toBe(0xe);
+});

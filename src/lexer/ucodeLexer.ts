@@ -555,7 +555,7 @@ export class UcodeLexer {
         );
     }
 
-    /** Mirror is_numeric_char (ucode/lexer.c:577). `prev` is the last char already in the lexeme. */
+    /** Mirror is_numeric_char (ucode/lexer.c:577). `prev` is the lexeme consumed so far. */
     private isNumericChar(c: string, prev: string): boolean {
         if (c >= '0' && c <= '9') return true;
         if (c === '.') return true;
@@ -566,8 +566,14 @@ export class UcodeLexer {
             return prev !== '';
         }
         if (c === '+' || c === '-') {
-            // A sign is only part of the number right after an exponent char.
-            return prev.toLowerCase() === 'e';
+            // A sign is only part of the number right after a decimal exponent char
+            // (`1e+5`). In a `0x` literal `e`/`E` is a hex digit, not an exponent
+            // marker, so the sign never bonds there and `0x1e+2` splits into
+            // `0x1e + 2` (upstream 65d41a1; on older ucode the bonded lexeme is an
+            // "Invalid number literal" — version-gated in the analyzer, see
+            // docs/sign-after-exponent-number-lexing.md).
+            if (prev[prev.length - 1]?.toLowerCase() !== 'e') return false;
+            return !(prev[0] === '0' && prev[1]?.toLowerCase() === 'x');
         }
         return false;
     }
