@@ -418,8 +418,7 @@ function getUnifiedMemberHover(
     if (chain && chain.length >= 3) {
         // Position-aware lookup: the base is often a function PARAM or local, which a
         // bare global lookup never finds (scope-correct API is lookupAtPosition).
-        const baseSym = (offset !== undefined ? analysisResult.symbolTable.lookupAtPosition(chain[0]!, offset) : null)
-            ?? analysisResult.symbolTable.lookup(chain[0]!);
+        const baseSym = (offset !== undefined ? analysisResult.symbolTable.resolveReference(chain[0]!, offset) : null);
         if (baseSym) {
             // `nl80211.const.NL80211_*` / `rtnl.const.*` on a namespace import:
             // the leaf is an integer constant with registry documentation.
@@ -466,8 +465,7 @@ function getUnifiedMemberHover(
     }
 
     // Look up the object in the symbol table
-    const symbol = (offset !== undefined ? analysisResult.symbolTable.lookupAtPosition(objectName, offset) : null)
-        ?? analysisResult.symbolTable.lookup(objectName);
+    const symbol = (offset !== undefined ? analysisResult.symbolTable.resolveReference(objectName, offset) : null);
 
     if (!symbol) return null;
 
@@ -932,11 +930,7 @@ export function handleHover(
 
             // Look up the object in the symbol table to determine its module
             if (analysisResult && analysisResult.symbolTable) {
-                // Try position-aware lookup first for correct scoping, then fall back
-                let symbol = analysisResult.symbolTable.lookupAtPosition(objectName, offset);
-                if (!symbol) {
-                    symbol = analysisResult.symbolTable.lookup(objectName);
-                }
+                const symbol = analysisResult.symbolTable.resolveReference(objectName, offset);
                 if (symbol && symbol.propertyTypes && symbol.propertyTypes.has(memberName)) {
                     // Flow-sensitive: show the most-recent write at/before the hovered position,
                     // so `rv.days` reads `object` before `rv.days = keys(rv.days)` and
@@ -1221,7 +1215,9 @@ export function handleHover(
         // as an ordinary TK_LABEL (docs/from-contextual-keyword.md).
         if (token && token.type === TokenType.TK_LABEL && token.value === 'from' && analysisResult) {
             const word = 'from';
-            const symbol = analysisResult.symbolTable.lookup(word);
+            // Position-aware: a function-local `let from` shadows the io import, and this
+            // early-return branch preempts the main hover path (stale-scope audit bug #3).
+            const symbol = analysisResult.symbolTable.resolveReference(word, offset);
             if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'io') {
                 const originalName = symbol.importSpecifier || symbol.name;
                 const isFunctionCall = detectFunctionCall(offset, tokens);
@@ -1250,10 +1246,7 @@ export function handleHover(
             // Check if this is a function call (e.g., test() instead of just test)
             const isFunctionCall = detectFunctionCall(offset, tokens);
             if (isFunctionCall && analysisResult) {
-                let symbol = analysisResult.symbolTable.lookupAtPosition(word, offset);
-                if (!symbol) {
-                    symbol = analysisResult.symbolTable.lookup(word);
-                }
+                const symbol = analysisResult.symbolTable.resolveReference(word, offset);
 
                 if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
                     // Show return type for function calls
@@ -1319,7 +1312,7 @@ export function handleHover(
             // builtin/function lookup below wins for those.
             if (token && token.type === TokenType.TK_LABEL && typeof token.value === 'string' && analysisResult?.ast) {
                 const word = token.value;
-                const sameNameSymbol = analysisResult.symbolTable.lookup(word);
+                const sameNameSymbol = analysisResult.symbolTable.resolveReference(word, offset);
                 const hasUserFunction = (sameNameSymbol && sameNameSymbol.type === SymbolType.FUNCTION) ?? false;
                 if (!hasUserFunction) {
                     const prop = findPropertyKeyAtOffset(analysisResult.ast, offset);
@@ -1359,13 +1352,8 @@ export function handleHover(
 
             // 1. Check for user-defined symbols using the analysis cache (PRIORITY OVER GLOBAL FUNCTIONS)
             if (analysisResult) {
-                // Try position-aware lookup first for correct scoping (local vars shadow globals)
-                let symbol = analysisResult.symbolTable.lookupAtPosition(word, offset);
-
-                // Fall back to regular lookup if position-aware lookup fails
-                if (!symbol) {
-                    symbol = analysisResult.symbolTable.lookup(word);
-                }
+                // Position-aware for correct scoping (local vars shadow globals)
+                let symbol = analysisResult.symbolTable.resolveReference(word, offset);
 
                 // A bare name that's a property of the builtin `global` object
                 // (`global.X = …`) has no declared symbol of its own, but it IS a real
@@ -1373,7 +1361,7 @@ export function handleHover(
                 // shows the function/value instead of nothing. Mirrors the
                 // "Undefined function"/"Undefined variable" suppression for these names.
                 if (!symbol) {
-                    const globalSym = analysisResult.symbolTable.lookup('global');
+                    const globalSym = analysisResult.symbolTable.lookupOpenScopes('global');
                     const propType = globalSym?.propertyTypes?.get(word);
                     if (propType !== undefined) {
                         symbol = {
@@ -1566,7 +1554,7 @@ export function handleHover(
                 if (word === 'const' && tokIdx >= 2) {
                     const baseTok = tokens[tokIdx - 2];
                     const baseName = baseTok?.type === TokenType.TK_LABEL ? String(baseTok.value) : null;
-                    const baseSym = baseName ? analysisResult?.symbolTable.lookup(baseName) : null;
+                    const baseSym = baseName ? analysisResult?.symbolTable.resolveReference(baseName, offset) : null;
                     const nsModule = baseSym?.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*'
                         ? baseSym.importedFrom : null;
                     if (nsModule === 'nl80211' || nsModule === 'rtnl') {
@@ -1603,7 +1591,7 @@ export function handleHover(
             // "no hover" leaves the user guessing; explain where the value comes from.
             if (/^[A-Z][A-Z0-9_]*$/.test(word) && word.length >= 2
                 && !analysisResult?.symbolTable.lookupAtPosition(word, offset)
-                && !analysisResult?.symbolTable.lookup(word)) {
+                && !analysisResult?.symbolTable.lookupOpenScopes(word)) {
                 return {
                     contents: {
                         kind: MarkupKind.Markdown,

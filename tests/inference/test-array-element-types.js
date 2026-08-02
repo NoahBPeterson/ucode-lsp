@@ -30,21 +30,21 @@ function check(label, actual, expected) {
 // Test 1: ARGV should be typed as array<string>
 {
     const result = analyze('let x = ARGV;');
-    const sym = result.symbolTable.lookup('ARGV');
+    const sym = result.symbolTable.lookupOpenScopes('ARGV');
     check('ARGV type', typeToString(sym.dataType), 'array<string>');
 }
 
 // Test 2: ARGV[0] should be string | null
 {
     const result = analyze('let script_path = ARGV[0];');
-    const sym = result.symbolTable.lookup('script_path');
+    const sym = result.symbolTable.lookupOpenScopes('script_path');
     check('ARGV[0] type', typeToString(sym.dataType), 'string | null');
 }
 
 // Test 3: ARGV[1] should also be string | null
 {
     const result = analyze('let arg1 = ARGV[1];');
-    const sym = result.symbolTable.lookup('arg1');
+    const sym = result.symbolTable.lookupOpenScopes('arg1');
     check('ARGV[1] type', typeToString(sym.dataType), 'string | null');
 }
 
@@ -58,7 +58,7 @@ function parse_array(val) {
     return val;
 }
 `);
-    const sym = result.symbolTable.lookup('val');
+    const sym = result.symbolTable.lookupOpenScopes('val');
     check('regular param isRestParam', sym?.isRestParam || false, false);
 }
 
@@ -79,7 +79,7 @@ function foo(a, ...rest) {
 // Test 6: split() result indexed should be string | null
 {
     const result = analyze('let parts = split("a b", " "); let first = parts[0];');
-    const sym = result.symbolTable.lookup('first');
+    const sym = result.symbolTable.lookupOpenScopes('first');
     check('split()[0] type', typeToString(sym.dataType), 'string | null');
 }
 

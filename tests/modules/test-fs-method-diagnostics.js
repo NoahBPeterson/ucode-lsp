@@ -32,7 +32,7 @@ function createMockTypeChecker() {
 // Mock symbol table with fs as a module
 function createMockSymbolTable() {
     return {
-        lookup: (name) => {
+        lookupOpenScopes: (name) => {
             if (name === 'fs') {
                 return {
                     name: 'fs',

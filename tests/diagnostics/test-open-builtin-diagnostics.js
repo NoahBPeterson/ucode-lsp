@@ -10,7 +10,7 @@ function createMockBuiltinFunctions() {
 
 function createMockSymbolTable() {
     return {
-        lookup: (name) => {
+        lookupOpenScopes: (name) => {
             // open is a builtin function, not a user-defined variable
             if (name === 'open') {
                 return null; // Not in user symbol table
@@ -79,7 +79,7 @@ function createMockSemanticAnalyzer() {
             
             if (node.name === 'open') {
                 // Check if it's in user symbol table
-                const symbol = symbolTable.lookup(node.name);
+                const symbol = symbolTable.lookupOpenScopes(node.name);
                 
                 if (!symbol) {
                     // Check if it's a builtin function
@@ -101,7 +101,7 @@ function createMockSemanticAnalyzer() {
             console.log(`    - checkIdentifierType called for: ${node.name}`);
             
             if (node.name === 'open') {
-                const symbol = symbolTable.lookup(node.name);
+                const symbol = symbolTable.lookupOpenScopes(node.name);
                 
                 if (!symbol) {
                     // Check if it's a builtin function BEFORE adding error

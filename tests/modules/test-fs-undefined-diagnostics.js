@@ -6,7 +6,7 @@ function createMockSemanticAnalyzer() {
     const diagnostics = [];
     
     const symbolTable = {
-        lookup: (name) => {
+        lookupOpenScopes: (name) => {
             // fs is not defined
             if (name === 'fs') {
                 return null;
@@ -44,7 +44,7 @@ function createMockSemanticAnalyzer() {
             // Simulate semantic analyzer behavior
             if (node.object.type === 'Identifier') {
                 const objectName = node.object.name;
-                const symbol = symbolTable.lookup(objectName);
+                const symbol = symbolTable.lookupOpenScopes(objectName);
                 
                 if (!symbol) {
                     // Only add ONE diagnostic for undefined variable
@@ -69,7 +69,7 @@ function createMockSemanticAnalyzer() {
                 // Don't generate additional errors for the call itself
                 // if the object is undefined
                 const objectName = node.callee.object.name;
-                const symbol = symbolTable.lookup(objectName);
+                const symbol = symbolTable.lookupOpenScopes(objectName);
                 if (!symbol) {
                     // The member expression already handled the error
                     return;

@@ -65,7 +65,7 @@ export function computeRawInlayHints(
         if (node.type === 'VariableDeclaration') {
             for (const d of ((node as VariableDeclarationNode).declarations || [])) {
                 if (d?.id?.type !== 'Identifier' || !isNonObviousInit(d.init)) continue;
-                const sym: Symbol | null = symbolTable?.lookupAtPosition?.(d.id.name, d.id.start) ?? symbolTable?.lookup?.(d.id.name);
+                const sym: Symbol | null = symbolTable?.resolveReference(d.id.name, d.id.start);
                 if (sym?.dataType === undefined) continue;
                 const ts = typeToString(sym.dataType);
                 if (!ts || ts === 'unknown') continue;

@@ -39,8 +39,8 @@ function typeAtRead(code, name, marker) {
     const result = analyze(code);
     const offset = code.lastIndexOf(marker);
     const sym = result.symbolTable.lookupAtPosition
-        ? (result.symbolTable.lookupAtPosition(name, offset) ?? result.symbolTable.lookup(name))
-        : result.symbolTable.lookup(name);
+        ? (result.symbolTable.lookupAtPosition(name, offset) ?? result.symbolTable.lookupOpenScopes(name))
+        : result.symbolTable.lookupOpenScopes(name);
     if (!sym) return '(no-symbol)';
     const t = sym.currentType ?? sym.dataType;
     return t ? typeToString(t) : 'unknown';

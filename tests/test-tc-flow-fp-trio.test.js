@@ -31,7 +31,7 @@ function narrowedAt(code, name, marker) {
 function symType(code, name) {
   const r = analyze(code);
   const off = code.lastIndexOf(name);
-  const s = r.typeChecker.symbolTable.lookupAtPosition(name, off) ?? r.typeChecker.symbolTable.lookup(name);
+  const s = r.typeChecker.symbolTable.lookupAtPosition(name, off) ?? r.typeChecker.symbolTable.lookupOpenScopes(name);
   return s ? typeToString(s.dataType) : null;
 }
 

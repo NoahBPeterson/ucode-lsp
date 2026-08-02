@@ -43,7 +43,7 @@ function analyze(code) {
 // Simulate the hover path for member expressions:
 // Given a symbol from analysis, check if hovering on a method would produce docs
 function simulateMethodHover(result, objectName, methodName) {
-  const symbol = result.symbolTable.lookup(objectName);
+  const symbol = result.symbolTable.lookupOpenScopes(objectName);
   if (!symbol) return null;
   if (ioModuleTypeRegistry.isVariableOfIoType(symbol.dataType)) {
     return ioModuleTypeRegistry.getHandleFunctionDocumentation(methodName);
@@ -57,7 +57,7 @@ function simulateMethodHover(result, objectName, methodName) {
 
 testCase('open() from io: handle type is io.handle', () => {
   const result = analyze(`import { open } from 'io';\nlet handle = open('/tmp/test', 0);`);
-  const sym = result.symbolTable.lookup('handle');
+  const sym = result.symbolTable.lookupOpenScopes('handle');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
   return typeToString(sym.dataType) === 'io.handle | null';
@@ -65,7 +65,7 @@ testCase('open() from io: handle type is io.handle', () => {
 
 testCase('from() from io: handle type is io.handle | null', () => {
   const result = analyze(`import { from } from 'io';\nlet h = from(null);`);
-  const sym = result.symbolTable.lookup('h');
+  const sym = result.symbolTable.lookupOpenScopes('h');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
   return typeToString(sym.dataType) === 'io.handle | null';
@@ -73,7 +73,7 @@ testCase('from() from io: handle type is io.handle | null', () => {
 
 testCase('io.open() namespace: handle type is io.handle', () => {
   const result = analyze(`import * as io from 'io';\nlet h = io.open('/tmp/test', 0);`);
-  const sym = result.symbolTable.lookup('h');
+  const sym = result.symbolTable.lookupOpenScopes('h');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
   return typeToString(sym.dataType) === 'io.handle | null';
@@ -81,7 +81,7 @@ testCase('io.open() namespace: handle type is io.handle', () => {
 
 testCase('io.new() namespace: handle type is io.handle | null', () => {
   const result = analyze(`import * as io from 'io';\nlet h = io.new(1, false);`);
-  const sym = result.symbolTable.lookup('h');
+  const sym = result.symbolTable.lookupOpenScopes('h');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
   return typeToString(sym.dataType) === 'io.handle | null';
@@ -89,7 +89,7 @@ testCase('io.new() namespace: handle type is io.handle | null', () => {
 
 testCase('io.from() namespace: handle type is io.handle | null', () => {
   const result = analyze(`import * as io from 'io';\nlet h = io.from(null);`);
-  const sym = result.symbolTable.lookup('h');
+  const sym = result.symbolTable.lookupOpenScopes('h');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
   return typeToString(sym.dataType) === 'io.handle | null';
@@ -100,7 +100,7 @@ testCase('Second open() call: ptmx type is io.handle | null', () => {
 let handle = open('/tmp/a', 0);
 let ptmx = open('/dev/ptmx', O_RDWR);`;
   const result = analyze(code);
-  const sym = result.symbolTable.lookup('ptmx');
+  const sym = result.symbolTable.lookupOpenScopes('ptmx');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
   return typeToString(sym.dataType) === 'io.handle | null';
@@ -112,7 +112,7 @@ let handle = open('/tmp/a', 0);
 let ptmx = open('/dev/ptmx', O_RDWR);
 let tty = open('/dev/tty', O_RDWR);`;
   const result = analyze(code);
-  const sym = result.symbolTable.lookup('tty');
+  const sym = result.symbolTable.lookupOpenScopes('tty');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
   return typeToString(sym.dataType) === 'io.handle | null';
@@ -120,7 +120,7 @@ let tty = open('/dev/tty', O_RDWR);`;
 
 testCase('open() without io import: type is fs.file | null (not io.handle)', () => {
   const result = analyze(`let f = open('/tmp/test', 'r');`);
-  const sym = result.symbolTable.lookup('f');
+  const sym = result.symbolTable.lookupOpenScopes('f');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
   // Bare builtin open() returns `fs.file | null` (can fail at runtime), matching the
@@ -130,7 +130,7 @@ testCase('open() without io import: type is fs.file | null (not io.handle)', () 
 
 testCase('open() from fs import: type is fs.file | null (not io.handle)', () => {
   const result = analyze(`import { open } from 'fs';\nlet f = open('/tmp/test', 'r');`);
-  const sym = result.symbolTable.lookup('f');
+  const sym = result.symbolTable.lookupOpenScopes('f');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
   return typeToString(sym.dataType) === 'fs.file | null';
@@ -139,7 +139,7 @@ testCase('open() from fs import: type is fs.file | null (not io.handle)', () => 
 testCase('Assignment inference: h = open() from io', () => {
   const code = `import { open } from 'io';\nlet h;\nh = open('/tmp/test', 0);\nprint(h);\n`;
   const result = analyze(code);
-  const sym = result.symbolTable.lookup('h');
+  const sym = result.symbolTable.lookupOpenScopes('h');
   if (!sym) { console.log('    Symbol not found'); return false; }
   // Check at a position after the assignment using SSA
   const afterOffset = code.indexOf('print(h)') + 6;
@@ -231,7 +231,7 @@ testCase('Invalid method on io.handle returns null', () => {
 
 testCase('O_RDONLY imported from io gets constant-specific hover', () => {
   const result = analyze(`import { O_RDONLY } from 'io';\nlet x = O_RDONLY;`);
-  const sym = result.symbolTable.lookup('O_RDONLY');
+  const sym = result.symbolTable.lookupOpenScopes('O_RDONLY');
   if (!sym) { console.log('    Symbol not found'); return false; }
   const name = sym.importSpecifier || sym.name;
   const doc = ioModuleTypeRegistry.getConstantDocumentation(name);
@@ -241,7 +241,7 @@ testCase('O_RDONLY imported from io gets constant-specific hover', () => {
 
 testCase('SEEK_END gets constant-specific hover', () => {
   const result = analyze(`import { SEEK_END } from 'io';\nlet x = SEEK_END;`);
-  const sym = result.symbolTable.lookup('SEEK_END');
+  const sym = result.symbolTable.lookupOpenScopes('SEEK_END');
   if (!sym) { console.log('    Symbol not found'); return false; }
   const doc = ioModuleTypeRegistry.getConstantDocumentation(sym.importSpecifier || sym.name);
   console.log(`    Doc: ${doc.substring(0, 60)}`);
@@ -250,7 +250,7 @@ testCase('SEEK_END gets constant-specific hover', () => {
 
 testCase('F_SETFL gets constant-specific hover', () => {
   const result = analyze(`import { F_SETFL } from 'io';\nlet x = F_SETFL;`);
-  const sym = result.symbolTable.lookup('F_SETFL');
+  const sym = result.symbolTable.lookupOpenScopes('F_SETFL');
   if (!sym) { console.log('    Symbol not found'); return false; }
   const doc = ioModuleTypeRegistry.getConstantDocumentation(sym.importSpecifier || sym.name);
   return doc.includes('F_SETFL') && doc.includes('fcntl');
@@ -258,7 +258,7 @@ testCase('F_SETFL gets constant-specific hover', () => {
 
 testCase('TCSAFLUSH gets constant-specific hover', () => {
   const result = analyze(`import { TCSAFLUSH } from 'io';\nlet x = TCSAFLUSH;`);
-  const sym = result.symbolTable.lookup('TCSAFLUSH');
+  const sym = result.symbolTable.lookupOpenScopes('TCSAFLUSH');
   if (!sym) { console.log('    Symbol not found'); return false; }
   const doc = ioModuleTypeRegistry.getConstantDocumentation(sym.importSpecifier || sym.name);
   return doc.includes('TCSAFLUSH') && doc.includes('discarding');
@@ -266,7 +266,7 @@ testCase('TCSAFLUSH gets constant-specific hover', () => {
 
 testCase('IOC_DIR_RW gets constant-specific hover', () => {
   const result = analyze(`import { IOC_DIR_RW } from 'io';\nlet x = IOC_DIR_RW;`);
-  const sym = result.symbolTable.lookup('IOC_DIR_RW');
+  const sym = result.symbolTable.lookupOpenScopes('IOC_DIR_RW');
   if (!sym) { console.log('    Symbol not found'); return false; }
   const doc = ioModuleTypeRegistry.getConstantDocumentation(sym.importSpecifier || sym.name);
   return doc.includes('IOC_DIR_RW') && doc.includes('Read-write');
@@ -336,7 +336,7 @@ let dup_handle = handle.dup();
 let is_terminal = handle.isatty();
 let closed = handle.close();`;
   const result = analyze(code);
-  const sym = result.symbolTable.lookup('handle');
+  const sym = result.symbolTable.lookupOpenScopes('handle');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
   return typeToString(sym.dataType) === 'io.handle | null';
@@ -353,7 +353,7 @@ ptmx.tcsetattr({}, TCSANOW);
 ptmx.ioctl(0, 0, 0);
 ptmx.close();`;
   const result = analyze(code);
-  const sym = result.symbolTable.lookup('ptmx');
+  const sym = result.symbolTable.lookupOpenScopes('ptmx');
   if (!sym) { console.log('    Symbol not found'); return false; }
   console.log(`    type: ${typeToString(sym.dataType)}`);
   return typeToString(sym.dataType) === 'io.handle | null';

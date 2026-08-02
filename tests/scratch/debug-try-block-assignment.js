@@ -38,7 +38,7 @@ try {
     const result = analyzer.analyze(ast.ast);
 
     console.log('\n🧠 Symbol Analysis:');
-    const symbol = result.symbolTable.lookup('file_content');
+    const symbol = result.symbolTable.lookupOpenScopes('file_content');
     if (symbol) {
         console.log('✅ file_content symbol found:');
         console.log(`   Name: ${symbol.name}`);

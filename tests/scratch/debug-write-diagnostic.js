@@ -23,7 +23,7 @@ try {
     const result = analyzer.analyze(ast.ast);
     
     console.log('🧠 Analysis Result:');
-    const symbol = result.symbolTable.lookup('file_content');
+    const symbol = result.symbolTable.lookupOpenScopes('file_content');
     if (symbol) {
         console.log(`✅ file_content symbol found: ${JSON.stringify(symbol.dataType)}`);
     } else {

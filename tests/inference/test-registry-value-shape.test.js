@@ -24,7 +24,7 @@ function analyze(code) {
   return { result: analyzer.analyze(parseResult.ast), code };
 }
 const symAt = (a, name, near) => a.result.symbolTable.lookupAtPosition(name, a.code.indexOf(near))
-  ?? a.result.symbolTable.lookup(name);
+  ?? a.result.symbolTable.lookupOpenScopes(name);
 
 const REGISTRY = `function create_pbr() {
   let iface_registry = {};

@@ -32,8 +32,8 @@ let efff = zea.lol;
 `;
 
   const result = analyze(code);
-  const zeaSymbol = result.symbolTable.lookup('zea');
-  const efffSymbol = result.symbolTable.lookup('efff');
+  const zeaSymbol = result.symbolTable.lookupOpenScopes('zea');
+  const efffSymbol = result.symbolTable.lookupOpenScopes('efff');
 
   expect(zeaSymbol).toBeTruthy();
   expect(efffSymbol).toBeTruthy();
@@ -54,9 +54,9 @@ let extracted = alias.name;
 `;
 
   const result = analyze(code);
-  const objSymbol = result.symbolTable.lookup('obj');
-  const aliasSymbol = result.symbolTable.lookup('alias');
-  const extractedSymbol = result.symbolTable.lookup('extracted');
+  const objSymbol = result.symbolTable.lookupOpenScopes('obj');
+  const aliasSymbol = result.symbolTable.lookupOpenScopes('alias');
+  const extractedSymbol = result.symbolTable.lookupOpenScopes('extracted');
 
   expect(objSymbol?.propertyTypes?.get('name')).toBe(UcodeType.STRING);
   expect(aliasSymbol?.propertyTypes?.get('name')).toBe(UcodeType.STRING);

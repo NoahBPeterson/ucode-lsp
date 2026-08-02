@@ -36,7 +36,7 @@ describe('Completion Fixes - Comprehensive', function() {
             // Mock analysis result with fs variable
             const mockAnalysisResult = {
                 symbolTable: {
-                    lookup: (name) => {
+                    lookupOpenScopes: (name) => {
                         if (name === 'fs') {
                             return {
                                 name: 'fs',
@@ -59,7 +59,7 @@ describe('Completion Fixes - Comprehensive', function() {
                 if (!analysisResult || !analysisResult.symbolTable) {
                     return [];
                 }
-                const symbol = analysisResult.symbolTable.lookup(objectName);
+                const symbol = analysisResult.symbolTable.lookupOpenScopes(objectName);
                 if (!symbol) {
                     return [];
                 }

@@ -319,7 +319,7 @@ export function resolveCalleeParameters(
         const mem = callee as MemberExpressionNode;
         const method: string = (mem.property as IdentifierNode).name;
         const obj = mem.object as IdentifierNode;
-        const objSym = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
+        const objSym = symbolTable?.resolveReference(obj.name, obj.start);
         const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
         // Factory-object / namespace-import / local-object fallback: resolve the method's
         // params from its recorded cross-file def location (#83 factory, #171 namespace
@@ -371,7 +371,7 @@ export function resolveCalleeParameters(
     const name: string = (callee as IdentifierNode).name;
 
     // User function first (so a local function shadowing a builtin name wins).
-    const sym = symbolTable?.lookupAtPosition?.(name, callee.start) ?? symbolTable?.lookup?.(name);
+    const sym = symbolTable?.resolveReference(name, callee.start);
     const userParams: ParamInfo[] | undefined = sym?.parameters;
     if (Array.isArray(userParams)) {
         return {
@@ -434,7 +434,7 @@ export function resolveMemberCallParameterTypes(
     const mem = callee as MemberExpressionNode;
     const method: string = (mem.property as IdentifierNode).name;
     const obj = mem.object as IdentifierNode;
-    const objSym = symbolTable?.lookupAtPosition?.(obj.name, obj.start) ?? symbolTable?.lookup?.(obj.name);
+    const objSym = symbolTable?.resolveReference(obj.name, obj.start);
     const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
     if (!mt) return null;
     const tn = mt.moduleName;

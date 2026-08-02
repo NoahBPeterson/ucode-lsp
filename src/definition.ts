@@ -92,8 +92,7 @@ export function handleDefinition(
             }
 
             // Look up the symbol in the symbol table (position-aware for nested scopes)
-            const symbol = analysisResult.symbolTable.lookupAtPosition(symbolName, offset)
-                        || analysisResult.symbolTable.lookup(symbolName);
+            const symbol = analysisResult.symbolTable.resolveReference(symbolName, offset);
 
             if (symbol) {
                 const symDef = getSymbolDefinition(symbol, document, fileResolver);
@@ -132,8 +131,7 @@ export function handleDefinition(
         const wordRange = getWordRangeAtPosition(text, offset);
         if (wordRange) {
             const symbolName = text.substring(wordRange.start, wordRange.end);
-            const symbol = analysisResult.symbolTable.lookupAtPosition(symbolName, offset)
-                        || analysisResult.symbolTable.lookup(symbolName);
+            const symbol = analysisResult.symbolTable.resolveReference(symbolName, offset);
             if (symbol) {
                 return getSymbolDefinition(symbol, document, fileResolver);
             }
@@ -160,8 +158,7 @@ function resolveMemberDefinition(
     documents: TextDocuments<TextDocument>,
     fileResolver: FileResolver
 ): Definition | null {
-    const objSymbol = analysisResult.symbolTable.lookupAtPosition(objName, offset)
-                   || analysisResult.symbolTable.lookup(objName);
+    const objSymbol = analysisResult.symbolTable.resolveReference(objName, offset);
 
     // Namespace import member: `import * as U from './m'; U.foo()` —
     // resolve `foo` as an export of U's source module.
@@ -237,8 +234,7 @@ function resolveMemberDefinition(
         if (isMemberAccessDot(dot2?.type)
             && baseToken?.type === TokenType.TK_LABEL
             && typeof baseToken.value === 'string') {
-            const baseSym = analysisResult.symbolTable.lookupAtPosition(baseToken.value, offset)
-                         || analysisResult.symbolTable.lookup(baseToken.value);
+            const baseSym = analysisResult.symbolTable.resolveReference(baseToken.value, offset);
             if (baseSym?.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*' && baseSym.importedFrom) {
                 let nsUri: string | null;
                 if (baseSym.importedFrom.startsWith('file://')) {

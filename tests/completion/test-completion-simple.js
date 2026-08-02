@@ -47,7 +47,7 @@ function createFsModuleCompletions() {
 // Mock analysis result
 const mockAnalysisResult = {
     symbolTable: {
-        lookup: (name) => {
+        lookupOpenScopes: (name) => {
             if (name === 'fs') {
                 return {
                     name: 'fs',
@@ -67,7 +67,7 @@ console.log('🧪 Testing FS Completion Logic...\\n');
 
 // Test 1: Symbol lookup
 console.log('📋 Test 1: Symbol Lookup');
-const fsSymbol = mockAnalysisResult.symbolTable.lookup('fs');
+const fsSymbol = mockAnalysisResult.symbolTable.lookupOpenScopes('fs');
 console.log(`- fs symbol found: ${!!fsSymbol}`);
 console.log(`- fs symbol type: ${fsSymbol?.type}`);
 console.log(`- fs module name: ${fsSymbol?.dataType?.moduleName}`);

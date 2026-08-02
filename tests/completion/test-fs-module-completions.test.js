@@ -27,7 +27,7 @@ class MockAnalysisResult {
     constructor() {
         this.symbols = new Map();
         this.symbolTable = {
-            lookup: (name) => this.symbols.get(name),
+            lookupOpenScopes: (name) => this.symbols.get(name),
             addSymbol: (name, symbol) => this.symbols.set(name, symbol)
         };
     }
@@ -39,7 +39,7 @@ function getFsModuleCompletions(objectName, analysisResult) {
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = analysisResult.symbolTable.lookupOpenScopes(objectName);
     if (!symbol) {
         return [];
     }
@@ -95,7 +95,7 @@ describe('FS Module Completions', function() {
                 dataType: { type: 'object', moduleName: 'fs' }
             });
             
-            const symbol = analysisResult.symbolTable.lookup('fs');
+            const symbol = analysisResult.symbolTable.lookupOpenScopes('fs');
             
             assert.ok(symbol, 'fs symbol should be found');
             assert.strictEqual(symbol.type, 'module', 'fs should be module type');

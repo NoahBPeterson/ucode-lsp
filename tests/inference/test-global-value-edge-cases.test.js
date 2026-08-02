@@ -21,14 +21,14 @@ function res(code, opt = {}) {
 const codes = (code, opt) => res(code, opt).diagnostics.map(d => d.code);
 // Resolve a variable's type from an analysis result (server-less), union-safe.
 function hoverTypeFromResult(r, name) {
-  const sym = r.symbolTable.lookup(name);
+  const sym = r.symbolTable.lookupOpenScopes(name);
   return sym?.dataType !== undefined ? typeToString(sym.dataType) : 'unknown';
 }
 
 test("08 bare implicit-global object member types (X = {a:1}; X.a)", () => {
   // `y = X.a` → integer means the bare implicit global object got its shape.
   const r = res("X = { a: 1 };\ny = X.a;\n");
-  const sym = r.symbolTable.lookup('X');
+  const sym = r.symbolTable.lookupOpenScopes('X');
   expect(sym?.propertyTypes?.get('a')).toBe('integer');
 });
 

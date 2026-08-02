@@ -27,7 +27,7 @@ class MockSymbolTable {
         this.symbols.set(name, symbol);
     }
     
-    lookup(name) {
+    lookupOpenScopes(name) {
         return this.symbols.get(name) || null;
     }
 }
@@ -59,7 +59,7 @@ function validateFunctionCall(funcName, argCount, typeCheckerBuiltins, symbolTab
         return { found: true, diagnostics };
     } else {
         // Check if it's a user-defined function or variable
-        const symbol = symbolTable.lookup(funcName);
+        const symbol = symbolTable.lookupOpenScopes(funcName);
         if (symbol && (symbol.type === 'function' || symbol.type === 'variable')) {
             return { found: true, diagnostics: [] };
         }

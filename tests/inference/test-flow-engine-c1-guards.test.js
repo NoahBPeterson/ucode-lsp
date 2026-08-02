@@ -24,7 +24,7 @@ function build(code) {
   const cfg = new CFGBuilder('f').build(fn.body);
   const litT = (n) => { const v = n.value; return typeof v === 'string' ? UcodeType.STRING : typeof v === 'number' ? (Number.isInteger(v) ? UcodeType.INTEGER : UcodeType.DOUBLE) : typeof v === 'boolean' ? UcodeType.BOOLEAN : UcodeType.NULL; };
   const typeOf = (n) => result.typeChecker.getTypeOf(n) ?? (n.type === 'Literal' ? litT(n) : undefined);
-  return { cfg, code, typeOf, fnSym: result.symbolTable.lookup(fn.id.name) };
+  return { cfg, code, typeOf, fnSym: result.symbolTable.lookupOpenScopes(fn.id.name) };
 }
 const probe = (code, varName) => code.indexOf(`trim(${varName})`) + 'trim('.length;
 

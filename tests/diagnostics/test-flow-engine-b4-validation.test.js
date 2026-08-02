@@ -24,7 +24,7 @@ function engineFor(code) {
   const typeOf = (n) => result.typeChecker.getTypeOf(n) ?? (n.type === 'Literal' ? litT(n) : undefined);
   // Seed parameters from the function symbol's resolved signature (ParamInfo).
   const entryEnv = new Map();
-  const fnSym = result.symbolTable.lookup(fn.id.name);
+  const fnSym = result.symbolTable.lookupOpenScopes(fn.id.name);
   for (const pi of (fnSym?.parameters ?? [])) entryEnv.set(pi.name, pi.type);
   const engine = new FlowTypeEngine(cfg, makeAssignmentTransfer(typeOf), entryEnv);
   engine.compute();

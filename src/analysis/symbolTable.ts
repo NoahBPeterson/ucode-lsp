@@ -557,6 +557,12 @@ export class SymbolTable {
   private globalScope: Map<string, Symbol> = new Map();
   // Keep track of all symbols ever declared (including in exited scopes) for position-based lookup
   private allSymbols: Symbol[] = [];
+  // Name-keyed index over allSymbols so position-aware lookups scan only same-name
+  // symbols (typically 1; worst case = shadow depth) instead of every symbol in the
+  // file. Append-only, maintained in declare() alongside the allSymbols push.
+  // (docs/lookupatposition-index-perf.md: the flat scan was 40% of analysis time on a
+  // 7.5k-line file once resolveReference landed on the every-identifier path.)
+  private symbolsByName: Map<string, Symbol[]> = new Map();
   // Builtin names a user re-declared at a scope where the builtin already lives (so
   // declare() rejected it and the builtin entry survives). ucode allows shadowing a
   // builtin with a user function, so consumers that special-case a builtin by name
@@ -827,8 +833,10 @@ export class SymbolTable {
     };
 
     currentScopeMap.set(name, symbol);
-    // Also add to allSymbols for position-based lookup after scope exits
+    // Also add to allSymbols (+ the name index) for position-based lookup after scope exits
     this.allSymbols.push(symbol);
+    const bucket = this.symbolsByName.get(name);
+    if (bucket) bucket.push(symbol); else this.symbolsByName.set(name, [symbol]);
     return true;
   }
 
@@ -844,7 +852,19 @@ export class SymbolTable {
     return this.scopes.length;
   }
 
-  lookup(name: string): Symbol | null {
+  /**
+   * "What does this name bind to in the scope chain the analyzer is currently INSIDE?"
+   *
+   * Walks only the currently-OPEN scopes, innermost first. Only meaningful while the
+   * traversal cursor is at the relevant node — in any deferred/post-visit/post-analysis
+   * context the answer is stale (closed block scopes are invisible; an outer same-name
+   * symbol can win). Use resolveReference there instead.
+   *
+   * Legitimate callers are a closed set: shadow detection, module-scope/export checks,
+   * `this` resolution, declare-then-fetch idioms, and the deliberately position-blind
+   * forward-declaration hunt (UC1009). (docs/stale-scope-lookup-audit.md)
+   */
+  lookupOpenScopes(name: string): Symbol | null {
     // Search from current scope to global scope
     for (let i = this.scopes.length - 1; i >= 0; i--) {
       const scope = this.scopes[i];
@@ -858,13 +878,30 @@ export class SymbolTable {
     return null;
   }
 
-  // Position-aware lookup that searches all scopes for symbols that contain the given position
+  /**
+   * "Which symbol does this identifier occurrence denote under ucode's lexical scoping?"
+   *
+   * Valid in EVERY execution window: normal traversal, the if-statement post-visit
+   * re-check, post-traversal passes, and post-analysis hover/completion/definition.
+   * Position-aware innermost-wins first; the open-scope-chain fallback is part of the
+   * semantics, not a safety net — it admits hoisted/forward declarations (declaredAt
+   * after the use) and stamp-less synthetic/ambient symbols. Default choice for any
+   * caller holding an AST node. (docs/stale-scope-lookup-audit.md)
+   */
+  resolveReference(name: string, position: number): Symbol | null {
+    return this.lookupAtPosition(name, position) ?? this.lookupOpenScopes(name);
+  }
+
+  // Position-aware lookup that searches all scopes for symbols that contain the given
+  // position. Position-ONLY: deliberately rejects declarations after `position`, so
+  // callers that must distinguish "visible here" from "declared later" (forward-ref
+  // detection) use this directly; everything else goes through resolveReference.
   lookupAtPosition(name: string, position: number): Symbol | null {
-    // Search allSymbols which includes both active and exited scopes.
+    // Search the name bucket (allSymbols filtered by name — active and exited scopes).
     // Pick the innermost scope that contains the position.
     let bestMatch: Symbol | null = null;
-    for (const symbol of this.allSymbols) {
-      if (symbol.name === name && symbol.declaredAt !== undefined && symbol.declaredAt <= position) {
+    for (const symbol of this.symbolsByName.get(name) ?? []) {
+      if (symbol.declaredAt !== undefined && symbol.declaredAt <= position) {
         // If scopeEnd is set, the symbol's scope has exited — check position is within range
         if (symbol.scopeEnd !== undefined && position > symbol.scopeEnd) {
           continue; // Position is outside this symbol's scope
@@ -906,8 +943,7 @@ export class SymbolTable {
    */
   findInScopeLaterDeclaration(name: string, useStart: number): Symbol | null {
     let best: Symbol | null = null;
-    for (const symbol of this.allSymbols) {
-      if (symbol.name !== name) continue;
+    for (const symbol of this.symbolsByName.get(name) ?? []) {
       if (symbol.type !== SymbolType.VARIABLE) continue; // let/const only; functions handled separately
       if (symbol.declaredAt === undefined || symbol.declaredAt <= useStart) continue; // not "later"
       if (symbol.scopeStart === undefined || symbol.scopeStart > useStart) continue; // use precedes the block
@@ -970,7 +1006,7 @@ export class SymbolTable {
     }
     
     // Look for existing symbol in other scopes to preserve position information
-    const existingSymbol = this.lookup(name);
+    const existingSymbol = this.lookupOpenScopes(name);
     let nodeToUse: AstNode;
     let declaredAtPos: number;
     

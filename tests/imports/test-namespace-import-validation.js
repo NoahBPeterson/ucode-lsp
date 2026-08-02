@@ -8,7 +8,7 @@ const mockDocument = {
 
 // Mock symbol table with namespace import
 const mockSymbolTable = {
-    lookup: (name) => {
+    lookupOpenScopes: (name) => {
         if (name === 'constants') {
             return {
                 type: 'imported',
@@ -97,7 +97,7 @@ function testNamespaceImportValidation(testName, memberExpression, shouldValidat
     // Check if it's a namespace import
     if (!computed && object.type === 'Identifier') {
         const objectName = object.name;
-        const symbol = mockSymbolTable.lookup(objectName);
+        const symbol = mockSymbolTable.lookupOpenScopes(objectName);
         
         // If the object is a namespace import, don't validate the property
         if (symbol && symbol.type === 'imported' && symbol.importSpecifier === '*') {

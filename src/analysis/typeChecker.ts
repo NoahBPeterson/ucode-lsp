@@ -585,8 +585,7 @@ export class TypeChecker {
       return null;
     }
     if (node.type === 'Identifier') {
-      const sym = this.symbolTable.lookupAtPosition((node as IdentifierNode).name, node.start)
-                ?? this.symbolTable.lookup((node as IdentifierNode).name);
+      const sym = this.symbolTable.resolveReference((node as IdentifierNode).name, node.start);
       if (sym?.initNode) return this.resolvePropertyKeyToString(sym.initNode);
       return null;
     }
@@ -599,7 +598,7 @@ export class TypeChecker {
         const inner = mem.object as MemberExpressionNode;
         if (!inner.computed && inner.object.type === 'Identifier') {
           const baseName = (inner.object as IdentifierNode).name;
-          const baseSym = this.symbolTable.lookupAtPosition(baseName, node.start) ?? this.symbolTable.lookup(baseName);
+          const baseSym = this.symbolTable.resolveReference(baseName, node.start);
           const aName = this.getStaticPropertyName(inner.property);
           const bName = this.getStaticPropertyName(mem.property);
           if (baseSym?.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*'
@@ -662,8 +661,7 @@ export class TypeChecker {
       return createUnionType(members);
     }
     if (arg.type === 'Identifier') {
-      const sym = this.symbolTable.lookupAtPosition((arg as IdentifierNode).name, arg.start)
-                ?? this.symbolTable.lookup((arg as IdentifierNode).name);
+      const sym = this.symbolTable.resolveReference((arg as IdentifierNode).name, arg.start);
       if (sym?.propertyTypes && sym.propertyTypes.size > 0) {
         return this.computePropertyValueUnion(sym.propertyTypes);
       }
@@ -685,8 +683,8 @@ export class TypeChecker {
     return properties ? properties.has(propertyName) : false;
   }
 
-  private ensureSymbolHasIntegerProperty(objectName: string, propertyName: string): void {
-    const symbol = this.symbolTable.lookup(objectName);
+  private ensureSymbolHasIntegerProperty(objectName: string, propertyName: string, position: number): void {
+    const symbol = this.symbolTable.resolveReference(objectName, position);
     if (!symbol) {
       return;
     }
@@ -905,8 +903,7 @@ export class TypeChecker {
     // FPs (docs/foreach-callback-local-builtin-shadow.md). lookupAtPosition
     // resolves by declaredAt/scopeEnd like hover does; the scope-chain lookup
     // stays as the fallback for forward references it can't see.
-    const symbol = this.symbolTable.lookupAtPosition(node.name, node.start)
-                ?? this.symbolTable.lookup(node.name);
+    const symbol = this.symbolTable.resolveReference(node.name, node.start);
     if (symbol) {
       this.symbolTable.markUsed(node.name, node.start);
 
@@ -1684,7 +1681,7 @@ export class TypeChecker {
     if (!isArrayType(arrType) || !arrType.tupleTypes) return null;
     if (objNode && objNode.type === 'Identifier') {
       const name = (objNode as IdentifierNode).name;
-      const symbol = this.symbolTable.lookupAtPosition(name, objNode.start) ?? this.symbolTable.lookup(name);
+      const symbol = this.symbolTable.resolveReference(name, objNode.start);
       if (symbol) {
         const fromPos = symbol.currentTypeEffectiveFrom ?? symbol.declaredAt;
         if (!this.tupleShapeStillValidAt(name, fromPos, propNode.start)) return null;
@@ -1830,9 +1827,14 @@ export class TypeChecker {
     if (callee?.type === 'Identifier') {
       const range = BUILTIN_RETURN_RANGE[callee.name];
       if (!range) return null;
+      const sym = this.symbolTable.resolveReference(callee.name, callee.start);
       if (range.module) {
-        const sym = this.symbolTable.lookup(callee.name);
         if (!sym || sym.importedFrom !== range.module) return null;
+      } else if (sym && sym.type !== SymbolType.BUILTIN) {
+        // A user binding shadows the builtin — the range contract doesn't apply
+        // (stale-scope audit bug #1: a block-local `let index = fn` was ranged
+        // like builtin index()).
+        return null;
       }
       return range;
     }
@@ -1842,7 +1844,7 @@ export class TypeChecker {
       if (callee.object?.type === 'Identifier') {
         const range = BUILTIN_RETURN_RANGE[methodName];
         if (range && range.module) {
-          const objSym = this.symbolTable.lookup(callee.object.name);
+          const objSym = this.symbolTable.resolveReference(callee.object.name, callee.object.start);
           if (objSym && objSym.importedFrom === range.module) return range;
         }
       }
@@ -1869,7 +1871,7 @@ export class TypeChecker {
       if (d) return d;
     }
     if (objNode.type === 'Identifier') {
-      const sym = this.symbolTable.lookup((objNode as IdentifierNode).name);
+      const sym = this.symbolTable.resolveReference((objNode as IdentifierNode).name, objNode.start);
       if (sym) return this.detectObjectType(sym.dataType);
     }
     return null;
@@ -2571,7 +2573,7 @@ export class TypeChecker {
       // (The guardContextStack lookup that used to wrap this was proven redundant
       // and removed — C2. The AST guard walk below still applies guards.)
       const baseType: UcodeDataType = this.getFullTypeFromNode(node)
-        || this.symbolTable.lookup(variableName)?.dataType
+        || this.symbolTable.resolveReference(variableName, node.start)?.dataType
         || UcodeType.UNKNOWN;
 
       // Then check for flow-sensitive narrowing from current if statement
@@ -2638,7 +2640,7 @@ export class TypeChecker {
       const callNode = node as CallExpressionNode;
       if (callNode.callee.type === 'Identifier') {
         const funcName = (callNode.callee as IdentifierNode).name;
-        const symbol = this.symbolTable.lookup(funcName);
+        const symbol = this.symbolTable.resolveReference(funcName, callNode.callee.start);
         if (symbol && symbol.returnType) {
           // Return the full type description of the return type
           return this.getTypeDescription(symbol.returnType) as UcodeType;
@@ -2900,7 +2902,7 @@ export class TypeChecker {
       // scope, this is a forward reference — ucode doesn't hoist function values, so
       // it errors at runtime as "access to undeclared variable". Give a clear message
       // distinct from a genuinely-undefined call (which is the `else` below).
-      const laterDecl = this.symbolTable.lookup(funcName);
+      const laterDecl = this.symbolTable.lookupOpenScopes(funcName);
       if (laterDecl && laterDecl.type === SymbolType.FUNCTION
           && laterDecl.declaredAt !== undefined && laterDecl.declaredAt > node.start) {
         this.errors.push({
@@ -2979,8 +2981,8 @@ export class TypeChecker {
       if (!memberCallee.computed && memberCallee.property.type === 'Identifier'
           && (memberCallee.object.type === 'Identifier' || memberCallee.object.type === 'ThisExpression')) {
         const recvSym = memberCallee.object.type === 'ThisExpression'
-          ? this.symbolTable.lookup('this')
-          : this.symbolTable.lookup((memberCallee.object as IdentifierNode).name);
+          ? this.symbolTable.lookupOpenScopes('this')
+          : this.symbolTable.resolveReference((memberCallee.object as IdentifierNode).name, memberCallee.object.start);
         const rt = recvSym?.propertyReturnTypes?.get((memberCallee.property as IdentifierNode).name);
         if (rt !== undefined) {
           return rt as UcodeType;
@@ -2990,7 +2992,7 @@ export class TypeChecker {
       if (memberCallee.object.type === 'Identifier' && memberCallee.property.type === 'Identifier') {
         const objName = (memberCallee.object as IdentifierNode).name;
         const methodName = (memberCallee.property as IdentifierNode).name;
-        const objSym = this.symbolTable.lookup(objName);
+        const objSym = this.symbolTable.resolveReference(objName, memberCallee.object.start);
         if (objSym?.propertyFunctionReturnTypes?.has(methodName)) {
           const returnHint = objSym.propertyFunctionReturnTypes.get(methodName)!;
           // parseReturnType handles unions ("object | null"), arrays, and known
@@ -3007,7 +3009,7 @@ export class TypeChecker {
       if (memberCallee.object.type === 'Identifier' && memberCallee.property.type === 'Identifier') {
         const objName = (memberCallee.object as IdentifierNode).name;
         const methodName = (memberCallee.property as IdentifierNode).name;
-        const objSym = this.symbolTable.lookup(objName);
+        const objSym = this.symbolTable.resolveReference(objName, memberCallee.object.start);
         if (objSym && typeof objSym.dataType === 'object' && objSym.dataType !== null &&
             'moduleName' in objSym.dataType && isKnownModule((objSym.dataType as any).moduleName)) {
           const modName = (objSym.dataType as any).moduleName as string;
@@ -3030,7 +3032,7 @@ export class TypeChecker {
       // imported call (`fs.file | null`). Once imported, fs has a symbol and the
       // namespace branch above resolves the real return type.
       if (memberCallee.object.type === 'Identifier' && memberCallee.property.type === 'Identifier'
-          && !this.symbolTable.lookup((memberCallee.object as IdentifierNode).name)
+          && !this.symbolTable.resolveReference((memberCallee.object as IdentifierNode).name, memberCallee.object.start)
           && isKnownModule((memberCallee.object as IdentifierNode).name)) {
         return UcodeType.UNKNOWN;
       }
@@ -3865,7 +3867,7 @@ export class TypeChecker {
       const inner = node.object as MemberExpressionNode;
       if (!inner.computed && inner.object.type === 'Identifier') {
         const baseName = (inner.object as IdentifierNode).name;
-        const baseSym = this.symbolTable.lookup(baseName);
+        const baseSym = this.symbolTable.resolveReference(baseName, inner.object.start);
         const aName = this.getStaticPropertyName(inner.property);
         const bName = this.getStaticPropertyName(node.property);
         if (baseSym?.nestedPropertyTypes && aName && bName) {
@@ -3914,8 +3916,7 @@ export class TypeChecker {
       if (node.object.type === 'CallExpression'
           && (node.object as CallExpressionNode).callee.type === 'Identifier') {
         const calleeName = ((node.object as CallExpressionNode).callee as IdentifierNode).name;
-        const calleeSym = this.symbolTable.lookupAtPosition(calleeName, node.object.start)
-                       ?? this.symbolTable.lookup(calleeName);
+        const calleeSym = this.symbolTable.resolveReference(calleeName, node.object.start);
         const propName = this.getStaticPropertyName(node.property);
         if (calleeSym?.returnPropertyTypes && propName) {
           const t = calleeSym.returnPropertyTypes.get(propName);
@@ -3926,7 +3927,7 @@ export class TypeChecker {
 
     // Handle `this.property` — look up `this` in symbol table (declared by semantic analyzer)
     if (node.object.type === 'ThisExpression') {
-      const thisSym = this.symbolTable.lookup('this');
+      const thisSym = this.symbolTable.lookupOpenScopes('this');
       if (thisSym && thisSym.propertyTypes && !node.computed) {
         let propertyName: string | null = null;
         if (node.property.type === 'Identifier') {
@@ -3948,7 +3949,7 @@ export class TypeChecker {
 
     // Check if the object is a module
     if (node.object.type === 'Identifier') {
-      const symbol = this.symbolTable.lookup((node.object as IdentifierNode).name);
+      const symbol = this.symbolTable.resolveReference((node.object as IdentifierNode).name, node.object.start);
 
       // If symbol doesn't exist, let the semantic analyzer handle the "Undefined variable" error
       // Don't duplicate the error here by calling checkNode(node.object)
@@ -4081,7 +4082,7 @@ export class TypeChecker {
             : null;
           if (objectName && this.isAssignmentTargetContext()) {
             this.recordConstantAssignment(objectName, propertyName);
-            this.ensureSymbolHasIntegerProperty(objectName, propertyName);
+            this.ensureSymbolHasIntegerProperty(objectName, propertyName, node.object.start);
             return UcodeType.INTEGER;
           }
           if (objectName && this.hasConstantAssignment(objectName, propertyName)) {
@@ -4111,7 +4112,7 @@ export class TypeChecker {
             : null;
           if (objectName && this.isAssignmentTargetContext()) {
             this.recordConstantAssignment(objectName, propertyName);
-            this.ensureSymbolHasIntegerProperty(objectName, propertyName);
+            this.ensureSymbolHasIntegerProperty(objectName, propertyName, node.object.start);
             return UcodeType.INTEGER;
           }
           if (objectName && this.hasConstantAssignment(objectName, propertyName)) {
@@ -4144,8 +4145,7 @@ export class TypeChecker {
     // binding copy in the analyzer). Checked before the per-key keys-of union so
     // a map with an incidental static property still reads as its value shape.
     if (node.object.type === 'Identifier' && node.computed) {
-      const dictSym = this.symbolTable.lookupAtPosition((node.object as IdentifierNode).name, node.start)
-                   ?? this.symbolTable.lookup((node.object as IdentifierNode).name);
+      const dictSym = this.symbolTable.resolveReference((node.object as IdentifierNode).name, node.start);
       if (dictSym?.valuePropertyTypes && dictSym.valuePropertyTypes.size > 0) {
         return UcodeType.OBJECT as UcodeDataType;
       }
@@ -4156,8 +4156,7 @@ export class TypeChecker {
     // constant) OR through keys-of provenance (the key carries a tag that
     // proves it's one of the object's known keys).
     if (node.object.type === 'Identifier' && node.computed) {
-      const objSym = this.symbolTable.lookupAtPosition((node.object as IdentifierNode).name, node.start)
-                  ?? this.symbolTable.lookup((node.object as IdentifierNode).name);
+      const objSym = this.symbolTable.resolveReference((node.object as IdentifierNode).name, node.start);
       // Effective type at the access position. For `let x = {...}` the
       // declarator stamps dataType=OBJECT directly. For `let x; x = {...}`
       // the assignment-handler instead writes currentType (SSA) and leaves
@@ -4185,7 +4184,7 @@ export class TypeChecker {
         // 2. Keys-of provenance: `obj[k]` where k.keysOfSymbol === obj's name.
         const keyName = (node.property.type === 'Identifier') ? (node.property as IdentifierNode).name : null;
         if (keyName) {
-          const keySym = this.symbolTable.lookupAtPosition(keyName, node.start) ?? this.symbolTable.lookup(keyName);
+          const keySym = this.symbolTable.resolveReference(keyName, node.start);
           if (keySym?.keysOfSymbol && keySym.keysOfSymbol === (node.object as IdentifierNode).name) {
             const valueUnion = this.computePropertyValueUnion(objSym.propertyTypes);
             if (valueUnion !== null) {
@@ -4198,7 +4197,7 @@ export class TypeChecker {
 
     // For computed property access on arrays (e.g., uuid[0]), check if we have type info
     if (node.object.type === 'Identifier' && node.computed) {
-      const symbol = this.symbolTable.lookup((node.object as IdentifierNode).name);
+      const symbol = this.symbolTable.resolveReference((node.object as IdentifierNode).name, node.object.start);
       if (symbol && (symbol.dataType === UcodeType.ARRAY || isArrayType(symbol.dataType as UcodeDataType))) {
         // Propagate keys-of provenance: indexing a tagged array yields one of
         // the tagged object's keys. `let ks = keys(obj); ks[i]` → keysOfSymbol=obj.
@@ -4403,7 +4402,7 @@ export class TypeChecker {
       // type for any expression; the SSA/declared type for an identifier).
       let dt: UcodeDataType = objectType;
       if (node.object.type === 'Identifier') {
-        const sym = this.symbolTable.lookup((node.object as IdentifierNode).name);
+        const sym = this.symbolTable.resolveReference((node.object as IdentifierNode).name, node.object.start);
         if (sym) dt = (sym.currentType || sym.dataType) as UcodeDataType;
       }
       let hasArray = objectBase === UcodeType.ARRAY || dt === UcodeType.ARRAY || isArrayType(dt);
@@ -4550,7 +4549,7 @@ export class TypeChecker {
       const memberExpr = node.left as MemberExpressionNode;
       if (memberExpr.object.type === 'Identifier' && memberExpr.computed) {
         const arrayName = (memberExpr.object as IdentifierNode).name;
-        const symbol = this.symbolTable.lookup(arrayName);
+        const symbol = this.symbolTable.resolveReference(arrayName, memberExpr.object.start);
 
         // If this is an array variable, track the element type
         if (symbol && (symbol.dataType === UcodeType.ARRAY || isArrayType(symbol.dataType as UcodeDataType))) {
@@ -4822,7 +4821,7 @@ export class TypeChecker {
         if (call.callee.type === 'Identifier') {
           const name = (call.callee as IdentifierNode).name;
           if (name === 'die' || name === 'exit') return true;
-          const sym = this.symbolTable.lookup(name);
+          const sym = this.symbolTable.resolveReference(name, call.callee.start);
           if (sym?.neverReturns) return true;
         }
       }
@@ -5038,11 +5037,9 @@ export class TypeChecker {
    */
   getNarrowedTypeAtPosition(variableName: string, position: number, baseTypeHint?: UcodeDataType): UcodeDataType | null {
     // Symbol base (needed by both the engine refinement check and the legacy path).
-    // Try both lookup (current scope) and lookupAtPosition (exited scopes like callbacks).
-    let symbol = this.symbolTable.lookup(variableName);
-    if (!symbol) {
-      symbol = this.symbolTable.lookupAtPosition(variableName, position);
-    }
+    // Position-first: this runs from stale windows (post-visit filters, hover), where
+    // the open-chain walk can hit an outer same-name symbol before the closed local.
+    const symbol = this.symbolTable.resolveReference(variableName, position);
 
     // C1 — the flow engine now folds in BOTH reassignment narrowing AND guards
     // (edge transfers), so it is the primary authority. It only covers what the
@@ -5326,7 +5323,7 @@ export class TypeChecker {
     const env = new Map<string, UcodeDataType>();
     const name = (fnNode as any).id?.name;
     if (name) {
-      const sym = this.symbolTable.lookup(name);
+      const sym = this.symbolTable.resolveReference(name, fnNode.start);
       for (const p of (sym?.parameters ?? [])) env.set(p.name, p.type);
     }
     return env;
@@ -5934,10 +5931,9 @@ export class TypeChecker {
               if (this.earlyExitNegatesIdentifier(sibIf.test, variableName)) {
                 {
                   // Position-aware lookup: a hover/narrowing query runs AFTER the
-                  // function scope has exited, so plain lookup() misses a local
-                  // variable — lookupAtPosition finds it by the query position.
-                  const sym = this.symbolTable.lookup(variableName)
-                    ?? this.symbolTable.lookupAtPosition(variableName, position);
+                  // function scope has exited, so the open-chain walk misses a local
+                  // variable (or hits an outer same-name one first).
+                  const sym = this.symbolTable.resolveReference(variableName, position);
                   const effType = sym ? this.getEffectiveSymbolDataType(sym, position) : undefined;
                   if (effType && isUnionType(effType) && getUnionTypes(effType).includes(UcodeType.NULL)) {
                     guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
@@ -6178,7 +6174,7 @@ export class TypeChecker {
     // `let stat = _fs.stat;` inside a function body resolve — a plain lookup() runs
     // after scope exit and misses them.
     const lookupSym = (name: string) =>
-      this.symbolTable.lookupAtPosition(name, call.start) ?? this.symbolTable.lookup(name);
+      this.symbolTable.resolveReference(name, call.start);
 
     let argIndex: number | undefined;
     if (call.callee.type === 'Identifier') {
@@ -6297,10 +6293,7 @@ export class TypeChecker {
     const otherNode = (binaryExpr.left.type === 'Identifier' &&
       (binaryExpr.left as IdentifierNode).name === otherVarName)
       ? binaryExpr.left : binaryExpr.right;
-    let otherSymbol = this.symbolTable.lookup(otherVarName);
-    if (!otherSymbol) {
-      otherSymbol = this.symbolTable.lookupAtPosition(otherVarName, otherNode.start);
-    }
+    const otherSymbol = this.symbolTable.resolveReference(otherVarName, otherNode.start);
     if (!otherSymbol) return null;
 
     // Use the EFFECTIVE type at the comparison (SSA currentType) — a
@@ -6341,8 +6334,7 @@ export class TypeChecker {
           // Get the variable's original type at the guard — position-aware lookup
           // and EFFECTIVE type (SSA currentType), so a declare-then-assign variable
           // (`let x; x = f();`, declared `null`) narrows from its assigned type.
-          const symbol = this.symbolTable.lookup(variableName)
-            ?? this.symbolTable.lookupAtPosition(variableName, binaryExpr.start);
+          const symbol = this.symbolTable.resolveReference(variableName, binaryExpr.start);
           if (!symbol) {
             return null;
           }
@@ -6961,8 +6953,7 @@ export class TypeChecker {
     }
 
     // Use position-aware lookup since the variable may be in an exited scope (e.g., export function)
-    const sym = this.symbolTable.lookupAtPosition(identNode.name, identNode.start)
-             || this.symbolTable.lookup(identNode.name);
+    const sym = this.symbolTable.resolveReference(identNode.name, identNode.start);
     if (!sym?.initNode || sym.initNode.type !== 'CallExpression') {
       return null;
     }
@@ -7003,8 +6994,7 @@ export class TypeChecker {
       }
     } else if (node.type === 'Identifier') {
       const ident = node as IdentifierNode;
-      const sym = this.symbolTable.lookupAtPosition(ident.name, ident.start)
-               || this.symbolTable.lookup(ident.name);
+      const sym = this.symbolTable.resolveReference(ident.name, ident.start);
       if (sym?.initNode?.type === 'CallExpression') {
         const initCall = sym.initNode as CallExpressionNode;
         if (initCall.callee.type === 'Identifier' &&

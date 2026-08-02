@@ -10,7 +10,7 @@ class MockSymbolTable {
         this.symbols.set(name, symbol);
     }
 
-    lookup(name) {
+    lookupOpenScopes(name) {
         return this.symbols.get(name) || null;
     }
 
@@ -51,7 +51,7 @@ function getVariableCompletions_OLD(objectName, analysisResult) {
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = analysisResult.symbolTable.lookupOpenScopes(objectName);
     if (!symbol) {
         return [];
     }
@@ -85,7 +85,7 @@ function getVariableCompletions_FIXED(objectName, analysisResult) {
         return [];
     }
 
-    const symbol = analysisResult.symbolTable.lookup(objectName);
+    const symbol = analysisResult.symbolTable.lookupOpenScopes(objectName);
     if (!symbol) {
         return [];
     }

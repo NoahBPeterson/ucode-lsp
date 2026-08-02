@@ -25,7 +25,7 @@ function analyze(code) {
 
 // Simulate hover type resolution (same logic as resolveVariableTypeForHover)
 function hoverTypeAt(result, varName, offset) {
-    const sym = result.symbolTable.lookup(varName);
+    const sym = result.symbolTable.lookupOpenScopes(varName);
     if (!sym) return 'NOT FOUND';
     if (sym.currentType && sym.currentTypeEffectiveFrom !== undefined && offset >= sym.currentTypeEffectiveFrom) {
         return typeToString(sym.currentType);

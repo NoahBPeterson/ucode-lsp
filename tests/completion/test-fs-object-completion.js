@@ -149,7 +149,7 @@ const mockFsCompletionProvider = {
   // Simulate the enhanced completion system we just implemented
   getEnhancedCompletions: function(objectName, mockSymbolTable) {
     // Look up the variable in the symbol table
-    const symbol = mockSymbolTable.lookup(objectName);
+    const symbol = mockSymbolTable.lookupOpenScopes(objectName);
     if (!symbol) {
       return [];
     }
@@ -167,7 +167,7 @@ const mockFsCompletionProvider = {
 
 // Enhanced mock symbol table for testing the real completion system
 const enhancedMockSymbolTable = {
-  lookup: function(name) {
+  lookupOpenScopes: function(name) {
     if (name === 'file_content') {
       return {
         name: 'file_content',
@@ -178,7 +178,7 @@ const enhancedMockSymbolTable = {
         used: true
       };
     }
-    return mockSymbolTable.lookup(name);
+    return mockSymbolTable.lookupOpenScopes(name);
   }
 };
 

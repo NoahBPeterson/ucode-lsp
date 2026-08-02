@@ -219,7 +219,7 @@ testCase('typeToString returns io.handle for io handle data type', () => {
 testCase('io.handle inferred from open() imported from io (let declaration)', () => {
   const code = `import { open } from 'io';\nlet h = open('/tmp/test', 0);`;
   const result = analyzeCode(code);
-  const sym = result.symbolTable.lookup('h');
+  const sym = result.symbolTable.lookupOpenScopes('h');
   if (!sym) { console.log('    Symbol h not found'); return false; }
   const ts = typeToString(sym.dataType);
   console.log(`    h type: ${ts}`);
@@ -230,7 +230,7 @@ testCase('io.handle inferred from from() imported from io', () => {
   // 'from' is a keyword but still importable from io
   const code = `import { from } from 'io';\nlet h = from(null);`;
   const result = analyzeCode(code);
-  const sym = result.symbolTable.lookup('h');
+  const sym = result.symbolTable.lookupOpenScopes('h');
   if (!sym) { console.log('    Symbol h not found'); return false; }
   const ts = typeToString(sym.dataType);
   console.log(`    h type: ${ts}`);
@@ -242,7 +242,7 @@ testCase('io.handle NOT inferred from open() without io import', () => {
   // at runtime). The point of this case is the io-vs-fs distinction, not the nullability.
   const code = `let h = open('/tmp/test', 'r');`;
   const result = analyzeCode(code);
-  const sym = result.symbolTable.lookup('h');
+  const sym = result.symbolTable.lookupOpenScopes('h');
   if (!sym) { console.log('    Symbol h not found'); return false; }
   const ts = typeToString(sym.dataType);
   console.log(`    h type: ${ts}`);
@@ -252,7 +252,7 @@ testCase('io.handle NOT inferred from open() without io import', () => {
 testCase('io.handle inferred via namespace import io.open()', () => {
   const code = `import * as io from 'io';\nlet h = io.open('/tmp/test', 0);`;
   const result = analyzeCode(code);
-  const sym = result.symbolTable.lookup('h');
+  const sym = result.symbolTable.lookupOpenScopes('h');
   if (!sym) { console.log('    Symbol h not found'); return false; }
   const ts = typeToString(sym.dataType);
   console.log(`    h type: ${ts}`);
@@ -262,7 +262,7 @@ testCase('io.handle inferred via namespace import io.open()', () => {
 testCase('io.handle inferred from assignment (not just declaration)', () => {
   const code = `import { open } from 'io';\nlet h;\nh = open('/tmp/test', 0);\nprint(h);\n`;
   const result = analyzeCode(code);
-  const sym = result.symbolTable.lookup('h');
+  const sym = result.symbolTable.lookupOpenScopes('h');
   if (!sym) { console.log('    Symbol h not found'); return false; }
   // Check at a position after the assignment using SSA
   const afterOffset = code.indexOf('print(h)') + 6;
@@ -278,7 +278,7 @@ testCase('io.handle inferred from assignment (not just declaration)', () => {
 testCase('pipe() does NOT return io.handle type (returns array)', () => {
   const code = `import { pipe } from 'io';\nlet p = pipe();`;
   const result = analyzeCode(code);
-  const sym = result.symbolTable.lookup('p');
+  const sym = result.symbolTable.lookupOpenScopes('p');
   if (!sym) { console.log('    Symbol p not found'); return false; }
   const ts = typeToString(sym.dataType);
   console.log(`    p type: ${ts}`);

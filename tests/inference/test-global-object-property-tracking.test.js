@@ -19,7 +19,7 @@ function analyze(code, opt = {}) {
   const doc = TextDocument.create("file://" + path.join(FIX, "a.uc"), "ucode", 1, code);
   return new SemanticAnalyzer(doc, { enableScopeAnalysis: true, enableTypeChecking: true, uncertainGlobalScope: 'errorInStrict', ...opt }, new FileResolver(FIX)).analyze(ast);
 }
-const typeOf = (res, name) => { const s = res.symbolTable.lookup(name); return s ? typeToString(s.dataType) : "(none)"; };
+const typeOf = (res, name) => { const s = res.symbolTable.lookupOpenScopes(name); return s ? typeToString(s.dataType) : "(none)"; };
 const u6 = (code, opt) => analyze(code, opt).diagnostics.filter(d => d.code === 'UC8006');
 
 // ── nested `global.X.prop = …` write tracking ───────────────────────────────────────────

@@ -40,7 +40,7 @@ function analyze(code) {
 }
 
 function getType(result, code, varName) {
-    let sym = result.symbolTable.lookup(varName);
+    let sym = result.symbolTable.lookupOpenScopes(varName);
     if (!sym) {
         const offset = code.indexOf(`let ${varName}`) + 4;
         sym = result.symbolTable.lookupAtPosition(varName, offset);

@@ -33,7 +33,7 @@ function typeAtRead(code, varName, occurrence = 'last') {
   const narrowed = tc.getNarrowedTypeAtPosition(varName, off);
   if (narrowed !== null) return typeToString(narrowed);
   // Fall back to the symbol's declared type (what hover would render).
-  const sym = tc.symbolTable.lookup(varName) ?? tc.symbolTable.lookupAtPosition(varName, off);
+  const sym = tc.symbolTable.lookupOpenScopes(varName) ?? tc.symbolTable.lookupAtPosition(varName, off);
   return sym ? typeToString(sym.dataType) : 'undefined';
 }
 

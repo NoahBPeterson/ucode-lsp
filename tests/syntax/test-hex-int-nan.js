@@ -24,7 +24,7 @@ function analyze(code) {
 }
 
 function getType(result, varName) {
-    const sym = result.symbolTable.lookup(varName);
+    const sym = result.symbolTable.lookupOpenScopes(varName);
     return sym ? typeToString(sym.dataType) : 'NOT FOUND';
 }
 
@@ -33,7 +33,7 @@ function getType(result, varName) {
 // function applying the builtin to its parameter, rather than a top-level binding (a bare
 // `let v;` is now typed null, not unknown).
 function getRet(result, fnName) {
-    const sym = result.symbolTable.lookup(fnName);
+    const sym = result.symbolTable.lookupOpenScopes(fnName);
     return sym && sym.returnType ? typeToString(sym.returnType) : 'NO RETURN TYPE';
 }
 function applied(builtinCall) {

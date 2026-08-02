@@ -77,7 +77,7 @@ async function validateAndAnalyzeDocument(textDocument) {
         console.log(`   Diagnostics: ${diagnostics.length}`);
         
         // Check the symbol
-        const symbol = analysisResult.symbolTable.lookup('file_content');
+        const symbol = analysisResult.symbolTable.lookupOpenScopes('file_content');
         if (symbol) {
             console.log(`   ✅ Symbol cached: ${JSON.stringify(symbol.dataType)}`);
         } else {
@@ -101,7 +101,7 @@ async function simulateDocumentEvent() {
     const cachedResult = analysisCache.get('file:///test.uc');
     if (cachedResult) {
         console.log('✅ Analysis result found in cache');
-        const symbol = cachedResult.symbolTable.lookup('file_content');
+        const symbol = cachedResult.symbolTable.lookupOpenScopes('file_content');
         console.log(`   Symbol: ${symbol ? JSON.stringify(symbol.dataType) : 'NOT FOUND'}`);
     } else {
         console.log('❌ NO analysis result in cache!');

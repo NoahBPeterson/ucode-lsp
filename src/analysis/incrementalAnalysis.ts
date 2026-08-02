@@ -53,7 +53,7 @@ export function planClean(
 }
 
 function unitReturnType(u: UnitRange, symbolTable: SymbolTable | undefined): unknown {
-  if (u.kind === 'function') return symbolTable?.lookup(u.name)?.returnType;
+  if (u.kind === 'function') return symbolTable?.lookupOpenScopes(u.name)?.returnType;
   return (u.fnNode as any)._inferredReturnType;
 }
 
@@ -79,7 +79,7 @@ function stableJson(v: unknown): string {
  *  — its return type, its returned-object shape, and the `this.<prop>` types it writes. */
 function unitSig(u: UnitRange, symbolTable: SymbolTable | undefined): string {
   const rt = unitReturnType(u, symbolTable);
-  const rpt = u.kind === 'function' ? symbolTable?.lookup(u.name)?.returnPropertyTypes : (u.fnNode as any)._inferredReturnPropertyTypes;
+  const rpt = u.kind === 'function' ? symbolTable?.lookupOpenScopes(u.name)?.returnPropertyTypes : (u.fnNode as any)._inferredReturnPropertyTypes;
   const tw = ((u.fnNode as any)._thisWrites ?? []) as Array<[string, unknown]>;
   return stableJson([rt, rpt, tw]);
 }

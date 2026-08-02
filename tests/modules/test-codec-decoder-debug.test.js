@@ -44,7 +44,7 @@ decode_tlv({buf: {pos: () => ({})}}, 1, 0, 100);
     console.log('CFG query engine:', !!analysisResult.cfgQueryEngine);
 
     console.log('\n=== SYMBOL TABLE ===');
-    const decodeSymbol = analysisResult.symbolTable.lookup('decode');
+    const decodeSymbol = analysisResult.symbolTable.lookupOpenScopes('decode');
     console.log('Symbol table has "decode" (global lookup):', !!decodeSymbol);
 
     const decodeCallPos = code.indexOf('decode(msg.buf');

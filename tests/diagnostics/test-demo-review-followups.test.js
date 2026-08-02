@@ -64,7 +64,7 @@ test('nl80211/rtnl .const chain: members type integer, bogus names flag UC5003',
   const uc5003 = diagnostics.filter(x => x.code === 'UC5003');
   expect(uc5003.length).toBe(1);
   expect(uc5003[0].message).toContain('RTA_DST');
-  expect(symbolTable.lookup('a')?.dataType).toBe('integer'); // integer + integer
+  expect(symbolTable.lookupOpenScopes('a')?.dataType).toBe('integer'); // integer + integer
 });
 
 test('fs IOC_DIR_* named import is UC6005-gated below 24.10, clean at 24.10', () => {
@@ -100,7 +100,7 @@ test('every unexpected character in a file reports independently (no panic latch
   expect(chars.some(d => d.message.includes('\u{1F600}'))).toBe(true);
   expect(chars.some(d => d.message.includes('é'))).toBe(true);
   // the parser skips the bad char: caf still received its initializer
-  expect(symbolTable.lookup('caf')?.dataType).toBe('integer');
+  expect(symbolTable.lookupOpenScopes('caf')?.dataType).toBe('integer');
   // and the genuine paren error still reports too
   expect(diagnostics.some(d => /Unexpected token in expression/.test(d.message))).toBe(true);
 });
@@ -121,7 +121,7 @@ test('UC6016 messages say WHY: base digits, bare 0x, double dot, bare exponent',
 
 test('?? with an unknown left keeps the default arm type (integer | unknown)', () => {
   const { symbolTable } = analyze('let lvl = SOME_INJECTED ?? 1;\nlet nm = SOME_INJECTED ?? "x";\nprint(lvl, nm);\n');
-  const t = (n) => JSON.stringify(symbolTable.lookup(n)?.dataType);
+  const t = (n) => JSON.stringify(symbolTable.lookupOpenScopes(n)?.dataType);
   expect(t('lvl')).toContain('integer');
   expect(t('lvl')).toContain('unknown');
   expect(t('nm')).toContain('string');
@@ -129,7 +129,7 @@ test('?? with an unknown left keeps the default arm type (integer | unknown)', (
 
 test('?? with a provably non-null left stays the left type (fallback unreachable)', () => {
   const { symbolTable } = analyze('let s = "hi";\nlet r = s ?? "fallback";\nprint(r);\n');
-  expect(symbolTable.lookup('r')?.dataType).toBe('string');
+  expect(symbolTable.lookupOpenScopes('r')?.dataType).toBe('string');
 });
 
 test('include() of a parse-broken target flags UC3009; missing target flags UC3002', () => {
@@ -156,7 +156,7 @@ test('include() of a parse-broken target flags UC3009; missing target flags UC30
 test('assumed-injected global gets a symbol: type() guard narrows it, UC1001 still fires', () => {
   const code = 'let lvl = VERBOSITY ?? 1;\nif (type(VERBOSITY) !== "string")\n    die();\nprint(lvl, VERBOSITY);\n';
   const { diagnostics, symbolTable } = analyze(code);
-  const sym = symbolTable.lookup('VERBOSITY');
+  const sym = symbolTable.lookupOpenScopes('VERBOSITY');
   expect(sym).toBeDefined();
   expect(sym.isAssumedInjectedGlobal).toBe(true);
   expect(sym.dataType).toBe('unknown');

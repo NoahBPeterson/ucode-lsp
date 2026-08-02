@@ -100,10 +100,9 @@ function lookupSymbol(
     offset?: number
 ): UcodeSymbol | undefined {
     if (offset !== undefined) {
-        const scoped = analysisResult.symbolTable.lookupAtPosition(objectName, offset);
-        if (scoped) return scoped;
+        return analysisResult.symbolTable.resolveReference(objectName, offset) || undefined;
     }
-    return analysisResult.symbolTable.lookup(objectName) || undefined;
+    return analysisResult.symbolTable.lookupOpenScopes(objectName) || undefined;
 }
 
 export function handleCompletion(
@@ -265,20 +264,20 @@ export function handleCompletion(
             }
 
             // nl80211/rtnl constants object completions
-            const nl80211ConstCompletions = getNl80211ConstObjectCompletions(objectName, analysisResult);
+            const nl80211ConstCompletions = getNl80211ConstObjectCompletions(objectName, analysisResult, offset);
             if (nl80211ConstCompletions.length > 0) {
                 connection.console.log(`Returning ${nl80211ConstCompletions.length} nl80211 constants completions for ${objectName}`);
                 return nl80211ConstCompletions;
             }
 
-            const rtnlConstCompletions = getRtnlConstObjectCompletions(objectName, analysisResult);
+            const rtnlConstCompletions = getRtnlConstObjectCompletions(objectName, analysisResult, offset);
             if (rtnlConstCompletions.length > 0) {
                 connection.console.log(`Returning ${rtnlConstCompletions.length} rtnl constants completions for ${objectName}`);
                 return rtnlConstCompletions;
             }
 
             // Check if this is a default import with completions available
-            const defaultImportCompletions = getDefaultImportCompletions(objectName, analysisResult, document.uri);
+            const defaultImportCompletions = getDefaultImportCompletions(objectName, analysisResult, document.uri, offset);
             if (defaultImportCompletions.length > 0) {
                 connection.console.log(`Returning ${defaultImportCompletions.length} default import completions for ${objectName}`);
                 return defaultImportCompletions;
@@ -295,7 +294,7 @@ export function handleCompletion(
 
             // Check if this is a namespace import with completions available (only if no property chain)
             if (!propertyChain || propertyChain.length === 0) {
-                const namespaceImportCompletions = getNamespaceImportCompletions(objectName, analysisResult, document.uri);
+                const namespaceImportCompletions = getNamespaceImportCompletions(objectName, analysisResult, document.uri, offset);
                 if (namespaceImportCompletions.length > 0) {
                     connection.console.log(`Returning ${namespaceImportCompletions.length} namespace import completions for ${objectName}`);
                     return namespaceImportCompletions;
@@ -303,7 +302,7 @@ export function handleCompletion(
                 
                 // Fallback: check if this might be a namespace import that wasn't handled above
                 // This covers edge cases where the symbol properties don't match expected patterns
-                const fallbackNamespaceCompletions = getFallbackNamespaceCompletions(objectName, analysisResult, document.uri);
+                const fallbackNamespaceCompletions = getFallbackNamespaceCompletions(objectName, analysisResult, document.uri, offset);
                 if (fallbackNamespaceCompletions.length > 0) {
                     connection.console.log(`Returning ${fallbackNamespaceCompletions.length} fallback namespace completions for ${objectName}`);
                     return fallbackNamespaceCompletions;
@@ -594,7 +593,7 @@ function resolveCalleeSignatureForArgs(
         }
         const arrTok = k > 0 ? tokens[k - 1] : undefined;
         if (!arrTok || arrTok.type !== TokenType.TK_LABEL) return null;
-        const arrSym = st.lookupAtPosition(arrTok.value as string, arrTok.pos) ?? st.lookup(arrTok.value as string);
+        const arrSym = st.resolveReference(arrTok.value as string, arrTok.pos);
         const elemType = arrayElementObjectType(arrSym?.dataType);
         if (elemType && isKnownObjectType(elemType)) {
             const m = OBJECT_REGISTRIES[elemType].getMethod(method);
@@ -603,7 +602,7 @@ function resolveCalleeSignatureForArgs(
         return null;
     }
     if (dotTok && isMemberAccessDot(dotTok.type) && recvTok && recvTok.type === TokenType.TK_LABEL) {
-        const recvSym = st.lookupAtPosition(recvTok.value as string, recvTok.pos) ?? st.lookup(recvTok.value as string);
+        const recvSym = st.resolveReference(recvTok.value as string, recvTok.pos);
         const mt = recvSym?.dataType !== undefined ? extractModuleType(recvSym.dataType) : null;
         if (!mt) return null;
         const tn = mt.moduleName;
@@ -625,7 +624,7 @@ function resolveCalleeSignatureForArgs(
         }
         return null;
     }
-    const sym = st.lookupAtPosition(method, nameTok.pos) ?? st.lookup(method);
+    const sym = st.resolveReference(method, nameTok.pos);
     if (sym?.importedFrom && isKnownModule(sym.importedFrom)) {
         const f = MODULE_REGISTRIES[sym.importedFrom].getFunction(sym.importSpecifier ?? method);
         if (Option.isSome(f)) return { fn: f.value, moduleName: sym.importedFrom };
@@ -1199,12 +1198,12 @@ function getUserFunctionReturnCompletions(funcName: string, analysisResult?: Sem
     return items;
 }
 
-function getFallbackNamespaceCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, documentUri?: string): CompletionItem[] {
+function getFallbackNamespaceCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, documentUri?: string, offset?: number): CompletionItem[] {
     if (!analysisResult || !analysisResult.symbolTable) {
         return [];
     }
 
-    const symbol = lookupSymbol(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult, offset);
 
     // Only for NAMESPACE imports (import * as ns) — ns.<member> = the module's
     // exports. Named value imports (import { x }) complete their own properties
@@ -1220,14 +1219,14 @@ function getFallbackNamespaceCompletions(objectName: string, analysisResult?: Se
     return getModuleExportCompletions(uri, objectName);
 }
 
-function getDefaultImportCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, documentUri?: string): CompletionItem[] {
+function getDefaultImportCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, documentUri?: string, offset?: number): CompletionItem[] {
     const fs = require('fs');
 
     if (!analysisResult || !analysisResult.symbolTable) {
         return [];
     }
 
-    const symbol = lookupSymbol(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult, offset);
     if (!symbol) {
         return [];
     }
@@ -1275,12 +1274,12 @@ function getDefaultImportCompletions(objectName: string, analysisResult?: Semant
     return [];
 }
 
-function getNamespaceImportCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, documentUri?: string): CompletionItem[] {
+function getNamespaceImportCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, documentUri?: string, offset?: number): CompletionItem[] {
     if (!analysisResult || !analysisResult.symbolTable) {
         return [];
     }
 
-    const symbol = lookupSymbol(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult, offset);
     if (!symbol) {
         return [];
     }
@@ -1755,7 +1754,7 @@ function rtnlConstantItems(): CompletionItem[] {
     return items;
 }
 
-function getNl80211ConstObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+function getNl80211ConstObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, offset?: number): CompletionItem[] {
     console.log(`[NL80211_CONST_COMPLETION] Checking nl80211 constants completion for: ${objectName}`);
     
     if (!analysisResult || !analysisResult.symbolTable) {
@@ -1763,7 +1762,7 @@ function getNl80211ConstObjectCompletions(objectName: string, analysisResult?: S
         return [];
     }
 
-    const symbol = lookupSymbol(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult, offset);
     if (!symbol) {
         console.log(`[NL80211_CONST_COMPLETION] Symbol not found: ${objectName}`);
         return [];
@@ -1805,14 +1804,14 @@ function getNl80211ConstObjectCompletions(objectName: string, analysisResult?: S
     return [];
 }
 
-function getRtnlConstObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult): CompletionItem[] {
+function getRtnlConstObjectCompletions(objectName: string, analysisResult?: SemanticAnalysisResult, offset?: number): CompletionItem[] {
     console.log(`[RTNL_CONST_COMPLETION] Checking rtnl constants completion for: ${objectName}`);
     
     if (!analysisResult || !analysisResult.symbolTable) {
         console.log(`[RTNL_CONST_COMPLETION] No analysisResult or symbolTable for ${objectName}`);
         return [];
     }
-    const symbol = lookupSymbol(objectName, analysisResult);
+    const symbol = lookupSymbol(objectName, analysisResult, offset);
     if (!symbol) {
         console.log(`[RTNL_CONST_COMPLETION] Symbol not found: ${objectName}`);
         return [];

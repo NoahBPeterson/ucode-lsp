@@ -50,7 +50,7 @@ try {
     console.log(`✅ Analyzed: ${analysisResult.diagnostics.length} diagnostics`);
     
     // Check symbol table
-    const symbol = analysisResult.symbolTable.lookup('file_content');
+    const symbol = analysisResult.symbolTable.lookupOpenScopes('file_content');
     if (symbol) {
         console.log(`✅ Symbol found: ${JSON.stringify(symbol.dataType)}`);
     } else {

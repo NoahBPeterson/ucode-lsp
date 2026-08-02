@@ -2214,11 +2214,11 @@ connection.onCodeLensResolve((lens: CodeLens): CodeLens => {
         const symbolTable = cacheEntry?.result?.symbolTable;
         let isReference: ((node: { start: number }) => boolean) | undefined;
         if (symbolTable && typeof symbolTable.lookupAtPosition === 'function') {
-            const targetSym = symbolTable.lookupAtPosition(fn.name, fn.nameStart) ?? symbolTable.lookup(fn.name);
+            const targetSym = symbolTable.resolveReference(fn.name, fn.nameStart);
             const targetDeclaredAt = targetSym?.declaredAt;
             if (targetDeclaredAt !== undefined) {
                 isReference = (node: { start: number }): boolean => {
-                    const s = symbolTable.lookupAtPosition(fn.name, node.start) ?? symbolTable.lookup(fn.name);
+                    const s = symbolTable.resolveReference(fn.name, node.start);
                     return !!s && s.declaredAt === targetDeclaredAt;
                 };
             }
@@ -2310,7 +2310,7 @@ function resolveSymbolAt(uri: string, position: { line: number; character: numbe
     if (!ident) return null;
     const name = ident.name;
     const symbolTable: SymbolTable = entry.result.symbolTable;
-    const targetSym = symbolTable?.lookupAtPosition?.(name, offset) ?? symbolTable?.lookup?.(name);
+    const targetSym = symbolTable?.resolveReference(name, offset);
     const declaredAt: number | undefined = targetSym?.declaredAt;
 
     // Scope-aware predicate (mirrors the references CodeLens): a name match counts
@@ -2319,7 +2319,7 @@ function resolveSymbolAt(uri: string, position: { line: number; character: numbe
     let isReference: (node: { start: number }) => boolean = () => true;
     if (declaredAt !== undefined && typeof symbolTable?.lookupAtPosition === 'function') {
         isReference = (node) => {
-            const s = symbolTable.lookupAtPosition(name, node.start) ?? symbolTable.lookup(name);
+            const s = symbolTable.resolveReference(name, node.start);
             return !!s && s.declaredAt === declaredAt;
         };
     }
@@ -2439,8 +2439,7 @@ function resolveMemberCanonical(uri: string, position: { line: number; character
     }
     // Factory-returned local: `let sh = make()` → `sh.prop` is a method whose source
     // file is recorded on the receiver symbol's propertyDefinitionLocations.
-    const objSym: Symbol | null | undefined = entry.result.symbolTable?.lookupAtPosition?.(objName, member.object.start)
-        ?? entry.result.symbolTable?.lookup?.(objName);
+    const objSym: Symbol | null | undefined = entry.result.symbolTable?.resolveReference(objName, member.object.start);
     const loc = objSym?.propertyDefinitionLocations?.get?.(propName);
     if (loc?.uri) return { canonicalUri: loc.uri, canonicalName: propName };
     return null;
@@ -2539,8 +2538,7 @@ function collectLocalObjectMethodReferences(uri: string, position: { line: numbe
     }
     if (!objName || !methodName) return null;
 
-    const objSym: Symbol | null | undefined = entry.result.symbolTable?.lookupAtPosition?.(objName, offset)
-        ?? entry.result.symbolTable?.lookup?.(objName);
+    const objSym: Symbol | null | undefined = entry.result.symbolTable?.resolveReference(objName, offset);
     const keySpan = objectLiteralMethodKey(objSym?.initNode, methodName);
     if (!keySpan) return null;
 
@@ -2619,8 +2617,7 @@ function collectReferences(uri: string, position: { line: number; character: num
     // and fan out from there (the exporter's own refs + every importer). Otherwise
     // treat THIS file as the potential exporter (findCrossFileReferences returns []
     // when it doesn't export `name`).
-    const sym: Symbol | null | undefined = entry.result.symbolTable?.lookupAtPosition?.(name, declaredAt ?? document.offsetAt(position))
-        ?? entry.result.symbolTable?.lookup?.(name);
+    const sym: Symbol | null | undefined = entry.result.symbolTable?.resolveReference(name, declaredAt ?? document.offsetAt(position));
     const canon = sym?.type === SymbolType.IMPORTED ? resolveImportedCanonical(uri, name) : null;
     if (canon) {
         for (const r of collectInFileRefsByName(canon.canonicalUri, canon.canonicalName)) add(r.uri, r.range as Range);
@@ -3034,8 +3031,7 @@ function analyzeRenameTarget(uri: string, position: { line: number; character: n
         return { kind: 'blocked', reason: `'${resolved.name}' has no local declaration to rename (builtin or unresolved)` };
     }
     const name = resolved.name;
-    const sym: Symbol | null | undefined = entry.result.symbolTable?.lookupAtPosition?.(name, resolved.declaredAt)
-        ?? entry.result.symbolTable?.lookup?.(name);
+    const sym: Symbol | null | undefined = entry.result.symbolTable?.resolveReference(name, resolved.declaredAt);
     // Builtins are seeded into global scope with a synthetic declaration — never renameable.
     if (sym?.type === SymbolType.BUILTIN) return { kind: 'blocked', reason: `'${name}' is a builtin function` };
 
@@ -3978,7 +3974,7 @@ function generateJsDocQuickFix(
     const symbolTable = analysisResult.symbolTable;
     const unknownParams: string[] = [];
     for (const param of funcNode.params) {
-        const sym = symbolTable.lookupAtPosition ? symbolTable.lookupAtPosition(param.name, param.start) : symbolTable.lookup(param.name);
+        const sym = symbolTable.resolveReference(param.name, param.start);
         if (!sym || sym.dataType === 'unknown') {
             unknownParams.push(param.name);
         }

@@ -32,7 +32,7 @@ function analyze(code) {
 }
 
 const typeOf = (code, varName) => {
-  const sym = analyze(code).symbolTable.lookup(varName);
+  const sym = analyze(code).symbolTable.lookupOpenScopes(varName);
   return sym ? typeToString(sym.dataType) : 'NOT FOUND';
 };
 

@@ -22,7 +22,7 @@ function analyze(code) {
 }
 
 function getType(result, varName) {
-    const sym = result.symbolTable.lookup(varName);
+    const sym = result.symbolTable.lookupOpenScopes(varName);
     return sym ? typeToString(sym.dataType) : 'NOT FOUND';
 }
 

@@ -794,7 +794,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     const severity = (mode === 'errorInStrict' && this.strictMode) ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning;
     for (const r of reads) {
       if (tainted.has(r.name)) continue;
-      const sym = this.symbolTable.lookup(r.name);
+      const sym = this.symbolTable.lookupOpenScopes(r.name);
       if (!sym || sym.propertyTypes?.has(r.prop)) continue; // assigned somewhere → fine
       this.addDiagnostic(
         `Property '${r.prop}' is never assigned on global '${r.name}' in this file - its object ` +
@@ -826,7 +826,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (d.id?.type === 'Identifier' && d.init?.type === 'ObjectExpression'
             && this.isFullyStaticObjectLiteral(d.init as ObjectExpressionNode)) {
           const name = (d.id as IdentifierNode).name;
-          const sym = this.symbolTable.lookupAtPosition(name, d.id.start) ?? this.symbolTable.lookup(name);
+          const sym = this.symbolTable.resolveReference(name, d.id.start);
           // declaredAt identity ties the occurrence to THIS declarator; names that are also
           // object-literal GLOBALS are UC8006's turf (top-level `let` is fine — it's a local).
           if (sym && sym.declaredAt === d.id.start && !this.globalObjectBindings.has(name)) {
@@ -852,7 +852,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     const resolveCandidate = (name: string, pos: number): number | 'ambiguous' | null => {
       const set = candidates.get(name);
       if (!set) return null;
-      const sym = this.symbolTable.lookupAtPosition(name, pos) ?? this.symbolTable.lookup(name);
+      const sym = this.symbolTable.resolveReference(name, pos);
       if (!sym) return 'ambiguous';
       return set.has(sym.declaredAt) ? sym.declaredAt : null; // resolved to a different (shadowing) binding
     };
@@ -1006,7 +1006,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     const severity = this.strictMode ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning;
     for (const r of reads) {
       if (tainted.has(r.key)) continue;
-      const sym = this.symbolTable.lookupAtPosition(r.name, r.start) ?? this.symbolTable.lookup(r.name);
+      const sym = this.symbolTable.resolveReference(r.name, r.start);
       if (!sym || sym.declaredAt !== r.key) continue;
       if (sym.propertyTypes?.has(r.prop)) continue; // assigned somewhere (incl. closures) → fine
       this.addDiagnostic(
@@ -1022,7 +1022,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     // under 'use strict'; nothing crashes or reads null — the code just does nothing).
     for (const d of deletes) {
       if (tainted.has(d.key)) continue;
-      const sym = this.symbolTable.lookupAtPosition(d.name, d.start) ?? this.symbolTable.lookup(d.name);
+      const sym = this.symbolTable.resolveReference(d.name, d.start);
       if (!sym || sym.declaredAt !== d.key) continue;
       if (sym.propertyTypes?.has(d.prop)) continue; // assigned somewhere (incl. closures) → real delete
       this.addDiagnostic(
@@ -1824,7 +1824,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (!n) return false;
     if (n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return true;
     if (n.type === 'Identifier') {
-      const sym = this.symbolTable.lookup((n as IdentifierNode).name);
+      // Post-visit pass: a function-scoped handler's scope has exited by now.
+      const sym = this.symbolTable.resolveReference((n as IdentifierNode).name, n.start);
       if (!sym) return false;
       return sym.type === SymbolType.FUNCTION
         || sym.dataType === (UcodeType.FUNCTION as UcodeDataType)
@@ -1860,8 +1861,10 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (call.callee?.type === 'Identifier'
             && THROWING_BUILTINS.has((call.callee as IdentifierNode).name)) {
           // Only the actual builtin throws; if a user shadowed the name with their own
-          // binding, it's not our throwing builtin, so skip it.
-          const sym = this.symbolTable.lookup((call.callee as IdentifierNode).name);
+          // binding, it's not our throwing builtin, so skip it. Position-aware: this
+          // pass runs post-visit, so a function/block-scoped shadow is invisible to
+          // the open-chain walk and a miss would masquerade as "the real builtin".
+          const sym = this.symbolTable.resolveReference((call.callee as IdentifierNode).name, call.callee.start);
           if (!sym || sym.type === SymbolType.BUILTIN) return call;
         }
       }
@@ -2093,7 +2096,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       for (const spec of (exp.specifiers || [])) {
         const name = spec.local?.name;
         if (!name) continue;
-        const sym = this.symbolTable.lookup(name);
+        const sym = this.symbolTable.lookupOpenScopes(name);
         const isLocal = sym && (sym.type === SymbolType.VARIABLE || sym.type === SymbolType.FUNCTION);
         if (isLocal) continue;
         const reason = !sym ? `it is not declared in this module`
@@ -2264,7 +2267,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // `global.X = { … }` equivalent of declareGlobalObjectBinding).
         if (g.propertyTypes && g.propertyTypes.size > 0) {
           this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE, UcodeType.OBJECT as UcodeDataType);
-          const sym = this.symbolTable.lookup(g.name);
+          const sym = this.symbolTable.lookupOpenScopes(g.name);
           if (sym) {
             sym.dataType = UcodeType.OBJECT as UcodeDataType;
             sym.propertyTypes = g.propertyTypes;
@@ -2284,7 +2287,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           const dt = scalar[g.typeStr];
           if (dt) {
             this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE, dt as UcodeDataType);
-            const sym = this.symbolTable.lookup(g.name);
+            const sym = this.symbolTable.lookupOpenScopes(g.name);
             if (sym) { sym.dataType = dt as UcodeDataType; sym.used = true; }
           }
         }
@@ -2347,7 +2350,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       for (const name of this.fileResolver.getIncludeGlobals(rawPath, this.textDocument.uri)) {
         this.globalPropertyNames.add(name); // suppress UC1001/UC1002 for the leaked name
         this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType);
-        const sym = this.symbolTable.lookup(name);
+        const sym = this.symbolTable.lookupOpenScopes(name);
         if (sym) { sym.dataType = UcodeType.UNKNOWN as UcodeDataType; sym.used = true; }
       }
     };
@@ -2503,7 +2506,7 @@ export class SemanticAnalyzer extends BaseVisitor {
               if (resolvedUri) {
                 const dataType: UcodeDataType = { type: UcodeType.OBJECT, isDefaultImport: true };
                 this.symbolTable.declare((left as IdentifierNode).name, SymbolType.IMPORTED, dataType, left);
-                const sym = this.symbolTable.lookup((left as IdentifierNode).name);
+                const sym = this.symbolTable.lookupOpenScopes((left as IdentifierNode).name);
                 if (sym) {
                   sym.importedFrom = this.normalizeImportedFrom(moduleName, resolvedUri);
                   sym.importSpecifier = 'default';
@@ -2831,7 +2834,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         const memberExpr = node.init as any; // MemberExpressionNode
         if (memberExpr.object && memberExpr.object.type === 'Identifier') {
           const objectName = memberExpr.object.name;
-          const sourceSymbol = this.symbolTable.lookup(objectName);
+          const sourceSymbol = this.symbolTable.lookupOpenScopes(objectName);
           
           if (sourceSymbol && sourceSymbol.type === SymbolType.IMPORTED && 
               sourceSymbol.dataType && typeof sourceSymbol.dataType === 'object' && 
@@ -2878,7 +2881,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       } else {
         // Check for shadowing
-        const shadowedSymbol = this.symbolTable.lookup(name);
+        const shadowedSymbol = this.symbolTable.lookupOpenScopes(name);
         
         if (shadowedSymbol && shadowedSymbol.type === SymbolType.BUILTIN) {
           // Shadowing builtin function - show warning but allow it. Suppress the warning
@@ -2907,7 +2910,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // Declare the symbol (allow shadowing builtins)
         this.symbolTable.declare(name, symbolType, dataType, node.id, node.init || undefined);
 
-        const declaredSymbol = this.symbolTable.lookup(name);
+        const declaredSymbol = this.symbolTable.lookupOpenScopes(name);
         // If the initializer had a parse error (`let x = (1 +;`), the declaration is
         // already broken — don't pile a misleading "declared but never used" (UC1006)
         // on top of the real syntax error. Treat the binding as used to suppress it.
@@ -2928,7 +2931,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // Add import information if this is a CommonJS require
         const commonjsImport = this.commonjsImports.get(name);
         if (commonjsImport) {
-          const symbol = this.symbolTable.lookup(name);
+          const symbol = this.symbolTable.lookupOpenScopes(name);
           if (symbol) {
             symbol.importedFrom = commonjsImport.importedFrom;
             symbol.importSpecifier = commonjsImport.importSpecifier;
@@ -2940,7 +2943,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Stamp the member shape of a loadfile()()-returned object literal so
       // `a.member` / `a.method()` resolve like a local object literal would.
       if (loadfileReturnShape) {
-        const sym = this.symbolTable.lookup(name);
+        const sym = this.symbolTable.lookupOpenScopes(name);
         if (sym) {
           if (loadfileReturnShape.propertyTypes) sym.propertyTypes = loadfileReturnShape.propertyTypes;
           if (loadfileReturnShape.propertyFunctionReturnTypes) {
@@ -2954,7 +2957,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // `fw4.read_state()` resolves cross-file instead of `unknown`.
       // docs/tc-require-user-module-typing.md
       if (requireResolvedUri && requireResolvedUri.startsWith('file://')) {
-        const sym = this.symbolTable.lookup(name);
+        const sym = this.symbolTable.lookupOpenScopes(name);
         if (sym) {
           if (this.fileResolver.requireModuleIsFunction(requireResolvedUri)) {
             // The default export is itself a FACTORY FUNCTION — `fw4` is callable;
@@ -3002,7 +3005,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // stamp the symbol as a FUNCTION carrying that returnType so call sites
         // (inferFunctionCallReturnType) resolve `f(...)`'s type like a named function.
         if (node.init.type === 'ArrowFunctionExpression' || node.init.type === 'FunctionExpression') {
-          const fnSym = this.symbolTable.lookup(name);
+          const fnSym = this.symbolTable.lookupOpenScopes(name);
           if (fnSym) {
             fnSym.dataType = UcodeType.FUNCTION as UcodeDataType;
             const rt = (node.init as any)._inferredReturnType;
@@ -3016,7 +3019,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
         // Upgrade array literal type to ArrayType if element type can be inferred
         if (node.init.type === 'ArrayExpression') {
-          const sym = this.symbolTable.lookup(name);
+          const sym = this.symbolTable.lookupOpenScopes(name);
           if (sym) {
             // checkNode returns the rich type (e.g. array<string>) directly.
             const fullType = this.typeChecker.checkNode(node.init);
@@ -3032,7 +3035,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         //  glob("/path") → array<string> (narrowed from array<string> | null),
         //  io.open() → io.handle | null, cursor() → uci.cursor | null)
         if (node.init.type === 'CallExpression' || node.init.type === 'MemberExpression') {
-          const sym = this.symbolTable.lookup(name);
+          const sym = this.symbolTable.lookupOpenScopes(name);
           if (sym) {
             // checkNode returns the call/member result's rich type directly.
             // Only upgrade when we actually resolved something (non-UNKNOWN) so
@@ -3070,9 +3073,9 @@ export class SemanticAnalyzer extends BaseVisitor {
         // Plain alias: `let alias = ks;` where ks already has keysOfSymbol →
         // copy the tag. Without this, the chain breaks at any rebinding.
         if (node.init.type === 'Identifier') {
-          const sym = this.symbolTable.lookup(name);
+          const sym = this.symbolTable.lookupOpenScopes(name);
           if (sym) {
-            const srcSym = this.symbolTable.lookup((node.init as IdentifierNode).name);
+            const srcSym = this.symbolTable.lookupOpenScopes((node.init as IdentifierNode).name);
             if (srcSym?.keysOfSymbol) sym.keysOfSymbol = srcSym.keysOfSymbol;
             // Function-value aliasing: `let f = greet` (and chains `let g = f`)
             // carry the callee's signature so `f(args)` is argument-checked like a
@@ -3093,12 +3096,12 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (node.init.type === 'MemberExpression') {
           const mem = node.init as MemberExpressionNode;
           if (mem.object.type === 'Identifier' && !mem.computed && mem.property.type === 'Identifier') {
-            const objSym = this.symbolTable.lookup((mem.object as IdentifierNode).name);
+            const objSym = this.symbolTable.lookupOpenScopes((mem.object as IdentifierNode).name);
             const modName = objSym ? extractModuleType(objSym.dataType)?.moduleName : undefined;
             if (modName && isKnownModule(modName)) {
               const memberName = (mem.property as IdentifierNode).name;
               if (MODULE_REGISTRIES[modName].getFunctionNames().includes(memberName)) {
-                const sym = this.symbolTable.lookup(name);
+                const sym = this.symbolTable.lookupOpenScopes(name);
                 if (sym) {
                   sym.dataType = UcodeType.FUNCTION;
                   sym.importedFrom = modName;
@@ -3112,7 +3115,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // When initializer is an identifier, check if it has a narrowed type at this position
         // (e.g., after equality guard: if (readfile != rf) return; let d = readfile;)
         if (node.init.type === 'Identifier') {
-          const sym = this.symbolTable.lookup(name);
+          const sym = this.symbolTable.lookupOpenScopes(name);
           // ANY (json()/call() contract-any — behaves exactly like UNKNOWN in every
           // check, docs/tc-json-any-return-display.md) is just as narrowable as a
           // genuine UNKNOWN: `let x = json(y); if (type(x)=="object") { let z = x; }`
@@ -3141,9 +3144,8 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (node.init.type === 'MemberExpression') {
           const mem = node.init as MemberExpressionNode;
           if (mem.computed && mem.object.type === 'Identifier') {
-            const objSym = this.symbolTable.lookupAtPosition((mem.object as IdentifierNode).name, mem.object.start)
-                        ?? this.symbolTable.lookup((mem.object as IdentifierNode).name);
-            const sym = this.symbolTable.lookup(name);
+            const objSym = this.symbolTable.resolveReference((mem.object as IdentifierNode).name, mem.object.start);
+            const sym = this.symbolTable.lookupOpenScopes(name);
             if (objSym?.valuePropertyTypes && objSym.valuePropertyTypes.size > 0 && sym) {
               sym.dataType = UcodeType.OBJECT as UcodeDataType;
               sym.propertyTypes = objSym.valuePropertyTypes;
@@ -3153,7 +3155,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
         // Case 1: Populate propertyTypes from object literal at declaration
         if (node.init.type === 'ObjectExpression') {
-          const sym = this.symbolTable.lookup(name);
+          const sym = this.symbolTable.lookupOpenScopes(name);
           if (sym) {
             const propTypes = this.inferObjectLiteralPropertyTypes(node.init as ObjectExpressionNode);
             if (propTypes) {
@@ -3191,7 +3193,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         else if (node.init.type === 'ConditionalExpression'
           || (node.init.type === 'BinaryExpression'
               && ['||', '??', '&&'].includes((node.init as BinaryExpressionNode).operator))) {
-          const sym = this.symbolTable.lookup(name);
+          const sym = this.symbolTable.lookupOpenScopes(name);
           // Only when EVERY reachable branch is object-like — a mixed `obj|array`
           // result must keep its union so the "possibly array" member-access warning
           // still fires (don't mask it by stamping an object shape). (#174)
@@ -3214,7 +3216,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       case 'ObjectExpression':
         return true;
       case 'Identifier': {
-        const sym = this.symbolTable.lookup((expr as IdentifierNode).name);
+        const sym = this.symbolTable.lookupOpenScopes((expr as IdentifierNode).name);
         if (!sym) return false;
         return dataTypeToBase(sym.dataType) === UcodeType.OBJECT
           || (!!sym.propertyTypes && sym.propertyTypes.size > 0);
@@ -3243,7 +3245,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       case 'ObjectExpression':
         return this.inferObjectLiteralPropertyTypes(expr as ObjectExpressionNode);
       case 'Identifier': {
-        const sym = this.symbolTable.lookup((expr as IdentifierNode).name);
+        const sym = this.symbolTable.lookupOpenScopes((expr as IdentifierNode).name);
         return sym?.propertyTypes && sym.propertyTypes.size > 0 ? new Map(sym.propertyTypes) : null;
       }
       case 'BinaryExpression': {
@@ -3455,7 +3457,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       );
     } else {
       // Store import information in the symbol
-      const symbol = this.symbolTable.lookup(localName);
+      const symbol = this.symbolTable.lookupOpenScopes(localName);
       if (symbol) {
         const effectiveUri = resolvedUri || this.resolveModuleSource(source);
         // Object-handle exports (fs stdin/stdout/stderr → fs.file) behave like a local
@@ -4081,7 +4083,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // caller omits it, so its declared type is really `T|null`.
         const declaredType = jsdocInfo.optional ? widenWithNull(jsdocInfo.type) : jsdocInfo.type;
         this.symbolTable.declare(param.name, SymbolType.PARAMETER, declaredType, param);
-        const sym = this.symbolTable.lookup(param.name);
+        const sym = this.symbolTable.lookupOpenScopes(param.name);
         if (sym) {
           if (jsdocInfo.optional) sym.jsdocOptionalParam = true;
           if (jsdocInfo.description) sym.jsdocDescription = jsdocInfo.description;
@@ -4123,7 +4125,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
     const unknownParams = params.filter(p => {
       if (documented && documented.has(p.name)) return false;
-      const sym = this.symbolTable.lookup(p.name);
+      const sym = this.symbolTable.lookupOpenScopes(p.name);
       return !sym || sym.dataType === UcodeType.UNKNOWN;
     });
     if (unknownParams.length === 0) return;
@@ -4275,8 +4277,14 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
 
-      // Declare the function (may already exist from hoisting pre-pass).
-      const existing = this.symbolTable.lookup(name);
+      // Declare the function (may already exist from hoisting pre-pass). SAME-SCOPE
+      // only: the hoist pre-pass declares top-level functions into the top-level
+      // scope, so that's the only place a hoisted twin can legitimately live. The
+      // old chain-walking lookup made a NESTED `function halt()` find an outer
+      // same-name function, skip its own declaration, and repoint the outer
+      // symbol's declaredAt/node — after which the return-type write below
+      // corrupted the outer function (stale-scope audit bug #7).
+      const existing = this.symbolTable.lookupInCurrentScope(name);
       const alreadyHoisted = existing && existing.type === SymbolType.FUNCTION;
       if (!alreadyHoisted) {
         if (!this.symbolTable.declare(name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, node.id)) {
@@ -4325,7 +4333,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
         this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
-        const restSym = this.symbolTable.lookup(node.restParam.name);
+        const restSym = this.symbolTable.lookupOpenScopes(node.restParam.name);
         if (restSym) restSym.isRestParam = true;
       }
 
@@ -4347,7 +4355,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const reconciledReturnType = this.reconcileJsDocReturn(node.leadingJsDoc, returnEntries, inferredReturnType);
 
       // Update the function's symbol with the now-known return type.
-      const symbol = this.symbolTable.lookup(name);
+      const symbol = this.symbolTable.lookupOpenScopes(name);
       if (symbol) {
         symbol.dataType = UcodeType.FUNCTION;  // Functions should always have type 'function'
         symbol.returnType = reconciledReturnType; // Store the actual return type separately
@@ -4359,7 +4367,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // each declared type; the rest param (if any) is tracked separately.
         if (!node.forwardDeclaration) {
           const paramInfos: ParamInfo[] = node.params.map(p => {
-            const psym = this.symbolTable.lookup(p.name);
+            const psym = this.symbolTable.lookupOpenScopes(p.name);
             return {
               name: p.name,
               type: psym ? psym.dataType : (UcodeType.UNKNOWN as UcodeDataType),
@@ -4423,7 +4431,7 @@ export class SemanticAnalyzer extends BaseVisitor {
    */
   private buildFunctionExprParamInfos(node: { params: { name: string }[]; restParam?: { name: string } | null }): ParamInfo[] {
     const paramInfos: ParamInfo[] = node.params.map(p => {
-      const psym = this.symbolTable.lookup(p.name);
+      const psym = this.symbolTable.lookupOpenScopes(p.name);
       return {
         name: p.name,
         type: psym ? psym.dataType : (UcodeType.UNKNOWN as UcodeDataType),
@@ -4446,7 +4454,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (this.options.enableScopeAnalysis && node.argument.type === 'MemberExpression') {
       const mem = node.argument as MemberExpressionNode;
       if (!mem.computed && mem.object.type === 'Identifier' && mem.property.type === 'Identifier') {
-        const sym = this.symbolTable.lookup((mem.object as IdentifierNode).name);
+        const sym = this.symbolTable.lookupOpenScopes((mem.object as IdentifierNode).name);
         const prop = (mem.property as IdentifierNode).name;
         if (sym?.propertyTypes?.has(prop)) {
           this.recordPropertyWrite(sym, prop, UcodeType.NULL as UcodeDataType, node.end);
@@ -4561,7 +4569,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     const mem = callNode.callee as MemberExpressionNode;
     if (mem.computed || mem.object.type !== 'ThisExpression' || mem.property.type !== 'Identifier') return;
     const methodName = (mem.property as IdentifierNode).name;
-    const thisSym = this.symbolTable.lookup('this');
+    const thisSym = this.symbolTable.lookupOpenScopes('this');
     if (!thisSym?.propertyReturnTypesShallow?.has(methodName)) return;
     const objNode = this.thisObjectNodeStack[this.thisObjectNodeStack.length - 1];
     if (!objNode) return;
@@ -4606,7 +4614,7 @@ export class SemanticAnalyzer extends BaseVisitor {
    * reference, or the identifier isn't callable) — callers fall back to unknown.
    */
   private resolveIdentifierFunctionReturnType(id: IdentifierNode): UcodeDataType | null {
-    const refSym = this.symbolTable.lookup(id.name);
+    const refSym = this.symbolTable.lookupOpenScopes(id.name);
     if (!refSym) return null;
     if (refSym.dataType !== UcodeType.FUNCTION && refSym.type !== SymbolType.FUNCTION) return null;
     const rt = refSym.returnType;
@@ -4788,7 +4796,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
         this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
-        const restSym = this.symbolTable.lookup(node.restParam.name);
+        const restSym = this.symbolTable.lookupOpenScopes(node.restParam.name);
         if (restSym) restSym.isRestParam = true;
       }
 
@@ -4796,7 +4804,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (this.thisPropertyStack.length > 0) {
         const thisProps = this.thisPropertyStack[this.thisPropertyStack.length - 1]!;
         this.symbolTable.declare('this', SymbolType.VARIABLE, UcodeType.OBJECT as UcodeDataType, node);
-        const thisSym = this.symbolTable.lookup('this');
+        const thisSym = this.symbolTable.lookupOpenScopes('this');
         if (thisSym) {
           thisSym.propertyTypes = new Map(thisProps);
           // Resolve `this.method()` return types from sibling function properties already
@@ -4825,7 +4833,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // A skipped thisSafe body recorded its `this.x=` with UNKNOWN (type checking was
       // short-circuited) — restore the cached real types so sibling methods see them.
       if (feClean && feThisMap && feClean.thisWrites.length > 0) {
-        const thisSym = this.symbolTable.lookup('this');
+        const thisSym = this.symbolTable.lookupOpenScopes('this');
         for (const [k, v] of feClean.thisWrites) {
           feThisMap.set(k, v as UcodeDataType);
           if (thisSym?.propertyTypes) thisSym.propertyTypes.set(k, v as UcodeDataType);
@@ -4899,7 +4907,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
         this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
-        const restSym = this.symbolTable.lookup(node.restParam.name);
+        const restSym = this.symbolTable.lookupOpenScopes(node.restParam.name);
         if (restSym) restSym.isRestParam = true;
       }
 
@@ -4995,7 +5003,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           );
         } else {
           // Add property types for exception object properties
-          const symbol = this.symbolTable.lookup(node.param.name);
+          const symbol = this.symbolTable.lookupOpenScopes(node.param.name);
           if (symbol) {
             symbol.propertyTypes = new Map([
               ['message', UcodeType.STRING],
@@ -5027,7 +5035,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
 
       // Check if identifier is defined
-      const symbol = this.symbolTable.lookup(node.name);
+      const symbol = this.symbolTable.lookupOpenScopes(node.name);
       if (!symbol) {
         // Check if it's a builtin function before reporting as undefined
         const isBuiltin = allBuiltinFunctions.has(node.name);
@@ -5036,7 +5044,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // globalPropertyNames also carries cross-file `global.X` injected via `loadfile()()`,
         // so a bare *read* of such a name (e.g. `print(MAX_BODY)`, not just a call) isn't a
         // false UC1001 — matching how the call case is suppressed for UC1002.
-        const globalSymbol = this.symbolTable.lookup('global');
+        const globalSymbol = this.symbolTable.lookupOpenScopes('global');
         const isGlobalProperty = globalSymbol?.propertyTypes?.has(node.name)
           || this.globalPropertyNames.has(node.name);
 
@@ -5158,8 +5166,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (this.assignmentLeftDepth > 0) return; // defining the member, not reading it
 
     const objectName = (node.object as IdentifierNode).name;
-    const symbol = this.symbolTable.lookupAtPosition(objectName, node.object.start)
-                || this.symbolTable.lookup(objectName);
+    const symbol = this.symbolTable.resolveReference(objectName, node.object.start);
     if (!symbol || !symbol.closedPropertyShape || !symbol.propertyTypes) return;
 
     const member = (node.property as IdentifierNode).name;
@@ -5194,7 +5201,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     const methodName = (node.property as IdentifierNode).name;
 
     // Look up the object symbol
-    const symbol = this.symbolTable.lookup(objectName);
+    const symbol = this.symbolTable.lookupOpenScopes(objectName);
     if (!symbol) {
       // A provable implicit global (bare `fs = ctx.fs;` in some function) shadows the
       // module namespace: `fs` here is a local-ish variable holding a value, NOT an
@@ -5355,7 +5362,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       return null;
     }
     if (node.type === 'Identifier') {
-      const sym = this.symbolTable.lookup((node as IdentifierNode).name);
+      const sym = this.symbolTable.lookupOpenScopes((node as IdentifierNode).name);
       if (sym?.initNode) return this.resolveExpressionToLiteralKey(sym.initNode);
       return null;
     }
@@ -5367,7 +5374,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         const inner = mem.object as MemberExpressionNode;
         if (!inner.computed && inner.object.type === 'Identifier') {
           const baseName = (inner.object as IdentifierNode).name;
-          const baseSym = this.symbolTable.lookup(baseName);
+          const baseSym = this.symbolTable.lookupOpenScopes(baseName);
           const aName = this.getStaticPropertyName(inner.property);
           const bName = this.getStaticPropertyName(mem.property);
           if (baseSym?.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*'
@@ -5433,7 +5440,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const functionName = callExpr.callee.name;
         
         // Look up the function in the symbol table to check if it's an imported fs function
-        const symbol = this.symbolTable.lookup(functionName);
+        const symbol = this.symbolTable.lookupOpenScopes(functionName);
         if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'fs') {
           // Get the function signature from the fs module registry
           const fsFunction = fsModuleTypeRegistry.getFunction(functionName);
@@ -5491,7 +5498,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       const calleeName = (node.callee as IdentifierNode).name;
       const builtinIntro = VERSION_GLOBAL_BUILTINS[calleeName];
       if (builtinIntro) {
-        const sym = this.symbolTable.lookup(calleeName);
+        const sym = this.symbolTable.lookupOpenScopes(calleeName);
         if (!sym || sym.type === SymbolType.BUILTIN) {
           this.flagVersionMin(builtinIntro,
             `The \`${calleeName}()\` builtin isn't available on {TARGET} (needs {INTRO}).`,
@@ -5589,7 +5596,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
     let objType: string | null = null;
     if (memberNode.object.type === 'Identifier') {
-      const symbol = this.symbolTable.lookup((memberNode.object as IdentifierNode).name);
+      const symbol = this.symbolTable.lookupOpenScopes((memberNode.object as IdentifierNode).name);
       if (symbol) {
         const mt = extractModuleType(symbol.dataType);
         if (mt) objType = mt.moduleName;
@@ -5641,7 +5648,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private checkConstReassignment(target: AstNode, isUpdate: boolean): void {
     if (!target || target.type !== 'Identifier') return;
     const name = (target as IdentifierNode).name;
-    const symbol = this.symbolTable.lookup(name);
+    const symbol = this.symbolTable.lookupOpenScopes(name);
     if (!symbol || !symbol.isConstant) return;
     const message = isUpdate
       ? `Invalid increment/decrement of constant '${name}'. A 'const' binding cannot be modified.`
@@ -5663,7 +5670,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const base = (target as MemberExpressionNode).object;
     if (!base || base.type !== 'Identifier') return;
     const name = (base as IdentifierNode).name;
-    const symbol = this.symbolTable.lookup(name);
+    const symbol = this.symbolTable.lookupOpenScopes(name);
     if (!symbol || symbol.type !== SymbolType.IMPORTED || symbol.importSpecifier !== '*') return;
     this.addDiagnosticErrorCode(
       UcodeErrorCode.CONST_REASSIGNMENT,
@@ -5708,7 +5715,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // obj.prop = val
             if (memberNode.object.type === 'Identifier') {
               const objectName = (memberNode.object as IdentifierNode).name;
-              const targetSymbol = this.symbolTable.lookup(objectName);
+              const targetSymbol = this.symbolTable.lookupOpenScopes(objectName);
 
               if (targetSymbol && (objectName === 'global' || (targetSymbol.type !== SymbolType.MODULE && targetSymbol.type !== SymbolType.IMPORTED))) {
                 const propertyType = this.inferAssignmentDataType(node.right);
@@ -5769,7 +5776,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                   && (base.object as IdentifierNode).name === 'global'
                   && base.property.type === 'Identifier') {
                 const globalName = (base.property as IdentifierNode).name;
-                const targetSymbol = this.symbolTable.lookup(globalName);
+                const targetSymbol = this.symbolTable.lookupOpenScopes(globalName);
                 if (targetSymbol && targetSymbol.type !== SymbolType.MODULE && targetSymbol.type !== SymbolType.IMPORTED) {
                   const propertyType = this.inferAssignmentDataType(node.right);
                   deferredPropertyWrites.push(() => this.recordPropertyWrite(targetSymbol, propertyName, propertyType, node.end));
@@ -5780,7 +5787,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // this.prop = val — update the `this` symbol's propertyTypes
             // AND the enclosing object literal's property stack so sibling methods see it
             if (memberNode.object.type === 'ThisExpression') {
-              const thisSym = this.symbolTable.lookup('this');
+              const thisSym = this.symbolTable.lookupOpenScopes('this');
               if (thisSym) {
                 const propertyType = this.inferAssignmentDataType(node.right);
 
@@ -5820,7 +5827,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // Only handle cases that need early inference for undeclared variables
       if (node.left.type === 'Identifier') {
         const variableName = (node.left as IdentifierNode).name;
-        let symbol = this.symbolTable.lookup(variableName);
+        let symbol = this.symbolTable.lookupOpenScopes(variableName);
         
         // For undeclared variables assigned from module function calls,
         // use the type checker's resolved type to infer the type
@@ -5890,7 +5897,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // After type checking, update variable types for general function calls
       if (node.left.type === 'Identifier') {
         const variableName = (node.left as IdentifierNode).name;
-        let symbol = this.symbolTable.lookup(variableName);
+        let symbol = this.symbolTable.lookupOpenScopes(variableName);
         
         // Skip require() calls - they're handled specially in visitVariableDeclarator
         const isRequireCall = node.right.type === 'CallExpression' &&
@@ -6000,7 +6007,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           if (functionReturnType && symbol && node.right.type === 'CallExpression') {
             const callExpr = node.right as CallExpressionNode;
             if (callExpr.callee.type === 'Identifier') {
-              const funcSym = this.symbolTable.lookup((callExpr.callee as IdentifierNode).name);
+              const funcSym = this.symbolTable.lookupOpenScopes((callExpr.callee as IdentifierNode).name);
               if (funcSym) this.copyFactoryReturnToBinding(symbol, funcSym);
             }
           }
@@ -6045,7 +6052,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // UC8006 candidacy requires a fully-enumerable shape; a spread/computed key means the
     // literal itself can carry properties we can't list → never claim "never assigned".
     if (this.isFullyStaticObjectLiteral(objNode)) this.globalObjectBindings.add(name);
-    const sym = this.symbolTable.lookup(name);
+    const sym = this.symbolTable.lookupOpenScopes(name);
     if (!sym) return;
     this.stampGlobalSymbolPosition(name, sym);
     sym.dataType = UcodeType.OBJECT as UcodeDataType;
@@ -6066,7 +6073,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    */
   private declareGlobalFunctionBinding(name: string, fnNode: AstNode): void {
     this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, UcodeType.FUNCTION as UcodeDataType);
-    const sym = this.symbolTable.lookup(name);
+    const sym = this.symbolTable.lookupOpenScopes(name);
     if (!sym) return;
     this.stampGlobalSymbolPosition(name, sym);
     sym.dataType = UcodeType.FUNCTION as UcodeDataType;
@@ -6082,7 +6089,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const at = this.typeChecker.checkNode(arrNode);
     if (!isArrayType(at)) return;
     this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, at);
-    const sym = this.symbolTable.lookup(name);
+    const sym = this.symbolTable.lookupOpenScopes(name);
     if (sym) { this.stampGlobalSymbolPosition(name, sym); sym.dataType = at; sym.used = true; }
   }
 
@@ -6101,10 +6108,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    * typeHistory makes hover on M itself positional too.
    */
   private declareGlobalScalarBinding(name: string, type: UcodeType, from: number): void {
-    let sym = this.symbolTable.lookup(name);
+    let sym = this.symbolTable.lookupOpenScopes(name);
     if (!sym) {
       this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, type as UcodeDataType);
-      sym = this.symbolTable.lookup(name);
+      sym = this.symbolTable.lookupOpenScopes(name);
       if (!sym) return;
       sym.used = true; // a global is externally observable — never "unused"
       this.stampGlobalSymbolPosition(name, sym);
@@ -6310,8 +6317,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                  && (node.argument as MemberExpressionNode).computed
                  && (node.argument as MemberExpressionNode).object.type === 'Identifier') {
           const baseName = ((node.argument as MemberExpressionNode).object as IdentifierNode).name;
-          const baseSym = this.symbolTable.lookupAtPosition(baseName, node.argument.start)
-                       ?? this.symbolTable.lookup(baseName);
+          const baseSym = this.symbolTable.resolveReference(baseName, node.argument.start);
           if (baseSym?.valuePropertyTypes && baseSym.valuePropertyTypes.size > 0) {
             this.functionReturnPropertyTypes.get(this.currentFunctionNode)?.push(new Map(baseSym.valuePropertyTypes));
           }
@@ -6549,7 +6555,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
         // Iterator vars only become useful from the body onwards; hide them
         // from completion while the user is still typing the iterable.
-        const iterSym = this.symbolTable.lookup(iteratorName);
+        const iterSym = this.symbolTable.lookupOpenScopes(iteratorName);
         if (iterSym && node.body?.start !== undefined) {
           iterSym.visibleFrom = node.body.start;
         }
@@ -6558,7 +6564,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           let keysOf: string | undefined;
           if (node.right.type === 'Identifier') {
             const rightName = (node.right as IdentifierNode).name;
-            const rightSym = this.symbolTable.lookup(rightName);
+            const rightSym = this.symbolTable.lookupOpenScopes(rightName);
             if (rightSym?.keysOfSymbol) {
               keysOf = rightSym.keysOfSymbol;
             } else if (rightSym && (rightSym.dataType === UcodeType.OBJECT || (typeof rightSym.dataType === 'object' && (rightSym.dataType as any).type === UcodeType.OBJECT))) {
@@ -6609,13 +6615,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // element's property shape onto v so `v.` completes its members. (#176)
             if (dataTypeToBase(iterType) === UcodeType.OBJECT) {
               const elemShape = this.inferForInElementObjectShape(node.right);
-              const vSym = this.symbolTable.lookup(iteratorName);
+              const vSym = this.symbolTable.lookupOpenScopes(iteratorName);
               if (vSym && elemShape) vSym.propertyTypes = elemShape;
             }
 
             // Hide from completion until the body starts — see the bare-iterator
             // branch above for rationale.
-            const iterSymInit = this.symbolTable.lookup(iteratorName);
+            const iterSymInit = this.symbolTable.lookupOpenScopes(iteratorName);
             if (iterSymInit && node.body?.start !== undefined) {
               iterSymInit.visibleFrom = node.body.start;
             }
@@ -6625,12 +6631,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             //   2) `for (let k in keys(obj))` (CallExpression tagged by validateKeysFunction).
             //   3) `for (let k in tagged_arr)` where tagged_arr has keysOfSymbol set
             //      from a prior `let tagged_arr = keys(obj);`.
-            const iterSym = this.symbolTable.lookup(iteratorName);
+            const iterSym = this.symbolTable.lookupOpenScopes(iteratorName);
             if (iterSym) {
               let keysOf: string | undefined;
               if (node.right.type === 'Identifier') {
                 const rightName = (node.right as IdentifierNode).name;
-                const rightSym = this.symbolTable.lookup(rightName);
+                const rightSym = this.symbolTable.lookupOpenScopes(rightName);
                 if (rightSym?.keysOfSymbol) {
                   keysOf = rightSym.keysOfSymbol;
                 } else if (rightSym && (rightSym.dataType === UcodeType.OBJECT || (typeof rightSym.dataType === 'object' && (rightSym.dataType as any).type === UcodeType.OBJECT))) {
@@ -6781,7 +6787,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // recover the element type. Fall back to the declared type.
       const narrowed = this.typeChecker.getNarrowedTypeAtPosition(id.name, id.start);
       if (narrowed) return narrowed;
-      const sym = this.symbolTable.lookup(id.name);
+      const sym = this.symbolTable.lookupOpenScopes(id.name);
       if (sym) return sym.dataType;
     }
     // Non-identifier iterables (e.g. `keys(obj)`): the caller checkNode'd the
@@ -6919,9 +6925,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // This runs after the main analysis pass, so it cannot suppress the UC1001s.
     for (const ref of this.pendingUndefinedRefs) {
       if (!isReadOnlyInjectedGlobal(ref.name)) continue;
-      if (this.symbolTable.lookup(ref.name)) continue;
+      if (this.symbolTable.resolveReference(ref.name, ref.start)) continue;
       this.symbolTable.forceGlobalDeclaration(ref.name, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType);
-      const sym = this.symbolTable.lookup(ref.name);
+      const sym = this.symbolTable.lookupOpenScopes(ref.name);
       if (sym) {
         sym.isAssumedInjectedGlobal = true;
         sym.used = true;
@@ -7124,7 +7130,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (callNode.callee.type === 'Identifier') {
       const funcName = (callNode.callee as IdentifierNode).name;
       // Skip if imported from a non-fs module (e.g. io.open)
-      const symbol = this.symbolTable.lookup(funcName);
+      const symbol = this.symbolTable.lookupOpenScopes(funcName);
       if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom && symbol.importedFrom !== 'fs') {
         return null;
       }
@@ -7139,7 +7145,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (memberNode.object.type === 'Identifier' &&
           (memberNode.object as IdentifierNode).name === 'fs' &&
           memberNode.property.type === 'Identifier') {
-        const fsSym = this.symbolTable.lookup('fs');
+        const fsSym = this.symbolTable.lookupOpenScopes('fs');
         if (!fsSym || extractModuleType(fsSym.dataType)?.moduleName !== 'fs') return null;
         return this.fsObjectDataType((memberNode.property as IdentifierNode).name);
       }
@@ -7176,8 +7182,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (!memberNode.computed
         && (memberNode.object.type === 'Identifier' || memberNode.object.type === 'ThisExpression')) {
       const recvSym = memberNode.object.type === 'ThisExpression'
-        ? this.symbolTable.lookup('this')
-        : this.symbolTable.lookup((memberNode.object as IdentifierNode).name);
+        ? this.symbolTable.lookupOpenScopes('this')
+        : this.symbolTable.lookupOpenScopes((memberNode.object as IdentifierNode).name);
       const rt = recvSym?.propertyReturnTypes?.get(methodName);
       if (rt !== undefined && rt !== UcodeType.UNKNOWN) return rt;
     }
@@ -7185,7 +7191,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // Case 1: obj.method() where obj is an Identifier in the symbol table
     if (memberNode.object.type === 'Identifier') {
       const objectName = (memberNode.object as IdentifierNode).name;
-      const symbol = this.symbolTable.lookup(objectName);
+      const symbol = this.symbolTable.lookupOpenScopes(objectName);
       if (symbol) {
         // Check if this is a uloop object method call
         const uloopType = uloopObjectRegistry.isVariableOfUloopType(symbol.dataType);
@@ -7268,7 +7274,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       return cached;
     }
     if (node.type === 'Identifier') {
-      const sym = this.symbolTable.lookup((node as IdentifierNode).name);
+      const sym = this.symbolTable.lookupOpenScopes((node as IdentifierNode).name);
       if (sym) return sym.dataType;
     }
     return null;
@@ -7277,7 +7283,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private inferAssignmentDataType(expression: AstNode): UcodeDataType {
     if (expression.type === 'Identifier') {
       const sourceName = (expression as IdentifierNode).name;
-      const sourceSymbol = this.symbolTable.lookup(sourceName);
+      const sourceSymbol = this.symbolTable.lookupOpenScopes(sourceName);
       if (sourceSymbol) {
         return sourceSymbol.currentType || sourceSymbol.dataType;
       }
@@ -7327,7 +7333,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         if (arg.type === 'ObjectExpression') {
           sourceProps = this.inferObjectLiteralPropertyTypes(arg as ObjectExpressionNode);
         } else if (arg.type === 'Identifier') {
-          const sym = this.symbolTable.lookup((arg as IdentifierNode).name);
+          const sym = this.symbolTable.lookupOpenScopes((arg as IdentifierNode).name);
           sourceProps = sym?.propertyTypes ?? null;
         }
         if (sourceProps) {
@@ -7342,7 +7348,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
         valType = UcodeType.FUNCTION as UcodeDataType;
       } else if (val.type === 'Identifier') {
-        const sym = this.symbolTable.lookup((val as IdentifierNode).name);
+        const sym = this.symbolTable.lookupOpenScopes((val as IdentifierNode).name);
         valType = sym ? sym.dataType : UcodeType.UNKNOWN as UcodeDataType;
       } else if (val.type === 'Literal') {
         const lit = val as LiteralNode;
@@ -7373,7 +7379,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (right.type === 'ArrayExpression') {
       arrNode = right;
     } else if (right.type === 'Identifier') {
-      const sym = this.symbolTable.lookup((right as IdentifierNode).name);
+      const sym = this.symbolTable.lookupOpenScopes((right as IdentifierNode).name);
       if (sym?.initNode?.type === 'ArrayExpression') arrNode = sym.initNode;
     }
     if (!arrNode) return null;
@@ -7405,7 +7411,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const sub = this.dropNullableEntries(this.inferObjectLiteralPropertyTypes(val as ObjectExpressionNode));
         if (sub && sub.size > 0) nested.set(key, sub);
       } else if (val.type === 'Identifier') {
-        const sym = this.symbolTable.lookup((val as IdentifierNode).name);
+        const sym = this.symbolTable.lookupOpenScopes((val as IdentifierNode).name);
         const sub = this.dropNullableEntries(sym?.propertyTypes ?? null);
         if (sub && sub.size > 0) nested.set(key, sub);
       }
@@ -7573,7 +7579,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
     
     const funcName = (callExpr.callee as IdentifierNode).name;
-    const symbol = this.symbolTable.lookup(funcName);
+    const symbol = this.symbolTable.lookupOpenScopes(funcName);
     
     if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
       // Return the raw return type without conversion to preserve unions
@@ -7677,12 +7683,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
 
 
-    const symbol = this.symbolTable.lookup(name);
+    const symbol = this.symbolTable.lookupOpenScopes(name);
     if (symbol) {
       // Handle simple aliasing of imported modules (e.g., let alias = fs;)
       if (node.init.type === 'Identifier') {
         const sourceName = (node.init as IdentifierNode).name;
-        const sourceSymbol = this.symbolTable.lookup(sourceName);
+        const sourceSymbol = this.symbolTable.lookupOpenScopes(sourceName);
 
         if (sourceSymbol && (sourceSymbol.type === SymbolType.IMPORTED || sourceSymbol.type === SymbolType.MODULE)) {
           symbol.type = sourceSymbol.type;
@@ -7732,7 +7738,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           const propertyName = this.getStaticPropertyName(memberNode.property);
 
           if (propertyName) {
-            const objectSymbol = this.symbolTable.lookup(objectName);
+            const objectSymbol = this.symbolTable.lookupOpenScopes(objectName);
             if (objectSymbol && objectSymbol.propertyTypes && objectSymbol.propertyTypes.has(propertyName)) {
               const propertyType = objectSymbol.propertyTypes.get(propertyName)!;
               symbol.dataType = propertyType;
@@ -7802,7 +7808,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           if (node.init!.type === 'CallExpression') {
             const callExpr = node.init! as CallExpressionNode;
             if (callExpr.callee.type === 'Identifier') {
-              const funcSym = this.symbolTable.lookup((callExpr.callee as IdentifierNode).name);
+              const funcSym = this.symbolTable.lookupOpenScopes((callExpr.callee as IdentifierNode).name);
               if (funcSym) this.copyFactoryReturnToBinding(symbol, funcSym);
             }
           }
@@ -8226,7 +8232,7 @@ private addDiagnostic(
    *  so mutating either name touches the iterated array (UC4005 alias FN, finding #59). */
   private resolveIterateeAliasNames(name: string): string[] {
     const names = [name];
-    const sym = this.symbolTable.lookup(name);
+    const sym = this.symbolTable.lookupOpenScopes(name);
     // Only alias when the iteratee has NOT been reassigned since its declaration — a
     // reassignment (`let c=a; c=[…]; for(x in c)`) makes its `let c = a` init stale, so
     // the source no longer references the iterated array. typeHistory holds reassignments
@@ -8237,7 +8243,7 @@ private addDiagnostic(
       const src = (init as IdentifierNode).name;
       if (src && src !== name) {
         // Likewise skip if the source itself was reassigned before the loop.
-        const srcSym = this.symbolTable.lookup(src);
+        const srcSym = this.symbolTable.lookupOpenScopes(src);
         if (srcSym && (!srcSym.typeHistory || srcSym.typeHistory.length === 0)) {
           names.push(src);
         }
@@ -8730,7 +8736,7 @@ private addDiagnostic(
         if (c.callee?.type === 'Identifier') {
           const name = (c.callee as IdentifierNode).name;
           if (name === 'loadfile' || name === 'include') {
-            const sym = this.symbolTable.lookupAtPosition(name, c.callee.start) ?? this.symbolTable.lookup(name);
+            const sym = this.symbolTable.resolveReference(name, c.callee.start);
             if (!sym || sym.type === SymbolType.BUILTIN) {
               // ERROR, not warning, and NOT strict-gated: the abort is uncatchable, silent
               // (empty response, no log), unrecoverable, and has no legitimate use in a handler
@@ -9170,7 +9176,10 @@ private addDiagnostic(
         for (const funcNode of funcNodes) {
           const name = (funcNode as FunctionDeclarationNode).id?.name;
           if (!name || !funcNode.body) continue;
-          const symbol = this.symbolTable.lookup(name);
+          // Post-traversal fixpoint over ALL functions incl. nested ones whose scopes
+          // have exited — the open-chain walk would hit a same-name OUTER function and
+          // stamp neverReturns on the wrong symbol.
+          const symbol = this.symbolTable.resolveReference(name, funcNode.start);
           if (!symbol || symbol.neverReturns) continue;
 
           try {
@@ -9338,7 +9347,10 @@ private addDiagnostic(
     // Re-compute and update the function symbol's return type
     const name = (funcNode as FunctionDeclarationNode).id?.name;
     if (name) {
-      const symbol = this.symbolTable.lookup(name);
+      // Post-traversal: resolve the function's OWN symbol by position — a nested
+      // `function halt()` must not overwrite a same-name outer function's returnType
+      // (stale-scope audit bug #7).
+      const symbol = this.symbolTable.resolveReference(name, funcNode.start);
       if (symbol) {
         const reachableTypes = reachableEntries.map(e => e.type);
         symbol.returnType = this.typeChecker.getCommonReturnType(reachableTypes);
@@ -9592,7 +9604,10 @@ private addDiagnostic(
       if ((diagnostic as any).code === 'incompatible-function-argument') {
         const diagnosticData = (diagnostic as any).data;
         if (diagnosticData?.variableName && diagnosticData.actualType === UcodeType.UNKNOWN) {
-          const sym = this.symbolTable.lookup(diagnosticData.variableName);
+          // Deferred filter: resolve at the diagnostic's own position like every
+          // sibling branch, so a local can't be confused with a same-name global.
+          const sym = this.symbolTable.resolveReference(
+            diagnosticData.variableName, this.textDocument.offsetAt(diagnostic.range.start));
           if (sym && sym.dataType !== UcodeType.UNKNOWN && sym.type === SymbolType.VARIABLE) {
             // Re-check: parse the expected type string and verify the final type is compatible
             const expectedTypes = (diagnosticData.expectedType as string).split(' | ');
