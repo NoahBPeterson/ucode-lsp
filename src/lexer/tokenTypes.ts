@@ -100,7 +100,9 @@ export enum TokenType {
     TK_PLACEH,        // '${'
     TK_EXPORT,        // 'export'
     TK_IMPORT,        // 'import'
-    TK_FROM,          // 'from'
+    TK_FROM,          // DEAD since 0.7.80: never emitted. `from` is contextual in ucode
+                      // (compiler.c string-matches it in imports); it lexes as TK_LABEL.
+                      // Kept so TokenType numbering stays stable. docs/from-contextual-keyword.md
     TK_TEMPLATE,      // Template literal
     TK_COMMENT,       // Comment
     TK_NEWLINE,       // New line
@@ -172,7 +174,6 @@ export const Keywords: Record<string, TokenType> = {
     'default': TokenType.TK_DEFAULT,
     'export': TokenType.TK_EXPORT,
     'import': TokenType.TK_IMPORT,
-    'from': TokenType.TK_FROM,
 };
 
 // Operator mapping

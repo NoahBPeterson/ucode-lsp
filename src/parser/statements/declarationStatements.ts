@@ -16,6 +16,20 @@ import { ExpressionParser } from '../expressions/expressionParser';
 
 export abstract class DeclarationStatements extends ExpressionParser {
 
+  /** ucode has no `from` token - the import parser consumes it by string comparison
+   *  (uc_compiler_keyword_consume(compiler, "from"), compiler.c), so `from` is an
+   *  ordinary identifier everywhere else (`let from`, params, `import { from } ...`).
+   *  Mirror that: match a TK_LABEL whose text is exactly `from` and advance.
+   *  docs/from-contextual-keyword.md */
+  protected matchContextualFrom(): boolean {
+    const tok = this.peek();
+    if (tok && tok.type === TokenType.TK_LABEL && tok.value === 'from') {
+      this.advance();
+      return true;
+    }
+    return false;
+  }
+
   protected parseVariableDeclaration(jsdocAnchorPos?: number): VariableDeclarationNode {
     const start = this.previous()!.pos;
     const leadingJsDoc = this.findLeadingJsDoc(jsdocAnchorPos ?? start);
@@ -253,7 +267,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
           if (!imported) continue;
 
           let local = imported;
-          if (this.match(TokenType.TK_LABEL) && this.previous()!.value === 'as') {
+          if (this.peek()?.type === TokenType.TK_LABEL && this.peek()?.value === 'as' && (this.advance(), true)) {
             const parsedLocal = this.parseIdentifierName();
             if (!parsedLocal) continue;
             local = parsedLocal;
@@ -335,7 +349,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
               if (!imported) continue;
 
               let namedLocal = imported;
-              if (this.match(TokenType.TK_LABEL) && this.previous()!.value === 'as') {
+              if (this.peek()?.type === TokenType.TK_LABEL && this.peek()?.value === 'as' && (this.advance(), true)) {
                 const parsedLocal = this.parseIdentifierName();
                 if (!parsedLocal) continue;
                 namedLocal = parsedLocal;
@@ -361,9 +375,9 @@ export abstract class DeclarationStatements extends ExpressionParser {
       }
     }
 
-    // Parse 'from' keyword — present only when the import has bindings. A bare
+    // Parse the contextual 'from' — present only when the import has bindings. A bare
     // side-effect import (`import "module";`, no specifiers) has no `from`.
-    if ((specifiers.length > 0 || sawBindingSyntax) && !this.match(TokenType.TK_FROM)) {
+    if ((specifiers.length > 0 || sawBindingSyntax) && !this.matchContextualFrom()) {
       this.error("Expected 'from' after import specifiers");
       return null;
     }
@@ -472,14 +486,18 @@ export abstract class DeclarationStatements extends ExpressionParser {
   private parseExportAllDeclaration(start: number): ExportAllDeclarationNode | null {
     let exported: IdentifierNode | null = null;
     
-    // Check for export * as name from 'module'
-    if (this.match(TokenType.TK_LABEL) && this.previous()!.value === 'as') {
+    // Check for export * as name from 'module'. Peek-first: match(TK_LABEL) would
+    // consume ANY label - including the contextual `from`, which lexes as a label
+    // since 0.7.80 (docs/from-contextual-keyword.md).
+    const maybeAs = this.peek();
+    if (maybeAs && maybeAs.type === TokenType.TK_LABEL && maybeAs.value === 'as') {
+      this.advance();
       exported = this.parseIdentifierName();
       if (!exported) return null;
     }
 
-    // Parse 'from' keyword
-    if (!this.match(TokenType.TK_FROM)) {
+    // Parse the contextual 'from'
+    if (!this.matchContextualFrom()) {
       this.error("Expected 'from' after export * declaration");
       return null;
     }
@@ -524,7 +542,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
         if (!local) continue;
 
         let exported = local;
-        if (this.match(TokenType.TK_LABEL) && this.previous()!.value === 'as') {
+        if (this.peek()?.type === TokenType.TK_LABEL && this.peek()?.value === 'as' && (this.advance(), true)) {
           let parsedExported: IdentifierNode | null;
           if (this.check(TokenType.TK_DEFAULT)) {
             // export { x as default } — alias a local binding to the default export.
@@ -551,7 +569,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     this.consume(TokenType.TK_RBRACE, "Expected '}' after export specifiers");
 
     let source: LiteralNode | null = null;
-    if (this.match(TokenType.TK_FROM)) {
+    if (this.matchContextualFrom()) {
       if (!this.check(TokenType.TK_STRING)) {
         this.error("Expected string literal after 'from'");
         return null;

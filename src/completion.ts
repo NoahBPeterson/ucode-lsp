@@ -1921,8 +1921,8 @@ function detectImportCompletionContext(offset: number, tokens: Token[], text: st
             }
         }
         
-        // Look for 'from' keyword
-        if (token.type === TokenType.TK_FROM && fromTokenIndex === -1) {
+        // Look for the contextual 'from' label (not a token type since 0.7.80)
+        if (token.type === TokenType.TK_LABEL && token.value === 'from' && fromTokenIndex === -1) {
             fromTokenIndex = i;
         }
         
@@ -2035,7 +2035,7 @@ function detectDestructuredImportContext(offset: number, tokens: Token[]): { mod
 
                 if (nextToken.type === TokenType.TK_LBRACE && lbraceTokenIndex === -1) {
                     lbraceTokenIndex = j;
-                } else if (nextToken.type === TokenType.TK_FROM && fromTokenIndex === -1 && lbraceTokenIndex !== -1) {
+                } else if (nextToken.type === TokenType.TK_LABEL && nextToken.value === 'from' && fromTokenIndex === -1 && lbraceTokenIndex !== -1) {
                     fromTokenIndex = j;
                 } else if (nextToken.type === TokenType.TK_STRING && stringTokenIndex === -1 && fromTokenIndex !== -1) {
                     stringTokenIndex = j;

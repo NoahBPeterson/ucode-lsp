@@ -14,16 +14,6 @@ export abstract class PrimaryExpressions extends ParseRules {
   protected parseIdentifier(): IdentifierNode | null {
     const token = this.previous()!;
 
-    // TK_FROM is a contextual keyword that can be used as an identifier
-    // e.g.: import { from } from 'io'; from(resource);
-    if (token.type === TokenType.TK_FROM) {
-      return {
-        type: 'Identifier',
-        start: token.pos,
-        end: token.end,
-        name: 'from'
-      };
-    }
 
     if (token.type !== TokenType.TK_LABEL) {
       this.error("Expected identifier");
@@ -57,17 +47,8 @@ export abstract class PrimaryExpressions extends ParseRules {
     // Import specifiers can be identifiers, contextual keywords (e.g. 'from'),
     // or string literals (quoted reserved words)
     if (this.check(TokenType.TK_LABEL)) {
+      // includes a specifier literally named `from` - it is a plain label in ucode
       return this.parseIdentifierName();
-    } else if (this.check(TokenType.TK_FROM)) {
-      // 'from' is a contextual keyword, valid as an import specifier name
-      // e.g.: import { from } from 'io';
-      const token = this.advance()!;
-      return {
-        type: 'Identifier',
-        start: token.pos,
-        end: token.end,
-        name: 'from'
-      };
     } else if (this.check(TokenType.TK_DEFAULT)) {
       // 'default' names the module's default export: import { default as X } from '…'
       // (valid in ucode on all versions — oracle-verified). Finding #11.

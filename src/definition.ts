@@ -48,7 +48,8 @@ export function handleDefinition(
             const ti = tokens.indexOf(token);
             const prev = ti >= 1 ? tokens[ti - 1] : undefined;
             const callee = ti >= 2 ? tokens[ti - 2] : undefined;
-            const isImportPath = prev?.type === TokenType.TK_FROM;
+            // `from` is a contextual label since 0.7.80, not a token type
+            const isImportPath = prev?.type === TokenType.TK_LABEL && prev.value === 'from';
             const isCallPath = prev?.type === TokenType.TK_LPAREN
                 && callee?.type === TokenType.TK_LABEL
                 && (callee.value === 'loadfile' || callee.value === 'include');

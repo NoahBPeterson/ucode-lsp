@@ -22,7 +22,8 @@ export function test() {}`,
  * Import comment
  */
 import { test } from './test.uc';`,
-        expectedTokens: ['TK_IMPORT', 'TK_LBRACE', 'TK_LABEL', 'TK_RBRACE', 'TK_FROM', 'TK_STRING', 'TK_SCOL', 'TK_EOF']
+        // `from` lexes as an ordinary TK_LABEL since 0.7.80 (contextual keyword, docs/from-contextual-keyword.md)
+        expectedTokens: ['TK_IMPORT', 'TK_LBRACE', 'TK_LABEL', 'TK_RBRACE', 'TK_LABEL', 'TK_STRING', 'TK_SCOL', 'TK_EOF']
     },
     {
         name: 'Multiple block comments',

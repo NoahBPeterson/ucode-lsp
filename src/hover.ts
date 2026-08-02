@@ -1217,8 +1217,9 @@ export function handleHover(
             }
         }
         
-        // Handle 'from' keyword — when imported from io module, it's lexed as TK_FROM not TK_LABEL
-        if (token && token.type === TokenType.TK_FROM && analysisResult) {
+        // A symbol literally named `from` (importable from io). Since 0.7.80 `from` lexes
+        // as an ordinary TK_LABEL (docs/from-contextual-keyword.md).
+        if (token && token.type === TokenType.TK_LABEL && token.value === 'from' && analysisResult) {
             const word = 'from';
             const symbol = analysisResult.symbolTable.lookup(word);
             if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom === 'io') {
