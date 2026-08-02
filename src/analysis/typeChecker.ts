@@ -897,7 +897,16 @@ export class TypeChecker {
   }
 
   private checkIdentifier(node: IdentifierNode): CheckResult {
-    const symbol = this.symbolTable.lookup(node.name);
+    // Position-aware first: visitIfStatement re-checks the whole statement AFTER
+    // its branch blocks' scopes have exited, so the plain scope-chain lookup can
+    // miss a block-scoped local (or land on an outer same-name symbol). For a
+    // local named after a builtin that miss fell through to the builtin registry
+    // below, typing `let proto` as `function` and producing impossible-comparison
+    // FPs (docs/foreach-callback-local-builtin-shadow.md). lookupAtPosition
+    // resolves by declaredAt/scopeEnd like hover does; the scope-chain lookup
+    // stays as the fallback for forward references it can't see.
+    const symbol = this.symbolTable.lookupAtPosition(node.name, node.start)
+                ?? this.symbolTable.lookup(node.name);
     if (symbol) {
       this.symbolTable.markUsed(node.name, node.start);
 
