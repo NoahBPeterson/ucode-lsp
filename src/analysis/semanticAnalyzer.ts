@@ -14,7 +14,7 @@ import { type AstNode, type ProgramNode, type VariableDeclarationNode, type Vari
          type ForInStatementNode, type ForStatementNode, type WhileStatementNode,
          type ArrayExpressionNode,
          type AstNodeKind } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, widenWithNull, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, effectiveSymbolType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, widenWithNull, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, type TypeCheckResult } from './types';
 import { detectTemplateMode } from '../lexer/templateMode';
 import { BaseVisitor, AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
@@ -134,6 +134,9 @@ export class SemanticAnalyzer extends BaseVisitor {
   private options: SemanticAnalysisOptions;
   private functionScopes: number[] = []; // Track function scope levels
   private loopScopes: number[] = []; // Track loop scope levels
+  // Depth of enclosing LOOP bodies during traversal - stamps TypeHistoryEntry.inLoop
+  // so branch reasoning is disabled for in-loop writes (back edges break it).
+  private loopDepth = 0;
   private switchScopes: number[] = []; // Track switch statement scope levels
   private commonjsImports: Map<string, { importedFrom: string; importSpecifier: string }> = new Map();
   private resolvedImports: Set<string> = new Set();
@@ -220,12 +223,25 @@ export class SemanticAnalyzer extends BaseVisitor {
   private branchStack: Array<{
     bs: number; be: number; is: number; ie: number;
     guardBase?: string; guardProp?: string; guardElseType?: UcodeDataType;
+    /** Set on FUNCTION-BODY frames of a NAMED function: writes recorded under this
+     *  frame are call-position gated (skipped for reads before the fn's first
+     *  reference - see bodyWriteCannotHaveRun). */
+    fnSym?: SymbolEntry;
   }> = [];
+
+  /** The innermost function-body frame (with a resolvable named symbol), if any. */
+  private innermostBodyFrame(): { fnSym: SymbolEntry; bs: number; be: number } | null {
+    for (let i = this.branchStack.length - 1; i >= 0; i--) {
+      const f = this.branchStack[i]!;
+      if (f.fnSym) return { fnSym: f.fnSym, bs: f.bs, be: f.be };
+    }
+    return null;
+  }
 
   /** Detect `type(<ident>.<ident>) != "T"` (either operand order, != or !==) and return
    *  the guarded member + the fall-through type T, or null. */
   private negatedMemberTypeGuard(test: AstNode | null | undefined):
-    { base: string; prop: string; elseType: UcodeDataType } | null {
+    { base: string; prop?: string; elseType: UcodeDataType } | null {
     if (!test || test.type !== 'BinaryExpression') return null;
     const b = test as BinaryExpressionNode;
     if (b.operator !== '!=' && b.operator !== '!==') return null;
@@ -234,9 +250,6 @@ export class SemanticAnalyzer extends BaseVisitor {
       const c = call as CallExpressionNode;
       if (c.callee.type !== 'Identifier' || (c.callee as IdentifierNode).name !== 'type') return null;
       const arg = c.arguments?.[0];
-      if (!arg || arg.type !== 'MemberExpression') return null;
-      const m = arg as MemberExpressionNode;
-      if (m.computed || m.object.type !== 'Identifier' || m.property.type !== 'Identifier') return null;
       const t = (lit as LiteralNode).value;
       if (typeof t !== 'string') return null;
       const mapped: UcodeDataType | undefined = ({
@@ -244,12 +257,23 @@ export class SemanticAnalyzer extends BaseVisitor {
         int: UcodeType.INTEGER, double: UcodeType.DOUBLE, bool: UcodeType.BOOLEAN,
         function: UcodeType.FUNCTION, regexp: UcodeType.REGEX,
       } as Record<string, UcodeDataType>)[t];
-      if (mapped === undefined) return null;
-      return {
-        base: (m.object as IdentifierNode).name,
-        prop: (m.property as IdentifierNode).name,
-        elseType: mapped,
-      };
+      if (mapped === undefined || !arg) return null;
+      // `type(x.p) != "T"` - member form
+      if (arg.type === 'MemberExpression') {
+        const m = arg as MemberExpressionNode;
+        if (m.computed || m.object.type !== 'Identifier' || m.property.type !== 'Identifier') return null;
+        return {
+          base: (m.object as IdentifierNode).name,
+          prop: (m.property as IdentifierNode).name,
+          elseType: mapped,
+        };
+      }
+      // `type(x) != "T"` - bare identifier form (the quick-fix-generated
+      // normalization shape `if (type(x) != "string") x = "d";`)
+      if (arg.type === 'Identifier') {
+        return { base: (arg as IdentifierNode).name, elseType: mapped };
+      }
+      return null;
     };
     return pick(b.left, b.right) ?? pick(b.right, b.left);
   }
@@ -4387,13 +4411,22 @@ export class SemanticAnalyzer extends BaseVisitor {
       // but the SCOPE visit still runs so declarations/usage/shadowing stay correct.
       const fnClean = this.cleanBodies.get(node.body.start);
       const fnDiagBefore = fnClean ? this.diagnostics.length : 0;
+      // A function body's writes to OUTER symbols only run if/when the function is
+      // called - may-have-run for reads outside the body, and IMPOSSIBLE for reads
+      // before the function's first reference (docs/type-soundness-audit.md I-4).
+      const ownFnSym = this.symbolTable.lookupOpenScopes(name) ?? undefined;
+      this.branchStack.push({
+        bs: node.body.start, be: node.body.end, is: node.body.start, ie: node.body.end,
+        ...(ownFnSym ? { fnSym: ownFnSym } : {}),
+      });
       this.visit(node.body);
+      this.branchStack.pop();
 
       // Infer the final return type — but if the body was type-skipped, the collected return
       // types are UNKNOWN (checkNode short-circuited), so use the cached return type.
       const returnEntries = this.functionReturnTypes.get(node) || [];
       const returnTypes = returnEntries.map(e => e.type);
-      const inferredReturnType = fnClean ? (fnClean.returnType as UcodeDataType ?? this.typeChecker.getCommonReturnType(returnTypes)) : this.typeChecker.getCommonReturnType(returnTypes);
+      const inferredReturnType = fnClean ? (fnClean.returnType as UcodeDataType ?? this.typeChecker.getCommonReturnType(returnTypes)) : this.widenReturnForFallthrough(node.body, returnTypes.length, this.typeChecker.getCommonReturnType(returnTypes));
       if (fnClean) this.replayCleanBodyTypeDiagnostics(fnClean, fnDiagBefore);
       // Reconcile against a `@returns {T}` annotation: T fills/narrows an opaque body, but a
       // return that provably contradicts T is flagged per-statement (the body type wins). (#61)
@@ -4874,7 +4907,11 @@ export class SemanticAnalyzer extends BaseVisitor {
       // body, restore) the `this.<prop> = …` types this method writes.
       const feThisMap = this.thisPropertyStack.length > 0 ? this.thisPropertyStack[this.thisPropertyStack.length - 1]! : null;
       const feThisBefore = feThisMap ? new Map(feThisMap) : null;
+      // A function body's writes to OUTER symbols only run if/when the function is
+      // called - may-have-run for reads outside the body (docs/type-soundness-audit.md I-4).
+      this.branchStack.push({ bs: node.body.start, be: node.body.end, is: node.body.start, ie: node.body.end });
       this.visit(node.body);
+      this.branchStack.pop();
       // A skipped thisSafe body recorded its `this.x=` with UNKNOWN (type checking was
       // short-circuited) — restore the cached real types so sibling methods see them.
       if (feClean && feThisMap && feClean.thisWrites.length > 0) {
@@ -4896,7 +4933,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // an anonymous function expression has no symbol of its own, so the binding site
       // (variable declarator / assignment) reads `_inferredReturnType` off the node.
       const fnReturnTypes = (this.functionReturnTypes.get(node as any) || []).map(e => e.type);
-      (node as any)._inferredReturnType = feClean ? (feClean.returnType as UcodeDataType ?? this.typeChecker.getCommonReturnType(fnReturnTypes)) : this.typeChecker.getCommonReturnType(fnReturnTypes);
+      (node as any)._inferredReturnType = feClean ? (feClean.returnType as UcodeDataType ?? this.typeChecker.getCommonReturnType(fnReturnTypes)) : this.widenReturnForFallthrough(node.body, fnReturnTypes.length, this.typeChecker.getCommonReturnType(fnReturnTypes));
       if (feClean) this.replayCleanBodyTypeDiagnostics(feClean, feDiagBefore);
 
       // Stash the param signature (read while still in scope) for the binding site.
@@ -4908,7 +4945,11 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.currentFunctionNode = previousFunction;
     } else {
       // Fallback: just visit the function body if scope analysis is disabled
+      // A function body's writes to OUTER symbols only run if/when the function is
+      // called - may-have-run for reads outside the body (docs/type-soundness-audit.md I-4).
+      this.branchStack.push({ bs: node.body.start, be: node.body.end, is: node.body.start, ie: node.body.end });
       this.visit(node.body);
+      this.branchStack.pop();
     }
   }
 
@@ -4958,6 +4999,9 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Visit the function body
       // For BlockStatement bodies, visit statements directly to avoid creating an extra scope
+      // A function body's writes to OUTER symbols only run if/when the function is
+      // called - may-have-run for reads outside the body (docs/type-soundness-audit.md I-4).
+      this.branchStack.push({ bs: node.body.start, be: node.body.end, is: node.body.start, ie: node.body.end });
       if (node.body.type === 'BlockStatement') {
         const blockBody = (node.body as BlockStatementNode).body;
         for (const statement of blockBody) {
@@ -4967,6 +5011,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // For expression bodies, visit normally
         this.visit(node.body);
       }
+      this.branchStack.pop();
 
       // Infer the return type and stash it on the node (arrows are anonymous, so the
       // binding site reads `_inferredReturnType`). Block body → common type of the
@@ -4975,7 +5020,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       let arrowReturnType: UcodeDataType;
       if (node.body.type === 'BlockStatement') {
         const rts = (this.functionReturnTypes.get(node as any) || []).map(e => e.type);
-        arrowReturnType = this.typeChecker.getCommonReturnType(rts);
+        arrowReturnType = this.widenReturnForFallthrough(node.body, rts.length, this.typeChecker.getCommonReturnType(rts));
       } else {
         // Inference-only: the body was already validated during the visit above, so query
         // its type without re-emitting diagnostics (checkNode would double-report).
@@ -5015,14 +5060,19 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   override visitTryStatement(node: TryStatementNode): void {
     if (this.options.enableScopeAnalysis) {
-      // Visit the try block
+      // A try-block write may not complete (a throw can interrupt) and a catch-body
+      // write only runs on the throwing path — both are may-have-run for later reads.
+      // No sibling exclusion (empty is/ie region): a catch read CAN see try writes.
+      this.branchStack.push({ bs: node.block.start, be: node.block.end, is: 0, ie: -1 });
       this.visit(node.block);
-      
-      // Visit the catch handler if present
+      this.branchStack.pop();
+
       if (node.handler) {
+        this.branchStack.push({ bs: node.handler.start, be: node.handler.end, is: 0, ie: -1 });
         this.visit(node.handler);
+        this.branchStack.pop();
       }
-      
+
     } else {
       super.visit(node);
     }
@@ -5532,6 +5582,17 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (node.callee.type === 'Identifier') {
         const functionName = (node.callee as IdentifierNode).name;
         this.symbolTable.markUsed(functionName, node.callee.start);
+        // A DIRECT call with no enclosing branch/loop/function frame definitely
+        // executes when control reaches this line. Body writes of the callee are
+        // promoted from "may have run" to DEFINITE for reads after such a call
+        // (docs/type-soundness-audit.md I-4 refinement: `reset(); cfg.mode` is
+        // the written type, not a union).
+        if (this.branchStack.length === 0 && this.loopDepth === 0) {
+          const calleeSym = this.symbolTable.lookupOpenScopes(functionName);
+          if (calleeSym && calleeSym.type === SymbolType.FUNCTION) {
+            (calleeSym.definiteCallAt ??= []).push(node.start);
+          }
+        }
       }
     }
 
@@ -6006,7 +6067,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // (e.g., unknown from `let cpus;`) for positions before this assignment.
             symbol.currentType = dataType;
             symbol.currentTypeEffectiveFrom = node.end;
-            this.recordTypeHistory(symbol, node.end, dataType);
+            this.recordTypeHistory(symbol, node.end, dataType, node.start);
             // Force global declaration for module object types (cross-scope visibility),
             // but only when the reassigned variable is itself a global. Force-declaring a
             // function-local's module type into global scope leaks it into same-named
@@ -6025,7 +6086,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // Parameters: preserve declared type (unknown), track reassigned type via SSA
             symbol.currentType = dataType;
             symbol.currentTypeEffectiveFrom = node.end;
-            this.recordTypeHistory(symbol, node.end, dataType);
+            this.recordTypeHistory(symbol, node.end, dataType, node.start);
           } else {
             // SSA: If this is a literal type, preserve original but track current type
             const isLiteralVariable = symbol && symbol.initialLiteralType !== undefined;
@@ -6033,7 +6094,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               // Update current type but preserve original literal type
               symbol.currentType = dataType;
               symbol.currentTypeEffectiveFrom = node.end;
-              this.recordTypeHistory(symbol, node.end, dataType);
+              this.recordTypeHistory(symbol, node.end, dataType, node.start);
             } else {
               // Regular variable, update normally
               symbol.currentType = undefined;
@@ -6138,9 +6199,42 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (sym) { this.stampGlobalSymbolPosition(name, sym); sym.dataType = at; sym.used = true; }
   }
 
-  /** Append an entry to a variable's per-assignment type history (for position-aware hover). */
-  private recordTypeHistory(symbol: SymbolEntry, from: number, type: UcodeDataType): void {
-    (symbol.typeHistory ??= []).push({ from, type });
+
+  /** Widen an inferred return type with `| null` when the body can FALL OFF THE
+   *  END: ucode returns null on the implicit exit, so a function with SOME explicit
+   *  returns and a reachable fall-through path returns `T | null`, not `T`
+   *  (docs/type-soundness-audit.md H-1). No-return functions already infer null;
+   *  bodies whose last path always returns/throws/dies keep their exact union. */
+  private widenReturnForFallthrough(body: AstNode, returnCount: number, inferred: UcodeDataType): UcodeDataType {
+    if (returnCount === 0) return inferred;
+    if (this.typeChecker.blockAlwaysTerminates(body)) return inferred;
+    return widenWithNull(inferred);
+  }
+
+  /** Append an entry to a variable's per-assignment type history. Snapshots the
+   *  enclosing conditional regions (branchStack) and loop context so
+   *  effectiveSymbolType can tell definite writes from may-have-run writes —
+   *  the identifier mirror of recordPropertyWrite (docs/type-soundness-audit.md I-1). */
+  private recordTypeHistory(symbol: SymbolEntry, from: number, type: UcodeDataType, start?: number): void {
+    // A write under `if (type(x) != "T")` covers the fall-through path too: on the
+    // else path x is provably T (the identifier twin of recordPropertyWrite's stamp).
+    let elseType: UcodeDataType | undefined;
+    for (let i = this.branchStack.length - 1; i >= 0; i--) {
+      const f = this.branchStack[i]!;
+      if (f.guardBase === symbol.name && f.guardProp === undefined && f.guardElseType !== undefined) {
+        elseType = f.guardElseType; break;
+      }
+    }
+    const bodyFrame = this.innermostBodyFrame();
+    (symbol.typeHistory ??= []).push({
+      from,
+      start: start ?? from,
+      type,
+      ...(this.branchStack.length ? { branches: [...this.branchStack] } : {}),
+      ...(this.loopDepth > 0 ? { inLoop: true } : {}),
+      ...(elseType !== undefined ? { elseType } : {}),
+      ...(bodyFrame ? { fnSym: bodyFrame.fnSym, fnBody: { bs: bodyFrame.bs, be: bodyFrame.be } } : {}),
+    });
   }
 
   /**
@@ -6216,8 +6310,15 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     this.truthinessDepth++;
     this.visit(node.test);
     this.truthinessDepth--;
+    // Ternary arms are sibling branches, exactly like if/else (writes in one arm
+    // are invisible to reads in the other; may-have-run for reads after the whole
+    // expression).
+    this.branchStack.push({ bs: node.consequent.start, be: node.consequent.end, is: node.start, ie: node.end });
     this.visit(node.consequent);
+    this.branchStack.pop();
+    this.branchStack.push({ bs: node.alternate.start, be: node.alternate.end, is: node.start, ie: node.end });
     this.visit(node.alternate);
+    this.branchStack.pop();
   }
 
   override visitBinaryExpression(node: BinaryExpressionNode): void {
@@ -6228,7 +6329,18 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                          node.operator === '==' || node.operator === '!=' ||
                          node.operator === '===' || node.operator === '!==';
     if (isComparison) this.truthinessDepth++;
-    super.visitBinaryExpression(node);
+    // Short-circuit operators only evaluate the RHS on some paths, so a write
+    // there (`c && (x = [1])`) is may-have-run for later reads. No sibling region
+    // (empty is/ie) — nothing is mutually exclusive with the RHS.
+    const shortCircuit = node.operator === '&&' || node.operator === '||' || node.operator === '??';
+    if (shortCircuit) {
+      this.visit(node.left);
+      this.branchStack.push({ bs: node.right.start, be: node.right.end, is: 0, ie: -1 });
+      this.visit(node.right);
+      this.branchStack.pop();
+    } else {
+      super.visitBinaryExpression(node);
+    }
     if (isComparison) this.truthinessDepth--;
 
     if (this.options.enableTypeChecking) {
@@ -6481,7 +6593,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     this.checkEmptyInfiniteLoop(node.test, node.body, node.start, node.body?.start ?? node.end);
     if (node.body) this.checkIterateeMutation(node.body, this.lengthBoundedArrayName(node.test));
 
+    this.loopDepth++;
     super.visitWhileStatement(node);
+    this.loopDepth--;
 
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.pop();
@@ -6532,13 +6646,17 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (node.update) {
         this.visit(node.update);
       }
+      this.loopDepth++;
       this.visit(node.body);
+      this.loopDepth--;
       
       // Exit the for loop scope
       this.symbolTable.exitScope(node.end);
     } else {
       // Fallback to default behavior if scope analysis is disabled
+      this.loopDepth++;
       super.visitForStatement(node);
+      this.loopDepth--;
     }
     
     if (this.options.enableControlFlowAnalysis) {
@@ -6752,13 +6870,17 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       this.visit(node.right);
       
       // Visit the loop body (iterator variables are now in scope)
+      this.loopDepth++;
       this.visit(node.body);
+      this.loopDepth--;
       
       // Exit the for-in loop scope
       this.symbolTable.exitScope(node.end);
     } else {
       // Fallback to default behavior if scope analysis is disabled
+      this.loopDepth++;
       super.visitForInStatement(node);
+      this.loopDepth--;
     }
 
     if (this.options.enableControlFlowAnalysis) {
@@ -6876,8 +6998,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
     }
 
-    // Continue with default traversal
-    super.visitSwitchStatement(node);
+    // Visit the discriminant + each case under a may-have-run frame: whether a
+    // case body executes depends on the runtime discriminant. Empty is/ie region
+    // (no sibling exclusion) because cases FALL THROUGH — a later case's read CAN
+    // see an earlier case's write.
+    this.visit(node.discriminant);
+    for (const cs of node.cases ?? []) {
+      this.branchStack.push({ bs: cs.start, be: cs.end, is: 0, ie: -1 });
+      this.visit(cs);
+      this.branchStack.pop();
+    }
 
     if (this.options.enableControlFlowAnalysis) {
       // Pop the switch scope when exiting
@@ -7342,7 +7472,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       const sourceName = (expression as IdentifierNode).name;
       const sourceSymbol = this.symbolTable.lookupOpenScopes(sourceName);
       if (sourceSymbol) {
-        return sourceSymbol.currentType || sourceSymbol.dataType;
+        // Position-aware: the bare currentType slot is the file's LAST write,
+        // not the value reaching THIS position (docs/type-soundness-audit.md I-2).
+        return effectiveSymbolType(sourceSymbol, expression.start);
       }
     }
 
@@ -7393,10 +7525,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       const f = this.branchStack[i]!;
       if (f.guardBase === symbol.name && f.guardProp === propName) { elseType = f.guardElseType; break; }
     }
+    const bodyFrame = this.innermostBodyFrame();
     hist.push({
       pos, start, type,
       ...(this.branchStack.length ? { branches: [...this.branchStack] } : {}),
       ...(elseType !== undefined ? { elseType } : {}),
+      ...(bodyFrame ? { fnSym: bodyFrame.fnSym, fnBody: { bs: bodyFrame.bs, be: bodyFrame.be } } : {}),
     });
   }
 

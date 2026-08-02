@@ -13,7 +13,7 @@ import type {
 } from './ast/nodes';
 import { allBuiltinFunctions } from './builtins';
 import { type SemanticAnalysisResult, SymbolType, type Symbol as UcodeSymbol } from './analysis';
-import { typeToString, type UcodeDataType, UcodeType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt, isNeverType } from './analysis/symbolTable';
+import { typeToString, type UcodeDataType, UcodeType, effectiveSymbolType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt, isNeverType } from './analysis/symbolTable';
 import { exceptionTypeRegistry, exceptionObjectType } from './analysis/exceptionTypes';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
@@ -307,41 +307,24 @@ function resolveVariableTypeForHoverRaw(
         }
     }
 
-    // Position-aware SSA: pick the type as of THIS line from the per-assignment history, so a
-    // reassigned variable shows the right type on each line (not just the final one). Each entry's
-    // `from` is the assignment's end offset (type in effect after it).
+    // Position-aware SSA. Hovering the LHS of `a = …` shows the type it BECOMES (the
+    // entry effective just after this position); everything else routes through
+    // effectiveSymbolType — the branch-aware walk (conditional writes union with the
+    // fall-through value; sibling-branch writes are invisible;
+    // docs/type-soundness-audit.md I-1).
     const history = symbol.typeHistory;
-    if (history && history.length > 0) {
-        if (isAssignmentTarget) {
-            // Hovering the LHS of `a = …`: show the type it BECOMES — the entry effective just
-            // after this position (the smallest `from` greater than the offset).
-            let best: { from: number; type: UcodeDataType } | undefined;
-            for (const e of history) {
-                if (e.from > offset && (!best || e.from < best.from)) best = e;
-            }
-            if (best) return best.type;
-        } else {
-            // A read: the type in effect at this point (largest `from` ≤ offset). A read inside an
-            // assignment's RHS (offset < that assignment's end) correctly resolves to the prior type.
-            let best: { from: number; type: UcodeDataType } | undefined;
-            for (const e of history) {
-                if (e.from <= offset && (!best || e.from > best.from)) best = e;
-            }
-            if (best) return best.type;
+    if (history && history.length > 0 && isAssignmentTarget) {
+        let best: { from: number; type: UcodeDataType } | undefined;
+        for (const e of history) {
+            if (e.from > offset && (!best || e.from < best.from)) best = e;
         }
+        if (best) return best.type;
+    }
+    if (isAssignmentTarget && symbol.currentType) {
+        return symbol.currentType;
     }
 
-    if (symbol.currentType) {
-        if (isAssignmentTarget) {
-            return symbol.currentType;
-        }
-
-        if (symbol.currentTypeEffectiveFrom !== undefined && offset >= symbol.currentTypeEffectiveFrom) {
-            return symbol.currentType;
-        }
-    }
-
-    return symbol.dataType;
+    return effectiveSymbolType(symbol, offset);
 }
 
 

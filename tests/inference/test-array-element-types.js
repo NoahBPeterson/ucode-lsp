@@ -140,7 +140,10 @@ function parse_array(val) {
     } else {
         effectiveTypeAtReturn = sym.dataType;
     }
-    check('hover after reassign shows array | null', typeToString(effectiveTypeAtReturn), 'array<string> | null');
+    // Soundness campaign: the split() write is CONDITIONAL (type-guard else keeps
+    // the caller's array with unknown elements), so the honest post-if type unions
+    // the fall-through arm in - array | array<string> | null.
+    check('hover after reassign shows the honest union', typeToString(effectiveTypeAtReturn), 'array | array<string> | null');
 }
 
 // Test 9: Parameter with no reassignment stays unknown

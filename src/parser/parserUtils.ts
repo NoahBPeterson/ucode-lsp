@@ -13,6 +13,10 @@ export class ParserUtils {
   protected errors: ParseError[] = [];
   protected warnings: ParseWarning[] = [];
   protected panicMode = false;
+  // One-shot: the broken-line-comment root-cause hint (a `/` starting an unintended
+  // regex literal) is emitted once per parse; later regex-led failures are its echoes.
+  protected regexCommentHintEmitted = false;
+  protected regexCommentHintLine = -1;
   protected comments: Token[] = [];
   protected sourceText: string = '';
 

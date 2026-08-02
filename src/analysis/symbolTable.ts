@@ -284,46 +284,114 @@ export function dataTypeToBase(type: UcodeDataType): UcodeType {
   return typeof t === 'string' ? (t as UcodeType) : UcodeType.UNKNOWN;
 }
 
-/** The effective type of a symbol at a source position: the SSA-tracked
- *  `currentType` when it is active at the position (i.e. after the assignment
- *  that set it), otherwise the declared `dataType`. This is THE single source for
- *  "what type does this variable hold here" that the narrowing machinery builds
- *  on — declared-vs-current divergence here was the root of several narrowing
- *  bugs (a `let c; c = f();` has declared type null but an effective string|null). */
+/** One SSA write in a symbol's history. `from` = write END (reads at/after see it),
+ *  `start` = write START. `branches` = enclosing conditional regions at write time
+ *  (innermost last), same shape as PropertyWriteEntry.branches. `inLoop` = the write
+ *  sits inside a loop body: branch reasoning is invalid there (a sibling branch's
+ *  write from a PREVIOUS iteration reaches this iteration's other branch, and a
+ *  later write reaches earlier positions via the back edge), so in-loop writes are
+ *  always UNIONED and never excluded. */
+export interface TypeHistoryEntry {
+  from: number;
+  start: number;
+  type: UcodeDataType;
+  branches?: Array<{ bs: number; be: number; is: number; ie: number }>;
+  inLoop?: boolean;
+  /** Innermost enclosing NAMED function whose body contains this write, plus that
+   *  body's region. For a read OUTSIDE the body, the write can only have happened
+   *  if the function was referenced (called/escaped, tracked via usedAt) at or
+   *  before the read - otherwise the write is skipped entirely: `function reset()
+   *  { cfg.mode = "off"; } if (cfg.mode == 0)` reads the pristine integer, because
+   *  nothing can have called reset yet. */
+  fnSym?: Symbol;
+  fnBody?: { bs: number; be: number };
+  /** For a write under `if (type(x) != "T") x = <T value>`: the fall-through path's
+   *  provable type T - a post-if read resolves union(write, T), the if covers both
+   *  paths (same rule as PropertyWriteEntry.elseType). */
+  elseType?: UcodeDataType;
+}
+
+
+/** A body write is impossible for a read OUTSIDE the body unless the enclosing
+ *  function was referenced (called or escaped) at or before the read position. */
+function bodyWriteCannotHaveRun(
+  e: { fnSym?: Symbol; fnBody?: { bs: number; be: number } }, readPos: number,
+): boolean {
+  if (!e.fnSym || !e.fnBody) return false;
+  if (readPos >= e.fnBody.bs && readPos <= e.fnBody.be) return false; // same body
+  return !e.fnSym.usedAt?.some(p => p <= readPos);
+}
+
+/** A body write DEFINITELY ran for a read after an UNCONDITIONAL direct call to the
+ *  enclosing function, provided the write itself is unconditional within the body
+ *  (its only branch frame is the body frame) and not loop-carried:
+ *  `function reset() { cfg.mode = "off"; } reset(); cfg.mode` is definitely the
+ *  written string, not a union. */
+function bodyWriteDefinitelyRan(
+  e: { fnSym?: Symbol; fnBody?: { bs: number; be: number };
+       branches?: Array<{ bs: number; be: number }>; inLoop?: boolean }, readPos: number,
+): boolean {
+  if (!e.fnSym || !e.fnBody || e.inLoop) return false;
+  if (!e.branches || e.branches.length !== 1) return false; // conditional within the body
+  return !!e.fnSym.definiteCallAt?.some(p => p <= readPos);
+}
+
+function typeWriteInvisible(e: TypeHistoryEntry, readPos: number): boolean {
+  if (e.inLoop) return false;
+  return !!e.branches?.some(b =>
+    readPos >= b.is && readPos <= b.ie && !(readPos >= b.bs && readPos <= b.be));
+}
+
+function typeWriteDefinite(e: TypeHistoryEntry, readPos: number): boolean {
+  if (e.inLoop) return false;
+  if (!e.branches || e.branches.length === 0) return true;
+  const inner = e.branches[e.branches.length - 1]!;
+  return readPos >= inner.bs && readPos <= inner.be;
+}
+
+function unionInto(a: UcodeDataType, b: UcodeDataType): UcodeDataType {
+  const parts: SingleType[] = [];
+  for (const t of [a, b]) {
+    if (isUnionType(t)) parts.push(...t.types);
+    else parts.push(t as SingleType);
+  }
+  return createUnionType(parts);
+}
+
+/** The effective type of a symbol at a source position. THE single source for
+ *  "what type does this variable hold here" that the narrowing machinery builds on.
+ *
+ *  Walks the SSA typeHistory in source order, seeded with the DECLARED type (null
+ *  for a bare `let`, unknown for a parameter): a write that DEFINITELY executed
+ *  before the read (unconditional, or the read is inside the write's own branch)
+ *  REPLACES the value; a write that only MAY have executed (conditional relative to
+ *  the read, or inside a loop body) UNIONS in — the fall-through/zero-iteration
+ *  path keeps the prior value alive (docs/type-soundness-audit.md I-1/I-3; the
+ *  0.7.81 between-assignment union and 0.7.84 member fix are special cases of this
+ *  rule). A write in a SIBLING if-branch of the read is excluded outright — it
+ *  provably did not run on the read's path (never inside loops, see
+ *  TypeHistoryEntry.inLoop).
+ *
+ *  Writers that bypass recordTypeHistory (forced globals, forward-call patches)
+ *  still land in the currentType slot — honored only when no history exists. */
 export function effectiveSymbolType(symbol: Symbol, position: number): UcodeDataType {
+  const history = symbol.typeHistory;
+  if (history && history.length > 0) {
+    const ordered = [...history].sort((a, b) => a.from - b.from);
+    let value: UcodeDataType = symbol.dataType;
+    for (const e of ordered) {
+      if (e.from > position) continue;            // future write
+      if (typeWriteInvisible(e, position)) continue; // sibling-branch write
+      if (bodyWriteCannotHaveRun(e, position)) continue; // enclosing fn not yet called
+      if (typeWriteDefinite(e, position) || bodyWriteDefinitelyRan(e, position)) value = e.type;
+      else if (e.elseType !== undefined && !e.inLoop) value = unionInto(e.elseType, e.type); // guard covers the fall-through
+      else value = unionInto(value, e.type);
+    }
+    return value;
+  }
   if (symbol.currentType !== undefined && symbol.currentTypeEffectiveFrom !== undefined
       && position >= symbol.currentTypeEffectiveFrom) {
     return symbol.currentType;
-  }
-  // The currentType slot only holds the LATEST assignment. A query at a position
-  // BETWEEN two assignments (e.g. the test in `p = params.x; if (p == "") p = null;`,
-  // where the branch write pushed currentTypeEffectiveFrom past the test) used to
-  // fall through to the declared type, resurrecting the bare-`let` null and making
-  // UC2009 call the comparison impossible (docs/uc2009-branch-reassign-declared-null.md).
-  // typeHistory records every SSA write (appended in visitation = source order, but
-  // scan for max rather than assume sortedness).
-  //
-  // Return the UNION of the preceding write and the declared type, not the write
-  // alone: in a loop the position can also be reached via the back edge carrying a
-  // LATER write or the first-iteration declared value (`let sec; for (…) { if (…)
-  // sec = [i]; else { sec[0]; sec = null; } }` - the read is genuinely may-null),
-  // and this position-based lookup has no loop context. The union keeps those
-  // may-null warnings alive while the unknown/real member stops the
-  // impossible-comparison lint from claiming a provable type.
-  const history = symbol.typeHistory;
-  if (history && history.length > 0) {
-    let best: { from: number; type: UcodeDataType } | undefined;
-    for (const h of history) {
-      if (h.from <= position && (best === undefined || h.from > best.from)) best = h;
-    }
-    if (best !== undefined) {
-      const parts: SingleType[] = [];
-      for (const t of [best.type, symbol.dataType]) {
-        if (isUnionType(t)) parts.push(...t.types);
-        else parts.push(t as SingleType);
-      }
-      return createUnionType(parts);
-    }
   }
   return symbol.dataType;
 }
@@ -386,6 +454,9 @@ export interface PropertyWriteEntry {
    *  union(write type, T) — the if covers BOTH paths — instead of unioning in the
    *  pre-if value. */
   elseType?: UcodeDataType;
+  /** Same call-position gating as TypeHistoryEntry.fnSym/fnBody. */
+  fnSym?: Symbol;
+  fnBody?: { bs: number; be: number };
 }
 
 /** True when the write `e` provably did NOT execute on the path reaching `readPos`:
@@ -447,8 +518,9 @@ export function propertyTypeAt(
     let sawWrite = false;
     for (const e of visible) {
       if (e.pos < 0 || e.pos > readPos) continue;
+      if (bodyWriteCannotHaveRun(e, readPos)) continue; // enclosing fn not yet called
       sawWrite = true;
-      if (writeDefiniteForRead(e, readPos)) value = e.type;
+      if (writeDefiniteForRead(e, readPos) || bodyWriteDefinitelyRan(e, readPos)) value = e.type;
       else if (e.elseType !== undefined) value = unionMemberTypes(e.elseType, e.type); // guard covers the fall-through
       else value = unionMemberTypes(value, e.type);
     }
@@ -559,6 +631,10 @@ export interface Symbol {
   node: AstNode;
   declaredAt: number; // position in source
   usedAt: number[];   // positions where used
+  /** Positions of DIRECT calls made outside any branch/loop/function frame - a call
+   *  here definitely executes when control reaches it. Used to promote the callee's
+   *  body writes to definite for later reads (vs the may-have-run union). */
+  definiteCallAt?: number[];
   // Function-specific fields
   returnType?: UcodeDataType;   // Return type for functions (when dataType is FUNCTION)
   parameters?: ParamInfo[];     // Ordered parameter signature for user functions (for call-site argument checking)
@@ -589,7 +665,7 @@ export interface Symbol {
     // `from` is the assignment's end offset (the type is in effect AFTER that point). `currentType`
     // only holds the LAST assignment, which makes mid-sequence hover show the final type; this keeps
     // the whole timeline so hover can report the type as of each line.
-    typeHistory?: Array<{ from: number; type: UcodeDataType }>;
+    typeHistory?: TypeHistoryEntry[];
     neverReturns?: boolean; // True if function always terminates (die/exit/throw on all paths)
     scopeEnd?: number; // End offset of the scope this symbol was declared in (set when scope exits)
     scopeStart?: number; // Start offset of the block scope this symbol was declared in (set at declare)

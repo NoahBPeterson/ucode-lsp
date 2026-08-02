@@ -60,10 +60,13 @@ const testCases = [
         expectedError: "Unsupported regex flag 'u'. Supported flags are: g, i, s"
     },
     {
-        name: "Regex with mix of supported and unsupported flags should error on first unsupported",
+        // One error for the whole flag run (not per letter) - listing every
+        // unsupported flag at once; per-letter spam amplified the broken-`//`
+        // comment cascade (docs/type-soundness-audit.md follow-up, 0.7.85).
+        name: "Regex with mix of supported and unsupported flags lists them in ONE error",
         code: `/test.*pattern/imu`,
         shouldError: true,
-        expectedError: "Unsupported regex flag 'm'. Supported flags are: g, i, s"
+        expectedError: "Unsupported regex flags 'm', 'u'. Supported flags are: g, i, s"
     }
 ];
 

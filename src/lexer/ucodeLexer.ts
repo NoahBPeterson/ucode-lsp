@@ -119,6 +119,13 @@ export class UcodeLexer {
     private line: number = 1;
     private column: number = 1;
     private noRegexp: boolean = false;
+    // True when the NEXT token begins a statement (start of file, or after ; { }).
+    // A regex literal lexed here is LINE-BOUNDED: a bare multi-line regex statement
+    // is (a) dead code and (b) in practice always a broken `//` comment - a lone
+    // `/` swallowing lines used to cascade mis-lexed regexes through the whole
+    // file. In expression positions (call arguments, assignments, return, after
+    // ':') regexes may still span lines, matching ucode.
+    private atStatementStart: boolean = true;
     private noKeyword: boolean = false;
     private lastOffset: number = 0;
     private buffer: string = '';
@@ -471,8 +478,10 @@ export class UcodeLexer {
                 );
             }
             
-            // If the lookahead passed, parse the regex as normal
-            return this.parseRegex();
+            // If the lookahead passed, parse the regex as normal. In statement
+            // position the regex is line-bounded (a bare multi-line regex statement
+            // is always the broken-comment trap).
+            return this.parseRegex(this.atStatementStart);
         }
 
         // Identifiers and keywords
@@ -773,7 +782,7 @@ export class UcodeLexer {
         return this.emitToken(TokenType.TK_ERROR, 'Unterminated template literal', startPos);
     }
 
-    private parseRegex(): Token | null {
+    private parseRegex(lineBounded: boolean = false): Token | null {
         const startPos = this.pos;
         let value = '';
         let inCharClass = false;
@@ -783,9 +792,42 @@ export class UcodeLexer {
         const bodyStart = this.pos;
 
         while (this.pos < this.source.length) {
+            if (lineBounded && isLineBreak(this.peekChar())) {
+                // Statement-position regex hit a newline with no closing '/': this is
+                // a broken line comment, not a regex. Report ONCE at the slash and
+                // consume nothing further - the line's remaining tokens were already
+                // garbage-consumed into `value`, and lexing resumes cleanly after it.
+                this.errors.push({
+                    message: "This '/' starts a regex literal, but a regex is not valid as a bare statement and no closing '/' appears on this line. If a comment was intended, use '//'.",
+                    start: startPos,
+                    end: this.pos,
+                    code: UcodeErrorCode.SYNTAX_ERROR,
+                });
+                return this.emitToken(TokenType.TK_COMMENT, value, startPos);
+            }
             const ch = this.peekChar();
 
             if (ch === '/' && !inCharClass) {
+                // A regex whose "closing" slash is immediately followed by another
+                // '/': the closer is really the start of a `//` comment - this line is
+                // a commented-out fragment missing one slash (`/print(x); // note`).
+                // A genuine regex before a trailing comment always has whitespace
+                // between them, so this signature is position-independent. Report the
+                // broken comment ONCE and consume the entire line as a comment so
+                // nothing downstream parses (the surrounding expression often even
+                // recovers: `print(\n/1, // note\n2)` parses as print(2)).
+                if (this.peekChar(1) === '/') {
+                    while (this.pos < this.source.length && !isLineBreak(this.peekChar())) {
+                        value += this.nextChar();
+                    }
+                    this.errors.push({
+                        message: "This '/' starts a regex literal whose only closing '/' is the start of a '//' comment - this line looks like a commented-out statement missing one slash. If a comment was intended, use '//'.",
+                        start: startPos,
+                        end: startPos + 1,
+                        code: UcodeErrorCode.SYNTAX_ERROR,
+                    });
+                    return this.emitToken(TokenType.TK_COMMENT, value, startPos);
+                }
                 const bodyEnd = this.pos;
                 value += this.nextChar(); // consume closing /
 
@@ -796,18 +838,27 @@ export class UcodeLexer {
                 // consume every trailing flag, record each unsupported one in the side-channel,
                 // and still emit a valid TK_REGEXP so the argument survives.
                 const supportedFlags = new Set(['g', 'i', 's']);
+                const badFlags: Array<{ flag: string; pos: number }> = [];
                 while (this.pos < this.source.length && /[a-zA-Z]/.test(this.peekChar())) {
                     const flag = this.peekChar();
                     const flagPos = this.pos;
                     value += this.nextChar(); // consume the flag regardless of validity
-                    if (!supportedFlags.has(flag)) {
-                        this.errors.push({
-                            message: `Unsupported regex flag '${flag}'. Supported flags are: g, i, s`,
-                            start: flagPos,
-                            end: this.pos,
-                            code: UcodeErrorCode.SYNTAX_ERROR,
-                        });
-                    }
+                    if (!supportedFlags.has(flag)) badFlags.push({ flag, pos: flagPos });
+                }
+                // One error for the whole flag run, not one per letter. Skip entirely
+                // for a regex whose body spans lines - those "flags" are almost always
+                // prose swallowed by a broken `//` comment (a lone `/`), and the
+                // per-letter errors only amplified that cascade.
+                if (badFlags.length > 0 && !value.includes('\n')) {
+                    const list = badFlags.map(b => `'${b.flag}'`).join(', ');
+                    this.errors.push({
+                        message: badFlags.length === 1
+                            ? `Unsupported regex flag ${list}. Supported flags are: g, i, s`
+                            : `Unsupported regex flags ${list}. Supported flags are: g, i, s`,
+                        start: badFlags[0]!.pos,
+                        end: badFlags[badFlags.length - 1]!.pos + 1,
+                        code: UcodeErrorCode.SYNTAX_ERROR,
+                    });
                 }
 
                 this.validateRegexBody(this.source.slice(bodyStart, bodyEnd), bodyStart);
@@ -1144,7 +1195,8 @@ export class UcodeLexer {
             tokenType === TokenType.TK_NULL ||           // null
             tokenType === TokenType.TK_THIS ||           // this
             tokenType === TokenType.TK_INC ||            // ++
-            tokenType === TokenType.TK_DEC) {            // --
+            tokenType === TokenType.TK_DEC ||            // --
+            tokenType === TokenType.TK_REGEXP) {         // a regex literal is a VALUE - division follows values
             this.noRegexp = true;
         }
         // After these tokens, a regex is expected (not division)
@@ -1154,6 +1206,8 @@ export class UcodeLexer {
                  tokenType === TokenType.TK_ASSIGN ||    // =
                  tokenType === TokenType.TK_EQ ||        // ==
                  tokenType === TokenType.TK_NE ||        // !=
+                 tokenType === TokenType.TK_EQS ||       // ===
+                 tokenType === TokenType.TK_NES ||       // !==
                  tokenType === TokenType.TK_LT ||        // <
                  tokenType === TokenType.TK_LE ||        // <=
                  tokenType === TokenType.TK_GT ||        // >
@@ -1183,6 +1237,16 @@ export class UcodeLexer {
             this.noRegexp = false; // Allow regex but lookahead will catch stray slashes
         }
         // For other tokens, don't change the flag
+
+        // Statement-position tracking (see atStatementStart): ; { } start a new
+        // statement; comments are trivia and change nothing; everything else means
+        // we're mid-expression.
+        if (tokenType === TokenType.TK_SCOL || tokenType === TokenType.TK_LBRACE
+            || tokenType === TokenType.TK_RBRACE) {
+            this.atStatementStart = true;
+        } else if (tokenType !== TokenType.TK_COMMENT) {
+            this.atStatementStart = false;
+        }
     }
 
     private updateNoKeywordFlag(tokenType: TokenType): void {

@@ -3,7 +3,7 @@
  */
 
 import { type AstNode, type CallExpressionNode, type LiteralNode, type ObjectExpressionNode, type PropertyNode, type IdentifierNode } from '../../ast/nodes';
-import { UcodeType, type UcodeDataType, createUnionType, createArrayType, createTupleArrayType, isArrayType, getArrayElementType, extractModuleType, getObjectTypeName, isUnionType, getUnionTypes } from '../symbolTable';
+import { UcodeType, type UcodeDataType, createUnionType, createArrayType, createTupleArrayType, isArrayType, getArrayElementType, extractModuleType, getObjectTypeName, isUnionType, getUnionTypes, widenWithNull } from '../symbolTable';
 import { type TypeError, type TypeWarning } from '../types';
 import { UcodeErrorCode } from '../errorConstants';
 import { isKnownObjectType, OBJECT_REGISTRIES } from '../moduleDispatch';
@@ -2387,10 +2387,11 @@ export class BuiltinValidator {
 
   validatePopFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'pop', 1)) return true;
-    // C: returns NULL if not mutable array; returns popped element otherwise
+    // C: returns NULL if not mutable array - AND on an EMPTY array (js_array_pop) -
+    // so the element type always carries | null.
     const fullType = node.arguments[0] ? this.getNodeFullType(node.arguments[0]) : null;
     if (fullType && isArrayType(fullType)) {
-      this.narrowedReturnType = getArrayElementType(fullType);
+      this.narrowedReturnType = widenWithNull(getArrayElementType(fullType));
     }
     this.validateArgumentType(node.arguments[0], 'pop', 1, [UcodeType.ARRAY]);
     return true;
@@ -2398,10 +2399,11 @@ export class BuiltinValidator {
 
   validateShiftFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'shift', 1)) return true;
-    // C: returns NULL if not mutable array; returns shifted element otherwise
+    // C: returns NULL if not mutable array - AND on an EMPTY array - so the
+    // element type always carries | null.
     const fullType = node.arguments[0] ? this.getNodeFullType(node.arguments[0]) : null;
     if (fullType && isArrayType(fullType)) {
-      this.narrowedReturnType = getArrayElementType(fullType);
+      this.narrowedReturnType = widenWithNull(getArrayElementType(fullType));
     }
     this.validateArgumentType(node.arguments[0], 'shift', 1, [UcodeType.ARRAY]);
     return true;

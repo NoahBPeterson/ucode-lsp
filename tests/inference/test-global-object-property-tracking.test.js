@@ -28,7 +28,13 @@ test("global.X.prop = … at top level is tracked (was unknown)", () => {
   expect(typeOf(analyze("global.CACHE = {};\nglobal.CACHE.hot = 1;\nlet hh = CACHE.hot;\n"), "hh")).toBe("integer");
 });
 
-test("global.X.prop = … INSIDE a function is tracked (parity with locals)", () => {
+test("global.X.prop = … INSIDE a function is tracked (binding path, flat)", () => {
+  // The declarator BINDING path reads the flat propertyTypes map (most-recent
+  // write), so the tracked type shows through - the original feature contract.
+  // Hover and the diagnostics path are stricter: they route through propertyTypeAt,
+  // which call-position-gates function-body writes (warm() is never called here, so
+  // the write cannot have happened; docs/type-soundness-audit.md I-4). Routing the
+  // binding path through propertyTypeAt as well is the open H-3/H-5 work.
   expect(typeOf(analyze("global.CACHE = {};\nfunction warm() { global.CACHE.hot = 1; }\nlet hh = CACHE.hot;\n"), "hh")).toBe("integer");
 });
 

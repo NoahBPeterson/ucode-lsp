@@ -38,8 +38,9 @@ export abstract class BasicStatements extends ControlFlowStatements {
 
   protected parseExpressionStatement(): ExpressionStatementNode | null {
     const start = this.peek()?.pos || 0;
+    const firstTok = this.peek();
     const expression = this.parseExpression(Precedence.COMMA);
-    
+
     if (!expression) return null;
     
     // Check for semicolon but don't let missing semicolon trigger panic mode
@@ -53,11 +54,31 @@ export abstract class BasicStatements extends ControlFlowStatements {
                                  nextToken === TokenType.TK_EOF;
       
       if (!isOptionalSemicolon) {
-        // Record error but continue parsing
-        this.errorAt("Expected ';' after expression",
-                     this.previous()?.end || start,
-                     this.previous()?.end || start,
-                     UcodeErrorCode.MISSING_SEMICOLON);
+        // A statement that BEGINS with a regex literal and then fails to terminate
+        // is almost always a broken line comment (`/` typed for `//`): the lone
+        // slash starts a regex that swallows everything to the next `/`, and every
+        // diagnostic after it is noise - often a whole CASCADE of regex-led
+        // statements. Point at the root cause ONCE and silence the echoes.
+        const regexLead = firstTok?.type === TokenType.TK_REGEXP;
+        if (regexLead) {
+          if (!this.regexCommentHintEmitted) {
+            this.regexCommentHintEmitted = true;
+            this.regexCommentHintLine = firstTok!.line ?? -1;
+            this.errorAt("This '/' starts a regex literal (running to the next unescaped '/', possibly across lines). If a comment was intended, use '//'. Diagnostics after this point may be side effects of the mis-lexed region.",
+                         firstTok!.pos, firstTok!.pos + 1,
+                         UcodeErrorCode.MISSING_SEMICOLON);
+          }
+          // Subsequent regex-led failures are the documented side effects - silent.
+        } else if (this.regexCommentHintEmitted && firstTok?.line === this.regexCommentHintLine) {
+          // Prose swallowed on the SAME line as the hinted broken comment parses as a
+          // run of bare identifiers - each would add an "Expected ';'". All echoes.
+        } else {
+          // Record error but continue parsing
+          this.errorAt("Expected ';' after expression",
+                       this.previous()?.end || start,
+                       this.previous()?.end || start,
+                       UcodeErrorCode.MISSING_SEMICOLON);
+        }
         // Reset panic mode for missing semicolon to allow subsequent errors
         this.panicMode = false;
       }

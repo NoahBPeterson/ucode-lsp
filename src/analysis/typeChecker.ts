@@ -95,7 +95,7 @@ const NULL_PROPAGATING_BUILTINS: Record<string, number> = {
 //
 // GLOBAL builtins: matched as bare unshadowed identifiers (`match(x)`, `split(x)`).
 const STRING_CONTRACT_GLOBAL_BUILTINS: Record<string, number> = {
-  match: 0, substr: 0, trim: 0, ltrim: 0, rtrim: 0, split: 0, ord: 0, b64dec: 0, hexdec: 0,
+  substr: 0, trim: 0, ltrim: 0, rtrim: 0, split: 0, ord: 0, b64dec: 0, hexdec: 0,
 };
 // fs MODULE functions: matched only when the callee resolves to the fs module
 // (`fs.stat(x)` or a `let stat = fs.stat` alias) — never a user's own `stat()`.
@@ -2735,7 +2735,7 @@ export class TypeChecker {
       } else if (argType.includes(' | ')) {
         // Union arg — check if all members are compatible
         const argTypes = argType.split(' | ').map(t => t.trim());
-        const allCompatible = argTypes.every(t => t === expectedUcode || t === 'unknown');
+        const allCompatible = argTypes.every(t => t === expectedUcode);
         const noneCompatible = !argTypes.some(t => t === expectedUcode || t === 'unknown');
         if (noneCompatible) { anyArgDefinitelyWrong = true; break; }
         if (!allCompatible) allArgsMatch = false;
@@ -3597,7 +3597,7 @@ export class TypeChecker {
         allArgsMatch = false;
       } else if (argType.includes(' | ')) {
         const argTypes = argType.split(' | ').map(t => t.trim());
-        const allCompatible = argTypes.every(t => acceptableTypes.includes(t) || t === 'unknown');
+        const allCompatible = argTypes.every(t => acceptableTypes.includes(t));
         const noneCompatible = !argTypes.some(t => acceptableTypes.includes(t) || t === 'unknown');
         if (noneCompatible) { anyArgDefinitelyWrong = true; break; }
         if (!allCompatible) allArgsMatch = false;
@@ -4403,7 +4403,10 @@ export class TypeChecker {
       let dt: UcodeDataType = objectType;
       if (node.object.type === 'Identifier') {
         const sym = this.symbolTable.resolveReference((node.object as IdentifierNode).name, node.object.start);
-        if (sym) dt = (sym.currentType || sym.dataType) as UcodeDataType;
+        // Position-aware: the bare currentType slot reflects the LAST write in the
+        // file regardless of position, which typed reads that precede the write
+        // (docs/type-soundness-audit.md I-2).
+        if (sym) dt = effectiveSymbolType(sym, node.object.start);
       }
       let hasArray = objectBase === UcodeType.ARRAY || dt === UcodeType.ARRAY || isArrayType(dt);
       let hasObject = false;
@@ -4799,7 +4802,7 @@ export class TypeChecker {
     return UcodeType.UNKNOWN;
   }
 
-  private blockAlwaysTerminates(block: AstNode): boolean {
+  blockAlwaysTerminates(block: AstNode): boolean {
     let statements: AstNode[];
     if (block.type === 'BlockStatement') {
       statements = (block as BlockStatementNode).body;
@@ -5073,7 +5076,10 @@ export class TypeChecker {
   }
 
   /** Of two sound narrowings of the same point, the more precise (strict subtype).
-   *  Incomparable → the engine result (the authority). */
+   *  Incomparable → JOIN the two: neither is provably a refinement of the other, and
+   *  a join is the only answer that is sound whichever source is right
+   *  (docs/type-soundness-audit.md — picking the engine here let a stale narrower
+   *  result mask the honest one). */
   private moreNarrowed(engineResult: UcodeDataType, legacyResult: UcodeDataType): UcodeDataType {
     if (this.dataTypesCanonicalEqual(engineResult, legacyResult)) return engineResult;
     const engineMembers = getUnionTypes(engineResult) as SingleType[];
@@ -5082,7 +5088,7 @@ export class TypeChecker {
     if (this.typeNarrowing.isSubtypeOfUnion(legacyResult, engineMembers)) return legacyResult;
     // engine ⊆ legacy → engine is more narrowed (e.g. reassignment the legacy missed).
     if (this.typeNarrowing.isSubtypeOfUnion(engineResult, legacyMembers)) return engineResult;
-    return engineResult;
+    return createUnionType([...engineMembers, ...legacyMembers]);
   }
 
   /** The pre-C1 per-query narrowing: the position guard walk (incl. ternary /
@@ -5464,7 +5470,7 @@ export class TypeChecker {
     if (!ast) {
       return [];
     }
-    const key = variableName + '' + position;
+    const key = variableName + '\0' + position;
     const cached = this.guardCache.get(key);
     if (cached) {
       this.transitiveTypeAliases = cached.aliases;

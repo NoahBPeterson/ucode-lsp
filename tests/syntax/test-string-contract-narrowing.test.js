@@ -48,13 +48,16 @@ function f(p) {
   expect(await hoverType(content, '// USE', 'p')).toMatch(/: `string`/);
 });
 
-test('global match() early-exit narrows', async () => {
+test('global match() does NOT narrow - ucode coerces its subject', async () => {
+  // uc_match calls uc_cast_string: match(123, /2/) is ["2"], match([1,2], /1/) is
+  // ["1"]. A truthy match proves nothing about the subject's type
+  // (docs/type-soundness-audit.md N-2; builtinValidation documents the coercion).
   const content = `function f(p) {
     if (!match(p, /a/)) return 1;
     return p; // USE
 }
 `;
-  expect(await hoverType(content, '// USE', 'p')).toMatch(/: `string`/);
+  expect(await hoverType(content, '// USE', 'p')).toMatch(/: `unknown`/);
 });
 
 test('positive consequent branch narrows too', async () => {
