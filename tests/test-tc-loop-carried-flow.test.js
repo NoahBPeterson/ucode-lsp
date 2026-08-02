@@ -84,11 +84,16 @@ describe('loop-carried state must not produce a definite-null ERROR (UC5005/UC20
 describe('a genuine first-iteration null stays a soft may-null WARNING, never a hard error', () => {
   // 8 — reset-to-null at the end of the branch → the joined state is genuinely array|null, so the
   // read IS may-null (static analysis can't prove the even/odd alternation). runtime: prints 0, 2.
-  // Correct behaviour: a UC5006 may-null WARNING, and NO UC5005/UC2009 hard error.
-  test('08 reset-to-null then re-read → UC5006 warning, not a UC5005/UC2009 error', async () => {
+  //
+  // CONTRACT CHANGE 0.7.81 (docs/uc2009-branch-reassign-declared-null.md): the receiver now
+  // types as `array | null` at the read (effectiveSymbolType joins the preceding write with
+  // the declared type instead of resurrecting bare declared-null), so the definite-null
+  // UC5005 that the loop filter used to DOWNGRADE into a UC5006 warning never fires at all.
+  // That matches the established union-receiver baseline: `let x = c ? [1] : null; x[0]` has
+  // always been silent. Contract now: no null diagnostic of any severity, and no UC2009.
+  test('08 reset-to-null then re-read → no hard error (union receiver, silent like c?[1]:null)', async () => {
     const ds = await diags('function f() {\n  let sec;\n  for (let i = 0; i < 4; i++) {\n    if (i % 2 == 0) sec = [i];\n    else { print(sec[0], "\\n"); sec = null; }\n  }\n}\n');
     expect(hasHardNull(ds)).toBe(false);              // no definite-null error
-    expect(ds.some(d => d.code === 'UC5006')).toBe(true); // but a defensible may-null warning
-    expect((ds.find(d => d.code === 'UC5006') || {}).severity).toBe(2); // Warning, not Error
+    expect(ds.some(d => d.code === 'UC2009')).toBe(false); // and no impossible-comparison claim
   });
 });

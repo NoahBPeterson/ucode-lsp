@@ -295,6 +295,36 @@ export function effectiveSymbolType(symbol: Symbol, position: number): UcodeData
       && position >= symbol.currentTypeEffectiveFrom) {
     return symbol.currentType;
   }
+  // The currentType slot only holds the LATEST assignment. A query at a position
+  // BETWEEN two assignments (e.g. the test in `p = params.x; if (p == "") p = null;`,
+  // where the branch write pushed currentTypeEffectiveFrom past the test) used to
+  // fall through to the declared type, resurrecting the bare-`let` null and making
+  // UC2009 call the comparison impossible (docs/uc2009-branch-reassign-declared-null.md).
+  // typeHistory records every SSA write (appended in visitation = source order, but
+  // scan for max rather than assume sortedness).
+  //
+  // Return the UNION of the preceding write and the declared type, not the write
+  // alone: in a loop the position can also be reached via the back edge carrying a
+  // LATER write or the first-iteration declared value (`let sec; for (…) { if (…)
+  // sec = [i]; else { sec[0]; sec = null; } }` - the read is genuinely may-null),
+  // and this position-based lookup has no loop context. The union keeps those
+  // may-null warnings alive while the unknown/real member stops the
+  // impossible-comparison lint from claiming a provable type.
+  const history = symbol.typeHistory;
+  if (history && history.length > 0) {
+    let best: { from: number; type: UcodeDataType } | undefined;
+    for (const h of history) {
+      if (h.from <= position && (best === undefined || h.from > best.from)) best = h;
+    }
+    if (best !== undefined) {
+      const parts: SingleType[] = [];
+      for (const t of [best.type, symbol.dataType]) {
+        if (isUnionType(t)) parts.push(...t.types);
+        else parts.push(t as SingleType);
+      }
+      return createUnionType(parts);
+    }
+  }
   return symbol.dataType;
 }
 
