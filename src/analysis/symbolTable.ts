@@ -356,32 +356,104 @@ export const singleTypeToString: (t: SingleType) => string = Match.type<SingleTy
 /**
  * Flow-sensitive member-type lookup. Returns the type of `symbol.propName` as of source
  * position `readPos` — the most-recent assignment AT OR BEFORE that position. Falls back to
- * the flat `propertyTypes` (most-recent overall) when there's no history or no qualifying
- * write (e.g. an object-literal property, which is set once at declaration with no history).
+ * the flat `propertyTypes` (most-recent overall) when there's no history at all (e.g. an
+ * object-literal property that is never reassigned).
  *
  * This is what makes `(rv.days ||= {})[day]=true; … rv.days = keys(rv.days)` read as `object`
  * before the `keys()` reassignment and `array<string>` after it, instead of one type for all.
+ *
+ * A read that PRECEDES every recorded write must NOT inherit a future write's type
+ * (docs/uc2009-member-prewrite-read-fallback.md — the firewall.uc `param.proto`
+ * normalization ladder read the type of assignments that hadn't executed yet). Resolution
+ * order for such a read:
+ *   1. inside the FIRST write itself (start <= readPos < pos, i.e. hovering the write
+ *      target `(rv.days ||= {})`) → that write's type;
+ *   2. a BASELINE entry exists (pos = -1: the declared object-literal/JSDoc/import shape
+ *      captured before the first write) → the declared type;
+ *   3. otherwise → UNKNOWN ("no information yet" — the receiver's pre-write contents are
+ *      caller-controlled), which the comparison lints already treat as ineligible.
  */
+export interface PropertyWriteEntry {
+  pos: number;   // write END (or -1 for the declared-baseline entry)
+  start: number; // write START (or -1 for the baseline)
+  type: UcodeDataType;
+  /** Enclosing if-BRANCH regions at the time of the write, innermost last. A read that
+   *  falls inside one of these ifs but OUTSIDE the write's branch is on a path where
+   *  the write provably did not execute — the write is invisible to it. */
+  branches?: Array<{ bs: number; be: number; is: number; ie: number }>;
+  /** For a write under the normalization idiom `if (type(x.p) != "T") x.p = <T value>`:
+   *  the fall-through path's provable type T. A post-if read then resolves to
+   *  union(write type, T) — the if covers BOTH paths — instead of unioning in the
+   *  pre-if value. */
+  elseType?: UcodeDataType;
+}
+
+/** True when the write `e` provably did NOT execute on the path reaching `readPos`:
+ *  the read sits inside one of the write's enclosing if-statements but outside the
+ *  branch the write lives in (i.e. in a sibling else/else-if world). */
+function writeInvisibleToRead(e: PropertyWriteEntry, readPos: number): boolean {
+  return !!e.branches?.some(b =>
+    readPos >= b.is && readPos <= b.ie && !(readPos >= b.bs && readPos <= b.be));
+}
+
+/** True when the write DEFINITELY executed before the read on the read's own path:
+ *  either it has no enclosing if-branch at all, or the read sits inside the write's
+ *  innermost branch (same straight-line region). A conditional write outside the
+ *  read's region only MAY have executed — it unions into the prior value instead of
+ *  replacing it (`if (c) p.x = [1]; return p.x` is array | prior, not array: on the
+ *  no-match path the write never ran). */
+function writeDefiniteForRead(e: PropertyWriteEntry, readPos: number): boolean {
+  if (!e.branches || e.branches.length === 0) return true;
+  const inner = e.branches[e.branches.length - 1]!;
+  return readPos >= inner.bs && readPos <= inner.be;
+}
+
+/** Union two resolved member types, treating "no info" (undefined) as UNKNOWN. */
+function unionMemberTypes(a: UcodeDataType | undefined, b: UcodeDataType): UcodeDataType {
+  const parts: SingleType[] = [];
+  for (const t of [a ?? UcodeType.UNKNOWN, b]) {
+    if (isUnionType(t)) parts.push(...t.types);
+    else parts.push(t as SingleType);
+  }
+  return createUnionType(parts);
+}
+
 export function propertyTypeAt(
-  symbol: { propertyTypes?: Map<string, UcodeDataType>; propertyTypeHistory?: Map<string, Array<{ pos: number; type: UcodeDataType }>> } | null | undefined,
+  symbol: { propertyTypes?: Map<string, UcodeDataType>; propertyTypeHistory?: Map<string, PropertyWriteEntry[]> } | null | undefined,
   propName: string,
   readPos: number,
 ): UcodeDataType | undefined {
   if (!symbol) return undefined;
   const hist = symbol.propertyTypeHistory?.get(propName);
   if (hist && hist.length) {
-    let best: { pos: number; type: UcodeDataType } | undefined;
-    let earliest: { pos: number; type: UcodeDataType } | undefined;
-    for (const e of hist) {
-      if (e.pos <= readPos && (!best || e.pos > best.pos)) best = e;
-      if (!earliest || e.pos < earliest.pos) earliest = e;
+    // Visible entries at/before the read, in source order. Sibling-branch writes are
+    // excluded outright (they provably did not run on the read's path).
+    const visible = hist
+      .filter(e => !(e.pos >= 0 && writeInvisibleToRead(e, readPos)))
+      .sort((x, y) => x.pos - y.pos);
+    let firstWrite: PropertyWriteEntry | undefined;
+    for (const e of visible) if (e.pos >= 0) { firstWrite = e; break; }
+    // A read inside the FIRST real write (its target/RHS) shows that write's type —
+    // there is no preceding write to show, and the bucket-target hover depends on it.
+    if (firstWrite && readPos < firstWrite.pos && readPos >= firstWrite.start) {
+      return firstWrite.type;
     }
-    if (best) return best.type;
-    // The read precedes every recorded write — this happens when hovering the very write
-    // that establishes the property (the assignment target itself, whose recorded position
-    // is its END). Use the earliest write's type so a bucket target like `(rv.days ||= {})`
-    // reads `object`, not the final reassigned type.
-    if (earliest) return earliest.type;
+    // Walk the visible writes in order: a write that definitely ran REPLACES the
+    // value; one that only may have run (conditional, read outside its branch)
+    // UNIONS in — keeping the fall-through possibility visible, exactly like the
+    // 0.7.81 identifier fix. Seed: the declared baseline, else "no info".
+    let value: UcodeDataType | undefined =
+      visible.length && visible[0]!.pos < 0 ? visible[0]!.type : undefined;
+    let sawWrite = false;
+    for (const e of visible) {
+      if (e.pos < 0 || e.pos > readPos) continue;
+      sawWrite = true;
+      if (writeDefiniteForRead(e, readPos)) value = e.type;
+      else if (e.elseType !== undefined) value = unionMemberTypes(e.elseType, e.type); // guard covers the fall-through
+      else value = unionMemberTypes(value, e.type);
+    }
+    if (value !== undefined) return value;
+    return sawWrite ? undefined /* unreachable */ : UcodeType.UNKNOWN; // pre-write, no baseline
   }
   return symbol.propertyTypes?.get(propName);
 }
@@ -499,7 +571,7 @@ export interface Symbol {
     range: { start: number; end: number };
   };
     propertyTypes?: Map<string, UcodeDataType>; // Known property types for object-like symbols (e.g., global). Flat = most-recent write (kept for `.has` and position-less consumers).
-    propertyTypeHistory?: Map<string, Array<{ pos: number; type: UcodeDataType }>>; // Per-property assignment history (source position → type) so member reads are flow-sensitive: `obj.p` reflects the most-recent write AT OR BEFORE the read position, not the single final type.
+    propertyTypeHistory?: Map<string, PropertyWriteEntry[]>; // Per-property assignment history (see PropertyWriteEntry) so member reads are flow-sensitive: `obj.p` reflects the most-recent VISIBLE write at or before the read position, with a declared-shape baseline for pre-write reads.
     nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>; // Nested property types (propName → sub-property types)
     returnPropertyTypes?: Map<string, UcodeDataType>; // Property types of objects returned by this function
     valuePropertyTypes?: Map<string, UcodeDataType>; // For a dictionary-like object (Record<string,T>): the inferred shape of its VALUES, derived from computed assignments `O[k] = {…}` (directly or one setter hop). Copied to `propertyTypes` of `let v = O[k]` bindings.

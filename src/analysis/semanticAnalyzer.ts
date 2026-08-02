@@ -208,6 +208,51 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
   private truthinessDepth = 0; // Track when we're inside a truthiness context (if test, !, ternary test)
+  // Stack of enclosing if-BRANCH regions (consequent/alternate being visited), innermost
+  // last. Property writes snapshot it so propertyTypeAt can exclude a branch write from
+  // reads in the SAME if's OTHER branch (where the write provably did not execute) —
+  // the firewall.uc else-if normalization ladder (docs/uc2009-member-prewrite-read-fallback.md).
+  // Deliberately NOT pushed for loop bodies: post-loop reads keep the definite written
+  // type (the shipped rv.days contract, tests/inference/test-flow-sensitive-member-types).
+  // guardBase/guardProp/guardElseType mark a consequent whose test is the normalization
+  // idiom `type(x.p) != "T"`: on the fall-through (else) path x.p is provably T, so a
+  // post-if read of a write under this guard is union(write, T), not union(write, prior).
+  private branchStack: Array<{
+    bs: number; be: number; is: number; ie: number;
+    guardBase?: string; guardProp?: string; guardElseType?: UcodeDataType;
+  }> = [];
+
+  /** Detect `type(<ident>.<ident>) != "T"` (either operand order, != or !==) and return
+   *  the guarded member + the fall-through type T, or null. */
+  private negatedMemberTypeGuard(test: AstNode | null | undefined):
+    { base: string; prop: string; elseType: UcodeDataType } | null {
+    if (!test || test.type !== 'BinaryExpression') return null;
+    const b = test as BinaryExpressionNode;
+    if (b.operator !== '!=' && b.operator !== '!==') return null;
+    const pick = (call: AstNode, lit: AstNode) => {
+      if (call.type !== 'CallExpression' || lit.type !== 'Literal') return null;
+      const c = call as CallExpressionNode;
+      if (c.callee.type !== 'Identifier' || (c.callee as IdentifierNode).name !== 'type') return null;
+      const arg = c.arguments?.[0];
+      if (!arg || arg.type !== 'MemberExpression') return null;
+      const m = arg as MemberExpressionNode;
+      if (m.computed || m.object.type !== 'Identifier' || m.property.type !== 'Identifier') return null;
+      const t = (lit as LiteralNode).value;
+      if (typeof t !== 'string') return null;
+      const mapped: UcodeDataType | undefined = ({
+        object: UcodeType.OBJECT, array: UcodeType.ARRAY, string: UcodeType.STRING,
+        int: UcodeType.INTEGER, double: UcodeType.DOUBLE, bool: UcodeType.BOOLEAN,
+        function: UcodeType.FUNCTION, regexp: UcodeType.REGEX,
+      } as Record<string, UcodeDataType>)[t];
+      if (mapped === undefined) return null;
+      return {
+        base: (m.object as IdentifierNode).name,
+        prop: (m.property as IdentifierNode).name,
+        elseType: mapped,
+      };
+    };
+    return pick(b.left, b.right) ?? pick(b.right, b.left);
+  }
   private callbackElementType: UcodeDataType | null = null; // Type to pass to leading callback parameters (filter/map/sort/replace/uci.foreach)
   private callbackParamCount = 1; // How many leading callback params receive callbackElementType (sort→2, replace→all)
   private typedefRegistry: Map<string, ParsedTypedef> = new Map(); // File-level @typedef definitions
@@ -4457,7 +4502,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         const sym = this.symbolTable.lookupOpenScopes((mem.object as IdentifierNode).name);
         const prop = (mem.property as IdentifierNode).name;
         if (sym?.propertyTypes?.has(prop)) {
-          this.recordPropertyWrite(sym, prop, UcodeType.NULL as UcodeDataType, node.end);
+          this.recordPropertyWrite(sym, prop, UcodeType.NULL as UcodeDataType, node.end, node.start);
         }
       }
     }
@@ -5724,7 +5769,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                   targetSymbol.propertyTypes = new Map<string, UcodeDataType>();
                 }
 
-                deferredPropertyWrites.push(() => this.recordPropertyWrite(targetSymbol, propertyName, propertyType, node.end));
+                deferredPropertyWrites.push(() => this.recordPropertyWrite(targetSymbol, propertyName, propertyType, node.end, node.start));
 
                 // Post-hoc method attachment (`nft_file.append = function(…){…}` /
                 // `nft_file.append = someHelper`) — record the function's return type so
@@ -5779,7 +5824,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                 const targetSymbol = this.symbolTable.lookupOpenScopes(globalName);
                 if (targetSymbol && targetSymbol.type !== SymbolType.MODULE && targetSymbol.type !== SymbolType.IMPORTED) {
                   const propertyType = this.inferAssignmentDataType(node.right);
-                  deferredPropertyWrites.push(() => this.recordPropertyWrite(targetSymbol, propertyName, propertyType, node.end));
+                  deferredPropertyWrites.push(() => this.recordPropertyWrite(targetSymbol, propertyName, propertyType, node.end, node.start));
                 }
               }
             }
@@ -5794,7 +5839,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                 if (!thisSym.propertyTypes) {
                   thisSym.propertyTypes = new Map<string, UcodeDataType>();
                 }
-                deferredPropertyWrites.push(() => this.recordPropertyWrite(thisSym, propertyName, propertyType, node.end));
+                deferredPropertyWrites.push(() => this.recordPropertyWrite(thisSym, propertyName, propertyType, node.end, node.start));
 
                 // Also update the thisPropertyStack so sibling methods
                 // in the same object literal can see the property
@@ -6374,8 +6419,20 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // `t = type(value); if (t == "object") { keys(value) }` — was proven redundant
     // and removed: that narrowing now flows through the per-query
     // getGuardsForPosition walk and the engine-backed post-visit filter. Phase C2.)
-    if (node.consequent) this.visit(node.consequent);
-    if (node.alternate) this.visit(node.alternate);
+    if (node.consequent) {
+      const guard = this.negatedMemberTypeGuard(node.test);
+      this.branchStack.push({
+        bs: node.consequent.start, be: node.consequent.end, is: node.start, ie: node.end,
+        ...(guard ? { guardBase: guard.base, guardProp: guard.prop, guardElseType: guard.elseType } : {}),
+      });
+      this.visit(node.consequent);
+      this.branchStack.pop();
+    }
+    if (node.alternate) {
+      this.branchStack.push({ bs: node.alternate.start, be: node.alternate.end, is: node.start, ie: node.end });
+      this.visit(node.alternate);
+      this.branchStack.pop();
+    }
 
     if (this.options.enableTypeChecking) {
       // Type check the if statement AFTER visiting to ensure all local variables are declared
@@ -7309,15 +7366,38 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    * Record a member-property write: updates the flat `propertyTypes` (most-recent) AND appends
    * to `propertyTypeHistory` keyed by source position, so later reads are flow-sensitive. `pos`
    * is the END of the assignment expression, so a read WITHIN the RHS (`rv.days = keys(rv.days)`)
-   * still sees the prior type, and only reads after the statement see the new one.
+   * still sees the prior type, and only reads after the statement see the new one; `start` is
+   * the assignment's START, so propertyTypeAt can tell a read INSIDE this write (hovering the
+   * write target) apart from a read that genuinely precedes it.
+   *
+   * On the FIRST write, any pre-existing flat type (an object-literal / JSDoc / import shape
+   * established at declaration, which has no history of its own) is preserved as a BASELINE
+   * entry (pos/start = -1), so reads BEFORE the first write keep the declared type instead of
+   * inheriting the future write's (docs/uc2009-member-prewrite-read-fallback.md).
    */
-  private recordPropertyWrite(symbol: SymbolEntry, propName: string, type: UcodeDataType, pos: number): void {
+  private recordPropertyWrite(symbol: SymbolEntry, propName: string, type: UcodeDataType, pos: number, start: number): void {
     if (!symbol.propertyTypes) symbol.propertyTypes = new Map<string, UcodeDataType>();
-    symbol.propertyTypes.set(propName, type);
     if (!symbol.propertyTypeHistory) symbol.propertyTypeHistory = new Map();
     let hist = symbol.propertyTypeHistory.get(propName);
-    if (!hist) { hist = []; symbol.propertyTypeHistory.set(propName, hist); }
-    hist.push({ pos, type });
+    if (!hist) {
+      hist = [];
+      const declared = symbol.propertyTypes.get(propName);
+      if (declared !== undefined) hist.push({ pos: -1, start: -1, type: declared });
+      symbol.propertyTypeHistory.set(propName, hist);
+    }
+    symbol.propertyTypes.set(propName, type);
+    // A write under `if (type(x.p) != "T")` covers the fall-through path too: on the
+    // else path x.p is provably T, so stamp T as this entry's elseType.
+    let elseType: UcodeDataType | undefined;
+    for (let i = this.branchStack.length - 1; i >= 0; i--) {
+      const f = this.branchStack[i]!;
+      if (f.guardBase === symbol.name && f.guardProp === propName) { elseType = f.guardElseType; break; }
+    }
+    hist.push({
+      pos, start, type,
+      ...(this.branchStack.length ? { branches: [...this.branchStack] } : {}),
+      ...(elseType !== undefined ? { elseType } : {}),
+    });
   }
 
   private inferObjectLiteralPropertyTypes(node: ObjectExpressionNode): Map<string, UcodeDataType> | null {

@@ -1,9 +1,26 @@
 # UC2009 FP: member read BEFORE any write uses the earliest/flat write type
 
-Status: **NOT STARTED - 🟡 MEDIUM PRIORITY** (5 hard-error FPs on glinet firewall.uc:523-527).
-The MEMBER-property twin of the fixed identifier bug
-(docs/uc2009-branch-reassign-declared-null.md, shipped 0.7.81) - split out when that fix
-left these standing.
+Status: **IMPLEMENTED 0.7.84 (uncommitted, awaiting user test).** Four-part fix
+(part 4 added after user review caught the post-ladder read claiming a definite
+`array<string>` - a null/integer input matches no branch and flows through, so
+conditional writes now UNION into the prior value instead of replacing it; the
+`if (type(x.p) != "T") x.p = ...` normalization idiom stays precise via a
+fall-through elseType stamp, keeping glinet ui.uc:66 clean):
+(1) `recordPropertyWrite` captures the write's START and, on first write, preserves any
+pre-existing flat type (object-literal/JSDoc/import shape) as a pos=-1 BASELINE entry;
+(2) `propertyTypeAt` resolves pre-write reads as inside-first-write -> that write's type
+(the rv.days bucket-target hover), else baseline (declared type), else UNKNOWN - never a
+future write's type; (3) writes snapshot the analyzer's new `branchStack` so a read in a
+SIBLING else/else-if of the same if-statement treats the write as invisible (the else-if
+ladder's reads 2..n positionally FOLLOW write 1 but flow-wise exclude it). Loop bodies
+deliberately NOT treated as branches - post-loop reads keep the definite written type
+(shipped rv.days contract, tests/inference/test-flow-sensitive-member-types.test.js).
+Corpus differential: firewall.uc 5 UC2009 -> 0, PLUS two more instances of the same class
+(wifi.uc:523 UC2015 "string vs 0" from the future `= "auto"` write; ovpn_client.uc:37
+nullable-argument from a future write), zero other changes. Tests:
+tests/diagnostics/test-member-prewrite-read.test.js (6). Was: **NOT STARTED - 🟡 MEDIUM
+PRIORITY** (5 hard-error FPs on glinet firewall.uc:523-527). The MEMBER-property twin of
+the fixed identifier bug (docs/uc2009-branch-reassign-declared-null.md, shipped 0.7.81).
 
 ## The FP
 
