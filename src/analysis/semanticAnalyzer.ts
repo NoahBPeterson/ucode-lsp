@@ -293,8 +293,9 @@ export class SemanticAnalyzer extends BaseVisitor {
    */
   private flagVersionFeature(feature: VersionGatedFeature, start: number, end: number): void {
     if (!targetLacksFeature(this.targetVersion, feature.introducedIn)) return;
+    const remedy = feature.remedy.charAt(0).toUpperCase() + feature.remedy.slice(1);
     this.flagVersionMin(feature.introducedIn,
-      `${feature.label} requires {INTRO}'s ucode`, `To stay compatible, ${feature.remedy}`, start, end,
+      `${feature.label} does not work on {TARGET} (needs {INTRO}). ${remedy}.`, start, end,
       undefined, { feature: feature.id });
   }
 
@@ -319,28 +320,30 @@ export class SemanticAnalyzer extends BaseVisitor {
     return !!v && targetLacksFeature(this.targetVersion, v);
   }
 
-  /** Emit UC6005 if the target predates `introducedIn`. `{INTRO}` in `what` is
-   *  replaced with the introducing release; `remedy` ends with the how-to-fix hint.
+  /** Emit UC6005 if the target predates `introducedIn`. `{INTRO}`/`{TARGET}` in the
+   *  message are replaced with the introducing release and the configured target.
    *
-   *  Severity escalates to ERROR under `'use strict'`, Warning otherwise: using a
-   *  module/function/syntax that doesn't exist on the target is a guaranteed
-   *  compile-time failure there (named imports + module paths resolve at compile
-   *  time), so under strict it's a hard error like the other strict escalations.
-   *  Non-strict keeps it a warning since the gate is keyed on the configured
-   *  `ucode.targetVersion` assumption rather than a defect in the source. */
-  private flagVersionMin(introducedIn: UcodeTargetVersion, what: string, remedy: string, start: number, end: number,
+   *  MESSAGE STYLE (user-mandated 2026-08-01, after three strikes): say what is wrong
+   *  and what the code DOES on the target - nothing else. No compiler internals, no
+   *  "the configured target is" lecture, no "change ucode.targetVersion" tail (the
+   *  "Target a different OpenWrt release" code action covers that). Name the target
+   *  once, as the place the behavior happens ("isn't available on {TARGET}", "fails
+   *  to compile on {TARGET}"). Remediation belongs in QUICK FIXES; put it in prose
+   *  only when no quick fix is possible.
+   *
+   *  Severity escalates to ERROR under `'use strict'`, Warning otherwise (a gate is
+   *  keyed on the configured-target assumption, not a source defect). severityOverride:
+   *  PARSE-level gates (the target rejects the token sequence, e.g. the `0x1e+2`
+   *  hex-sign split) pass Error unconditionally - no guard or runtime path avoids the
+   *  compile failure. data carries `{ feature }` (+ fix offsets) for the server's
+   *  per-feature quick-fix dispatch - never a one-size-fits-all fix on UC6005. */
+  private flagVersionMin(introducedIn: UcodeTargetVersion, message: string, start: number, end: number,
       severityOverride?: DiagnosticSeverity, data?: unknown): void {
     if (!targetLacksFeature(this.targetVersion, introducedIn)) return;
     const intro = introducedIn === 'main' ? 'OpenWrt main/snapshot' : `OpenWrt ${introducedIn}`;
-    // severityOverride: PARSE-level gates (the target's lexer/parser rejects the very
-    // token sequence, e.g. the `0x1e+2` hex-sign split) pass Error unconditionally —
-    // there is no guard, fallback, or runtime path that avoids a compile failure, unlike
-    // the availability gates (missing module/function) that stay soft in non-strict.
-    // data carries `{ feature }` (+ per-feature fix offsets) so the server's quick-fix
-    // dispatch can match the right edit — never a one-size-fits-all fix on UC6005.
     this.addDiagnosticErrorCode(
       UcodeErrorCode.TARGET_VERSION_UNSUPPORTED,
-      `${what.replace('{INTRO}', intro)}, but the configured target is OpenWrt ${this.targetVersion}. ${remedy} - or change \`ucode.targetVersion\`.`,
+      message.replaceAll('{INTRO}', intro).replaceAll('{TARGET}', `OpenWrt ${this.targetVersion}`),
       start, end, severityOverride ?? (this.strictMode ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning),
       data,
     );
@@ -2567,6 +2570,68 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
+  /** docs/named-funcexpr-let-const-crash.md: on targets below main, a NAMED function
+   *  expression anywhere inside a `let`/`const` declarator's initializer corrupts the
+   *  declaration - the name is declared in the ENCLOSING scope mid-initialization,
+   *  shifting the local slots, so any later use of the variable fails to compile
+   *  ("Can't access lexical declaration"). Upstream e2493b5 fixed it (in main's pin
+   *  b885dd0, 2026-07-09). Oracle-verified 2026-08-01: direct init, object-property
+   *  and call-argument nesting, and same-name forms all crash on the old binary;
+   *  statement-position/bare-callback/assignment-after-declaration forms do not.
+   *  The walk stops at nested function boundaries: a named funcexpr inside a nested
+   *  function body corrupts THAT function's own locals and is flagged when its own
+   *  declarator is visited (verified: the inner declaration is the one that crashes). */
+  private flagNamedFuncexprInInitializer(varName: string, init: AstNode): void {
+    if (!targetLacksFeature(this.targetVersion, 'main')) return;
+    const stack: unknown[] = [init];
+    while (stack.length) {
+      const n = stack.pop();
+      if (!n || typeof n !== 'object' || typeof (n as { type?: unknown }).type !== 'string') continue;
+      const node = n as AstNode;
+      if (node.type === 'FunctionExpression') {
+        const fn = node as FunctionExpressionNode;
+        if (fn.id) {
+          const nameUsedInBody = this.identifierAppearsIn(fn.body as AstNode, fn.id.name);
+          this.flagVersionMin('main',
+            `Naming this function \`${fn.id.name}\` breaks \`${varName}\` on {TARGET}: every use of \`${varName}\` after this line fails to compile ("Can't access lexical declaration").`
+              + (nameUsedInBody ? ` For recursion, use a declaration: \`function ${varName}(...) { ... }\`.` : ''),
+            fn.id.start, fn.id.end,
+            // Compile-failure class on every gated target: unconditional Error (same
+            // stance as the hex-sign-split gate), not the strict-gated default.
+            DiagnosticSeverity.Error,
+            { feature: 'named-funcexpr-in-init', nameStart: fn.id.start, nameEnd: fn.id.end, nameUsedInBody });
+        }
+        continue; // nested bodies corrupt their own scope, not this declarator
+      }
+      if (node.type === 'ArrowFunctionExpression') continue;
+      for (const k of Object.keys(node)) {
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // runtime-stamped annotations, not AST
+        const v = (node as unknown as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) stack.push(it); }
+        else stack.push(v);
+      }
+    }
+  }
+
+  /** Conservative subtree scan: does any Identifier named `name` appear under `root`?
+   *  (Shadowing is ignored on purpose - a false "used" only withholds a quick fix.) */
+  private identifierAppearsIn(root: AstNode, name: string): boolean {
+    const stack: unknown[] = [root];
+    while (stack.length) {
+      const n = stack.pop();
+      if (!n || typeof n !== 'object' || typeof (n as { type?: unknown }).type !== 'string') continue;
+      const node = n as AstNode;
+      if (node.type === 'Identifier' && (node as unknown as IdentifierNode).name === name) return true;
+      for (const k of Object.keys(node)) {
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+        const v = (node as unknown as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) stack.push(it); }
+        else stack.push(v);
+      }
+    }
+    return false;
+  }
+
   override visitVariableDeclaration(node: VariableDeclarationNode): void {
     if (this.options.enableScopeAnalysis) {
       // Propagate JSDoc from variable declaration to function init expressions
@@ -2594,6 +2659,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   override visitVariableDeclarator(node: VariableDeclaratorNode, kind: string = 'let'): void {
+    if (node.init) this.flagNamedFuncexprInInitializer(node.id.name, node.init);
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
 
@@ -3236,8 +3302,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // (e.g. `io` predates OpenWrt 25.12) → UC6005 on the module path.
       const moduleIntro = VERSION_MODULES[modulePath];
       if (moduleIntro) {
-        this.flagVersionMin(moduleIntro, `The \`${modulePath}\` module requires {INTRO}'s ucode`,
-          `it isn't available on the target`, node.source.start, node.source.end);
+        this.flagVersionMin(moduleIntro, `The \`${modulePath}\` module isn't available on {TARGET} (needs {INTRO}).`, node.source.start, node.source.end);
       }
 
       // Validate import specifiers against module exports
@@ -3346,8 +3411,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // constants (e.g. fs's `ST_*` mount flags, modeled as main-only).
       const symIntro = VERSION_MODULE_FUNCTIONS[`${source}.${importedName}`];
       if (symIntro && !this.moduleGatedOutAtTarget(source)) {
-        this.flagVersionMin(symIntro, `\`${source}.${importedName}\` requires {INTRO}'s ucode`,
-          `it isn't available on the target`, specifier.imported.start, specifier.imported.end);
+        this.flagVersionMin(symIntro, `\`${source}.${importedName}\` isn't available on {TARGET} (needs {INTRO}).`, specifier.imported.start, specifier.imported.end);
       }
       // Object-handle exports (e.g. fs `stdin`/`stdout`/`stderr` → `fs.file`) are typed
       // as their object type — using the same ModuleType wrapper form as a local
@@ -4665,8 +4729,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           const rest = /^[0-9a-fA-F]*/.exec(src.slice(node.end + 1))![0];
           const lexeme = `${text}${next}${rest}`;
           this.flagVersionMin('main',
-            `\`${lexeme}\` only parses on {INTRO}'s ucode - older ucode reads the \`${hexE}\` as an exponent marker and eats the \`${next}\` ("Invalid number literal")`,
-            `Put a space before the \`${next}\`: \`${text} ${next}${rest ? ` ${rest}` : ' …'}\``,
+            `\`${lexeme}\` is an "Invalid number literal" on {TARGET}. Write \`${text} ${next}${rest ? ` ${rest}` : ' ...'}\`.`,
             node.start, node.end + 1,
             // On any target below main this is a guaranteed LEX failure of the whole
             // file — always an error, not a strict-gated warning. signOffset (the AST
@@ -5164,8 +5227,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (!this.processingFunctionCallCallee) {
           const cIntro = VERSION_MODULE_FUNCTIONS[`${nsModule}.${methodName}`];
           if (cIntro && !this.moduleGatedOutAtTarget(nsModule)) {
-            this.flagVersionMin(cIntro, `\`${nsModule}.${methodName}\` requires {INTRO}'s ucode`,
-              `it isn't available on the target`, node.property.start, node.property.end);
+            this.flagVersionMin(cIntro, `\`${nsModule}.${methodName}\` isn't available on {TARGET} (needs {INTRO}).`, node.property.start, node.property.end);
           }
         }
       }
@@ -5190,8 +5252,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // predate the method, so this is the only place these get caught.
       const objIntro = VERSION_OBJECT_METHODS[`${handleType.moduleName}.${methodName}`];
       if (objIntro && !this.moduleGatedOutAtTarget(handleType.moduleName.split('.')[0] || handleType.moduleName)) {
-        this.flagVersionMin(objIntro, `\`${handleType.moduleName}.${methodName}()\` requires {INTRO}'s ucode`,
-          `it isn't available on the target`, node.property.start, node.property.end);
+        this.flagVersionMin(objIntro, `\`${handleType.moduleName}.${methodName}()\` isn't available on {TARGET} (needs {INTRO}).`, node.property.start, node.property.end);
       }
       return;
     }
@@ -5206,8 +5267,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     // configured target's ucode (e.g. `fs.mkdtemp()` on a 24.10 target) → UC6005.
     const memberIntro = VERSION_MODULE_FUNCTIONS[`${moduleName}.${methodName}`];
     if (memberIntro && !this.moduleGatedOutAtTarget(moduleName)) {
-      this.flagVersionMin(memberIntro, `\`${moduleName}.${methodName}\` requires {INTRO}'s ucode`,
-        `it isn't available on the target`, node.property.start, node.property.end);
+      this.flagVersionMin(memberIntro, `\`${moduleName}.${methodName}\` isn't available on {TARGET} (needs {INTRO}).`, node.property.start, node.property.end);
     }
 
     if (moduleName === 'fs') {
@@ -5434,8 +5494,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const sym = this.symbolTable.lookup(calleeName);
         if (!sym || sym.type === SymbolType.BUILTIN) {
           this.flagVersionMin(builtinIntro,
-            `The \`${calleeName}()\` builtin requires {INTRO}'s ucode`,
-            `guard for older targets or avoid it`,
+            `The \`${calleeName}()\` builtin isn't available on {TARGET} (needs {INTRO}).`,
             node.callee.start, node.callee.end);
         }
       }
@@ -6369,6 +6428,27 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   override visitForStatement(node: ForStatementNode): void {
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.push(this.symbolTable.getCurrentScope());
+    }
+
+    // docs/for-loop-leading-declarator.md: on targets below main, the compiler consumes
+    // up to two leading labels while disambiguating for-in and forwards only the LAST
+    // one, so an initializer-less FIRST declarator (`for (let x, y = 0; ...)`) is never
+    // declared: body assignments create an implicit GLOBAL in non-strict mode and raise
+    // "access to undeclared variable" under 'use strict'. Fixed upstream (467fb44, in
+    // main's pin b885dd0). Oracle-verified 2026-08-01: only the first declarator is
+    // dropped (`let x, y, z = 0` -> y and z fine), and giving it an initializer
+    // (`let x = null, y = 0`) works on ALL versions. Severity uses the strict-gated
+    // default: strict = guaranteed runtime reference error, non-strict = silent leak.
+    if (node.init && node.init.type === 'VariableDeclaration') {
+      const decl = node.init as VariableDeclarationNode;
+      const first = decl.declarations[0];
+      if (decl.declarations.length >= 2 && first && !first.init) {
+        this.flagVersionMin('main',
+          `\`${first.id.name}\` is never declared on {TARGET}: assigning it writes a global instead (a runtime error under 'use strict').`,
+          first.id.start, first.id.end,
+          undefined,
+          { feature: 'for-leading-declarator', idEnd: first.id.end });
+      }
     }
 
     this.checkEmptyInfiniteLoop(node.test ?? null, node.body, node.start, node.body?.start ?? node.end);
@@ -8716,7 +8796,7 @@ private addDiagnostic(
       }
       for (const k of Object.keys(node)) {
         if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (node as Record<string, unknown>)[k];
+        const v = (node as unknown as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else if (v && typeof v === 'object') walk(v);
       }
@@ -8758,12 +8838,11 @@ private addDiagnostic(
     // resolve `netifd` as a PLAIN object — no UC1001, no members to suggest.
     if (targetLacksFeature(this.targetVersion, floor)) {
       const what = shape === 'netifd.proto'
-        ? 'netifd proto-handler support (`proto-ucode.uc`) was added in {INTRO}'
-        : 'the netifd daemon `netifd` global was added in {INTRO}';
-      const remedy = `Target OpenWrt ${floor === 'main' ? 'main/snapshot' : floor} to use it`;
+        ? 'netifd proto-handler support (`proto-ucode.uc`) isn\'t available on {TARGET} (needs {INTRO}).'
+        : 'The netifd daemon `netifd` global isn\'t available on {TARGET} (needs {INTRO}).';
       // Flag EVERY netifd member usage (not just the first) — on this target the whole API is
       // unavailable, so a single note would leave later usages looking fine.
-      for (const use of uses) this.flagVersionMin(floor, what, remedy, use.start, use.end);
+      for (const use of uses) this.flagVersionMin(floor, what, use.start, use.end);
       this.symbolTable.forceGlobalDeclaration('netifd', SymbolType.VARIABLE, { type: UcodeType.OBJECT } as UcodeDataType);
       this.symbolTable.markUsed('netifd', 0);
       return;
@@ -8804,7 +8883,7 @@ private addDiagnostic(
       }
       for (const k of Object.keys(node)) {
         if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (node as Record<string, unknown>)[k];
+        const v = (node as unknown as Record<string, unknown>)[k];
         if (Array.isArray(v)) { for (const it of v) walk(it); }
         else if (v && typeof v === 'object') walk(v);
       }
@@ -8828,9 +8907,8 @@ private addDiagnostic(
       if (declaresSelf) continue;                          // a user's own `hostapd`/`wpas`
       if (members.size === 0 && !isHostapPath) continue;   // no signal → don't inject
       if (targetLacksFeature(this.targetVersion, '23.05')) {
-        const what = `the \`${name}\` global (hostapd/wpa_supplicant ucode support) was added in {INTRO}`;
-        const remedy = 'Target OpenWrt 23.05 or later to use it';
-        for (const use of uses) this.flagVersionMin('23.05', what, remedy, use.start, use.end);
+        const what = `The \`${name}\` global (hostapd/wpa_supplicant ucode support) isn't available on {TARGET} (needs {INTRO}).`;
+        for (const use of uses) this.flagVersionMin('23.05', what, use.start, use.end);
         this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, { type: UcodeType.OBJECT } as UcodeDataType);
         this.symbolTable.markUsed(name, 0);
         continue;
@@ -8846,8 +8924,8 @@ private addDiagnostic(
         const sig = reg.getMethod(use.member);
         const introducedIn = Option.isSome(sig) ? sig.value.introducedIn : undefined;
         if (introducedIn) {
-          this.flagVersionMin(introducedIn, `\`${name}.${use.member}\` was added in {INTRO}`,
-            'Target that release or later to use it', use.start, use.end);
+          this.flagVersionMin(introducedIn, `\`${name}.${use.member}\` isn't available on {TARGET} (needs {INTRO}).`,
+            use.start, use.end);
         }
       }
     }

@@ -1706,6 +1706,36 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                         edit: { changes: { [params.textDocument.uri]: [TextEdit.insert(diagnostic.range.end, ';')] } },
                     });
                 }
+                if (feature === 'named-funcexpr-in-init' && typeof (diagnostic as any).data?.nameStart === 'number'
+                        && !(diagnostic as any).data?.nameUsedInBody) {
+                    // Deleting the name is only offered when the body never references it -
+                    // for self-recursion the remedy is a function declaration (message says so),
+                    // which is a rewrite we don't automate. AST offsets stamped by the analyzer.
+                    const { nameStart, nameEnd } = (diagnostic as any).data;
+                    codeActions.push({
+                        title: 'Remove the function name',
+                        kind: CodeActionKind.QuickFix,
+                        diagnostics: [diagnostic],
+                        isPreferred: true,
+                        edit: { changes: { [params.textDocument.uri]: [
+                            TextEdit.del({ start: document.positionAt(nameStart), end: document.positionAt(nameEnd) }),
+                        ] } },
+                    });
+                }
+                if (feature === 'for-leading-declarator' && typeof (diagnostic as any).data?.idEnd === 'number') {
+                    // `for (let x, y = 0; ...)` -> `for (let x = null, y = 0; ...)` -
+                    // oracle-verified fine on every ucode version; matches what the
+                    // dropped declarator's value would have been on fixed ucode anyway.
+                    codeActions.push({
+                        title: 'Initialize it: `= null`',
+                        kind: CodeActionKind.QuickFix,
+                        diagnostics: [diagnostic],
+                        isPreferred: true,
+                        edit: { changes: { [params.textDocument.uri]: [
+                            TextEdit.insert(document.positionAt((diagnostic as any).data.idEnd), ' = null'),
+                        ] } },
+                    });
+                }
                 if (feature === 'hex-literal-sign-split' && typeof (diagnostic as any).data?.signOffset === 'number') {
                     // Un-bond the sign from the hex literal: ` ` before it, and after it too
                     // unless whitespace already follows (`0x1e+2` → `0x1e + 2`). signOffset is

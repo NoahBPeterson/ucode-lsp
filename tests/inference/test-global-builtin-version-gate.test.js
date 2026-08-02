@@ -22,7 +22,7 @@ const CALL = 'signal(15, function() { print("term"); });\n';
 test('signal() is version-gated on 22.03 (added in 23.05)', () => {
   const ds = u6005(CALL, '22.03');
   expect(ds.length).toBe(1);
-  expect(ds[0].message).toMatch(/requires OpenWrt 23\.05/);
+  expect(ds[0].message).toMatch(/isn't available on OpenWrt 22\.03 \(needs OpenWrt 23\.05\)/);
 });
 
 describe('signal() is NOT gated on 23.05 and later', () => {

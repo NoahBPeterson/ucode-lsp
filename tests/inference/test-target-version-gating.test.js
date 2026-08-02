@@ -87,7 +87,9 @@ describe('UC6005 export-function-without-semicolon gating', () => {
     const { ast } = new UcodeParser(new UcodeLexer(NOSEMI, { rawMode: true }).tokenize(), NOSEMI).parse();
     const d = new SemanticAnalyzer(doc, { targetVersion: '23.05' }).analyze(ast).diagnostics.find(x => x.code === 'UC6005');
     expect(d.message).toContain('23.05');
-    expect(d.message).toContain('ucode.targetVersion');
+    // Style rule (2026-08-01): no "change ucode.targetVersion" tail - the retarget
+    // code action carries that; the message only states behavior on the target.
+    expect(d.message).not.toContain('ucode.targetVersion');
   });
 });
 
