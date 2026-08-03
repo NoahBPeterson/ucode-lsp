@@ -98,8 +98,8 @@
     "regexp": {
       "patterns": [
         {
-          "name": "string.regexp.ucode",
-          "begin": "(?<=[=(,:;!?\\[])\\s*(/(?![/*]))",
+          "contentName": "string.regexp.ucode",
+          "begin": "(?<=[=(,:;!?\\[]|\\breturn|\\bcase|&&|\\|\\|)\\s*(/(?![/*]))",
           "beginCaptures": {
             "1": {
               "name": "string.regexp.ucode"

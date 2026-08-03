@@ -17,7 +17,9 @@ const grammar = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'syn
 
 function findRuleByName(node, name) {
   if (!node || typeof node !== 'object') return null;
-  if (node.name === name && (node.begin || node.end)) return node;
+  // The regexp rule scopes its interior via contentName (2026-08-02: the rule-level
+  // name also painted the begin match's leading whitespace as regex) — accept both.
+  if ((node.name === name || node.contentName === name) && (node.begin || node.end)) return node;
   for (const k of Object.keys(node)) {
     const r = findRuleByName(node[k], name);
     if (r) return r;
