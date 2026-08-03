@@ -1,5 +1,104 @@
 # Changelog
 
+## 0.7.89 (2026-08-02)
+
+Everything since `v0.7.59` (0.7.60–0.7.89). Four arcs: **typed OpenWrt daemon globals**
+killed the biggest false-positive source in real firmware code; a **parser-fidelity
+round** aligned the LSP's syntax verdicts with the real ucode compiler (with thanks to
+**m00qek**, whose tree-sitter-ucode work surfaced several of these); a **scope-resolution
+overhaul** fixed seven confirmed symbol-lookup bugs behind one sharp two-function API; and
+a **type-soundness campaign** made the inference engine stop claiming definite types where
+the honest answer is `T | null` or `T | unknown` — so the null-safety warnings fire exactly
+where real firmware crashes.
+
+### Typed OpenWrt daemon ambient globals (0.7.61, 0.7.66)
+
+- `hostapd`/`wpa_supplicant` injected globals — the single biggest OpenWrt FP source
+  (229 `UC1001` across a real firmware corpus) — are now fully typed ambients, gated by
+  usage, install path, and target version, with member shapes read from the daemons'
+  C sources (0.7.66). Built on new general per-member `introducedIn` version-gating infra.
+- `netifd` proto/wireless/daemon scripts get the same treatment: two shapes (strict proto
+  stub vs rich daemon global), handler- and version-gated, `openMembers` for
+  runtime-extended objects (0.7.61).
+
+### Ticket sweeps and the type-coverage audit (0.7.65, 0.7.67–0.7.69)
+
+- 104-ticket false-positive/negative sweep across every layer (0.7.67); new codes
+  `UC3004`/`UC3009`/`UC3010`/`UC6016`/`UC7006`–`UC7008`; disable comments now remove
+  diagnostics entirely.
+- `--type-coverage` CLI audit mode + hover-path quadratic perf fixes (0.7.68); the audit
+  produced 31 tickets, 18 of which landed in 0.7.69 (operator typing, for-in two-var
+  keys, `match()` tuple typing, negative array indexes, loop back-edge joins, and more) —
+  corpus type coverage 60.7% → 65.9%.
+- Comparison lint understands `==`/`===` reference-vs-value semantics
+  (`UC2009`/`UC2015`/`UC2016`, 0.7.70); unreachable code after a terminator in an
+  initializer/assignment RHS is flagged (0.7.65); module resolver soundness (0.7.71).
+
+### Parser fidelity vs. real ucode (0.7.60, 0.7.72–0.7.80)
+
+Every verdict below is oracle-verified against the ucode interpreter. Credit to
+**m00qek**: rounds of these gaps came from comparing against their tree-sitter-ucode.
+
+- Colon-block syntax (`if …: endif`) parses, with `UC6015` + quick fix (0.7.60).
+- A bare numeric object key is a syntax error in ucode (`UC6018`, 0.7.72); an empty
+  import/export list too (`UC6019`, 0.7.73).
+- Regex literals may span raw newlines (0.7.74) and a leading `]` in a character class is
+  literal (0.7.75) — both previously false-positive syntax errors. The TextMate grammar
+  learned the same rules (0.7.78).
+- `1e+5` is a plain double; `0x1e+2` hex-sign splitting is target-gated (0.7.76–0.7.77).
+- Named function expressions in initializers and initializer-less leading for-declarators
+  are compile crashes on older targets — both gated with grokable messages and
+  per-feature quick fixes (0.7.79).
+- `from` is an ordinary identifier, not a keyword — killed ~33 spurious diagnostics per
+  affected file (0.7.80).
+
+### Scope-resolution overhaul (0.7.81–0.7.83)
+
+- A block-scoped local named after a builtin no longer resolves to the builtin in
+  post-visit checks (0.7.82) — the reduction of that bug exposed a whole class of
+  stale-scope lookups.
+- The overhaul (0.7.83): plain `lookup()` is gone, replaced by two sharp contracts —
+  `resolveReference(name, pos)` (position-correct everywhere) and `lookupOpenScopes(name)`
+  (traversal-time only) — fixing seven confirmed resolution bugs (hover, completion,
+  definition, return-type inference, nested-function hoisting among them). A by-name
+  symbol index makes position-aware lookup fast: a 7.5k-line file analyzes in 0.43s,
+  down from 1.13s.
+
+### Type-soundness campaign (0.7.81, 0.7.84–0.7.86)
+
+The disease: a value whose honest type is `T | null` or `T | unknown` got a definite `T`,
+silencing the exact warnings that exist for real crashes. Every fix shape was verified
+against the interpreter (the runtime really does die on the paths the old types called
+safe).
+
+- Conditional writes union with the fall-through type instead of replacing it; sibling
+  branches are excluded; in-loop writes always union (0.7.81 identifiers, 0.7.84–0.7.85
+  members and all conditional contexts: ternary arms, switch cases, `&&`/`||`/`??` RHS,
+  try/catch).
+- Function-body writes are call-position gated: impossible before the function is first
+  referenced, definite after an unconditional call (0.7.85).
+- A function that can fall off the end returns `| null` (0.7.85).
+- Dict reads `m[k]` and cross-file factory returns carry `| null` — the registry-lookup
+  and guarded-factory idioms now warn exactly where a missing key or null return crashes;
+  keys-of provenance (`for (k in m) m[k]`) keeps proven-present reads definite (0.7.86).
+- A stray `/` (a `//` comment missing a slash) no longer cascades mis-lexed regexes
+  through the file: one root-cause hint, diagnostics contained to the broken line
+  (0.7.85, 31-case battery).
+- Note for `'use strict'` users: honest types surface some new "may be null/unknown"
+  argument errors that were previously hidden by overclaimed definite types.
+
+### This week's fixes (0.7.87–0.7.89)
+
+- `UC1012`: referencing a `let`/`const` inside its own initializer — directly, via a
+  closure body, a member base, or a write — is a compile-time rejection on every ucode
+  version; the LSP now says so (0.7.87).
+- Everyday regexes like `/([^\/]+)$/` and `/\[([^\]]+)\]/` no longer trip a false
+  "Unbalanced parenthesis" hard error: an escaped char inside a bracket class now counts
+  as a class member in the validator (0.7.88).
+- TextMate grammar: regexes after `return`/`case`/`&&`/`||` are recognized (previously
+  they rendered as plain code, where the editor's bracket colorizer painted their
+  brackets red), and the whitespace before a regex is no longer regex-scoped (0.7.89).
+
 ## 0.7.38 (2026-07-02)
 
 Everything since `v0.7.2`. Two arcs: **per-OpenWrt-release version gating** finished its
