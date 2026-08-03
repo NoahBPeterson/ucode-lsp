@@ -90,23 +90,25 @@ test('17 bare require of an UNKNOWN module is not treated as a module (no false 
 // evaluates to null at runtime. These checks are therefore severity-agnostic and
 // scoped to undefined-variable/function diagnostics: the only name we still can't
 // resolve is the host-injected `backend` (pending runtime introspection).
+// fuzz-tests/ is a gitignored local corpus — skip (don't fail) where it's absent,
+// e.g. CI (same pattern as the utpl oracle gate in test-include-scope-oracle).
+const ubiPath = `${__dirname}/../../fuzz-tests/ubi.uc`;
+const hasUbi = fs.existsSync(ubiPath);
 const undefDiags = async (code, path) =>
   ((await server.getDiagnostics(code, path)) || []).filter((x) => /Undefined (variable|function)/.test(x.message || ''));
-test('18 ubi.uc: every undefined-var diagnostic except host-injected `backend` is gone', async () => {
-  const path = `${__dirname}/../../fuzz-tests/ubi.uc`;
-  const u = await undefDiags(fs.readFileSync(path, 'utf8'), path);
+test.skipIf(!hasUbi)('18 ubi.uc: every undefined-var diagnostic except host-injected `backend` is gone', async () => {
+  const u = await undefDiags(fs.readFileSync(ubiPath, 'utf8'), ubiPath);
   const nonBackend = u.filter((x) => !/backend/.test(x.message || ''));
   expect(nonBackend.map((x) => `L${x.range.start.line + 1} ${x.message.slice(0, 50)}`)).toEqual([]);
 });
-test('19 ubi.uc: the remaining undefined-var diagnostics are all `backend` (pending introspection)', async () => {
-  const path = `${__dirname}/../../fuzz-tests/ubi.uc`;
-  const u = await undefDiags(fs.readFileSync(path, 'utf8'), path);
+test.skipIf(!hasUbi)('19 ubi.uc: the remaining undefined-var diagnostics are all `backend` (pending introspection)', async () => {
+  const u = await undefDiags(fs.readFileSync(ubiPath, 'utf8'), ubiPath);
   expect(u.length).toBeGreaterThan(0);
   expect(u.every((x) => /backend/.test(x.message || ''))).toBe(true);
 });
-test('20 ubi.uc: no UC1003, UC3006, or undefined-function diagnostics remain', async () => {
-  const code = fs.readFileSync(`${__dirname}/../../fuzz-tests/ubi.uc`, 'utf8');
-  const all = (await server.getDiagnostics(code, `${__dirname}/../../fuzz-tests/ubi.uc`)) || [];
+test.skipIf(!hasUbi)('20 ubi.uc: no UC1003, UC3006, or undefined-function diagnostics remain', async () => {
+  const code = fs.readFileSync(ubiPath, 'utf8');
+  const all = (await server.getDiagnostics(code, ubiPath)) || [];
   expect(codes(all)).not.toContain('UC1003');
   expect(codes(all)).not.toContain('UC3006');
   expect(all.some((x) => /Undefined function/.test(x.message || ''))).toBe(false);

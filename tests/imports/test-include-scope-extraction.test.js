@@ -6,7 +6,7 @@ import { test, expect, describe } from 'bun:test';
 import { UcodeLexer, detectTemplateMode, bridgeTemplateTokens } from '../../src/lexer/index.ts';
 import { UcodeParser } from '../../src/parser/ucodeParser.ts';
 import { extractIncludeSites } from '../../src/analysis/includeScope.ts';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 
 // Template files carry their include() calls inside {% %} tags, so they must be parsed
 // through the template pipeline (detect + bridge framing) before extraction.
@@ -61,8 +61,11 @@ describe('extractIncludeSites', () => {
     expect(sites('include(lib + "/x.uc", { a });')).toEqual([]);
   });
 
-  test('finds every include site in the real firewall4 ruleset.uc', () => {
-    const src = readFileSync('firewall4/root/usr/share/firewall4/templates/ruleset.uc', 'utf8');
+  // firewall4/ is a gitignored local checkout — skip (don't fail) where it's
+  // absent, e.g. CI (same pattern as the utpl oracle gate in the oracle suite).
+  const RULESET = 'firewall4/root/usr/share/firewall4/templates/ruleset.uc';
+  test.skipIf(!existsSync(RULESET))('finds every include site in the real firewall4 ruleset.uc', () => {
+    const src = readFileSync(RULESET, 'utf8');
     const found = sites(src);
     expect(found.length).toBeGreaterThan(10);
     // every site has fw4 in scope, and known sub-templates appear
