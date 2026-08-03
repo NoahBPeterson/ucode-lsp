@@ -137,6 +137,10 @@ export class SemanticAnalyzer extends BaseVisitor {
   // Depth of enclosing LOOP bodies during traversal - stamps TypeHistoryEntry.inLoop
   // so branch reasoning is disabled for in-loop writes (back edges break it).
   private loopDepth = 0;
+  /** >0 while visiting a for-statement's init declaration — ucode accepts a
+   *  self-referencing declarator there (`for (let i = i; ...)`, oracle-verified),
+   *  so the UC1012 check must stand down. */
+  private forInitDepth = 0;
   private switchScopes: number[] = []; // Track switch statement scope levels
   private commonjsImports: Map<string, { importedFrom: string; importSpecifier: string }> = new Map();
   private resolvedImports: Set<string> = new Set();
@@ -2685,6 +2689,97 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
+  /** docs/self-reference-in-own-initializer.md: a let/const referenced from inside
+   *  its OWN initializer — directly, through a closure body, a member base, or a
+   *  write — fails to compile on EVERY ucode version ("Can't access lexical
+   *  declaration"). The check is purely syntactic (the innermost declaration wins,
+   *  so even a builtin-named `let print = print;` crashes — oracle-verified), minus
+   *  subtrees where the name is re-bound (param, funcexpr's own name, or any inner
+   *  re-declaration: conservative whole-function skip, so a block-scoped inner
+   *  shadow beside an outer reference is a rare accepted false negative).
+   *  For-statement init declarators are EXEMPT: `for (let i = i; ...)` compiles
+   *  and runs on both oracle binaries. One diagnostic per declarator. */
+  private flagSelfReferenceInInitializer(varName: string, init: AstNode): void {
+    if (this.forInitDepth > 0) return;
+    const hit = this.findSelfRef(init, varName);
+    if (!hit) return;
+    this.addDiagnosticErrorCode(
+      UcodeErrorCode.SELF_REFERENCE_IN_INITIALIZER,
+      `'${varName}' is used inside its own initializer, where it has no value yet — ucode refuses to compile this ("Can't access lexical declaration '${varName}' before initialization").`,
+      hit.start, hit.end,
+      DiagnosticSeverity.Error,
+    );
+  }
+
+  /** First reference-position Identifier named `name` under `root`, respecting
+   *  re-binding (shadowing) at function granularity; null if none. */
+  private findSelfRef(root: AstNode | null | undefined, name: string): IdentifierNode | null {
+    if (!root || typeof root !== 'object' || typeof (root as { type?: unknown }).type !== 'string') return null;
+    switch (root.type) {
+      case 'Identifier':
+        return (root as IdentifierNode).name === name ? (root as IdentifierNode) : null;
+      case 'MemberExpression': {
+        const m = root as MemberExpressionNode;
+        return this.findSelfRef(m.object, name)
+          ?? (m.computed ? this.findSelfRef(m.property, name) : null);
+      }
+      case 'Property': {
+        const p = root as PropertyNode;
+        return (p.computed ? this.findSelfRef(p.key, name) : null)
+          ?? this.findSelfRef(p.value, name);
+      }
+      case 'FunctionExpression':
+      case 'ArrowFunctionExpression':
+      case 'FunctionDeclaration': {
+        const fn = root as unknown as { id?: IdentifierNode; params?: IdentifierNode[]; restParam?: IdentifierNode; body?: AstNode };
+        if (fn.id?.name === name) return null;                       // funcexpr's own name shadows
+        if ((fn.params || []).some(p => p?.name === name)) return null;
+        if (fn.restParam?.name === name) return null;
+        if (fn.body && this.rebindsName(fn.body, name)) return null; // inner let/const/function shadows
+        return this.findSelfRef(fn.body, name);
+      }
+      default: {
+        for (const k of Object.keys(root)) {
+          if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+          const v = (root as unknown as Record<string, unknown>)[k];
+          if (Array.isArray(v)) {
+            for (const it of v) {
+              const hit = this.findSelfRef(it as AstNode, name);
+              if (hit) return hit;
+            }
+          } else if (v && typeof v === 'object') {
+            const hit = this.findSelfRef(v as AstNode, name);
+            if (hit) return hit;
+          }
+        }
+        return null;
+      }
+    }
+  }
+
+  /** Does any let/const declarator, function declaration, or nested-function
+   *  param re-declare `name` anywhere under `root`? (Conservative: block-scoped
+   *  inner shadows count for the whole function.) */
+  private rebindsName(root: AstNode | null | undefined, name: string): boolean {
+    const stack: unknown[] = [root];
+    while (stack.length) {
+      const n = stack.pop();
+      if (!n || typeof n !== 'object' || typeof (n as { type?: unknown }).type !== 'string') continue;
+      const node = n as AstNode;
+      if (node.type === 'VariableDeclarator' && (node as VariableDeclaratorNode).id?.name === name) return true;
+      if (node.type === 'FunctionDeclaration' && (node as FunctionDeclarationNode).id?.name === name) return true;
+      if ((node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression')
+          && ((node as unknown as { params?: IdentifierNode[] }).params || []).some(p => p?.name === name)) return true;
+      for (const k of Object.keys(node)) {
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+        const v = (node as unknown as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) stack.push(it); }
+        else stack.push(v);
+      }
+    }
+    return false;
+  }
+
   /** Conservative subtree scan: does any Identifier named `name` appear under `root`?
    *  (Shadowing is ignored on purpose - a false "used" only withholds a quick fix.) */
   private identifierAppearsIn(root: AstNode, name: string): boolean {
@@ -2732,6 +2827,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   override visitVariableDeclarator(node: VariableDeclaratorNode, kind: string = 'let'): void {
     if (node.init) this.flagNamedFuncexprInInitializer(node.id.name, node.init);
+    if (node.init) this.flagSelfReferenceInInitializer(node.id.name, node.init);
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
 
@@ -6664,7 +6760,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       
       // Visit the loop components in the new scope
       if (node.init) {
+        this.forInitDepth++;
         this.visit(node.init);
+        this.forInitDepth--;
       }
       if (node.test) {
         this.visit(node.test);
@@ -6675,13 +6773,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       this.loopDepth++;
       this.visit(node.body);
       this.loopDepth--;
-      
+
       // Exit the for loop scope
       this.symbolTable.exitScope(node.end);
     } else {
-      // Fallback to default behavior if scope analysis is disabled
+      // Fallback to default behavior if scope analysis is disabled. The init is
+      // visited inside super, so the for-init exemption must cover the whole call.
       this.loopDepth++;
+      this.forInitDepth++;
       super.visitForStatement(node);
+      this.forInitDepth--;
       this.loopDepth--;
     }
     

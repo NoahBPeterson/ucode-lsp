@@ -1,6 +1,14 @@
 # Self-reference from inside a let/const's own initializer crashes on EVERY ucode
 
-Status: **NOT STARTED - 🟡 MEDIUM PRIORITY** (all-versions compile crash, we say nothing).
+Status: **✅ IMPLEMENTED 0.7.87** — UC1012, unconditional Error (all-versions compile
+crash). Purely syntactic scan (`findSelfRef`) with function-granularity shadowing
+(param / funcexpr's own name / any inner re-declaration skips the whole function —
+a block-scoped inner shadow beside an outer reference is a rare accepted FN);
+for-init declarators EXEMPT (`for (let i = i; ...)` compiles and runs, oracle-verified
+both binaries — so is self-WRITE `f = 1` an error, and builtin-named `let print =
+print;`). One diagnostic per declarator. No quick fix yet (candidate: rewrite
+`let f = function(){...}` → `function f(){...}`). Suite:
+tests/diagnostics/test-self-reference-initializer.test.js (17).
 Found 2026-08-01 while building the named-funcexpr gate
 (docs/named-funcexpr-let-const-crash.md probe matrix).
 
