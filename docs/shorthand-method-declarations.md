@@ -1,9 +1,12 @@
 # Shorthand method declarations in object literals (new ucode `main` syntax)
 
-Status: **NOT STARTED — 🟢 LOW PRIORITY.** The feature isn't in any OpenWrt release pin yet (not
-even main's `3ec4e5c`), so no real deployed script uses it — revisit when a release bumps its
-ucode past `fecacb8`. Reviewed 2026-07-05 across `ucode-upstream.json` (`3ec4e5c`) → `ucode/`
-`origin/master` (`fecacb8`).
+Status: **NOT STARTED — 🟡 MEDIUM PRIORITY** (bumped from LOW 2026-08-01: **the revisit
+condition fired** — OpenWrt main's ucode pin is now `b885dd0`, 2026-07-09, which CONTAINS
+`fecacb8`, so `main`-target scripts can legitimately use shorthand methods and our parser
+hard-errors on them). Reviewed 2026-07-05 across `ucode-upstream.json` (`3ec4e5c`) → `ucode/`
+`origin/master` (`fecacb8`). Re-reviewed 2026-08-01: the newer range `fecacb8..81205a2` was
+reviewed separately (see tickets listed in `ucode-upstream.json`) — note `e8af70e` fixed a
+use-after-free in this feature's method-name handling upstream (no LSP impact).
 
 ## TL;DR
 
@@ -52,10 +55,10 @@ The feature is in ucode **upstream master** but **not yet in any OpenWrt release
 |---|---|---|---|
 | 24.10 | `3f64c808` | 2025-07-18 | ✗ |
 | 25.12 | `85922056` | 2026-01-16 | ✗ |
-| main | `3ec4e5c` | 2026-06-03 | ✗ (this **is** `lastSupportedCommit`) |
-| ucode upstream master | `fecacb8` | 2026-06-22 | ✓ |
+| main | `b885dd0` | **2026-07-09** (bumped; was `3ec4e5c`) | **✓ (since 2026-08-01 re-check)** |
+| ucode upstream master | `81205a2` | 2026-07+ | ✓ |
 
-So even OpenWrt **main** currently pins a ucode that predates `fecacb8`. The LSP's `'main'`
+**As of the 2026-07-09 pin bump, OpenWrt main ships this feature.** The LSP's `'main'`
 target models the **newest ucode grammar** (`UCODE_SNAPSHOT_DATES.main = 'newest'`, and the
 existing `exportFunctionNoSemicolon` is `introducedIn: 'main'`), so the consistent model is:
 
@@ -63,12 +66,9 @@ existing `exportFunctionNoSemicolon` is `introducedIn: 'main'`), so the consiste
 > **UC6005** on any target below `main` (i.e. 24.10 / 25.12): *"shorthand method declarations were
 > added in {INTRO}, but the target is {target}; use `key: function() {…}`."*
 
-Caveat to weigh at implementation time: because OpenWrt main's Makefile still pins pre-`fecacb8`
-ucode, `'main'` here is optimistic (bleeding-edge grammar, ahead of the deployed pin) — the same
-stance the LSP already takes for `exportFunctionNoSemicolon`. If we'd rather not surface a
-grammar feature no release ships yet, the alternative is to add the parser support now but keep
-it flagged on **all** current targets until an OpenWrt release bumps its ucode pin past `fecacb8`
-(then relax the floor). Recommend matching the existing `'main'` convention.
+(The old caveat about `'main'` being optimistic is obsolete — since the 2026-07-09 pin bump,
+`introducedIn: 'main'` describes the actually-deployed snapshot pin. `'main'` gating is now
+simply correct.)
 
 ## Implementation plan
 

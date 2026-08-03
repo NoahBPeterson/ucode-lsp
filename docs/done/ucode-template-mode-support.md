@@ -192,3 +192,18 @@ analysis. But it's the difference between "usable" and "239 false errors" on a f
 OpenWrt ucode codebase. If a full implementation is too large now, a cheap interim
 mitigation is **mode detection that SKIPS diagnostics on detected template files** (emit
 nothing rather than garbage) so the Problems panel isn't poisoned by the workspace scan.
+
+## Addendum 2026-08-01 — template-mode footguns verified (from tree-sitter-ucode v0.8.0)
+
+Three tag-layer behaviors documented by m00qek's tree-sitter-ucode and re-verified against
+the local ucode binary in `-T` mode (record them for whichever layer eventually implements
+template diagnostics; credit m00qek if a fix commit cites these):
+
+1. **A `//` line comment swallows a same-line `%}`.** `A{% // note %}\nB` renders just `A` —
+   the comment runs to end-of-line, the tag never closes, and the rest of the file is
+   silently consumed as script. ucode tolerates this without error; an LSP should WARN (it is
+   almost never intended). tree-sitter-ucode flags it too.
+2. **An unterminated `{%` at EOF is tolerated silently.** `A{% let x = 1;` (EOF) renders `A`
+   with rc=0. Worth a warning for the same reason.
+3. **An empty expression tag `{{ }}` is a syntax error** ("Expecting expression") — a real
+   error to report, analogous to UC6019's empty-list rule.
