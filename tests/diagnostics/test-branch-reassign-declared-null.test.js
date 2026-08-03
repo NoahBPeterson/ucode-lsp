@@ -67,8 +67,10 @@ test('TRUE POSITIVE kept: assigned a provable null, compared, then reassigned', 
 test('between-assignments hover semantics: earlier assignment type governs, not declared', () => {
   // Same mechanism, no branch: after `p = "s"`, before `p = 7`, p is a string -
   // comparing to an array VARIABLE (not a fresh literal, which has its own rule)
-  // must flag as string-vs-array (impossible), NOT as null-vs-array.
-  const code = 'function f() {\n    let arr = [1];\n    let p;\n    p = "s";\n    if (p == arr) return 1;\n    p = 7;\n    return p;\n}\nprint(f(), "\\n");\n';
+  // must flag as string-vs-array (impossible), NOT as null-vs-array. The trailing
+  // `print(arr)` keeps arr non-sole-use so the 0.7.90 unshared-fresh-reference
+  // lint (which would fire first with its own message) stays out of the way.
+  const code = 'function f() {\n    let arr = [1];\n    let p;\n    p = "s";\n    if (p == arr) return 1;\n    p = 7;\n    print(arr);\n    return p;\n}\nprint(f(), "\\n");\n';
   const diags = uc2009(code);
   expect(diags.length).toBe(1);
   expect(diags[0].message).toContain('string');

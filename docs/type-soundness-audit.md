@@ -58,10 +58,35 @@ in-file) - unifying it with propertyTypeAt is part of H-3/H-5.
   dropped-by-intersection member still hovers `unknown` instead of nothing.
 - Suite: tests/diagnostics/test-container-read-null.test.js (13; oracle-verified
   crash shapes + keys-of/bucket/guard/total-factory controls).
-REMAINING (phases 5-6, not started): N-1 loose == var narrowing, N-3 numeric guard,
-N-6 engine assignment transfer, N-7 NEVER laundering, H-5 index history, H-6
-literal unknown elements, H-7 cross-file builtin shims, I-5 global binder gate,
-I-6/I-7 misc writers, loop contract decision.
+0.7.90 IMPLEMENTED N-1 + N-3 (coercing comparisons are not type guards; full
+oracle matrix in tests/diagnostics/test-coercing-comparison-guards.test.js,
+identical on both binaries):
+- N-1: loose ==/!= var-var narrowing now requires EVERY member of the other
+  side's type to be reference-exact (array/object/function/regex/null —
+  `==` on references is pointer identity, [1]==[1] is false; null only
+  loose-equals null). Scalars coerce (0=="0", ""==false, "1"==true, 1==1.0)
+  so a scalar match proves nothing. ===/!== unchanged (same-type-only;
+  1===1.0 is FALSE). Gate lives in extractVariableEqualityGuard (isStrict
+  param); the `== null` check was verified sound and untouched.
+- N-3 (polished per user review): numeric comparisons narrow to the exact SOUND
+  passable set instead of the unsound integer|double. From unknown, a true
+  `x <op> K` proves `integer | double | string` (numeric strings coerce:
+  "10">5, "5.5">5, "-3"<0 all TRUE) + boolean iff 0-or-1 passes K (true>5 is
+  FALSE → bools drop for `> 5`; false<5 TRUE → they stay for `< 5`) + null iff
+  0 passes K (null behaves exactly as 0). References NEVER pass. Known unions
+  refine per-member with the same predicate; an unknown MEMBER tightens to the
+  passable set. Literal-on-left mirrors the operator.
+- Contract updates (documented in-file): hover-type-narrowing 61-63 (no
+  fabrication), filter-narrowing-matrix 28 (`x > 5` predicate no longer types
+  elements), equality-narrowing-hover scalar cases switched to strict
+  operators (same machinery, sound trigger), 19b likewise.
+- Corpus: +1 vetted honest strict error (tailscale.uc:170 — `pos >= 0` does
+  not exclude null from index()'s integer|null; null>=0 is TRUE). Same
+  strict-mode-on-honest-types family as 0.7.85's 9.
+REMAINING (phases 5-6, not started): N-6 engine assignment transfer, N-7 NEVER
+laundering, H-5 index history, H-6 literal unknown elements, H-7 cross-file
+builtin shims, I-5 global binder gate, I-6/I-7 misc writers, loop contract
+decision.
 Original audit below. Requested after the
 0.7.81 (identifier) and 0.7.84 (member) fixes: "where else do we incorrectly reduce
 `unknown` from the type?" Three parallel code audits (identifier SSA, narrowing/joins,

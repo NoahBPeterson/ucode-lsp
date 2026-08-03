@@ -366,8 +366,9 @@ function test19(x) {
 
 // Variable-to-variable equality narrowing must read the OTHER variable's
 // EFFECTIVE type (SSA currentType), not its declared type. `let y; y = readfile()`
-// has declared type null but effective string|null; `if (x == y)` narrows x to
-// y's effective type, not null. (0.6.128 audit fix.)
+// has declared type null but effective string|null; `if (x === y)` narrows x to
+// y's effective type, not null. (0.6.128 audit fix.) Strict === since 0.7.90:
+// loose == no longer narrows on scalar-containing types (N-1 — string coerces).
 {
     const code = `
 import * as fs from 'fs';
@@ -375,7 +376,7 @@ function test19b(p) {
     let y;
     y = fs.readfile(p);
     let x = trim("a");
-    if (x == y) {
+    if (x === y) {
         let v = x;
     }
 }
@@ -1160,7 +1161,14 @@ function test50(x) {
     check('Test 60: path.complete pattern val narrowed', narrowedStr(result, 'val', offset), 'string');
 }
 
-// Test 61: numeric comparison narrows unknown to integer | double in true branch
+// Tests 61-63 CONTRACT CHANGE (0.7.90, docs/type-soundness-audit.md N-3): a true
+// numeric comparison proves the exact SOUND passable set, not integer|double.
+// Numeric strings coerce ("10">5, "-3"<0 are TRUE) so string is ALWAYS in;
+// booleans coerce to 0/1 and join only when 0 or 1 passes the literal; null
+// behaves exactly as 0. References never pass. Full matrix in
+// tests/diagnostics/test-coercing-comparison-guards.test.js.
+
+// Test 61: cpu < 0 — bools (0,1) and null (0) can't pass; numeric strings can
 {
     const code = `function cpu_mask(cpu) {
     let mask;
@@ -1173,11 +1181,12 @@ function test50(x) {
     const result = analyze(code);
     const truePos = code.indexOf('mask = cpu;');
     const trueOffset = code.indexOf('cpu', truePos);
-    check('Test 61: numeric comparison cpu < 0 narrows to numeric in true branch',
-        narrowedStr(result, 'cpu', trueOffset), 'integer | double');
+    check('Test 61: cpu < 0 narrows to the sound passable set',
+        narrowedStr(result, 'cpu', trueOffset), 'integer | double | string');
 }
 
-// Test 62: numeric comparison — else branch keeps original type
+// Test 62: numeric comparison — else branch keeps original type (negative edge
+// of the guard applies no narrowing)
 {
     const code = `function check(x) {
     if (x > 10)
@@ -1191,7 +1200,8 @@ function test50(x) {
         narrowedStr(result, 'x', offset), 'unknown');
 }
 
-// Test 63: reversed numeric comparison — numericLiteral <op> variable
+// Test 63: reversed literal mirrors the op: 0 <= val is val >= 0, which every
+// scalar passes (null is 0, false is 0) — only references are excluded
 {
     const code = `function check(val) {
     if (0 <= val)
@@ -1201,8 +1211,8 @@ function test50(x) {
     const result = analyze(code);
     const truePos = code.indexOf('return val;');
     const trueOffset = code.indexOf('val', truePos);
-    check('Test 63: reversed numeric comparison 0 <= val narrows to numeric',
-        narrowedStr(result, 'val', trueOffset), 'integer | double');
+    check('Test 63: reversed 0 <= val keeps every passable scalar',
+        narrowedStr(result, 'val', trueOffset), 'integer | double | string | boolean | null');
 }
 
 console.log(`\n${passed} passed, ${failed} failed out of ${passed + failed} tests`);

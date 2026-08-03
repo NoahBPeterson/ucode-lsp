@@ -45,7 +45,11 @@ function expected(op, a, b) {
 }
 
 async function classify(op, a, b) {
-  const code = `let a = ${T[a]};\nlet b = ${T[b]};\nlet r = (a ${op} b);\n`;
+  // The trailing `print(a, b);` de-freshens the variables: without another
+  // occurrence, sole-use fresh-literal refs get the STRONGER UC2009 always-false
+  // lint (0.7.90, test-unshared-fresh-reference-compare) and same-type reference
+  // pairs would never reach the `reference` (UC2016) classification pinned here.
+  const code = `let a = ${T[a]};\nlet b = ${T[b]};\nlet r = (a ${op} b);\nprint(a, b);\n`;
   const ds = await server.getDiagnostics(code, `/tmp/eqm-${n++}.uc`);
   const has2009 = ds.some(d => d.code === 'UC2009');
   const has2015 = ds.some(d => d.code === 'UC2015');

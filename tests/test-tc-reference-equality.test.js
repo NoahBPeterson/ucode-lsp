@@ -15,6 +15,10 @@
 //      Key order in an object literal is irrelevant: `{a:1,b:2}` and `{b:2,a:1}` are
 //      still two distinct allocations (verified: they compare false).
 
+// NOTE (0.7.90): each snippet ends with `print(a, b);` — without another
+// occurrence, two sole-use fresh-literal variables now get the STRONGER
+// UC2009 always-false lint (see test-unshared-fresh-reference-compare) and
+// would never reach the UC2016 / quick-fix paths these suites pin.
 const { test, expect, describe, beforeAll, afterAll, setDefaultTimeout } = require('bun:test');
 const { createLSPTestServer } = require('./lsp-test-helpers');
 setDefaultTimeout(30000);
@@ -72,37 +76,37 @@ describe('UC2009: a fresh reference literal makes ==/=== always false', () => {
 
 describe('UC2016: two reference VARIABLES compared with loose == test identity, not contents', () => {
   test('object variable == object variable → warning', async () => {
-    const ds = await diags('let a = {x:1}, b = {x:1};\nlet r = (a == b);\n');
+    const ds = await diags('let a = {x:1}, b = {x:1};\nlet r = (a == b);\nprint(a, b);\n');
     expect(has(ds, 'UC2016')).toBe(true);
     expect(has(ds, 'UC2009')).toBe(false);
   });
   test('array variable == array variable → warning', async () => {
-    expect(has(await diags('let a = [1], b = [2];\nlet r = (a == b);\n'), 'UC2016')).toBe(true);
+    expect(has(await diags('let a = [1], b = [2];\nlet r = (a == b);\nprint(a, b);\n'), 'UC2016')).toBe(true);
   });
   test('function variable == function variable → warning', async () => {
-    expect(has(await diags('let a = function(){}, b = function(){};\nlet r = (a == b);\n'), 'UC2016')).toBe(true);
+    expect(has(await diags('let a = function(){}, b = function(){};\nlet r = (a == b);\nprint(a, b);\n'), 'UC2016')).toBe(true);
   });
   test('loose != between two object variables → warning', async () => {
-    expect(has(await diags('let a = {x:1}, b = {x:1};\nlet r = (a != b);\n'), 'UC2016')).toBe(true);
+    expect(has(await diags('let a = {x:1}, b = {x:1};\nlet r = (a != b);\nprint(a, b);\n'), 'UC2016')).toBe(true);
   });
   test('the warning steers to is_equal', async () => {
-    expect(/is_equal/.test(msgOf(await diags('let a = {x:1}, b = {x:1};\nlet r = (a == b);\n'), 'UC2016'))).toBe(true);
+    expect(/is_equal/.test(msgOf(await diags('let a = {x:1}, b = {x:1};\nlet r = (a == b);\nprint(a, b);\n'), 'UC2016'))).toBe(true);
   });
   test('strict === between two reference variables ALSO warns (=== is identical to == for references)', async () => {
-    const ds = await diags('let a = {x:1}, b = {x:1};\nlet r = (a === b);\n');
+    const ds = await diags('let a = {x:1}, b = {x:1};\nlet r = (a === b);\nprint(a, b);\n');
     expect(has(ds, 'UC2016')).toBe(true);
     expect(has(ds, 'UC2009')).toBe(false);
   });
   test('strict !== between two reference variables also warns', async () => {
-    expect(has(await diags('let a = {x:1}, b = {x:1};\nlet r = (a !== b);\n'), 'UC2016')).toBe(true);
+    expect(has(await diags('let a = {x:1}, b = {x:1};\nlet r = (a !== b);\nprint(a, b);\n'), 'UC2016')).toBe(true);
   });
   test('the message frames it as reference-vs-value and notes == and === are identical', async () => {
-    const m = msgOf(await diags('let a = {x:1}, b = {x:1};\nlet r = (a === b);\n'), 'UC2016');
+    const m = msgOf(await diags('let a = {x:1}, b = {x:1};\nlet r = (a === b);\nprint(a, b);\n'), 'UC2016');
     expect(/not their contents/.test(m)).toBe(true);
     expect(/identically on references/.test(m)).toBe(true);
   });
   test('object variable vs array variable (distinct ref kinds) is impossible, not a warning', async () => {
-    const ds = await diags('let a = {x:1}, b = [1];\nlet r = (a == b);\n');
+    const ds = await diags('let a = {x:1}, b = [1];\nlet r = (a == b);\nprint(a, b);\n');
     expect(has(ds, 'UC2009')).toBe(true);
     expect(has(ds, 'UC2016')).toBe(false);
   });
@@ -131,7 +135,7 @@ describe('Known module handle types are references (handle == scalar is always f
     });
   }
   test('handle == handle is SILENT (both object|null → could be null==null or same ref)', async () => {
-    const ds = await diags("import { open } from 'fs';\nlet a = open('/x'), b = open('/y');\nlet r = (a == b);\n");
+    const ds = await diags("import { open } from 'fs';\nlet a = open('/x'), b = open('/y');\nlet r = (a == b);\nprint(a, b);\n");
     expect(has(ds, 'UC2009')).toBe(false);
     expect(has(ds, 'UC2016')).toBe(false);
   });
@@ -157,14 +161,14 @@ describe('is_equal quick fix — rewrite reference == to a structural deep-equal
   });
 
   test('UC2016 (two object vars) rewrites to is_equal(a, b)', async () => {
-    const { act } = await fixFor('let a = {x:1}, b = {x:1};\nlet r = (a == b);\n', '/tmp/refeq-qf2.uc');
+    const { act } = await fixFor('let a = {x:1}, b = {x:1};\nlet r = (a == b);\nprint(a, b);\n', '/tmp/refeq-qf2.uc');
     expect(act).toBeTruthy();
     const edits = act.edit.changes[Object.keys(act.edit.changes)[0]];
     expect(edits.some(e => e.newText === 'is_equal(a, b)')).toBe(true);
   });
 
   test('negated != rewrites to !is_equal(a, b)', async () => {
-    const { act } = await fixFor('let a = {x:1}, b = {x:1};\nlet r = (a != b);\n', '/tmp/refeq-qf3.uc');
+    const { act } = await fixFor('let a = {x:1}, b = {x:1};\nlet r = (a != b);\nprint(a, b);\n', '/tmp/refeq-qf3.uc');
     expect(act).toBeTruthy();
     const edits = act.edit.changes[Object.keys(act.edit.changes)[0]];
     expect(edits.some(e => e.newText === '!is_equal(a, b)')).toBe(true);
@@ -198,7 +202,7 @@ describe('is_equal quick fix — rewrite reference == to a structural deep-equal
 
   test('regexp variables via != coerce with the negated operator', async () => {
     const uri = '/tmp/refeq-re2.uc';
-    const ds = (await server.getDiagnostics('let a = /x/, b = /y/;\nlet r = (a != b);\n', uri)) || [];
+    const ds = (await server.getDiagnostics('let a = /x/, b = /y/;\nlet r = (a != b);\nprint(a, b);\n', uri)) || [];
     const d = ds.find(x => x.code === 'UC2016');
     expect(d && d.data && d.data.referenceEquality.coerce).toBe(true);
     const acts = await server.getCodeActions(uri, [d], d.range.start.line, d.range.start.character);
@@ -209,14 +213,14 @@ describe('is_equal quick fix — rewrite reference == to a structural deep-equal
   test('function comparisons carry NO fix (string coercion elides the body → unsound)', async () => {
     const dj = await diags('let r = (function(){} == function(){});\n');   // fresh functions → UC2009, no fix
     expect((dj.find(x => x.code === 'UC2009').data || {}).referenceEquality).toBeFalsy();
-    const df = await diags('let a = function(){}, b = function(){};\nlet r = (a == b);\n');
+    const df = await diags('let a = function(){}, b = function(){};\nlet r = (a == b);\nprint(a, b);\n');
     const w = df.find(x => x.code === 'UC2016');   // still warns, but no is_equal fix
     expect(w).toBeTruthy();
     expect(w.data && w.data.referenceEquality).toBeFalsy();
   });
 
   test('helper is NOT re-inserted when the file already defines is_equal', async () => {
-    const code = 'function is_equal(a,b){ return a===b; }\nlet a = {x:1}, b = {x:1};\nlet r = (a == b);\n';
+    const code = 'function is_equal(a,b){ return a===b; }\nlet a = {x:1}, b = {x:1};\nlet r = (a == b);\nprint(a, b);\n';
     const { act } = await fixFor(code, '/tmp/refeq-qf5.uc');
     expect(act).toBeTruthy();
     const edits = act.edit.changes[Object.keys(act.edit.changes)[0]];
@@ -254,7 +258,7 @@ describe('is_equal quick fix respects ucode no-hoisting (UC1009)', () => {
     const uri = '/tmp/refeq-hoist1.uc';
     // is_equal defined below the use — the fix must still rewrite to is_equal (theirs), with NO
     // inserted helper and NO renamed clone (a duplicate would be a strict redeclaration).
-    const code = 'let a = {x:1}, b = {x:1};\nlet r = (a == b);\nfunction is_equal(x,y){ return x === y; }\n';
+    const code = 'let a = {x:1}, b = {x:1};\nlet r = (a == b);\nprint(a, b);\nfunction is_equal(x,y){ return x === y; }\n';
     const ds = (await server.getDiagnostics(code, uri)) || [];
     const d = ds.find(x => x.data && x.data.referenceEquality);
     const acts = await server.getCodeActions(uri, [d], d.range.start.line, d.range.start.character);
@@ -266,7 +270,7 @@ describe('is_equal quick fix respects ucode no-hoisting (UC1009)', () => {
   });
 
   test('is_equal defined ABOVE the use → fix does NOT inject a duplicate', async () => {
-    const code = 'function is_equal(x,y){ return x === y; }\nlet a = {x:1}, b = {x:1};\nlet r = (a == b);\n';
+    const code = 'function is_equal(x,y){ return x === y; }\nlet a = {x:1}, b = {x:1};\nlet r = (a == b);\nprint(a, b);\n';
     const ds = (await server.getDiagnostics(code, '/tmp/refeq-hoist2.uc')) || [];
     const d = ds.find(x => x.data && x.data.referenceEquality);
     const acts = await server.getCodeActions('/tmp/refeq-hoist2.uc', [d], d.range.start.line, d.range.start.character);
@@ -276,7 +280,7 @@ describe('is_equal quick fix respects ucode no-hoisting (UC1009)', () => {
   });
 
   test('applying the fix with no prior is_equal yields a clean file', async () => {
-    const fixed = await applyFirstFix('let a = {x:1}, b = {x:1};\nlet r = (a == b);\n', '/tmp/refeq-hoist3.uc');
+    const fixed = await applyFirstFix('let a = {x:1}, b = {x:1};\nlet r = (a == b);\nprint(a, b);\n', '/tmp/refeq-hoist3.uc');
     const ds = (await server.getDiagnostics(fixed, '/tmp/refeq-hoist3b.uc')) || [];
     expect(ds.some(x => x.code === 'UC1009')).toBe(false);
     expect(ds.some(x => x.code === 'UC2009' || x.code === 'UC2016')).toBe(false);
@@ -294,7 +298,7 @@ describe('Soundness — cases that must NOT be flagged', () => {
     expect(has(await diags('function f(x){ return type(x) == "object"; }\n'), 'UC2009')).toBe(false);
   });
   test('two scalar variables of the same type → silent', async () => {
-    const ds = await diags('let a = 5, b = 6;\nlet r = (a == b);\n');
+    const ds = await diags('let a = 5, b = 6;\nlet r = (a == b);\nprint(a, b);\n');
     expect(has(ds, 'UC2009')).toBe(false);
     expect(has(ds, 'UC2016')).toBe(false);
   });

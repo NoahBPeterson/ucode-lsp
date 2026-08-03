@@ -13,6 +13,10 @@
 // Codes: UC2009 = impossible (error), UC2016 = reference comparison (warning),
 //        UC2015 = coercing scalar equality (warning, shown for contrast).
 
+// NOTE (0.7.90): each snippet ends with `print(a, b);` — without another
+// occurrence, two sole-use fresh-literal variables now get the STRONGER
+// UC2009 always-false lint (see test-unshared-fresh-reference-compare) and
+// would never reach the UC2016 / quick-fix paths these suites pin.
 const { test, expect, describe, beforeAll, afterAll, setDefaultTimeout } = require('bun:test');
 const { createLSPTestServer } = require('./lsp-test-helpers');
 setDefaultTimeout(30000);
@@ -44,11 +48,11 @@ describe('1. every operator on two OBJECT variables → UC2016 (by reference)', 
   const cases = [['==', 1], ['!=', 2], ['===', 3], ['!==', 4]];
   for (const [op] of cases) {
     test(`a ${op} b → UC2016`, async () => {
-      expect(has(await diags(`${setup}\nlet r = (a ${op} b);\n`), 'UC2016')).toBe(true);
+      expect(has(await diags(`${setup}\nlet r = (a ${op} b);\nprint(a, b);\n`), 'UC2016')).toBe(true);
     });
   }
   test('the message says "not their contents" and notes == and === are identical', async () => {
-    const m = msgOf(await diags(`${setup}\nlet r = (a === b);\n`), 'UC2016');
+    const m = msgOf(await diags(`${setup}\nlet r = (a === b);\nprint(a, b);\n`), 'UC2016');
     expect(/not their contents/.test(m) && /identically on references/.test(m)).toBe(true);
   });
 });
@@ -56,7 +60,7 @@ describe('1. every operator on two OBJECT variables → UC2016 (by reference)', 
 describe('2. every operator on two ARRAY variables → UC2016', () => {
   for (const op of ['==', '!=', '===', '!==']) {
     test(`arr ${op} arr → UC2016`, async () => {
-      expect(has(await diags(`let a = [1], b = [2];\nlet r = (a ${op} b);\n`), 'UC2016')).toBe(true);
+      expect(has(await diags(`let a = [1], b = [2];\nlet r = (a ${op} b);\nprint(a, b);\n`), 'UC2016')).toBe(true);
     });
   }
 });
@@ -64,7 +68,7 @@ describe('2. every operator on two ARRAY variables → UC2016', () => {
 describe('3. FUNCTION variables → UC2016 but NO fix (string coercion elides the body)', () => {
   for (const op of ['==', '===']) {
     test(`func ${op} func → UC2016, no fix`, async () => {
-      const ds = await diags(`let a = function(){}, b = function(){};\nlet r = (a ${op} b);\n`);
+      const ds = await diags(`let a = function(){}, b = function(){};\nlet r = (a ${op} b);\nprint(a, b);\n`);
       const w = ds.find(d => d.code === 'UC2016');
       expect(w).toBeTruthy();
       expect(w.data && w.data.referenceEquality).toBeFalsy();
@@ -75,7 +79,7 @@ describe('3. FUNCTION variables → UC2016 but NO fix (string coercion elides th
 describe('4. REGEXP variables → UC2016 with an in-place string-coercion fix', () => {
   for (const op of ['==', '!=', '===', '!==']) {
     test(`regex ${op} regex → UC2016 + coerce fix`, async () => {
-      const ds = await diags(`let a = /x/, b = /y/;\nlet r = (a ${op} b);\n`);
+      const ds = await diags(`let a = /x/, b = /y/;\nlet r = (a ${op} b);\nprint(a, b);\n`);
       const w = ds.find(d => d.code === 'UC2016');
       expect(w && w.data && w.data.referenceEquality && w.data.referenceEquality.coerce).toBe(true);
     });
@@ -130,14 +134,14 @@ describe('7. reference vs SCALAR → UC2009 (coerces to NaN, never equal), no fi
 
 describe('8. distinct reference KINDS → UC2009 (different pointers, never equal)', () => {
   test('obj var == arr var', async () => {
-    expect(has(await diags('let a = {p:1}, b = [1];\nlet r = (a == b);\n'), 'UC2009')).toBe(true);
+    expect(has(await diags('let a = {p:1}, b = [1];\nlet r = (a == b);\nprint(a, b);\n'), 'UC2009')).toBe(true);
   });
   test('obj var === arr var', async () => {
-    expect(has(await diags('let a = {p:1}, b = [1];\nlet r = (a === b);\n'), 'UC2009')).toBe(true);
+    expect(has(await diags('let a = {p:1}, b = [1];\nlet r = (a === b);\nprint(a, b);\n'), 'UC2009')).toBe(true);
   });
   test('fresh {a:1} == [1] (cross-kind literals)', async () => expect(await classify('{a:1} == [1]')).toBe('UC2009'));
   test('function var == regex var', async () => {
-    expect(has(await diags('let a = function(){}, b = /x/;\nlet r = (a == b);\n'), 'UC2009')).toBe(true);
+    expect(has(await diags('let a = function(){}, b = /x/;\nlet r = (a == b);\nprint(a, b);\n'), 'UC2009')).toBe(true);
   });
 });
 
@@ -185,11 +189,11 @@ describe('10. module handles across operators / scalar kinds', () => {
 describe('11. two module handles compared → SILENT (object|null: could be null==null)', () => {
   const two = "import { open } from 'fs';\nlet a = open('/x'), b = open('/y');\n";
   test('handle == handle → silent', async () => {
-    const ds = await diags(`${two}let r = (a == b);\n`);
+    const ds = await diags(`${two}let r = (a == b);\nprint(a, b);\n`);
     expect(has(ds, 'UC2009') || has(ds, 'UC2016')).toBe(false);
   });
   test('handle === handle → silent', async () => {
-    const ds = await diags(`${two}let r = (a === b);\n`);
+    const ds = await diags(`${two}let r = (a === b);\nprint(a, b);\n`);
     expect(has(ds, 'UC2009') || has(ds, 'UC2016')).toBe(false);
   });
   test('handle == null → silent (owned by null-safety)', async () => {
@@ -209,21 +213,21 @@ describe('12. quick-fix SHAPE differs by operand kind', () => {
     return { title: act.title, newText: edits[0].newText, count: edits.length };
   };
   test('object → is_equal(a, b) + helper insertion', async () => {
-    const f = await fixOf('let a = {p:1}, b = {p:1};\nlet r = (a == b);\n', '/tmp/refx-fo.uc');
+    const f = await fixOf('let a = {p:1}, b = {p:1};\nlet r = (a == b);\nprint(a, b);\n', '/tmp/refx-fo.uc');
     expect(f.newText).toBe('is_equal(a, b)');
     expect(f.count).toBe(2);
   });
   test('negated object → !is_equal(a, b)', async () => {
-    const f = await fixOf('let a = {p:1}, b = {p:1};\nlet r = (a !== b);\n', '/tmp/refx-fn.uc');
+    const f = await fixOf('let a = {p:1}, b = {p:1};\nlet r = (a !== b);\nprint(a, b);\n', '/tmp/refx-fn.uc');
     expect(f.newText).toBe('!is_equal(a, b)');
   });
   test('regexp → in-place ("" + a) == ("" + b), no helper', async () => {
-    const f = await fixOf('let a = /x/, b = /y/;\nlet r = (a == b);\n', '/tmp/refx-fr.uc');
+    const f = await fixOf('let a = /x/, b = /y/;\nlet r = (a == b);\nprint(a, b);\n', '/tmp/refx-fr.uc');
     expect(f.newText).toBe('("" + a) == ("" + b)');
     expect(f.count).toBe(1);
   });
   test('regexp negated → ("" + a) != ("" + b)', async () => {
-    const f = await fixOf('let a = /x/, b = /y/;\nlet r = (a !== b);\n', '/tmp/refx-frn.uc');
+    const f = await fixOf('let a = /x/, b = /y/;\nlet r = (a !== b);\nprint(a, b);\n', '/tmp/refx-frn.uc');
     expect(f.newText).toBe('("" + a) != ("" + b)');
   });
 });
@@ -237,7 +241,7 @@ describe('13. DELIBERATELY SILENT / not a reference comparison', () => {
     expect(has(await diags('function f(o){ return type(o) == "object"; }\n'), 'UC2009')).toBe(false);
   });
   test('int == int (scalars) → silent', async () => {
-    const ds = await diags('let a = 5, b = 6;\nlet r = (a == b);\n');
+    const ds = await diags('let a = 5, b = 6;\nlet r = (a == b);\nprint(a, b);\n');
     expect(has(ds, 'UC2009') || has(ds, 'UC2016')).toBe(false);
   });
   test('unknown == unknown → silent (never mis-flag dynamic)', async () => {

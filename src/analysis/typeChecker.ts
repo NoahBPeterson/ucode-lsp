@@ -2066,6 +2066,22 @@ export class TypeChecker {
       return;
     }
 
+    // A VARIABLE that still holds an unshared fresh reference literal is as
+    // impossible to == as the literal itself: `let yy = [1, 2]; if (xx == yy)`
+    // can only be true if something aliases yy's reference into xx, and a name
+    // with no other occurrence in the file cannot be aliased by anything.
+    // (Runtime-verified: pickRef([1,2]) and pickRef(sharedArr) both skip the
+    // branch; only `xx = yy` — an occurrence — makes it true.) The whole-AST
+    // occurrence walk is position-blind on purpose: an escape AFTER the
+    // comparison is reachable via loop back-edges, so it disqualifies too.
+    const freshVarL = this.unsharedFreshLiteralVar(node.left, node);
+    const freshVarR = freshVarL ? null : this.unsharedFreshLiteralVar(node.right, node);
+    if (freshVarL || freshVarR) {
+      const info = (freshVarL ?? freshVarR)!;
+      this.emitImpossibleFreshVariable(node, info.name, info.init);
+      return;
+    }
+
     const lt = this.getTypeOf(node.left), rt = this.getTypeOf(node.right);
     if (lt === undefined || rt === undefined) return;
     const L = this.baseMembers(lt), R = this.baseMembers(rt);
@@ -2136,6 +2152,94 @@ export class TypeChecker {
    * `==`/`===` any other operand). A function DECLARATION is a statement, not an
    * operand, so only the expression forms appear here.
    */
+  /** Does `operand` name a local variable that provably STILL holds the fresh
+   *  reference literal it was declared with? Requires: a plain VARIABLE whose
+   *  declarator init is a fresh reference literal, not exported (importers could
+   *  alias it), and whose name occurs NOWHERE else in the file — the declarator
+   *  id and exactly one occurrence inside the comparison are the only ones
+   *  allowed. Every alias route (reassignment, escape into a container or call,
+   *  closure capture, `export { name }`, a shadow, even `yy == yy`) adds an
+   *  occurrence and bails — conservative false negatives, never false positives. */
+  private unsharedFreshLiteralVar(operand: AstNode, cmpNode: BinaryExpressionNode): { name: string; init: AstNode } | null {
+    if (operand.type !== 'Identifier') return null;
+    const name = (operand as IdentifierNode).name;
+    const sym = this.symbolTable.resolveReference(name, operand.start);
+    if (!sym || sym.type !== SymbolType.VARIABLE) return null;
+    if (!sym.initNode || !this.isFreshReferenceLiteral(sym.initNode)) return null;
+    const ast = this.currentAST;
+    if (!ast) return null;
+
+    // `export let name = …` — the declarator id is the only occurrence, but the
+    // export hands the reference to importers. (`export { name }` needs no
+    // special case: the specifier is an Identifier occurrence.)
+    for (const stmt of (ast.body || [])) {
+      if (stmt.type !== 'ExportNamedDeclaration') continue;
+      const decl = (stmt as unknown as { declaration?: AstNode }).declaration;
+      if (decl?.type === 'VariableDeclaration') {
+        for (const d of ((decl as unknown as { declarations?: Array<{ id?: IdentifierNode }> }).declarations || [])) {
+          if (d?.id?.name === name) return null;
+        }
+      }
+    }
+
+    // Whole-file occurrence walk over Identifiers spelled `name`. Occurrences
+    // that resolve to a DIFFERENT symbol (an unrelated same-named local in
+    // another scope, or a shadow) don't alias this one and are skipped; any
+    // occurrence resolving to THIS symbol outside the declarator id and the
+    // single expected slot in the comparison disqualifies. Property keys and
+    // member names aren't variable references, but resolveReference happily
+    // resolves them to the in-scope symbol — a spurious count, which only ever
+    // BAILS (conservative: false negatives, never false positives).
+    let inCmp = 0;
+    const stack: unknown[] = [ast];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur || typeof cur !== 'object' || typeof (cur as { type?: unknown }).type !== 'string') continue;
+      const anode = cur as AstNode;
+      if (anode.type === 'Identifier' && (anode as IdentifierNode).name === name) {
+        if (anode.start === sym.declaredAt) {
+          // the declarator's own id
+        } else if (this.symbolTable.resolveReference(name, anode.start) !== sym) {
+          // a different symbol with the same name — cannot alias this one
+        } else if (anode.start >= cmpNode.start && anode.end <= cmpNode.end) {
+          inCmp++;
+          if (inCmp > 1) return null; // e.g. `yy == yy` — same ref, always TRUE
+        } else {
+          return null;
+        }
+      }
+      for (const k of Object.keys(anode)) {
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+        const v = (anode as unknown as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) stack.push(it); }
+        else stack.push(v);
+      }
+    }
+    if (inCmp !== 1) return null;
+    return { name, init: sym.initNode };
+  }
+
+  /** UC2009 for a comparison against a variable that still holds its unshared
+   *  fresh reference literal (see unsharedFreshLiteralVar). */
+  private emitImpossibleFreshVariable(node: BinaryExpressionNode, name: string, init: AstNode): void {
+    const op = node.operator;
+    const neg = op === '!=' || op === '!==';
+    const noun = init.type === 'ArrayExpression' ? 'array'
+      : init.type === 'ObjectExpression' ? 'object'
+      : (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression') ? 'function'
+      : 'regexp';
+    let message = `\`${name}\` still holds the brand-new ${noun} from its declaration and nothing else references it, so \`${op}\` — which compares ${noun} references, not contents — is always ${neg ? 'true' : 'false'} here.`;
+    if (this.wantsIsEqualFix(node)) {
+      message += noun === 'regexp'
+        ? ` To compare regex patterns, compare their string forms instead (e.g. \`("" + a) == ("" + b)\`).`
+        : ` Use a structural deep-equal (e.g. \`is_equal(a, b)\`) to compare by value.`;
+    }
+    this.errors.push({
+      message, start: node.start, end: node.end, severity: 'error', code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
+      ...(this.wantsIsEqualFix(node) ? { data: this.referenceEqualityData(node) } : {}),
+    });
+  }
+
   private isFreshReferenceLiteral(n: AstNode): boolean {
     if (!n) return false;
     switch (n.type) {
@@ -6286,14 +6390,29 @@ export class TypeChecker {
     return null;
   }
 
+  /** Is this type exact under ucode's LOOSE `==`? Oracle-verified: `==` between
+   *  references is pointer identity ([1]==[1] false, /x/==/x/ false, f==f true)
+   *  and null only loose-equals null — but scalars coerce freely (0=="0",
+   *  ""==false, "1"==true, 1==1.0 all TRUE), so a scalar match proves nothing
+   *  (docs/type-soundness-audit.md N-1). */
+  private isLooseEqualityExact(member: SingleType): boolean {
+    const base = singleTypeToBase(member);
+    return base === UcodeType.ARRAY || base === UcodeType.OBJECT
+      || base === UcodeType.FUNCTION || base === UcodeType.REGEX
+      || base === UcodeType.NULL;
+  }
+
   /**
    * Extract a variable-to-variable equality guard.
    * For `if (x != y) return;`, after the early exit x is narrowed to y's type.
+   * Loose `==`/`!=` only qualifies when EVERY member of the other side's type is
+   * reference-exact (see isLooseEqualityExact); strict `===`/`!==` always does.
    */
   private extractVariableEqualityGuard(
     binaryExpr: BinaryExpressionNode,
     variableName: string,
-    isEquality: boolean
+    isEquality: boolean,
+    isStrict: boolean
   ): TypeGuardInfo | null {
     let otherVarName: string | null = null;
 
@@ -6326,6 +6445,13 @@ export class TypeChecker {
     const otherType = this.getEffectiveSymbolDataType(otherSymbol, otherNode.start);
     // Only narrow if the other variable has a known type
     if (otherType === UcodeType.UNKNOWN) return null;
+
+    // Loose equality coerces among scalars, so `x == y` with a scalar-typed y
+    // proves nothing about x (0 == "0" is true — N-1). Only all-reference-exact
+    // other types qualify under ==/!=.
+    if (!isStrict && !getUnionTypes(otherType).every(m => this.isLooseEqualityExact(m))) {
+      return null;
+    }
 
     return {
       variableName,
@@ -6575,37 +6701,105 @@ export class TypeChecker {
 
     // Variable-to-variable equality: if (x == y) or if (x != y)
     // When one side is variableName and the other is a variable with known type,
-    // narrow variableName to the other variable's type
+    // narrow variableName to the other variable's type. Loose ==/!= is gated to
+    // reference-exact other types inside the extractor (N-1).
     if (condition.type === 'BinaryExpression') {
       const binaryExpr = condition as BinaryExpressionNode;
       if (binaryExpr.operator === '==' || binaryExpr.operator === '===' ||
           binaryExpr.operator === '!=' || binaryExpr.operator === '!==') {
         const isEquality = binaryExpr.operator === '==' || binaryExpr.operator === '===';
-        const guard = this.extractVariableEqualityGuard(binaryExpr, variableName, isEquality);
+        const isStrict = binaryExpr.operator === '===' || binaryExpr.operator === '!==';
+        const guard = this.extractVariableEqualityGuard(binaryExpr, variableName, isEquality, isStrict);
         if (guard) return guard;
       }
     }
 
-    // Numeric comparison narrowing: variable <op> numericLiteral or numericLiteral <op> variable
-    // e.g., if (cpu < 0) narrows cpu to integer | double in the true branch
+    // Numeric comparison narrowing: variable <op> numericLiteral or numericLiteral <op> variable.
+    // A TRUE numeric comparison does NOT prove integer|double — numeric strings and
+    // bools coerce ("10">5 and true>0 are TRUE) — so fabricating a numeric type from
+    // unknown is unsound (docs/type-soundness-audit.md N-3). What it DOES prove
+    // (oracle-verified, both binaries):
+    //   - the value is not an array/object/function/regex (references ALWAYS compare
+    //     false: []<5, {}<5, f<5, /x/<5 all false), and
+    //   - the value is not null WHEN the op/literal combo excludes 0 (null behaves
+    //     exactly as 0: null<5 true, null>0 false, null>=0 true).
+    // So: refine an already-known union by removing those members; produce no guard
+    // for an unknown base or when nothing is removable.
     if (condition.type === 'BinaryExpression') {
       const binaryExpr = condition as BinaryExpressionNode;
       if (binaryExpr.operator === '<' || binaryExpr.operator === '>' ||
           binaryExpr.operator === '<=' || binaryExpr.operator === '>=') {
         let matchedName: string | null = null;
+        let idNode: AstNode | null = null;
+        let litValue: number | null = null;
+        let op = binaryExpr.operator;
         if (binaryExpr.left.type === 'Identifier' && binaryExpr.right.type === 'Literal' &&
             typeof (binaryExpr.right as any).value === 'number') {
           matchedName = (binaryExpr.left as any).name;
+          idNode = binaryExpr.left;
+          litValue = (binaryExpr.right as any).value;
         } else if (binaryExpr.right.type === 'Identifier' && binaryExpr.left.type === 'Literal' &&
                    typeof (binaryExpr.left as any).value === 'number') {
           matchedName = (binaryExpr.right as any).name;
+          idNode = binaryExpr.right;
+          litValue = (binaryExpr.left as any).value;
+          // `K < x` ⇔ `x > K`: mirror the operator so the 0-exclusion test below
+          // always reads as <variable> <op> <literal>.
+          op = op === '<' ? '>' : op === '>' ? '<' : op === '<=' ? '>=' : '<=';
         }
-        if (matchedName === variableName) {
+        if (matchedName === variableName && idNode && litValue !== null) {
+          // What can pass `<var> <op> K`? Compute the exact passable set from the
+          // op/literal (oracle-verified, both binaries):
+          //   - integers/doubles: obviously (some value always passes).
+          //   - strings: ALWAYS possible — numeric strings coerce to their value
+          //     ("10" > 5, "5.5" > 5, "-3" < 0 all TRUE) and numbers are unbounded.
+          //   - booleans: coerce to 0/1, so they pass iff 0 or 1 passes
+          //     (`false < 5` TRUE, `true > 5` FALSE).
+          //   - null: behaves exactly as 0 (`null >= 0` TRUE, `null > 0` FALSE).
+          //   - references: NEVER ([]<5, {}<5, f<5, /x/<5 all false).
+          const k = litValue;
+          const cmp = (v: number): boolean =>
+            op === '<' ? v < k : op === '>' ? v > k : op === '<=' ? v <= k : v >= k;
+          const zeroPasses = cmp(0);
+          const boolPasses = cmp(0) || cmp(1);
+          const passable: SingleType[] = [UcodeType.INTEGER, UcodeType.DOUBLE, UcodeType.STRING];
+          if (boolPasses) passable.push(UcodeType.BOOLEAN);
+          if (zeroPasses) passable.push(UcodeType.NULL);
+
+          const sym = this.symbolTable.resolveReference(variableName, idNode.start);
+          const baseType = sym ? this.getEffectiveSymbolDataType(sym, idNode.start) : UcodeType.UNKNOWN as UcodeDataType;
+          if (baseType === UcodeType.UNKNOWN || baseType === UcodeType.ANY) {
+            // From unknown, the true edge soundly proves membership in the
+            // passable set — every member of it really can pass, and nothing
+            // outside it can.
+            return {
+              variableName,
+              narrowToType: null,
+              isNegative: false,
+              equalityNarrowType: createUnionType(passable)
+            };
+          }
+          // Known base: keep each member iff it can pass; an unknown MEMBER
+          // tightens to the passable set (it could be any passing value).
+          let changed = false;
+          const kept: SingleType[] = [];
+          for (const m of getUnionTypes(baseType)) {
+            const mb = singleTypeToBase(m);
+            if (mb === UcodeType.ARRAY || mb === UcodeType.OBJECT ||
+                mb === UcodeType.FUNCTION || mb === UcodeType.REGEX) { changed = true; continue; }
+            if (mb === UcodeType.NULL && !zeroPasses) { changed = true; continue; }
+            if (mb === UcodeType.BOOLEAN && !boolPasses) { changed = true; continue; }
+            if (mb === UcodeType.UNKNOWN) { kept.push(...passable); changed = true; continue; }
+            kept.push(m);
+          }
+          if (!changed || kept.length === 0) {
+            return null; // nothing to refine, or a contradiction (N-7's business)
+          }
           return {
             variableName,
             narrowToType: null,
             isNegative: false,
-            equalityNarrowType: createUnionType([UcodeType.INTEGER, UcodeType.DOUBLE])
+            equalityNarrowType: createUnionType(kept)
           };
         }
       }

@@ -252,11 +252,19 @@ describe('Equality Narrowing Hover', function () {
       assert.ok(text.includes('array'), `Expected array type, got: ${text}`);
     });
 
-    it('should narrow unknown param to string via equality with string var', async function () {
+    // CONTRACT CHANGE (0.7.90, docs/type-soundness-audit.md N-1): loose ==/!=
+    // COERCES among scalars (0=="0", true==1, 1==1.0 — all TRUE in ucode,
+    // oracle-verified), so a scalar match proves nothing about the type. The
+    // scalar variants below use STRICT !== (same-type-only, 1===1.0 is FALSE),
+    // which exercises the identical narrowing machinery soundly. Loose !=
+    // continues to narrow for reference types (array/object/function above and
+    // below) — == on references is pointer identity. The loose-scalar
+    // no-narrowing contract is pinned in test-coercing-comparison-guards.test.js.
+    it('should narrow unknown param to string via strict equality with string var', async function () {
       const lines = [
         'function test5b(x) {',
         '    let known = "hello";',
-        '    if (x != known)',
+        '    if (x !== known)',
         '        return;',
         '    let y = x;',
         '    print(y);',
@@ -267,11 +275,11 @@ describe('Equality Narrowing Hover', function () {
       assert.ok(text.includes('string'), `Expected string type, got: ${text}`);
     });
 
-    it('should narrow unknown param to integer via equality with integer var', async function () {
+    it('should narrow unknown param to integer via strict equality with integer var', async function () {
       const lines = [
         'function test5c(x) {',
         '    let known = 42;',
-        '    if (x != known)',
+        '    if (x !== known)',
         '        return;',
         '    let y = x;',
         '    print(y);',
@@ -297,11 +305,11 @@ describe('Equality Narrowing Hover', function () {
       assert.ok(text.includes('object'), `Expected object type, got: ${text}`);
     });
 
-    it('should narrow unknown param to boolean via equality with boolean var', async function () {
+    it('should narrow unknown param to boolean via strict equality with boolean var', async function () {
       const lines = [
         'function test5e(x) {',
         '    let known = true;',
-        '    if (x != known)',
+        '    if (x !== known)',
         '        return;',
         '    let y = x;',
         '    print(y);',
@@ -312,11 +320,11 @@ describe('Equality Narrowing Hover', function () {
       assert.ok(text.includes('boolean'), `Expected boolean type, got: ${text}`);
     });
 
-    it('should narrow unknown param to double via equality with double var', async function () {
+    it('should narrow unknown param to double via strict equality with double var', async function () {
       const lines = [
         'function test5f(x) {',
         '    let known = 3.14;',
-        '    if (x != known)',
+        '    if (x !== known)',
         '        return;',
         '    let y = x;',
         '    print(y);',
@@ -415,11 +423,12 @@ describe('Equality Narrowing Hover', function () {
       assert.ok(!text.includes(': `unknown`'), `Reversed operands should still narrow, got: ${text}`);
     });
 
-    it('if (known == x) { ... } should narrow x inside body', async function () {
+    // Strict === here — loose == with a scalar no longer narrows (N-1, 0.7.90).
+    it('if (known === x) { ... } should narrow x inside body', async function () {
       const lines = [
         'function test7b(x) {',
         '    let known = "hello";',
-        '    if (known == x) {',
+        '    if (known === x) {',
         '        let y = x;',
         '        print(y);',
         '    }',
@@ -442,7 +451,7 @@ describe('Equality Narrowing Hover', function () {
         '    let str = "hello";',
         '    if (x != arr)',
         '        return;',
-        '    if (x != str)',
+        '    if (x !== str)',
         '        return;',
         '    let y = x;',
         '    print(y);',
@@ -461,7 +470,7 @@ describe('Equality Narrowing Hover', function () {
         '    let str = "hello";',
         '    if (x != arr)',
         '        return;',
-        '    if (z != str)',
+        '    if (z !== str)',
         '        return;',
         '    let a = x;',
         '    let b = z;',
@@ -553,7 +562,7 @@ describe('Equality Narrowing Hover', function () {
       const lines = [
         'function test10c(x) {',
         '    let known = "expected";',
-        '    if (x != known) {',
+        '    if (x !== known) {',
         '        die("wrong");',
         '    }',
         '    let y = x;',

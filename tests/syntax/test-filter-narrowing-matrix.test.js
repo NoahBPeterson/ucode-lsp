@@ -64,7 +64,11 @@ test('26 guard on a different variable → no narrowing of x', async () => expec
 
 // ── D. Predicates that are NOT type guards → element unchanged ───────────────
 test('27 length(x) > 0 → no narrowing', async () => expect(await restR(F('(x) => length(x) > 0'))).toBe('array'));
-test('28 numeric x > 5 → array<integer | double> (reused numeric-comparison guard)', async () => expect(await restR(F('(x) => x > 5'))).toBe('array<integer | double>'));
+// CONTRACT CHANGE (0.7.90, N-3): `x > 5` proves the SOUND passable set, not
+// integer|double — numeric strings coerce ("10">5 is TRUE) so string stays;
+// booleans coerce to 0/1 and neither beats 5, so boolean drops (as do null and
+// every reference type). See test-coercing-comparison-guards.test.js.
+test('28 numeric x > 5 → array<integer | double | string> (sound passable set)', async () => expect(await restR(F('(x) => x > 5'))).toBe('array<integer | double | string>'));
 test('29 member truthy x.enabled → no narrowing of x', async () => expect(await restR(F('(x) => x.enabled'))).toBe('array'));
 test('30 opaque call helper(x) → no narrowing', async () => expect(await restR(F('(x) => index(x, "a") != -1'))).toBe('array'));
 test('31 constant true → no narrowing', async () => expect(await restR(F('(x) => true'))).toBe('array'));
