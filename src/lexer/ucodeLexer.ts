@@ -917,7 +917,11 @@ export class UcodeLexer {
         let classLen = 0; // body chars seen in the current class (a leading '^' is not counted)
         for (let i = 0; i < body.length; i++) {
             const ch = body[i]!;
-            if (ch === '\\') { i++; continue; } // escaped char: skip it and its operand
+            // Escaped char: skip it and its operand. Inside a class it is still a
+            // class MEMBER — without counting it, `[^\/]`'s closing `]` would be
+            // read as the leading-literal-`]` form and the class would swallow
+            // the rest of the pattern (docs/regex-escaped-class-unbalanced-paren-fp.md).
+            if (ch === '\\') { i++; if (inClass) classLen++; continue; }
             if (inClass) {
                 if (ch === '^' && classLen === 0) { continue; }       // negation marker
                 if (ch === ']' && classLen > 0) { inClass = false; continue; } // ']' first is literal

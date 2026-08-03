@@ -111,6 +111,29 @@ for (const ok of ['/foo(bar)/', '/[a-z]/', '/[[:alpha:]]/', '/a\\d+/', '/(a|b)+/
   });
 }
 
+// docs/regex-escaped-class-unbalanced-paren-fp.md: an escaped char inside a
+// bracket class is a class MEMBER — it must advance the member count, or the
+// following `]` is mistaken for the leading-literal-`]` form and the class
+// swallows the rest of the pattern (glinet ksmbd.uc:25 / led.uc:22 FPs).
+// All six run correctly in real ucode (oracle-verified).
+for (const ok of [
+  '/([^\\/]+)$/',      // basename: chars after last slash
+  '/\\[([^\\]]+)\\]/', // text inside [brackets]
+  '/a\\)b/',           // escaped paren outside a class
+  '/[()]/',            // parens as class literals
+  '/(a(b)c)/',         // balanced nesting
+  '/[]\\/]/',          // leading-literal-] class + escaped slash (0.7.75 rule)
+]) {
+  test(`escape-and-class balanced regex ${ok} is not flagged`, () => {
+    const errs = lex(`let re = ${ok};`).errors;
+    expect(errs.length).toBe(0);
+  });
+}
+test('genuinely unbalanced /(a/ and /([^\\]]/ still flag', () => {
+  expect(lex('let re = /(a/;').errors.some((e) => e.message.includes('Unbalanced parenthesis'))).toBe(true);
+  expect(lex('let re = /([^\\]]/;').errors.some((e) => e.message.includes('Unbalanced parenthesis'))).toBe(true);
+});
+
 // ── T55: `/*/` is a complete empty block comment ─────────────────────────────
 test('/*/ is consumed as an empty comment (no Unterminated comment)', () => {
   const { tokens, errors } = lex('let re = /*/;');
