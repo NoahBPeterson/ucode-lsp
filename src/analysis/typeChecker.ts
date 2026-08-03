@@ -1479,6 +1479,17 @@ export class TypeChecker {
     return null;
   }
 
+  /** A computed dict read `O[k]` is provably non-null when the key carries
+   *  keys-of provenance for that very map: `for (let k in O) O[k]` (or via
+   *  `keys(O)` / a keys-array alias). Anything else — a parameter, a computed
+   *  string, a key of a DIFFERENT map — proves nothing, and the read keeps its
+   *  honest `| null` (docs/type-soundness-audit.md H-3). */
+  private keyProvesDictMembership(node: MemberExpressionNode, dictName: string): boolean {
+    if (node.property.type !== 'Identifier') return false;
+    const keySym = this.symbolTable.resolveReference((node.property as IdentifierNode).name, node.property.start);
+    return keySym?.keysOfSymbol === dictName;
+  }
+
   /** The group-by / bucket idiom: `m[k] ??= []; push(m[k], v)` (or `||= []`).
    *  A computed read `base[key]` is provably a (non-null) `array` when BOTH hold:
    *   1. It is preceded, in the SAME straight-line statement list, by a
@@ -4141,13 +4152,20 @@ export class TypeChecker {
 
     // Dictionary value-type FIRST: `O[expr]` where O is a string-keyed map whose
     // VALUE shape was inferred (valuePropertyTypes). Any key yields a value of
-    // that shape → return OBJECT (the nested shape rides on the `let v = O[k]`
-    // binding copy in the analyzer). Checked before the per-key keys-of union so
-    // a map with an incidental static property still reads as its value shape.
+    // that shape OR null — a missing key reads as null, and nothing proves the
+    // key present (docs/type-soundness-audit.md H-3) — UNLESS the key carries
+    // keys-of provenance for this very map (`for (let k in O) O[k]`), which does
+    // prove presence. The nested shape rides on the `let v = O[k]` binding copy
+    // in the analyzer. Checked before the per-key keys-of union so a map with an
+    // incidental static property still reads as its value shape.
     if (node.object.type === 'Identifier' && node.computed) {
-      const dictSym = this.symbolTable.resolveReference((node.object as IdentifierNode).name, node.start);
+      const dictName = (node.object as IdentifierNode).name;
+      const dictSym = this.symbolTable.resolveReference(dictName, node.start);
       if (dictSym?.valuePropertyTypes && dictSym.valuePropertyTypes.size > 0) {
-        return UcodeType.OBJECT as UcodeDataType;
+        if (this.keyProvesDictMembership(node, dictName)) {
+          return UcodeType.OBJECT as UcodeDataType;
+        }
+        return createUnionType([UcodeType.OBJECT, UcodeType.NULL]);
       }
     }
 

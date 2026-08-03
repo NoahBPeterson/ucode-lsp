@@ -2429,24 +2429,39 @@ export class FileResolver {
 
         // Find return statements at the top level of the function body (not nested functions).
         // returnPropMaps[i] / returnLocMaps[i] correspond to the same i-th return branch.
+        // Non-object-literal returns (explicit `return null`, `return expr`, bare
+        // `return;`) land in extraReturnTypes so the factory's return type stays
+        // honest (docs/type-soundness-audit.md H-2).
         const returnPropMaps: Map<string, UcodeDataType>[] = [];
         const returnLocMaps: Map<string, { start: number; end: number }>[] = [];
-        this.collectReturnObjectProperties(bodyStmts, localFuncNodes, localVarInits, topLevelFuncs, returnPropMaps, returnLocMaps);
+        const extraReturnTypes: UcodeDataType[] = [];
+        this.collectReturnObjectProperties(bodyStmts, localFuncNodes, localVarInits, topLevelFuncs, returnPropMaps, returnLocMaps, extraReturnTypes);
 
         if (returnPropMaps.length === 0) return null;
 
-        // Intersection merge: keep properties present in ALL return branches
+        // Intersection merge on KEYS (only always-present properties survive),
+        // union on their TYPES — branch 0's type is not more true than branch 1's
+        // (`{v: 1}` / `{v: "s"}` must read back as `integer | string`).
         const merged = new Map<string, UcodeDataType>(returnPropMaps[0]);
         for (let i = 1; i < returnPropMaps.length; i++) {
             const entry = returnPropMaps[i]!;
             for (const key of [...merged.keys()]) {
                 if (!entry.has(key)) {
                     merged.delete(key);
+                    continue;
                 }
+                const a = merged.get(key)!;
+                const b = entry.get(key)!;
+                if (a !== b) merged.set(key, this.unionTypes(a, b));
             }
         }
 
         if (merged.size === 0) return null;
+
+        // A body that can fall off the end returns null implicitly.
+        if (!this.blockAlwaysReturns(funcBody)) {
+            extraReturnTypes.push(UcodeType.NULL as UcodeDataType);
+        }
 
         // Definition locations taken from the first return branch (offsets are
         // file-local; the caller stamps the file URI).
@@ -2465,8 +2480,16 @@ export class FileResolver {
             (funcNode as FunctionDeclarationNode).params || []
         );
 
+        // The returned OBJECT is joined with every non-object branch (and the
+        // implicit fall-through null) — a caller deref without a guard is the
+        // exact crash the null-safety warnings exist for.
+        let returnType: UcodeDataType = UcodeType.OBJECT as UcodeDataType;
+        for (const t of extraReturnTypes) {
+            returnType = this.unionTypes(returnType, t);
+        }
+
         const returnInfo: FactoryReturnInfo = {
-            returnType: UcodeType.OBJECT as UcodeDataType,
+            returnType,
             returnPropertyTypes: merged
         };
         if (propertyFunctionReturnTypes.size > 0) {
@@ -2488,7 +2511,8 @@ export class FileResolver {
         localVarInits: Map<string, AstNode>,
         topLevelFuncs: Map<string, AstNode>,
         result: Map<string, UcodeDataType>[],
-        resultLocs: Map<string, { start: number; end: number }>[]
+        resultLocs: Map<string, { start: number; end: number }>[],
+        extraReturnTypes?: UcodeDataType[]
     ): void {
         for (const stmt of stmts) {
             if (stmt.type === 'ReturnStatement') {
@@ -2500,6 +2524,12 @@ export class FileResolver {
                         result.push(propTypes);
                         resultLocs.push(locs);
                     }
+                } else if (extraReturnTypes) {
+                    // Non-object-literal branch: bare `return;` is null in ucode;
+                    // anything else is typed like inferFunctionReturnType would.
+                    extraReturnTypes.push(arg
+                        ? this.inferReturnArgType(arg, localVarInits)
+                        : UcodeType.NULL as UcodeDataType);
                 }
             } else if (stmt.type === 'FunctionDeclaration' || stmt.type === 'FunctionExpression' || stmt.type === 'ArrowFunctionExpression') {
                 // Skip nested function bodies
@@ -2508,16 +2538,61 @@ export class FileResolver {
                 const ifStmt = stmt as any;
                 if (ifStmt.consequent) {
                     const block = ifStmt.consequent.type === 'BlockStatement' ? ifStmt.consequent.body : [ifStmt.consequent];
-                    this.collectReturnObjectProperties(block, localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs);
+                    this.collectReturnObjectProperties(block, localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs, extraReturnTypes);
                 }
                 if (ifStmt.alternate) {
                     const block = ifStmt.alternate.type === 'BlockStatement' ? ifStmt.alternate.body : [ifStmt.alternate];
-                    this.collectReturnObjectProperties(block, localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs);
+                    this.collectReturnObjectProperties(block, localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs, extraReturnTypes);
                 }
             } else if (stmt.type === 'BlockStatement') {
-                this.collectReturnObjectProperties((stmt as any).body || [], localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs);
+                this.collectReturnObjectProperties((stmt as any).body || [], localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs, extraReturnTypes);
             }
         }
+    }
+
+    /** Union two data types, flattening nested unions (createUnionType dedups). */
+    private unionTypes(a: UcodeDataType, b: UcodeDataType): UcodeDataType {
+        const members: SingleType[] = [];
+        for (const t of [a, b]) {
+            if (typeof t === 'string') {
+                members.push(t as UcodeType);
+            } else if (isUnionType(t)) {
+                members.push(...t.types);
+            } else if (isObjectType(t) || isArrayType(t)) {
+                members.push(t as SingleType);
+            } else {
+                members.push(UcodeType.UNKNOWN);
+            }
+        }
+        return createUnionType(members);
+    }
+
+    /** Conservative "every path returns" check, mirroring the shape of
+     *  typeChecker.blockAlwaysTerminates (minus the symbol-table lookup for
+     *  user `neverReturns` functions — unavailable here). False negatives just
+     *  add `| null` to a factory's return union: noise, never a missed crash. */
+    private blockAlwaysReturns(block: AstNode | null | undefined): boolean {
+        if (!block || typeof block !== 'object') return false;
+        const stmts: AstNode[] = block.type === 'BlockStatement' ? ((block as any).body || []) : [block];
+        if (stmts.length === 0) return false;
+        const last = stmts[stmts.length - 1]!;
+        if (last.type === 'ReturnStatement') return true;
+        if (last.type === 'ExpressionStatement') {
+            const expr = (last as any).expression;
+            if (expr?.type === 'CallExpression' && expr.callee?.type === 'Identifier'
+                && (expr.callee.name === 'die' || expr.callee.name === 'exit')) return true;
+        }
+        if (last.type === 'TryStatement') {
+            const t = last as any;
+            if (!this.blockAlwaysReturns(t.block)) return false;
+            return !t.handler || this.blockAlwaysReturns(t.handler.body);
+        }
+        if (last.type === 'IfStatement') {
+            const i = last as any;
+            return this.blockAlwaysReturns(i.consequent)
+                && !!i.alternate && this.blockAlwaysReturns(i.alternate);
+        }
+        return false;
     }
 
     /**

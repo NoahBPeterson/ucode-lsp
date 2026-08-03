@@ -3208,15 +3208,27 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
 
         // Dictionary value-shape binding: `let v = O[expr]` where O is a map with
-        // an inferred value shape → v gets that shape (so `v.foo` resolves). Runs
-        // after the rich-type upgrade above so it isn't clobbered.
+        // an inferred value shape → v gets that shape (so `v.foo` resolves), but
+        // `object | null` — a missing key reads as null (H-3). A truthiness guard
+        // narrows the null away; unguarded derefs warn. Exception: a key with
+        // keys-of provenance for this very map (`for (let k in O) O[k]`) proves
+        // presence, so the binding stays definite. Runs after the rich-type
+        // upgrade above so it isn't clobbered.
         if (node.init.type === 'MemberExpression') {
           const mem = node.init as MemberExpressionNode;
           if (mem.computed && mem.object.type === 'Identifier') {
-            const objSym = this.symbolTable.resolveReference((mem.object as IdentifierNode).name, mem.object.start);
+            const objName = (mem.object as IdentifierNode).name;
+            const objSym = this.symbolTable.resolveReference(objName, mem.object.start);
             const sym = this.symbolTable.lookupOpenScopes(name);
             if (objSym?.valuePropertyTypes && objSym.valuePropertyTypes.size > 0 && sym) {
-              sym.dataType = UcodeType.OBJECT as UcodeDataType;
+              let keyProvesMembership = false;
+              if (mem.property.type === 'Identifier') {
+                const keySym = this.symbolTable.resolveReference((mem.property as IdentifierNode).name, mem.property.start);
+                keyProvesMembership = keySym?.keysOfSymbol === objName;
+              }
+              sym.dataType = keyProvesMembership
+                ? UcodeType.OBJECT as UcodeDataType
+                : createUnionType([UcodeType.OBJECT, UcodeType.NULL]);
               sym.propertyTypes = objSym.valuePropertyTypes;
             }
           }
@@ -4459,15 +4471,29 @@ export class SemanticAnalyzer extends BaseVisitor {
           symbol.parameters = paramInfos;
         }
 
-        // Merge return property types (intersection: keep props present in ALL return branches)
+        // Merge return property types: intersection on KEYS (only props present
+        // in ALL return branches survive), union on their TYPES — branch 0's
+        // type is not more true than branch 1's (H-2 sub-bug: `{v: 1}` /
+        // `{v: "s"}` must read back as `integer | string`).
         const returnPropEntries = this.functionReturnPropertyTypes.get(node) || [];
         if (returnPropEntries.length > 0) {
           const merged = new Map<string, UcodeDataType>(returnPropEntries[0]);
           for (let i = 1; i < returnPropEntries.length; i++) {
             const entry = returnPropEntries[i]!;
-            for (const key of merged.keys()) {
+            for (const key of [...merged.keys()]) {
               if (!entry.has(key)) {
                 merged.delete(key);
+                continue;
+              }
+              const a = merged.get(key)!;
+              const b = entry.get(key)!;
+              if (a !== b) {
+                const members: SingleType[] = [];
+                for (const t of [a, b]) {
+                  if (typeof t === 'string') members.push(t as UcodeType);
+                  else members.push(...getUnionTypes(t));
+                }
+                merged.set(key, createUnionType(members));
               }
             }
           }

@@ -40,10 +40,28 @@ root-cause hint with same-line echoes suppressed (user's 25-error file -> 2).
 Binding-path note: declarator inference for member reads still uses the flat map
 (test-global-object-property-tracking reverted to original expectations, documented
 in-file) - unifying it with propertyTypeAt is part of H-3/H-5.
+0.7.86 IMPLEMENTED H-2 + H-3 (container reads carry | null):
+- H-3: dict value-shape reads `m[k]` and the `let v = m[k]` binding are now
+  `object | null` (typeChecker dict branch + semanticAnalyzer binding site).
+  EXEMPTION: a key with keys-of provenance for that very map
+  (`for (let k in m) m[k]`, keysOfSymbol) proves presence -> stays definite.
+  Without it: 6 FPs in glinet parental-control.uc; with it: corpus byte-identical.
+  The bucket `??=` gate still runs first (dominated reads stay definite array).
+- H-2: computeFunctionReturnInfo no longer hard-codes OBJECT — non-object-literal
+  returns are collected (extraReturnTypes), a conservative blockAlwaysReturns
+  (fileResolver-local mirror of blockAlwaysTerminates, no neverReturns lookup)
+  adds the implicit fall-through null, and the final returnType is the union.
+  Sub-bug fixed BOTH places: the return-branch property merge now intersects
+  KEYS but unions TYPES (fileResolver + the in-file twin in
+  visitFunctionDeclaration) — `{v:1}` / `{v:"s"}` reads back integer | string.
+- hover.ts minimal-member fallback extended to `object | null` receivers so a
+  dropped-by-intersection member still hovers `unknown` instead of nothing.
+- Suite: tests/diagnostics/test-container-read-null.test.js (13; oracle-verified
+  crash shapes + keys-of/bucket/guard/total-factory controls).
 REMAINING (phases 5-6, not started): N-1 loose == var narrowing, N-3 numeric guard,
-N-6 engine assignment transfer, N-7 NEVER laundering, H-2 cross-file factory, H-3
-dict-read null, H-5 index history, H-6 literal unknown elements, H-7 cross-file
-builtin shims, I-5 global binder gate, I-6/I-7 misc writers, loop contract decision.
+N-6 engine assignment transfer, N-7 NEVER laundering, H-5 index history, H-6
+literal unknown elements, H-7 cross-file builtin shims, I-5 global binder gate,
+I-6/I-7 misc writers, loop contract decision.
 Original audit below. Requested after the
 0.7.81 (identifier) and 0.7.84 (member) fixes: "where else do we incorrectly reduce
 `unknown` from the type?" Three parallel code audits (identifier SSA, narrowing/joins,

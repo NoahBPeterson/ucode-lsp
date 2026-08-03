@@ -1058,7 +1058,13 @@ export function handleHover(
                     // member's type, but returning nothing leaves the user no feedback on
                     // `.prop`. Surface a minimal hover so the member still shows *something*.
                     const baseTypeStr = typeToString(symbol.dataType);
-                    if (baseTypeStr === 'unknown' || baseTypeStr === 'any' || baseTypeStr === 'object') {
+                    // `object | null` receivers (dict value-shape reads, H-3) get the
+                    // same minimal member hover a bare `object` does — the null side
+                    // is the guard's problem, not the member's.
+                    const isObjectOrNull = isUnionType(symbol.dataType)
+                        && getUnionTypes(symbol.dataType).every(m => m === UcodeType.OBJECT || m === UcodeType.NULL)
+                        && getUnionTypes(symbol.dataType).includes(UcodeType.OBJECT);
+                    if (baseTypeStr === 'unknown' || baseTypeStr === 'any' || baseTypeStr === 'object' || isObjectOrNull) {
                         return {
                             contents: {
                                 kind: MarkupKind.Markdown,
