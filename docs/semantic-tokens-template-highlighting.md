@@ -6,7 +6,11 @@ demonstrated; the fix is a server-side semantic-tokens provider.
 ## The problem
 
 ucode's mode is **invocation-determined** (`utpl` / `ucode -T` = template; `ucode` / `-R` =
-raw; default raw), both modes use the `.uc` extension, and there is **no `.ut` convention**.
+raw; default raw), and template files often still use the `.uc` extension. (CORRECTION
+2026-08-03: LuCI DOES use a `.ut` convention for its templates — a `ucode-template`
+language + wrapper grammar for `.ut` is specced ready-to-land in
+docs/luci-template-runtime-support.md Part 0. This ticket remains relevant for
+TEMPLATE-MODE `.uc` files, where only content detection can tell.)
 In a TEMPLATE file, everything outside `{% … %}` / `{{ … }}` is literal output text — so a
 `//` out there is **not a comment, it prints**. Example (run with `utpl`):
 
