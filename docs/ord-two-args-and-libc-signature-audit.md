@@ -68,6 +68,17 @@ Methodology (established tooling):
    doc recording per-pin signatures for every audited function, and corpus
    differential runs to vet fallout.
 
+### Audited so far (per-pin source extraction, 2026-08-03)
+
+| Function | 22.03 `46d93c9c` | 23.05 `1a8a0bcf` | 24.10 `3f64c808` | 25.12 `85922056` | main `b885dd0` | Verdict |
+|----------|------------------|------------------|------------------|------------------|----------------|---------|
+| `ord`    | 2-arg, neg-from-end | identical | identical | identical | identical | NO gating; modeled 0.7.91 |
+| `chr`    | variadic, clamp 0..255, coerce-to-0 | identical | identical | identical | identical | NO gating; modeled 0.7.91 |
+
+(uc_chr byte-identical at all five pins; uc_ord's only cross-pin diff is doc
+comments around the NEXT function. Extraction: `git -C ucode show '<pin>:lib.c'`
+— quote the pathspec, zsh eats `:l` as a history modifier.)
+
 Known-good context to not re-litigate: return TYPES were audited in
 reference_return_type_audit (memory) and hardened through 0.7.85–0.7.90
 (pop/shift null, split null, match tuple/coercion) — this audit is about
