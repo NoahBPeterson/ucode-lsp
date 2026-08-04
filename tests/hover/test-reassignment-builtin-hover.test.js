@@ -93,18 +93,33 @@ describe('builtin return type survives reassignment/redeclaration in hover', () 
     const lit = await t('', 'ord("A")', 0);
     expect(lit).toContain('integer');
     expect(lit).not.toContain('null');
-    // empty literal -> str[0] is out of bounds -> null possible
+    // empty literal -> str[0] is PROVABLY out of bounds -> definite null since
+    // 0.7.91 (constant-bounds refinement; a strict-gated always-null warning
+    // fires too — see test-ord-two-args.test.js)
     const empty = await t('', 'ord("")', 0);
-    expect(empty).toContain('integer');
     expect(empty).toContain('null');
-    // string variable could be "" -> null possible
-    const v = await t('let s = "x";\n', 'ord(s)', 1);
+    expect(empty).not.toContain('integer');
+    // REASSIGNED string variable could be "" -> null possible. (Since 0.7.91 a
+    // never-reassigned `let s = "x"` constant-folds to a provable in-bounds read,
+    // so the variable must actually be mutable to keep the null.)
+    const v = await t('let s = "x";\nif (length(ARGV) > 0)\n    s = "";\n', 'ord(s)', 3);
     expect(v).toContain('integer');
     expect(v).toContain('null');
-    // position argument -> can be out of bounds -> null possible
+    // literal position INSIDE a literal string is provably in bounds since 0.7.91
+    // (ord two-arg support, docs/ord-two-args-and-libc-signature-audit.md) -> definite integer
     const pos = await t('', 'ord("A", 0)', 0);
     expect(pos).toContain('integer');
-    expect(pos).toContain('null');
+    expect(pos).not.toContain('null');
+    // literal position OUT of the literal's bounds -> PROVABLY null since 0.7.91
+    // (definite null + always-null warning, see test-ord-two-args.test.js)
+    const oob = await t('', 'ord("A", 1)', 0);
+    expect(oob).toContain('null');
+    expect(oob).not.toContain('integer');
+    // REASSIGNED position variable -> unprovable -> null possible (a
+    // never-reassigned `let off = 0` would constant-fold to in-bounds)
+    const dyn = await t('let off = 0;\nif (length(ARGV) > 0)\n    off = 9;\n', 'ord("A", off)', 3);
+    expect(dyn).toContain('integer');
+    expect(dyn).toContain('null');
     // non-string argument -> always null
     expect(await t('', 'ord(5)', 0)).toContain('null');
   });

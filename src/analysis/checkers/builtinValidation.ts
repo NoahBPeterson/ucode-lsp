@@ -9,6 +9,12 @@ import { UcodeErrorCode } from '../errorConstants';
 import { isKnownObjectType, OBJECT_REGISTRIES } from '../moduleDispatch';
 import { regexTypeRegistry, analyzeCaptureGroups, type CaptureGroupInfo } from '../regexTypes';
 
+/** A compile-time-known scalar value, as resolved by the type checker's
+ *  constant resolver (see setConstantValueResolver). */
+export type ConstantValue =
+  | { kind: 'string'; value: string }
+  | { kind: 'integer'; value: number };
+
 export interface FormatSpecifier {
   specifier: string;
   expectedTypes: UcodeType[];
@@ -422,6 +428,15 @@ export class BuiltinValidator {
     this.warnUselessCall(node, funcName, entry.effect);
     this.narrowedReturnType = entry.type;
     return true;
+  }
+
+  /** Injected by the type checker: resolves a node to its compile-time constant
+   *  string/integer value (literals, and never-reassigned variables initialized
+   *  from them), or null when unprovable. */
+  private constantValue: ((node: AstNode | undefined) => ConstantValue | null) | null = null;
+
+  setConstantValueResolver(fn: (node: AstNode | undefined) => ConstantValue | null): void {
+    this.constantValue = fn;
   }
 
   private checkArgumentCount(node: CallExpressionNode, funcName: string, minArgs: number): boolean {
@@ -2022,7 +2037,10 @@ export class BuiltinValidator {
     for (let i = 0; i < node.arguments.length; i++) {
       const arg = node.arguments[i];
       if (arg) {
-        this.validateNumericArgument(arg, 'chr', i);
+        // soft: lib.c uc_chr COERCES via ucv_to_integer and never throws — a
+        // non-numeric arg silently becomes byte 0 (a footgun worth flagging,
+        // but the call is valid), matching the localtime/gmtime treatment (#34).
+        this.validateNumericArgument(arg, 'chr', i, true);
       }
     }
     return true;
@@ -2030,6 +2048,21 @@ export class BuiltinValidator {
 
   validateOrdFunction(node: CallExpressionNode): boolean {
     if (node.arguments.length === 0) { this.warnUselessCall(node, 'ord', 'returns null'); this.narrowedReturnType = UcodeType.NULL; return true; }
+
+    // ord(str[, offset]) reads at most 2 arguments; lib.c uc_ord silently
+    // ignores extras, so this is a warning, not an error — the call still runs.
+    // Anchored on the extra arguments themselves, not the whole call.
+    if (node.arguments.length > 2) {
+      const firstExtra = node.arguments[2];
+      const lastArg = node.arguments[node.arguments.length - 1];
+      this.warnings.push({
+        message: `Function 'ord' expects at most 2 arguments, got ${node.arguments.length} (extra arguments are ignored)`,
+        start: firstExtra ? firstExtra.start : node.start,
+        end: lastArg ? lastArg.end : node.end,
+        severity: 'warning',
+        code: UcodeErrorCode.INVALID_PARAMETER_COUNT,
+      });
+    }
 
     const arg0 = node.arguments[0];
     if (arg0) {
@@ -2041,18 +2074,39 @@ export class BuiltinValidator {
 
       // ord() returns null beyond the wrong-type case: an EMPTY string (str[0] is out
       // of bounds) and an out-of-bounds POSITION argument both yield null. narrowForArgType
-      // collapses a string arg to plain INTEGER, dropping that null — widen it back to
-      // `integer | null` unless we can prove the access is in bounds: a single, non-empty
-      // string literal with no position argument (`ord("A")` → always str[0]). (soundness)
+      // collapses a string arg to plain INTEGER, dropping that null — refine when both
+      // the subject's compile-time string value and the offset are known (a literal, or
+      // a never-reassigned variable initialized from one — constantValue; no offset
+      // argument means offset 0; negative = from the end, per lib.c `n += len`):
+      //   • provably IN bounds  → keep the definite integer;
+      //   • provably OUT of bounds → the call ALWAYS returns null — narrow to null and
+      //     warn (strict-gated, like other useless calls), anchored on the offset;
+      //   • unknown → widen back to `integer | null` (soundness).
+      // Bounds proofs need ucode's BYTE length, and the JS string length only equals it
+      // for pure-ASCII values (multi-byte chars make JS undercount; `\xNN` escapes above
+      // 0x7F make UTF-8 re-encoding overcount) — so a non-ASCII subject stays unknown.
       if (this.narrowedReturnType === UcodeType.INTEGER) {
-        const provablyInBounds =
-          node.arguments.length === 1 &&
-          arg0.type === 'Literal' &&
-          (arg0 as LiteralNode).literalType === 'string' &&
-          typeof (arg0 as LiteralNode).value === 'string' &&
-          ((arg0 as LiteralNode).value as string).length >= 1;
-        if (!provablyInBounds) {
+        const verdict = (() => {
+          const subject = this.constantValue?.(arg0);
+          if (!subject || subject.kind !== 'string' || !/^[\x00-\x7F]*$/.test(subject.value)) return null;
+          const len = subject.value.length;
+          // ≥2 args: the runtime reads only arg 1 as the offset (extras are ignored).
+          const offArg = node.arguments.length >= 2 ? node.arguments[1] : undefined;
+          const off = offArg ? this.constantValue?.(offArg) : { kind: 'integer' as const, value: 0 };
+          if (!off || off.kind !== 'integer') return null;
+          const pos = off.value < 0 ? off.value + len : off.value;
+          return { inBounds: pos >= 0 && pos < len, offArg, offValue: off.value, subjectValue: subject.value, len };
+        })();
+        if (!verdict) {
           this.narrowedReturnType = createUnionType([UcodeType.INTEGER, UcodeType.NULL]) as UcodeType;
+        } else if (!verdict.inBounds) {
+          const anchor = verdict.offArg ?? arg0;
+          const message = verdict.offArg
+            ? `ord() always returns null here: offset ${verdict.offValue} is out of range for ` +
+              `${JSON.stringify(verdict.subjectValue)} (${verdict.len} byte${verdict.len === 1 ? '' : 's'}).`
+            : `ord() always returns null here: the string is empty, so there is no byte to read.`;
+          this.pushWarnOrStrictError(message, anchor.start, anchor.end, UcodeErrorCode.USELESS_CALL);
+          this.narrowedReturnType = UcodeType.NULL;
         }
       }
     }

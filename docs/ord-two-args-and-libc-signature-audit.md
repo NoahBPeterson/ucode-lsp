@@ -1,7 +1,9 @@
 # ord() takes TWO parameters — and a full lib.c signature re-audit
 
-Status: **NOT STARTED — 🟠 HIGH PRIORITY** (user-reported arity false positive on a
-core builtin; unknown how many siblings are wrong the same way).
+Status: **ord() fix SHIPPED 0.7.91** (registry two-param + arity cap + literal
+in-bounds return refinement + hover/signature docs; tests/diagnostics/
+test-ord-two-args.test.js). **The lib.c signature re-audit below is STILL OPEN —
+🟠 HIGH PRIORITY** (unknown how many siblings are wrong the same way).
 
 ## The reported bug
 

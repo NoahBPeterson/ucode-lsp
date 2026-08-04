@@ -1152,9 +1152,56 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
       if (left.type === 'MemberExpression') {
         const m = left as MemberExpressionNode;
-        if (!m.computed && m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global' && m.property.type === 'Identifier') return (m.property as IdentifierNode).name;
+        if (m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global') {
+          if (!m.computed && m.property.type === 'Identifier') return (m.property as IdentifierNode).name;
+          // `global['X'] = …` names the same property as `global.X = …`.
+          if (m.computed && m.property.type === 'Literal' && (m.property as LiteralNode).literalType === 'string'
+              && typeof (m.property as LiteralNode).value === 'string') return (m.property as LiteralNode).value as string;
+        }
       }
       return null;
+    };
+
+    // `exists(global, 'NAME')` with a literal name — the runtime existence test for
+    // exactly the globals this check reasons about. A variable key proves nothing
+    // about any specific name, so it must be a string literal.
+    const existsGlobalCallName = (n: AstNode | undefined): string | null => {
+      if (!n || n.type !== 'CallExpression') return null;
+      const c = n as CallExpressionNode;
+      if (c.callee?.type !== 'Identifier' || (c.callee as IdentifierNode).name !== 'exists') return null;
+      const recv = c.arguments?.[0], key = c.arguments?.[1];
+      if (!recv || recv.type !== 'Identifier' || (recv as IdentifierNode).name !== 'global') return null;
+      if (!key || key.type !== 'Literal' || (key as LiteralNode).literalType !== 'string'
+          || typeof (key as LiteralNode).value !== 'string') return null;
+      return (key as LiteralNode).value as string;
+    };
+    // An if-test that IS the existence check, in its common spellings:
+    // `!exists(global,'X')` (negated), bare `exists(global,'X')`, and the
+    // boolean-literal comparisons `== false` / `=== false` / `!= true` /
+    // `!== true` (negated) and their non-negating mirrors.
+    const existsGuard = (test: AstNode | undefined): { name: string; negated: boolean } | null => {
+      if (!test) return null;
+      if (test.type === 'UnaryExpression' && (test as unknown as { operator?: string }).operator === '!') {
+        const inner = existsGuard((test as unknown as { argument?: AstNode }).argument);
+        return inner ? { name: inner.name, negated: !inner.negated } : null;
+      }
+      if (test.type === 'BinaryExpression') {
+        const b = test as unknown as { operator?: string; left?: AstNode; right?: AstNode };
+        if (b.operator === '==' || b.operator === '===' || b.operator === '!=' || b.operator === '!==') {
+          const boolLit = (n: AstNode | undefined): boolean | null =>
+            (n?.type === 'Literal' && typeof (n as LiteralNode).value === 'boolean') ? (n as LiteralNode).value as boolean : null;
+          const [callSide, litSide] = existsGlobalCallName(b.left) !== null ? [b.left, b.right] : [b.right, b.left];
+          const name = existsGlobalCallName(callSide);
+          const lit = boolLit(litSide);
+          if (name !== null && lit !== null) {
+            const opNegates = b.operator === '!=' || b.operator === '!==';
+            return { name, negated: opNegates !== !lit }; // "compares to false" XOR operator negation
+          }
+        }
+        return null;
+      }
+      const name = existsGlobalCallName(test);
+      return name !== null ? { name, negated: false } : null;
     };
     const isStaticTruthy = (test: AstNode | undefined): boolean => {
       if (!test || test.type !== 'Literal') return false;
@@ -1292,6 +1339,14 @@ export class SemanticAnalyzer extends BaseVisitor {
         case 'IfStatement': {
           const s = n as unknown as { test?: AstNode; consequent?: unknown; alternate?: unknown };
           const out = definitelyAssigns(s.test);
+          // Existence-guard seeding: `if (!exists(global,'X')) global.X = v;` defines X
+          // on BOTH paths — the branch that doesn't assign is exactly the branch where
+          // the test proved X already exists. (docs/uc8004-exists-guard-seeding.md)
+          const guard = existsGuard(s.test);
+          if (guard) {
+            const seedingArm = guard.negated ? s.consequent : s.alternate;
+            if (seedingArm && definitelyAssigns(seedingArm).has(guard.name)) out.add(guard.name);
+          }
           if (isStaticTruthy(s.test)) {
             for (const nm of definitelyAssigns(s.consequent)) out.add(nm);
           } else if (isStaticFalsy(s.test)) {

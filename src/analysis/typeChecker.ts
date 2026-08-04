@@ -68,7 +68,7 @@ import type { CheckResult } from './checkResult';
 import { logicalTypeInference } from './logicalTypeInference';
 import { arithmeticTypeInference } from './arithmeticTypeInference';
 import { UcodeErrorCode } from './errorConstants';
-import { BuiltinValidator, TypeCompatibilityChecker, coerceArgNeedsParens, moduleParamAllowedTypes, MODULES_WITHOUT_POSITIONAL_ARG_CONTRACT } from './checkers';
+import { BuiltinValidator, TypeCompatibilityChecker, coerceArgNeedsParens, moduleParamAllowedTypes, MODULES_WITHOUT_POSITIONAL_ARG_CONTRACT, type ConstantValue } from './checkers';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { allBuiltinFunctions } from '../builtins';
 import { rtnlTypeRegistry } from './rtnlTypes';
@@ -346,6 +346,7 @@ export class TypeChecker {
     // Use a method that returns the full type description including unions
     this.builtinValidator.setTypeChecker(this.getNodeTypeDescription.bind(this));
     this.builtinValidator.setFullTypeChecker(this.getFullTypeFromNode.bind(this));
+    this.builtinValidator.setConstantValueResolver((n) => this.constantLiteralValue(n));
 
     this.initializeBuiltins();
   }
@@ -379,8 +380,13 @@ export class TypeChecker {
       { name: 'trim', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0], minParams: 1, maxParams: 2 },
       { name: 'ltrim', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0], minParams: 1, maxParams: 2 },
       { name: 'rtrim', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, narrowingArgs: [0], minParams: 1, maxParams: 2 },
-      { name: 'chr', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING },
-      { name: 'ord', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]) },
+      // chr(...codes) — one byte per argument, clamped to 0..255; coerces
+      // non-numerics to 0 and never returns null (lib.c uc_chr).
+      { name: 'chr', parameters: [UcodeType.INTEGER], returnType: UcodeType.STRING, variadic: true, minParams: 0 },
+      // ord(str[, offset]) — offset defaults to 0, negative counts from the END
+      // (lib.c uc_ord: nargs > 1 reads an int64; += len when negative; out of
+      // range → null). A double offset truncates; a non-numeric one yields null.
+      { name: 'ord', parameters: [UcodeType.STRING, UcodeType.INTEGER], returnType: createUnionType([UcodeType.INTEGER, UcodeType.NULL]), minParams: 1, maxParams: 2 },
       { name: 'uc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, coercesArgToString: true },
       { name: 'lc', parameters: [UcodeType.STRING], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]), nullMeansWrongType: true, coercesArgToString: true },
       { name: 'type', parameters: [UcodeType.UNKNOWN], returnType: createUnionType([UcodeType.STRING, UcodeType.NULL]) },
@@ -2217,6 +2223,149 @@ export class TypeChecker {
     }
     if (inCmp !== 1) return null;
     return { name, init: sym.initNode };
+  }
+
+  /** The compile-time constant value of an expression, or null when unprovable:
+   *  a string or integer literal (unary minus folded), a variable whose
+   *  initializer resolves to one and which is NEVER rebound anywhere in the
+   *  file, or an `ord()`/`chr()` call over such constants (so chains like
+   *  `chr(ord(ch))` fold). Powers provable-bounds refinements (e.g. ord()'s
+   *  definite-integer return). Folded strings are kept ASCII-exact — for pure
+   *  ASCII the JS length/char codes equal ucode's byte semantics; anything
+   *  beyond bails to null. Under-approximates: unknown shapes yield null. */
+  private constantLiteralValue(node: AstNode | undefined, seen?: Set<UcodeSymbol>): ConstantValue | null {
+    if (!node) return null;
+    if (node.type === 'UnaryExpression' && (node as unknown as { operator?: string }).operator === '-') {
+      const inner = this.constantLiteralValue((node as unknown as { argument?: AstNode }).argument, seen);
+      return (inner && inner.kind === 'integer') ? { kind: 'integer', value: -inner.value } : null;
+    }
+    if (node.type === 'Literal') {
+      const lit = node as LiteralNode;
+      if (lit.literalType === 'string' && typeof lit.value === 'string') return { kind: 'string', value: lit.value };
+      if (lit.literalType === 'number' && typeof lit.value === 'number' && Number.isInteger(lit.value)) return { kind: 'integer', value: lit.value };
+      return null;
+    }
+    if (node.type === 'Identifier') {
+      const name = (node as IdentifierNode).name;
+      const sym = this.symbolTable.resolveReference(name, node.start);
+      if (!sym || sym.type !== SymbolType.VARIABLE || !sym.initNode) return null;
+      const marks = seen ?? new Set<UcodeSymbol>();
+      if (marks.has(sym)) return null; // self-referential / cyclic initializer
+      marks.add(sym); // recursion-stack semantics: released below so siblings may share the symbol
+      const value = this.constantLiteralValue(sym.initNode, marks);
+      marks.delete(sym);
+      if (!value) return null;
+      return this.symbolNeverRebound(name, sym) ? value : null;
+    }
+    if (node.type === 'CallExpression') {
+      const call = node as CallExpressionNode;
+      if (call.callee?.type !== 'Identifier') return null;
+      const fnName = (call.callee as IdentifierNode).name;
+      // A user binding shadowing the builtin means the call isn't the builtin.
+      const fnSym = this.symbolTable.resolveReference(fnName, node.start);
+      if (fnSym && fnSym.type !== SymbolType.BUILTIN) return null;
+      const args = call.arguments || [];
+      if (fnName === 'ord') {
+        // ord(str[, offset]) — byte read; extras ignored (lib.c uc_ord).
+        const subject = this.constantLiteralValue(args[0], seen);
+        if (!subject || subject.kind !== 'string' || !/^[\x00-\x7F]*$/.test(subject.value)) return null;
+        const off = args.length >= 2 ? this.constantLiteralValue(args[1], seen) : { kind: 'integer' as const, value: 0 };
+        if (!off || off.kind !== 'integer') return null;
+        const pos = off.value < 0 ? off.value + subject.value.length : off.value;
+        if (pos < 0 || pos >= subject.value.length) return null; // runtime value is null — not a foldable scalar
+        return { kind: 'integer', value: subject.value.charCodeAt(pos) };
+      }
+      if (fnName === 'chr') {
+        // chr(...codes) — one byte per arg, clamped to 0..255 (lib.c uc_chr).
+        // Only fold when every clamped byte is ASCII (keeps the invariant above).
+        let out = '';
+        for (const argNode of args) {
+          const code = this.constantLiteralValue(argNode, seen);
+          if (!code || code.kind !== 'integer') return null;
+          const clamped = code.value < 0 ? 0 : (code.value > 255 ? 255 : code.value);
+          if (clamped > 0x7F) return null;
+          out += String.fromCharCode(clamped);
+        }
+        return { kind: 'string', value: out };
+      }
+      return null;
+    }
+    return null;
+  }
+
+  /** Whether a variable provably holds its initializer for its whole lifetime:
+   *  no assignment (plain, compound, or destructuring) targets it, no `++`/`--`
+   *  touches it, and it isn't a for-in binding. Same occurrence discipline as
+   *  unsharedFreshLiteralVar: same-named identifiers resolving to a DIFFERENT
+   *  symbol don't alias this one; spurious property-key resolutions only ever
+   *  BAIL (conservative). `export let` also bails — the binding escapes. */
+  private symbolNeverRebound(name: string, sym: UcodeSymbol): boolean {
+    const ast = this.currentAST;
+    if (!ast) return false;
+    for (const stmt of (ast.body || [])) {
+      if (stmt.type !== 'ExportNamedDeclaration') continue;
+      const decl = (stmt as unknown as { declaration?: AstNode }).declaration;
+      if (decl?.type === 'VariableDeclaration') {
+        for (const d of ((decl as unknown as { declarations?: Array<{ id?: IdentifierNode }> }).declarations || [])) {
+          if (d?.id?.name === name) return false;
+        }
+      }
+    }
+    const subtreeScan = (root: unknown, matchSymbol: boolean): boolean => {
+      const stack: unknown[] = [root];
+      while (stack.length) {
+        const cur = stack.pop();
+        if (!cur || typeof cur !== 'object' || typeof (cur as { type?: unknown }).type !== 'string') continue;
+        const anode = cur as AstNode;
+        if (anode.type === 'Identifier' && (anode as IdentifierNode).name === name
+            && (!matchSymbol || this.symbolTable.resolveReference(name, anode.start) === sym)) return true;
+        for (const k of Object.keys(anode)) {
+          if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+          const v = (anode as unknown as Record<string, unknown>)[k];
+          if (Array.isArray(v)) { for (const it of v) stack.push(it); }
+          else stack.push(v);
+        }
+      }
+      return false;
+    };
+    const subtreeHitsSym = (root: unknown): boolean => subtreeScan(root, true);
+    const subtreeMentionsName = (root: unknown): boolean => subtreeScan(root, false);
+    const stack: unknown[] = [ast];
+    while (stack.length) {
+      const cur = stack.pop();
+      if (!cur || typeof cur !== 'object' || typeof (cur as { type?: unknown }).type !== 'string') continue;
+      const anode = cur as AstNode;
+      if (anode.type === 'AssignmentExpression') {
+        if (subtreeHitsSym((anode as unknown as { left?: unknown }).left)) return false;
+      } else if (anode.type === 'UnaryExpression') {
+        const op = (anode as unknown as { operator?: string }).operator;
+        if ((op === '++' || op === '--') && subtreeHitsSym((anode as unknown as { argument?: unknown }).argument)) return false;
+      } else if (anode.type === 'ForInStatement') {
+        const left = (anode as unknown as { left?: AstNode }).left;
+        if (left && left.type !== 'VariableDeclaration') {
+          // BARE head: `for (name in …)` rebinds the binding visible in the
+          // scope ENCLOSING the loop. Symbol identity at the head can't see
+          // that — visitForInStatement deliberately declares a fresh loop-scope
+          // symbol for the head (element typing / keys-of provenance) — so
+          // resolve the name just BEFORE the loop, where the enclosing binding
+          // is the one in scope. (The loop scope opens at anode.start, and our
+          // sym is declared earlier, so start-1 is a valid enclosing position.)
+          if (subtreeMentionsName(left)
+              && this.symbolTable.resolveReference(name, Math.max(0, anode.start - 1)) === sym) return false;
+        } else if (left) {
+          // `for (let name in …)` declares its OWN binding — a shadow must not
+          // break the outer constant; only a true symbol-identity hit counts.
+          if (subtreeHitsSym(left)) return false;
+        }
+      }
+      for (const k of Object.keys(anode)) {
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+        const v = (anode as unknown as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) stack.push(it); }
+        else stack.push(v);
+      }
+    }
+    return true;
   }
 
   /** UC2009 for a comparison against a variable that still holds its unshared

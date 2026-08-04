@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.7.90",
+  "version": "0.7.91",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
@@ -144,7 +144,11 @@
         "ucode.uncertainGlobalScope": {
           "scope": "resource",
           "type": "string",
-          "enum": ["off", "warn", "errorInStrict"],
+          "enum": [
+            "off",
+            "warn",
+            "errorInStrict"
+          ],
           "default": "errorInStrict",
           "enumDescriptions": [
             "Disabled.",

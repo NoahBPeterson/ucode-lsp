@@ -737,7 +737,7 @@ export class SymbolTable {
       { name: 'ltrim', returnType: UcodeType.STRING, params: [UcodeType.STRING, UcodeType.STRING] },
       { name: 'rtrim', returnType: UcodeType.STRING, params: [UcodeType.STRING, UcodeType.STRING] },
       { name: 'chr', returnType: UcodeType.STRING, params: [UcodeType.INTEGER] },
-      { name: 'ord', returnType: UcodeType.INTEGER, params: [UcodeType.STRING] },
+      { name: 'ord', returnType: UcodeType.INTEGER, params: [UcodeType.STRING, UcodeType.INTEGER] },
       { name: 'uc', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
       { name: 'lc', returnType: UcodeType.STRING, params: [UcodeType.STRING] },
       { name: 'type', returnType: UcodeType.STRING, params: [UcodeType.UNKNOWN] },
