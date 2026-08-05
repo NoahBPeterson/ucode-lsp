@@ -43,20 +43,32 @@ let fw = {
 };`;
 
 describe('flow-sensitive member types (fw4 parse_weekdays)', () => {
-  test('rv.days is object at the `||= {}` bucket write', async () => {
-    expect(await hover(PW, 'rv.days ||=', 1, 3)).toMatch(/`object`/);
+  test('rv.days is object | unwritten at the `||= {}` bucket write', async () => {
+    // CONTRACT UPDATE (0.7.92 dominance follow-up): `p ||= {}` KEEPS a truthy
+    // old value, so the recorded write type is the operator-aware union
+    // (memberWriteType → computeAssignmentResultType), not the bare `{}` —
+    // otherwise a dominating bucket write would claim a definite object it
+    // cannot prove. Here days has no baseline, so old = unknown.
+    expect(await hover(PW, 'rv.days ||=', 1, 3)).toMatch(/`object \| unknown`/);
   });
-  test('rv.days is object inside the loop', async () => {
-    expect(await hover(PW, 'rv.days;', 1, 3)).toMatch(/`object`/);
+  // CONTRACT UPDATE (soundness ruling 2026-08-04, docs/type-soundness-audit.md
+  // I-3): in-loop member writes are union-only — the loop may run zero times, so
+  // `days` keeps its never-written possibility (`unknown`, no baseline) alive at
+  // every read the write can't dominate. These three were `object` when in-loop
+  // writes still promoted.
+  test('rv.days is object | unwritten inside the loop', async () => {
+    expect(await hover(PW, 'rv.days;', 1, 3)).toMatch(/`object \| unknown`/);
   });
-  test('rv.days is object after the loop (before keys())', async () => {
-    expect(await hover(PW, 'rv.days;', 2, 3)).toMatch(/`object`/);
+  test('rv.days is object | unwritten after the loop (zero-iteration path)', async () => {
+    expect(await hover(PW, 'rv.days;', 2, 3)).toMatch(/`object \| unknown`/);
   });
-  test('the keys() argument sees object (so no UC2004 fires)', async () => {
-    expect(await hover(PW, 'keys(rv.days)', 1, 8)).toMatch(/`object`/);
+  test('the keys() argument sees the union (still no UC2004)', async () => {
+    expect(await hover(PW, 'keys(rv.days)', 1, 8)).toMatch(/`object \| unknown`/);
   });
-  test('rv.days is array<string> after `rv.days = keys(rv.days)`', async () => {
-    expect(await hover(PW, 'return rv.days', 1, 10)).toMatch(/`array<string>`/);
+  test('rv.days is array<string> | null after `rv.days = keys(rv.days)`', async () => {
+    // keys(object | unknown): the object path yields string keys, the
+    // wrong-type path yields null — both honestly kept (0.7.92 keys refinement).
+    expect(await hover(PW, 'return rv.days', 1, 10)).toMatch(/`array<string> \| null`/);
   });
   test('keys(rv.days) does NOT raise UC2004 (arg is object there)', async () => {
     const d = (await server.getDiagnostics(PW, uri())) || [];

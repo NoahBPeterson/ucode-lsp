@@ -167,8 +167,18 @@ answer** (typeChecker.ts ~5038-5087):
   check at all** - the last write anywhere in the file types every read, including
   reads BEFORE the write; feeds hard UC5003. Same pattern: semanticAnalyzer ~7345,
   hover.ts ~334. Cheapest high-impact fix, independent of branch machinery.
-- **I-3. Loop-body writes -> definite post-loop currentType** [probe 2]. Needs the
-  same user decision as the rv.days member contract (see CONTRACTUAL).
+- **I-3. Loop-body writes -> definite post-loop currentType** [probe 2].
+  **CLOSED 0.7.92 — user ruled for SOUNDNESS (2026-08-04).** Read-before-write
+  half: loop-extent stamps + back-edge union in both walks + UC2009
+  post-filter (docs/uc2009-loop-read-before-write-null.md). Post-loop half:
+  in-loop MEMBER writes are union-only (writeDefiniteForRead/
+  writeInvisibleToRead/elseType all gate on `e.loop`), matching the 0.7.85
+  identifier contract — rv.days is `object | unknown` post-loop and the
+  honest may-null warning on keys(rv.days) is the accepted cost (the code's
+  own `rv.days ? … : null` guard proves the path is real). Derived bindings
+  (`let snap = x;`) are re-stamped post-analysis from complete history
+  (restampDerivedBindings — widen-only, concrete members only). keys() now
+  refines a maybe-object arg to `array<string> | null`.
 - **I-4. branchStack only pushed by visitIfStatement** - switch cases, ternary arms,
   `&&`/`||` RHS, try/catch bodies, and FUNCTION BODIES [probe 5 - UC2015 FP today]
   are invisible to both the 0.7.84 member fix and any future identifier fix. Function

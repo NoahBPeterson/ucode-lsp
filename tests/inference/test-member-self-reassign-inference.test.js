@@ -62,14 +62,18 @@ describe('self-referential member reassignment (fw4.uc parse_weekdays)', () => {
   // point. Position-aware property typing is a separate, larger change; for now we only assert
   // hover resolves rv.days to a concrete collection type (not `unknown`), guarding the member
   // resolution itself.
-  test('hovering rv.days resolves to a concrete collection type (not unknown)', () => {
+  test('hovering rv.days resolves to a type INCLUDING a concrete collection', () => {
+    // CONTRACT UPDATE (0.7.92 dominance follow-up): `p ||= {}` keeps a truthy
+    // old value, so its recorded write type is the operator-aware union — with
+    // no baseline for days, that is `object | unknown`. The guard here is that
+    // member resolution still yields the concrete collection member (a bare
+    // `unknown` with no object/array would be the original resolution bug).
     const { doc, ar } = analyze(SRC);
     const line = 2;
     const col = SRC.split('\n')[line].indexOf('days') + 1;
     const h = handleHover({ textDocument: { uri: 'file:///t.uc' }, position: { line, character: col } }, { get: () => doc }, ar);
     const text = h && h.contents ? (typeof h.contents === 'string' ? h.contents : h.contents.value || '') : '';
     expect(/object|array/.test(text)).toBe(true);
-    expect(text).not.toContain('unknown');
   });
 
   test('a plain object indexed-assign + keys is fine (control — already passes)', () => {

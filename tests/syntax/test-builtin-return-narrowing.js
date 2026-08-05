@@ -193,8 +193,11 @@ function check(label, actual, expected) {
     check('keys(object) -> array<string>', getType(r, 'a'), 'array<string>');
 }
 {
+    // 0.7.92: the maybe-object path still yields STRING keys, so even an
+    // unknown arg refines the array member to array<string> (null = the
+    // wrong-type path). Was plain `array | null` before the refinement.
     const r = analyze(`function _u(x) { return keys(x); }`);
-    check('keys(unknown) -> array | null', getRet(r, '_u'), 'array | null');
+    check('keys(unknown) -> array<string> | null', getRet(r, '_u'), 'array<string> | null');
 }
 
 // --- values(obj): arg is object -> array; otherwise array | null ---

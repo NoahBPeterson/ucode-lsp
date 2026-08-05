@@ -14,7 +14,7 @@ import { type AstNode, type ProgramNode, type VariableDeclarationNode, type Vari
          type ForInStatementNode, type ForStatementNode, type WhileStatementNode,
          type ArrayExpressionNode,
          type AstNodeKind } from '../ast/nodes';
-import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, effectiveSymbolType, isArrayType, getArrayElementType, getUnionTypes, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, widenWithNull, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, effectiveSymbolType, propertyTypeAt, isArrayType, getArrayElementType, getUnionTypes, isUnionType, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, widenWithNull, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, type TypeCheckResult } from './types';
 import { detectTemplateMode } from '../lexer/templateMode';
 import { BaseVisitor, AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
@@ -137,6 +137,17 @@ export class SemanticAnalyzer extends BaseVisitor {
   // Depth of enclosing LOOP bodies during traversal - stamps TypeHistoryEntry.inLoop
   // so branch reasoning is disabled for in-loop writes (back edges break it).
   private loopDepth = 0;
+  // Extents (whole loop statement, start..end) of the enclosing loops, outermost
+  // first — stamps TypeHistoryEntry.loop / PropertyWriteEntry.loop so the walks
+  // can union back-edge-delivered writes into reads that precede them in the
+  // same loop (docs/uc2009-loop-read-before-write-null.md). Pushed/popped in
+  // lockstep with loopDepth.
+  private loopExtents: Array<{ ls: number; le: number }> = [];
+  // Every function-body extent visited so far (declarations, function
+  // expressions, arrows — including expression-bodied arrows). Stamped BY
+  // REFERENCE onto in-loop write entries (`fnx`) so it keeps growing after the
+  // stamp: the dominance check needs to see lambdas defined AFTER the write.
+  private fnBodyExtents: Array<{ bs: number; be: number }> = [];
   /** >0 while visiting a for-statement's init declaration — ucode accepts a
    *  self-referencing declarator there (`for (let i = i; ...)`, oracle-verified),
    *  so the UC1012 check must stand down. */
@@ -524,6 +535,13 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (this.currentASTRoot) {
         this.typeChecker.buildFlowEngines(this.currentASTRoot);
       }
+      // Re-stamp bindings whose declared type was inferred from a read of another
+      // variable/member: the main pass stamped them from PARTIAL history (writes
+      // later in an enclosing loop weren't recorded yet), so `let snap = x;` at
+      // the top of a loop typed as x's declared seed. The history is complete
+      // now — recompute from it (docs/uc2009-loop-read-before-write-null.md,
+      // soundness ruling 2026-08-04).
+      this.restampDerivedBindings();
       // Post-process diagnostics to apply flow-sensitive narrowing
       this.diagnostics = this.filterDiagnosticsWithFlowSensitiveAnalysis(this.diagnostics);
     } catch (error) {
@@ -4488,6 +4506,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   override visitFunctionDeclaration(node: FunctionDeclarationNode): void {
+    if (node.body) this.fnBodyExtents.push({ bs: node.body.start, be: node.body.end });
     if (this.options.enableScopeAnalysis) {
       const name = node.id.name;
 
@@ -5005,6 +5024,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   override visitFunctionExpression(node: FunctionExpressionNode): void {
+    if (node.body) this.fnBodyExtents.push({ bs: node.body.start, be: node.body.end });
     // Consume the pending name immediately so nested anonymous functions in the
     // body don't inherit it.
     const exprName = node.id?.name ?? this.pendingFunctionExprName;
@@ -5131,6 +5151,9 @@ export class SemanticAnalyzer extends BaseVisitor {
   }
 
   override visitArrowFunctionExpression(node: ArrowFunctionExpressionNode): void {
+    // Expression-bodied arrows (`() => expr`) register too — the body node is
+    // the expression, which still has an extent.
+    if (node.body) this.fnBodyExtents.push({ bs: node.body.start, be: node.body.end });
     // Consume any pending assignment-target name now so nested callbacks in the
     // body don't inherit it.
     const exprName = this.pendingFunctionExprName;
@@ -6001,7 +6024,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               const targetSymbol = this.symbolTable.lookupOpenScopes(objectName);
 
               if (targetSymbol && (objectName === 'global' || (targetSymbol.type !== SymbolType.MODULE && targetSymbol.type !== SymbolType.IMPORTED))) {
-                const propertyType = this.inferAssignmentDataType(node.right);
+                const propertyType = this.memberWriteType(node, targetSymbol, propertyName);
 
                 if (!targetSymbol.propertyTypes) {
                   targetSymbol.propertyTypes = new Map<string, UcodeDataType>();
@@ -6061,7 +6084,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                 const globalName = (base.property as IdentifierNode).name;
                 const targetSymbol = this.symbolTable.lookupOpenScopes(globalName);
                 if (targetSymbol && targetSymbol.type !== SymbolType.MODULE && targetSymbol.type !== SymbolType.IMPORTED) {
-                  const propertyType = this.inferAssignmentDataType(node.right);
+                  const propertyType = this.memberWriteType(node, targetSymbol, propertyName);
                   deferredPropertyWrites.push(() => this.recordPropertyWrite(targetSymbol, propertyName, propertyType, node.end, node.start));
                 }
               }
@@ -6072,7 +6095,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             if (memberNode.object.type === 'ThisExpression') {
               const thisSym = this.symbolTable.lookupOpenScopes('this');
               if (thisSym) {
-                const propertyType = this.inferAssignmentDataType(node.right);
+                const propertyType = this.memberWriteType(node, thisSym, propertyName);
 
                 if (!thisSym.propertyTypes) {
                   thisSym.propertyTypes = new Map<string, UcodeDataType>();
@@ -6388,6 +6411,31 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     return widenWithNull(inferred);
   }
 
+  /** Enter/exit a loop statement during traversal: bumps loopDepth and records
+   *  the loop's whole extent (start..end — reads in the test/update see the back
+   *  edge too) for the TypeHistoryEntry/PropertyWriteEntry `loop` stamp. */
+  private enterLoop(node: AstNode): void {
+    this.loopDepth++;
+    this.loopExtents.push({ ls: node.start, le: node.end });
+  }
+  private exitLoop(): void {
+    this.loopDepth--;
+    this.loopExtents.pop();
+  }
+
+  /** Type recorded for a member write: the RHS type for `=`, the operator-aware
+   *  result for every compound form — `x.p ||= y` may KEEP a truthy old value,
+   *  so the recorded type must union old and new exactly like the identifier
+   *  path does (computeAssignmentResultType). Vital under within-iteration
+   *  dominance: a dominating `p ||= {}` must not claim a definite object when
+   *  the old truthy value could be something else. */
+  private memberWriteType(node: AssignmentExpressionNode, targetSymbol: SymbolEntry, propertyName: string): UcodeDataType {
+    const rhs = this.inferAssignmentDataType(node.right);
+    if (node.operator === '=') return rhs;
+    const oldProp = propertyTypeAt(targetSymbol, propertyName, node.start);
+    return this.typeChecker.computeAssignmentResultType(node, oldProp ?? (UcodeType.UNKNOWN as UcodeDataType), rhs);
+  }
+
   /** Append an entry to a variable's per-assignment type history. Snapshots the
    *  enclosing conditional regions (branchStack) and loop context so
    *  effectiveSymbolType can tell definite writes from may-have-run writes —
@@ -6403,12 +6451,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
     }
     const bodyFrame = this.innermostBodyFrame();
+    const outerLoop = this.loopExtents[0];
+    const innerLoop = this.loopExtents[this.loopExtents.length - 1];
     (symbol.typeHistory ??= []).push({
       from,
       start: start ?? from,
       type,
       ...(this.branchStack.length ? { branches: [...this.branchStack] } : {}),
       ...(this.loopDepth > 0 ? { inLoop: true } : {}),
+      ...(this.loopDepth > 0 && outerLoop && innerLoop
+        ? { loop: outerLoop, loopIn: innerLoop, fnx: this.fnBodyExtents } : {}),
       ...(elseType !== undefined ? { elseType } : {}),
       ...(bodyFrame ? { fnSym: bodyFrame.fnSym, fnBody: { bs: bodyFrame.bs, be: bodyFrame.be } } : {}),
     });
@@ -6770,9 +6822,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     this.checkEmptyInfiniteLoop(node.test, node.body, node.start, node.body?.start ?? node.end);
     if (node.body) this.checkIterateeMutation(node.body, this.lengthBoundedArrayName(node.test));
 
-    this.loopDepth++;
+    this.enterLoop(node);
     super.visitWhileStatement(node);
-    this.loopDepth--;
+    this.exitLoop();
 
     if (this.options.enableControlFlowAnalysis) {
       this.loopScopes.pop();
@@ -6825,20 +6877,20 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (node.update) {
         this.visit(node.update);
       }
-      this.loopDepth++;
+      this.enterLoop(node);
       this.visit(node.body);
-      this.loopDepth--;
+      this.exitLoop();
 
       // Exit the for loop scope
       this.symbolTable.exitScope(node.end);
     } else {
       // Fallback to default behavior if scope analysis is disabled. The init is
       // visited inside super, so the for-init exemption must cover the whole call.
-      this.loopDepth++;
+      this.enterLoop(node);
       this.forInitDepth++;
       super.visitForStatement(node);
       this.forInitDepth--;
-      this.loopDepth--;
+      this.exitLoop();
     }
     
     if (this.options.enableControlFlowAnalysis) {
@@ -7052,17 +7104,17 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       this.visit(node.right);
       
       // Visit the loop body (iterator variables are now in scope)
-      this.loopDepth++;
+      this.enterLoop(node);
       this.visit(node.body);
-      this.loopDepth--;
-      
+      this.exitLoop();
+
       // Exit the for-in loop scope
       this.symbolTable.exitScope(node.end);
     } else {
       // Fallback to default behavior if scope analysis is disabled
-      this.loopDepth++;
+      this.enterLoop(node);
       super.visitForInStatement(node);
-      this.loopDepth--;
+      this.exitLoop();
     }
 
     if (this.options.enableControlFlowAnalysis) {
@@ -7708,9 +7760,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (f.guardBase === symbol.name && f.guardProp === propName) { elseType = f.guardElseType; break; }
     }
     const bodyFrame = this.innermostBodyFrame();
+    const outerLoop = this.loopExtents[0];
+    const innerLoop = this.loopExtents[this.loopExtents.length - 1];
     hist.push({
       pos, start, type,
       ...(this.branchStack.length ? { branches: [...this.branchStack] } : {}),
+      ...(this.loopDepth > 0 && outerLoop && innerLoop
+        ? { loop: outerLoop, loopIn: innerLoop, fnx: this.fnBodyExtents } : {}),
       ...(elseType !== undefined ? { elseType } : {}),
       ...(bodyFrame ? { fnSym: bodyFrame.fnSym, fnBody: { bs: bodyFrame.bs, be: bodyFrame.be } } : {}),
     });
@@ -9871,6 +9927,64 @@ private addDiagnostic(
     return false;
   }
 
+  /** Post-analysis soundness pass: a binding declared FROM a plain identifier or
+   *  non-computed member read (`let snap = x;` / `let mode = cfg.mode;`) was
+   *  typed mid-pass, before writes later in an enclosing loop were recorded —
+   *  so its declared type can be too narrow (the back edge delivers those
+   *  writes on iteration 2+). Recompute each such binding's declared type from
+   *  the now-COMPLETE history and WIDEN the stamp when members were missing.
+   *  Widen-only (never replace/narrow): mid-pass stamps may legitimately be
+   *  more precise than the walk (SSA literal inference, module typing) — this
+   *  pass exists to restore soundness, not to second-guess precision. Iterated
+   *  in declaration order so chains (`let a = x; let b = a;`) converge; a few
+   *  rounds bound pathological chains. */
+  private restampDerivedBindings(): void {
+    const readSource = (init: AstNode | undefined, sym: SymbolEntry): UcodeDataType | undefined => {
+      if (!init) return undefined;
+      if (init.type === 'Identifier') {
+        const src = this.symbolTable.resolveReference((init as IdentifierNode).name, init.start);
+        if (!src || src === sym || src.type === SymbolType.FUNCTION || src.type === SymbolType.BUILTIN) return undefined;
+        return effectiveSymbolType(src, init.start);
+      }
+      if (init.type === 'MemberExpression') {
+        const m = init as MemberExpressionNode;
+        if (m.computed || m.object.type !== 'Identifier' || m.property.type !== 'Identifier') return undefined;
+        const src = this.symbolTable.resolveReference((m.object as IdentifierNode).name, m.object.start);
+        if (!src) return undefined;
+        return propertyTypeAt(src, (m.property as IdentifierNode).name, init.start);
+      }
+      return undefined;
+    };
+    const baseSet = (t: UcodeDataType): Set<string> =>
+      new Set((isUnionType(t) ? getUnionTypes(t) : [t]).map(m => String(dataTypeToBase(m))));
+    for (let round = 0; round < 3; round++) {
+      let changed = false;
+      for (const sym of this.symbolTable.getAllSymbolsEver()) {
+        if (sym.type !== SymbolType.VARIABLE || !sym.initNode) continue;
+        const post = readSource(sym.initNode, sym);
+        if (post === undefined) continue;
+        const stamped = baseSet(sym.dataType);
+        // Widen only with CONCRETE members. UNKNOWN/ANY mean "no information",
+        // not a value: unioning them in adds no soundness (claims gated on
+        // unknown are already conservative) and would clobber stamps from
+        // better-informed paths (e.g. the global binding-path flat type, whose
+        // divergent gating is the open H-3/H-5 work).
+        const missing = (isUnionType(post) ? getUnionTypes(post) : [post])
+          .filter(m => {
+            const b = dataTypeToBase(m);
+            return b !== UcodeType.UNKNOWN && b !== UcodeType.ANY && !stamped.has(String(b));
+          });
+        if (missing.length === 0) continue;
+        sym.dataType = createUnionType([
+          ...(isUnionType(sym.dataType) ? getUnionTypes(sym.dataType) : [sym.dataType as SingleType]),
+          ...missing.map(m => m as SingleType),
+        ]);
+        changed = true;
+      }
+      if (!changed) break;
+    }
+  }
+
   private filterDiagnosticsWithFlowSensitiveAnalysis(diagnostics: Diagnostic[]): Diagnostic[] {
     if (!this.currentASTRoot || !this.cfgQueryEngine) {
       return diagnostics;
@@ -9920,6 +10034,79 @@ private addDiagnostic(
           // can yield a scalar that matches the literal → the comparison is NOT always
           // false. Only a provably-null receiver keeps the diagnostic.
           if (joined !== null && this.flowReceiverCanBeIndexable(joined)) return false;
+        }
+        // Loop back-edge re-validation (docs/uc2009-loop-read-before-write-null.md):
+        // the main pass typed each operand from the history recorded SO FAR, so a
+        // write later in an enclosing loop was invisible and a read-before-write
+        // typed as the declared seed. Re-resolve each recorded operand against the
+        // now-COMPLETE history (effectiveSymbolType/propertyTypeAt union back-edge
+        // writes): if new type members appeared, the at-emit "can never be" claim
+        // no longer holds — drop it. Unchanged types keep the diagnostic, so
+        // straight-line true positives survive.
+        const refs = (diagnostic as any).data?.impossibleCompareRefs as
+          Array<{ name: string; offset: number; prop?: string; members: string[] }> | undefined;
+        if (refs) {
+          // Only growth by a SCALAR-ish member can rescue the comparison: every
+          // "impossible" verdict has a scalar side, and references/null still never
+          // equal a scalar — so `quote = []` appearing later keeps the claim, while
+          // `quote = 39` (or an unknown) invalidates it.
+          const rescuers = new Set<string>([
+            UcodeType.INTEGER, UcodeType.DOUBLE, UcodeType.STRING, UcodeType.BOOLEAN,
+            UcodeType.UNKNOWN, UcodeType.ANY,
+          ].map(String));
+          for (const ref of refs) {
+            const sym = this.symbolTable.resolveReference(ref.name, ref.offset);
+            if (!sym) continue;
+            const post = ref.prop !== undefined
+              ? propertyTypeAt(sym, ref.prop, ref.offset)
+              : effectiveSymbolType(sym, ref.offset);
+            if (post === undefined) continue;
+            const postMembers = (isUnionType(post) ? getUnionTypes(post) : [post]).map(m => String(dataTypeToBase(m)));
+            const emitMembers = new Set(ref.members);
+            if (postMembers.some(m => !emitMembers.has(m) && rescuers.has(m))) return false; // claim is stale
+          }
+        }
+      }
+
+      // Second look for DEFINITE argument-type-mismatch errors (UC2004 /
+      // incompatible-function-argument) on identifier/member operands: the main
+      // pass typed the operand from partial history, so a loop read-before-write
+      // emitted "got null" where the complete history says `string | null`.
+      // Re-resolve; if the type grew a member the function ACCEPTS, the definite
+      // claim is stale — downgrade to the standard may-be nullable-argument form
+      // (warning; error under 'use strict', matching the direct-emit path).
+      // Growth by still-disallowed members keeps the error (still definitely wrong).
+      {
+        const sta = (diagnostic as any).data?.staleTypeArg as
+          { name: string; offset: number; prop?: string; members: string[]; funcName: string; argPosition: number; expected: string[] } | undefined;
+        // Only re-validate the read-before-write SIGNATURE: an at-emit type that
+        // includes null (the declared seed of an unwritten `let`). An emit type
+        // WITHOUT null came from guard-aware narrowing, which knows MORE than
+        // the guard-blind history walk — re-checking those against the walk
+        // would wrongly soften claims the guards proved.
+        if (sta && diagnostic.severity === DiagnosticSeverity.Error
+            && sta.members.some(m => m.toLowerCase() === String(UcodeType.NULL))) {
+          const sym = this.symbolTable.resolveReference(sta.name, sta.offset);
+          if (sym) {
+            const post = sta.prop !== undefined
+              ? propertyTypeAt(sym, sta.prop, sta.offset)
+              : effectiveSymbolType(sym, sta.offset);
+            if (post !== undefined) {
+              const postMembers = (isUnionType(post) ? getUnionTypes(post) : [post]).map(m => String(dataTypeToBase(m)));
+              const emitSet = new Set(sta.members.map(m => m.toLowerCase()));
+              const expectedSet = new Set(sta.expected.map(m => m.toLowerCase()));
+              const grew = postMembers.some(m => !emitSet.has(m.toLowerCase()));
+              const nowCompatible = postMembers.some(m =>
+                expectedSet.has(m.toLowerCase()) || m === String(UcodeType.UNKNOWN) || m === String(UcodeType.ANY));
+              if (grew && nowCompatible) {
+                const disallowed = postMembers.filter(m => !expectedSet.has(m.toLowerCase()));
+                diagnostic.severity = this.strictMode ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning;
+                (diagnostic as any).code = 'nullable-argument';
+                diagnostic.message = `Argument ${sta.argPosition} of ${sta.funcName}() may be ${disallowed.join(' | ') || String(UcodeType.NULL)}. `
+                  + `Use a type guard to narrow to ${sta.expected.join(' | ')}.`;
+              }
+            }
+          }
         }
       }
 

@@ -297,6 +297,24 @@ export interface TypeHistoryEntry {
   type: UcodeDataType;
   branches?: Array<{ bs: number; be: number; is: number; ie: number }>;
   inLoop?: boolean;
+  /** OUTERMOST enclosing loop's extent at write time. A read anywhere inside this
+   *  extent shares a loop with the write, so the loop's back edge can deliver the
+   *  write to reads that sit textually BEFORE it (iteration 2+) — such "future"
+   *  writes union in instead of being skipped (union-only, never definite:
+   *  iteration 1 really sees the prior value). The outermost extent suffices —
+   *  loop extents nest, so sharing ANY loop implies being inside the outermost. */
+  loop?: { ls: number; le: number };
+  /** INNERMOST enclosing loop's extent — the dominance region: a read inside it,
+   *  textually after the write, in the write's own branch, with no closure
+   *  boundary between, is preceded by this write on EVERY path in EVERY
+   *  iteration (see writeDominatesIteration). */
+  loopIn?: { ls: number; le: number };
+  /** Shared, still-growing registry of every function-body extent in the file
+   *  (the analyzer appends as it visits — including lambdas defined AFTER this
+   *  write). Lets the dominance check detect a closure boundary between write
+   *  and read: a closure body runs at CALL time, so it may observe a later
+   *  rewrite, never the dominated value. */
+  fnx?: ReadonlyArray<{ bs: number; be: number }>;
   /** Innermost enclosing NAMED function whose body contains this write, plus that
    *  body's region. For a read OUTSIDE the body, the write can only have happened
    *  if the function was referenced (called/escaped, tracked via usedAt) at or
@@ -313,13 +331,20 @@ export interface TypeHistoryEntry {
 
 
 /** A body write is impossible for a read OUTSIDE the body unless the enclosing
- *  function was referenced (called or escaped) at or before the read position. */
+ *  function was referenced (called or escaped) at or before the read position —
+ *  OR, when read and write share a loop, referenced anywhere INSIDE that loop:
+ *  a call site later in the loop body runs on iteration 1 and its write reaches
+ *  the read on iteration 2+ via the back edge. */
 function bodyWriteCannotHaveRun(
-  e: { fnSym?: Symbol; fnBody?: { bs: number; be: number } }, readPos: number,
+  e: { fnSym?: Symbol; fnBody?: { bs: number; be: number }; loop?: { ls: number; le: number } }, readPos: number,
 ): boolean {
   if (!e.fnSym || !e.fnBody) return false;
   if (readPos >= e.fnBody.bs && readPos <= e.fnBody.be) return false; // same body
-  return !e.fnSym.usedAt?.some(p => p <= readPos);
+  if (e.fnSym.usedAt?.some(p => p <= readPos)) return false;
+  const lp = e.loop;
+  if (lp && readPos >= lp.ls && readPos <= lp.le
+      && e.fnSym.usedAt?.some(p => p >= lp.ls && p <= lp.le)) return false; // used in the shared loop
+  return true;
 }
 
 /** A body write DEFINITELY ran for a read after an UNCONDITIONAL direct call to the
@@ -329,9 +354,10 @@ function bodyWriteCannotHaveRun(
  *  written string, not a union. */
 function bodyWriteDefinitelyRan(
   e: { fnSym?: Symbol; fnBody?: { bs: number; be: number };
-       branches?: Array<{ bs: number; be: number }>; inLoop?: boolean }, readPos: number,
+       branches?: Array<{ bs: number; be: number }>; inLoop?: boolean;
+       loop?: { ls: number; le: number } }, readPos: number,
 ): boolean {
-  if (!e.fnSym || !e.fnBody || e.inLoop) return false;
+  if (!e.fnSym || !e.fnBody || e.inLoop || e.loop) return false;
   if (!e.branches || e.branches.length !== 1) return false; // conditional within the body
   return !!e.fnSym.definiteCallAt?.some(p => p <= readPos);
 }
@@ -380,11 +406,16 @@ export function effectiveSymbolType(symbol: Symbol, position: number): UcodeData
     const ordered = [...history].sort((a, b) => a.from - b.from);
     let value: UcodeDataType = symbol.dataType;
     for (const e of ordered) {
-      if (e.from > position) continue;            // future write
+      // A write LATER in a loop the read also sits in still reaches the read —
+      // via the back edge, on iteration 2+ (docs/uc2009-loop-read-before-write-null.md).
+      // Such back-edge writes are union-only below: iteration 1 sees the prior value.
+      const viaBackEdge = e.from > position;
+      if (viaBackEdge && !sharesLoop(e, position)) continue; // future write, no back edge
       if (typeWriteInvisible(e, position)) continue; // sibling-branch write
       if (bodyWriteCannotHaveRun(e, position)) continue; // enclosing fn not yet called
-      if (typeWriteDefinite(e, position) || bodyWriteDefinitelyRan(e, position)) value = e.type;
-      else if (e.elseType !== undefined && !e.inLoop) value = unionInto(e.elseType, e.type); // guard covers the fall-through
+      if (!viaBackEdge && (typeWriteDefinite(e, position) || bodyWriteDefinitelyRan(e, position)
+          || writeDominatesIteration(e, e.from, position))) value = e.type;
+      else if (!viaBackEdge && e.elseType !== undefined && !e.inLoop) value = unionInto(e.elseType, e.type); // guard covers the fall-through
       else value = unionInto(value, e.type);
     }
     return value;
@@ -457,12 +488,63 @@ export interface PropertyWriteEntry {
   /** Same call-position gating as TypeHistoryEntry.fnSym/fnBody. */
   fnSym?: Symbol;
   fnBody?: { bs: number; be: number };
+  /** Same back-edge semantics as TypeHistoryEntry.loop (member twin). */
+  loop?: { ls: number; le: number };
+  /** Same dominance semantics as TypeHistoryEntry.loopIn / fnx (member twin). */
+  loopIn?: { ls: number; le: number };
+  fnx?: ReadonlyArray<{ bs: number; be: number }>;
+}
+
+/** The read shares a loop with the write — the back edge connects them. */
+function sharesLoop(e: { loop?: { ls: number; le: number } }, readPos: number): boolean {
+  return !!e.loop && readPos >= e.loop.ls && readPos <= e.loop.le;
+}
+
+/** Within-iteration dominance for an IN-LOOP write: the write provably executed
+ *  before the read on EVERY path of EVERY iteration that reaches the read, so it
+ *  REPLACES the value instead of unioning (`for { x = 5; print(x) }` is a
+ *  definite integer). Requires ALL of:
+ *   - the read sits inside the write's INNERMOST loop (an inner sibling loop's
+ *     zero-iteration path, or a post-loop read, breaks dominance);
+ *   - the write ends at/before the read (back-edge order excluded);
+ *   - the read sits inside the write's innermost branch frame, or the write is
+ *     unbranched (same rule as writeDefiniteForRead — switch cases, ternary
+ *     arms, short-circuit RHS and try/catch all push frames, so a write inside
+ *     any of them never dominates a read outside it);
+ *   - no function boundary INSIDE the loop separates write from read: a closure
+ *     body runs at call time, so a read in it may observe a later rewrite (and
+ *     a write in one may run after the read's textual position). */
+function writeDominatesIteration(
+  e: { branches?: Array<{ bs: number; be: number }>; loopIn?: { ls: number; le: number };
+       fnx?: ReadonlyArray<{ bs: number; be: number }> },
+  writeEnd: number, readPos: number,
+): boolean {
+  const li = e.loopIn;
+  if (!li || readPos < li.ls || readPos > li.le) return false;
+  if (writeEnd > readPos) return false;
+  if (e.branches && e.branches.length) {
+    const inner = e.branches[e.branches.length - 1]!;
+    if (!(readPos >= inner.bs && readPos <= inner.be)) return false;
+  }
+  if (e.fnx) {
+    for (const f of e.fnx) {
+      if (f.bs < li.ls || f.be > li.le) continue; // boundary not inside the loop
+      const readInside = readPos >= f.bs && readPos <= f.be;
+      const writeInside = writeEnd >= f.bs && writeEnd <= f.be;
+      if (readInside !== writeInside) return false;
+    }
+  }
+  return true;
 }
 
 /** True when the write `e` provably did NOT execute on the path reaching `readPos`:
  *  the read sits inside one of the write's enclosing if-statements but outside the
- *  branch the write lives in (i.e. in a sibling else/else-if world). */
+ *  branch the write lives in (i.e. in a sibling else/else-if world). Never claimed
+ *  for IN-LOOP writes: a previous iteration's sibling-branch write reaches this
+ *  iteration's other branch (and any post-loop read) via the back edge — same rule
+ *  as TypeHistoryEntry.inLoop. */
 function writeInvisibleToRead(e: PropertyWriteEntry, readPos: number): boolean {
+  if (e.loop) return false;
   return !!e.branches?.some(b =>
     readPos >= b.is && readPos <= b.ie && !(readPos >= b.bs && readPos <= b.be));
 }
@@ -472,8 +554,12 @@ function writeInvisibleToRead(e: PropertyWriteEntry, readPos: number): boolean {
  *  innermost branch (same straight-line region). A conditional write outside the
  *  read's region only MAY have executed — it unions into the prior value instead of
  *  replacing it (`if (c) p.x = [1]; return p.x` is array | prior, not array: on the
- *  no-match path the write never ran). */
+ *  no-match path the write never ran). An IN-LOOP write is NEVER definite: the loop
+ *  may run zero times, so a post-loop read keeps the pre-loop value alive — the
+ *  member half of the 0.7.85 "in-loop writes always union" identifier contract
+ *  (docs/type-soundness-audit.md I-3, soundness ruling 2026-08-04). */
 function writeDefiniteForRead(e: PropertyWriteEntry, readPos: number): boolean {
+  if (e.loop) return false;
   if (!e.branches || e.branches.length === 0) return true;
   const inner = e.branches[e.branches.length - 1]!;
   return readPos >= inner.bs && readPos <= inner.be;
@@ -498,7 +584,8 @@ export function propertyTypeAt(
   const hist = symbol.propertyTypeHistory?.get(propName);
   if (hist && hist.length) {
     // Visible entries at/before the read, in source order. Sibling-branch writes are
-    // excluded outright (they provably did not run on the read's path).
+    // excluded outright (they provably did not run on the read's path); in-loop
+    // writes are never excluded — writeInvisibleToRead handles the back edge.
     const visible = hist
       .filter(e => !(e.pos >= 0 && writeInvisibleToRead(e, readPos)))
       .sort((x, y) => x.pos - y.pos);
@@ -517,11 +604,16 @@ export function propertyTypeAt(
       visible.length && visible[0]!.pos < 0 ? visible[0]!.type : undefined;
     let sawWrite = false;
     for (const e of visible) {
-      if (e.pos < 0 || e.pos > readPos) continue;
+      if (e.pos < 0) continue;
+      // Back-edge write: later in a loop the read also sits in — reaches the read
+      // on iteration 2+, union-only (same rule as effectiveSymbolType).
+      const viaBackEdge = e.pos > readPos;
+      if (viaBackEdge && !sharesLoop(e, readPos)) continue;
       if (bodyWriteCannotHaveRun(e, readPos)) continue; // enclosing fn not yet called
       sawWrite = true;
-      if (writeDefiniteForRead(e, readPos) || bodyWriteDefinitelyRan(e, readPos)) value = e.type;
-      else if (e.elseType !== undefined) value = unionMemberTypes(e.elseType, e.type); // guard covers the fall-through
+      if (!viaBackEdge && (writeDefiniteForRead(e, readPos) || bodyWriteDefinitelyRan(e, readPos)
+          || writeDominatesIteration(e, e.pos, readPos))) value = e.type;
+      else if (!viaBackEdge && !e.loop && e.elseType !== undefined) value = unionMemberTypes(e.elseType, e.type); // guard covers the fall-through
       else value = unionMemberTypes(value, e.type);
     }
     if (value !== undefined) return value;
@@ -705,6 +797,14 @@ export class SymbolTable {
   private globalScope: Map<string, Symbol> = new Map();
   // Keep track of all symbols ever declared (including in exited scopes) for position-based lookup
   private allSymbols: Symbol[] = [];
+
+  /** Every symbol ever declared in this table (active AND exited scopes), in
+   *  declaration order. Read-only view for post-analysis passes (the derived-
+   *  binding re-stamp) — do not mutate the array. Distinct from getAllSymbols(),
+   *  which only walks the still-active scope stack. */
+  getAllSymbolsEver(): readonly Symbol[] {
+    return this.allSymbols;
+  }
   // Name-keyed index over allSymbols so position-aware lookups scan only same-name
   // symbols (typically 1; worst case = shadow depth) instead of every symbol in the
   // file. Append-only, maintained in declare() alongside the allSymbols push.

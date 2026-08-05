@@ -2122,7 +2122,10 @@ export class TypeChecker {
       const always = neg ? 'true' : 'false';
       const base: {
         message: string; start: number; end: number; severity: 'error'; code: UcodeErrorCode;
-        data?: { impossibleCompareBase: { name: string; offset: number } };
+        data?: {
+          impossibleCompareBase?: { name: string; offset: number };
+          impossibleCompareRefs?: Array<{ name: string; offset: number; prop?: string; members: string[] }>;
+        };
       } = {
         message: `${descL} can never be ${op} ${descR} in ucode, so this comparison is always ${always}.`,
         start: node.start, end: node.end, severity: 'error', code: UcodeErrorCode.IMPOSSIBLE_COMPARISON,
@@ -2136,6 +2139,26 @@ export class TypeChecker {
           break;
         }
       }
+      // Record identifier/member operands WITH their at-emit type members, so the
+      // post-analysis filter can re-validate against the COMPLETE type history:
+      // this pass runs in source order, so a write later in an enclosing loop is
+      // not recorded yet, and the read types as the declared seed — the back edge
+      // makes that a false "can never be" (docs/uc2009-loop-read-before-write-null.md).
+      const refs: Array<{ name: string; offset: number; prop?: string; members: string[] }> = [];
+      for (const [side, members] of [[node.left, L], [node.right, R]] as Array<[AstNode, UcodeType[]]>) {
+        if (side.type === 'Identifier') {
+          refs.push({ name: (side as IdentifierNode).name, offset: side.start, members: members.map(String) });
+        } else if (side.type === 'MemberExpression') {
+          const m = side as MemberExpressionNode;
+          if (!m.computed && m.object.type === 'Identifier' && m.property.type === 'Identifier') {
+            refs.push({
+              name: (m.object as IdentifierNode).name, offset: m.object.start,
+              prop: (m.property as IdentifierNode).name, members: members.map(String),
+            });
+          }
+        }
+      }
+      if (refs.length) base.data = { ...(base.data ?? {}), impossibleCompareRefs: refs };
       this.errors.push(base);
     } else { // 'coercing'
       const strictOp = op === '==' ? '===' : '!==';
@@ -3740,9 +3763,26 @@ export class TypeChecker {
             severity: 'warning', code: 'incompatible-function-argument', data: diagData
           });
         } else {
+          // Definite-mismatch errors on an identifier/member operand carry a
+          // re-validation ref: the mid-pass type may be stale for loop
+          // read-before-write shapes (the post-analysis filter re-checks and
+          // downgrades to the may-be form when the type grew a compatible
+          // member — docs/uc2009-loop-read-before-write-null.md).
+          const emitMembers = (isUnionType(actualTypeData) ? getUnionTypes(actualTypeData) : [actualTypeData])
+            .map(m => String(dataTypeToBase(m)));
+          let staleRef: { name: string; offset: number; prop?: string; members: string[]; funcName: string; argPosition: number; expected: string[] } | undefined;
+          if (arg.type === 'Identifier') {
+            staleRef = { name: (arg as IdentifierNode).name, offset: arg.start, members: emitMembers, funcName: fnName, argPosition: i + 1, expected: [String(expectedType)] };
+          } else if (arg.type === 'MemberExpression') {
+            const m = arg as MemberExpressionNode;
+            if (!m.computed && m.object.type === 'Identifier' && m.property.type === 'Identifier') {
+              staleRef = { name: (m.object as IdentifierNode).name, offset: m.object.start, prop: (m.property as IdentifierNode).name, members: emitMembers, funcName: fnName, argPosition: i + 1, expected: [String(expectedType)] };
+            }
+          }
           this.errors.push({
             message, start: arg.start, end: arg.end,
-            severity: 'error', code: 'incompatible-function-argument', data: diagData
+            severity: 'error', code: 'incompatible-function-argument',
+            data: staleRef ? { ...diagData, staleTypeArg: staleRef } : diagData
           });
         }
       }

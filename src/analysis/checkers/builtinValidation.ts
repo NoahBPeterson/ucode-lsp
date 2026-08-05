@@ -3,7 +3,7 @@
  */
 
 import { type AstNode, type CallExpressionNode, type LiteralNode, type ObjectExpressionNode, type PropertyNode, type IdentifierNode } from '../../ast/nodes';
-import { UcodeType, type UcodeDataType, createUnionType, createArrayType, createTupleArrayType, isArrayType, getArrayElementType, extractModuleType, getObjectTypeName, isUnionType, getUnionTypes, widenWithNull } from '../symbolTable';
+import { UcodeType, type UcodeDataType, type SingleType, createUnionType, createArrayType, createTupleArrayType, isArrayType, getArrayElementType, extractModuleType, getObjectTypeName, isUnionType, getUnionTypes, widenWithNull } from '../symbolTable';
 import { type TypeError, type TypeWarning } from '../types';
 import { UcodeErrorCode } from '../errorConstants';
 import { isKnownObjectType, OBJECT_REGISTRIES } from '../moduleDispatch';
@@ -439,6 +439,31 @@ export class BuiltinValidator {
     this.constantValue = fn;
   }
 
+  /** Re-validation payload for a DEFINITE type-mismatch diagnostic whose operand
+   *  is a plain identifier or non-computed member read. The main pass types the
+   *  operand from the history recorded SO FAR — a write later in an enclosing
+   *  loop is invisible, so the "got null" claim can be stale. The post-analysis
+   *  filter re-resolves against complete history and downgrades to the may-be
+   *  form when the type grew a compatible member.
+   *  (docs/uc2009-loop-read-before-write-null.md, second-look pass) */
+  private staleArgRef(
+    arg: AstNode, members: string[], funcName: string, argPosition: number, expected: string[],
+  ): { name: string; offset: number; prop?: string; members: string[]; funcName: string; argPosition: number; expected: string[] } | undefined {
+    if (arg.type === 'Identifier') {
+      return { name: (arg as IdentifierNode).name, offset: arg.start, members, funcName, argPosition, expected };
+    }
+    if (arg.type === 'MemberExpression') {
+      const m = arg as unknown as { computed?: boolean; object?: AstNode; property?: AstNode };
+      if (!m.computed && m.object?.type === 'Identifier' && m.property?.type === 'Identifier') {
+        return {
+          name: (m.object as IdentifierNode).name, offset: m.object.start,
+          prop: (m.property as IdentifierNode).name, members, funcName, argPosition, expected,
+        };
+      }
+    }
+    return undefined;
+  }
+
   private checkArgumentCount(node: CallExpressionNode, funcName: string, minArgs: number): boolean {
     // A zero-arg call to a builtin ucode accepts with no args is valid-but-useless, not an arity
     // error: warn (error under 'use strict') and narrow the return type. Return false so the
@@ -582,7 +607,11 @@ export class BuiltinValidator {
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()}`;
 
-        this.errors.push({ message, start: diagStart, end: diagEnd, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
+        const staleRef = this.staleArgRef(arg, argTypes.map(t => t.toLowerCase()), funcName, argPosition, [...allowedTypes]);
+        this.errors.push({
+          message, start: diagStart, end: diagEnd, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
+          ...(staleRef ? { data: { staleTypeArg: staleRef } } : {}),
+        });
         return false;
       } else if (disallowedTypes.length > 0) {
         // A union whose ONLY disallowed member is `unknown` (e.g. `array | unknown` from
@@ -721,7 +750,11 @@ export class BuiltinValidator {
         const message = customErrorMessage ||
           `Function '${funcName}' expects ${allowedTypes.join(' or ')} for argument ${argPosition}, got ${argType.toLowerCase()}`;
 
-        this.errors.push({ message, start: diagStart, end: diagEnd, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
+        const staleRef = this.staleArgRef(arg, [argType.toLowerCase()], funcName, argPosition, [...allowedTypes]);
+        this.errors.push({
+          message, start: diagStart, end: diagEnd, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
+          ...(staleRef ? { data: { staleTypeArg: staleRef } } : {}),
+        });
         return false;
       }
     }
@@ -2629,6 +2662,13 @@ export class BuiltinValidator {
     // keys() always returns array<string> (object keys are strings)
     if (this.narrowedReturnType === UcodeType.ARRAY) {
       this.narrowedReturnType = createArrayType(UcodeType.STRING);
+    } else if (this.narrowedReturnType !== null && isUnionType(this.narrowedReturnType as unknown as UcodeDataType)) {
+      // Arg only MAY be an object (e.g. `object | unknown` from a loop-carried
+      // union): the object path still yields string keys — refine the ARRAY
+      // member to array<string>, keeping the | null wrong-type path.
+      const parts = getUnionTypes(this.narrowedReturnType as unknown as UcodeDataType)
+        .map(m => m === UcodeType.ARRAY ? createArrayType(UcodeType.STRING) : m);
+      this.narrowedReturnType = createUnionType(parts as SingleType[]) as unknown as UcodeType;
     }
     this.validateArgumentType(node.arguments[0], 'keys', 1, [UcodeType.OBJECT]);
     // Tag the call result with keys-of provenance. When the argument is a
