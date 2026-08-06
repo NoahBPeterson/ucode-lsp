@@ -38,6 +38,7 @@ import { socketModule, socketObjectType } from './socketTypes';
 import { uhttpdObjectType } from './uhttpdTypes';
 import { netifdProtoObjectType, netifdDaemonObjectType } from './netifdTypes';
 import { hostapdGlobalObjectType, hostapdBssObjectType, hostapdIfaceObjectType, wpasGlobalObjectType, wpasIfaceObjectType } from './hostapdTypes';
+import { luciHttpObjectType, luciDispatcherObjectType } from './luciTypes';
 import { ubusModule, ubusConnectionObjectType, ubusChannelObjectType, ubusDeferredObjectType, ubusObjectObjectType, ubusRequestObjectType, ubusNotifyObjectType, ubusListenerObjectType, ubusSubscriberObjectType } from './ubusTypes';
 import { zlibModule, zlibDeflateObjectType, zlibInflateObjectType } from './zlibTypes';
 import { ioModule, ioHandleObjectType } from './ioTypes';
@@ -133,6 +134,8 @@ export const OBJECT_REGISTRIES: Record<KnownObjectType, ObjectTypeRegistry> = {
   'hostapd.iface': createObjectTypeRegistry(hostapdIfaceObjectType),
   'wpas.global': createObjectTypeRegistry(wpasGlobalObjectType),
   'wpas.iface': createObjectTypeRegistry(wpasIfaceObjectType),
+  'luci.http': createObjectTypeRegistry(luciHttpObjectType),
+  'luci.dispatcher': createObjectTypeRegistry(luciDispatcherObjectType),
   'exception': createObjectTypeRegistry(exceptionObjectType),
 };
 

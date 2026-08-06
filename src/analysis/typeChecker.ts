@@ -3818,8 +3818,8 @@ export class TypeChecker {
     // Emit at warning severity, escalated to error under `'use strict'`. The
     // range defaults to the callee (not the whole call — flagging every
     // argument for a MISSING one reads as if the present args were wrong).
-    const emit = (message: string, start = node.callee.start, end = node.callee.end, forceWarning = false) => {
-      const d = { message, start, end, code: UcodeErrorCode.INVALID_PARAMETER_COUNT };
+    const emit = (message: string, start = node.callee.start, end = node.callee.end, forceWarning = false, data?: Record<string, unknown>) => {
+      const d = { message, start, end, code: UcodeErrorCode.INVALID_PARAMETER_COUNT, ...(data ? { data } : {}) };
       if (this.strictMode && !forceWarning) this.errors.push({ ...d, severity: 'error' });
       else this.warnings.push({ ...d, severity: 'warning' });
     };
@@ -3855,7 +3855,10 @@ export class TypeChecker {
         : dataTypeToBase(p.type) !== UcodeType.UNKNOWN;
       if (!declared) continue;
       const shown = this.getTypeDescription(p.type);
-      emit(`Function '${fnName}' expects argument '${p.name}' (${shown}); omitting it passes null. If that is intended, declare it optional: @param {${shown}} [${p.name}]`);
+      // data → the "mark it optional" quick fix, which edits the CALLEE's @param tag.
+      emit(`Function '${fnName}' expects argument '${p.name}' (${shown}); omitting it passes null. If that is intended, declare it optional: @param {${shown}} [${p.name}]`,
+        node.callee.start, node.callee.end, false,
+        { missingOptionalParam: { funcName: fnName, paramName: p.name } });
     }
   }
 
@@ -4326,19 +4329,24 @@ export class TypeChecker {
         // was previously mislabeled "Method" even for reads (ticket 145). Severity
         // stays error for both: a typo'd field on a known object shape (e.g. fs.stat)
         // is a bug worth flagging, matching the existing closed-shape contract.
+        // Anchor on the PROPERTY id alone — the base object (`uci`) is fine; only the
+        // member name is wrong, and the squiggle should say so.
+        const propNode = node.property as IdentifierNode;
+        const propStart = typeof propNode.start === 'number' ? propNode.start : node.start;
+        const propEnd = typeof propNode.end === 'number' ? propNode.end : node.end;
         if (this.calleeMemberNodes.has(node)) {
           this.errors.push({
             message: `Method '${methodName}' does not exist on ${detectedObjectType}`,
-            start: node.start,
-            end: node.end,
+            start: propStart,
+            end: propEnd,
             severity: 'error',
             code: UcodeErrorCode.METHOD_NOT_FOUND,
           });
         } else {
           this.errors.push({
             message: `Property '${methodName}' does not exist on ${detectedObjectType}`,
-            start: node.start,
-            end: node.end,
+            start: propStart,
+            end: propEnd,
             severity: 'error',
             code: UcodeErrorCode.PROPERTY_NOT_FOUND,
           });

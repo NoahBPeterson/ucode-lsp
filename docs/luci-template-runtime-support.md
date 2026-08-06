@@ -1,10 +1,75 @@
 # LuCI template/controller runtime: ambient scope + template include resolution
 
-Status: **NOT STARTED — 🟠 HIGH PRIORITY for LuCI users** (every opened .ut file
-shows UC1002/UC1001 for runtime-injected names; UC3002's file-relative include
-model is factually wrong for these files). Investigated 2026-08-03 against the
-vendored luci/ checkout; all evidence lines cited. Successor-in-spirit to the
-uhttpd/hostapd/netifd ambient work; the injection MECHANISM is the
+Status: **SHIPPED at 0.8.0 (2026-08-04, uncommitted — awaiting user test). All four
+parts built, plus follow-ons the corpus differential surfaced.** Implementation map:
+
+- **Part 0** re-landed verbatim (package.json languages/grammars/activationEvents/
+  configurationDefaults, syntaxes/ucode-template.tmLanguage.json, extension.ts
+  documentSelector + `**/*.{uc,ut}` watcher; tests/syntax/test-tmgrammar-template.test.js
+  reconstructed, 8 tests). `.ut` counts as a workspace source file now (shebang.ts).
+- **Parts A–C** live in `src/analysis/luciEnv.ts` (workspace sniff: checkout via
+  modules/luci-base/ucode/dispatcher.uc, deployed via dispatcher+runtime+template/ in one
+  dir — with the "luci-base/ucode IS deployed-shaped" disambiguation; template roots =
+  every package ucode/ dir's template/, luci-base first; `resolveLuciTemplatePath`,
+  `resolveLuciTemplatePattern` for `themes/*/…` template-literal paths,
+  `resolveLuciModulePath` for `luci.*` dotted imports), `src/analysis/luciTypes.ts`
+  (LUCI_ENV_GLOBALS incl. post-construction env members dispatched/requested/media_error/
+  lua_active; `luci.http` + `luci.dispatcher` openMembers object registries),
+  `SemanticAnalyzer.detectAndDeclareLuciEnv`, fileResolver (template-first include
+  resolution + `luci.*` import/require + template-mode parsing of targets),
+  includeScope.ts (render()/`.render()` sites, template-literal → `*` patterns,
+  identifier paths via agreeing declarators, identifier SCOPES mined through declarator
+  inits/member assigns/call sites + ONE callback hop, bare includes as leak edges),
+  server.ts (index hooks + checkIncludeScopes skip for template-root/render/pattern
+  sites; include() document links via fileResolver.resolveIncludeTarget).
+- **Follow-ons from the differential:** `.ut` ⇒ template mode even with no tag
+  (detectTemplateModeForFile — pure-HTML templates are legal utpl); fw4's 43 false
+  "include target could not be parsed" errors died with template-mode target parsing;
+  `import { default as X }` validates against the default export (incl. the
+  `export { a as default }` form); strict-mode `if (length(maybe-null))` emptiness
+  tests are no longer errors (tolerated-type + truthiness + test-idiom gate).
+- **Numbers:** corpus differential glinet −8/+0, firewall4 −45/+0, luci .uc −80/+0;
+  luci .ut tree-wide UC1001s 71 → 13. Suite 4,058/0 + validations;
+  tests/diagnostics/test-luci-template-runtime.test.js = 40 tests.
+- **Follow-up round (2026-08-05, from user demo feedback):** UC6020 — a `{# … #}`
+  comment that closes at its first `#}` while another terminator sits in the trailing
+  literal text warns on the stray terminator (the tail is page output; oracle-verified;
+  0 hits across 126 real corpus files). Go-to-definition: template-mode token positions
+  in `.ut` files (was raw-lexed), `include('name')` paths resolve via template roots,
+  `luci.http`/`luci.dispatcher` members jump into luci-base's own http.uc/dispatcher.uc
+  (AST-based member locator), and synthetic ambient symbols no longer fabricate a
+  row-1 col-1 definition.
+- **Standalone packages (2026-08-05, evidence from real repos):** out-of-tree LuCI
+  packages are detected by their package-root Makefile (`LUCI_TITLE` + `include
+  …luci.mk` — the convention of jerrykuku/luci-theme-argon, sbwml/luci-app-bluetooth,
+  and luci.mk itself; feed repos nest `applications/<pkg>/`). `LuciWorkspace` gained
+  kind `'package'`: the package's `ucode/` dir is a template root and `luci.*` slice
+  (it installs to `/usr/share/ucode/luci`, luci.mk:86), the env ambient activates for
+  its templates/controllers, and a suppression floor stops absence claims we can't
+  prove — unresolvable `luci.*` imports (silent in ANY LuCI tree: luci.core is
+  compiled C, luci.version is build-generated) and template-style include not-found
+  (package kind only — the on-device template dir is merged from all installed
+  packages). `LUCI_TEMPLATE_RENDER_COMPAT_NAMES` (node/css/duser/fuser/auth_*/
+  trigger_*/rollback_token/https_port) are UC1001-suppressed in `.ut` templates only
+  (controllers keep full typo detection). Validation: a fresh clone of the real
+  argon theme analyzes with ZERO undefined-variable FPs; the former in-tree floor is
+  now 0 UC1001s tree-wide.
+- **Container validation (2026-08-05):** installed luci via opkg/apk in the
+  owrt-{2305,2410,2512} containers and analyzed the extracted `/usr/share/ucode/luci`
+  trees — identical layout on all three releases, and `version.uc` exists deployed
+  (confirming the checkout-side suppression). The real rootfs exposed four bugs, all
+  fixed: deployed/nested controller paths missed by the env gate; file-wide
+  self-declared checking (a nested `for (let config in …)` loop-local killed the env
+  `config` ambient — controller/admin/uci.uc); missing-`.ut` includes with a Lua-view
+  fallback (`luasrc/view/<name>.htm`, the admin_status/luaindex case) falsely flagged;
+  and shadow warnings on locals named like ambient globals. All three deployed trees
+  now analyze with 0 undefined names and 0 spurious not-founds.
+- **Known residual:** honest null-safety warnings only (e.g. `cursor()`/`ubus.call`
+  results used unguarded in themes, `json(http.content())` inside a try) — true
+  positives per the uci/ubus/http typings.
+
+Original investigation below (2026-08-03, all evidence lines cited). Successor-in-spirit
+to the uhttpd/hostapd/netifd ambient work; the injection MECHANISM is the
 call-scope-injection family (docs/call-scope-injection.md).
 
 ## How the runtime actually works (evidence)

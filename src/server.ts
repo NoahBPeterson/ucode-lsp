@@ -60,7 +60,7 @@ import { computeRawInlayHints, shiftRawHints, materializeRawHints, type RawInlay
 import { provideFoldingRanges } from './foldingRanges';
 import { provideDocumentLinks } from './documentLinks';
 import { computeImportInsertEdit, computeNamedImportEdit } from './importEdit';
-import { parseDisableDirectives, anyDirectiveCovers } from './analysis/disableDirectives';
+import { parseDisableDirectives, anyDirectiveCovers, directiveCovers } from './analysis/disableDirectives';
 import { allBuiltinFunctions } from './builtins';
 import { SemanticAnalyzer, type SemanticAnalysisResult, SymbolType, type SymbolTable, type Symbol } from './analysis';
 import type {
@@ -82,8 +82,9 @@ import { UCODE_TARGET_VERSIONS, type UcodeTargetVersion, DEFAULT_TARGET_VERSION 
 import { UcodeErrorCode } from './analysis/errorConstants';
 import { stringSourceToRegexLiteral } from './analysis/checkers/builtinValidation';
 import { UcodeParser } from './parser';
-import { UcodeLexer, TokenType, detectTemplateMode, bridgeTemplateTokens, type Token } from './lexer';
+import { UcodeLexer, TokenType, detectTemplateModeForFile, bridgeTemplateTokens, type Token } from './lexer';
 import { buildIncludeScopeIndex, checkIncludeScopes, computeFreeVariables, type IncludeScopeEntry } from './analysis/includeScope';
+import { resolveLuciTemplatePath, resolveLuciTemplatePattern } from './analysis/luciEnv';
 import { runIncremental, type CleanBody } from './analysis/incrementalAnalysis';
 import { type IncrementalCacheEntry } from './analysis/incrementalCache';
 import { isKnownModule } from './analysis/moduleDispatch';
@@ -99,6 +100,16 @@ const connection = createConnection(ProposedFeatures.all);
 // The LSP `Diagnostic.data` field is typed `unknown`, so handlers narrow to this before reading.
 // Every field is optional — different diagnostic codes populate different subsets.
 interface DiagnosticData {
+    /** UC6020: lexer-computed offsets to split each inner '#}' so the comment extends
+     *  to the author's intended terminator (no escape exists in template comments). */
+    commentEndedEarly?: { insertSpaceBefore?: number[]; intendedStart?: number };
+    /** UC2003 too-few-args: the callee/param pair, for the quick fix that rewrites the
+     *  callee's `@param {T} name` into the optional form `@param {T} [name]`. */
+    missingOptionalParam?: { funcName?: string; paramName?: string };
+    /** UC3002 luci.* typo: the shipped module name to rewrite the import string to. */
+    luciModuleSuggestion?: { replaceWith?: string };
+    /** UC8015 blanket disable: the codes it suppresses + insert column for narrowing. */
+    narrowDisable?: { codes?: string[]; insertAt?: number };
     coerceToString?: boolean;
     argNeedsParens?: boolean;
     convertStringToRegex?: boolean;
@@ -675,10 +686,11 @@ async function ensureFullAnalysis(uri: string): Promise<void> {
 
 async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, forceFull = false): Promise<void> {
     const text = textDocument.getText();
-    // Template files (`{% %}`/`{{ }}`) lex in template mode and have their framing
-    // tokens bridged to statement separators so the ordinary parser can consume them;
-    // raw scripts are unchanged. (ucode template-mode bring-up, phase 3.)
-    const isTemplate = detectTemplateMode(text);
+    // Template files (`{% %}`/`{{ }}` content, or any `.ut` — utpl may be pure HTML with
+    // no tag) lex in template mode and have their framing tokens bridged to statement
+    // separators so the ordinary parser can consume them; raw scripts are unchanged.
+    // (ucode template-mode bring-up, phase 3.)
+    const isTemplate = detectTemplateModeForFile(textDocument.uri, text);
     const lexer = new UcodeLexer(text, { rawMode: !isTemplate });
     const tokens = isTemplate ? bridgeTemplateTokens(lexer.tokenize()) : lexer.tokenize();
     const parser = new UcodeParser(tokens, text);
@@ -691,6 +703,11 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
     // document. A directive REMOVES (not demotes) a covered diagnostic — ticket 08 — and the
     // semantic analyzer applies the same directives to its own diagnostics via the shared module.
     const disableDirectives = parseDisableDirectives(textDocument.getText());
+    // Comment lines of directives that suppressed a lexer/parser diagnostic (this layer
+    // is invisible to the analyzer's own staleness check — see the filter below), plus
+    // the CODES each BARE directive suppressed here (for the UC8015 narrowing hint).
+    const parserUsedDirectiveLines = new Set<number>();
+    const parserBareSuppressedCodes = new Map<number, Set<string>>();
     let diagnostics: Diagnostic[] = [...lexer.errors, ...parseResult.errors].map(err => {
         const diagnostic: Diagnostic = {
             severity: (err as { severity?: string }).severity === 'warning' ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error,
@@ -703,9 +720,29 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
             // Every parser diagnostic carries a stable code (#103); UC6001 is the
             // umbrella fallback if an emission site didn't set a more specific one.
             code: err.code ?? UcodeErrorCode.SYNTAX_ERROR,
+            // Lexer-computed quick-fix payloads (e.g. UC6020's neutralize offsets).
+            ...((err as { data?: Record<string, unknown> }).data ? { data: (err as { data?: Record<string, unknown> }).data } : {}),
         };
         return diagnostic;
-    }).filter(d => !anyDirectiveCovers(disableDirectives, d.range.start.line, d.code));
+    }).filter(d => {
+        // Track which directives earned their keep on LEXER/PARSER diagnostics — the
+        // analyzer's staleness check can't see this layer, so without the record a
+        // directive that suppresses only e.g. a UC6016/UC6020 would be falsely flagged
+        // "No diagnostic disabled by this comment" (UC8014).
+        let covered = false;
+        for (const dir of disableDirectives) {
+            if (directiveCovers(dir, d.range.start.line, d.code)) {
+                covered = true;
+                parserUsedDirectiveLines.add(dir.commentLine);
+                if (dir.codes === null && d.code !== undefined) {
+                    let set = parserBareSuppressedCodes.get(dir.commentLine);
+                    if (!set) { set = new Set(); parserBareSuppressedCodes.set(dir.commentLine, set); }
+                    set.add(String(d.code));
+                }
+            }
+        }
+        return !covered;
+    });
 
     if (parseResult.ast) {
         // One analysis pass with a given skip set; reused by runIncremental (which may invoke
@@ -772,6 +809,44 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
         // Semantic analysis diagnostics are already filtered by the SemanticAnalyzer itself
         diagnostics.push(...analysisResult.diagnostics);
 
+        // A directive the analyzer judged stale (UC8014) but that actually suppressed a
+        // lexer/parser diagnostic above is NOT stale — drop the false claim.
+        if (parserUsedDirectiveLines.size > 0) {
+            diagnostics = diagnostics.filter(d =>
+                !(d.code === UcodeErrorCode.UNNECESSARY_DISABLE_DIRECTIVE
+                  && parserUsedDirectiveLines.has(d.range.start.line)));
+        }
+
+        // UC8015 — a USED bare disable is a line-wide blanket, but both layers have now
+        // reported exactly which codes it suppressed, so it can be narrowed to them.
+        // Emitted HERE (not in the analyzer) because only the server sees both layers.
+        {
+            const byLine = new Map<number, { commentCol: number; markerEndCol: number; codes: Set<string> }>();
+            for (const rec of analysisResult.bareDirectiveSuppressions ?? []) {
+                byLine.set(rec.commentLine, { commentCol: rec.commentCol, markerEndCol: rec.markerEndCol, codes: new Set(rec.codes) });
+            }
+            for (const dir of disableDirectives) {
+                if (dir.codes !== null) continue;
+                const parserCodes = parserBareSuppressedCodes.get(dir.commentLine);
+                if (!parserCodes) continue;
+                let entry = byLine.get(dir.commentLine);
+                if (!entry) { entry = { commentCol: dir.commentCol, markerEndCol: dir.markerEndCol, codes: new Set() }; byLine.set(dir.commentLine, entry); }
+                for (const c of parserCodes) entry.codes.add(c);
+            }
+            for (const [line, entry] of byLine) {
+                const codes = [...entry.codes].sort();
+                if (codes.length === 0) continue;
+                diagnostics.push({
+                    severity: DiagnosticSeverity.Hint,
+                    range: { start: { line, character: entry.commentCol }, end: { line, character: entry.markerEndCol } },
+                    message: `This blanket disable hides every diagnostic on the line - it currently suppresses ${codes.join(', ')}. Narrowing it keeps new problems visible.`,
+                    source: 'ucode-semantic',
+                    code: UcodeErrorCode.BLANKET_DISABLE_NARROWABLE,
+                    data: { narrowDisable: { codes, insertAt: entry.markerEndCol } },
+                });
+            }
+        }
+
         // Host-side render-scope enforcement: for each include("tmpl", { … }) in THIS file,
         // flag a template free variable the scope fails to provide (sound — verified vs the
         // oracle). Best-effort + contained; never let it break the main diagnostics. (phase 4b)
@@ -790,7 +865,8 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
             // so pass it as "provided" (else we'd falsely flag a leaked var like fw4). (phase 4b)
             const selfEntry = getWorkspaceIncludeScopeIndex().get(includerPath);
             const includerScope = selfEntry ? { names: selfEntry.injectedNames, complete: selfEntry.complete } : undefined;
-            for (const d of checkIncludeScopes(parseResult.ast, includerPath, getTargetFreeVars, (n) => allBuiltinFunctions.has(n), includerScope)) {
+            for (const d of checkIncludeScopes(parseResult.ast, includerPath, getTargetFreeVars, (n) => allBuiltinFunctions.has(n), includerScope,
+                (raw, includer) => resolveLuciTemplatePath(includer, raw))) {
                 const startLine = textDocument.positionAt(d.start).line;
                 if (anyDirectiveCovers(disableDirectives, startLine, UcodeErrorCode.UNDEFINED_VARIABLE)) continue;
                 diagnostics.push({
@@ -1323,11 +1399,105 @@ function generateDeclareGlobalQuickFix(diagnostic: Diagnostic, document: TextDoc
     if (!m) return [];
     const name = m[0];
     const at = topInsertPosition(document);
+    // In a TEMPLATE, a bare `/** … */` at the top is literal PAGE OUTPUT, not a comment —
+    // wrap it in a statement block, which renders zero bytes (oracle-verified) while the
+    // @global scan (raw-text regex) still honors it.
+    const text = topLevelCode(document, `/** @global ${name} */`);
     return [{
         title: `Declare '${name}' as an injected global (@global)`,
         kind: CodeActionKind.QuickFix,
         diagnostics: [diagnostic],
-        edit: { changes: { [uri]: [TextEdit.insert(at, `/** @global ${name} */\n`)] } },
+        edit: { changes: { [uri]: [TextEdit.insert(at, text)] } },
+    }];
+}
+
+/** Top-of-file CODE insertion, template-aware: raw scripts get `code\n`; template files
+ *  get `{% code %}\n` so the insertion is a zero-output statement block instead of
+ *  literal page text. */
+function topLevelCode(document: TextDocument, code: string): string {
+    return detectTemplateModeForFile(document.uri, document.getText())
+        ? `{% ${code} %}\n`
+        : `${code}\n`;
+}
+
+// UC8014: delete a stale disable directive. The diagnostic anchors at the comment's
+// start; the deletion spans the whole comment — `//` form to end of line, `{# … #}`
+// template form to its terminator — plus the whitespace run before it, and the whole
+// line (with newline) when nothing else is on it.
+function generateRemoveDisableDirectiveQuickFix(
+    diagnostic: Diagnostic,
+    document: TextDocument,
+    uri: string,
+): CodeAction[] {
+    const line = diagnostic.range.start.line;
+    const lineText = document.getText({ start: { line, character: 0 }, end: { line: line + 1, character: 0 } }).replace(/\r?\n$/, '');
+    const col = diagnostic.range.start.character;
+    const at = lineText.slice(col);
+    let endCol: number;
+    if (at.startsWith('//')) {
+        endCol = lineText.length; // a line comment runs to EOL
+    } else if (at.startsWith('{#')) {
+        const term = /-?#\}/.exec(at);
+        if (!term) return [];
+        endCol = col + term.index + term[0].length;
+    } else {
+        return [];
+    }
+    const before = lineText.slice(0, col);
+    const wholeLine = before.trim() === '' && lineText.slice(endCol).trim() === '';
+    const startChar = wholeLine ? 0 : before.length - (before.length - before.trimEnd().length);
+    const range = wholeLine
+        ? { start: { line, character: 0 }, end: { line: line + 1, character: 0 } } // include the newline
+        : { start: { line, character: startChar }, end: { line, character: endCol } };
+    return [{
+        title: 'Remove this disable directive (it suppresses nothing)',
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        edit: { changes: { [uri]: [{ range, newText: '' }] } },
+    }];
+}
+
+// UC2003 too-few-args: rewrite the CALLEE's `@param {T} name` into the optional form
+// `@param {T} [name]` — the reconciliation the diagnostic message describes. The edit
+// targets the JSDoc block governing the same-file declaration (found by comment offsets
+// from the lexer side-channel); applying it once clears every call site's diagnostic.
+function generateMarkParamOptionalQuickFix(
+    diagnostic: Diagnostic,
+    document: TextDocument,
+    uri: string,
+    cacheEntry: { result: SemanticAnalysisResult; comments: Token[] } | undefined,
+): CodeAction[] {
+    const info = diagData(diagnostic).missingOptionalParam;
+    const funcName = info?.funcName;
+    const paramName = info?.paramName;
+    if (!funcName || !paramName || !cacheEntry?.result?.symbolTable) return [];
+    const offset = document.offsetAt(diagnostic.range.start);
+    const sym = cacheEntry.result.symbolTable.resolveReference(funcName, offset);
+    // Same-file declarations only: an imported callee's JSDoc lives in another module.
+    if (!sym || sym.importedFrom || typeof sym.declaredAt !== 'number') return [];
+    const text = document.getText();
+    // The governing JSDoc block: the last comment before the declaration id with nothing
+    // but the declaration keywords between its end and the id.
+    let best: Token | null = null;
+    for (const c of cacheEntry.comments ?? []) {
+        if (typeof c.pos !== 'number' || typeof c.end !== 'number') continue;
+        if (c.end <= sym.declaredAt && (!best || c.end > best.end)) best = c;
+    }
+    if (!best) return [];
+    if (text.slice(best.end, sym.declaredAt).replace(/\bexport\b|\bfunction\b|\basync\b|\s+/g, '') !== '') return [];
+    const commentText = text.slice(best.pos, best.end);
+    const esc = paramName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = new RegExp(`(@param\\s*\\{[^}]*\\}\\s+)(${esc})\\b`).exec(commentText);
+    if (!m) return [];
+    const nameStart = best.pos + m.index + m[1]!.length;
+    return [{
+        title: `Mark '${paramName}' optional in its @param ([${paramName}])`,
+        kind: CodeActionKind.QuickFix,
+        diagnostics: [diagnostic],
+        edit: { changes: { [uri]: [{
+            range: { start: document.positionAt(nameStart), end: document.positionAt(nameStart + paramName.length) },
+            newText: `[${paramName}]`,
+        }] } },
     }];
 }
 
@@ -1346,7 +1516,7 @@ function generateSeedGlobalDefaultQuickFix(diagnostic: Diagnostic, document: Tex
         // declare-local fix is the preferred one instead.
         ...(data?.implicit === false ? { isPreferred: true } : {}),
         diagnostics: [diagnostic],
-        edit: { changes: { [uri]: [TextEdit.insert(at, `global.${name} = null;\n`)] } },
+        edit: { changes: { [uri]: [TextEdit.insert(at, topLevelCode(document, `global.${name} = null;`))] } },
     }];
 }
 
@@ -1481,6 +1651,29 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             if (colonFix) codeActions.push(colonFix);
         }
 
+        // UC6020 is a LEXER diagnostic (source 'ucode-parser') — a template comment that
+        // closed at its first '#}' with the author's real terminator further on. ucode has
+        // NO escape sequence inside `{# … #}`, so the only way to keep the text commented
+        // is to split every inner '#}' pair; the lexer computed those offsets.
+        if (diagnostic.code === UcodeErrorCode.TEMPLATE_COMMENT_ENDED_EARLY) {
+            const offsets = diagData(diagnostic).commentEndedEarly?.insertSpaceBefore;
+            if (Array.isArray(offsets) && offsets.length > 0) {
+                codeActions.push({
+                    title: `Extend the comment to this terminator (split each inner '#}' into '# }')`,
+                    kind: CodeActionKind.QuickFix,
+                    diagnostics: [diagnostic],
+                    edit: {
+                        changes: {
+                            [params.textDocument.uri]: offsets.map((o) => ({
+                                range: { start: document.positionAt(o), end: document.positionAt(o) },
+                                newText: ' ',
+                            })),
+                        },
+                    },
+                });
+            }
+        }
+
         // Only provide fix for ucode-semantic diagnostics (our diagnostics)
         if (diagnostic.source === 'ucode-semantic') {
             const line = diagnostic.range.start.line;
@@ -1532,6 +1725,53 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // offer optional chaining (`.`→`?.`) and a null guard (`if (x) …`).
             if (diagnostic.code === 'UC5005' || diagnostic.code === 'UC5006') {
                 codeActions.push(...generateNullAccessQuickFixes(diagnostic, document, params.textDocument.uri, ast));
+            }
+
+            // UC2003 too-few-args with a declared non-optional @param: offer to make the
+            // callee's @param optional (`[name]`) — the fix the message describes.
+            if (diagnostic.code === 'UC2003' && diagData(diagnostic).missingOptionalParam) {
+                codeActions.push(...generateMarkParamOptionalQuickFix(diagnostic, document, params.textDocument.uri, cacheEntry));
+            }
+
+            // UC3002 with a shipped-module suggestion: rewrite the import string in place.
+            // The diagnostic range covers the string literal INCLUDING its quotes — the
+            // edit replaces the inner text only, preserving the author's quote style.
+            if (diagnostic.code === 'UC3002' && diagData(diagnostic).luciModuleSuggestion?.replaceWith) {
+                const replaceWith = diagData(diagnostic).luciModuleSuggestion!.replaceWith!;
+                const inner = {
+                    start: { line: diagnostic.range.start.line, character: diagnostic.range.start.character + 1 },
+                    end: { line: diagnostic.range.end.line, character: diagnostic.range.end.character - 1 },
+                };
+                codeActions.push({
+                    title: `Change to '${replaceWith}'`,
+                    kind: CodeActionKind.QuickFix,
+                    isPreferred: true,
+                    diagnostics: [diagnostic],
+                    edit: { changes: { [params.textDocument.uri]: [{ range: inner, newText: replaceWith }] } },
+                });
+            }
+
+            // UC8015 blanket disable: append the suppressed codes after the keyword —
+            // `// ucode-lsp disable` → `// ucode-lsp disable UC1001 UC2003`.
+            if (diagnostic.code === UcodeErrorCode.BLANKET_DISABLE_NARROWABLE) {
+                const nd = diagData(diagnostic).narrowDisable;
+                if (Array.isArray(nd?.codes) && nd.codes.length > 0 && typeof nd.insertAt === 'number') {
+                    const at = { line: diagnostic.range.start.line, character: nd.insertAt };
+                    codeActions.push({
+                        title: `Narrow to 'disable ${nd.codes.join(' ')}'`,
+                        kind: CodeActionKind.QuickFix,
+                        isPreferred: true,
+                        diagnostics: [diagnostic],
+                        edit: { changes: { [params.textDocument.uri]: [{ range: { start: at, end: at }, newText: ' ' + nd.codes.join(' ') }] } },
+                    });
+                }
+            }
+
+            // UC8014 stale disable directive: offer to delete the directive comment
+            // (trailing `// …` to end of line, or the whole `{# … #}` template comment;
+            // a comment-only line is removed entirely).
+            if (diagnostic.code === UcodeErrorCode.UNNECESSARY_DISABLE_DIRECTIVE) {
+                codeActions.push(...generateRemoveDisableDirectiveQuickFix(diagnostic, document, params.textDocument.uri));
             }
 
             // UC8001: throwing builtin outside try/catch → wrap it (and the rest of its
@@ -1987,8 +2227,13 @@ function getWorkspaceIncludeScopeIndex(): Map<string, IncludeScopeEntry> {
     }
     // resolveRequireType: a scope value `require("mod")` injects that module's type when mod
     // is a builtin module (e.g. fs/uci/math); user-module requires stay unknown.
+    // resolveTargetPath: LuCI template-root includes (`include('commands_public', result)`
+    // from a controller) resolve against the checkout's ucode/template roots, so the
+    // render scope reaches the right .ut file.
     const index = buildIncludeScopeIndex(entries, {
         resolveRequireType: (mod) => (isKnownModule(mod) ? mod : null),
+        resolveTargetPath: (raw, includer) => resolveLuciTemplatePath(includer, raw),
+        resolveTargetPattern: (pattern, includer) => resolveLuciTemplatePattern(includer, pattern),
     });
     includeScopeIndexCache = { index, at: now };
     return index;
@@ -2000,7 +2245,7 @@ function getWorkspaceFile(filePath: string): WorkspaceFileEntry | null {
     const uri = filePathToUri(filePath);
     const parseEntry = (content: string, doc: TextDocument, key: Partial<WorkspaceFileEntry>): WorkspaceFileEntry | null => {
         try {
-            const isTemplate = detectTemplateMode(content);
+            const isTemplate = detectTemplateModeForFile(uri, content);
             const lexer = new UcodeLexer(content, { rawMode: !isTemplate });
             const tokens = isTemplate ? bridgeTemplateTokens(lexer.tokenize()) : lexer.tokenize();
             const parser = new UcodeParser(tokens, content);

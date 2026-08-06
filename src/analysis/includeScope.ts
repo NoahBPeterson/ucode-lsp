@@ -39,8 +39,17 @@ export type ScopeValueInfo =
   | { kind: 'unknown' };
 
 export interface IncludeSite {
-  /** The literal path argument, verbatim (e.g. "rule.uc", "templates/ruleset.uc"). */
+  /** The literal path argument, verbatim (e.g. "rule.uc", "templates/ruleset.uc") — or,
+   *  when `isPattern` is set, a glob-ish pattern with `*` standing in for each template-
+   *  literal interpolation (`themes/${theme}/header` → `themes/*&#47;header`). */
   path: string;
+  /** How the target renders: the `include()` builtin/env function, or a `render(...)` /
+   *  `<obj>.render(...)` call (LuCI's runtime.render — template-root semantics only). */
+  via: 'include' | 'render';
+  /** True when `path` came from a template literal (or an identifier bound to one) and
+   *  contains `*` wildcards — it may match SEVERAL targets, and only pattern-aware
+   *  resolvers should touch it. */
+  isPattern: boolean;
   /** Names the scope object provides to the included file (statically known keys). */
   scopeKeys: string[];
   /** Per-key info for inferring the injected name's TYPE (from the scope value expression). */
@@ -53,6 +62,151 @@ export interface IncludeSite {
   /** Source range of the whole `include(...)` call (for diagnostics at the host site). */
   start: number;
   end: number;
+}
+
+/** Merge mined scope info into an accumulator: a key seen twice with DIFFERENT value info
+ *  degrades to `unknown` (we can't claim a type two call paths disagree on). */
+function mergeScopeInfo(
+  keys: string[], values: Record<string, ScopeValueInfo>,
+  addKeys: string[], addValues: Record<string, ScopeValueInfo>,
+): void {
+  for (const k of addKeys) {
+    if (!keys.includes(k)) {
+      keys.push(k);
+      const v = addValues[k];
+      if (v) values[k] = v;
+    } else {
+      const prev = values[k];
+      const next = addValues[k];
+      if (prev && next && JSON.stringify(prev) !== JSON.stringify(next)) values[k] = { kind: 'unknown' };
+    }
+  }
+}
+
+/** Collect the statically-known keys/values of an object-literal scope argument. */
+function collectObjectScope(scopeArg: AnyNode): { keys: string[]; values: Record<string, ScopeValueInfo>; dynamic: boolean } {
+  const keys: string[] = [];
+  const values: Record<string, ScopeValueInfo> = {};
+  let dynamic = false;
+  const properties = Array.isArray(scopeArg.properties) ? scopeArg.properties : [];
+  for (const p of properties) {
+    if (!isNode(p)) continue;
+    if (p.type === 'SpreadElement') { dynamic = true; continue; }
+    if (p.type === 'Property') {
+      if (p.computed) { dynamic = true; continue; }
+      const name = propertyKeyName(p.key);
+      if (name !== null) {
+        keys.push(name);
+        values[name] = classifyScopeValue(p.value);
+      } else {
+        dynamic = true;
+      }
+    }
+  }
+  return { keys, values, dynamic };
+}
+
+/**
+ * Mine the object SHAPE a bare-identifier scope argument carries: `include('tmpl', result)`.
+ * The identifier's keys come from (checked in order, all same-file static evidence):
+ *   1. a `let result = { … }` declarator initializer + any `result.k = …` /
+ *      `result["k"] = …` member assignments anywhere in the file;
+ *   2. when `result` is a PARAMETER of the enclosing function F: every object literal
+ *      passed in that position at a direct call `F({…})`, PLUS one level of callback
+ *      indirection — when F itself is passed as an argument to `G(F, …)`, the object
+ *      literals G's body passes to that parameter (`callback({ ok, stdout, … })`). This is
+ *      exactly LuCI's controller shape (execute_command(return_html, …) → callback({…})).
+ *
+ * The result is NEVER exhaustive (callers must keep hasDynamicScope=true): it exists to
+ * feed injected NAMES (+ best-effort types) into the target template, not to prove a key
+ * absent.
+ */
+function mineIdentifierScope(
+  ast: AstNode | null | undefined, name: string, enclosingFns: AnyNode[],
+): { keys: string[]; values: Record<string, ScopeValueInfo> } | null {
+  const keys: string[] = [];
+  const values: Record<string, ScopeValueInfo> = {};
+  let found = false;
+
+  const eachNode = (root: unknown, fn: (n: AnyNode) => void): void => {
+    const walk = (n: unknown): void => {
+      if (!isNode(n)) return;
+      fn(n);
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (isNode(v)) walk(v);
+      }
+    };
+    walk(root);
+  };
+
+  // 1. Local binding evidence: declarator init object literal + member assignments.
+  eachNode(ast, (n) => {
+    if (n.type === 'VariableDeclarator' && isNode(n.id) && n.id.type === 'Identifier' && n.id.name === name
+        && isNode(n.init) && n.init.type === 'ObjectExpression') {
+      const o = collectObjectScope(n.init as AnyNode);
+      mergeScopeInfo(keys, values, o.keys, o.values);
+      found = true;
+    }
+    if (n.type === 'AssignmentExpression' && isNode(n.left) && n.left.type === 'MemberExpression') {
+      const left = n.left as AnyNode;
+      if (isNode(left.object) && left.object.type === 'Identifier' && left.object.name === name) {
+        const key = left.computed
+          ? (isNode(left.property) && left.property.type === 'Literal' && left.property.value != null ? String(left.property.value) : null)
+          : (isNode(left.property) && left.property.type === 'Identifier' ? String(left.property.name) : null);
+        if (key !== null) {
+          mergeScopeInfo(keys, values, [key], { [key]: classifyScopeValue(n.right) });
+          found = true;
+        }
+      }
+    }
+  });
+
+  // 2. Parameter evidence: object literals flowing into the enclosing function's param slot.
+  const paramOwner = enclosingFns.find((f) => Array.isArray(f.params)
+    && (f.params as unknown[]).some((p) => isNode(p) && p.type === 'Identifier' && p.name === name));
+  if (paramOwner) {
+    const paramIndex = (paramOwner.params as unknown[]).findIndex((p) => isNode(p) && (p as AnyNode).name === name);
+    const fnName = isNode(paramOwner.id) && typeof paramOwner.id.name === 'string' ? paramOwner.id.name : null;
+    if (fnName !== null && paramIndex >= 0) {
+      const takeCallArg = (call: AnyNode, index: number): void => {
+        const a = Array.isArray(call.arguments) ? call.arguments[index] : undefined;
+        if (isNode(a) && a.type === 'ObjectExpression') {
+          const o = collectObjectScope(a as AnyNode);
+          mergeScopeInfo(keys, values, o.keys, o.values);
+          found = true;
+        }
+      };
+      eachNode(ast, (n) => {
+        if (n.type !== 'CallExpression') return;
+        const callee = n.callee;
+        // Direct call: F({…}).
+        if (isNode(callee) && callee.type === 'Identifier' && callee.name === fnName) takeCallArg(n, paramIndex);
+        // Indirect: F passed as an argument to G(…) — follow G's matching param name
+        // through G's body to the object literals it passes when calling it back.
+        const args = Array.isArray(n.arguments) ? n.arguments : [];
+        const fnArgPos = args.findIndex((a) => isNode(a) && (a as AnyNode).type === 'Identifier' && (a as AnyNode).name === fnName);
+        if (fnArgPos < 0 || !isNode(callee) || callee.type !== 'Identifier') return;
+        const gName = callee.name;
+        eachNode(ast, (g) => {
+          if (g.type !== 'FunctionDeclaration' || !isNode(g.id) || g.id.name !== gName) return;
+          const gParams = Array.isArray(g.params) ? g.params : [];
+          const cbParam = gParams[fnArgPos];
+          const cbName = isNode(cbParam) && cbParam.type === 'Identifier' ? cbParam.name : null;
+          if (typeof cbName !== 'string') return;
+          eachNode(g.body, (c) => {
+            if (c.type === 'CallExpression' && isNode(c.callee) && c.callee.type === 'Identifier' && c.callee.name === cbName) {
+              takeCallArg(c, paramIndex);
+            }
+          });
+        });
+      });
+    }
+  }
+
+  return found ? { keys, values } : null;
 }
 
 /** Read a property key name from either a `Literal` (shorthand `{ fw4 }` normalizes to a
@@ -103,48 +257,104 @@ function classifyScopeValue(node: unknown): ScopeValueInfo {
  */
 export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSite[] {
   const sites: IncludeSite[] = [];
+  const fnStack: AnyNode[] = [];
+
+  // A path argument as (pattern, isPattern): a string literal verbatim; a template
+  // literal with each interpolation replaced by `*` (`themes/${theme}/header` →
+  // themes/*/header — the LuCI theme-dispatch shims); an identifier resolved one hop
+  // through its declarator initializer (`let p = \`themes/${x}/sysauth\`; render(p, s)`).
+  const pathOf = (arg: unknown, depth = 0): { path: string; isPattern: boolean } | null => {
+    if (!isNode(arg)) return null;
+    if (arg.type === 'Literal' && typeof arg.value === 'string') return { path: arg.value, isPattern: false };
+    if (arg.type === 'TemplateLiteral') {
+      const quasis = Array.isArray(arg.quasis) ? arg.quasis : [];
+      const exprs = Array.isArray(arg.expressions) ? arg.expressions : [];
+      let out = '';
+      for (let i = 0; i < quasis.length; i++) {
+        const q = quasis[i] as AnyNode;
+        const cooked = (q?.value as { cooked?: unknown } | undefined)?.cooked;
+        out += typeof cooked === 'string' ? cooked : '';
+        if (i < exprs.length) out += '*';
+      }
+      return exprs.length > 0 ? { path: out, isPattern: true } : { path: out, isPattern: false };
+    }
+    if (arg.type === 'Identifier' && typeof arg.name === 'string' && depth === 0) {
+      // Every declarator initializer of this name must agree (dispatcher.uc declares its
+      // theme_sysauth template path identically in two sibling blocks) — a genuine
+      // disagreement means we can't know which path renders, so give up.
+      const found: Array<{ path: string; isPattern: boolean } | null> = [];
+      const scan = (n: unknown): void => {
+        if (!isNode(n)) return;
+        if (n.type === 'VariableDeclarator' && isNode(n.id) && n.id.type === 'Identifier' && n.id.name === arg.name && n.init) {
+          found.push(pathOf(n.init, 1));
+        }
+        for (const k of Object.keys(n)) {
+          if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+          const v = n[k];
+          if (Array.isArray(v)) { for (const it of v) scan(it); }
+          else if (isNode(v)) scan(v);
+        }
+      };
+      scan(ast);
+      if (found.length === 0 || found.some((f) => f === null)) return null;
+      const first = found[0]!;
+      return found.every((f) => f!.path === first.path && f!.isPattern === first.isPattern) ? first : null;
+    }
+    return null;
+  };
 
   const walk = (n: unknown): void => {
     if (!isNode(n)) return;
 
+    const isFn = n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression';
+    if (isFn) fnStack.push(n);
+
     const callee = n.callee;
-    if (n.type === 'CallExpression'
-        && isNode(callee) && callee.type === 'Identifier' && callee.name === 'include'
+    // `include(...)` (builtin or LuCI env), bare `render(...)`, or `<obj>.render(...)`
+    // (LuCI runtime.render) — all feed a render scope to a template.
+    const via: 'include' | 'render' | null =
+      isNode(callee) && callee.type === 'Identifier' && callee.name === 'include' ? 'include'
+        : isNode(callee) && callee.type === 'Identifier' && callee.name === 'render' ? 'render'
+          : isNode(callee) && callee.type === 'MemberExpression' && !callee.computed
+              && isNode(callee.property) && (callee.property as AnyNode).name === 'render' ? 'render'
+            : null;
+    if (n.type === 'CallExpression' && via !== null
         && Array.isArray(n.arguments) && n.arguments.length >= 1) {
-      const pathArg = n.arguments[0];
-      if (isNode(pathArg) && pathArg.type === 'Literal' && typeof pathArg.value === 'string') {
+      const resolved = pathOf(n.arguments[0]);
+      if (resolved !== null && resolved.path !== '') {
         const scopeArg: unknown = n.arguments[1];
-        const scopeKeys: string[] = [];
-        const scopeValues: Record<string, ScopeValueInfo> = {};
+        let scopeKeys: string[] = [];
+        let scopeValues: Record<string, ScopeValueInfo> = {};
         let hasScope = false;
         let hasDynamicScope = false;
 
         if (isNode(scopeArg) && scopeArg.type === 'ObjectExpression') {
           hasScope = true;
-          const properties = Array.isArray(scopeArg.properties) ? scopeArg.properties : [];
-          for (const p of properties) {
-            if (!isNode(p)) continue;
-            if (p.type === 'SpreadElement') { hasDynamicScope = true; continue; }
-            if (p.type === 'Property') {
-              if (p.computed) { hasDynamicScope = true; continue; }
-              const name = propertyKeyName(p.key);
-              if (name !== null) {
-                scopeKeys.push(name);
-                scopeValues[name] = classifyScopeValue(p.value);
-              } else {
-                hasDynamicScope = true;
-              }
-            }
-          }
+          const o = collectObjectScope(scopeArg as AnyNode);
+          scopeKeys = o.keys;
+          scopeValues = o.values;
+          hasDynamicScope = o.dynamic;
+        } else if (isNode(scopeArg) && scopeArg.type === 'Identifier' && typeof scopeArg.name === 'string') {
+          // A bare-identifier scope (`include('tmpl', result)`) — mine the identifier's
+          // object shape from same-file evidence (declarator init / member assigns /
+          // call-site object literals incl. one callback hop). The mined key set is
+          // never exhaustive, so the site stays dynamic — it feeds names/types into the
+          // target without licensing "missing key" claims.
+          hasScope = true;
+          hasDynamicScope = true;
+          const mined = mineIdentifierScope(ast, scopeArg.name, [...fnStack].reverse());
+          if (mined) { scopeKeys = mined.keys; scopeValues = mined.values; }
         } else if (scopeArg) {
-          // A non-literal 2nd argument (a variable, call, etc.) — scope exists but its
-          // keys are unknown.
+          // Any other non-literal 2nd argument (a call, member expr, etc.) — scope
+          // exists but its keys are unknown.
           hasScope = true;
           hasDynamicScope = true;
         }
 
         sites.push({
-          path: pathArg.value,
+          path: resolved.path,
+          via,
+          isPattern: resolved.isPattern,
           scopeKeys,
           scopeValues,
           hasScope,
@@ -161,6 +371,8 @@ export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSit
       if (Array.isArray(v)) { for (const it of v) walk(it); }
       else if (isNode(v)) walk(v);
     }
+
+    if (isFn) fnStack.pop();
   };
 
   walk(ast);
@@ -243,24 +455,52 @@ export interface IncludeScopeEntry {
  */
 export function buildIncludeScopeIndex(
   entries: Array<{ path: string; ast: AstNode | null }>,
-  opts?: { resolveRequireType?: (module: string) => string | null },
+  opts?: {
+    resolveRequireType?: (module: string) => string | null;
+    /** Non-file-relative include resolution, tried FIRST — e.g. LuCI's template-root
+     *  `include('name')` → `<checkout>/…/ucode/template/name.ut` (luciEnv.ts). Returns an
+     *  absolute path (same keying as the entries' `path`) or null to fall through to the
+     *  file-relative model. */
+    resolveTargetPath?: (rawPath: string, includerPath: string) => string | null;
+    /** Pattern resolution for template-literal paths (`themes/*&#47;header` from the LuCI
+     *  theme-dispatch shims) — every matching target receives the site's scope. Without
+     *  this, pattern sites are dropped (never guessed). */
+    resolveTargetPattern?: (pattern: string, includerPath: string) => string[];
+  },
 ): Map<string, IncludeScopeEntry> {
   const resolveRequireType = opts?.resolveRequireType ?? (() => null);
+  // Targets a site's scope reaches. `include` with a literal path keeps the builtin
+  // file-relative fallback; `render(...)` / `<obj>.render(...)` is the LuCI runtime's
+  // template-root method, so it resolves ONLY via the template-root hook (a bare
+  // `render()` builtin call renders by path but injects the same way — the hook decides
+  // whether the name maps to a workspace template). Patterns need the pattern hook.
+  const targetsOf = (site: IncludeSite, includer: string): string[] => {
+    if (site.isPattern) return opts?.resolveTargetPattern?.(site.path, includer) ?? [];
+    const templateHit = opts?.resolveTargetPath?.(site.path, includer);
+    if (templateHit) return [templateHit];
+    return site.via === 'include' ? [resolveIncludePath(site.path, includer)] : [];
+  };
 
-  // 1. Collect every scope-bearing site as (includer → target).
+  // 1. Collect every site as (includer → target). A site WITHOUT a scope argument
+  //    injects no keys of its own, but it is still an EDGE: the includer's own injected
+  //    scope leaks down into the child (oracle-verified — a nested include sees vars its
+  //    own site omitted). LuCI's theme-dispatch shims are exactly this shape:
+  //    header.ut does a bare `include(`themes/${theme}/header`)`, and the css/node
+  //    scope its OWN includers provided must reach the theme copy.
   const sites: Array<{ includer: string; target: string; keys: string[]; values: Record<string, ScopeValueInfo>; dynamic: boolean; start: number; end: number }> = [];
   for (const { path, ast } of entries) {
     for (const site of extractIncludeSites(ast)) {
-      if (!site.hasScope) continue; // bare include(path) injects nothing
-      sites.push({
-        includer: path,
-        target: resolveIncludePath(site.path, path),
-        keys: site.scopeKeys,
-        values: site.scopeValues,
-        dynamic: site.hasDynamicScope,
-        start: site.start,
-        end: site.end,
-      });
+      for (const target of targetsOf(site, path)) {
+        sites.push({
+          includer: path,
+          target,
+          keys: site.scopeKeys,
+          values: site.scopeValues,
+          dynamic: site.hasDynamicScope,
+          start: site.start,
+          end: site.end,
+        });
+      }
     }
   }
 
@@ -431,12 +671,21 @@ export function checkIncludeScopes(
    *  the child, so they count as provided. `complete: false` ⇒ the includer's scope is not
    *  fully known (a dynamic chain), so we cannot prove anything missing — skip enforcement. */
   includerScope?: { names: ReadonlySet<string>; complete: boolean },
+  /** When set and it resolves a site's path, that site is a TEMPLATE-ROOT include (LuCI
+   *  render_any) — enforcement is skipped for it: the target also receives the whole env
+   *  chain plus every OTHER includer's scope at render time, so a per-site "missing key"
+   *  claim would not be sound. */
+  resolveTemplateTarget?: (rawPath: string, includerPath: string) => string | null,
 ): IncludeScopeDiagnostic[] {
   const out: IncludeScopeDiagnostic[] = [];
   // If the includer's own scope is incomplete, leaked names are unknown → don't flag.
   if (includerScope && !includerScope.complete) return out;
   for (const site of extractIncludeSites(includerAst)) {
     if (!site.hasScope || site.hasDynamicScope) continue;
+    // render() targets and pattern paths are template-root/dynamic renders — the target
+    // also receives the env chain and other render scopes, so nothing is provably missing.
+    if (site.via === 'render' || site.isPattern) continue;
+    if (resolveTemplateTarget?.(site.path, includerPath)) continue;
     const target = resolveIncludePath(site.path, includerPath);
     const frees = getTargetFreeVars(target);
     if (!frees) continue;

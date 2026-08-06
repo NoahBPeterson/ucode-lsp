@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.7.92",
+  "version": "0.8.0",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
@@ -21,11 +21,19 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onLanguage:ucode"
+    "onLanguage:ucode",
+    "onLanguage:ucode-template"
   ],
   "contributes": {
     "configurationDefaults": {
       "[ucode]": {
+        "editor.quickSuggestions": {
+          "comments": true,
+          "strings": false,
+          "other": true
+        }
+      },
+      "[ucode-template]": {
         "editor.quickSuggestions": {
           "comments": true,
           "strings": false,
@@ -48,6 +56,21 @@
         "mimetypes": [
           "text/x-ucode"
         ]
+      },
+      {
+        "id": "ucode-template",
+        "aliases": [
+          "ucode Template",
+          "utpl"
+        ],
+        "extensions": [
+          ".ut"
+        ],
+        "firstLine": "^#!.*\\butpl\\b",
+        "configuration": "./language-configuration.json",
+        "mimetypes": [
+          "text/x-ucode-template"
+        ]
       }
     ],
     "grammars": [
@@ -55,6 +78,14 @@
         "language": "ucode",
         "scopeName": "source.ucode",
         "path": "./syntaxes/ucode.tmLanguage.json"
+      },
+      {
+        "language": "ucode-template",
+        "scopeName": "source.ucode-template",
+        "path": "./syntaxes/ucode-template.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.ucode": "ucode"
+        }
       }
     ],
     "iconThemes": [

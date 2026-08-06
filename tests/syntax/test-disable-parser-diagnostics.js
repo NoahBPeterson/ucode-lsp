@@ -1,3 +1,7 @@
+// CONTRACT UPDATE (0.8.0, 2026-08-06): a USED bare disable now carries a UC8015
+// narrowing hint ON THE DIRECTIVE (it lists the codes it suppresses). Assertions that
+// a disabled line is empty therefore exclude UC8015 - the suppressed diagnostics
+// themselves must still be gone.
 const assert = require('assert');
 const { createLSPTestServer } = require('../lsp-test-helpers');
 
@@ -32,7 +36,7 @@ describe('Disable Comments Parser Diagnostics Tests', function() {
       });
       
       // Ticket 08: a disable comment now REMOVES diagnostics on the line entirely.
-      const line0 = diagnostics.filter(d => d.range.start.line === 0);
+      const line0 = diagnostics.filter(d => d.range.start.line === 0 && d.code !== 'UC8015');
       assert.strictEqual(line0.length, 0, 'Disabled line should have no diagnostics of any severity');
     });
 
@@ -49,8 +53,8 @@ let anotherVar = anotherUndefinedFunction();`;
       });
       
       // Ticket 08: line 0 is disabled -> all its diagnostics are removed; line 1 keeps errors.
-      const line0Diagnostics = diagnostics.filter(d => d.range.start.line === 0);
-      const line1Diagnostics = diagnostics.filter(d => d.range.start.line === 1);
+      const line0Diagnostics = diagnostics.filter(d => d.range.start.line === 0 && d.code !== 'UC8015');
+      const line1Diagnostics = diagnostics.filter(d => d.range.start.line === 1 && d.code !== 'UC8015');
 
       const line1Errors = line1Diagnostics.filter(d => d.severity === 1);
 
@@ -71,9 +75,9 @@ let error3 = undefinedFunction3();`;
         console.log(`  [${i}] Line ${d.range.start.line}: "${d.message}" (severity: ${d.severity}, source: ${d.source})`);
       });
       
-      const line0Diagnostics = diagnostics.filter(d => d.range.start.line === 0);
-      const line1Diagnostics = diagnostics.filter(d => d.range.start.line === 1);
-      const line2Diagnostics = diagnostics.filter(d => d.range.start.line === 2);
+      const line0Diagnostics = diagnostics.filter(d => d.range.start.line === 0 && d.code !== 'UC8015');
+      const line1Diagnostics = diagnostics.filter(d => d.range.start.line === 1 && d.code !== 'UC8015');
+      const line2Diagnostics = diagnostics.filter(d => d.range.start.line === 2 && d.code !== 'UC8015');
       
       // Line 0 should have errors (not disabled)
       const line0Errors = line0Diagnostics.filter(d => d.severity === 1);

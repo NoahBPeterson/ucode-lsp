@@ -1,3 +1,7 @@
+// CONTRACT UPDATE (0.8.0, 2026-08-06): a USED bare disable now carries a UC8015
+// narrowing hint ON THE DIRECTIVE (it lists the codes it suppresses). Assertions that
+// a disabled line is empty therefore exclude UC8015 - the suppressed diagnostics
+// themselves must still be gone.
 const assert = require('assert');
 const { createLSPTestServer } = require('../lsp-test-helpers');
 
@@ -29,7 +33,7 @@ describe('Disable Comments Warning Conversion Tests', function() {
       const diagnostics = await getDiagnostics(testContent, testFilePath);
 
       // The whole line is disabled — no diagnostics of any severity should remain on line 0.
-      const line0 = diagnostics.filter(d => d.range.start.line === 0);
+      const line0 = diagnostics.filter(d => d.range.start.line === 0 && d.code !== 'UC8015');
       assert.strictEqual(line0.length, 0,
         `Disabled line should have no diagnostics, got: ${JSON.stringify(line0.map(d => d.message))}`);
     });
@@ -42,7 +46,7 @@ let errorVar3 = undefinedFunction3();`;
 
       const diagnostics = await getDiagnostics(testContent, testFilePath);
 
-      const line1 = diagnostics.filter(d => d.range.start.line === 1);
+      const line1 = diagnostics.filter(d => d.range.start.line === 1 && d.code !== 'UC8015');
       assert.strictEqual(line1.length, 0, 'Disabled line 1 should have no diagnostics');
 
       // Lines 0 and 2 keep their error-level diagnostics.
@@ -70,7 +74,7 @@ let errorVar3 = undefinedFunction3();`;
       const testFilePath = `/tmp/test-code-targeted-${Date.now()}.uc`;
 
       const diagnostics = await getDiagnostics(testContent, testFilePath);
-      const line0 = diagnostics.filter(d => d.range.start.line === 0);
+      const line0 = diagnostics.filter(d => d.range.start.line === 0 && d.code !== 'UC8015');
 
       assert(line0.some(d => d.code === 'UC1001'),
         `UC1001 (undefined var) must survive a UC1006-only disable, got: ${JSON.stringify(line0.map(d => d.code))}`);
@@ -98,16 +102,20 @@ let errorVar3 = undefinedFunction3();`;
       assert(warningText.includes('// ucode-lsp disable'), 'Warning should point to the disable comment');
     });
 
-    it('should NOT warn about a bare defensive disable that matches nothing', async function() {
-      // Ticket 08: a bare `// ucode-lsp disable` is legitimate defensive use and must never
-      // produce the self-inflicted "No diagnostic disabled" noise.
+    it('should surface a stale bare disable as a HINT only, never a warning', async function() {
+      // CONTRACT UPDATE (0.8.0, 2026-08-05): ticket 08 kept stale bare disables silent
+      // to avoid noise. Real-world evidence (luci-app-podman's now-stale `// ucode-lsp
+      // disable` on every luci.* import) moved this to a faded Hint + Unnecessary tag:
+      // quiet enough for defensive style, visible enough to clean up the line-wide
+      // suppression blind spot it leaves behind.
       const testContent = `print("hello"); // ucode-lsp disable`;
       const testFilePath = `/tmp/test-bare-defensive-${Date.now()}.uc`;
 
       const diagnostics = await getDiagnostics(testContent, testFilePath);
 
       const unnecessary = diagnostics.filter(d => d.message.includes('No diagnostic disabled'));
-      assert.strictEqual(unnecessary.length, 0, 'Bare defensive disable must not be flagged as unnecessary');
+      assert.strictEqual(unnecessary.length, 1, 'Stale bare disable surfaces once');
+      assert.strictEqual(unnecessary[0].severity, 4, 'Hint severity, not a warning');
     });
 
     it('should not warn about a disable that suppressed something', async function() {
@@ -120,7 +128,7 @@ let errorVar3 = undefinedFunction3();`;
       assert.strictEqual(unnecessary.length, 0, 'Should not warn about a necessary disable comment');
 
       // The suppressed error is removed entirely.
-      const line0 = diagnostics.filter(d => d.range.start.line === 0);
+      const line0 = diagnostics.filter(d => d.range.start.line === 0 && d.code !== 'UC8015');
       assert.strictEqual(line0.length, 0, 'Disabled line should have no remaining diagnostics');
     });
 
@@ -132,14 +140,17 @@ let anotherError = anotherUndefinedFunction(); // ucode-lsp disable`;
 
       const diagnostics = await getDiagnostics(testContent, testFilePath);
 
-      // No line should carry an unnecessary-disable warning: line 1 is a bare defensive
-      // disable, lines 0/2 genuinely suppressed errors.
+      // CONTRACT UPDATE (0.8.0, 2026-08-05): lines 0/2 genuinely suppressed errors (used —
+      // silent); line 1's bare disable suppressed nothing → ONE faded stale HINT there,
+      // never a warning (see the bare-defensive test above for the rationale).
       const unnecessary = diagnostics.filter(d => d.message.includes('No diagnostic disabled'));
-      assert.strictEqual(unnecessary.length, 0, 'Bare disables should never be flagged as unnecessary');
+      assert.strictEqual(unnecessary.length, 1, 'Only the unused bare disable surfaces');
+      assert.strictEqual(unnecessary[0].range.start.line, 1, 'On the unused directive line');
+      assert.strictEqual(unnecessary[0].severity, 4, 'Hint severity');
 
       // Lines 0 and 2 had their errors removed entirely.
-      assert.strictEqual(diagnostics.filter(d => d.range.start.line === 0).length, 0, 'Line 0 diagnostics removed');
-      assert.strictEqual(diagnostics.filter(d => d.range.start.line === 2).length, 0, 'Line 2 diagnostics removed');
+      assert.strictEqual(diagnostics.filter(d => d.range.start.line === 0 && d.code !== 'UC8015').length, 0, 'Line 0 diagnostics removed');
+      assert.strictEqual(diagnostics.filter(d => d.range.start.line === 2 && d.code !== 'UC8015').length, 0, 'Line 2 diagnostics removed');
     });
   });
 });

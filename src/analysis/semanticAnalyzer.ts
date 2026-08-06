@@ -16,7 +16,7 @@ import { type AstNode, type ProgramNode, type VariableDeclarationNode, type Vari
          type AstNodeKind } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, effectiveSymbolType, propertyTypeAt, isArrayType, getArrayElementType, getUnionTypes, isUnionType, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, widenWithNull, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, type TypeCheckResult } from './types';
-import { detectTemplateMode } from '../lexer/templateMode';
+import { detectTemplateModeForFile } from '../lexer/templateMode';
 import { BaseVisitor, AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
 import { Diagnostic, DiagnosticSeverity, DiagnosticTag, type DiagnosticRelatedInformation } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
@@ -40,6 +40,8 @@ import { collectScopeBindings, enclosingBindings, functionOwnBindings } from '..
 import { Either, Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, validateImport } from './moduleDispatch';
 import { NETIFD_DAEMON_ONLY_MEMBERS } from './netifdTypes';
+import { isLuciEnvFile, findLuciWorkspace, hasLuciLuaViewFallback, suggestLuciModuleName } from './luciEnv';
+import { LUCI_ENV_GLOBALS, LUCI_TEMPLATE_RENDER_COMPAT_NAMES } from './luciTypes';
 import { parseDisableDirectives, directiveCovers, type DisableDirective } from './disableDirectives';
 
 /** An AST node viewed as an open record, for dynamic traversal/field access. The base
@@ -100,6 +102,11 @@ export interface SemanticAnalysisOptions {
 export interface SemanticAnalysisResult {
   diagnostics: Diagnostic[];
   symbolTable: SymbolTable;
+  /** Per-directive record of what each USED BARE `ucode-lsp disable` suppressed at the
+   *  ANALYZER layer (codes only — parser/lexer-layer suppressions are recorded by the
+   *  server). Feeds the blanket-disable narrowing hint (UC8015), which the SERVER emits
+   *  after merging both layers. */
+  bareDirectiveSuppressions?: Array<{ commentLine: number; commentCol: number; markerEndCol: number; codes: string[] }>;
   typeResults: Map<AstNode, TypeCheckResult>;
   typeChecker?: TypeChecker;
   ast?: ProgramNode;
@@ -174,6 +181,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   // Parsed `// ucode-lsp disable[-next-line] [UC####...]` directives (ticket 08). Suppression now
   // REMOVES diagnostics (in checkUnnecessaryDisableComments) rather than demoting their severity.
   private disableDirectives: DisableDirective[] = [];
+  private bareDirectiveSuppressionRecord: Array<{ commentLine: number; commentCol: number; markerEndCol: number; codes: string[] }> = [];
   private assignmentLeftDepth = 0;
   private fileResolver: FileResolver;
   private currentASTRoot: ProgramNode | null = null;
@@ -585,6 +593,10 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     result.resolvedImports = new Set(this.resolvedImports);
 
+    if (this.bareDirectiveSuppressionRecord.length > 0) {
+      result.bareDirectiveSuppressions = this.bareDirectiveSuppressionRecord;
+    }
+
     return result;
   }
 
@@ -622,7 +634,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Both conditions together are a strong, low-false-positive signal (nobody assigns
     // `global.handle_request` by accident). Runs after collectGlobalPropertyNames so the
     // property set is populated. Consumed by the handler-specific phases (C/D/E).
-    this.isTemplateFile = detectTemplateMode(this.textDocument.getText());
+    this.isTemplateFile = detectTemplateModeForFile(this.textDocument.uri, this.textDocument.getText());
     this.isUhttpdHandler = this.globalPropertyNames.has('handle_request') && this.isTemplateFile;
     // Phase E / FN-5: seed the `uhttpd` ambient ONLY in handler context (before traversal, so
     // `uhttpd.recv()` resolves during it). Declared and TYPED here rather than as an
@@ -638,6 +650,13 @@ export class SemanticAnalyzer extends BaseVisitor {
     // biggest FP source on the OpenWrt corpus (132 + 97 UC1001). Same discipline: seeded ONLY on a
     // usage/path signal, version-gated (23.05+), so a non-hostapd file referencing them still gets UC1001.
     this.detectAndDeclareHostapd(node);
+    // LuCI env ambient: dispatcher.uc builds an env object (http/ubus/uci/ctx/version/config/
+    // dispatcher/striptags/entityencode/_/N_) that runtime.uc chains onto global for every
+    // template render AND controller invocation — so those names are free globals in LuCI
+    // `.ut` templates and `…/ucode/controller/*.uc` files. Seeded ONLY when the file's own
+    // tree contains luci-base's dispatcher/runtime (evidence-based workspace sniff, luciEnv.ts),
+    // so a stray template outside a LuCI checkout still gets UC1001.
+    this.detectAndDeclareLuciEnv(node);
     // `loadfile("file.uc")()` runs file.uc's top-level code in the shared global scope —
     // a poor-man's import. Harvest the globals that file injects (its top-level
     // `global.X = …` + bare implicit-global assignments) so bare `X(...)`/`X` here isn't a
@@ -2474,12 +2493,30 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Surface the include target's health at the callsite (mirrors the import-side
     // taxonomy: missing file → UC3002 warning; parse-broken → UC3009 error, since its
     // leaked-global list is unreliable and downstream UC1001s would be misleading).
+    // In a LuCI template/controller, `include` is the runtime's template-root include —
+    // the not-found story (and the lookup that just ran) is different from the builtin's
+    // file-relative one, so say so instead of pointing the user at a wrong directory.
+    const selfPath = this.uriToFsPath(this.textDocument.uri);
+    const luciEnv = selfPath !== null ? isLuciEnvFile(selfPath) : null;
+    const isLuci = luciEnv !== null;
+    // Standalone package (no luci-base in the tree): the on-device template dir is
+    // MERGED from every installed package — header/footer/sysauth come from luci-base,
+    // which this repo doesn't carry. Absence here proves nothing → no claim.
+    const halfTree = luciEnv?.ws.kind === 'package';
     const flagTarget = (rawPath: string, argStart: number, argEnd: number) => {
       const status = this.fileResolver.getIncludeTargetStatus(rawPath, this.textDocument.uri);
       if (status === 'not-found') {
+        const templateStyle = !rawPath.startsWith('/') && !rawPath.endsWith('.uc') && !rawPath.endsWith('.ut');
+        if (isLuci && templateStyle && halfTree) return;
+        // render_any's Lua fallback: no `.ut`, but the Lua runtime's `<name>.htm` view
+        // exists (checkout: <pkg>/luasrc/view/) — the include resolves at runtime via
+        // the luabridge (admin_status/luaindex is the shipped example).
+        if (isLuci && templateStyle && selfPath !== null && hasLuciLuaViewFallback(selfPath, rawPath)) return;
         this.addDiagnosticErrorCode(
           UcodeErrorCode.MODULE_NOT_FOUND,
-          `Cannot find include target '${rawPath}' (resolved relative to this file; at runtime include() raises if the file is absent)`,
+          isLuci && templateStyle
+            ? `Cannot find template '${rawPath}' - no ucode/template/ directory in this LuCI tree has '${rawPath}.ut' (LuCI's include() renders templates from the template directory, not relative paths)`
+            : `Cannot find include target '${rawPath}' (resolved relative to this file; at runtime include() raises if the file is absent)`,
           argStart, argEnd,
           DiagnosticSeverity.Warning
         );
@@ -3134,7 +3171,12 @@ export class SemanticAnalyzer extends BaseVisitor {
               DiagnosticSeverity.Warning,
             );
           }
-        } else if (shadowedSymbol && this.options.enableShadowingWarnings) {
+        } else if (shadowedSymbol && this.options.enableShadowingWarnings
+            // A host-injected AMBIENT (uhttpd/netifd/hostapd/LuCI env — synthetic
+            // zero-width node): declaring a local of the same name is ordinary,
+            // intentional code (the author needn't know the env name exists), not a
+            // shadowing smell. Real outer bindings still warn.
+            && !(shadowedSymbol.declaredAt === 0 && shadowedSymbol.node?.start === 0 && shadowedSymbol.node?.end === 0)) {
           // Shadowing variable/function from outer scope - show warning
           this.addDiagnosticErrorCode(
             UcodeErrorCode.VARIABLE_SHADOWING,
@@ -3934,9 +3976,16 @@ export class SemanticAnalyzer extends BaseVisitor {
       const moduleExports = this.fileResolver.getModuleExports(resolvedUri);
 
       if (moduleExports && specifier.type === 'ImportSpecifier') {
-        // Validate named import against actual module exports
+        // Validate named import against actual module exports. `import { default as X }`
+        // is a NAMED specifier whose imported name is 'default' — it binds the module's
+        // DEFAULT export (the dispatcher.uc ← luci.runtime pattern), so it validates
+        // against that, not the named-export list.
         const importedName = specifier.imported.name;
-        const hasNamedExport = moduleExports.some(exp => exp.type === 'named' && exp.name === importedName);
+        // A default export appears as type 'default' (`export default …`) or as a NAMED
+        // export aliased to 'default' (`export { a as default }`) — both satisfy it.
+        const hasNamedExport = importedName === 'default'
+          ? moduleExports.some(exp => exp.type === 'default' || (exp.type === 'named' && exp.name === 'default'))
+          : moduleExports.some(exp => exp.type === 'named' && exp.name === importedName);
 
         if (!hasNamedExport) {
           this.addDiagnosticErrorCode(
@@ -3949,8 +3998,8 @@ export class SemanticAnalyzer extends BaseVisitor {
           return; // Don't process invalid import
         }
       } else if (moduleExports && specifier.type === 'ImportDefaultSpecifier') {
-        // Validate default import
-        const hasDefaultExport = moduleExports.some(exp => exp.type === 'default');
+        // Validate default import — `export { a as default }` provides one too.
+        const hasDefaultExport = moduleExports.some(exp => exp.type === 'default' || (exp.type === 'named' && exp.name === 'default'));
 
         if (!hasDefaultExport) {
           this.addDiagnosticErrorCode(
@@ -3977,14 +4026,40 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Process the import since the module was found
       this.processImportSpecifier(specifier, modulePath, defaultIsFunction, resolvedUri);
     } else {
-      // Module cannot be resolved - add a warning on the source path, not the imported identifier
-      this.addDiagnosticErrorCode(
-        UcodeErrorCode.MODULE_NOT_FOUND,
-        `Cannot find module '${modulePath}'`,
-        sourceNode.start,
-        sourceNode.end,
-        DiagnosticSeverity.Warning
-      );
+      // An unresolvable `luci.*` import INSIDE a LuCI tree is not proof of absence:
+      // luci.core is compiled C (luci-base/src → core.so), luci.version is GENERATED at
+      // build time, and a standalone package (argon-style repo: Makefile + luci.mk, no
+      // luci-base checked out) can't see any of luci-base's modules — yet all of them
+      // exist on the deployed device. Bind the specifiers untyped and stay silent.
+      const selfPath = this.uriToFsPath(this.textDocument.uri);
+      const inLuciTree = modulePath.startsWith('luci.') && selfPath !== null && findLuciWorkspace(selfPath) !== null;
+      if (!inLuciTree) {
+        // Module cannot be resolved - add a warning on the source path, not the imported identifier
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.MODULE_NOT_FOUND,
+          `Cannot find module '${modulePath}'`,
+          sourceNode.start,
+          sourceNode.end,
+          DiagnosticSeverity.Warning
+        );
+      } else {
+        // The device-provided-module assumption does not cover names THIS tree owns: an
+        // unresolvable luci.* that is a close match to a module the repo itself ships
+        // (`luci.podman_validated` vs shipped `luci.podman_validate`) is almost certainly
+        // a typo of the shipped one — say so instead of staying silent.
+        const suggestion = suggestLuciModuleName(selfPath!, modulePath);
+        if (suggestion) {
+          this.addDiagnosticErrorCode(
+            UcodeErrorCode.MODULE_NOT_FOUND,
+            `Cannot find module '${modulePath}' - did you mean '${suggestion}'? (this tree ships it)`,
+            sourceNode.start,
+            sourceNode.end,
+            DiagnosticSeverity.Warning,
+            // → quick fix: rewrite the module string in place.
+            { luciModuleSuggestion: { replaceWith: suggestion } }
+          );
+        }
+      }
 
       // Still process the import to avoid cascading errors
       this.processImportSpecifier(specifier, modulePath);
@@ -8479,7 +8554,8 @@ private addDiagnostic(
     severity?: DiagnosticSeverity,
     code?: string,
     data?: unknown,
-    relatedInformation?: DiagnosticRelatedInformation[]
+    relatedInformation?: DiagnosticRelatedInformation[],
+    tags?: DiagnosticTag[]
   ): void {
     let finalSeverity: DiagnosticSeverity = severity || DiagnosticSeverity.Error;
 
@@ -8529,6 +8605,9 @@ private addDiagnostic(
 
       if (data && typeof data === 'object' && (data as { unnecessary?: unknown }).unnecessary) {
         diagnostic.tags = [DiagnosticTag.Unnecessary];
+      }
+      if (tags && tags.length > 0) {
+        diagnostic.tags = [...new Set([...(diagnostic.tags ?? []), ...tags])];
       }
 
       this.diagnostics.push(diagnostic);
@@ -8770,7 +8849,7 @@ private addDiagnostic(
         // requiring the source to start (after shebang/whitespace) with the `{%` block. Raw
         // scripts are unaffected (the first-statement AST check already ignores leading comments).
         const src = this.textDocument.getText();
-        if (detectTemplateMode(src)) {
+        if (detectTemplateModeForFile(this.textDocument.uri, src)) {
           // The `{% %}` block carrying the directive must lead the file. Allowed before it:
           // a shebang line and `{# … #}` comment blocks ONLY (they emit no statement) — verified
           // vs the oracle. Anything else, INCLUDING whitespace, compiles to a print() statement
@@ -8941,6 +9020,8 @@ private addDiagnostic(
     if (this.disableDirectives.length === 0) return;
 
     const used = new Set<DisableDirective>();
+    // What each BARE directive actually suppressed, for the narrowing hint (UC8015).
+    const bareSuppressed = new Map<DisableDirective, Set<string>>();
     this.diagnostics = this.diagnostics.filter((d) => {
       const line = d.range.start.line;
       let covered = false;
@@ -8948,21 +9029,69 @@ private addDiagnostic(
         if (directiveCovers(directive, line, d.code)) {
           used.add(directive);
           covered = true;
+          if (directive.codes === null && d.code !== undefined) {
+            let set = bareSuppressed.get(directive);
+            if (!set) { set = new Set(); bareSuppressed.set(directive, set); }
+            set.add(String(d.code));
+          }
         }
       }
       return !covered; // drop it if any directive suppresses it
     });
+    this.bareDirectiveSuppressionRecord = [...bareSuppressed.entries()].map(([dir, codes]) => ({
+      commentLine: dir.commentLine,
+      commentCol: dir.commentCol,
+      markerEndCol: dir.markerEndCol,
+      codes: [...codes].sort(),
+    }));
 
+    // The staleness warnings are born AFTER directive application, so they need their
+    // own coverage pass: a directive targeting UC8014 that covers a stale comment's
+    // line suppresses that warning — and thereby earns its own keep. Iterate to a
+    // fixpoint (a UC8014-suppressor may itself have looked stale until it was used).
+    const suppressedStale = new Set<DisableDirective>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const candidate of this.disableDirectives) {
+        if (used.has(candidate) || suppressedStale.has(candidate)) continue;
+        for (const other of this.disableDirectives) {
+          // Only an EXPLICIT UC8014-targeting directive works as the escape hatch. A
+          // bare directive covers every code — including, on its own line, its own
+          // would-be staleness hint — which would make every stale same-line bare
+          // disable silently self-hushing.
+          if (other.codes !== null
+              && directiveCovers(other, candidate.commentLine, UcodeErrorCode.UNNECESSARY_DISABLE_DIRECTIVE)) {
+            suppressedStale.add(candidate);
+            if (!used.has(other)) { used.add(other); changed = true; }
+            break;
+          }
+        }
+      }
+    }
+
+    // Severity split (design re-evaluated 2026-08-05 on real-world evidence — the
+    // luci-app-podman author ships bare `// ucode-lsp disable` on every luci.* import,
+    // now stale since those imports resolve): a stale CODE-TARGETED directive is a
+    // WARNING (it names a rule that never fired — wrong suppression); a stale BARE
+    // directive is a faded HINT (DiagnosticTag.Unnecessary) — quiet enough for
+    // defensive style, visible enough to clean up. The soundness stake: a stale bare
+    // disable keeps suppressing EVERYTHING on its line, a standing blind spot for
+    // future real diagnostics.
     for (const directive of this.disableDirectives) {
       if (used.has(directive)) continue;
-      if (directive.codes === null) continue; // bare defensive disable — never "unnecessary"
+      if (suppressedStale.has(directive)) continue; // explicitly hushed via UC8014
       const start = this.textDocument.offsetAt({ line: directive.commentLine, character: directive.commentCol });
       const end = this.textDocument.offsetAt({ line: directive.commentLine, character: directive.markerEndCol });
       this.addDiagnostic(
         'No diagnostic disabled by this comment',
         start,
         end,
-        DiagnosticSeverity.Warning
+        directive.codes === null ? DiagnosticSeverity.Hint : DiagnosticSeverity.Warning,
+        UcodeErrorCode.UNNECESSARY_DISABLE_DIRECTIVE,
+        undefined,
+        undefined,
+        [DiagnosticTag.Unnecessary]
       );
     }
   }
@@ -9385,6 +9514,103 @@ private addDiagnostic(
           this.flagVersionMin(introducedIn, `\`${name}.${use.member}\` isn't available on {TARGET} (needs {INTRO}).`,
             use.start, use.end);
         }
+      }
+    }
+  }
+
+  /** Best-effort file:// URI → filesystem path for evidence-based (fs-probing) detection.
+   *  Non-file schemes and unparseable URIs return null (→ detection quietly disabled). */
+  private uriToFsPath(uri: string): string | null {
+    try {
+      if (uri.startsWith('file://')) return decodeURIComponent(uri.slice(7));
+      if (uri.startsWith('/')) return uri;
+      return null;
+    } catch { return null; }
+  }
+
+  /** Which of `names` this file declares at MODULE (top-level) scope — let/const,
+   *  function declarations, and import locals. Only a top-level binding conflicts with
+   *  seeding an ambient global (dispatcher.uc's own `let http`; a controller importing
+   *  `striptags`); a NESTED declaration — a loop-local `for (let config in …)` inside a
+   *  function (real shape: LuCI's controller/admin/uci.uc, where module-level reads of
+   *  the env `config` coexist with loop locals) — shadows through ordinary scoping and
+   *  must NOT disable the ambient for the rest of the file. */
+  private collectSelfDeclaredNames(root: AstNode, names: ReadonlySet<string>): Set<string> {
+    const declared = new Set<string>();
+    const note = (n: unknown): void => {
+      const name = (n as AnyNode | undefined)?.name;
+      if (typeof name === 'string' && names.has(name)) declared.add(name);
+    };
+    const body = Array.isArray((root as AnyNode).body) ? ((root as AnyNode).body as unknown[]) : [];
+    for (const raw of body) {
+      if (!raw || typeof raw !== 'object') continue;
+      let stmt = raw as AnyNode;
+      // Unwrap export wrappers so `export let http = …` / `export function ubus()` count.
+      if ((stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportDefaultDeclaration') && stmt.declaration) {
+        stmt = stmt.declaration as AnyNode;
+      }
+      if (stmt.type === 'VariableDeclaration') {
+        for (const d of (Array.isArray(stmt.declarations) ? stmt.declarations : [])) note((d as AnyNode)?.id);
+      } else if (stmt.type === 'FunctionDeclaration') {
+        note(stmt.id);
+      } else if (stmt.type === 'ImportDeclaration') {
+        for (const s of (Array.isArray(stmt.specifiers) ? stmt.specifiers : [])) {
+          const spec = s as AnyNode;
+          note(spec.local ?? spec);
+        }
+      }
+    }
+    return declared;
+  }
+
+  /** Detect a LuCI template/controller (luciEnv.ts — evidence-based: the file's own tree must
+   *  contain luci-base's dispatcher.uc/runtime.uc) and seed the runtime env ambient globals:
+   *  `http`/`ubus`/`uci`/`dispatcher` as typed handles, `ctx`/`version`/`config` as objects,
+   *  `media`/`theme`/`resource`/`pkgs_update_time` as scalars, and `_`/`N_`/`striptags`/
+   *  `entityencode` as string-returning functions. A name the file declares or imports itself
+   *  is skipped (dispatcher.uc's own `let http` stays the user's binding). */
+  private detectAndDeclareLuciEnv(root: AstNode): void {
+    const filePath = this.uriToFsPath(this.textDocument.uri);
+    if (!filePath || !isLuciEnvFile(filePath)) return;
+    const envNames = new Set([...LUCI_ENV_GLOBALS.map((g) => g.name), ...LUCI_TEMPLATE_RENDER_COMPAT_NAMES]);
+    const selfDeclared = this.collectSelfDeclaredNames(root, envNames);
+    for (const g of LUCI_ENV_GLOBALS) {
+      if (selfDeclared.has(g.name)) continue; // the user's own binding wins
+      if (g.shape.kind === 'fn') {
+        this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType);
+        const sym = this.symbolTable.lookupOpenScopes(g.name);
+        if (sym) {
+          sym.returnType = (g.shape.returnType === 'string' ? UcodeType.STRING : UcodeType.NULL) as UcodeDataType;
+          sym.parameters = [
+            ...g.shape.params.map((p) => ({ name: p, type: UcodeType.UNKNOWN as UcodeDataType, isRest: false, optional: true })),
+            // The runtime fns are variadic (`(...args) => translate(...args) ?? args[0]`) —
+            // a rest tail keeps extra arguments from tripping arity checks.
+            { name: 'args', type: UcodeType.UNKNOWN as UcodeDataType, isRest: true, optional: true },
+          ];
+          sym.jsdocDescription = g.doc;
+        }
+      } else if (g.shape.kind === 'objectType') {
+        this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE,
+          { type: UcodeType.OBJECT, moduleName: g.shape.objectType } as UcodeDataType);
+      } else {
+        const t = g.shape.type === 'object' ? UcodeType.OBJECT
+          : g.shape.type === 'string' ? UcodeType.STRING
+            : g.shape.type === 'boolean' ? UcodeType.BOOLEAN : UcodeType.INTEGER;
+        this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE, t as UcodeDataType);
+      }
+      const sym = this.symbolTable.lookupOpenScopes(g.name);
+      if (sym && !sym.jsdocDescription) sym.jsdocDescription = g.doc;
+      this.symbolTable.markUsed(g.name, 0); // host-injected — never "unused"
+      this.globalPropertyNames.add(g.name); // suppress UC1001 read + UC1002 call paths
+    }
+    // Render-scope compat names (node/css/duser/…): fed to templates by LuCI's own
+    // machinery through channels a static walk can't see (Lua-bridge render scopes,
+    // dispatcher paths outside a standalone repo). Suppression-only — no symbol, no
+    // type claim — and ONLY in `.ut` templates, so controllers/modules keep full
+    // typo detection. See LUCI_TEMPLATE_RENDER_COMPAT_NAMES for the per-name evidence.
+    if (this.textDocument.uri.endsWith('.ut')) {
+      for (const name of LUCI_TEMPLATE_RENDER_COMPAT_NAMES) {
+        if (!selfDeclared.has(name)) this.globalPropertyNames.add(name);
       }
     }
   }

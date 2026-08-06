@@ -2,6 +2,8 @@
 
 A comprehensive Language Server Protocol implementation for the [ucode scripting language](https://github.com/jow-/ucode). It provides flow-sensitive type inference, target-version-aware diagnostics, autocompletion of builtins and module members, go-to-definition and hover across files, quick fixes, and a standalone CLI checker — for VS Code, Neovim, and any LSP-capable editor.
 
+Both plain scripts (`.uc`) and ucode templates (`.ut`, with embedded-ucode syntax highlighting) are supported, including full awareness of [LuCI](https://github.com/openwrt/luci)'s ucode runtime — see [LuCI & OpenWrt awareness](#luci--openwrt-awareness).
+
 Every diagnostic carries a stable `UC####` code so you can look it up, filter it, or suppress it.
 
 ## Type inference
@@ -23,12 +25,17 @@ In short: inference does as much as is soundly possible, JSDoc annotations close
 - **Builtin call validation** — argument counts, types, and coercions checked against real ucode signatures (including a full `printf`/`sprintf` format checker), with precise line/column positions. No more vague "left-hand side is not a function" errors.
 - **Scope analysis** — undefined variables, `const` reassignment, shadowing, use-before-declaration, and unused imports, with ucode's non-strict vs `'use strict';` semantics modeled faithfully (implicit globals, last-write-wins redeclaration, etc.).
 - **Target-version awareness** — modules, functions, and methods are gated to a chosen OpenWrt/ucode release (`UC6005`); using something newer than your target is flagged. See [Target version](#target-version).
+- **Suppression directives** — `// ucode-lsp disable` / `disable-next-line`, optionally code-targeted (`disable UC1001 UC1006`); in template text, use the comment form `{# ucode-lsp disable-next-line UC6020 #}`. The directives are themselves checked: a stale one (suppressing nothing) is flagged with a removal fix, and a *used* blanket disable gets a faded hint listing the exact codes it suppresses, with a one-click fix to narrow it to them.
 
 ### Quick fixes & code actions
 - Add a missing import for an unresolved module member.
 - Add inferred null guards or optional chaining (`?.`) on possibly-null access.
 - Insert a `/** @param */` JSDoc block with types **inferred from body usage**.
+- Mark a parameter optional (`@param {string} [body]`) when call sites omit it — one edit at the declaration clears every call-site diagnostic.
 - Coerce a non-string argument where a builtin expects one.
+- Fix a typo'd `luci.*` import to the module the tree actually ships ("did you mean…").
+- Repair an over-long `{# … #}` template comment (a `#}` inside the body ends it early — the fix splits the inner pairs so the comment reaches its real terminator).
+- Remove or narrow suppression directives (see above).
 - Type-guard narrowing fixes, generated from the AST (not text scraping).
 
 ### Autocompletion
@@ -40,7 +47,7 @@ In short: inference does as much as is soundly possible, JSDoc annotations close
 ### Code navigation & info
 - **Go to Definition** across files, following re-export chains.
 - **Find References** and **Rename** (workspace-wide).
-- **Hover** showing inferred types and function signatures.
+- **Hover** showing inferred types and function signatures — including on import-source strings (`from 'lucihttp'` shows the module's documentation and availability; `from './helper.uc'` shows the resolved file and its exports).
 - **Signature help** with parameter info as you type a call.
 - **Document symbols**, **folding ranges**, **document highlights**, and **inlay hints**.
 - **Code lens** — Git history and reference count above each function (VS Code).
@@ -75,7 +82,7 @@ Install the extension from the [VS Code Marketplace](https://marketplace.visuals
 ### Neovim (0.11+)
 Add to `~/.config/nvim/init.lua`:
 ```lua
-vim.filetype.add({ extension = { uc = 'ucode' } })
+vim.filetype.add({ extension = { uc = 'ucode', ut = 'ucode' } })
 
 vim.lsp.config('ucode', {
   cmd = { 'ucode-lsp', '--stdio' },
@@ -84,6 +91,8 @@ vim.lsp.config('ucode', {
 })
 vim.lsp.enable('ucode')
 ```
+
+(`.ut` templates are detected by file extension server-side, so mapping them to the same filetype is enough.)
 
 ### Building from Source
 ```bash
@@ -141,22 +150,43 @@ let file = fs.open("test.txt", "r");      // ✅ fs.open(), fs.readfile(), fs.wr
 let content = fs.readfile("data.txt");    // string | null
 ```
 
-**Supported modules:**
-- **debug** — runtime debugging and introspection
-- **digest** — cryptographic hash functions
+**Supported modules** (all typed, completed, and gated to your [target version](#target-version) by first *feed* availability, ground-truthed against real per-release OpenWrt images):
+- **bpf** — eBPF program/map access (23.05+)
+- **debug** — runtime debugging and introspection (23.05+)
+- **digest** — cryptographic hash functions (24.10+)
 - **fs** — file system operations (`open`, `readfile`, `writefile`, `stat`, …)
-- **io** — I/O handle operations (OpenWrt 25.12+)
-- **log** — system logging (syslog, ulog functions)
+- **html** — HTML entity encoding and tag stripping (23.05+)
+- **io** — I/O handle operations (25.12+)
+- **log** — system logging (syslog, ulog functions) (23.05+)
+- **lua** — Lua interpreter bridge (23.05+)
+- **lucihttp** — LuCI HTTP utility library: URL percent-encoding, urlencoded/multipart body parsers
 - **math** — mathematical functions (`sin`, `cos`, `sqrt`, …)
 - **nl80211** — WiFi/802.11 networking
+- **pkgen** — package generation helpers (25.12+)
 - **resolv** — DNS resolution
 - **rtnl** — netlink routing (routes, links, addresses)
-- **socket** — network socket functionality
+- **socket** — network socket functionality (24.10+)
 - **struct** — binary data packing/unpacking
 - **ubus** — OpenWrt inter-process communication
 - **uci** — OpenWrt UCI configuration management
+- **uclient** — HTTP/FTP client transfers (24.10+)
+- **udebug** — OpenWrt debug ring buffers (24.10+)
+- **uline** — line-editing / readline (25.12+)
 - **uloop** — event loop and timer functionality
-- **zlib** — compression/decompression
+- **zlib** — compression/decompression (25.12+)
+
+Beyond importable modules, the LSP also models **host-injected runtime objects** — the globals C daemons bind into their embedded ucode VMs, seeded only in the matching file context: `uhttpd` request handlers, `netifd` proto/daemon scripts, `hostapd`/`wpas` scripts, and the LuCI dispatcher environment below.
+
+## LuCI & OpenWrt awareness
+
+[LuCI](https://github.com/openwrt/luci)'s ucode runtime does things no file-local analysis can see — so the LSP models the runtime itself, activating on **evidence** (never guesswork) in three contexts: a LuCI source checkout, a standalone package repo (a `Makefile` with `LUCI_TITLE`/`luci.mk`, the convention of real third-party apps and themes), or an extracted device rootfs (`/usr/share/ucode/luci/`).
+
+- **`.ut` templates** are a first-class language: wrapper grammar with embedded-ucode highlighting for `{% %}` / `{{ }}` blocks and `{# #}` comments, plus full analysis inside the blocks.
+- **The dispatcher environment is ambient** in templates and controllers: `http`, `ubus`, `uci`, `dispatcher`, `ctx`, `theme`, `media`, `_()`, `entityencode()`, … — all typed with real signatures (hover `http.formvalue` for its actual contract; go-to-definition lands in luci-base's own source).
+- **Template-root includes**: `include('header')` resolves against the tree's `ucode/template/` roots the way `render_any` really works — not file-relative — including theme-dispatch patterns like `` include(`themes/${theme}/header`) ``. Missing templates with a Lua-view fallback (`luasrc/view/*.htm`) are not flagged.
+- **Render scopes travel across files**: variables passed via `include('page', scope)` / `runtime.render(...)` are known inside the target template — mined through object literals, local bindings, and callback indirection — so `{{ exitcode }}` in a template hovers as `integer`, traced back to the controller that supplied it.
+- **`luci.*` modules** resolve against the tree (every package's `ucode/` dir mirrors `/usr/share/ucode/luci/` on-device); unresolvable ones that the device provides (compiled `luci.core`, generated `luci.version`, other packages' modules) stay silent instead of false-positive — while a *typo* of a module the tree itself ships gets a did-you-mean with a one-click fix.
+- Everything above holds for **out-of-tree development**: real-world repos like luci-theme-argon and luci-app-podman analyze with zero false "undefined" warnings, validated against 14 published third-party packages and opkg/apk-installed rootfs images of OpenWrt 23.05, 24.10, and 25.12. (On 22.03, which predates the ucode-based LuCI, none of this activates — correctly.)
 
 ## Configuration
 

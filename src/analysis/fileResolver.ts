@@ -1,10 +1,12 @@
 import { UcodeLexer } from '../lexer';
+import { detectTemplateModeForFile, bridgeTemplateTokens } from '../lexer/templateMode';
 import { UcodeParser } from '../parser';
 import { type FunctionDeclarationNode, type AstNode, type ExportDefaultDeclarationNode, type ExportNamedDeclarationNode, type IdentifierNode } from '../ast/nodes';
 import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
 import { UcodeType, type UcodeDataType, type SingleType, createUnionType, isUnionType, isObjectType, isArrayType, typeToString, type ParamInfo } from './symbolTable';
 import { parseJsDocComment, resolveTypeExpression } from './jsdocParser';
 import { getOpenDocumentContent } from './openDocuments';
+import { resolveLuciTemplatePath, resolveLuciModulePath } from './luciEnv';
 import { MAX_ANALYSIS_DEPTH } from './visitor';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -117,8 +119,13 @@ export class FileResolver {
         const cached = this.astCache.get(fileUri);
         if (cached && cached.content === source) return cached.ast;
         try {
-            const lexer = new UcodeLexer(source, { rawMode: true });
-            const tokens = lexer.tokenize();
+            // Template files (`{% %}`, or any .ut — utpl may be pure HTML with no tag) must
+            // lex in template mode with the framing tokens bridged — raw mode would misparse
+            // every include()-able template (fw4's templates/, LuCI .ut files) as a
+            // syntax-error soup.
+            const isTemplate = detectTemplateModeForFile(fileUri, source);
+            const lexer = new UcodeLexer(source, { rawMode: !isTemplate });
+            const tokens = isTemplate ? bridgeTemplateTokens(lexer.tokenize()) : lexer.tokenize();
             const parser = new UcodeParser(tokens, source);
             parser.setComments(lexer.comments);
             const ast = parser.parse().ast ?? null;
@@ -152,8 +159,11 @@ export class FileResolver {
             if (content === null) return false;
             const cached = this.parseErrorCache.get(fileUri);
             if (cached && cached.content === content) return cached.hadErrors;
-            const lexer = new UcodeLexer(content, { rawMode: true });
-            const tokens = lexer.tokenize();
+            // Same template-mode handling as getCachedAst — a healthy template is not
+            // a pile of syntax errors.
+            const isTemplate = detectTemplateModeForFile(fileUri, content);
+            const lexer = new UcodeLexer(content, { rawMode: !isTemplate });
+            const tokens = isTemplate ? bridgeTemplateTokens(lexer.tokenize()) : lexer.tokenize();
             const parser = new UcodeParser(tokens, content);
             parser.setComments(lexer.comments);
             const result = parser.parse();
@@ -331,6 +341,13 @@ export class FileResolver {
     private resolveIncludePath(rawPath: string, currentFileUri: string): string | null {
         const curPath = this.uriToFilePath(currentFileUri);
         if (!curPath) return null;
+        // LuCI template/controller context: `include` there IS the runtime's render_any
+        // (runtime.uc: `env.include = (...args) => render_any(...args)`), which resolves the
+        // name against the merged template DIRECTORY with `.ut` appended — not against this
+        // file. Checked first because in that context file-relative resolution never happens;
+        // resolveLuciTemplatePath returns null for non-LuCI files, so nothing else changes.
+        const luciTemplate = resolveLuciTemplatePath(curPath, rawPath);
+        if (luciTemplate) return this.filePathToUri(luciTemplate);
         const dir = path.dirname(curPath);
         const candidates: string[] = [];
         if (rawPath.startsWith('/')) {
@@ -364,6 +381,56 @@ export class FileResolver {
      *  best-effort and stay silent): 'not-found' when no candidate file exists in the
      *  workspace, 'parse-error' when it exists but has syntax errors (its leaked-global
      *  list is unreliable), 'ok' otherwise. */
+    /** Public include-target resolution (file URI or null) — for document links /
+     *  go-to-definition on the `include('…')` path argument. Same semantics as the
+     *  internal resolver: LuCI template roots first, then file-relative. */
+    resolveIncludeTarget(rawPath: string, currentFileUri: string): string | null {
+        return this.resolveIncludePath(rawPath, currentFileUri);
+    }
+
+    /**
+     * Offset span of `member`'s definition id in `fileUri`, AST-based: the first
+     * object-literal property `member: …` / shorthand, or a `function member(...)`
+     * declaration. Serves go-to-definition for runtime objects implemented in plain
+     * ucode (LuCI's http.uc prototype methods, dispatcher.uc's helper functions).
+     */
+    findMemberDefinitionLocation(fileUri: string, member: string): { start: number; end: number } | null {
+        const content = this.readFileContent(fileUri);
+        if (content === null) return null;
+        const ast = this.getCachedAst(fileUri, content);
+        if (!ast) return null;
+        let found: { start: number; end: number } | null = null;
+        const walk = (n: unknown): void => {
+            if (found || !n || typeof n !== 'object') return;
+            const node = n as { type?: string } & Record<string, unknown>;
+            if (typeof node.type !== 'string') return;
+            if (node.type === 'FunctionDeclaration') {
+                const id = node.id as { name?: string; start?: number; end?: number } | undefined;
+                if (id?.name === member && typeof id.start === 'number' && typeof id.end === 'number') {
+                    found = { start: id.start, end: id.end };
+                    return;
+                }
+            }
+            if (node.type === 'Property' && !node.computed) {
+                const key = node.key as { type?: string; name?: string; value?: unknown; start?: number; end?: number } | undefined;
+                const keyName = key?.type === 'Identifier' ? key.name
+                    : key?.type === 'Literal' && typeof key.value === 'string' ? key.value : undefined;
+                if (keyName === member && typeof key?.start === 'number' && typeof key?.end === 'number') {
+                    found = { start: key.start, end: key.end };
+                    return;
+                }
+            }
+            for (const k of Object.keys(node)) {
+                if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+                const v = node[k];
+                if (Array.isArray(v)) { for (const it of v) walk(it); }
+                else if (v && typeof v === 'object') walk(v);
+            }
+        };
+        walk(ast);
+        return found;
+    }
+
     getIncludeTargetStatus(rawPath: string, currentFileUri: string): 'ok' | 'not-found' | 'parse-error' {
         const targetUri = this.resolveIncludePath(rawPath, currentFileUri);
         if (!targetUri) return 'not-found';
@@ -642,6 +709,9 @@ export class FileResolver {
      * release; this method covers only on-disk modules.
      */
     requireResolvesFile(name: string, currentFileUri: string): boolean {
+        // LuCI checkout mapping (same as resolveImportPath): luci.<rest> → package ucode/ dirs.
+        const cur = this.uriToFilePath(currentFileUri);
+        if (cur && resolveLuciModulePath(cur, name)) return true;
         const rel = name.replace(/\./g, '/'); // dotted module → subdirectory path
         // Per REQUIRE_SEARCH_PATH each install root pairs with ONE extension: `lib/ucode` is
         // `*.so`-only, `share/ucode` is `*.uc`-only (verified on-device). Only the requiring file's
@@ -650,7 +720,6 @@ export class FileResolver {
             ['/usr/local/lib/ucode', ['.so']], ['/usr/local/share/ucode', ['.uc']],
             ['/usr/lib/ucode', ['.so']], ['/usr/share/ucode', ['.uc']],
         ];
-        const cur = this.uriToFilePath(currentFileUri);
         if (cur) roots.push([path.dirname(cur), ['.uc', '.so']]);
         for (const [d, exts] of roots) {
             for (const ext of exts) {
@@ -781,6 +850,12 @@ export class FileResolver {
 
             // Handle dotted module paths (e.g., 'cli.utils', 'u1905.u1905d.src.u1905.log')
             if (!importPath.includes('/') && !importPath.startsWith('.')) {
+                // LuCI checkout mapping: `luci.<rest>` lives at /usr/share/ucode/luci/<rest>.uc
+                // on-device, a directory assembled from every LuCI package's `ucode/` dir — so in
+                // a checkout the import resolves against those dirs (luci-base first). Returns
+                // null outside a LuCI tree, so nothing else changes.
+                const luciModule = resolveLuciModulePath(currentFilePath, importPath);
+                if (luciModule) return this.filePathToUri(luciModule);
                 const dottedPath = importPath.replace(/\./g, '/') + '.uc';
                 const resolvedPath = path.resolve(this.workspaceRoot, dottedPath);
                 if (this.isImportableFile(resolvedPath)) {

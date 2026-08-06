@@ -623,6 +623,17 @@ export class BuiltinValidator {
             && !((this.strictMode && !safeInTestContext) || !this.inTruthinessContext)) {
           return true;
         }
+        // A union whose only disallowed members are TOLERATED (length()'s null) inside a
+        // truthiness test of a sound test-idiom builtin is the standard emptiness check —
+        // `if (length(x))` with x possibly null: length(null) returns null (no crash) and
+        // null is falsy, so the test reads correctly. That reasoning doesn't change under
+        // 'use strict' (strict alters undeclared-name access, not length()'s return), so
+        // suppress here even though strict mode disables tolerance for VALUE uses.
+        if (toleratedTypes && toleratedTypes.length > 0
+            && disallowedTypes.every(t => toleratedTypes.includes(t as UcodeType) || t === UcodeType.UNKNOWN)
+            && safeInTestContext && this.inTruthinessContext) {
+          return true;
+        }
         // Some types are allowed, some are not - WARNING (error in strict mode)
         // NOTE: `customErrorMessage` is deliberately NOT applied here. It describes a
         // DEFINITE, whole-union type mismatch (see the hard-error branches above/below);

@@ -5,11 +5,12 @@ import {
     Range
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { UcodeLexer, TokenType, isMemberAccessDot, type Token } from './lexer';
+import { UcodeLexer, TokenType, isMemberAccessDot, detectTemplateModeForFile, bridgeTemplateTokens, type Token } from './lexer';
 import { type SemanticAnalysisResult, type Symbol, SymbolType } from './analysis';
 import { FileResolver } from './analysis/fileResolver';
 import { isKnownObjectType, OBJECT_REGISTRIES } from './analysis/moduleDispatch';
 import { extractModuleType } from './analysis/symbolTable';
+import { resolveLuciModulePath } from './analysis/luciEnv';
 import { Option } from 'effect';
 
 // Global file resolver instance
@@ -36,8 +37,11 @@ export function handleDefinition(
     const offset = document.offsetAt(position);
     
     try {
-        const lexer = new UcodeLexer(text, { rawMode: true });
-        const tokens = lexer.tokenize();
+        // Templates must lex in template mode (bridged framing tokens) or every token
+        // position in a `.ut` file is garbage and definitions land nowhere.
+        const isTemplate = detectTemplateModeForFile(document.uri, text);
+        const lexer = new UcodeLexer(text, { rawMode: !isTemplate });
+        const tokens = isTemplate ? bridgeTemplateTokens(lexer.tokenize()) : lexer.tokenize();
         
         // Find the token at the cursor position
         const token = tokens.find(t => t.pos <= offset && offset <= t.end);
@@ -54,7 +58,11 @@ export function handleDefinition(
                 && callee?.type === TokenType.TK_LABEL
                 && (callee.value === 'loadfile' || callee.value === 'include');
             if (isImportPath || isCallPath) {
-                const resolved = fileResolver.resolveImportPath(token.value, document.uri);
+                // include() paths use include semantics (LuCI template roots first, then
+                // file-relative); imports/loadfile keep the import resolver.
+                const resolved = callee?.value === 'include'
+                    ? fileResolver.resolveIncludeTarget(token.value, document.uri)
+                    : fileResolver.resolveImportPath(token.value, document.uri);
                 // Only a real file target — skip builtin:// modules (no source to open).
                 if (resolved && resolved.startsWith('file://') && fileResolver.getFileContent(resolved) !== null) {
                     const zero = { line: 0, character: 0 };
@@ -267,6 +275,13 @@ function resolveMemberDefinition(
         if (isKnownObjectType(moduleName)) {
             const method = OBJECT_REGISTRIES[moduleName].getMethod(symbolName);
             if (Option.isSome(method)) {
+                // The LuCI runtime objects are implemented in plain ucode that exists IN
+                // the workspace (luci-base's http.uc / dispatcher.uc) — jump to the real
+                // member definition there instead of bouncing to the ambient's fake node.
+                if (moduleName === 'luci.http' || moduleName === 'luci.dispatcher') {
+                    const loc = findLuciRuntimeMemberDefinition(moduleName, symbolName, document, fileResolver);
+                    if (loc) return loc;
+                }
                 // Known built-in method — navigate to the object's declaration instead
                 return getSymbolDefinition(objSymbol, document, fileResolver);
             }
@@ -274,6 +289,29 @@ function resolveMemberDefinition(
     }
 
     return null;
+}
+
+/** Jump target for a `luci.http` / `luci.dispatcher` member: the member's definition in
+ *  luci-base's own source (`formvalue: function` in http.uc; `function build_url` in
+ *  dispatcher.uc), resolved through the same package-ucode-dir mapping as `luci.*`
+ *  imports. Null outside a LuCI tree or when the member isn't found there. */
+function findLuciRuntimeMemberDefinition(
+    moduleName: 'luci.http' | 'luci.dispatcher',
+    member: string,
+    document: TextDocument,
+    resolver: FileResolver,
+): Definition | null {
+    const curPath = document.uri.startsWith('file://') ? decodeURIComponent(document.uri.slice(7)) : null;
+    if (!curPath) return null;
+    const srcPath = resolveLuciModulePath(curPath, moduleName);
+    if (!srcPath) return null;
+    const srcUri = 'file://' + srcPath;
+    const loc = resolver.findMemberDefinitionLocation(srcUri, member);
+    if (!loc) return null;
+    const content = resolver.getFileContent(srcUri);
+    if (content === null) return null;
+    const tmpDoc = TextDocument.create(srcUri, 'ucode', 1, content);
+    return { uri: srcUri, range: { start: tmpDoc.positionAt(loc.start), end: tmpDoc.positionAt(loc.end) } };
 }
 
 function getSymbolDefinition(symbol: Symbol, currentDocument: TextDocument, fileResolver: FileResolver): Definition | null {
@@ -288,10 +326,17 @@ function getSymbolDefinition(symbol: Symbol, currentDocument: TextDocument, file
     }
     
     // Handle local symbols (functions, variables, parameters)
-    if (symbol.type === SymbolType.FUNCTION || 
-        symbol.type === SymbolType.VARIABLE || 
+    if (symbol.type === SymbolType.FUNCTION ||
+        symbol.type === SymbolType.VARIABLE ||
         symbol.type === SymbolType.PARAMETER) {
-        
+
+        // Host-injected ambient (forced declaration over a synthetic zero-width node —
+        // uhttpd/netifd/hostapd/LuCI env): there is no in-file declaration; returning
+        // offset 0 would fabricate a jump to row 1, column 1.
+        if (symbol.declaredAt === 0 && symbol.node?.start === 0 && symbol.node?.end === 0) {
+            return null;
+        }
+
         const start = currentDocument.positionAt(symbol.declaredAt);
         const end = currentDocument.positionAt(symbol.declaredAt + symbol.name.length);
         const range: Range = {

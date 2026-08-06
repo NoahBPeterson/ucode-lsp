@@ -46,6 +46,7 @@ export type KnownObjectType =
   | 'netifd.daemon'
   | 'hostapd.global' | 'hostapd.bss' | 'hostapd.iface'
   | 'wpas.global' | 'wpas.iface'
+  | 'luci.http' | 'luci.dispatcher'
   | 'exception';
 
 // ---- Common function signature ----

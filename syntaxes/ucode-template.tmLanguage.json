@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "ucode Template",
+  "scopeName": "source.ucode-template",
+  "patterns": [
+    {
+      "name": "comment.block.ucode-template",
+      "begin": "\\{#-?",
+      "end": "-?#\\}",
+      "beginCaptures": { "0": { "name": "punctuation.definition.comment.begin.ucode-template" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.comment.end.ucode-template" } }
+    },
+    {
+      "contentName": "meta.embedded.block.ucode",
+      "begin": "\\{\\{-?",
+      "end": "-?\\}\\}",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.ucode-template" } },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.ucode-template" } },
+      "patterns": [ { "include": "source.ucode" } ]
+    },
+    {
+      "contentName": "meta.embedded.block.ucode",
+      "begin": "\\{%[+-]?",
+      "end": "-?%\\}",
+      "beginCaptures": { "0": { "name": "punctuation.section.embedded.begin.ucode-template" } },
+      "endCaptures": { "0": { "name": "punctuation.section.embedded.end.ucode-template" } },
+      "patterns": [ { "include": "source.ucode" } ]
+    },
+    {
+      "include": "text.html.basic"
+    }
+  ]
+}

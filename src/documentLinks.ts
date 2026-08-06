@@ -20,6 +20,9 @@ import type {
 
 interface PathResolver {
     resolveImportPath(importPath: string, currentFileUri: string): string | null;
+    /** include('…') targets — file-relative, or LuCI template-root for LuCI templates/
+     *  controllers. Optional so older/lighter resolvers keep working without it. */
+    resolveIncludeTarget?(rawPath: string, currentFileUri: string): string | null;
 }
 
 export function provideDocumentLinks(
@@ -43,9 +46,10 @@ export function provideDocumentLinks(
         return { start: document.positionAt(s), end: document.positionAt(e) };
     };
 
-    const addLink = (sourceLit: AstNode | null | undefined): void => {
+    const addLink = (sourceLit: AstNode | null | undefined, resolve?: (raw: string) => string | null): void => {
         if (!sourceLit || sourceLit.type !== 'Literal' || typeof (sourceLit as LiteralNode).value !== 'string') return;
-        const target = fileResolver.resolveImportPath((sourceLit as LiteralNode).value as string, uri);
+        const raw = (sourceLit as LiteralNode).value as string;
+        const target = resolve ? resolve(raw) : fileResolver.resolveImportPath(raw, uri);
         if (!target || !target.startsWith('file://')) return; // skip builtins / unresolved
         const range = innerRange(sourceLit);
         if (range) links.push({ range, target });
@@ -69,6 +73,11 @@ export function provideDocumentLinks(
                 if (call.callee?.type === 'Identifier' && (call.callee as IdentifierNode).name === 'require'
                     && call.arguments?.length >= 1) {
                     addLink(call.arguments[0]);
+                }
+                // include('…') — file-relative, or a LuCI template-root name ('header').
+                if (call.callee?.type === 'Identifier' && (call.callee as IdentifierNode).name === 'include'
+                    && call.arguments?.length >= 1 && fileResolver.resolveIncludeTarget) {
+                    addLink(call.arguments[0], (raw) => fileResolver.resolveIncludeTarget!(raw, uri));
                 }
                 break;
             }

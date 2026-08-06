@@ -15,6 +15,9 @@ import { allBuiltinFunctions } from './builtins';
 import { type SemanticAnalysisResult, SymbolType, type Symbol as UcodeSymbol } from './analysis';
 import { typeToString, type UcodeDataType, UcodeType, effectiveSymbolType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt, isNeverType } from './analysis/symbolTable';
 import { exceptionTypeRegistry, exceptionObjectType } from './analysis/exceptionTypes';
+import { VERSION_MODULES } from './analysis/ucodeVersions';
+import { findLuciWorkspace } from './analysis/luciEnv';
+import * as path from 'path';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { rtnlTypeRegistry } from './analysis/rtnlTypes';
@@ -837,6 +840,57 @@ function escapeHoverResult(document: TextDocument, start: number, end: number, m
     };
 }
 
+/**
+ * Markdown for a module-source string (`import … from '<name>'`, `require('<name>')`,
+ * `include('<name>')`, `loadfile('<name>')`): builtin registry documentation with its
+ * feed-availability floor, or the resolved workspace file with its export list, or —
+ * for an unresolvable `luci.*` inside a LuCI tree — the device-provided story.
+ * Null falls through to the plain string-literal hover.
+ */
+function moduleSourceHover(name: string, isInclude: boolean, documentUri: string): string | null {
+    const resolver = getHoverFileResolver();
+
+    if (!isInclude && isKnownModule(name)) {
+        const intro = VERSION_MODULES[name];
+        const introNote = intro && intro !== '22.03' ? `\n\n*Available since OpenWrt ${intro} (feed package \`ucode-mod-${name}\`).*` : '';
+        return MODULE_REGISTRIES[name].getModuleDocumentation() + introNote;
+    }
+
+    const resolved = isInclude
+        ? resolver.resolveIncludeTarget(name, documentUri)
+        : resolver.resolveImportPath(name, documentUri);
+
+    if (resolved && resolved.startsWith('file://')) {
+        const filePath = decodeURIComponent(resolved.slice(7));
+        const docPath = documentUri.startsWith('file://') ? decodeURIComponent(documentUri.slice(7)) : null;
+        const shown = docPath ? path.relative(path.dirname(docPath), filePath) : filePath;
+        if (isInclude || filePath.endsWith('.ut')) {
+            return `**Template \`${name}\`**\n\nResolves to \`${shown}\``;
+        }
+        const exports = resolver.getModuleExports(resolved) ?? [];
+        const named = exports.filter((e) => e.type === 'named');
+        const hasDefault = exports.some((e) => e.type === 'default');
+        const shownNames = named.slice(0, 12).map((e) => e.isFunction ? `\`${e.name}()\`` : `\`${e.name}\``);
+        const more = named.length > 12 ? ` … +${named.length - 12} more` : '';
+        const exportLine = (shownNames.length || hasDefault)
+            ? `\n\n**Exports:** ${[hasDefault ? '`default`' : '', ...shownNames].filter(Boolean).join(', ')}${more}`
+            : '';
+        return `**Module \`${name}\`**\n\nResolves to \`${shown}\`${exportLine}`;
+    }
+
+    // Unresolvable luci.* inside a LuCI tree: same epistemics as the suppressed
+    // diagnostic — the module lives on the device, assembled from installed packages.
+    if (!isInclude && name.startsWith('luci.') && documentUri.startsWith('file://')) {
+        const selfPath = decodeURIComponent(documentUri.slice(7));
+        if (findLuciWorkspace(selfPath)) {
+            return `**Module \`${name}\`**\n\nNot in this tree - on a device it resolves from \`/usr/share/ucode/luci/\`, `
+                + `which is assembled from every installed LuCI package (this one may be compiled C, build-generated, or shipped by another package).`;
+        }
+    }
+
+    return null;
+}
+
 export function handleHover(
     textDocumentPositionParams: TextDocumentPositionParams,
     documents: TextDocuments<TextDocument>,
@@ -1102,6 +1156,25 @@ export function handleHover(
         }
 
         // Check for printf/sprintf format specifier hover
+        // Import/require/include SOURCE strings are module references, not prose — hover
+        // them as modules (registry docs / resolved file + exports), not `(literal) string`.
+        if (token && token.type === TokenType.TK_STRING && typeof token.value === 'string' && tokenIndex >= 1) {
+            const prev = tokens[tokenIndex - 1];
+            const calleeTok = tokenIndex >= 2 ? tokens[tokenIndex - 2] : undefined;
+            const isImportSource = prev?.type === TokenType.TK_LABEL && prev.value === 'from';
+            const calleeName = prev?.type === TokenType.TK_LPAREN && calleeTok?.type === TokenType.TK_LABEL
+                ? String(calleeTok.value) : undefined;
+            if (isImportSource || calleeName === 'require' || calleeName === 'include' || calleeName === 'loadfile') {
+                const mod = moduleSourceHover(token.value, calleeName === 'include', document.uri);
+                if (mod) {
+                    return {
+                        contents: { kind: MarkupKind.Markdown, value: mod },
+                        range: { start: document.positionAt(token.pos), end: document.positionAt(token.end) },
+                    };
+                }
+            }
+        }
+
         if (token && token.type === TokenType.TK_STRING && tokenIndex >= 0) {
             const fmtHover = getFormatSpecifierHover(token, tokenIndex, tokens, offset, document);
             if (fmtHover) return fmtHover;

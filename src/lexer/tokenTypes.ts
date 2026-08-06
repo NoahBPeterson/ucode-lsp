@@ -132,6 +132,9 @@ export interface LexerError {
     /** Default is 'error'; 'warning' for legal-but-suspicious constructs (e.g. the
      *  `/*​/` empty-comment quirk, which the interpreter accepts silently). */
     severity?: 'warning' | 'error';
+    /** Structured payload threaded onto the LSP diagnostic's `data` for quick fixes
+     *  (the lexer is the only party that knows the offsets involved). */
+    data?: Record<string, unknown>;
 }
 
 export interface LexerState {

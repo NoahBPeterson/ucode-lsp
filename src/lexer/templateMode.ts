@@ -19,6 +19,16 @@ import { type Token, TokenType } from './tokenTypes';
  *    then modulo" — a syntax error), so their presence means the file is a template.
  *    It is also the only signal the no-shebang OpenWrt template corpus carries.
  */
+/**
+ * Template-mode decision for a file with a known name/URI: a `.ut` file is ALWAYS a
+ * template — utpl source may be pure HTML with no tag at all (LuCI theme headers,
+ * footer.ut), which the content sniff below cannot see. Everything else falls back to
+ * {@link detectTemplateMode}'s content signal.
+ */
+export function detectTemplateModeForFile(uriOrPath: string, text: string): boolean {
+    return uriOrPath.endsWith('.ut') || detectTemplateMode(text);
+}
+
 export function detectTemplateMode(text: string): boolean {
     const shebang = /^#![^\n]*/.exec(text)?.[0];
     if (shebang) {

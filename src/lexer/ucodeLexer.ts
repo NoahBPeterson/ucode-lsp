@@ -276,6 +276,7 @@ export class UcodeLexer {
     }
 
     private blockComment(): Token | null {
+        const commentStart = this.pos; // offset of the opening '{'
         this.nextChar(); // consume '{'
         this.nextChar(); // consume '#'
 
@@ -297,6 +298,45 @@ export class UcodeLexer {
         if (!closed) {
             this.state = LexState.UC_LEX_EOF;
             return this.emitToken(TokenType.TK_ERROR, 'Unterminated template block');
+        }
+
+        // Over-long comment tell (UC6020): a template comment ends at its FIRST '#}'
+        // (lexer.c scans to the first `#}`/`-#}`), so a terminator INSIDE the intended
+        // comment body cuts it short — and the tail, including the author's real
+        // terminator, is rendered into the page as literal output. The near-certain
+        // signature: ANOTHER '#}' appears in the plain text between here and the next
+        // tag open. Warn on that stray terminator. (Plain text containing '#}' with no
+        // preceding comment is never flagged.)
+        let scan = this.pos;
+        while (scan < this.source.length
+               && !(this.source[scan] === '{'
+                    && (this.source[scan + 1] === '{' || this.source[scan + 1] === '%' || this.source[scan + 1] === '#'))) {
+            scan++;
+        }
+        const trailingText = this.source.slice(this.pos, scan);
+        const stray = /-?#\}/.exec(trailingText);
+        if (stray) {
+            // The LAST terminator before the next tag is the author's intended close; the
+            // quick fix extends the comment to it by neutralizing every '#}' in between
+            // (inserting a space: '# }' — there is NO escape sequence in ucode's template
+            // comment scanner, so splitting the pair is the only way to write it inside).
+            let intended = stray;
+            const all = /-?#\}/g;
+            let m: RegExpExecArray | null;
+            while ((m = all.exec(trailingText)) !== null) intended = m;
+            const intendedAbs = this.pos + intended.index;
+            const insertSpaceBefore: number[] = [];
+            const span = this.source.slice(commentStart + 2, intendedAbs);
+            const inner = /#\}/g;
+            while ((m = inner.exec(span)) !== null) insertSpaceBefore.push(commentStart + 2 + m.index + 1); // before the '}'
+            this.errors.push({
+                message: `A template comment ends at the first '#}' - the comment above closed early, so this '${stray[0]}' and the text before it are rendered as page output, not commented out`,
+                start: this.pos + stray.index,
+                end: this.pos + stray.index + stray[0].length,
+                code: UcodeErrorCode.TEMPLATE_COMMENT_ENDED_EARLY,
+                severity: 'warning',
+                data: { commentEndedEarly: { insertSpaceBefore, intendedStart: intendedAbs } },
+            });
         }
 
         this.state = LexState.UC_LEX_IDENTIFY_BLOCK;

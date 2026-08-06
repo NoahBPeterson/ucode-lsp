@@ -81,6 +81,7 @@ export enum UcodeErrorCode {
   SUSPICIOUS_EMPTY_COMMENT = 'UC6017', // `/*/` lexes as a complete EMPTY comment; almost always an unescaped regex for '*'
   NUMERIC_OBJECT_KEY = 'UC6018', // `{1: 2}` — ucode's object parser takes only a label, a string, or a computed `[expr]` key: "Expecting label"
   EMPTY_IMPORT_EXPORT_LIST = 'UC6019', // `import {} from …` / `export {}` — ucode's list parser demands a first specifier before it checks for '}'
+  TEMPLATE_COMMENT_ENDED_EARLY = 'UC6020', // a `{# … #}` comment closed at its FIRST '#}' while another terminator follows in the literal text — the tail (incl. that stray '#}') is rendered as page output, not commented out
 
   // JSDoc annotation errors (7000-7999)
   JSDOC_UNKNOWN_TYPE = 'UC7001',
@@ -106,6 +107,8 @@ export enum UcodeErrorCode {
   HANDLER_VM_ABORTING_CALL = 'UC8011',            // loadfile()/loadfile()()/include() in a uhttpd handler — aborts the request VM uncatchably (empty response, no stderr; try/catch can't help). Use static import.
   HANDLER_NOT_A_TEMPLATE = 'UC8012',              // file registers global.handle_request but isn't a `{%` template — uhttpd emits the file as the response body and runs no code. Wrap in `{% … %}`.
   HANDLER_ENTRY_WRONG_FORM = 'UC8013',            // in a handler template, handle_request defined as a local/export/let form — uhttpd looks it up on the global scope, so only `global.handle_request = …` is found.
+  UNNECESSARY_DISABLE_DIRECTIVE = 'UC8014',       // a code-targeted `ucode-lsp disable UCxxxx` directive that suppressed nothing — stale/wrong suppression worth cleaning up
+  BLANKET_DISABLE_NARROWABLE = 'UC8015',          // a USED bare `ucode-lsp disable` — it hides EVERY diagnostic on the line; the codes it actually suppresses are known, so it can be narrowed to them
 
   // System and internal errors (9000-9999)
   ANALYSIS_ERROR = 'UC9002'

@@ -62,13 +62,13 @@ export function clearShebangPeekCache(): void {
 }
 
 /**
- * A workspace file is ucode source if it ends in `.uc`, OR it's an extensionless file
- * whose first line is a ucode shebang. The extensionless gate bounds the shebang peek
+ * A workspace file is ucode source if it ends in `.uc` or `.ut` (ucode template — LuCI
+ * template trees), OR it's an extensionless file whose first line is a ucode shebang. The extensionless gate bounds the shebang peek
  * to plausible scripts (skips `.c`/`.so`/`.json`/binaries), keeping the directory walk
  * cheap on large trees. The shebang verdict is mtime-cached (see {@link shebangPeekCache}).
  */
 export function isUcodeSourceFile(filePath: string): boolean {
-  if (filePath.endsWith('.uc')) return true;
+  if (filePath.endsWith('.uc') || filePath.endsWith('.ut')) return true;
   if (path.basename(filePath).includes('.')) return false;
   let mtimeMs: number;
   try { mtimeMs = fs.statSync(filePath).mtimeMs; } catch { return false; }
@@ -85,7 +85,7 @@ export function isUcodeSourceFile(filePath: string): boolean {
  * (matters on large trees). Shares the same mtime-keyed {@link shebangPeekCache}.
  */
 export async function isUcodeSourceFileAsync(filePath: string): Promise<boolean> {
-  if (filePath.endsWith('.uc')) return true;
+  if (filePath.endsWith('.uc') || filePath.endsWith('.ut')) return true;
   if (path.basename(filePath).includes('.')) return false;
   let mtimeMs: number;
   try { mtimeMs = (await fs.promises.stat(filePath)).mtimeMs; } catch { return false; }

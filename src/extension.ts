@@ -111,10 +111,13 @@ export function activate(context: vscode.ExtensionContext) {
     // Options for the language client
     const clientOptions: LanguageClientOptions = {
         // Register the server for ucode documents
-        documentSelector: [{ scheme: 'file', language: 'ucode' }],
+        documentSelector: [
+            { scheme: 'file', language: 'ucode' },
+            { scheme: 'file', language: 'ucode-template' },
+        ],
         synchronize: {
-            // Notify the server about file changes to '.uc' files contained in the workspace
-            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.uc'),
+            // Notify the server about file changes to '.uc'/'.ut' files in the workspace
+            fileEvents: vscode.workspace.createFileSystemWatcher('**/*.{uc,ut}'),
             // Watch the `ucode.*` settings so changing them (e.g. `ucode.targetVersion`)
             // sends workspace/didChangeConfiguration to the server, which re-pulls the
             // value and re-analyzes open docs. Without this, VS Code never notifies the

@@ -110,9 +110,19 @@ describe('buildIncludeScopeIndex', () => {
     ]);
     expect([...idx.get('/w/zv.uc').injectedNames].sort()).toEqual(['extra', 'fw4', 'zone']);
   });
-  test('bare include (no scope) creates no entry', () => {
+  // CONTRACT UPDATE (0.8.0 LuCI template runtime): a bare include is now an EDGE — the
+  // includer's own injected scope leaks through it (oracle-verified; LuCI's theme-dispatch
+  // shims are bare includes that must forward css/node). An includer with NO injected
+  // scope of its own still contributes nothing: the entry exists but is empty+complete.
+  test('bare include (no scope) creates an empty edge entry, and forwards a leaked scope', () => {
     const idx = idxOf([{ path: '/w/p.uc', src: '{% include("c.uc"); %}' }]);
-    expect(idx.get('/w/c.uc')).toBeUndefined();
+    expect([...idx.get('/w/c.uc').injectedNames]).toEqual([]);
+    expect(idx.get('/w/c.uc').complete).toBe(true);
+    const chain = idxOf([
+      { path: '/w/top.uc', src: '{% include("p.uc", { fw4 }); %}' },
+      { path: '/w/p.uc', src: '{% include("c.uc"); %}' },
+    ]);
+    expect([...chain.get('/w/c.uc').injectedNames]).toEqual(['fw4']);
   });
   test('non-literal path is not indexed', () => {
     const idx = idxOf([{ path: '/w/p.uc', src: '{% include(dyn, { a }); %}' }]);

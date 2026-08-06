@@ -33,6 +33,11 @@ export interface DisableDirective {
 
 // `disable-next-line` MUST come first so it wins the alternation over `disable`.
 const DIRECTIVE_RE = /\/\/[ \t]*ucode-lsp[ \t]+(disable-next-line|disable)([^\n]*)/;
+// Template-comment form for `.ut` files: `{# ucode-lsp disable-next-line UC6020 #}`.
+// Template TEXT has no `//` comments (a literal `//` is page output), and lexer
+// diagnostics like UC6020 anchor in that text — this is the only way to carry a
+// directive there. The rest-capture stops at the comment's own terminator.
+const TEMPLATE_DIRECTIVE_RE = /\{#-?[ \t]*ucode-lsp[ \t]+(disable-next-line|disable)((?:(?!-?#\})[^\n])*)/;
 const CODE_RE = /\bUC\d+\b/gi;
 
 /** Parse the target codes out of the trailing text after the keyword. Returns
@@ -88,7 +93,7 @@ export function parseDisableDirectives(text: string): DisableDirective[] {
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const line = lines[lineIndex];
     if (!line) continue;
-    const m = DIRECTIVE_RE.exec(line);
+    const m = DIRECTIVE_RE.exec(line) ?? TEMPLATE_DIRECTIVE_RE.exec(line);
     if (!m) continue;
 
     const keyword = m[1]!;
