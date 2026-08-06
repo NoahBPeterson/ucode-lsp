@@ -1,6 +1,6 @@
 # LuCI template/controller runtime: ambient scope + template include resolution
 
-Status: **SHIPPED at 0.8.0 (2026-08-04, uncommitted — awaiting user test). All four
+Status: **SHIPPED at 0.8.0 (committed 247f490, 2026-08-06). All four
 parts built, plus follow-ons the corpus differential surfaced.** Implementation map:
 
 - **Part 0** re-landed verbatim (package.json languages/grammars/activationEvents/
