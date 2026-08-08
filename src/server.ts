@@ -49,6 +49,7 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import * as fs from 'fs';
 import * as path from 'path';
 import { isUcodeSourceFile, isUcodeSourceFileAsync } from './shebang';
+import { mineParamShape, renderTypedefBlock, parseExistingTypedefs, planTypedefExtension, siblingExampleSeeds, mergeSiblingDeclaredKeys, propertyKeyName } from './analysis/typedefFromUsage';
 import { collectCodeLensFunctions, getFunctionGitSummary, formatSummaryTitle } from './gitHistory';
 import { findFunctionReferences, findNamespaceMemberReferences, findFactoryMethodReferences, formatReferencesTitle, getImportBindings, type ImportBinding } from './references';
 import { handleHover } from './hover';
@@ -76,6 +77,8 @@ import type {
     ObjectExpressionNode,
     PropertyNode,
     VariableDeclarationNode,
+    VariableDeclaratorNode,
+    AssignmentExpressionNode,
     LiteralNode,
 } from './ast/nodes';
 import { UCODE_TARGET_VERSIONS, type UcodeTargetVersion, DEFAULT_TARGET_VERSION } from './analysis/ucodeVersions';
@@ -84,7 +87,7 @@ import { stringSourceToRegexLiteral } from './analysis/checkers/builtinValidatio
 import { UcodeParser } from './parser';
 import { UcodeLexer, TokenType, detectTemplateModeForFile, bridgeTemplateTokens, type Token } from './lexer';
 import { buildIncludeScopeIndex, checkIncludeScopes, computeFreeVariables, type IncludeScopeEntry } from './analysis/includeScope';
-import { resolveLuciTemplatePath, resolveLuciTemplatePattern } from './analysis/luciEnv';
+import { resolveLuciTemplatePath, resolveLuciTemplatePattern, isBundledLuciPath } from './analysis/luciEnv';
 import { runIncremental, type CleanBody } from './analysis/incrementalAnalysis';
 import { type IncrementalCacheEntry } from './analysis/incrementalCache';
 import { isKnownModule } from './analysis/moduleDispatch';
@@ -110,6 +113,8 @@ interface DiagnosticData {
     luciModuleSuggestion?: { replaceWith?: string };
     /** UC8015 blanket disable: the codes it suppresses + insert column for narrowing. */
     narrowDisable?: { codes?: string[]; insertAt?: number };
+    /** UC7009 bare-object @param: which parameter the typedef quick fix should target. */
+    typedefFromUsage?: { paramName?: string };
     coerceToString?: boolean;
     argNeedsParens?: boolean;
     convertStringToRegex?: boolean;
@@ -521,7 +526,11 @@ connection.onInitialize((params: InitializeParams) => {
                 retriggerCharacters: [',']
             },
             codeActionProvider: {
-                codeActionKinds: [CodeActionKind.QuickFix]
+                // Advertise refactor.rewrite too: VS Code only routes a menu's request to
+                // this provider when the menu's kind intersects these — quickfix-only made
+                // the Refactor menu (Ctrl+Shift+R) permanently answer "No refactorings
+                // available" no matter what the server returned.
+                codeActionKinds: [CodeActionKind.QuickFix, CodeActionKind.RefactorRewrite]
             },
             codeLensProvider: {
                 resolveProvider: true
@@ -654,6 +663,15 @@ function isStackOverflow(e: unknown): boolean {
 }
 
 async function validateAndAnalyzeDocument(textDocument: TextDocument, forceFull = false): Promise<void> {
+  // The bundled luci-base reference copies (opened via go-to-definition on a luci.*
+  // import) are documentation, not the user's code — publishing lints on files the
+  // user cannot fix is pure noise. Analysis for IMPORTERS of these files runs through
+  // the fileResolver, not through here, so types are unaffected.
+  if (textDocument.uri.startsWith('file://')
+      && isBundledLuciPath(decodeURIComponent(textDocument.uri.slice(7)))) {
+    connection.sendDiagnostics({ uri: textDocument.uri, diagnostics: [] });
+    return;
+  }
   try {
     const started = Date.now();
     await validateAndAnalyzeDocumentInner(textDocument, forceFull);
@@ -1621,6 +1639,235 @@ function generateReferenceEqualityQuickFix(diagnostic: Diagnostic, document: Tex
     }];
 }
 
+// Diagnostic-independent refactor: mine the member accesses a function performs on an
+// `@param {object}` parameter and scaffold a `@typedef {object}` block with dotted
+// `@property` lines (nested paths included), then point the @param at it. Offered when
+// the cursor is inside the function's JSDoc or its signature. Same-file
+// FunctionDeclarations only — the annotation being edited must govern the declaration.
+function generateTypedefFromUsageActions(
+    ast: AstNode,
+    document: TextDocument,
+    uri: string,
+    range: Range,
+    comments: Token[] | undefined,
+    kind: CodeActionKind = CodeActionKind.QuickFix,
+): CodeAction[] {
+    // No comments is fine — the scaffold mode creates the JSDoc from scratch.
+    const commentList = comments ?? [];
+    const text = document.getText();
+    const cursor = document.offsetAt(range.start);
+    const actions: CodeAction[] = [];
+
+    const pascal = (s: string): string => s.split(/[_\-\s]+/).filter(Boolean).map((w) => w[0]!.toUpperCase() + w.slice(1)).join('');
+    // Names of ALL typedefs (any type) for collision avoidance; parsed object-typedef
+    // shapes for same-shape reuse instead of minting a duplicate block.
+    const existingTypedefs = new Set<string>();
+    for (const m of text.matchAll(/@typedef\s*(?:\{[^}]*\}\s*)?(\w+)/g)) existingTypedefs.add(m[1]!);
+    const existingShapes = parseExistingTypedefs(text);
+
+    const FN_KINDS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+    // The JSDoc anchors on the construct that NAMES the function, which differs by form:
+    //   function f(req) {}         → the declaration id  (gap may hold export/async/function)
+    //   call: function(req) {}     → the property key    (gap is pure whitespace + colon)
+    //   let f = function(req) {}   → the declarator id   (gap may hold let/const/export)
+    //   obj.f = function(req) {}   → the assignment LHS  (gap is pure whitespace)
+    const candidateOf = (node: AstNode): { fn: FunctionLikeNode; anchor: number; stripRe: RegExp; owner: string } | null => {
+        if (node.type === 'FunctionDeclaration') {
+            const fn = node as FunctionDeclarationNode;
+            if (!fn.id || !fn.body) return null;
+            return { fn, anchor: fn.id.start, stripRe: /\bexport\b|\bfunction\b|\basync\b|\s+/g, owner: fn.id.name };
+        }
+        if (node.type === 'Property') {
+            const prop = node as PropertyNode;
+            if (!FN_KINDS.has(prop.value?.type ?? '') || prop.computed) return null;
+            // Collision-fallback identity: the ENCLOSING property when there is one —
+            // in dispatch-style objects the inner key names the role (`call`, `handler`)
+            // while the outer key names the method (`containers_list`), and the method
+            // is the identity worth baking into a typedef name. No role name is special.
+            const owner = (enclosingKeys.length > 0 ? enclosingKeys[enclosingKeys.length - 1] : null)
+                ?? propertyKeyName(prop) ?? '';
+            return { fn: prop.value as FunctionLikeNode, anchor: prop.key.start, stripRe: /\s+/g, owner };
+        }
+        if (node.type === 'VariableDeclarator') {
+            const decl = node as VariableDeclaratorNode;
+            if (!decl.init || !FN_KINDS.has(decl.init.type)) return null;
+            return { fn: decl.init as FunctionLikeNode, anchor: decl.id.start, stripRe: /\blet\b|\bconst\b|\bexport\b|\s+/g, owner: decl.id.name };
+        }
+        if (node.type === 'AssignmentExpression') {
+            const asg = node as AssignmentExpressionNode;
+            if (asg.operator !== '=' || !FN_KINDS.has(asg.right?.type ?? '')) return null;
+            const left = asg.left;
+            const owner = left.type === 'Identifier'
+                ? (left as IdentifierNode).name
+                : (left.type === 'MemberExpression' && (left as MemberExpressionNode).property.type === 'Identifier'
+                    ? ((left as MemberExpressionNode).property as IdentifierNode).name
+                    : '');
+            return { fn: asg.right as FunctionLikeNode, anchor: left.start, stripRe: /\s+/g, owner };
+        }
+        return null;
+    };
+
+    // Names of the object-literal properties enclosing the current node, outermost
+    // first — the context that names an rpcd method's anonymous `call` function.
+    const enclosingKeys: string[] = [];
+    // Enclosing object literals, innermost last — where an rpcd `call` finds its
+    // sibling `args` declaration to seed property types from.
+    const objStack: ObjectExpressionNode[] = [];
+
+    const visit = (node: AstNode): void => {
+        const cand = candidateOf(node);
+        if (cand && (cand.fn.params?.length ?? 0) > 0 && cand.fn.body) {
+            const { fn, anchor, stripRe, owner } = cand;
+            // Sibling type-by-example seeding: any sibling property with an object-of-
+            // literals value contributes `<sibling>.<key>` → type seeds. A seed only
+            // applies where the body actually reads that path off the parameter, so the
+            // name link is proven by the code itself (rpcd/ubus `{ args, call }` objects
+            // are the common instance, but nothing is name-special).
+            let argsSeed: Map<string, string> | null = null;
+            if (node.type === 'Property' && objStack.length > 0) {
+                for (const s of objStack[objStack.length - 1]!.properties ?? []) {
+                    if (s === node || s?.type !== 'Property') continue;
+                    const sibName = propertyKeyName(s as PropertyNode);
+                    if (!sibName || (s as PropertyNode).value?.type !== 'ObjectExpression') continue;
+                    for (const [k, v] of siblingExampleSeeds(sibName, (s as PropertyNode).value)) {
+                        if (!argsSeed) argsSeed = new Map();
+                        argsSeed.set(k, v);
+                    }
+                }
+            }
+            // Governing JSDoc: the last comment before the anchor with nothing but the
+            // form's own keywords/whitespace in the gap (`call:` gaps also hold the colon).
+            let jsdoc: Token | null = null;
+            for (const c of commentList) {
+                if (typeof c.pos !== 'number' || typeof c.end !== 'number') continue;
+                if (c.end <= anchor && (!jsdoc || c.end > jsdoc.end)) jsdoc = c;
+            }
+            const gapClean = jsdoc !== null && text.slice(jsdoc.end, anchor).replace(stripRe, '') === '';
+            // The governing JSDoc, when one exists. Without one the action still offers —
+            // it scaffolds the whole JSDoc (typedef + @param) from bare code, so it is
+            // available anywhere the JSDoc parameter machinery applies, not only where an
+            // annotation already exists.
+            const effJsdoc = jsdoc && gapClean && text.slice(jsdoc.pos, jsdoc.pos + 3) === '/**' ? jsdoc : null;
+            const inTrigger = (effJsdoc !== null && cursor >= effJsdoc.pos && cursor <= effJsdoc.end)
+                || (cursor >= Math.min(anchor, fn.start) && cursor <= fn.body.start);
+            if (inTrigger) {
+                const commentText = effJsdoc ? text.slice(effJsdoc.pos, effJsdoc.end) : '';
+                // Indent + insertion line: the JSDoc's own line when one exists, else the
+                // anchor's line (the typedef/JSDoc lands directly above `call:`/`function`).
+                const topOff = effJsdoc ? effJsdoc.pos : anchor;
+                const topPos = document.positionAt(topOff);
+                const lineStart = { line: topPos.line, character: 0 };
+                const lineText = text.slice(document.offsetAt(lineStart), topOff);
+                const indent = /^\s*$/.test(lineText) ? lineText : '';
+                for (const p of fn.params) {
+                    if (!p?.name) continue;
+                    const esc = p.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const objectParam = effJsdoc
+                        ? new RegExp(`(@param\\s*\\{\\s*)(object)(\\s*\\}\\s+\\[?${esc}\\b)`).exec(commentText)
+                        : null;
+                    // A @param already declaring a NON-object type is the author's call — skip.
+                    if (effJsdoc && !objectParam && new RegExp(`@param\\s*(\\{[^}]*\\}\\s*)?\\[?${esc}\\b`).test(commentText)) continue;
+                    const mined = mineParamShape(fn, p.name);
+                    if (!mined) continue;
+                    // Refine unknowns AND fold in declared-but-unread sibling keys —
+                    // the declaration is the request contract, not just a type oracle.
+                    const props = argsSeed ? mergeSiblingDeclaredKeys(mined, argsSeed) : mined;
+                    // A compatible typedef already in the file? Point the @param at it,
+                    // WIDENING it with any members it lacks — one shared request typedef
+                    // per dispatcher, not a near-duplicate per method. Only a genuine
+                    // type conflict (or zero overlap) warrants a fresh typedef.
+                    const plan = planTypedefExtension(existingShapes, props);
+                    const reuseName = plan?.typedef.name ?? null;
+                    let typeName = reuseName ?? (pascal(p.name) || 'Shape');
+                    if (!reuseName) {
+                        if (existingTypedefs.has(typeName)) typeName = pascal(owner) + typeName;
+                        for (let i = 2; existingTypedefs.has(typeName); i++) typeName = pascal(p.name) + i;
+                    }
+                    const edits: TextEdit[] = [];
+                    if (plan) {
+                        if (plan.missing.length > 0) {
+                            const at = document.positionAt(plan.typedef.insertOffset);
+                            edits.push(TextEdit.insert(at, plan.missing
+                                .map((mp) => `${plan.typedef.indent} * @property {${mp.type}} ${mp.path}\n`).join('')));
+                        }
+                        for (const up of plan.upgrades) {
+                            edits.push(TextEdit.replace(
+                                { start: document.positionAt(up.span.start), end: document.positionAt(up.span.end) },
+                                up.newType,
+                            ));
+                        }
+                    } else {
+                        edits.push(TextEdit.insert(lineStart, renderTypedefBlock(typeName, props, indent) + (effJsdoc ? '\n' : '')));
+                    }
+                    if (objectParam) {
+                        // Rewrite the existing `{object}` annotation in place.
+                        const objStart = effJsdoc!.pos + objectParam.index + objectParam[1]!.length;
+                        edits.push(TextEdit.replace(
+                            { start: document.positionAt(objStart), end: document.positionAt(objStart + 'object'.length) },
+                            typeName,
+                        ));
+                    } else if (effJsdoc) {
+                        // JSDoc exists but never mentions this param — append a @param line
+                        // before the closing `*/` (breaking a single-line JSDoc open first).
+                        const closeOff = effJsdoc.pos + commentText.lastIndexOf('*/');
+                        const closeLine = document.positionAt(closeOff).line;
+                        if (closeLine === topPos.line) {
+                            edits.push(TextEdit.replace(
+                                { start: document.positionAt(closeOff), end: document.positionAt(closeOff + 2) },
+                                `\n${indent} * @param {${typeName}} ${p.name}\n${indent} */`,
+                            ));
+                        } else {
+                            edits.push(TextEdit.insert({ line: closeLine, character: 0 }, `${indent} * @param {${typeName}} ${p.name}\n`));
+                        }
+                    } else {
+                        // No JSDoc at all — the typedef insert above is followed by a fresh
+                        // JSDoc declaring the param, directly above the anchor line.
+                        edits.push(TextEdit.insert(lineStart, `${indent}/**\n${indent} * @param {${typeName}} ${p.name}\n${indent} */\n`));
+                    }
+                    // Kind comes from the caller: QuickFix for the lightbulb/diagnostic
+                    // paths, RefactorRewrite when the client's Refactor menu asked
+                    // (context.only) — the same action is legitimately both.
+                    const extendNote = plan && plan.missing.length > 0
+                        ? ` (+ ${plan.missing.map((mp) => mp.path).slice(0, 3).join(', ')}${plan.missing.length > 3 ? ', …' : ''})`
+                        : '';
+                    actions.push({
+                        title: plan
+                            ? (plan.missing.length > 0
+                                ? `Extend @typedef '${reuseName}' for '${p.name}'${extendNote}`
+                                : `Reuse @typedef '${reuseName}' for '${p.name}' (same shape as its usage)`)
+                            : `Generate @typedef for '${p.name}' from its usage (${props.length} propert${props.length === 1 ? 'y' : 'ies'})`,
+                        kind,
+                        edit: { changes: { [uri]: edits } },
+                    });
+                }
+            }
+        }
+        const keyName = node.type === 'Property' && !(node as PropertyNode).computed
+            ? ((node as PropertyNode).key.type === 'Identifier'
+                ? ((node as PropertyNode).key as IdentifierNode).name
+                : String(((node as PropertyNode).key as { value?: unknown }).value ?? ''))
+            : null;
+        if (keyName) enclosingKeys.push(keyName);
+        const isObj = node.type === 'ObjectExpression';
+        if (isObj) objStack.push(node as ObjectExpressionNode);
+        for (const key of Object.keys(node)) {
+            if (key === 'leadingJsDoc' || key.startsWith('_')) continue;
+            const value = (node as unknown as Record<string, unknown>)[key];
+            if (Array.isArray(value)) {
+                for (const item of value) {
+                    if (item && typeof item === 'object' && typeof (item as AstNode).type === 'string') visit(item as AstNode);
+                }
+            } else if (value && typeof value === 'object' && typeof (value as AstNode).type === 'string') {
+                visit(value as AstNode);
+            }
+        }
+        if (isObj) objStack.pop();
+        if (keyName) enclosingKeys.pop();
+    };
+    visit(ast);
+    return actions;
+}
+
 connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
     const document = documents.get(params.textDocument.uri);
     if (!document) {
@@ -2061,6 +2308,20 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                 }
             }
 
+            // Typedef-from-usage as a DIAGNOSTIC-attached quick fix, so the chain the
+            // author actually walks stays lit: UC7003's fix writes `@param {object}`,
+            // which raises UC7009 on the annotation, whose preferred fix generates the
+            // typedef. Both codes anchor inside the trigger zone the generator checks.
+            if ((diagnostic.code === 'UC7003' || diagnostic.code === UcodeErrorCode.JSDOC_BARE_OBJECT_PARAM) && ast) {
+                const targetParam = diagData(diagnostic).typedefFromUsage?.paramName;
+                for (const a of generateTypedefFromUsageActions(ast, document, params.textDocument.uri, diagnostic.range, cacheEntry?.comments)) {
+                    if (targetParam && !a.title.includes(`'${targetParam}'`)) continue;
+                    a.diagnostics = [diagnostic];
+                    if (diagnostic.code === UcodeErrorCode.JSDOC_BARE_OBJECT_PARAM) a.isPreferred = true;
+                    codeActions.push(a);
+                }
+            }
+
             // Add JSDoc annotation quick fix.
             //   - UC7003 fires this directly on the function declaration.
             //   - incompatible-function-argument / nullable-argument also fire it when
@@ -2131,6 +2392,14 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
     // mirrored install root (share/ucode | lib/ucode) into the conventional dotted form.
     if (ast) {
         codeActions.push(...generateRelativeToDottedImportActions(ast, document, params.textDocument.uri, params.range));
+        // Serve the kind the client's menu asked for: the Refactor menu requests
+        // `only: [refactor…]` and displays nothing else, the lightbulb requests
+        // unfiltered and groups quickfixes first.
+        const wantsRefactor = params.context.only?.some((k) => String(k).startsWith('refactor')) ?? false;
+        codeActions.push(...generateTypedefFromUsageActions(
+            ast, document, params.textDocument.uri, params.range, cacheEntry?.comments,
+            wantsRefactor ? CodeActionKind.RefactorRewrite : CodeActionKind.QuickFix,
+        ));
     }
 
     // Deduplicate actions with the same title — overlapping diagnostics

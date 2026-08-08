@@ -51,9 +51,21 @@ describe('module-source hover', () => {
     fs.writeFileSync(path.join(dir, 'Makefile'), 'LUCI_TITLE:=X\ninclude $(TOPDIR)/feeds/luci/luci.mk\n');
     fs.mkdirSync(path.join(dir, 'ucode/controller'), { recursive: true });
     const uri = path.join(dir, 'ucode/controller/c.uc');
-    const v = await hoverAt("import { x } from 'luci.sys';\nprint(x);\n", uri, "'luci.sys'");
+    // Not a luci-base module name — luci-base names resolve to the bundled copy (below).
+    const v = await hoverAt("import { x } from 'luci.podman';\nprint(x);\n", uri, "'luci.podman'");
     expect(v).toContain('/usr/share/ucode/luci/');
     expect(v).toContain('installed LuCI package');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a luci-base module in a standalone package hovers the bundled reference with exports', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'msh-'));
+    fs.writeFileSync(path.join(dir, 'Makefile'), 'LUCI_TITLE:=X\ninclude $(TOPDIR)/feeds/luci/luci.mk\n');
+    fs.mkdirSync(path.join(dir, 'ucode/controller'), { recursive: true });
+    const uri = path.join(dir, 'ucode/controller/c.uc');
+    const v = await hoverAt("import { init_enabled } from 'luci.sys';\nprint(init_enabled);\n", uri, "'luci.sys'");
+    expect(v).toContain('bundled reference');
+    expect(v).toContain('`init_enabled()`');
     fs.rmSync(dir, { recursive: true, force: true });
   });
 

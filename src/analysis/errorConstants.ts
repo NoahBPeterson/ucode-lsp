@@ -92,6 +92,7 @@ export enum UcodeErrorCode {
   JSDOC_DUPLICATE_PARAM = 'UC7006',   // two @param tags name the same parameter — the last type silently wins
   JSDOC_MALFORMED_TYPEDEF = 'UC7007',  // @typedef with no name, a duplicate @property, or an orphan @property (no @typedef)
   JSDOC_MISSING_BRACES = 'UC7008',     // `@param string x` — the type must be wrapped in braces: `@param {string} x`
+  JSDOC_BARE_OBJECT_PARAM = 'UC7009',  // `@param {object} x` on a function that reads x's members — a @typedef can capture the shape (quick fix generates it)
 
   // Robustness / defensive-coding hints (8000-8999)
   UNGUARDED_THROWING_CALL = 'UC8001', // call to a throwing builtin (json/loadfile/…) outside try/catch

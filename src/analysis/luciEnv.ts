@@ -311,18 +311,31 @@ function editDistanceAtMost(a: string, b: string, maxDist: number): number | nul
  * misspelling of the shipped one — the device-provided-module assumption doesn't apply
  * to names the repo itself owns. Returns the full suggested name or null.
  */
-export function suggestLuciModuleName(importerPath: string, moduleName: string): string | null {
+export function suggestLuciModuleName(importerPath: string, moduleName: string): { name: string; fromTree: boolean } | null {
   if (!moduleName.startsWith('luci.')) return null;
   const ws = findLuciWorkspace(importerPath);
   if (!ws) return null;
   const target = moduleName.slice('luci.'.length);
   let best: { name: string; d: number } | null = null;
-  for (const name of listLuciShippedModuleNames(ws)) {
+  // Tree-shipped names plus the bundled luci-base module names: a standalone
+  // package typo'ing `luci.sy` deserves the `luci.sys` suggestion even though
+  // its own tree ships nothing. `fromTree` tells the caller which story to cite.
+  const treeNames = new Set(listLuciShippedModuleNames(ws));
+  const candidates = new Set(treeNames);
+  const bundled = getBundledLuciBaseRoot();
+  if (bundled) {
+    try {
+      for (const e of fs.readdirSync(bundled)) {
+        if (e.endsWith('.uc')) candidates.add(e.slice(0, -3));
+      }
+    } catch { /* resources missing — suggestions just come from the tree */ }
+  }
+  for (const name of candidates) {
     if (name === target) continue; // identical would have resolved
     const d = editDistanceAtMost(target, name, 2);
     if (d !== null && (best === null || d < best.d)) best = { name, d };
   }
-  return best ? `luci.${best.name}` : null;
+  return best ? { name: `luci.${best.name}`, fromTree: treeNames.has(best.name) } : null;
 }
 
 /**
@@ -372,7 +385,41 @@ export function resolveLuciModulePath(importerPath: string, moduleName: string):
     const cand = path.join(dir, `${rest}.uc`);
     if (isFile(cand)) return cand;
   }
+  // Standalone packages import luci-base modules from the DEVICE at runtime — nothing
+  // on disk describes them. Fall back to the bundled reference copy (resources/
+  // luci-base) so their exports resolve, type, and validate; a tree that ships the
+  // real file (full checkout, deployed rootfs) always won above.
+  const bundled = getBundledLuciBaseRoot();
+  if (bundled) {
+    const cand = path.join(bundled, `${rest}.uc`);
+    if (isFile(cand)) return cand;
+  }
   return null;
+}
+
+/** Root of the bundled luci-base reference copy shipped with the extension, or null
+ *  when the resources directory is missing (unexpected — packaging error). Resolved
+ *  once relative to the running code: dist/server.js sits beside `../resources`;
+ *  the TS sources (test runs) sit two levels above it. */
+let bundledLuciBaseRoot: string | null | undefined;
+function getBundledLuciBaseRoot(): string | null {
+  if (bundledLuciBaseRoot !== undefined) return bundledLuciBaseRoot;
+  bundledLuciBaseRoot = null;
+  for (const cand of [
+    path.resolve(__dirname, '..', 'resources', 'luci-base'),
+    path.resolve(__dirname, '..', '..', 'resources', 'luci-base'),
+  ]) {
+    if (isFile(path.join(cand, 'dispatcher.uc'))) { bundledLuciBaseRoot = cand; break; }
+  }
+  return bundledLuciBaseRoot;
+}
+
+/** Whether `filePath` lives inside the bundled luci-base reference copy — consumers
+ *  present these as "bundled reference (device-provided at runtime)" rather than as
+ *  ordinary workspace files. */
+export function isBundledLuciPath(filePath: string): boolean {
+  const bundled = getBundledLuciBaseRoot();
+  return bundled !== null && (filePath === bundled || filePath.startsWith(bundled + path.sep));
 }
 
 /**
@@ -389,6 +436,13 @@ export function resolveLuciTemplatePath(includerPath: string, name: string): str
   if (!ws) return null;
   for (const root of getLuciTemplateRoots(ws)) {
     const cand = path.join(root, `${name}.ut`);
+    if (isFile(cand)) return cand;
+  }
+  // Base templates (header, footer, sysauth, view, …) come from the DEVICE's
+  // luci-base on a standalone package — resolve against the bundled reference copy.
+  const bundled = getBundledLuciBaseRoot();
+  if (bundled) {
+    const cand = path.join(bundled, 'template', `${name}.ut`);
     if (isFile(cand)) return cand;
   }
   return null;

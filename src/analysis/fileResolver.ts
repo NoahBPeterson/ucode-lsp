@@ -3,7 +3,7 @@ import { detectTemplateModeForFile, bridgeTemplateTokens } from '../lexer/templa
 import { UcodeParser } from '../parser';
 import { type FunctionDeclarationNode, type AstNode, type ExportDefaultDeclarationNode, type ExportNamedDeclarationNode, type IdentifierNode } from '../ast/nodes';
 import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
-import { UcodeType, type UcodeDataType, type SingleType, createUnionType, isUnionType, isObjectType, isArrayType, typeToString, type ParamInfo } from './symbolTable';
+import { UcodeType, type UcodeDataType, type SingleType, createUnionType, isUnionType, isObjectType, isArrayType, typeToString, widenWithNull, type ParamInfo } from './symbolTable';
 import { parseJsDocComment, resolveTypeExpression } from './jsdocParser';
 import { getOpenDocumentContent } from './openDocuments';
 import { resolveLuciTemplatePath, resolveLuciModulePath } from './luciEnv';
@@ -2451,20 +2451,32 @@ export class FileResolver {
         const leadingJsDoc = (funcNode as any).leadingJsDoc;
 
         const jsdocTypes = new Map<string, UcodeDataType>();
+        const jsdocOptional = new Set<string>();
         if (leadingJsDoc?.value) {
             const parsed = parseJsDocComment(leadingJsDoc.value);
             for (const tag of parsed.tags) {
                 if (tag.tag !== 'param' || !tag.name) continue;
+                // `[name]` bracket optionality, exactly as the in-file capture threads it
+                // into ParamInfo.optional — dropping it here made every cross-file call
+                // that omits such a param a UC2003 false positive. (`{T=}`/`{?T}`/`{T?}`
+                // arrive as T|null from resolveTypeExpression and need no flag.)
+                if (tag.optional) jsdocOptional.add(tag.name);
                 const resolved = resolveTypeExpression(tag.typeExpression);
                 if (resolved !== null) jsdocTypes.set(tag.name, resolved);
             }
         }
 
-        const result: ParamInfo[] = (params as { name: string }[]).map((p) => ({
-            name: p.name,
-            type: jsdocTypes.get(p.name) ?? (UcodeType.UNKNOWN as UcodeDataType),
-            isRest: false,
-        }));
+        const result: ParamInfo[] = (params as { name: string }[]).map((p) => {
+            const declared = jsdocTypes.get(p.name) ?? (UcodeType.UNKNOWN as UcodeDataType);
+            const optional = jsdocOptional.has(p.name);
+            return {
+                name: p.name,
+                // An omitted optional arg IS null at runtime — same widening as in-file.
+                type: optional && declared !== UcodeType.UNKNOWN ? widenWithNull(declared) : declared,
+                isRest: false,
+                ...(optional ? { optional: true } : {}),
+            };
+        });
         if (restParam) {
             result.push({ name: restParam.name, type: UcodeType.ARRAY as UcodeDataType, isRest: true });
         }

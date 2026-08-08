@@ -23,6 +23,7 @@
  */
 
 import { UcodeType } from '../symbolTable';
+import { splitTopLevel } from '../typeStringUtils';
 
 /**
  * Modules whose C implementation uses `args_get_named()` — every function accepts
@@ -65,7 +66,7 @@ const ATOMIC: Readonly<Record<string, readonly UcodeType[]>> = {
  */
 export function moduleParamAllowedTypes(typeStr: string | undefined): UcodeType[] | null {
   if (!typeStr) return null;
-  const parts = typeStr.split('|').map(s => s.trim().toLowerCase()).filter(Boolean);
+  const parts = splitTopLevel(typeStr, '|').map(s => s.trim().toLowerCase()).filter(Boolean);
   if (parts.length === 0) return null;
 
   const out = new Set<UcodeType>();

@@ -68,21 +68,8 @@ function readDescription(s: string): string | undefined {
   return t.length ? t : undefined;
 }
 
-/** Split `s` on `sep` at bracket/brace/angle/paren depth 0 (so `{a: string, b: int}`
- *  and `array<a|b>` don't split on inner commas/pipes). */
-function splitTopLevel(s: string, sep: string): string[] {
-  const out: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i]!;
-    if (ch === '{' || ch === '[' || ch === '(' || ch === '<') depth++;
-    else if (ch === '}' || ch === ']' || ch === ')' || ch === '>') depth--;
-    else if (ch === sep && depth === 0) { out.push(s.slice(start, i)); start = i + 1; }
-  }
-  out.push(s.slice(start));
-  return out;
-}
+import { splitTopLevel } from './typeStringUtils';
+export { splitTopLevel };
 
 /** Scan a JSDoc body (lines already `*`-stripped and joined) into line-anchored tags.
  *  Each entry is the tag word and the raw text up to the next line-anchored `@tag`. */
@@ -299,33 +286,44 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
     return widenWithNull(baseType);
   }
 
-  // Handle union types: type1|type2
+  // Inline object shape `{ a: string }` — valid as a standalone type and as a union
+  // member (`{header_buf:string}|null`). The type system's ObjectType carries no
+  // property map, so the shape collapses to `object` here; per-property detail is
+  // preserved only on the dedicated @param symbol path (parseInlineObjectShape there).
+  if (typeExpr.startsWith('{') && typeExpr.endsWith('}')) {
+    return parseInlineObjectShape(typeExpr) !== null ? (UcodeType.OBJECT as UcodeDataType) : null;
+  }
+
+  // Handle union types: type1|type2 — split at TOP LEVEL only, so a `|` inside an
+  // inline shape or `array<…>` doesn't shred the member expression.
   if (typeExpr.includes('|')) {
-    const parts = typeExpr.split('|').map(p => p.trim()).filter(Boolean);
-    const types: SingleType[] = [];
-    for (const part of parts) {
-      const resolved = resolveTypeExpression(part);
-      if (resolved === null) return null;
-      if (typeof resolved === 'string') {
-        types.push(resolved as UcodeType);
-      } else if (typeof resolved === 'object' && resolved.type === UcodeType.UNION) {
-        types.push(...(resolved as any).types);
-      } else if (isObjectType(resolved) || isArrayType(resolved)) {
-        // ObjectType or ArrayType can be used directly as SingleType
-        types.push(resolved);
-      } else {
-        // Complex type in union (module type etc.) — flatten to base
-        types.push(resolved.type);
+    const parts = splitTopLevel(typeExpr, '|').map(p => p.trim()).filter(Boolean);
+    if (parts.length > 1) {
+      const types: SingleType[] = [];
+      for (const part of parts) {
+        const resolved = resolveTypeExpression(part);
+        if (resolved === null) return null;
+        if (typeof resolved === 'string') {
+          types.push(resolved as UcodeType);
+        } else if (typeof resolved === 'object' && resolved.type === UcodeType.UNION) {
+          types.push(...(resolved as any).types);
+        } else if (isObjectType(resolved) || isArrayType(resolved)) {
+          // ObjectType or ArrayType can be used directly as SingleType
+          types.push(resolved);
+        } else {
+          // Complex type in union (module type etc.) — flatten to base
+          types.push(resolved.type);
+        }
       }
+      return createUnionType(types);
     }
-    return createUnionType(types);
   }
 
   // Element-typed arrays: `array<T>` (matches the LSP's own display), `Array<T>`,
   // or the JSDoc/TS `T[]` form → ArrayType(T). The element type is resolved
-  // recursively (so `string[][]` and `array<fs.file>` work); an unresolved element
-  // falls back to `unknown`. (Unions inside `<>` are not split here — `array<a|b>`
-  // is an unsupported edge, since the `|` handler above runs first.)
+  // recursively — `string[][]`, `array<fs.file>`, and (since the union handler went
+  // depth-aware) `array<a|b>` with a union element all work; an unresolved element
+  // falls back to `unknown`.
   const angleMatch = typeExpr.match(/^[Aa]rray<(.+)>$/);
   const bracketMatch = typeExpr.match(/^(.+)\[\]$/);
   const elementExpr = angleMatch ? angleMatch[1] : (bracketMatch ? bracketMatch[1] : null);

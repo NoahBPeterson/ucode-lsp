@@ -507,6 +507,41 @@ export class TypeChecker {
     this.errors = [];
     this.warnings = [];
     this.builtinValidator.resetErrors();
+    this.drainedTcErrors = 0;
+    this.drainedTcWarnings = 0;
+    this.drainedBvErrors = 0;
+    this.drainedBvWarnings = 0;
+  }
+
+  // High-water marks for drainNewDiagnostics(): entries below a mark were already
+  // handed to the analyzer. Clamped on read because checkNodeQuietly truncates the
+  // live arrays and setErrors() replaces them wholesale.
+  private drainedTcErrors = 0;
+  private drainedTcWarnings = 0;
+  private drainedBvErrors = 0;
+  private drainedBvWarnings = 0;
+
+  /**
+   * Errors/warnings emitted since the previous drain. The analyzer forwards these
+   * into its diagnostics at each expression visit; draining (instead of returning
+   * the cumulative arrays like getResult) keeps that forwarding linear — the old
+   * cumulative form re-forwarded the whole history at every visit, which on a
+   * 315KB file meant 14.8M addDiagnostic calls for 933 surviving diagnostics.
+   */
+  drainNewDiagnostics(): { errors: TypeError[]; warnings: TypeWarning[] } {
+    const bvErrors = this.builtinValidator.getErrors();
+    const bvWarnings = this.builtinValidator.getWarnings();
+    this.drainedTcErrors = Math.min(this.drainedTcErrors, this.errors.length);
+    this.drainedTcWarnings = Math.min(this.drainedTcWarnings, this.warnings.length);
+    this.drainedBvErrors = Math.min(this.drainedBvErrors, bvErrors.length);
+    this.drainedBvWarnings = Math.min(this.drainedBvWarnings, bvWarnings.length);
+    const errors = [...this.errors.slice(this.drainedTcErrors), ...bvErrors.slice(this.drainedBvErrors)];
+    const warnings = [...this.warnings.slice(this.drainedTcWarnings), ...bvWarnings.slice(this.drainedBvWarnings)];
+    this.drainedTcErrors = this.errors.length;
+    this.drainedTcWarnings = this.warnings.length;
+    this.drainedBvErrors = bvErrors.length;
+    this.drainedBvWarnings = bvWarnings.length;
+    return { errors, warnings };
   }
 
   /**

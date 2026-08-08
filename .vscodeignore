@@ -62,3 +62,4 @@ lucihttp/**
 uci/**
 wwand/**
 luci-app-podman/**
+resources/**

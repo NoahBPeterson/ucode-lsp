@@ -41,6 +41,7 @@ import { Either, Option } from 'effect';
 import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType, resolveReturnObjectType, validateImport } from './moduleDispatch';
 import { NETIFD_DAEMON_ONLY_MEMBERS } from './netifdTypes';
 import { isLuciEnvFile, findLuciWorkspace, hasLuciLuaViewFallback, suggestLuciModuleName } from './luciEnv';
+import { mineParamShape } from './typedefFromUsage';
 import { LUCI_ENV_GLOBALS, LUCI_TEMPLATE_RENDER_COMPAT_NAMES } from './luciTypes';
 import { parseDisableDirectives, directiveCovers, type DisableDirective } from './disableDirectives';
 
@@ -137,6 +138,12 @@ export class SemanticAnalyzer extends BaseVisitor {
   private symbolTable: SymbolTable;
   private typeChecker: TypeChecker;
   private diagnostics: Diagnostic[] = [];
+  /** Offset-keyed identity of every diagnostic pushed this analysis — the O(1)
+   *  duplicate filter behind addDiagnostic/addDiagnosticErrorCode. A pass that removes
+   *  diagnostics it intends to RE-EMIT (UC4001 phase 3) must delete their keys too;
+   *  end-of-analysis filters that only ever remove (disable directives, flow filter)
+   *  leave keys in place. */
+  private seenDiagnosticKeys = new Set<string>();
   private textDocument: TextDocument;
   private options: SemanticAnalysisOptions;
   private functionScopes: number[] = []; // Track function scope levels
@@ -230,7 +237,15 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
     for (const d of clean.diagnostics) {
       const key = `${d.range.start.line}:${d.range.start.character}:${d.code}:${d.message}`;
-      if (!fresh.has(key)) this.diagnostics.push(d);
+      if (!fresh.has(key)) {
+        this.diagnostics.push(d);
+        // Register the replayed entry with the O(1) duplicate filter: post-visit passes
+        // (e.g. resolvePendingUndefinedRefs) re-derive some of these and must dedup
+        // against the replay, exactly as the old whole-array scan did.
+        this.seenDiagnosticKeys.add(
+          this.diagKey(d.message, d.severity, this.textDocument.offsetAt(d.range.start), this.textDocument.offsetAt(d.range.end))
+        );
+      }
     }
   }
   private truthinessDepth = 0; // Track when we're inside a truthiness context (if test, !, ternary test)
@@ -443,6 +458,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   analyze(ast: AstNode): SemanticAnalysisResult {
     this.diagnostics = [];
+    this.seenDiagnosticKeys.clear();
     this.typeChecker.resetErrors();
     this.functionScopes = [];
     this.loopScopes = [];
@@ -4051,12 +4067,13 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (suggestion) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.MODULE_NOT_FOUND,
-            `Cannot find module '${modulePath}' - did you mean '${suggestion}'? (this tree ships it)`,
+            `Cannot find module '${modulePath}' - did you mean '${suggestion.name}'? `
+              + (suggestion.fromTree ? '(this tree ships it)' : '(a luci-base runtime module)'),
             sourceNode.start,
             sourceNode.end,
             DiagnosticSeverity.Warning,
             // → quick fix: rewrite the module string in place.
-            { luciModuleSuggestion: { replaceWith: suggestion } }
+            { luciModuleSuggestion: { replaceWith: suggestion.name } }
           );
         }
       }
@@ -4270,7 +4287,8 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   private applyJsDocToParams(
     jsDocNode: JsDocCommentNode | undefined,
-    params: IdentifierNode[]
+    params: IdentifierNode[],
+    fnNode?: AstNode
   ): void {
     if (!jsDocNode) {
       // No JSDoc — declare all params as UNKNOWN
@@ -4307,6 +4325,33 @@ export class SemanticAnalyzer extends BaseVisitor {
         );
       }
       seenParamNames.add(tag.name);
+    }
+
+    // UC7009: `@param {object} x` on a function whose body reads specific members of x.
+    // The bare `object` type checks nothing; a @typedef would name and type the shape —
+    // and the quick fix generates it from that very usage. Information severity, not
+    // Hint: VS Code hides Hints from the Problems panel and renders them as barely
+    // visible dots, which buried this exact suggestion. Anchored on the @param tag
+    // itself so the lightbulb appears where the author just wrote (or quick-fixed in)
+    // the annotation.
+    if (fnNode) {
+      const raw = this.textDocument.getText().substring(jsDocNode.start, jsDocNode.end);
+      const actualNames = new Set(params.map((p) => p.name));
+      for (const tag of paramTags) {
+        if (!tag.name || !actualNames.has(tag.name) || tag.typeExpression?.trim() !== 'object') continue;
+        if (!mineParamShape(fnNode, tag.name)) continue;
+        const esc = tag.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const m = new RegExp(`@param\\s*\\{\\s*object\\s*\\}\\s+\\[?${esc}\\b\\]?`).exec(raw);
+        if (!m) continue;
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.JSDOC_BARE_OBJECT_PARAM,
+          `Parameter '${tag.name}' is typed as a bare object, but this function reads specific members from it. A @typedef would name and type that shape.`,
+          jsDocNode.start + m.index,
+          jsDocNode.start + m.index + m[0].length,
+          DiagnosticSeverity.Information,
+          { typedefFromUsage: { paramName: tag.name } }
+        );
+      }
     }
 
     const jsdocParams = new Map<string, JsDocParamInfo>();
@@ -4649,7 +4694,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.functionScopes.push(this.symbolTable.getCurrentScope());
 
       // Declare parameters (with JSDoc type annotations if present)
-      this.applyJsDocToParams(node.leadingJsDoc, node.params);
+      this.applyJsDocToParams(node.leadingJsDoc, node.params, node);
 
       // Emit diagnostic for unknown-typed params (strict mode only)
       if (node.params.length > 0) {
@@ -4814,13 +4859,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     // through the type checker and surface its diagnostics.
     if (this.options.enableTypeChecking) {
       this.typeChecker.checkNode(node);
-      const result = this.typeChecker.getResult();
-      for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
-      }
-      for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
-      }
+      this.forwardTypeCheckerDiagnostics();
     }
   }
 
@@ -5133,7 +5172,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           this.symbolTable.declare(param.name, SymbolType.PARAMETER, this.callbackParamTypeAt(i), param);
         }
       } else {
-        this.applyJsDocToParams(node.leadingJsDoc, node.params);
+        this.applyJsDocToParams(node.leadingJsDoc, node.params, node);
       }
 
       // UC7003 for method-style function expressions (those with a derivable
@@ -5249,7 +5288,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Declare parameters — JSDoc takes priority over callback inference
       if (node.leadingJsDoc) {
-        this.applyJsDocToParams(node.leadingJsDoc, node.params);
+        this.applyJsDocToParams(node.leadingJsDoc, node.params, node);
       } else {
         // For callback parameters (filter/map/sort/replace/uci.foreach), infer param types
         // from the enclosing call context.
@@ -5506,17 +5545,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // Type check the member expression for invalid array/string methods
         this.typeChecker.checkNode(node);
       }
-      const result = this.typeChecker.getResult();
-      
-      // Add type errors to diagnostics
-      for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
-      }
-      
-      // Add type warnings to diagnostics
-      for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
-      }
+      this.forwardTypeCheckerDiagnostics();
     }
     
     // Validate builtin module method calls
@@ -5894,17 +5923,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       this.typeChecker.setTruthinessDepth(this.truthinessDepth);
       this.typeChecker.checkNode(node);
       this.typeChecker.setTruthinessDepth(0);
-      const result = this.typeChecker.getResult();
-
-      // Add type errors to diagnostics
-      for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
-      }
-
-      // Add type warnings to diagnostics
-      for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
-      }
+      this.forwardTypeCheckerDiagnostics();
     }
 
     // Visit the callee with special context to prevent "Undefined variable" for function calls
@@ -6256,17 +6275,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // RHS fully checked against the OLD property types — now record the new ones.
       for (const write of deferredPropertyWrites) write();
 
-      const result = this.typeChecker.getResult();
-      
-      // Add type errors to diagnostics
-      for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
-      }
-      
-      // Add type warnings to diagnostics
-      for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
-      }
+      this.forwardTypeCheckerDiagnostics();
 
       // `**=` gets the same INFO note as binary `**` (UC2014). checkNode isn't
       // called on the assignment node, so compute the compound result explicitly.
@@ -6597,15 +6606,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       this.typeChecker.setTruthinessDepth(this.truthinessDepth);
       this.typeChecker.checkNode(node);
       this.typeChecker.setTruthinessDepth(0);
-      const result = this.typeChecker.getResult();
-
-      for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
-      }
-
-      for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
-      }
+      this.forwardTypeCheckerDiagnostics();
     }
   }
 
@@ -6656,17 +6657,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       this.typeChecker.setTruthinessDepth(effectiveTruthiness);
       this.typeChecker.checkNode(node);
       this.typeChecker.setTruthinessDepth(0);
-      const result = this.typeChecker.getResult();
-
-      // Add type errors to diagnostics
-      for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
-      }
-
-      // Add type warnings to diagnostics
-      for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
-      }
+      this.forwardTypeCheckerDiagnostics();
 
       // `**` can't warn (it's a valid operator for any operand), but its type is
       // genuinely non-obvious — a negative exponent makes it a double. Surface an
@@ -6853,17 +6844,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (this.options.enableTypeChecking) {
       // Type check the if statement AFTER visiting to ensure all local variables are declared
       this.typeChecker.checkNode(node);
-      const result = this.typeChecker.getResult();
-
-      // Add type errors to diagnostics
-      for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
-      }
-
-      // Add type warnings to diagnostics
-      for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
-      }
+      this.forwardTypeCheckerDiagnostics();
     }
   }
 
@@ -7296,15 +7277,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // Running checkNode on the whole switch would produce spurious warnings
       // for variables not yet declared in the symbol table.
       this.typeChecker.checkNode(node.discriminant);
-      const result = this.typeChecker.getResult();
-
-      for (const error of result.errors) {
-        this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
-      }
-
-      for (const warning of result.warnings) {
-        this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
-      }
+      this.forwardTypeCheckerDiagnostics();
     }
 
     // Visit the discriminant + each case under a may-have-run frame: whether a
@@ -8420,6 +8393,28 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     }
   }
 
+  /** Identity key of a diagnostic for the O(1) duplicate filter. Numeric fields first,
+   *  colon-separated, message LAST — the message may contain anything, so trailing it
+   *  keeps the key unambiguous without needing a reserved separator. */
+  private diagKey(message: string, severity: DiagnosticSeverity | undefined, start: number, end: number): string {
+    return severity + ':' + start + ':' + end + ':' + message;
+  }
+
+  /** Forward the type checker's diagnostics emitted since the previous call into
+   *  this.diagnostics. Drain-based: each entry is forwarded exactly once. (The old
+   *  form re-forwarded the checker's entire cumulative history at every expression
+   *  visit and leaned on dedup to discard the repeats — quadratic, 14.8M calls on
+   *  a 315KB file.) */
+  private forwardTypeCheckerDiagnostics(): void {
+    const fresh = this.typeChecker.drainNewDiagnostics();
+    for (const error of fresh.errors) {
+      this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
+    }
+    for (const warning of fresh.warnings) {
+      this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
+    }
+  }
+
   private addDiagnosticErrorCode(
     errorCode: UcodeErrorCode,
     message: string,
@@ -8444,21 +8439,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
     }
 
-    // Check for duplicate diagnostics to prevent multiple identical errors
-    const startPos = this.textDocument.positionAt(start);
-    // Parser node.end is exclusive (points past the last char) — same as LSP ranges
-    const endPos = this.textDocument.positionAt(end);
-
-    const isDuplicate = this.diagnostics.some(existing =>
-      existing.message === message &&
-      existing.severity === severity &&
-      existing.range.start.line === startPos.line &&
-      existing.range.start.character === startPos.character &&
-      existing.range.end.line === endPos.line &&
-      existing.range.end.character === endPos.character
-    );
-
-    if (!isDuplicate) {
+    // Duplicate check BEFORE computing positions: keyed on offsets (positionAt is
+    // injective for in-range offsets, so this equals the old range comparison) and
+    // O(1) — the old .some() scan over all prior diagnostics, run per emission, was
+    // a second quadratic on large files.
+    const dupKey = this.diagKey(message, severity, start, end);
+    if (!this.seenDiagnosticKeys.has(dupKey)) {
+      this.seenDiagnosticKeys.add(dupKey);
+      const startPos = this.textDocument.positionAt(start);
+      // Parser node.end is exclusive (points past the last char) — same as LSP ranges
+      const endPos = this.textDocument.positionAt(end);
       const diagnostic: Diagnostic = {
         severity: severity,
         range: {
@@ -8575,21 +8565,16 @@ private addDiagnostic(
       }
     }
 
-    // Check for duplicate diagnostics to prevent multiple identical errors
-    const startPos = this.textDocument.positionAt(start);
-    // Parser node.end is exclusive (points past the last char) — same as LSP ranges
-    const endPos = this.textDocument.positionAt(end);
-    
-    const isDuplicate = this.diagnostics.some(existing => 
-      existing.message === message &&
-      existing.severity === finalSeverity &&
-      existing.range.start.line === startPos.line &&
-      existing.range.start.character === startPos.character &&
-      existing.range.end.line === endPos.line &&
-      existing.range.end.character === endPos.character
-    );
-    
-    if (!isDuplicate) {
+    // Duplicate check BEFORE computing positions: keyed on offsets (positionAt is
+    // injective for in-range offsets, so this equals the old range comparison) and
+    // O(1) — the old .some() scan over all prior diagnostics, run per emission, was
+    // a second quadratic on large files.
+    const dupKey = this.diagKey(message, finalSeverity, start, end);
+    if (!this.seenDiagnosticKeys.has(dupKey)) {
+      this.seenDiagnosticKeys.add(dupKey);
+      const startPos = this.textDocument.positionAt(start);
+      // Parser node.end is exclusive (points past the last char) — same as LSP ranges
+      const endPos = this.textDocument.positionAt(end);
       const diagnostic: Diagnostic = {
         severity: finalSeverity,
         range: {
@@ -9876,10 +9861,16 @@ private addDiagnostic(
 
       // Phase 3: Re-emit diagnostics with final terminator set if it grew
       if (terminators.size > 2) {
-        // Clear previously emitted UC4001 diagnostics so we can re-emit with updated info
-        this.diagnostics = this.diagnostics.filter(
-          d => (d as any).code !== UcodeErrorCode.UNREACHABLE_CODE
-        );
+        // Clear previously emitted UC4001 diagnostics so we can re-emit with updated info.
+        // Their keys must leave the duplicate filter too, or the re-emission below would
+        // be swallowed as a duplicate of the entry just removed.
+        this.diagnostics = this.diagnostics.filter(d => {
+          if ((d as any).code !== UcodeErrorCode.UNREACHABLE_CODE) return true;
+          this.seenDiagnosticKeys.delete(this.diagKey(
+            d.message, d.severity, this.textDocument.offsetAt(d.range.start), this.textDocument.offsetAt(d.range.end)
+          ));
+          return false;
+        });
         // Re-emit top-level
         if (this.cfgQueryEngine && this.cfg) {
           this.emitUnreachableDiagnostics(this.cfgQueryEngine, this.cfg);

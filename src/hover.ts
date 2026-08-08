@@ -6,6 +6,7 @@ import {
     MarkupKind
 } from 'vscode-languageserver/node';
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import { splitTopLevel } from './analysis/typeStringUtils';
 import { UcodeLexer, TokenType, isKeyword, isMemberAccessDot, decodeEscape, type Token } from './lexer';
 import type {
     AstNode, PropertyNode, ImportDeclarationNode, ImportSpecifierNode,
@@ -16,7 +17,7 @@ import { type SemanticAnalysisResult, SymbolType, type Symbol as UcodeSymbol } f
 import { typeToString, type UcodeDataType, UcodeType, effectiveSymbolType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt, isNeverType } from './analysis/symbolTable';
 import { exceptionTypeRegistry, exceptionObjectType } from './analysis/exceptionTypes';
 import { VERSION_MODULES } from './analysis/ucodeVersions';
-import { findLuciWorkspace } from './analysis/luciEnv';
+import { findLuciWorkspace, isBundledLuciPath } from './analysis/luciEnv';
 import * as path from 'path';
 import { regexTypeRegistry } from './analysis/regexTypes';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
@@ -337,7 +338,7 @@ function resolveVariableTypeForHoverRaw(
 /** Extract a known object type name from a method/property returnType string,
  *  e.g. "fs.stat.dev" or "fs.stat.dev | null" → "fs.stat.dev". */
 function knownObjectTypeFromReturn(returnType: string): KnownObjectType | null {
-    for (const part of returnType.split('|').map(s => s.trim())) {
+    for (const part of splitTopLevel(returnType, '|').map(s => s.trim())) {
         if (isKnownObjectType(part)) return part;
     }
     return null;
@@ -863,9 +864,15 @@ function moduleSourceHover(name: string, isInclude: boolean, documentUri: string
     if (resolved && resolved.startsWith('file://')) {
         const filePath = decodeURIComponent(resolved.slice(7));
         const docPath = documentUri.startsWith('file://') ? decodeURIComponent(documentUri.slice(7)) : null;
-        const shown = docPath ? path.relative(path.dirname(docPath), filePath) : filePath;
+        // A path into the bundled luci-base reference copy is presented as what it
+        // stands for — the device's installed luci-base — not as a workspace file
+        // (the relative path would be a meaningless trek into the extension).
+        const bundled = isBundledLuciPath(filePath);
+        const shown = bundled
+            ? `luci-base \`${path.basename(filePath)}\` (bundled reference — provided by the device's installed LuCI at runtime)`
+            : `\`${docPath ? path.relative(path.dirname(docPath), filePath) : filePath}\``;
         if (isInclude || filePath.endsWith('.ut')) {
-            return `**Template \`${name}\`**\n\nResolves to \`${shown}\``;
+            return `**Template \`${name}\`**\n\nResolves to ${shown}`;
         }
         const exports = resolver.getModuleExports(resolved) ?? [];
         const named = exports.filter((e) => e.type === 'named');
@@ -875,7 +882,7 @@ function moduleSourceHover(name: string, isInclude: boolean, documentUri: string
         const exportLine = (shownNames.length || hasDefault)
             ? `\n\n**Exports:** ${[hasDefault ? '`default`' : '', ...shownNames].filter(Boolean).join(', ')}${more}`
             : '';
-        return `**Module \`${name}\`**\n\nResolves to \`${shown}\`${exportLine}`;
+        return `**Module \`${name}\`**\n\nResolves to ${shown}${exportLine}`;
     }
 
     // Unresolvable luci.* inside a LuCI tree: same epistemics as the suppressed

@@ -20,6 +20,7 @@ export {
   type LookupError,
 } from './moduleTypes';
 
+import { splitTopLevel } from './typeStringUtils';
 import type { KnownModule, KnownObjectType, ModuleRegistry, ObjectTypeRegistry } from './moduleTypes';
 import { KNOWN_MODULES } from './moduleTypes';
 import { createModuleRegistry, createObjectTypeRegistry } from './registryFactory';
@@ -156,7 +157,7 @@ function extractObjectTypeFromReturnType(returnType: string): KnownObjectType | 
   const trimmed = returnType.trim();
   if (isKnownObjectType(trimmed)) return trimmed;
 
-  for (const part of trimmed.split('|')) {
+  for (const part of splitTopLevel(trimmed, '|')) {
     const candidate = part.trim();
     if (candidate && isKnownObjectType(candidate)) return candidate;
   }
