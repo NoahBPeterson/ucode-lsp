@@ -282,28 +282,7 @@ function listLuciShippedModuleNames(ws: LuciWorkspace): string[] {
   return names;
 }
 
-/** Bounded Levenshtein (≤ maxDist, early exit) for typo suggestions. */
-function editDistanceAtMost(a: string, b: string, maxDist: number): number | null {
-  if (Math.abs(a.length - b.length) > maxDist) return null;
-  const prev = new Array(b.length + 1).fill(0).map((_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    let best = Infinity;
-    let diag = prev[0]!;
-    prev[0] = i;
-    for (let j = 1; j <= b.length; j++) {
-      const cur = Math.min(
-        prev[j]! + 1,
-        prev[j - 1]! + 1,
-        diag + (a[i - 1] === b[j - 1] ? 0 : 1),
-      );
-      diag = prev[j]!;
-      prev[j] = cur;
-      if (cur < best) best = cur;
-    }
-    if (best > maxDist) return null;
-  }
-  return prev[b.length]! <= maxDist ? prev[b.length]! : null;
-}
+import { editDistanceAtMost } from './typeStringUtils';
 
 /**
  * Typo detector for the luci.* suppression: an unresolvable `luci.<x>` whose `<x>` is a

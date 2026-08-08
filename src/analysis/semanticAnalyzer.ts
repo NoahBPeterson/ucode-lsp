@@ -31,7 +31,8 @@ import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
 import { type UcodeTargetVersion, type VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, VERSION_GLOBAL_BUILTINS, PLATFORM_GATED_SYMBOLS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
-import { parseJsDocComment, resolveTypeExpression, resolveTypeExpressionDetailed, parseInlineObjectShape, parseImportTypeExpression, extractTypedef, type ParsedTypedef, type ParsedTypedefProperty } from './jsdocParser';
+import { parseJsDocComment, resolveTypeExpression, resolveTypeExpressionDetailed, parseInlineObjectShape, parseImportTypeExpression, extractTypedef, JSDOC_PRIMITIVE_MAP, type ParsedTypedef, type ParsedTypedefProperty } from './jsdocParser';
+import { editDistanceAtMost } from './typeStringUtils';
 import { KNOWN_HOST_GLOBALS, isHostEntryPointCallback } from './hostGlobals';
 import { THROWING_BUILTINS } from './throwingBuiltins';
 import { KNOWN_MODULES } from './moduleTypes';
@@ -2770,6 +2771,67 @@ export class SemanticAnalyzer extends BaseVisitor {
         this.symbolTable.declare(funcNode.id.name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, funcNode.id);
       }
     }
+    this.stampSyntacticNeverReturns(node);
+  }
+
+  /**
+   * Stamp `neverReturns` on top-level functions whose body PROVABLY never returns —
+   * no ReturnStatement anywhere, and the last statement calls die/exit or another
+   * already-stamped terminator (fixpoint over the top-level list, so `cleanup(){…
+   * exit()}` ⇒ `fatal(){… cleanup()}` chains resolve). This runs at HOIST time
+   * because blockAlwaysTerminates consults `sym.neverReturns` DURING the main visit —
+   * the precise CFG fixpoint (detectUnreachableCode phase 2) runs only afterward, so
+   * a guard like `if (!sock) { log(); cleanup(1); }` failed to narrow `sock` even
+   * though the same guard with a literal `exit(1)` did (found via podman's
+   * pull-worker when `?socket` annotations gained their null arm). Syntactic and
+   * conservative: any `return` in the body, or any other shape, stays unstamped —
+   * the later CFG pass is the authority for those.
+   */
+  private stampSyntacticNeverReturns(program: ProgramNode): void {
+    const fns: FunctionDeclarationNode[] = [];
+    for (const stmt of program.body) {
+      const fn = stmt.type === 'FunctionDeclaration'
+        ? stmt as FunctionDeclarationNode
+        : ((stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportDefaultDeclaration')
+            && (stmt as { declaration?: AstNode }).declaration?.type === 'FunctionDeclaration'
+          ? (stmt as { declaration?: AstNode }).declaration as FunctionDeclarationNode
+          : null);
+      if (fn?.id?.name && fn.body) fns.push(fn);
+    }
+    const terminators = new Set<string>(['die', 'exit']);
+    const containsReturn = (node: AstNode): boolean => {
+      const stack: AstNode[] = [node];
+      while (stack.length) {
+        const n = stack.pop()!;
+        if (n.type === 'ReturnStatement') return true;
+        // A nested function's returns are its own, not the outer body's.
+        if (n !== node && (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression')) continue;
+        for (const k of Object.keys(n)) {
+          if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+          const v = (n as unknown as Record<string, unknown>)[k];
+          if (Array.isArray(v)) { for (const it of v) { if (it && typeof (it as AstNode).type === 'string') stack.push(it as AstNode); } }
+          else if (v && typeof (v as AstNode).type === 'string') stack.push(v as AstNode);
+        }
+      }
+      return false;
+    };
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const fn of fns) {
+        if (terminators.has(fn.id.name)) continue;
+        const body = fn.body.body ?? [];
+        const last = body[body.length - 1];
+        if (!last || last.type !== 'ExpressionStatement') continue;
+        const call = (last as ExpressionStatementNode).expression;
+        if (call?.type !== 'CallExpression' || (call as CallExpressionNode).callee.type !== 'Identifier') continue;
+        if (!terminators.has(((call as CallExpressionNode).callee as IdentifierNode).name)) continue;
+        if (containsReturn(fn.body)) continue;
+        terminators.add(fn.id.name);
+        const sym = this.symbolTable.resolveReference(fn.id.name, fn.id.start);
+        if (sym) { sym.neverReturns = true; changed = true; }
+      }
+    }
   }
 
   /** docs/named-funcexpr-let-const-crash.md: on targets below main, a NAMED function
@@ -4097,13 +4159,55 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (resolved !== null) return resolved;
     const typedef = this.typedefRegistry.get(typeExpr);
     if (typedef) return this.typedefToParamInfo(typedef).type;
+    this.emitUnknownJsDocType(typeExpr, jsDocNode, tagLabel);
+    return null;
+  }
+
+  /** UC7001 with a did-you-mean when the unknown name is a near-miss of something the
+   *  resolver DOES know — `?Socket` is one case-fix away from the `socket` handle type.
+   *  Candidates: JSDoc primitives/aliases, registered object types, module names, and
+   *  this file's own @typedef/@callback names. The data payload drives the rewrite fix. */
+  private emitUnknownJsDocType(typeExpr: string, jsDocNode: JsDocCommentNode, tagLabel: string, unresolvedToken?: string): void {
+    // Strip nullable/optional sugar and array wrappers down to the name to match on.
+    let token = (unresolvedToken ?? typeExpr).trim().replace(/^\?/, '').replace(/[?=]$/, '');
+    const angle = token.match(/^[Aa]rray<(.+)>$/);
+    if (angle) token = angle[1]!.trim();
+    token = token.replace(/\[\]$/, '');
+    let suggestion: string | null = null;
+    if (/^[A-Za-z_$][\w.$]*$/.test(token)) {
+      const candidates = new Set<string>([
+        ...Object.keys(JSDOC_PRIMITIVE_MAP),
+        ...Object.keys(OBJECT_REGISTRIES),
+        ...(KNOWN_MODULES as readonly string[]),
+        ...this.typedefRegistry.keys(),
+      ]);
+      const lower = token.toLowerCase();
+      for (const c of candidates) {
+        if (c !== token && c.toLowerCase() === lower) { suggestion = c; break; }
+      }
+      if (!suggestion) {
+        let best: { name: string; d: number } | null = null;
+        for (const c of candidates) {
+          if (c === token) continue;
+          const d = editDistanceAtMost(token.toLowerCase(), c.toLowerCase(), 2);
+          if (d !== null && (best === null || d < best.d)) best = { name: c, d };
+        }
+        suggestion = best?.name ?? null;
+      }
+    }
+    // Show the CORRECTED FULL EXPRESSION, sugar and all — the author wrote `?Socket`,
+    // so the answer to "did you mean" is `?socket`, not the bare name.
+    const corrected = suggestion
+      ? typeExpr.replace(new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`), suggestion)
+      : null;
     this.addDiagnosticErrorCode(
       UcodeErrorCode.JSDOC_UNKNOWN_TYPE,
-      `Unknown type '${typeExpr}' in @${tagLabel} annotation`,
+      `Unknown type '${typeExpr}' in @${tagLabel} annotation`
+        + (corrected ? ` - did you mean '${corrected}'?` : ''),
       jsDocNode.start, jsDocNode.end - 1,
       DiagnosticSeverity.Warning,
+      suggestion ? { jsdocTypeSuggestion: { find: token, replaceWith: suggestion, corrected: corrected ?? suggestion } } : undefined,
     );
-    return null;
   }
 
   /** Readable base-type name(s) for a diagnostic message (e.g. "string", "integer|null"). */
@@ -4398,12 +4502,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (detail.type !== null) {
         if (detail.unresolved.length > 0) {
           // A union like `string|Bogus`: keep `string`, but still warn about the unknown arm.
-          this.addDiagnosticErrorCode(
-            UcodeErrorCode.JSDOC_UNKNOWN_TYPE,
-            `Unknown type '${tag.typeExpression}' in @param annotation`,
-            jsDocNode.start, jsDocNode.end - 1,
-            DiagnosticSeverity.Warning
-          );
+          this.emitUnknownJsDocType(tag.typeExpression, jsDocNode, 'param', detail.unresolved[0]);
         }
         jsdocParams.set(tag.name, { type: detail.type, description: tag.description, optional: tag.optional });
         continue;
@@ -4424,12 +4523,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         continue;
       }
 
-      this.addDiagnosticErrorCode(
-        UcodeErrorCode.JSDOC_UNKNOWN_TYPE,
-        `Unknown type '${tag.typeExpression}' in @param annotation`,
-        jsDocNode.start, jsDocNode.end - 1,
-        DiagnosticSeverity.Warning
-      );
+      this.emitUnknownJsDocType(tag.typeExpression, jsDocNode, 'param');
     }
 
     // Check for @param names that don't match any actual parameter
@@ -4765,30 +4859,8 @@ export class SemanticAnalyzer extends BaseVisitor {
         // in ALL return branches survive), union on their TYPES — branch 0's
         // type is not more true than branch 1's (H-2 sub-bug: `{v: 1}` /
         // `{v: "s"}` must read back as `integer | string`).
-        const returnPropEntries = this.functionReturnPropertyTypes.get(node) || [];
-        if (returnPropEntries.length > 0) {
-          const merged = new Map<string, UcodeDataType>(returnPropEntries[0]);
-          for (let i = 1; i < returnPropEntries.length; i++) {
-            const entry = returnPropEntries[i]!;
-            for (const key of [...merged.keys()]) {
-              if (!entry.has(key)) {
-                merged.delete(key);
-                continue;
-              }
-              const a = merged.get(key)!;
-              const b = entry.get(key)!;
-              if (a !== b) {
-                const members: SingleType[] = [];
-                for (const t of [a, b]) {
-                  if (typeof t === 'string') members.push(t as UcodeType);
-                  else members.push(...getUnionTypes(t));
-                }
-                merged.set(key, createUnionType(members));
-              }
-            }
-          }
-          if (merged.size > 0) symbol.returnPropertyTypes = merged;
-        }
+        const mergedProps = this.mergeReturnPropertyEntries(this.functionReturnPropertyTypes.get(node) || []);
+        if (mergedProps) symbol.returnPropertyTypes = mergedProps;
 
         // Merge the parallel member definition locations the same way (intersection),
         // so a same-file factory's returned methods carry source offsets for signature
@@ -6399,6 +6471,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             if (callExpr.callee.type === 'Identifier') {
               const funcSym = this.symbolTable.lookupOpenScopes((callExpr.callee as IdentifierNode).name);
               if (funcSym) this.copyFactoryReturnToBinding(symbol, funcSym);
+            } else if (callExpr.callee.type === 'ArrowFunctionExpression' || callExpr.callee.type === 'FunctionExpression') {
+              const merged = this.mergeReturnPropertyEntries(this.functionReturnPropertyTypes.get(callExpr.callee as unknown as FunctionDeclarationNode) ?? []);
+              if (merged) symbol.propertyTypes = merged;
             }
           }
         }
@@ -8068,16 +8143,53 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (merged.size > 0) symbol.valuePropertyTypes = merged;
   }
 
+  /** Merge per-return property maps into one shape: intersection on KEYS (only props
+   *  present in ALL return branches survive), union on their TYPES — branch 0's type
+   *  is not more true than branch 1's (H-2 sub-bug: `{v: 1}` / `{v: "s"}` must read
+   *  back as `integer | string`). Null when nothing survives. */
+  private mergeReturnPropertyEntries(entries: Map<string, UcodeDataType>[]): Map<string, UcodeDataType> | null {
+    if (entries.length === 0) return null;
+    const merged = new Map<string, UcodeDataType>(entries[0]);
+    for (let i = 1; i < entries.length; i++) {
+      const entry = entries[i]!;
+      for (const key of [...merged.keys()]) {
+        if (!entry.has(key)) {
+          merged.delete(key);
+          continue;
+        }
+        const a = merged.get(key)!;
+        const b = entry.get(key)!;
+        if (a !== b) {
+          const members: SingleType[] = [];
+          for (const t of [a, b]) {
+            if (typeof t === 'string') members.push(t as UcodeType);
+            else members.push(...getUnionTypes(t));
+          }
+          merged.set(key, createUnionType(members));
+        }
+      }
+    }
+    return merged.size > 0 ? merged : null;
+  }
+
   private inferFunctionCallReturnType(node: AstNode): UcodeDataType | null {
     if (node.type !== 'CallExpression') {
       return null;
     }
     
     const callExpr = node as CallExpressionNode;
+    // IIFE: `(() => {…})()` / `(function(){…})()` — the module-constant initializer
+    // idiom (`const _parsed = (() => {… return {…}; return null; })()`). The literal
+    // was visited as part of this initializer, which stamped its inferred return
+    // type on the node — that IS the call's type.
+    if (callExpr.callee.type === 'ArrowFunctionExpression' || callExpr.callee.type === 'FunctionExpression') {
+      const rt = (callExpr.callee as unknown as { _inferredReturnType?: UcodeDataType })._inferredReturnType;
+      return rt ?? null;
+    }
     if (callExpr.callee.type !== 'Identifier') {
       return null;
     }
-    
+
     const funcName = (callExpr.callee as IdentifierNode).name;
     const symbol = this.symbolTable.lookupOpenScopes(funcName);
     
@@ -8310,6 +8422,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             if (callExpr.callee.type === 'Identifier') {
               const funcSym = this.symbolTable.lookupOpenScopes((callExpr.callee as IdentifierNode).name);
               if (funcSym) this.copyFactoryReturnToBinding(symbol, funcSym);
+            } else if (callExpr.callee.type === 'ArrowFunctionExpression' || callExpr.callee.type === 'FunctionExpression') {
+              // IIFE: the literal accumulated its return-object property maps during
+              // its visit — merge them exactly like a named factory's shape.
+              const merged = this.mergeReturnPropertyEntries(this.functionReturnPropertyTypes.get(callExpr.callee as unknown as FunctionDeclarationNode) ?? []);
+              if (merged) symbol.propertyTypes = merged;
             }
           }
           return;
@@ -9828,8 +9945,17 @@ private addDiagnostic(
       const funcNodes: FunctionLikeNode[] = [];
       this.collectFunctionNodes(this.currentASTRoot, funcNodes);
 
-      // Phase 1: Initial pass with default terminators (die/exit)
+      // Phase 1: Initial pass with default terminators (die/exit) — seeded with any
+      // function ALREADY stamped neverReturns (the hoist-time syntactic pass): the
+      // phase-2 fixpoint `continue`s over stamped symbols, so without seeding they
+      // would never enter this set and the CFG would silently lose them.
       const terminators = new Set(['die', 'exit']);
+      for (const funcNode of funcNodes) {
+        const name = (funcNode as FunctionDeclarationNode).id?.name;
+        if (name && this.symbolTable.resolveReference(name, funcNode.start)?.neverReturns) {
+          terminators.add(name);
+        }
+      }
       this.analyzeAllFunctions(funcNodes, terminators);
 
       // Phase 2: Fixpoint iteration — infer never-returns and re-analyze

@@ -71,6 +71,27 @@ function readDescription(s: string): string | undefined {
 import { splitTopLevel } from './typeStringUtils';
 export { splitTopLevel };
 
+/** The primitive/alias names JSDoc type expressions resolve directly. Exported so the
+ *  UC7001 did-you-mean suggester can treat them as candidates. */
+export const JSDOC_PRIMITIVE_MAP: Record<string, UcodeType> = {
+  'string': UcodeType.STRING,
+  'number': UcodeType.DOUBLE,
+  'integer': UcodeType.INTEGER,
+  'int': UcodeType.INTEGER,
+  'double': UcodeType.DOUBLE,
+  'float': UcodeType.DOUBLE,
+  'boolean': UcodeType.BOOLEAN,
+  'bool': UcodeType.BOOLEAN,
+  'array': UcodeType.ARRAY,
+  'object': UcodeType.OBJECT,
+  'function': UcodeType.FUNCTION,
+  'null': UcodeType.NULL,
+  'regex': UcodeType.REGEX,
+  'regexp': UcodeType.REGEX,
+  'unknown': UcodeType.UNKNOWN,
+  'any': UcodeType.UNKNOWN,
+};
+
 /** Scan a JSDoc body (lines already `*`-stripped and joined) into line-anchored tags.
  *  Each entry is the tag word and the raw text up to the next line-anchored `@tag`. */
 function scanRawTags(fullText: string): { tag: string; body: string; tagStart: number }[] {
@@ -263,6 +284,22 @@ function parseParamTag(body: string, tags: JsDocTag[]): void {
  * Resolve a type expression string to a UcodeDataType.
  * Returns null if the type is unknown.
  */
+/** A resolved type as a UNION MEMBER: a known-object HANDLE annotation (`socket`,
+ *  `fs.file`) resolves to the module-record shape `{type: OBJECT, moduleName}`, which
+ *  cannot sit in a union — so `?socket` silently lost its null (widenWithNull returns
+ *  such records unchanged, and union assembly flattened them to bare `object`).
+ *  Registered object types have a first-class union representation (ObjectType,
+ *  'objectKind') — the same one socket.create()'s own `socket | null` uses. */
+function asUnionMember(t: UcodeDataType): UcodeDataType {
+  if (t && typeof t === 'object'
+      && (t as { type?: unknown }).type === UcodeType.OBJECT
+      && typeof (t as { moduleName?: unknown }).moduleName === 'string'
+      && isKnownObjectType((t as { moduleName: string }).moduleName)) {
+    return { type: 'objectKind', name: (t as { moduleName: string }).moduleName } as UcodeDataType;
+  }
+  return t;
+}
+
 export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
   typeExpr = typeExpr.trim();
 
@@ -278,12 +315,12 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
   if (typeExpr.endsWith('?') || typeExpr.endsWith('=')) {
     const baseType = resolveTypeExpression(typeExpr.slice(0, -1));
     if (baseType === null) return null;
-    return widenWithNull(baseType);
+    return widenWithNull(asUnionMember(baseType));
   }
   if (typeExpr.startsWith('?') && typeExpr.length > 1) {
     const baseType = resolveTypeExpression(typeExpr.slice(1));
     if (baseType === null) return null;
-    return widenWithNull(baseType);
+    return widenWithNull(asUnionMember(baseType));
   }
 
   // Inline object shape `{ a: string }` — valid as a standalone type and as a union
@@ -301,8 +338,9 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
     if (parts.length > 1) {
       const types: SingleType[] = [];
       for (const part of parts) {
-        const resolved = resolveTypeExpression(part);
-        if (resolved === null) return null;
+        const resolved0 = resolveTypeExpression(part);
+        if (resolved0 === null) return null;
+        const resolved = asUnionMember(resolved0); // known-object handles keep their identity in unions
         if (typeof resolved === 'string') {
           types.push(resolved as UcodeType);
         } else if (typeof resolved === 'object' && resolved.type === UcodeType.UNION) {
@@ -311,8 +349,8 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
           // ObjectType or ArrayType can be used directly as SingleType
           types.push(resolved);
         } else {
-          // Complex type in union (module type etc.) — flatten to base
-          types.push(resolved.type);
+          // Complex type in union (a true MODULE type etc.) — flatten to base
+          types.push((resolved as { type: UcodeType }).type);
         }
       }
       return createUnionType(types);
@@ -347,28 +385,9 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
   }
 
   // Handle primitive types
-  const primitiveMap: Record<string, UcodeType> = {
-    'string': UcodeType.STRING,
-    'number': UcodeType.DOUBLE,
-    'integer': UcodeType.INTEGER,
-    'int': UcodeType.INTEGER,
-    'double': UcodeType.DOUBLE,
-    'float': UcodeType.DOUBLE,
-    'boolean': UcodeType.BOOLEAN,
-    'bool': UcodeType.BOOLEAN,
-    'array': UcodeType.ARRAY,
-    'object': UcodeType.OBJECT,
-    'function': UcodeType.FUNCTION,
-    'null': UcodeType.NULL,
-    'regex': UcodeType.REGEX,
-    'regexp': UcodeType.REGEX,
-    'unknown': UcodeType.UNKNOWN,
-    'any': UcodeType.UNKNOWN,
-  };
-
   const lower = typeExpr.toLowerCase();
-  if (lower in primitiveMap) {
-    return primitiveMap[lower]! as UcodeDataType;
+  if (lower in JSDOC_PRIMITIVE_MAP) {
+    return JSDOC_PRIMITIVE_MAP[lower]! as UcodeDataType;
   }
 
   // Bare module names: 'fs', 'uci', etc. → module type (no 'module:' prefix needed)

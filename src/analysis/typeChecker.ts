@@ -3398,6 +3398,17 @@ export class TypeChecker {
       }
     }
 
+    // IIFE: the callee IS a function literal (`(() => {…})()` — the module-constant
+    // initializer idiom). No symbol exists for the named-call machinery, so the call's
+    // type is the literal's own return union: the analyzer's stamp when its visit
+    // already ran, else a quiet walk over the literal's OWN return statements (plus
+    // null when control can fall off the end).
+    if (node.callee.type === 'ArrowFunctionExpression' || node.callee.type === 'FunctionExpression') {
+      const stamped = (node.callee as unknown as { _inferredReturnType?: UcodeDataType })._inferredReturnType;
+      if (stamped !== undefined && stamped !== null) return stamped;
+      return this.inferFunctionLiteralReturnType(node.callee as ArrowFunctionExpressionNode | FunctionExpressionNode);
+    }
+
     // For other callees (but not Identifiers, which we already handled above)
     if ((node.callee.type as string) !== 'Identifier') {
       const calleeType = this.dataTypeToUcodeType(this.checkNode(node.callee));
@@ -3414,6 +3425,45 @@ export class TypeChecker {
     }
 
     return UcodeType.UNKNOWN;
+  }
+
+  /** Return type of a function LITERAL from its own body: expression-body arrows
+   *  return their expression's type; block bodies union every own-scope `return`
+   *  argument (nested functions' returns are theirs), with null added for bare
+   *  returns and fall-off-the-end paths. Quiet — the body's diagnostics belong to
+   *  the visitor pass, not to this inference. */
+  private inferFunctionLiteralReturnType(fn: ArrowFunctionExpressionNode | FunctionExpressionNode): UcodeDataType {
+    if (fn.type === 'ArrowFunctionExpression' && (fn as ArrowFunctionExpressionNode).expression) {
+      return this.checkNodeQuietly(fn.body as AstNode);
+    }
+    const types: UcodeDataType[] = [];
+    let sawBare = false;
+    const stack: AstNode[] = [fn.body as AstNode];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (n !== fn.body
+          && (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression')) {
+        continue;
+      }
+      if (n.type === 'ReturnStatement') {
+        const arg = (n as ReturnStatementNode).argument;
+        if (arg) types.push(this.checkNodeQuietly(arg));
+        else sawBare = true;
+        continue;
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+        const v = (n as unknown as Record<string, unknown>)[k];
+        if (Array.isArray(v)) {
+          for (const it of v) { if (it && typeof (it as AstNode).type === 'string') stack.push(it as AstNode); }
+        } else if (v && typeof (v as AstNode).type === 'string') {
+          stack.push(v as AstNode);
+        }
+      }
+    }
+    if (sawBare || !this.blockAlwaysTerminates(fn.body as AstNode)) types.push(UcodeType.NULL as UcodeDataType);
+    if (types.length === 0) return UcodeType.NULL as UcodeDataType;
+    return this.getCommonReturnType(types);
   }
 
   /**

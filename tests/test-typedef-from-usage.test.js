@@ -509,3 +509,90 @@ test('an inline object shape resolves standalone and inside a union (UC7001 fix)
   const d = await server.getDiagnostics(code, `/tmp/tfu-${n++}.uc`);
   expect((d || []).filter((x) => String(x.code) === 'UC7001')).toEqual([]);
 });
+
+test("UC7001 suggests near-miss known types and its fix rewrites just the name", async () => {
+  // The socket handle type is literally `socket` — `?Socket` is one case-fix away.
+  const code = [
+    "import * as socket from 'socket';",
+    '/** @returns {?Socket} connected socket, or null on failure */',
+    'export function connect() {',
+    '\tlet sock = socket.create(socket.AF_UNIX, socket.SOCK_STREAM);',
+    '\treturn sock || null;',
+    '};',
+    'print(connect());',
+  ].join('\n');
+  const p = `/tmp/tfu-${n++}.uc`;
+  const d = await server.getDiagnostics(code, p);
+  const uc = (d || []).find((x) => String(x.code) === 'UC7001');
+  expect(uc.message).toContain("did you mean '?socket'?");
+  const acts = await server.getCodeActions(p, [uc], uc.range.start.line, uc.range.start.character + 2);
+  const fix = (acts || []).find((a) => a.title === "Change type to '?socket'");
+  expect(fix.isPreferred).toBe(true);
+  const edit = fix.edit.changes[`file://${p}`][0];
+  expect(edit.newText).toBe('socket');
+  // Replaces ONLY the name — the `?` nullable sugar survives.
+  expect(edit.range.start.character).toBe(15);
+  expect(edit.range.end.character).toBe(21);
+});
+
+test('UC7001 with no plausible near-miss stays suggestion-free', async () => {
+  const code = '/** @param {CompletelyMadeUpThing} x */\nfunction f(x) {\n\treturn x;\n}\nprint(f(1));\n';
+  const d = await server.getDiagnostics(code, `/tmp/tfu-${n++}.uc`);
+  const uc = (d || []).find((x) => String(x.code) === 'UC7001');
+  expect(uc.message).not.toContain('did you mean');
+});
+
+test('?socket resolves as a real union — null returns covered, handle identity kept', async () => {
+  // The known-object annotation used to resolve to the module-record shape, which
+  // widenWithNull returns unchanged — so `?socket` silently lost its null and every
+  // `return null` under it drew a UC7005 "does not cover" warning.
+  const code = [
+    "import * as socket from 'socket';",
+    'let _parsed = null;',
+    '/** @returns {?socket} connected socket, or null on failure */',
+    'export function connect() {',
+    '\tif (!_parsed)',
+    '\t\treturn null;',
+    '\tlet sock = socket.create(socket.AF_UNIX, socket.SOCK_STREAM);',
+    '\tif (!sock) return null;',
+    '\treturn sock;',
+    '};',
+    'let conn = connect();',
+    'print(conn);',
+  ].join('\n');
+  const p = `/tmp/tfu-${n++}.uc`;
+  const d = await server.getDiagnostics(code, p);
+  expect((d || []).filter((x) => String(x.code) === 'UC7005')).toEqual([]);
+  const line = code.split('\n').findIndex((l) => l.includes('conn = '));
+  const h = await server.getHover(code, p, line, code.split('\n')[line].indexOf('conn') + 1);
+  expect(h?.contents?.value).toContain('`socket | null`');
+});
+
+test('a user-defined never-returning terminator narrows guards during the main pass', async () => {
+  // `cleanup(){ …; exit(); }` + `if (!sock) { log(); cleanup(1); }` — the CFG
+  // never-returns fixpoint runs AFTER the visit, so blockAlwaysTerminates saw an
+  // unstamped symbol and the fall-through kept its null (podman pull-worker FPs).
+  // Hoist-time syntactic stamping closes the gap; a body containing ANY return
+  // stays unstamped (conservative).
+  const code = [
+    "import * as socket from 'socket';",
+    'function term(code) { print(code); exit(code ?? 0); }',
+    'function fatal(msg) { print(msg); term(1); }',   // chains resolve via the fixpoint
+    '/** @returns {?socket} */',
+    'function connect() {',
+    '\tlet s = socket.create(socket.AF_INET, socket.SOCK_STREAM);',
+    '\treturn s || null;',
+    '};',
+    'let sock = connect();',
+    "if (!sock) { fatal('no sock'); }",
+    "sock.send('hi');",
+    'print(sock);',
+  ].join('\n');
+  const d = await server.getDiagnostics(code, `/tmp/tfu-${n++}.uc`);
+  expect((d || []).filter((x) => String(x.code).startsWith('UC5'))).toEqual([]);
+  // A would-be terminator that CAN return must not be stamped.
+  const soft = code.replace('function fatal(msg) { print(msg); term(1); }',
+    'function fatal(msg) { if (msg == "ignore") return; term(1); }');
+  const d2 = await server.getDiagnostics(soft, `/tmp/tfu-${n++}.uc`);
+  expect((d2 || []).some((x) => String(x.code) === 'UC5006')).toBe(true);
+});

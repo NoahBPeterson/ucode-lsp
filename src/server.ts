@@ -115,6 +115,9 @@ interface DiagnosticData {
     narrowDisable?: { codes?: string[]; insertAt?: number };
     /** UC7009 bare-object @param: which parameter the typedef quick fix should target. */
     typedefFromUsage?: { paramName?: string };
+    /** UC7001 unknown JSDoc type: the near-miss token, the known name to rewrite to,
+     *  and the corrected full expression (sugar included) for display. */
+    jsdocTypeSuggestion?: { find?: string; replaceWith?: string; corrected?: string };
     coerceToString?: boolean;
     argNeedsParens?: boolean;
     convertStringToRegex?: boolean;
@@ -2305,6 +2308,35 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                         isPreferred: suggestions.length === 1,
                         edit: { changes: { [params.textDocument.uri]: [TextEdit.replace(range, `"${suggestion}"`)] } },
                     });
+                }
+            }
+
+            // UC7001 near-miss rewrite: the diagnostic spans the whole JSDoc comment, so
+            // locate the unknown token inside a braced type group within that span and
+            // replace just the name (sugar like `?`/`[]` stays put).
+            if (diagnostic.code === 'UC7001') {
+                const sug = diagData(diagnostic).jsdocTypeSuggestion;
+                if (sug?.find && sug?.replaceWith) {
+                    const spanStart = document.offsetAt(diagnostic.range.start);
+                    const slice = document.getText(diagnostic.range);
+                    const esc = sug.find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const tokenRe = new RegExp(`\\b${esc}\\b`);
+                    for (const braced of slice.matchAll(/\{[^}]*\}/g)) {
+                        const m = tokenRe.exec(braced[0]);
+                        if (!m) continue;
+                        const at = spanStart + braced.index! + m.index;
+                        codeActions.push({
+                            title: `Change type to '${sug.corrected ?? sug.replaceWith}'`,
+                            kind: CodeActionKind.QuickFix,
+                            isPreferred: true,
+                            diagnostics: [diagnostic],
+                            edit: { changes: { [params.textDocument.uri]: [TextEdit.replace(
+                                { start: document.positionAt(at), end: document.positionAt(at + sug.find.length) },
+                                sug.replaceWith,
+                            )] } },
+                        });
+                        break;
+                    }
                 }
             }
 
