@@ -4687,7 +4687,32 @@ export class TypeChecker {
     // array-typed branch below — without this, `(array<string>|null)[i]`
     // collapses to unknown and the element's string-ness is lost downstream.
     if (node.computed && isUnionType(objectType)) {
-      const arrMember = getUnionTypes(objectType).find(m => isArrayType(m) || singleTypeToBase(m) === UcodeType.ARRAY);
+      const arrMembers = getUnionTypes(objectType).filter(m => isArrayType(m) || singleTypeToBase(m) === UcodeType.ARRAY);
+      // MULTIPLE array members — a function returning a different tuple shape per
+      // branch (`array<null> | array<string|null>`, glinet vpn-client
+      // split_host_port): the element type is the union of EVERY member's
+      // elements, plus null (receiver or index may miss). Taking just the first
+      // member typed `hp[0]` as bare `null` and cascaded into a UC2009 FP.
+      if (arrMembers.length > 1) {
+        const parts: SingleType[] = [];
+        let hasUnknown = false;
+        for (const m of arrMembers) {
+          const et = isArrayType(m) ? getArrayElementType(m) : (UcodeType.UNKNOWN as UcodeDataType);
+          for (const u of getUnionTypes(et) as SingleType[]) {
+            if (u === UcodeType.UNKNOWN) hasUnknown = true;
+            else parts.push(u);
+          }
+        }
+        if (parts.length > 0) {
+          // An unknown-element member stays IN the union (we cannot claim the
+          // read is confined to the known members) — dropping it would narrow
+          // types we have no evidence for.
+          if (hasUnknown) parts.push(UcodeType.UNKNOWN as SingleType);
+          parts.push(UcodeType.NULL as SingleType);
+          return createUnionType(parts);
+        }
+      }
+      const arrMember = arrMembers[0];
       if (arrMember) {
         // Is the receiver narrowed non-null HERE (e.g. `if (!m || length(m) < N)
         // continue; … m[k]`)? If so neither "receiver is null" nor (when also
@@ -4881,10 +4906,20 @@ export class TypeChecker {
     // mistake `someStr.toUpperCase()`. objectType IS the rich type now.
     let receiverHasString = objectBase === UcodeType.STRING || narrowedBase === UcodeType.STRING;
     if (!receiverHasString && !node.computed) {
-      if (objectType === UcodeType.STRING) {
+      // Honor flow/guard narrowing for an identifier receiver, exactly like the
+      // provably-null check above: inside `if (type(x) == "object")` a
+      // `object | string | null` x has no string member left, so `x.prop` is
+      // clean (glinet cloud.uc switch_server_format). Without this the raw
+      // union's string member fired UC5003 straight through the guard.
+      let receiverType: UcodeDataType = objectType;
+      if (node.object.type === 'Identifier') {
+        const nt = this.getNarrowedTypeAtPosition((node.object as IdentifierNode).name, node.object.start);
+        if (nt !== null && nt !== undefined) receiverType = nt;
+      }
+      if (receiverType === UcodeType.STRING) {
         receiverHasString = true;
-      } else if (isUnionType(objectType)) {
-        receiverHasString = getUnionTypes(objectType).some(m => singleTypeToBase(m) === UcodeType.STRING);
+      } else if (isUnionType(receiverType)) {
+        receiverHasString = getUnionTypes(receiverType).some(m => singleTypeToBase(m) === UcodeType.STRING);
       }
     }
     if (receiverHasString && !node.computed) {
@@ -5840,6 +5875,15 @@ export class TypeChecker {
 
     // Handle combined OR guards (e.g., type(x) === 'array' || type(x) === 'string')
     if ((guard as any).isCombinedOr) {
+      // NEGATED combined guard — the else/fall-through edge of the OR chain
+      // (`if (t == "int" || t == "double") return …;` fall-through): REMOVE every
+      // member instead of narrowing TO the union. Ignoring isNegative here was an
+      // inversion — the fall-through of an int/double early-return typed the
+      // variable AS integer|double (glinet firewall.uc is_valid_clean_port).
+      if (guard.isNegative) {
+        return this.typeNarrowing.removeTypesFromUnion(
+          baseType, getUnionTypes(guard.narrowToType as UcodeDataType) as UcodeType[]).narrowedType;
+      }
       // The narrowToType is already the narrowed union type (e.g., 'array' from 'array | object')
       return guard.narrowToType as UcodeDataType;
     }
@@ -6267,6 +6311,14 @@ export class TypeChecker {
           position >= binaryNode.right.start && position <= binaryNode.right.end) {
         if (this.earlyExitNegatesIdentifier(binaryNode.left, variableName)) {
           guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+        }
+        // The left's TYPE guard, negated: in `t != "string" || match(port, …)`
+        // (t aliasing type(port)) the RHS evaluates only when the left is FALSY,
+        // i.e. t == "string" — the short-circuit analogue of the else-branch
+        // flip. Null-propagation guards don't flip (their falsity says nothing).
+        const leftGuard = this.extractTypeGuard(binaryNode.left, variableName);
+        if (leftGuard && !leftGuard.isNullPropagation) {
+          guards.push({ ...leftGuard, isNegative: !leftGuard.isNegative });
         }
         // Null-guard arms on the LEFT: reaching the RHS means every left arm
         // evaluated falsy, and a falsy null-guard result proves its argument

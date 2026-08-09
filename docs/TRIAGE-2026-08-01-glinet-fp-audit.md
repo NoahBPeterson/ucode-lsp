@@ -53,3 +53,54 @@ not runtime).
   (`strictUnknownArguments`); the ubus-request ambient-typing work (docs/tc-ubus-request-handler-ambient.md)
   and scope-injection corpora are the long-term fix for their volume.
 - 14 warnings (unused vars, builtin shadowing, `==` coercion advisories) — accurate per audit.
+
+---
+
+## Resolution (2026-08-09, 0.8.6): the "13 remaining FPs" adjudicated and fixed
+
+A follow-up audit round (post-0.8.5) listed 14 remaining FPs. Verdicts:
+
+**NOT false positives (7)** — UC1009 forward references (cable.uc:656-663 ×4,
+dpi.uc:55, repeater.uc:195, wg_client.uc:126). Re-verified against BOTH OpenWrt
+containers (ucode main pin and 25.12): a reference compiled before the
+declaration resolves as a global lookup while a later top-level `function`
+statement creates a scoped LOCAL, so even DEFERRED calls die with "left-hand
+side is not a function". cable.uc's own "kept at bottom: referenced by
+set_config" comment documents a belief that is false — `set_config` with
+`proto == "static"` crashes at runtime. Second time this audit class has been
+debunked; the flags stay.
+
+**Real FPs — three engine bugs fixed in 0.8.6:**
+
+1. **Combined-OR negation inversion** (firewall.uc 88/110 "got integer |
+   double"): `applyTypeGuard` IGNORED `isNegative` on `isCombinedOr` guards, so
+   the fall-through of `if (t == "int" || t == "double") return …` narrowed the
+   variable TO integer|double. Now removes the union members on the negative
+   edge.
+2. **UC5003 through a `type(x) == "object"` guard** (cloud.uc 112/113/137): the
+   member-access string check read the RAW union (`object|string|null` from
+   switch_server_format's dict-value/for-in-key/null returns) instead of the
+   guard-narrowed type. Now consults getNarrowedTypeAtPosition like the
+   provably-null check beside it.
+3. **Union-of-tuples indexing took the FIRST array member only** (vpn-client.uc
+   567/568 UC2009): `split_host_port`'s three tuple arms union to
+   `array<null> | array<string|null>`; `hp[0]` typed bare `null` → the
+   `domain != ""` comparison "always true". Now unions ALL array members'
+   element types (unknown members RETAINED — no over-claim).
+
+Plus: `A || B` now applies A's NEGATED type guard inside B (`t != "string" ||
+match(v, …)` proves v string), mirroring the else-branch flip — this also
+removed four strict-unknown FPs (firewall.uc:88, black_white_list.uc:120,
+dns.uc:313, macclone.uc:39, timer.uc:27) beyond the audited list, and made the
+old "OR does not narrow" test assertion obsolete (it was pinning the gap).
+
+Residual (accepted): firewall.uc:110 now shows the honest strict-unknown
+complaint instead of the wrong-type claim — full `string` narrowing there needs
+negation of a disjunctive arm (`port == null || (t != "s" && t != "i" && …)`),
+filed as a follow-up thought, low value while strictUnknownArguments already
+covers the file.
+
+Validation: mega-sweep 282 files / 93,238 lines vs 0.8.5 → **−15 / +4**, all
+adjudicated (removals = the FP classes + short-circuit wins; adds = more-honest
+message rewrites on persisting warnings). Tests:
+tests/test-guard-negation-fixes.test.js (10). Suites 4,450/0 + comprehensive.

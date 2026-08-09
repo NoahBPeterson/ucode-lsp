@@ -418,7 +418,7 @@ let value = a != null && type(a) == "object" && 5 in a;`;
   }
 });
 
-test("should NOT narrow type in logical OR (||) expressions", async () => {
+test("narrows through the falsy left of a logical OR (a == null || a.a)", async () => {
   const content = `function null_or_object(test) {
     if (type(test) == "string") return null;
     return {"a": 5};
@@ -426,9 +426,11 @@ test("should NOT narrow type in logical OR (||) expressions", async () => {
 
 let a = null_or_object(1);
 
-// OR does not provide narrowing - if left is truthy, right is not evaluated.
-// (Probe via member access - the in operator is null-safe, so it no longer signals null.)
-let result = a == null || a.a; // Should still show possibly-null on a.a`;
+// The RIGHT side of || evaluates only when the left was FALSY — here that means
+// \`a == null\` was false, so \`a\` is provably non-null at \`a.a\`. This is the
+// classic null-check-or-default idiom; flagging it was a false positive (the
+// old version of this test pinned the gap as intended behavior).
+let result = a == null || a.a;`;
 
   const testPath = path.join(__dirname, "temp-or-no-narrowing.uc");
   fs.writeFileSync(testPath, content);
@@ -444,9 +446,9 @@ let result = a == null || a.a; // Should still show possibly-null on a.a`;
       d.range.start.line === orLineNum
     );
 
-    // OR should NOT narrow - should still have null diagnostic
-    expect(nullDiagnostics.length).toBe(1);
-    console.log("✓ OR does not narrow types (expected behavior)");
+    // The falsy-left negation proves a non-null on the right of the ||.
+    expect(nullDiagnostics.length).toBe(0);
+    console.log("✓ || narrows via the negated left guard");
 
   } finally {
     if (fs.existsSync(testPath)) {
