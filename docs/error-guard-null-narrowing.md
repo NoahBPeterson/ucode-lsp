@@ -87,3 +87,55 @@ must not narrow a read reached via the back edge).
   path ([[cfg-and-flow-engine]] rules).
 - Regression sentinels to add: the verbatim repro above; a reassigned-err
   counterexample; a loop-carried counterexample; cross-file + same-file variants.
+
+---
+
+# Survey (2026-08-09): cost of the gap, payoff, and build plan
+
+## What it costs today (measured, current build)
+
+| # | Where | Diagnostic | Verdict |
+|---|-------|-----------|---------|
+| 1 | podman-api L54 `match(volumeData, …)` | `nullable-argument` (sev1, strict file) | **FP** — volumeData guarded 3 lines up |
+| 2 | podman-api L57 `b64dec(volumeData)` | `nullable-argument` (sev1) | **FP** — same guard |
+| 3 | podman-api post-guard hovers | `volumeName`/`volumeData`/`compressed` show `string \| null` | UX lie — the guard proved non-null |
+| 4 | pull-worker sock/hdrs/lf wave (historical) | 10+ UC5006 | Mitigated by the 0.8.3 terminator stamping — but only because those were DIRECT `if (!x)` tests; the err-flag form has no such workaround |
+| 5 | Suppression pressure | podman-api already carries `// ucode-lsp disable` on imports | Every FP pushes authors toward blanket disables that mask future true positives |
+
+**Frequency of the idiom:** 108 `if (err)` / `if (e)` guard sites across the survey
+corpora (glinet + luci-base + podman + wwand); 49 `require_param`/`validate_*`
+chain lines in podman.uc alone. Most sites do NOT currently FP — only because the
+guarded values happen to be typed non-null (rpcd args via typedefs) or unknown
+(unannotated params, which suppress checks). That is the strategic point: **each
+typing improvement converts silent sites into FP sites** — it happened three times
+in one week (pull-worker sock after `?socket` unions, podman-api after container-
+read null, is_remote-adjacent hovers after IIFE inference). The narrowing is the
+missing counterweight to every future typing win.
+
+## What building it resolves — and what it deliberately does not
+
+| Outcome | Covered? |
+|---------|----------|
+| podman-api FPs #1–2 + hover lies #3 | ✅ the verbatim repro |
+| Any `let err = f(x) \|\| …; if (err) <bail>` where f null-rejects x | ✅ generic — nothing hardcoded to require_param |
+| `if (err) return …;` form (rpcd methods) as well as `die()`/terminators | ✅ blockAlwaysTerminates already handles both |
+| Guards over MEMBER paths (`require_param('id', req.args.id)`) | ✅ **required** — rpcd passes member paths, not identifiers; design v1 said "plain identifier" and must be widened to the member-path narrowing the engine already does (0.6.158) |
+| `validate_int(x)` / content validators narrowing null | ❌ by design — they reject on CONTENT; only the null-arm pattern licenses non-null (the \|\|-chain still narrows via its require_param arms) |
+| cursor()/popen() may-null true positives | ❌ correct diagnostics, out of scope |
+| Shape-in-union collapse (`json(hdrs.body_remainder)` unknown) | ❌ separate limitation (ObjectType carries no property map) |
+| Reassigned err / loop-carried captures | ❌ deliberately invalidated (soundness) |
+
+## Build plan
+
+| Phase | Work | Where | Size | Risk |
+|-------|------|-------|------|------|
+| 1 | `nullGuardParams` contract inference from function bodies (truthy return dominated by a `param == null`-arm test; all other paths null/implicit) | semanticAnalyzer, next to return-type inference; stamp on the fn symbol | S | Low — syntactic, conservative |
+| 2 | Same contract cross-file for imported guards | fileResolver (mirrors the 0.8.2 bracket-optional fix's shape) | S | Low |
+| 3 | Implication capture at `let err = <\|\|-chain>`: per-arm (guarded-expr, position) incl. MEMBER paths; invalidate on any write to err or a guarded expr's base | analyzer declarator/assignment visits; symbol field | M | Medium — write-invalidation must respect loop back-edge stamps (0.7.92) |
+| 4 | Application where flow knows err is falsy (post-`if (err) <terminating>`, else-branch): strip null via the existing guard-narrowing path | flowTypeEngine + getGuardsForPosition | M–L | **Highest** — the engine is the soundness-critical core; the loop-backedge campaign is the cautionary tale |
+| 5 | Tests: verbatim podman-api repro; reassignment/loop/content-validator counterexamples; cross-file + same-file; corpus differential must show EXACTLY the predicted removals (2 FPs + hover changes, nothing else) | tests/ + diff harness | M | — |
+
+Estimated shape: one focused session (comparable to the 0.7.92 loop-soundness
+campaign — same engine, similar blast surface). Phases 1–3 are safe to land alone
+(inert until phase 4 consumes them); phase 4 is the gate that wants fresh context
+and the corpus differential as its acceptance test.
