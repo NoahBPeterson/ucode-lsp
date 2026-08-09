@@ -1,6 +1,6 @@
 # Analyzer perf: multi-hundred-KB single files hang analysis
 
-Status: **FIXED in 0.8.1 (2026-08-06).** 315KB repro: 70.3 s → 0.6 s (~100×),
+Status: **FIXED — committed in 938d216 (0.8.2, 2026-08-08; developed as "0.8.1" but the wave absorbed that number — no commit ever carried it).** 315KB repro: 70.3 s → 0.6 s (~100×),
 byte-identical diagnostics. Found 2026-08-05 during the third-party LuCI fleet sweep.
 
 Repro: `i-love-luci`'s rpcd backend
@@ -27,7 +27,7 @@ from two compounding quadratics:
    computing both positionAt calls. So every one of the 14.8M discarded
    duplicates paid two positionAt binary searches plus a scan.
 
-## Fix (0.8.1)
+## Fix (shipped in 0.8.2, 938d216)
 
 - `typeChecker.drainNewDiagnostics()`: high-water-marked drain returning only
   entries emitted since the previous drain (4 marks: checker + builtinValidator
