@@ -87,3 +87,58 @@ test('expression-body arrow IIFE types from its expression', async () => {
   const code = "const six = (() => 6)();\nprint(six);\n";
   expect(await hoverAt(code, 'six = (')).toContain('`integer`');
 });
+
+// UC7005 boolean-coercion quick fix: `return X && (…)` leaks X itself when falsy
+// (ucode's && is value-preserving — compiler.c uc_compiler_compile_and), so an
+// object|null guard types the return boolean|null. When X's non-null arms are
+// always-truthy, `X != null && …` keeps the exact truth condition and returns a
+// real boolean — offered as the PREFERRED fix, demoting the annotation-widening one.
+test('UC7005 on `return guard && (…)` offers the != null coercion, preferred', async () => {
+  const code = [
+    "const _dest = 'unix:///x';",
+    'const _parsed = (() => {',
+    "\tif (substr(_dest, 0, 1) === '/')",
+    "\t\treturn { scheme: 'unix', addr: _dest };",
+    '\treturn null;',
+    '})();',
+    '/** @returns {boolean} true if destination is a TCP scheme */',
+    'export function is_remote() {',
+    "\treturn _parsed && (_parsed.scheme === 'tcp' || _parsed.scheme === 'tcp6');",
+    '};',
+    'print(is_remote());',
+  ].join('\n');
+  const p = `/tmp/iife-${n++}.uc`;
+  const d = await server.getDiagnostics(code, p);
+  const uc = (d || []).find((x) => String(x.code) === 'UC7005');
+  expect(uc.message).toContain("'boolean|null'");
+  const acts = await server.getCodeActions(p, [uc], uc.range.start.line, uc.range.start.character + 2);
+  const coerce = (acts || []).find((a) => a.title === 'Return a real boolean (_parsed != null && …)');
+  expect(coerce.isPreferred).toBe(true);
+  const widen = (acts || []).find((a) => a.title.startsWith('Change @returns'));
+  expect(widen.isPreferred).toBe(false); // demoted while the code-side fix is on offer
+  expect(coerce.edit.changes[`file://${p}`][0].newText).toBe(' != null');
+  // Applying it satisfies the annotation.
+  const e = coerce.edit.changes[`file://${p}`][0];
+  const applied = code.split('\n').map((l, i) => i === e.range.start.line
+    ? l.slice(0, e.range.start.character) + e.newText + l.slice(e.range.start.character) : l).join('\n');
+  const d2 = await server.getDiagnostics(applied, `/tmp/iife-${n++}.uc`);
+  expect((d2 || []).filter((x) => String(x.code) === 'UC7005')).toEqual([]);
+});
+
+test('no coercion fix when the guard has falsy non-null values (string)', async () => {
+  const code = [
+    'let name = ARGV[0];',
+    '/** @returns {boolean} */',
+    'export function has_name() {',
+    '\treturn name && length(name) > 0;',
+    '};',
+    'print(has_name());',
+  ].join('\n');
+  const p = `/tmp/iife-${n++}.uc`;
+  const d = await server.getDiagnostics(code, p);
+  const uc = (d || []).find((x) => String(x.code) === 'UC7005');
+  expect(uc).toBeTruthy();
+  const acts = await server.getCodeActions(p, [uc], uc.range.start.line, uc.range.start.character + 2);
+  // `"" != null` is true but `"" && …` is falsy — the rewrite would change behavior.
+  expect((acts || []).some((a) => a.title.startsWith('Return a real boolean'))).toBe(false);
+});

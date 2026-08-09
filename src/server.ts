@@ -118,6 +118,9 @@ interface DiagnosticData {
     /** UC7001 unknown JSDoc type: the near-miss token, the known name to rewrite to,
      *  and the corrected full expression (sugar included) for display. */
     jsdocTypeSuggestion?: { find?: string; replaceWith?: string; corrected?: string };
+    /** UC7005 on `return X && (…)` leaking X's null: offsets for the `X != null &&`
+     *  boolean-coercion fix (insertAfter = end of the guard atom X). */
+    returnGuardNonNull?: { insertAfter?: number; lhsStart?: number; lhsEnd?: number };
     coerceToString?: boolean;
     argNeedsParens?: boolean;
     convertStringToRegex?: boolean;
@@ -2278,6 +2281,27 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // the type expression to the TRUE inferred return type (the full union of returns;
             // `null` when there's no return). AST-based: replaces the `{…}` span the analyzer
             // located in the JSDoc, never line-string parsing.
+            // Preferred when available: `return X && (…)` leaking X's null — insert
+            // `!= null` after the guard so the return is a REAL boolean and the
+            // annotation becomes true as written (same truth condition: the analyzer
+            // only attaches this when X's non-null arms are always-truthy).
+            if (diagnostic.code === 'UC7005') {
+                const g = diagData(diagnostic).returnGuardNonNull;
+                if (g?.insertAfter !== undefined && g.lhsStart !== undefined && g.lhsEnd !== undefined) {
+                    const lhsText = document.getText({
+                        start: document.positionAt(g.lhsStart), end: document.positionAt(g.lhsEnd),
+                    });
+                    codeActions.push({
+                        title: `Return a real boolean (${lhsText} != null && …)`,
+                        kind: CodeActionKind.QuickFix,
+                        diagnostics: [diagnostic],
+                        isPreferred: true,
+                        edit: { changes: { [params.textDocument.uri]: [
+                            TextEdit.insert(document.positionAt(g.insertAfter), ' != null'),
+                        ] } },
+                    });
+                }
+            }
             if (diagnostic.code === 'UC7005' && (diagnostic as any).data?.ucReturnsFix) {
                 const fix = (diagnostic as any).data.ucReturnsFix;
                 const range = { start: document.positionAt(fix.exprStart), end: document.positionAt(fix.exprEnd) };
@@ -2285,7 +2309,8 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                     title: `Change @returns to '{${fix.suggested}}'`,
                     kind: CodeActionKind.QuickFix,
                     diagnostics: [diagnostic],
-                    isPreferred: true,
+                    // Preferred only when the boolean-coercion fix isn't on offer.
+                    isPreferred: diagData(diagnostic).returnGuardNonNull?.insertAfter === undefined,
                     edit: { changes: { [params.textDocument.uri]: [TextEdit.replace(range, `{${fix.suggested}}`)] } },
                 });
             }

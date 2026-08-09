@@ -4236,6 +4236,43 @@ export class SemanticAnalyzer extends BaseVisitor {
     return { ucReturnsFix: { exprStart: range.start, exprEnd: range.end, suggested: this.jsdocTypeDisplay(inferred) } };
   }
 
+  /** For `return X && <expr>` flagged ONLY for the null a falsy X leaks — ucode's `&&`
+   *  returns the LHS value itself when falsy (compiler.c uc_compiler_compile_and), so
+   *  `_parsed && (…)` with `_parsed: object|null` types boolean|null. When X can only
+   *  be null-or-always-truthy (object/array/regex arms — ucode objects have no falsy
+   *  values), rewriting to `X != null && <expr>` keeps the exact same truth condition
+   *  while producing a real boolean. Attach the insertion offset for that quick fix.
+   *  Gated on an ATOM LHS (identifier/member/call): after a compound LHS, `!= null`
+   *  would rebind under its higher precedence (`a && b != null && c`). */
+  private withGuardCoercionFix(
+    base: unknown,
+    declared: UcodeDataType,
+    e: { node: ReturnStatementNode; type: UcodeDataType },
+  ): unknown {
+    const arg = e.node.argument;
+    if (!arg || arg.type !== 'BinaryExpression') return base;
+    const bin = arg as BinaryExpressionNode;
+    if (bin.operator !== '&&') return base;
+    if (bin.left.type !== 'Identifier' && bin.left.type !== 'MemberExpression' && bin.left.type !== 'CallExpression') return base;
+    // The annotation shortfall must be EXACTLY the null arm — then dropping it fixes it.
+    const unify = (b: UcodeType): UcodeType => (b === UcodeType.DOUBLE ? UcodeType.INTEGER : b);
+    const declaredBases = new Set(getUnionTypes(declared).map(s => unify(singleTypeToBase(s))));
+    const uncovered = getUnionTypes(e.type)
+      .map(s => unify(singleTypeToBase(s)))
+      .filter(b => b !== UcodeType.UNKNOWN && !declaredBases.has(b));
+    if (uncovered.length === 0 || uncovered.some(b => b !== UcodeType.NULL)) return base;
+    const lhsType = this.typeChecker.getTypeOf(bin.left);
+    if (lhsType === undefined) return base;
+    const arms = getUnionTypes(lhsType).map(s => singleTypeToBase(s));
+    const alwaysTruthy = new Set<UcodeType>([UcodeType.OBJECT, UcodeType.ARRAY, UcodeType.REGEX]);
+    if (!arms.includes(UcodeType.NULL)) return base;
+    if (!arms.every(a => a === UcodeType.NULL || alwaysTruthy.has(a))) return base;
+    return {
+      ...((base as object) ?? {}),
+      returnGuardNonNull: { insertAfter: bin.left.end, lhsStart: bin.left.start, lhsEnd: bin.left.end },
+    };
+  }
+
   /** Does the declared JSDoc type COVER every concrete possibility of the inferred type?
    *  This is the soundness gate: a JSDoc annotation isn't runtime-checked, so it may FILL an
    *  `unknown` or restate/widen an inferred type, but it must NOT be narrower than what the
@@ -4300,7 +4337,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         `This returns '${this.jsdocTypeDisplay(e.type)}', which @returns {${this.jsdocTypeDisplay(declared)}} does not cover`,
         e.node.start, e.node.end,
         DiagnosticSeverity.Warning,
-        fixData,
+        this.withGuardCoercionFix(fixData, declared, e),
       );
     }
     return inferredReturnType; // keep the body type; don't poison call sites with the unsound annotation
