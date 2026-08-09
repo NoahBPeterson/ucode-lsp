@@ -1,5 +1,92 @@
 # Changelog
 
+## 0.8.6 (2026-08-09)
+
+Everything since `v0.7.89` (0.7.90–0.8.6). Four arcs: the analyzer got **~100× faster**
+on large files; the extension became **LuCI-runtime aware** (`.ut` templates, dispatcher
+environment, bundled `luci.*` types for standalone packages); inference learned the
+**error-guard idiom** (`let err = require_param('x', v) || …; if (err) die(err);` now
+proves the guarded arguments non-null); and two triage rounds against real firmware
+corpora fixed a set of **guard-narrowing engine bugs** — every change validated by a
+282-file / 93,000-line differential sweep across the LuCI tree, GL.iNet firmware, and
+community packages.
+
+### ~100× analyzer performance on large files (0.8.2)
+
+- A 315 KB / 10,000-line rpcd backend went from **70.3 s to 0.6 s** for a full analysis
+  pass, with byte-identical diagnostics. The disease was quadratic diagnostic
+  forwarding — 14.8 **million** `addDiagnostic` calls to produce 933 diagnostics — fixed
+  with high-water-marked draining and O(1) set-based dedup.
+
+### LuCI runtime awareness (0.8.0, 0.8.2)
+
+- `.ut` files are a first-class **ucode-template** language: template lexing, the
+  dispatcher render environment as typed ambients, template-root-relative `include()`
+  resolution, and cross-file render-scope inference (corpus: −133 diagnostics, +0).
+- **Bundled `luci-base` reference types** ship with the extension: a standalone
+  package checkout (no LuCI tree on disk) now resolves `require 'luci.sys'` & friends
+  to typed modules instead of `unknown`; a real LuCI tree on disk still wins.
+- Cross-file JSDoc `[optional]` parameters survive import resolution (was a UC2003
+  false-positive source).
+
+### Typedef and quick-fix suite (0.8.2–0.8.4)
+
+- **Generate `@typedef` from usage**: one action mines every member access off an
+  `@param {object}` parameter (nested paths included) into a nested-`@property`
+  typedef, reuses or *widens* an existing typedef when methods share a request shape,
+  and scaffolds JSDoc from scratch on bare functions — chained as
+  `UC7003 → UC7009 → preferred fix`.
+- `@returns {boolean}` on a null-leaking `return guard && (…)` (ucode's `&&` is
+  value-preserving) gets a preferred **`guard != null &&`** rewrite (0.8.4).
+- Unknown JSDoc types get a **did-you-mean** with a one-click rewrite
+  (`?Socket` → `?socket`), drawing on primitives, module names, object kinds, and
+  in-file typedefs (0.8.3).
+- Inline object shapes (`{a:string}|null`) parse in JSDoc unions; the union splitter
+  is depth-aware (0.8.2).
+
+### Deeper inference (0.7.91, 0.8.3)
+
+- **IIFE constants**: `const parsed = (() => { … })()` types from the literal's own
+  return union, and returned object shapes flow onto the binding like a named
+  factory's (the podman-socket module-constant idiom).
+- `?socket`-style handle annotations are real unions now (`socket | null`), and
+  syntactic never-return stamping makes `if (!x) die_helper();` guards narrow before
+  the CFG fixpoint runs (0.8.3).
+- `ord(s, offset)` second argument, `ord`/`chr` constant folding through never-rebound
+  locals, and exists-guard seeding (0.7.91) — lib.c-verified across all five supported
+  ucode pins.
+
+### Soundness: loops, coercion, and the error-guard idiom (0.7.90, 0.7.92, 0.8.5)
+
+- Coercing comparisons (`x == 1` etc.) are no longer treated as type guards; a new
+  lint catches unshared fresh references (0.7.90).
+- **Loop back-edge soundness** (0.7.92): read-before-write detection understands
+  loop-carried values via loop-extent stamps and within-iteration dominance — the
+  mid-pass divergence that produced phantom UC2009s is gone.
+- **Error-guard null narrowing** (0.8.5): a falsy `require_param('x', v)`-style result
+  proves `v` non-null — inferred from the guard's body, carried cross-file on imports,
+  applied through every bail shape (`die()`/`return`/`continue`/`break`/user
+  terminators, `else`, `if (!err)`, ternaries, `err || use`, mid-chain `||` arms,
+  aliases, member paths) with write- and loop-back-edge invalidation. Killed all five
+  null-family false positives in the podman-api CLI; **139-test** suite; the 93K-line
+  sweep shows −10/+0 with zero collateral.
+
+### Guard-narrowing engine fixes from firmware triage (0.8.6)
+
+- Fall-through of `if (t == "int" || t == "double") return …` no longer narrows the
+  variable **to** `integer|double` — combined-OR guards now honor negation.
+- `type(x) == "object"` guards suppress the string-member error on
+  `object|string|null` unions (the member check now reads the narrowed type).
+- Indexing a union of tuple-shaped arrays (`array<null> | array<string|null>`) unions
+  **all** members' element types instead of taking the first — fixing an
+  "always true" comparison false positive downstream.
+- `A || B` applies A's negated type guard inside B: `t != "string" || match(v, …)`
+  proves `v` is a string at the `match` — the short-circuit mirror of the else-branch
+  flip; removed five more strict-mode false positives corpus-wide.
+- The seven audited "use before declaration" claims were **confirmed true positives**:
+  ucode forward references crash even when the call is deferred (container-verified
+  against ucode main and 25.12) — the flags stay.
+
 ## 0.7.89 (2026-08-02)
 
 Everything since `v0.7.59` (0.7.60–0.7.89). Four arcs: **typed OpenWrt daemon globals**
