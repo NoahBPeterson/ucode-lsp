@@ -1,4 +1,4 @@
-.TH UCODE-LSP 1 "2026-07-11" "0.7.68" "ucode-lsp manual"
+.TH UCODE-LSP 1 "2026-08-09" "0.8.6" "ucode-lsp manual"
 .SH NAME
 ucode-lsp \- language server and static checker for ucode
 .SH SYNOPSIS
@@ -17,7 +17,9 @@ language used in OpenWrt.
 When invoked without a transport flag, it scans \fB.uc\fR files and prints
 diagnostics (errors and warnings) to stdout, similar to \fBtsc\fR.
 When invoked with \fB\-\-stdio\fR, it runs as an LSP server for use with
-editors like Neovim or VS Code.
+editors like Neovim or VS Code. In server mode it also handles \fB.ut\fR
+LuCI template files (the \fBucode-template\fR language) and template\-mode
+\fB.uc\fR files (content starting with \fB{%\fR).
 .SH MODES
 .TP
 .B (default)
@@ -127,8 +129,11 @@ function greet(name) { ... }
 .fi
 .RE
 .PP
-Note: return types are currently parsed for documentation but type inference
-uses the actual return statements.
+The annotation is checked against the function's actual return statements:
+a declared type that does not cover what the body can return (for example a
+missing \fBnull\fR arm, or a \fB{boolean}\fR on a value\-preserving
+\fBguard && (...)\fR return) is reported as \fBUC7005\fR, usually with a
+quick fix.
 .SS @typedef / @property \- Custom Types
 Define named object types with typed properties:
 .PP
@@ -157,6 +162,11 @@ Typedefs are scoped to the file they are defined in.
 \fBboolean\fR (\fBbool\fR), \fBarray\fR, \fBobject\fR, \fBfunction\fR, \fBnull\fR,
 \fBregex\fR (\fBregexp\fR)
 .TP
+.B Generic arrays
+\fBarray<T>\fR types the elements: \fB{array<string>}\fR makes \fBfor (let s
+in arr)\fR type \fBs\fR as \fBstring\fR and \fBarr[i]\fR as
+\fBstring | null\fR.
+.TP
 .B Module types
 Builtin modules can be used directly as types:
 \fBfs\fR, \fBuci\fR, \fBubus\fR, \fBuloop\fR, \fBmath\fR, \fBio\fR, \fBlog\fR,
@@ -167,18 +177,31 @@ The \fBmodule:\fR prefix is also accepted: \fB{module:fs}\fR.
 .TP
 .B Object types
 Module object types provide method/property completion:
-\fBfs.file\fR, \fBfs.dir\fR, \fBfs.proc\fR, \fBfs.statvfs\fR,
-\fBio.handle\fR, \fBuci.cursor\fR, \fBnl80211.listener\fR,
+\fBfs.file\fR, \fBfs.dir\fR, \fBfs.proc\fR, \fBfs.stat\fR, \fBfs.statvfs\fR,
+\fBio.handle\fR, \fBuci.cursor\fR, \fBuci.section\fR, \fBsocket\fR,
+\fBubus.connection\fR, \fBubus.channel\fR, \fBubus.deferred\fR,
+\fBubus.object\fR, \fBubus.request\fR, \fBubus.notify\fR, \fBubus.listener\fR,
+\fBubus.subscriber\fR, \fBnl80211.listener\fR, \fBrtnl.listener\fR,
 \fBuloop.timer\fR, \fBuloop.handle\fR, \fBuloop.process\fR, \fBuloop.task\fR,
 \fBuloop.interval\fR, \fBuloop.signal\fR, \fBuloop.pipe\fR,
-\fBexception\fR.
+\fBstruct.instance\fR, \fBstruct.buffer\fR, \fBzlib.deflate\fR,
+\fBzlib.inflate\fR, \fBbpf.module\fR, \fBbpf.map\fR, \fBbpf.program\fR,
+\fBuline.state\fR, \fBuline.argp\fR, \fBmbedtls.pk\fR, \fBmbedtls.crt\fR,
+\fBuhttpd\fR, \fBnetifd.proto\fR, \fBnetifd.daemon\fR, \fBhostapd.global\fR,
+\fBhostapd.bss\fR, \fBhostapd.iface\fR, \fBwpas.global\fR, \fBwpas.iface\fR,
+\fBluci.http\fR, \fBluci.dispatcher\fR, \fBexception\fR.
 .TP
 .B Union types
 Combine types with \fB|\fR: \fB{string|number}\fR, \fB{fs.file|null}\fR.
 .TP
 .B Optional types
-Append \fB?\fR to make a type nullable: \fB{string?}\fR is equivalent to
-\fB{string|null}\fR.
+Append or prefix \fB?\fR to make a type nullable: \fB{string?}\fR and
+\fB{?string}\fR are both equivalent to \fB{string|null}\fR.
+.TP
+.B Optional parameters
+Bracket the name (\fB@param {string} [ctx]\fR) or use \fB{string=}\fR to mark
+a parameter optional: call sites may omit it, and inside the function its type
+gains \fB| null\fR.
 .TP
 .B import() expressions
 Reference types from other modules:
@@ -294,6 +317,11 @@ always false.
 .TP
 .B UC2010
 A value that is not callable is called like a function.
+.SS Syntax fidelity (UC6xxx)
+Constructs the real ucode compiler rejects even though they scan as plausible
+code \(em reserved words as identifiers, empty import/export lists, bare
+numeric object keys, and similar. Each verdict is verified against the ucode
+interpreter.
 .SS Imports and modules (UC3xxx)
 .TP
 .B UC3002
@@ -331,13 +359,20 @@ Property access or indexing on a value that may be null here.
 .SS JSDoc annotations (UC7xxx)
 .TP
 .B UC7001
-Unknown type in a @param annotation.
+Unknown type in an annotation \(em with a did\-you\-mean suggestion and
+rewrite fix when a close match exists (\fB?Socket\fR \(-> \fB?socket\fR).
 .TP
 .B UC7002
 A @param name does not match any function parameter.
 .TP
 .B UC7003
-Function parameters missing @param annotations (strict mode only).
+Function parameters missing @param annotations (strict mode only). The quick
+fix can generate a full \fB@typedef\fR from how the parameter's members are
+actually used.
+.TP
+.B UC7005
+A declared @returns type that does not cover what the function's body can
+actually return.
 .SS Global\-scope soundness and risky calls (UC8xxx)
 .TP
 .B UC8001
