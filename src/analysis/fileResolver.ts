@@ -5,6 +5,7 @@ import { type FunctionDeclarationNode, type AstNode, type ExportDefaultDeclarati
 import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
 import { UcodeType, type UcodeDataType, type SingleType, createUnionType, isUnionType, isObjectType, isArrayType, typeToString, widenWithNull, type ParamInfo } from './symbolTable';
 import { parseJsDocComment, resolveTypeExpression } from './jsdocParser';
+import { inferNullGuardParams } from './nullGuardContract';
 import { getOpenDocumentContent } from './openDocuments';
 import { resolveLuciTemplatePath, resolveLuciModulePath } from './luciEnv';
 import { MAX_ANALYSIS_DEPTH } from './visitor';
@@ -2310,6 +2311,26 @@ export class FileResolver {
      * Returns null if the export is absent or isn't a function.
      */
     getNamedExportFunctionParameters(fileUri: string, exportName: string, _visited: Set<string> = new Set()): ParamInfo[] | null {
+        const funcNode = this.resolveNamedExportFunctionNode(fileUri, exportName, _visited);
+        return funcNode ? this.extractFunctionParameters(funcNode) : null;
+    }
+
+    /**
+     * Null-guard contract of a NAMED exported function (nullGuardContract.ts):
+     * the parameter indices whose argument is proven non-null by a falsy result.
+     * Resolved from the same export/re-export walk as the parameter signature and
+     * stamped onto the imported symbol (docs/error-guard-null-narrowing.md).
+     * Returns null when the export isn't a resolvable function.
+     */
+    getNamedExportNullGuardParams(fileUri: string, exportName: string): number[] | null {
+        const funcNode = this.resolveNamedExportFunctionNode(fileUri, exportName, new Set());
+        return funcNode ? inferNullGuardParams(funcNode) : null;
+    }
+
+    /** The AST node of a NAMED exported function, following barrel/namespace
+     *  re-export chains. Shared resolution for the signature and null-guard
+     *  contract extractors above. */
+    private resolveNamedExportFunctionNode(fileUri: string, exportName: string, _visited: Set<string>): AstNode | null {
         try {
             // Cycle guard for re-export chains (`export { x } ←→`).
             const visitKey = `${fileUri}#${exportName}`;
@@ -2353,12 +2374,12 @@ export class FileResolver {
                                 // `export const describe = someFn;` — chase an imported alias.
                                 // docs/tc-barrel-reexport-typing.md
                                 const reexp = this.findReexportedSource(fileUri, (init as IdentifierNode).name);
-                                if (reexp) return this.getNamedExportFunctionParameters(reexp.uri, reexp.importedName, _visited);
+                                if (reexp) return this.resolveNamedExportFunctionNode(reexp.uri, reexp.importedName, _visited);
                             } else if (init && init.type === 'MemberExpression') {
                                 // `export const describe = dsl.describe;` — barrel re-export
                                 // through a namespace member. docs/tc-barrel-reexport-typing.md
                                 const nsAlias = this.resolveNamespaceMemberAlias(fileUri, init);
-                                if (nsAlias) return this.getNamedExportFunctionParameters(nsAlias.uri, nsAlias.member, _visited);
+                                if (nsAlias) return this.resolveNamedExportFunctionNode(nsAlias.uri, nsAlias.member, _visited);
                             }
                             break;
                         }
@@ -2378,13 +2399,13 @@ export class FileResolver {
                                 funcNode = init;
                             } else if (init && init.type === 'MemberExpression') {
                                 const nsAlias = this.resolveNamespaceMemberAlias(fileUri, init);
-                                if (nsAlias) return this.getNamedExportFunctionParameters(nsAlias.uri, nsAlias.member, _visited);
+                                if (nsAlias) return this.resolveNamedExportFunctionNode(nsAlias.uri, nsAlias.member, _visited);
                             } else {
                                 // Re-export: `import { x } from './impl'; export { x };` — the
                                 // name isn't declared here, it's forwarded. Follow the chain to
                                 // the source module and resolve the signature there.
                                 const reexp = this.findReexportedSource(fileUri, localName);
-                                if (reexp) return this.getNamedExportFunctionParameters(reexp.uri, reexp.importedName, _visited);
+                                if (reexp) return this.resolveNamedExportFunctionNode(reexp.uri, reexp.importedName, _visited);
                             }
                         }
                         break;
@@ -2393,7 +2414,7 @@ export class FileResolver {
                 }
             }
 
-            return funcNode ? this.extractFunctionParameters(funcNode) : null;
+            return funcNode;
         } catch {
             return null;
         }

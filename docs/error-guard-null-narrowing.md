@@ -1,8 +1,65 @@
 # Error-guard null narrowing (the `require_param` idiom)
 
-Status: **OPEN — user-requested 2026-08-08.** This is the concrete, corpus-grounded
+Status: **BUILT — 0.8.5 (2026-08-09).** This was the concrete, corpus-grounded
 form of the long-open "correlated-flag narrowing" item
 (docs/TRIAGE-2026-07-07-type-coverage.md STILL-OPEN list).
+
+Shipped shape (all five phases, in one pass):
+- `src/analysis/nullGuardContract.ts` — contract inference from guard bodies
+  (`inferNullGuardParams`, WeakMap-cached): a param is flagged when a top-level
+  `if (T) <always-return-truthy>` has a top-level ||-arm null test of it and no
+  earlier statement contains a falsy-capable own return. Content validators
+  match nothing, by construction.
+- Cross-file: `fileResolver.getNamedExportNullGuardParams` (shares the export
+  node resolution with the param-signature extractor via
+  `resolveNamedExportFunctionNode`); stamped as `Symbol.nullGuardParams` at the
+  named-import site. Same-file callees resolve lazily from the declaration AST
+  (`functionNodeForSymbol` — FUNCTION symbols store their *identifier* node, so
+  a per-AST id-position index recovers the declaration).
+- Application lives in the GUARD LAYER (`collectGuards`), not the flow engine's
+  env: `falsyImpliedNonNullPaths` fires on the terminating-`if (err)` sibling
+  fall-through (incl. `continue`/`break` and user neverReturns terminators), the
+  `if (err) … else` branch, the POSITIVE `if (!err)` branch (any `!flag` conjunct
+  of the test), both ternary shapes (`err ? bail : use`, `!err ? use : bail`),
+  `err || use(v)` (flag arms of a `||`), and (mid-chain, no flag involved) the
+  `||`-RHS — `require_param('x', v) || validate_name(v)` narrows v at the
+  validate_name argument. Member paths (`req.args.id`) work via getDottedPath;
+  aliases (`let rp = require_param`) carry the contract (import stamp copy +
+  lazy initNode-identifier hops).
+- The IIFE/object-method fix that fell out: `getGuardsForPosition`'s cache was
+  being POISONED by out-of-order quiet walks (the 0.8.3 IIFE return pre-walk
+  runs before the body's `err` symbol exists, caching an empty guard set the
+  real pass then reads). `quietDepth` now gates cache writes — quiet checks
+  compute but never cache. This is a general staleness fix, not guard-specific.
+- NOT ucode, learned the hard way: there is no `throw` statement (nothing in
+  lexer.c/compiler.c; our ThrowStatement node type is vestigial) — exceptions
+  are raised via die(). Don't add ThrowStatement handling to terminator logic.
+- Invalidation: flag reassigned after its initializer; guarded path (or a
+  PREFIX — `req.args = …` kills `req.args.id`) written between capture and use
+  (`isPathAssignedBetween`); and the loop back edge — a query inside a loop
+  that does NOT contain the capture, where the loop body writes the flag or the
+  path, drops the implication (`loopCarriedWriteInvalidates`; a loop containing
+  the capture re-captures each iteration and stays safe).
+
+Validation: tests/test-error-guard-narrowing.test.js (139 tests in 8 sections:
+A contract-inference positives ×27, B contract negatives ×15, C application
+forms ×43 — incl. IIFEs, object-literal dispatcher methods, closures, loops,
+aliases, exports — D argument forms ×5, E invalidation counterexamples ×26,
+F cross-file ×8 — aliased imports, barrel re-exports — G hover ×5, H interplay
+×10); podman-api 9 → 4 diagnostics (ALL five null-family FPs gone: L54 match,
+L57 b64dec, and the three mid-chain validate_* arg errors — survivors are
+unrelated UC8002/UC8014); 86-file corpus AND 96-file vendor differentials both
+−0/+0; full suites 4,440/0 + comprehensive. Demo: zzzz/error-guard-demo.uc
+(BEFORE/AFTER annotations; sections 8–12 are live deliberate-refusal squiggles).
+
+Mega-sweep (2026-08-09, user-requested): every nested repo + external corpus —
+luci, luci-app-podman, wwand, lucihttp, vendored ucode, resources/luci-base,
+glinet, the fleet clones, i-love-luci (315KB) — *.uc + *.ut + extensionless
+ucode-shebang scripts: 282 files, 93,238 lines, 0 analyze failures, baseline
+3,983 → 3,973 diagnostics, **−10 / +0**. The 10 removals are the five podman-api
+null-family FPs twice (the workspace checkout and the fleet clone carry two
+revisions of the same file). ZERO additions anywhere — no upgrade pairs, no
+newly-reachable downstream checks fired on this corpus.
 
 ## Repro (luci-app-podman volume CLI helper, verbatim shape)
 

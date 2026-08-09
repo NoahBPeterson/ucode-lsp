@@ -63,6 +63,7 @@ interface TypeGuardInfo {
 }
 import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, type SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, resolveTupleIndex, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, propertyTypeAt, isNeverType, NEVER_TYPE, type Symbol as UcodeSymbol } from './symbolTable';
 import { FlowTypeEngine, makeAssignmentTransfer, type FlowEnvironment, type EdgeGuardFn } from './flowTypeEngine';
+import { inferNullGuardParams } from './nullGuardContract';
 import { CFGBuilder } from './cfg/cfgBuilder';
 import type { CheckResult } from './checkResult';
 import { logicalTypeInference } from './logicalTypeInference';
@@ -569,13 +570,27 @@ export class TypeChecker {
     const tcE = this.errors.length, tcW = this.warnings.length;
     const bvErr = this.builtinValidator.getErrors(), bvWarn = this.builtinValidator.getWarnings();
     const bvE = bvErr.length, bvW = bvWarn.length;
-    const result = this.checkNode(node);
+    this.quietDepth++;
+    let result: UcodeDataType;
+    try {
+      result = this.checkNode(node);
+    } finally {
+      this.quietDepth--;
+    }
     this.errors.length = tcE;
     this.warnings.length = tcW;
     bvErr.length = bvE;
     bvWarn.length = bvW;
     return result;
   }
+  /** >0 while inside checkNodeQuietly. Quiet checks often run OUT OF ORDER (the
+   *  IIFE/factory return pre-walks fire before the body's symbols are declared),
+   *  so any guard set they compute can be incomplete — they must not populate
+   *  the position-keyed guard cache, or the real in-order pass at the same
+   *  position reads the stale miss and loses its narrowing (found via the
+   *  error-flag guards: `(() => { let err = g(v); if (err) return null;
+   *  return b64dec(v); })()` kept flagging v — docs/error-guard-null-narrowing.md). */
+  private quietDepth = 0;
 
   withAssignmentTarget<T>(fn: () => T): T {
     this.assignmentTargetDepth++;
@@ -5883,7 +5898,9 @@ export class TypeChecker {
     this.transitiveTypeAliases = [];
     const guards: TypeGuardInfo[] = [];
     this.collectGuards(ast, variableName, position, guards);
-    this.guardCache.set(key, { guards, aliases: this.transitiveTypeAliases });
+    // A quiet (out-of-order) walk may compute guards before the enclosing body's
+    // symbols exist — usable for its own inference, but never cached (see quietDepth).
+    if (this.quietDepth === 0) this.guardCache.set(key, { guards, aliases: this.transitiveTypeAliases });
     return guards;
   }
 
@@ -6017,6 +6034,202 @@ export class TypeChecker {
     return found;
   }
 
+  /**
+   * Error-flag guard narrowing (docs/error-guard-null-narrowing.md): for a guard
+   * test that is a bare identifier — `if (err) die(err);` / `if (err) return …;`
+   * — whose declaration initializer is an `||` chain of null-guard calls
+   * (`let err = require_param('x', v) || validate_name(v) || …`), the FALSY side
+   * of the test proves every argument in a null-guard position non-null: err
+   * falsy means every `||` arm evaluated falsy, and a falsy null-guard result
+   * proves its flagged argument was non-null (nullGuardContract.ts).
+   *
+   * Returns the dotted paths (identifiers and constant member paths — rpcd
+   * passes `req.args.id`) proven non-null on that falsy side. Every implication
+   * is dropped when a write could have intervened:
+   *   - the flag itself reassigned between its initializer and the query;
+   *   - the guarded path (or a prefix of it) written between the flag's
+   *     declaration and the query — the guard proved the OLD value;
+   *   - the query sits in a loop the declaration is outside of and the loop body
+   *     writes the flag or the path: the back edge re-enters the guarded region
+   *     with a value the capture never saw (the 0.7.92 loop lesson). A loop
+   *     containing the declaration is safe — each iteration re-captures.
+   */
+  private falsyImpliedNonNullPaths(test: AstNode | null | undefined, position: number): string[] {
+    if (!test || test.type !== 'Identifier') return [];
+    const flagName = (test as IdentifierNode).name;
+    const flagSym = this.symbolTable.resolveReference(flagName, test.start);
+    const init = flagSym?.initNode;
+    if (!flagSym || !init) return [];
+    if (this.isVariableAssignedBetween(this.currentAST, flagName, init.end, position)) return [];
+    const out: string[] = [];
+    for (const path of this.nullGuardArmPaths(init)) {
+      if (out.includes(path)) continue;
+      if (this.isPathAssignedBetween(this.currentAST, path, flagSym.declaredAt, position)) continue;
+      if (this.loopCarriedWriteInvalidates(flagSym.declaredAt, position, [flagName, path])) continue;
+      out.push(path);
+    }
+    return out;
+  }
+
+  /** The dotted paths sitting in null-guard argument positions across an `||`
+   *  chain's arms — raw structural extraction; each caller applies its own
+   *  write-invalidation window. */
+  private nullGuardArmPaths(chainExpr: AstNode): string[] {
+    const out: string[] = [];
+    for (const arm of this.flattenOrChain(chainExpr)) {
+      if (arm.type !== 'CallExpression') continue;
+      const call = arm as CallExpressionNode;
+      if (call.callee.type !== 'Identifier') continue;
+      const guardIndices = this.nullGuardParamIndices((call.callee as IdentifierNode).name, call.callee.start);
+      for (const idx of guardIndices) {
+        const arg = call.arguments?.[idx];
+        if (!arg || (arg.type !== 'Identifier' && arg.type !== 'MemberExpression')) continue;
+        const path = this.getDottedPath(arg);
+        if (path && !out.includes(path)) out.push(path);
+      }
+    }
+    return out;
+  }
+
+  /** The `!flag` conjuncts of a test: for `!err`, `!err && x`, `x && !err && y`
+   *  the returned identifiers are all provably FALSY wherever the whole test is
+   *  truthy — the positive-branch entry points for the error-flag narrowing
+   *  (`if (!err) { use(v) }` / `!err ? use(v) : …`). */
+  private negatedIdentifierConjuncts(test: AstNode): IdentifierNode[] {
+    if (test.type === 'BinaryExpression' && (test as BinaryExpressionNode).operator === '&&') {
+      const b = test as BinaryExpressionNode;
+      return [...this.negatedIdentifierConjuncts(b.left), ...this.negatedIdentifierConjuncts(b.right)];
+    }
+    if (test.type === 'UnaryExpression') {
+      const u = test as UnaryExpressionNode;
+      if (u.operator === '!' && u.argument?.type === 'Identifier') return [u.argument as IdentifierNode];
+    }
+    return [];
+  }
+
+  /** Top-level `||` arms of an initializer (a non-`||` expression is its own arm). */
+  private flattenOrChain(node: AstNode): AstNode[] {
+    if (node.type === 'BinaryExpression' && (node as BinaryExpressionNode).operator === '||') {
+      const b = node as BinaryExpressionNode;
+      return [...this.flattenOrChain(b.left), ...this.flattenOrChain(b.right)];
+    }
+    return [node];
+  }
+
+  /** Null-guard parameter indices of the function `calleeName` resolves to at
+   *  `position`: stamped on the symbol for imports (fileResolver carries it),
+   *  inferred lazily from the declaration AST for same-file functions. */
+  private nullGuardParamIndices(calleeName: string, position: number): number[] {
+    const sym = this.symbolTable.resolveReference(calleeName, position);
+    if (!sym) return [];
+    if (sym.nullGuardParams) return sym.nullGuardParams;
+    const fnNode = this.functionNodeForSymbol(sym);
+    return fnNode ? inferNullGuardParams(fnNode) : [];
+  }
+
+  /** The function AST behind a callable symbol: a function-valued initializer
+   *  directly, an alias chain (`let rp = require_param;` — initNode is an
+   *  Identifier, followed up to 4 hops), or — for a FUNCTION symbol, which
+   *  stores its *identifier* node — the FunctionDeclaration it names, via a
+   *  per-AST id-position index. */
+  private functionNodeForSymbol(sym: UcodeSymbol, hops = 0): AstNode | null {
+    if (sym.initNode && (sym.initNode.type === 'FunctionExpression' || sym.initNode.type === 'ArrowFunctionExpression')) {
+      return sym.initNode;
+    }
+    if (sym.initNode?.type === 'Identifier' && hops < 4) {
+      const src = this.symbolTable.resolveReference((sym.initNode as IdentifierNode).name, sym.initNode.start);
+      if (src && src !== sym) return this.functionNodeForSymbol(src, hops + 1);
+    }
+    if (sym.type !== SymbolType.FUNCTION || !this.currentAST) return null;
+    let index = this.fnDeclByIdStart.get(this.currentAST);
+    if (!index) {
+      index = new Map<number, AstNode>();
+      const stack: AstNode[] = [this.currentAST];
+      while (stack.length > 0) {
+        const n = stack.pop()!;
+        if (!isAstNodeLike(n)) continue;
+        if (n.type === 'FunctionDeclaration') {
+          const id = (n as unknown as { id?: AstNode }).id;
+          if (id && typeof id.start === 'number') index.set(id.start, n);
+        }
+        for (const key of Object.keys(n)) {
+          if (key === 'parent' || key === 'leadingJsDoc') continue;
+          const v = (n as unknown as Record<string, unknown>)[key];
+          if (Array.isArray(v)) { for (const it of v) if (it && typeof it === 'object') stack.push(it as AstNode); }
+          else if (v && typeof v === 'object') stack.push(v as AstNode);
+        }
+      }
+      this.fnDeclByIdStart.set(this.currentAST, index);
+    }
+    return index.get(sym.node.start) ?? null;
+  }
+  private readonly fnDeclByIdStart = new WeakMap<AstNode, Map<number, AstNode>>();
+
+  /** Like isVariableAssignedBetween, but for a dotted path: a write to the path's
+   *  root identifier, to the exact member path, or to any PREFIX of it
+   *  (`req.args = …` invalidates `req.args.id`) counts. A write to a DEEPER path
+   *  does not — it mutates a property of the guarded value, which stays non-null. */
+  private isPathAssignedBetween(root: AstNode | null, path: string, after: number, before: number): boolean {
+    const rootName = path.split(/[.[]/, 1)[0]!;
+    if (this.isVariableAssignedBetween(root, rootName, after, before)) return true;
+    if (rootName === path) return false;
+    let found = false;
+    const walk = (n: unknown): void => {
+      if (found || !isAstNodeLike(n)) return;
+      if (typeof n.start === 'number' && n.start > after && n.start < before
+          && n.type === 'AssignmentExpression') {
+        const lhs = (n as unknown as AssignmentExpressionNode).left;
+        if (lhs?.type === 'MemberExpression') {
+          const written = this.getDottedPath(lhs);
+          if (written && (path === written || path.startsWith(written + '.') || path.startsWith(written + '['))) {
+            found = true;
+            return;
+          }
+        }
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'parent' || k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) walk(it); }
+        else if (isAstNodeLike(v)) walk(v);
+      }
+    };
+    walk(root);
+    return found;
+  }
+
+  /** Loop-carried invalidation for the error-flag narrowing: true when the query
+   *  position sits inside a loop that does NOT contain the flag's declaration and
+   *  that loop's body writes any of `paths`. The write may be positionally AFTER
+   *  the query, but the back edge delivers it to the next iteration's read while
+   *  the capture (outside the loop) never re-runs. When the declaration is inside
+   *  the loop too, every iteration re-captures, so the positional check suffices. */
+  private loopCarriedWriteInvalidates(declPos: number, position: number, paths: string[]): boolean {
+    const loops: AstNode[] = [];
+    const collect = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      if (typeof n.start === 'number' && typeof n.end === 'number'
+          && (position < n.start || position > n.end)) return;
+      if (n.type === 'WhileStatement' || n.type === 'ForStatement' || n.type === 'ForInStatement') {
+        loops.push(n as AstNode);
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'parent' || k === 'leadingJsDoc') continue;
+        const v = n[k];
+        if (Array.isArray(v)) { for (const it of v) collect(it); }
+        else if (isAstNodeLike(v)) collect(v);
+      }
+    };
+    collect(this.currentAST);
+    for (const loop of loops) {
+      if (declPos >= loop.start && declPos <= loop.end) continue;
+      for (const p of paths) {
+        if (this.isPathAssignedBetween(loop, p, loop.start - 1, loop.end + 1)) return true;
+      }
+    }
+    return false;
+  }
+
   private collectGuards(node: AstNode | null, variableName: string, position: number, guards: TypeGuardInfo[]): void {
     if (!node) {
       return;
@@ -6055,6 +6268,26 @@ export class TypeChecker {
         if (this.earlyExitNegatesIdentifier(binaryNode.left, variableName)) {
           guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
         }
+        // Null-guard arms on the LEFT: reaching the RHS means every left arm
+        // evaluated falsy, and a falsy null-guard result proves its argument
+        // non-null — the mid-chain form of the error-flag narrowing, so
+        // `require_param('x', v) || validate_name(v)` types v non-null at the
+        // validate_name argument (docs/error-guard-null-narrowing.md). Window
+        // [chain start, position] drops it if an embedded assignment rewrote v.
+        for (const path of this.nullGuardArmPaths(binaryNode.left)) {
+          if (path === variableName
+              && !this.isPathAssignedBetween(this.currentAST, path, binaryNode.left.start, position)) {
+            guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+          }
+        }
+        // A FLAG arm on the left (`err || use(v)`, or `err1 || err2 || use(v)`):
+        // each is falsy in the RHS, so its captured implications hold there.
+        for (const arm of this.flattenOrChain(binaryNode.left)) {
+          if (arm.type === 'Identifier'
+              && this.falsyImpliedNonNullPaths(arm, position).includes(variableName)) {
+            guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+          }
+        }
         this.collectGuards(binaryNode.right, variableName, position, guards);
         return;
       }
@@ -6073,6 +6306,14 @@ export class TypeChecker {
         // reassigned (nullable) type is what gets checked (ticket 140).
         if (!this.isVariableAssignedNullBetween(ifNode.consequent, variableName, ifNode.consequent.start, position)) {
           this.collectPositiveTestGuards(ifNode.test, variableName, guards);
+        }
+        // `if (!err) { use(v) }`: the consequent IS the err-falsy path, so the
+        // flag's null-guard implications hold — for every `!flag` conjunct of
+        // the test (docs/error-guard-null-narrowing.md).
+        for (const neg of this.negatedIdentifierConjuncts(ifNode.test)) {
+          if (this.falsyImpliedNonNullPaths(neg, position).includes(variableName)) {
+            guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+          }
         }
         this.collectGuards(ifNode.consequent, variableName, position, guards);
         return;
@@ -6110,6 +6351,13 @@ export class TypeChecker {
               isNegative: true // Remove null in else branch
             });
           }
+        }
+        // Error-flag guard, else-branch form: `if (err) { … } else { use(v) }` —
+        // the else runs with err falsy, so the flag's null-guard implications
+        // hold there exactly like on the terminating fall-through.
+        if (!reassignedInElse
+            && this.falsyImpliedNonNullPaths(ifNode.test, position).includes(variableName)) {
+          guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
         }
         // Bare identifier: if (x) { ... } else { ... } → x could be null in else (no removal)
         this.collectGuards(ifNode.alternate, variableName, position, guards);
@@ -6163,6 +6411,13 @@ export class TypeChecker {
         if (!this.isVariableAssignedNullBetween(cond.consequent, variableName, cond.consequent.start, position)) {
           this.collectPositiveTestGuards(cond.test, variableName, guards);
         }
+        // `!err ? use(v) : …` — consequent is the err-falsy path (mirrors the
+        // if-consequent error-flag form).
+        for (const neg of this.negatedIdentifierConjuncts(cond.test)) {
+          if (this.falsyImpliedNonNullPaths(neg, position).includes(variableName)) {
+            guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
+          }
+        }
         this.collectGuards(cond.consequent, variableName, position, guards);
         return;
       }
@@ -6170,6 +6425,12 @@ export class TypeChecker {
         const guardInfo = this.extractTypeGuard(cond.test, variableName);
         if (guardInfo && !guardInfo.isNullPropagation) {
           guards.push({ ...guardInfo, isNegative: !guardInfo.isNegative });
+        }
+        // `err ? die(err) : use(v)` — alternate is the err-falsy path (mirrors
+        // the if-else error-flag form).
+        if (cond.test.type === 'Identifier'
+            && this.falsyImpliedNonNullPaths(cond.test, position).includes(variableName)) {
+          guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
         }
         this.collectGuards(cond.alternate, variableName, position, guards);
         return;
@@ -6375,6 +6636,13 @@ export class TypeChecker {
                 } else if (alias.var2 === variableName && !this.transitiveTypeAliases.includes(alias.var1)) {
                   this.transitiveTypeAliases.push(alias.var1);
                 }
+              }
+              // Error-flag guard: `let err = require_param('x', v) || …;
+              // if (err) die(err);` — on this fall-through err is falsy, and a
+              // falsy null-guard result proves the guarded argument non-null
+              // (docs/error-guard-null-narrowing.md).
+              if (this.falsyImpliedNonNullPaths(sibIf.test, position).includes(variableName)) {
+                guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
               }
             }
           }

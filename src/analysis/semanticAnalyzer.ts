@@ -3443,6 +3443,11 @@ export class SemanticAnalyzer extends BaseVisitor {
               if (srcSym.returnType !== undefined) sym.returnType = srcSym.returnType;
               if (sym.dataType === UcodeType.UNKNOWN) sym.dataType = UcodeType.FUNCTION as UcodeDataType;
             }
+            // The null-guard contract rides the alias too: `let rp = require_param;
+            // let err = rp('x', v);` narrows exactly like the direct call. Imported
+            // guards carry the stamp; same-file guards also resolve lazily through
+            // the alias's initNode chain (typeChecker.functionNodeForSymbol).
+            if (srcSym?.nullGuardParams) sym.nullGuardParams = srcSym.nullGuardParams;
           }
         }
 
@@ -3963,6 +3968,12 @@ export class SemanticAnalyzer extends BaseVisitor {
             symbol.parameters = params;
             if (symbol.dataType === UcodeType.UNKNOWN) symbol.dataType = UcodeType.FUNCTION as UcodeDataType;
           }
+          // Null-guard contract (docs/error-guard-null-narrowing.md): a falsy
+          // result from this function proves the flagged arguments non-null.
+          // Carried on the imported symbol like the parameter signature, so the
+          // error-flag narrowing works without re-reading the defining module.
+          const guardParams = this.fileResolver.getNamedExportNullGuardParams(effectiveUri, importedName);
+          if (guardParams && guardParams.length > 0) symbol.nullGuardParams = guardParams;
         }
       }
     }

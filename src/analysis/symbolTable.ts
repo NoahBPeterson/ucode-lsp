@@ -730,6 +730,13 @@ export interface Symbol {
   // Function-specific fields
   returnType?: UcodeDataType;   // Return type for functions (when dataType is FUNCTION)
   parameters?: ParamInfo[];     // Ordered parameter signature for user functions (for call-site argument checking)
+  /** Parameter indices carrying the null-guard contract: a FALSY call result
+   *  proves that argument was non-null (the require_param shape — see
+   *  nullGuardContract.ts). Stamped at import time for cross-file guards;
+   *  same-file guards are inferred lazily from the declaration AST instead.
+   *  Consumed by the error-flag narrowing in collectGuards
+   *  (docs/error-guard-null-narrowing.md). */
+  nullGuardParams?: number[];
   // Import-specific fields
   importedFrom?: string;        // File path where this symbol is imported from
   importSpecifier?: string;     // Original name if aliased (e.g., 'run_command' for 'import { run_command as cmd }')
