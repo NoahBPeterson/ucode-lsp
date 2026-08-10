@@ -6,14 +6,13 @@
 import { type AstNode, type ProgramNode, type VariableDeclarationNode, type VariableDeclaratorNode, 
          type FunctionDeclarationNode, type FunctionExpressionNode, type IdentifierNode, type CallExpressionNode,
          type BlockStatementNode, type ReturnStatementNode, type BreakStatementNode, 
-         type ContinueStatementNode, type AssignmentExpressionNode, type BinaryExpressionNode, type UnaryExpressionNode, type LogicalExpressionNode, type ImportDeclarationNode,
+         type ContinueStatementNode, type AssignmentExpressionNode, type BinaryExpressionNode, type UnaryExpressionNode, type ImportDeclarationNode,
          type ImportSpecifierNode, type ImportDefaultSpecifierNode, type ImportNamespaceSpecifierNode,
          type ExportSpecifierNode,
          type PropertyNode, type MemberExpressionNode, type TryStatementNode, type CatchClauseNode,
          type ExportNamedDeclarationNode, type ExportDefaultDeclarationNode, type ArrowFunctionExpressionNode,
-         type SpreadElementNode, type TemplateLiteralNode, type SwitchStatementNode, type LiteralNode, type IfStatementNode, type ObjectExpressionNode, type ConditionalExpressionNode, type ExpressionStatementNode, type DeleteExpressionNode,
+         type SpreadElementNode, type TemplateLiteralNode, type SwitchStatementNode, type LiteralNode, type IfStatementNode, type ObjectExpressionNode, type ConditionalExpressionNode, type DeleteExpressionNode,
          type ForInStatementNode, type ForStatementNode, type WhileStatementNode,
-         type ArrayExpressionNode,
          type AstNodeKind } from '../ast/nodes';
 import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, effectiveSymbolType, propertyTypeAt, isArrayType, getArrayElementType, getUnionTypes, isUnionType, extractModuleType, singleTypeToBase, dataTypeToBase, createUnionType, widenWithNull, type SingleType, type ParamInfo, type Symbol as SymbolEntry } from './symbolTable';
 import { TypeChecker, type TypeCheckResult } from './types';
@@ -94,6 +93,26 @@ function legacyChildren(node: AstNode): AstNode[] {
 /** Any function-shaped AST node (declaration, expression, or arrow). */
 type FunctionLikeNode = FunctionDeclarationNode | FunctionExpressionNode | ArrowFunctionExpressionNode;
 
+/** Exhaustive per-kind handler table for a node walk. Indexing with a generic
+ *  `K extends AstNodeKind` resolves to the K-specific handler, so a correlated
+ *  `table[kind](node)` dispatch typechecks without assertions. */
+type NodeHandlerMap = { [K in AstNodeKind]: (n: Extract<AstNode, { type: K }>) => void };
+
+/** Placeholder type for a host-injected global on a target that predates it: an
+ *  OBJECT-tagged type with no module identity and no member surface. Every runtime
+ *  discriminator ('moduleName' in / truthy isDefaultImport / singleTypeToBase →
+ *  UNKNOWN / displays as "object") treats it exactly like the historical bare
+ *  `{ type: OBJECT }` value. */
+function degradedHostObjectType(): UcodeDataType {
+  return { type: UcodeType.OBJECT, isDefaultImport: false };
+}
+
+/** The declared name of a function-like node, when it has one (arrows never do,
+ *  function expressions may). */
+function functionNodeName(funcNode: FunctionLikeNode): string | undefined {
+  return funcNode.type === 'ArrowFunctionExpression' ? undefined : funcNode.id?.name;
+}
+
 /** Synthetic inference annotations stamped onto AST nodes during the visit (underscore-
  *  prefixed so generic walks skip them). All optional: a node carries a stamp only after
  *  the corresponding pass has visited it. */
@@ -111,7 +130,7 @@ interface InferenceStamps {
 }
 /** View a node's synthetic inference stamps (see InferenceStamps). */
 function stampsOf(node: AstNode): AstNode & InferenceStamps {
-  return node as AstNode & InferenceStamps;
+  return node;
 }
 
 /** Structured payload attached to a diagnostic for the server's per-code quick-fix
@@ -348,35 +367,35 @@ export class SemanticAnalyzer extends BaseVisitor {
   private negatedMemberTypeGuard(test: AstNode | null | undefined):
     { base: string; prop?: string; elseType: UcodeDataType } | null {
     if (!test || test.type !== 'BinaryExpression') return null;
-    const b = test as BinaryExpressionNode;
+    const b = test;
     if (b.operator !== '!=' && b.operator !== '!==') return null;
     const pick = (call: AstNode, lit: AstNode) => {
       if (call.type !== 'CallExpression' || lit.type !== 'Literal') return null;
-      const c = call as CallExpressionNode;
-      if (c.callee.type !== 'Identifier' || (c.callee as IdentifierNode).name !== 'type') return null;
+      const c = call;
+      if (c.callee.type !== 'Identifier' || c.callee.name !== 'type') return null;
       const arg = c.arguments?.[0];
-      const t = (lit as LiteralNode).value;
+      const t = lit.value;
       if (typeof t !== 'string') return null;
       const mapped: UcodeDataType | undefined = ({
         object: UcodeType.OBJECT, array: UcodeType.ARRAY, string: UcodeType.STRING,
         int: UcodeType.INTEGER, double: UcodeType.DOUBLE, bool: UcodeType.BOOLEAN,
         function: UcodeType.FUNCTION, regexp: UcodeType.REGEX,
-      } as Record<string, UcodeDataType>)[t];
+      })[t];
       if (mapped === undefined || !arg) return null;
       // `type(x.p) != "T"` - member form
       if (arg.type === 'MemberExpression') {
-        const m = arg as MemberExpressionNode;
+        const m = arg;
         if (m.computed || m.object.type !== 'Identifier' || m.property.type !== 'Identifier') return null;
         return {
-          base: (m.object as IdentifierNode).name,
-          prop: (m.property as IdentifierNode).name,
+          base: m.object.name,
+          prop: m.property.name,
           elseType: mapped,
         };
       }
       // `type(x) != "T"` - bare identifier form (the quick-fix-generated
       // normalization shape `if (type(x) != "string") x = "d";`)
       if (arg.type === 'Identifier') {
-        return { base: (arg as IdentifierNode).name, elseType: mapped };
+        return { base: arg.name, elseType: mapped };
       }
       return null;
     };
@@ -541,7 +560,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     // Store the AST root for later reference
     if (ast.type === 'Program') {
-      this.currentASTRoot = ast as ProgramNode;
+      this.currentASTRoot = ast;
       // Pass the AST to TypeChecker for direct analysis
       this.typeChecker.setAST(this.currentASTRoot);
       // Source text lets builtin validators read the RAW slice of a node (e.g. a string
@@ -841,14 +860,14 @@ export class SemanticAnalyzer extends BaseVisitor {
     // global's value)?
     const globalRefName = (n: AstNode): string | null => {
       if (n.type === 'Identifier') {
-        const nm = (n as IdentifierNode).name;
+        const nm = n.name;
         return candidates.has(nm) ? nm : null;
       }
       if (n.type === 'MemberExpression') {
-        const m = n as MemberExpressionNode;
-        if (!m.computed && m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global'
-            && m.property.type === 'Identifier' && candidates.has((m.property as IdentifierNode).name)) {
-          return (m.property as IdentifierNode).name;
+        const m = n;
+        if (!m.computed && m.object.type === 'Identifier' && m.object.name === 'global'
+            && m.property.type === 'Identifier' && candidates.has(m.property.name)) {
+          return m.property.name;
         }
       }
       return null;
@@ -1147,12 +1166,16 @@ export class SemanticAnalyzer extends BaseVisitor {
       ConditionalExpression: walkChildren, CallExpression: walkChildren, SpreadElement: walkChildren,
       ArrayExpression: walkChildren, ObjectExpression: walkChildren, TemplateLiteral: walkChildren,
       ExportDefaultDeclaration: walkChildren, ExportNamedDeclaration: walkChildren,
-    } satisfies { [K in AstNodeKind]: (n: Extract<AstNode, { type: K }>) => void };
+    } satisfies NodeHandlerMap;
+    const handlerTable: NodeHandlerMap = handlers;
+    const dispatch = <K extends AstNodeKind>(kind: K, n: Extract<AstNode, { type: K }>): void => {
+      handlerTable[kind](n);
+    };
     const walk = (n: AstNode | null | undefined): void => {
       if (!n) return;
-      // `satisfies` guarantees compile-time exhaustiveness over AstNodeKind; the typed
-      // traversal delivers only real AST nodes here, so the dispatch is total.
-      (handlers[n.type] as (x: AstNode) => void)(n);
+      // `satisfies` guarantees compile-time exhaustiveness over AstNodeKind; the generic
+      // dispatch correlates `n.type` with its handler, so the call is assertion-free.
+      dispatch(n.type, n);
     };
     walk(node);
 
@@ -1230,16 +1253,16 @@ export class SemanticAnalyzer extends BaseVisitor {
     const globalTargetName = (left: AstNode | undefined): string | null => {
       if (!left) return null;
       if (left.type === 'Identifier') {
-        const nm = (left as IdentifierNode).name;
+        const nm = left.name;
         return (nm && this.implicitGlobalNames.has(nm)) ? nm : null; // bare X → only if implicit global
       }
       if (left.type === 'MemberExpression') {
-        const m = left as MemberExpressionNode;
-        if (m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global') {
-          if (!m.computed && m.property.type === 'Identifier') return (m.property as IdentifierNode).name;
+        const m = left;
+        if (m.object.type === 'Identifier' && m.object.name === 'global') {
+          if (!m.computed && m.property.type === 'Identifier') return m.property.name;
           // `global['X'] = …` names the same property as `global.X = …`.
-          if (m.computed && m.property.type === 'Literal' && (m.property as LiteralNode).literalType === 'string'
-              && typeof (m.property as LiteralNode).value === 'string') return (m.property as LiteralNode).value as string;
+          if (m.computed && m.property.type === 'Literal' && m.property.literalType === 'string'
+              && typeof m.property.value === 'string') return m.property.value;
         }
       }
       return null;
@@ -1250,13 +1273,13 @@ export class SemanticAnalyzer extends BaseVisitor {
     // about any specific name, so it must be a string literal.
     const existsGlobalCallName = (n: AstNode | undefined): string | null => {
       if (!n || n.type !== 'CallExpression') return null;
-      const c = n as CallExpressionNode;
-      if (c.callee?.type !== 'Identifier' || (c.callee as IdentifierNode).name !== 'exists') return null;
+      const c = n;
+      if (c.callee?.type !== 'Identifier' || c.callee.name !== 'exists') return null;
       const recv = c.arguments?.[0], key = c.arguments?.[1];
-      if (!recv || recv.type !== 'Identifier' || (recv as IdentifierNode).name !== 'global') return null;
-      if (!key || key.type !== 'Literal' || (key as LiteralNode).literalType !== 'string'
-          || typeof (key as LiteralNode).value !== 'string') return null;
-      return (key as LiteralNode).value as string;
+      if (!recv || recv.type !== 'Identifier' || recv.name !== 'global') return null;
+      if (!key || key.type !== 'Literal' || key.literalType !== 'string'
+          || typeof key.value !== 'string') return null;
+      return key.value;
     };
     // An if-test that IS the existence check, in its common spellings:
     // `!exists(global,'X')` (negated), bare `exists(global,'X')`, and the
@@ -1272,7 +1295,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         const b = test;
         if (b.operator === '==' || b.operator === '===' || b.operator === '!=' || b.operator === '!==') {
           const boolLit = (n: AstNode | undefined): boolean | null =>
-            (n?.type === 'Literal' && typeof (n as LiteralNode).value === 'boolean') ? (n as LiteralNode).value as boolean : null;
+            (n?.type === 'Literal' && typeof n.value === 'boolean') ? n.value : null;
           const [callSide, litSide] = existsGlobalCallName(b.left) !== null ? [b.left, b.right] : [b.right, b.left];
           const name = existsGlobalCallName(callSide);
           const lit = boolLit(litSide);
@@ -1288,7 +1311,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     };
     const isStaticTruthy = (test: AstNode | undefined): boolean => {
       if (!test || test.type !== 'Literal') return false;
-      const v = (test as LiteralNode).value;
+      const v = test.value;
       if (typeof v === 'boolean') return v;
       if (typeof v === 'number') return v !== 0;
       if (typeof v === 'string') return v.length > 0;
@@ -1296,7 +1319,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     };
     const isStaticFalsy = (test: AstNode | undefined): boolean => {
       if (!test || test.type !== 'Literal') return false;
-      const v = (test as LiteralNode).value;
+      const v = test.value;
       return v === false || v === 0 || v === '' || v === null;
     };
 
@@ -1789,13 +1812,13 @@ export class SemanticAnalyzer extends BaseVisitor {
         case 'FunctionExpression': case 'ArrowFunctionExpression': return 'function';
         case 'TemplateLiteral': return 'string';
         case 'Literal': {
-          const v = (n as LiteralNode).value;
+          const v = n.value;
           if (typeof v === 'string') return 'string';
           if (typeof v === 'boolean') return 'boolean';
           if (v === null) return 'null';
           // Exponent notation (`1e5`) is a double literal even though its value is
           // integer-valued — honor the parser's literalType (ticket 115).
-          if (typeof v === 'number') return ((n as LiteralNode).literalType === 'double' || !Number.isInteger(v)) ? 'double' : 'integer';
+          if (typeof v === 'number') return (n.literalType === 'double' || !Number.isInteger(v)) ? 'double' : 'integer';
           return 'unknown';
         }
         default: return 'unknown';
@@ -1803,10 +1826,10 @@ export class SemanticAnalyzer extends BaseVisitor {
     };
     const targetName = (left: AstNode | undefined): string | null => {
       if (!left) return null;
-      if (left.type === 'Identifier') return (left as IdentifierNode).name || null;
+      if (left.type === 'Identifier') return left.name || null;
       if (left.type === 'MemberExpression') {
-        const m = left as MemberExpressionNode;
-        if (!m.computed && m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global' && m.property.type === 'Identifier') return (m.property as IdentifierNode).name;
+        const m = left;
+        if (!m.computed && m.object.type === 'Identifier' && m.object.name === 'global' && m.property.type === 'Identifier') return m.property.name;
       }
       return null;
     };
@@ -1915,9 +1938,9 @@ export class SemanticAnalyzer extends BaseVisitor {
       const inner = call.callee;
       if (inner?.type === 'CallExpression') {
         const lf = inner;
-        if (lf.callee?.type === 'Identifier' && (lf.callee as IdentifierNode).name === 'loadfile'
-            && lf.arguments?.[0]?.type === 'Literal' && typeof (lf.arguments[0] as LiteralNode).value === 'string') {
-          return this.fileResolver.getLoadfileGlobals((lf.arguments[0] as LiteralNode).value as string, this.textDocument.uri).map(g => g.name);
+        if (lf.callee?.type === 'Identifier' && lf.callee.name === 'loadfile'
+            && lf.arguments?.[0]?.type === 'Literal' && typeof lf.arguments[0].value === 'string') {
+          return this.fileResolver.getLoadfileGlobals(lf.arguments[0].value, this.textDocument.uri).map(g => g.name);
         }
       }
       return [];
@@ -1925,11 +1948,11 @@ export class SemanticAnalyzer extends BaseVisitor {
     // A global assignment target (`global.X` or bare `X`), or null.
     const assignTargetName = (left: AstNode | undefined): string | null => {
       if (!left) return null;
-      if (left.type === 'Identifier') return (left as IdentifierNode).name || null;
+      if (left.type === 'Identifier') return left.name || null;
       if (left.type === 'MemberExpression') {
-        const m = left as MemberExpressionNode;
-        if (!m.computed && m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global'
-            && m.property.type === 'Identifier') return (m.property as IdentifierNode).name;
+        const m = left;
+        if (!m.computed && m.object.type === 'Identifier' && m.object.name === 'global'
+            && m.property.type === 'Identifier') return m.property.name;
       }
       return null;
     };
@@ -2023,10 +2046,10 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return true;
     if (n.type === 'Identifier') {
       // Post-visit pass: a function-scoped handler's scope has exited by now.
-      const sym = this.symbolTable.resolveReference((n as IdentifierNode).name, n.start);
+      const sym = this.symbolTable.resolveReference(n.name, n.start);
       if (!sym) return false;
       return sym.type === SymbolType.FUNCTION
-        || sym.dataType === (UcodeType.FUNCTION as UcodeDataType)
+        || sym.dataType === UcodeType.FUNCTION
         || sym.returnType !== undefined;
     }
     return false;
@@ -2085,33 +2108,33 @@ export class SemanticAnalyzer extends BaseVisitor {
     // dependency-based wrap extent below.
     const gTarget = (left: AstNode | undefined): string | null => {
       if (!left) return null;
-      if (left.type === 'Identifier') return (left as IdentifierNode).name || null;
+      if (left.type === 'Identifier') return left.name || null;
       if (left.type === 'MemberExpression') {
-        const m = left as MemberExpressionNode;
-        if (!m.computed && m.object.type === 'Identifier' && (m.object as IdentifierNode).name === 'global'
-            && m.property.type === 'Identifier') return (m.property as IdentifierNode).name;
+        const m = left;
+        if (!m.computed && m.object.type === 'Identifier' && m.object.name === 'global'
+            && m.property.type === 'Identifier') return m.property.name;
       }
       return null;
     };
     const producedNames = (stmt: AstNode): string[] => {
-      const expr = stmt.type === 'ExpressionStatement' ? (stmt as ExpressionStatementNode).expression : stmt;
+      const expr = stmt.type === 'ExpressionStatement' ? stmt.expression : stmt;
       if (expr?.type === 'CallExpression') {
-        const inner = (expr as CallExpressionNode).callee;
+        const inner = expr.callee;
         if (inner?.type === 'CallExpression') {
-          const lf = inner as CallExpressionNode;
-          if (lf.callee?.type === 'Identifier' && (lf.callee as IdentifierNode).name === 'loadfile'
-              && lf.arguments?.[0]?.type === 'Literal' && typeof (lf.arguments[0] as LiteralNode).value === 'string') {
-            return this.fileResolver.getLoadfileGlobals((lf.arguments[0] as LiteralNode).value as string, this.textDocument.uri).map(g => g.name);
+          const lf = inner;
+          if (lf.callee?.type === 'Identifier' && lf.callee.name === 'loadfile'
+              && lf.arguments?.[0]?.type === 'Literal' && typeof lf.arguments[0].value === 'string') {
+            return this.fileResolver.getLoadfileGlobals(lf.arguments[0].value, this.textDocument.uri).map(g => g.name);
           }
         }
       }
       if (stmt.type === 'VariableDeclaration') {
         const out: string[] = [];
-        for (const d of ((stmt as VariableDeclarationNode).declarations || [])) if (d?.id?.type === 'Identifier') out.push((d.id as IdentifierNode).name);
+        for (const d of (stmt.declarations || [])) if (d?.id?.type === 'Identifier') out.push(d.id.name);
         return out;
       }
-      if (expr?.type === 'AssignmentExpression' && (expr as AssignmentExpressionNode).operator === '=') {
-        const n = gTarget((expr as AssignmentExpressionNode).left); return n ? [n] : [];
+      if (expr?.type === 'AssignmentExpression' && expr.operator === '=') {
+        const n = gTarget(expr.left); return n ? [n] : [];
       }
       return [];
     };
@@ -2134,7 +2157,9 @@ export class SemanticAnalyzer extends BaseVisitor {
         while (i < stmts.length) {
           const call = firstThrowAtLevel(stmts[i]);
           if (!call) { i++; continue; }
-          const throwName = (call.callee as IdentifierNode).name;
+          // firstThrowAtLevel only returns calls whose callee is an Identifier.
+          if (call.callee?.type !== 'Identifier') { i++; continue; }
+          const throwName = call.callee.name;
           // In a uhttpd handler, loadfile doesn't just "throw on bad input" — it aborts the
           // request VM uncatchably, so "guard it with try/catch" is WRONG advice.
           // checkHandlerVmAbortingCalls emits the correct fix (UC8011); skip UC8001 here.
@@ -2156,15 +2181,15 @@ export class SemanticAnalyzer extends BaseVisitor {
           let argVal: string | null = null;
           let resolvedArg: boolean | null = null; // null = not a resolvable-kind call
           if (spec?.resolvable) {
-            if (arg0?.type === 'Literal' && typeof (arg0 as LiteralNode).value === 'string') {
-              argVal = (arg0 as LiteralNode).value as string;
+            if (arg0?.type === 'Literal' && typeof arg0.value === 'string') {
+              argVal = arg0.value;
               // A path-shaped require() name can never resolve (template charset is
               // [A-Za-z0-9_.]) — that's the hard error UC3008 from the builtin
               // validator, and "guard it with try/catch" would be the wrong advice.
               // Skip the UC8001 framing entirely for that case.
               if (spec.resolvable === 'module' && /[^A-Za-z0-9_.]/.test(argVal)) { i++; continue; }
               resolvedArg = spec.resolvable === 'module'
-                ? ((KNOWN_MODULES as readonly string[]).includes(argVal)
+                ? (KNOWN_MODULES.some((m) => m === argVal)
                     ? !this.moduleGatedOutAtTarget(argVal)
                     : this.fileResolver.requireResolvesFile(argVal, this.textDocument.uri))
                 : this.fileResolver.filePathResolves(argVal, this.textDocument.uri);
@@ -2259,7 +2284,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         continue;
       }
       if (stmt.type !== 'ExportNamedDeclaration') continue;
-      const exp = stmt as ExportNamedDeclarationNode;
+      const exp = stmt;
       // `export { x } from "…"` — re-export syntax, also unsupported in ucode
       // (finding #69). Flag the whole statement; the specifier-local check below is
       // skipped (the names refer to the other module, not this one).
@@ -2432,10 +2457,10 @@ export class SemanticAnalyzer extends BaseVisitor {
         // real global object symbol so member access resolves cross-file (the in-file
         // `global.X = { … }` equivalent of declareGlobalObjectBinding).
         if (g.propertyTypes && g.propertyTypes.size > 0) {
-          this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE, UcodeType.OBJECT as UcodeDataType);
+          this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE, UcodeType.OBJECT);
           const sym = this.symbolTable.lookupOpenScopes(g.name);
           if (sym) {
-            sym.dataType = UcodeType.OBJECT as UcodeDataType;
+            sym.dataType = UcodeType.OBJECT;
             sym.propertyTypes = g.propertyTypes;
             if (g.propertyReturnTypes) sym.propertyFunctionReturnTypes = g.propertyReturnTypes;
             sym.used = true; // ambient injected global — never "unused"
@@ -2452,9 +2477,9 @@ export class SemanticAnalyzer extends BaseVisitor {
           };
           const dt = scalar[g.typeStr];
           if (dt) {
-            this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE, dt as UcodeDataType);
+            this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE, dt);
             const sym = this.symbolTable.lookupOpenScopes(g.name);
-            if (sym) { sym.dataType = dt as UcodeDataType; sym.used = true; }
+            if (sym) { sym.dataType = dt; sym.used = true; }
           }
         }
       }
@@ -2529,9 +2554,9 @@ export class SemanticAnalyzer extends BaseVisitor {
     const merge = (rawPath: string) => {
       for (const name of this.fileResolver.getIncludeGlobals(rawPath, this.textDocument.uri)) {
         this.globalPropertyNames.add(name); // suppress UC1001/UC1002 for the leaked name
-        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType);
+        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, UcodeType.UNKNOWN);
         const sym = this.symbolTable.lookupOpenScopes(name);
-        if (sym) { sym.dataType = UcodeType.UNKNOWN as UcodeDataType; sym.used = true; }
+        if (sym) { sym.dataType = UcodeType.UNKNOWN; sym.used = true; }
       }
     };
     const walk = (n: AstNode | null | undefined): void => {
@@ -2558,12 +2583,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (!n) return null;
     if (n.type === 'TemplateLiteral') return UcodeType.STRING;
     if (n.type === 'Literal') {
-      const v = (n as LiteralNode).value;
+      const v = n.value;
       if (typeof v === 'string') return UcodeType.STRING;
       if (typeof v === 'boolean') return UcodeType.BOOLEAN;
       if (v === null) return UcodeType.NULL;
       // Exponent notation (`1e5`) is a double literal (ticket 115).
-      if (typeof v === 'number') return ((n as LiteralNode).literalType === 'double' || !Number.isInteger(v)) ? UcodeType.DOUBLE : UcodeType.INTEGER;
+      if (typeof v === 'number') return (n.literalType === 'double' || !Number.isInteger(v)) ? UcodeType.DOUBLE : UcodeType.INTEGER;
       return null;
     }
     if (n.type === 'UnaryExpression') {
@@ -2661,7 +2686,7 @@ export class SemanticAnalyzer extends BaseVisitor {
               && arg0?.type === 'Literal' && typeof arg0.value === 'string') {
             const moduleName = arg0.value;
             if (isKnownModule(moduleName)) {
-              const dataType = { type: UcodeType.OBJECT, moduleName } as UcodeDataType;
+              const dataType: UcodeDataType = { type: UcodeType.OBJECT, moduleName };
               this.symbolTable.declare(left.name, SymbolType.MODULE, dataType, left);
             } else if (!moduleName.startsWith('./') && !moduleName.startsWith('../')) {
               // Bare `name = require("user-module")` (no `let`/`const` — e.g. a
@@ -2683,7 +2708,7 @@ export class SemanticAnalyzer extends BaseVisitor {
                   if (resolvedUri.startsWith('file://')) {
                     this.resolvedImports.add(resolvedUri);
                     if (this.fileResolver.requireModuleIsFunction(resolvedUri)) {
-                      sym.dataType = UcodeType.FUNCTION as UcodeDataType;
+                      sym.dataType = UcodeType.FUNCTION;
                       const returnInfo = this.fileResolver.getDefaultExportFunctionReturnInfo(resolvedUri);
                       if (returnInfo) this.applyFactoryReturnInfo(sym, returnInfo, resolvedUri);
                       const params = this.fileResolver.getDefaultExportFunctionParameters(resolvedUri);
@@ -2719,7 +2744,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // defined later in the module) was wrongly flagged "Undefined function".
       let funcNode: FunctionDeclarationNode | null = null;
       if (stmt.type === 'FunctionDeclaration') {
-        funcNode = stmt as FunctionDeclarationNode;
+        funcNode = stmt;
       } else if ((stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportDefaultDeclaration')
           && stmt.declaration?.type === 'FunctionDeclaration') {
         funcNode = stmt.declaration;
@@ -2733,7 +2758,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // recursion while leaving a forward reference unresolved → flagged. An
         // explicit `function f;` forward declaration appears earlier in node.body, so
         // it's pre-declared first and makes later references resolve.
-        this.symbolTable.declare(funcNode.id.name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, funcNode.id);
+        this.symbolTable.declare(funcNode.id.name, SymbolType.FUNCTION, UcodeType.FUNCTION, funcNode.id);
       }
     }
     this.stampSyntacticNeverReturns(node);
@@ -2925,10 +2950,10 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (node.leadingJsDoc && node.declarations.length === 1) {
         const init = node.declarations[0]?.init;
         if (init) {
-          if (init.type === 'FunctionExpression' && !(init as FunctionExpressionNode).leadingJsDoc) {
-            (init as FunctionExpressionNode).leadingJsDoc = node.leadingJsDoc;
-          } else if (init.type === 'ArrowFunctionExpression' && !(init as ArrowFunctionExpressionNode).leadingJsDoc) {
-            (init as ArrowFunctionExpressionNode).leadingJsDoc = node.leadingJsDoc;
+          if (init.type === 'FunctionExpression' && !init.leadingJsDoc) {
+            init.leadingJsDoc = node.leadingJsDoc;
+          } else if (init.type === 'ArrowFunctionExpression' && !init.leadingJsDoc) {
+            init.leadingJsDoc = node.leadingJsDoc;
           }
         }
       }
@@ -2953,33 +2978,33 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Standard variable declaration
       let symbolType = SymbolType.VARIABLE;
-      let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
+      let dataType: UcodeDataType = UcodeType.UNKNOWN;
 
       // SSA-style immediate type inference for literals to prevent later assignments from affecting initial type
       if (node.init) {
         switch (node.init.type) {
           case 'ArrayExpression':
-            dataType = UcodeType.ARRAY as UcodeDataType;
+            dataType = UcodeType.ARRAY;
             break;
           case 'ObjectExpression':
-            dataType = UcodeType.OBJECT as UcodeDataType;
+            dataType = UcodeType.OBJECT;
             break;
           case 'Literal': {
             const literal = node.init;
             if (literal.literalType === 'regexp') {
-              dataType = UcodeType.REGEX as UcodeDataType;
+              dataType = UcodeType.REGEX;
             } else if (typeof literal.value === 'string') {
-              dataType = UcodeType.STRING as UcodeDataType;
+              dataType = UcodeType.STRING;
             } else if (literal.literalType === 'double') {
               // Exponent notation (`1e5`) is a double literal even when integer-valued (ticket 115).
-              dataType = UcodeType.DOUBLE as UcodeDataType;
+              dataType = UcodeType.DOUBLE;
             } else if (typeof literal.value === 'number') {
               // Check if it's an integer or double
-              dataType = Number.isInteger(literal.value) ? UcodeType.INTEGER as UcodeDataType : UcodeType.DOUBLE as UcodeDataType;
+              dataType = Number.isInteger(literal.value) ? UcodeType.INTEGER : UcodeType.DOUBLE;
             } else if (typeof literal.value === 'boolean') {
-              dataType = UcodeType.BOOLEAN as UcodeDataType;
+              dataType = UcodeType.BOOLEAN;
             } else if (literal.value === null) {
-              dataType = UcodeType.NULL as UcodeDataType;
+              dataType = UcodeType.NULL;
             }
             break;
           }
@@ -2990,7 +3015,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // SSA flow still overrides this the moment the variable is assigned, so this only
         // governs the window before the first assignment (and bare `let x;` everywhere).
         // Guarded to plain identifiers so destructuring patterns are left to their own path.
-        dataType = UcodeType.NULL as UcodeDataType;
+        dataType = UcodeType.NULL;
       }
 
       // Special handling for require() calls
@@ -3084,16 +3109,16 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Handle || require('module') pattern (e.g., let _fs = fs_mod || require('fs'))
       // Parser emits BinaryExpression for || and ??, not LogicalExpression
       if (node.init && node.init.type === 'BinaryExpression') {
-        const binary = node.init as BinaryExpressionNode;
+        const binary = node.init;
         if (binary.operator === '||' || binary.operator === '??') {
           const requireCall = binary.right;
           if (requireCall && requireCall.type === 'CallExpression') {
-            const call = requireCall as CallExpressionNode;
-            if (call.callee?.type === 'Identifier' && (call.callee as IdentifierNode).name === 'require' &&
+            const call = requireCall;
+            if (call.callee?.type === 'Identifier' && call.callee.name === 'require' &&
                 call.arguments?.length === 1) {
               const arg = call.arguments[0];
-              if (arg && arg.type === 'Literal' && typeof (arg as LiteralNode).value === 'string') {
-                const moduleName = (arg as LiteralNode).value as string;
+              if (arg && arg.type === 'Literal' && typeof arg.value === 'string') {
+                const moduleName = arg.value;
                 if (isKnownModule(moduleName)) {
                   symbolType = SymbolType.MODULE;
                   dataType = { type: UcodeType.OBJECT, moduleName };
@@ -3255,7 +3280,7 @@ export class SemanticAnalyzer extends BaseVisitor {
             // mirror the ES6 default-import-function path (applyFactoryReturnInfo)
             // so `fw4()`'s call result gets the factory's return shape, not `fw4`
             // itself.
-            sym.dataType = UcodeType.FUNCTION as UcodeDataType;
+            sym.dataType = UcodeType.FUNCTION;
             const returnInfo = this.fileResolver.getDefaultExportFunctionReturnInfo(requireResolvedUri);
             if (returnInfo) this.applyFactoryReturnInfo(sym, returnInfo, requireResolvedUri);
             const params = this.fileResolver.getDefaultExportFunctionParameters(requireResolvedUri);
@@ -3298,7 +3323,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (node.init.type === 'ArrowFunctionExpression' || node.init.type === 'FunctionExpression') {
           const fnSym = this.symbolTable.lookupOpenScopes(name);
           if (fnSym) {
-            fnSym.dataType = UcodeType.FUNCTION as UcodeDataType;
+            fnSym.dataType = UcodeType.FUNCTION;
             const rt = stampsOf(node.init)._inferredReturnType;
             if (rt !== undefined && rt !== null) fnSym.returnType = rt;
             // Stamp the param signature so call sites argument-check `f(...)` like a
@@ -3366,7 +3391,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (node.init.type === 'Identifier') {
           const sym = this.symbolTable.lookupOpenScopes(name);
           if (sym) {
-            const srcSym = this.symbolTable.lookupOpenScopes((node.init as IdentifierNode).name);
+            const srcSym = this.symbolTable.lookupOpenScopes(node.init.name);
             if (srcSym?.keysOfSymbol) sym.keysOfSymbol = srcSym.keysOfSymbol;
             // Function-value aliasing: `let f = greet` (and chains `let g = f`)
             // carry the callee's signature so `f(args)` is argument-checked like a
@@ -3374,7 +3399,7 @@ export class SemanticAnalyzer extends BaseVisitor {
             if (srcSym?.parameters) {
               sym.parameters = srcSym.parameters;
               if (srcSym.returnType !== undefined) sym.returnType = srcSym.returnType;
-              if (sym.dataType === UcodeType.UNKNOWN) sym.dataType = UcodeType.FUNCTION as UcodeDataType;
+              if (sym.dataType === UcodeType.UNKNOWN) sym.dataType = UcodeType.FUNCTION;
             }
             // The null-guard contract rides the alias too: `let rp = require_param;
             // let err = rp('x', v);` narrows exactly like the direct call. Imported
@@ -3390,12 +3415,12 @@ export class SemanticAnalyzer extends BaseVisitor {
         // signature. Kept as a VARIABLE (not IMPORTED) so go-to-definition still
         // lands on the local `let` and completion doesn't treat it as a namespace.
         if (node.init.type === 'MemberExpression') {
-          const mem = node.init as MemberExpressionNode;
+          const mem = node.init;
           if (mem.object.type === 'Identifier' && !mem.computed && mem.property.type === 'Identifier') {
-            const objSym = this.symbolTable.lookupOpenScopes((mem.object as IdentifierNode).name);
+            const objSym = this.symbolTable.lookupOpenScopes(mem.object.name);
             const modName = objSym ? extractModuleType(objSym.dataType)?.moduleName : undefined;
             if (modName && isKnownModule(modName)) {
-              const memberName = (mem.property as IdentifierNode).name;
+              const memberName = mem.property.name;
               if (MODULE_REGISTRIES[modName].getFunctionNames().includes(memberName)) {
                 const sym = this.symbolTable.lookupOpenScopes(name);
                 if (sym) {
@@ -3417,7 +3442,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           // genuine UNKNOWN: `let x = json(y); if (type(x)=="object") { let z = x; }`
           // must narrow `z` to `object`, not stay `any`.
           if (sym && (sym.dataType === UcodeType.UNKNOWN || sym.dataType === UcodeType.ANY)) {
-            const initName = (node.init as IdentifierNode).name;
+            const initName = node.init.name;
             const narrowedType = this.typeChecker.getNarrowedTypeAtPosition(initName, node.init.start);
             if (narrowedType && narrowedType !== UcodeType.UNKNOWN) {
               sym.dataType = narrowedType;
@@ -3442,19 +3467,19 @@ export class SemanticAnalyzer extends BaseVisitor {
         // presence, so the binding stays definite. Runs after the rich-type
         // upgrade above so it isn't clobbered.
         if (node.init.type === 'MemberExpression') {
-          const mem = node.init as MemberExpressionNode;
+          const mem = node.init;
           if (mem.computed && mem.object.type === 'Identifier') {
-            const objName = (mem.object as IdentifierNode).name;
+            const objName = mem.object.name;
             const objSym = this.symbolTable.resolveReference(objName, mem.object.start);
             const sym = this.symbolTable.lookupOpenScopes(name);
             if (objSym?.valuePropertyTypes && objSym.valuePropertyTypes.size > 0 && sym) {
               let keyProvesMembership = false;
               if (mem.property.type === 'Identifier') {
-                const keySym = this.symbolTable.resolveReference((mem.property as IdentifierNode).name, mem.property.start);
+                const keySym = this.symbolTable.resolveReference(mem.property.name, mem.property.start);
                 keyProvesMembership = keySym?.keysOfSymbol === objName;
               }
               sym.dataType = keyProvesMembership
-                ? UcodeType.OBJECT as UcodeDataType
+                ? UcodeType.OBJECT
                 : createUnionType([UcodeType.OBJECT, UcodeType.NULL]);
               sym.propertyTypes = objSym.valuePropertyTypes;
             }
@@ -3465,7 +3490,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (node.init.type === 'ObjectExpression') {
           const sym = this.symbolTable.lookupOpenScopes(name);
           if (sym) {
-            const propTypes = this.inferObjectLiteralPropertyTypes(node.init as ObjectExpressionNode);
+            const propTypes = this.inferObjectLiteralPropertyTypes(node.init);
             if (propTypes) {
               sym.propertyTypes = propTypes;
             }
@@ -3476,20 +3501,20 @@ export class SemanticAnalyzer extends BaseVisitor {
             // map) to bound the cost.
             else {
               const scopeRoot = this.currentFunctionNode ?? this.currentASTRoot;
-              if (scopeRoot) this.inferMapValueShape(sym, scopeRoot as AstNode);
+              if (scopeRoot) this.inferMapValueShape(sym, scopeRoot);
             }
             // One-level-deeper shapes so a two-hop `a.b.c` on a same-file local object
             // literal resolves (typeChecker.checkMemberExpression reads nestedPropertyTypes;
             // previously only cross-file imports populated it). (#173)
-            const nested = this.inferObjectLiteralNestedPropertyTypes(node.init as ObjectExpressionNode);
+            const nested = this.inferObjectLiteralNestedPropertyTypes(node.init);
             if (nested) sym.nestedPropertyTypes = nested;
             // The whole init was visited above (line ~877), so every function property's
             // return type is stamped — record them so `obj.method()` resolves.
-            const fnReturns = this.inferObjectLiteralFunctionReturnTypes(node.init as ObjectExpressionNode);
+            const fnReturns = this.inferObjectLiteralFunctionReturnTypes(node.init);
             if (fnReturns) sym.propertyReturnTypes = fnReturns;
             // Property locations so go-to-definition on `obj.member` lands on the property.
             if (!sym.propertyDefinitionLocations) {
-              const locs = this.inferObjectLiteralPropertyLocations(node.init as ObjectExpressionNode);
+              const locs = this.inferObjectLiteralPropertyLocations(node.init);
               if (locs) sym.propertyDefinitionLocations = locs;
             }
           }
@@ -3500,7 +3525,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // parser emits BinaryExpression (not LogicalExpression) for `||`/`??`/`&&`. (#174)
         else if (node.init.type === 'ConditionalExpression'
           || (node.init.type === 'BinaryExpression'
-              && ['||', '??', '&&'].includes((node.init as BinaryExpressionNode).operator))) {
+              && ['||', '??', '&&'].includes(node.init.operator))) {
           const sym = this.symbolTable.lookupOpenScopes(name);
           // Only when EVERY reachable branch is object-like — a mixed `obj|array`
           // result must keep its union so the "possibly array" member-access warning
@@ -3524,20 +3549,20 @@ export class SemanticAnalyzer extends BaseVisitor {
       case 'ObjectExpression':
         return true;
       case 'Identifier': {
-        const sym = this.symbolTable.lookupOpenScopes((expr as IdentifierNode).name);
+        const sym = this.symbolTable.lookupOpenScopes(expr.name);
         if (!sym) return false;
         return dataTypeToBase(sym.dataType) === UcodeType.OBJECT
           || (!!sym.propertyTypes && sym.propertyTypes.size > 0);
       }
       case 'BinaryExpression': {
-        const be = expr as BinaryExpressionNode;
+        const be = expr;
         if (be.operator === '||' || be.operator === '??' || be.operator === '&&') {
           return this.isObjectLikeInit(be.left) && this.isObjectLikeInit(be.right);
         }
         return false;
       }
       case 'ConditionalExpression': {
-        const ce = expr as ConditionalExpressionNode;
+        const ce = expr;
         return this.isObjectLikeInit(ce.consequent) && this.isObjectLikeInit(ce.alternate);
       }
       default:
@@ -3551,13 +3576,13 @@ export class SemanticAnalyzer extends BaseVisitor {
   private resolvePropertyTypesFromInitExpr(expr: AstNode): Map<string, UcodeDataType> | null {
     switch (expr.type) {
       case 'ObjectExpression':
-        return this.inferObjectLiteralPropertyTypes(expr as ObjectExpressionNode);
+        return this.inferObjectLiteralPropertyTypes(expr);
       case 'Identifier': {
-        const sym = this.symbolTable.lookupOpenScopes((expr as IdentifierNode).name);
+        const sym = this.symbolTable.lookupOpenScopes(expr.name);
         return sym?.propertyTypes && sym.propertyTypes.size > 0 ? new Map(sym.propertyTypes) : null;
       }
       case 'BinaryExpression': {
-        const be = expr as BinaryExpressionNode;
+        const be = expr;
         if (be.operator === '||' || be.operator === '??' || be.operator === '&&') {
           return this.mergePropertyTypeMaps(
             this.resolvePropertyTypesFromInitExpr(be.left),
@@ -3566,7 +3591,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         return null;
       }
       case 'ConditionalExpression': {
-        const ce = expr as ConditionalExpressionNode;
+        const ce = expr;
         return this.mergePropertyTypeMaps(
           this.resolvePropertyTypesFromInitExpr(ce.consequent),
           this.resolvePropertyTypesFromInitExpr(ce.alternate));
@@ -3606,7 +3631,9 @@ export class SemanticAnalyzer extends BaseVisitor {
         return;
       }
 
-      const modulePath = node.source.value as string;
+      const modulePath = node.source.value;
+      // An import source is always a string literal by construction.
+      if (typeof modulePath !== 'string') return;
 
       // Version-gated: a builtin module that doesn't exist on the configured target
       // (e.g. `io` predates OpenWrt 25.12) → UC6005 on the module path.
@@ -3669,12 +3696,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
 
     // Create appropriate data type for special imports first
-    let dataType: UcodeDataType = UcodeType.UNKNOWN as UcodeDataType;
+    let dataType: UcodeDataType = UcodeType.UNKNOWN;
 
     // Mark default imports explicitly
     if (specifier.type === 'ImportDefaultSpecifier') {
       if (defaultIsFunction) {
-        dataType = UcodeType.FUNCTION as UcodeDataType;
+        dataType = UcodeType.FUNCTION;
       } else {
         dataType = {
           type: UcodeType.OBJECT,
@@ -3714,7 +3741,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       this.flagPlatformGated(source, importedName, specifier.imported.start, specifier.imported.end);
       const isModuleFunction = !!reg && reg.getFunctionNames().includes(importedName);
       if (isModuleFunction) {
-        dataType = UcodeType.FUNCTION as UcodeDataType;
+        dataType = UcodeType.FUNCTION;
       }
       // Version-gated: the symbol exists on the LSP's (newest) model but was added after
       // the configured target's ucode → UC6005 on the specifier. Fires for functions AND
@@ -3730,7 +3757,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // (hover/signature-help/completion/methods).
       const objType = reg?.getObjectExportType(importedName);
       if (objType) {
-        dataType = { type: UcodeType.OBJECT, moduleName: objType } as UcodeDataType;
+        dataType = { type: UcodeType.OBJECT, moduleName: objType };
       }
     }
 
@@ -3878,7 +3905,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           if (returnInfo) {
             this.applyFactoryReturnInfo(symbol, returnInfo, effectiveUri);
             if (symbol.dataType === UcodeType.UNKNOWN) {
-              symbol.dataType = UcodeType.FUNCTION as UcodeDataType;
+              symbol.dataType = UcodeType.FUNCTION;
             }
           } else if (symbol.dataType === UcodeType.UNKNOWN) {
             // Not a function — resolve a named-exported VARIABLE's type so e.g.
@@ -3899,7 +3926,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           const params = this.fileResolver.getNamedExportFunctionParameters(effectiveUri, importedName);
           if (params) {
             symbol.parameters = params;
-            if (symbol.dataType === UcodeType.UNKNOWN) symbol.dataType = UcodeType.FUNCTION as UcodeDataType;
+            if (symbol.dataType === UcodeType.UNKNOWN) symbol.dataType = UcodeType.FUNCTION;
           }
           // Null-guard contract (docs/error-guard-null-narrowing.md): a falsy
           // result from this function proves the flagged arguments non-null.
@@ -4122,7 +4149,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const candidates = new Set<string>([
         ...Object.keys(JSDOC_PRIMITIVE_MAP),
         ...Object.keys(OBJECT_REGISTRIES),
-        ...(KNOWN_MODULES as readonly string[]),
+        ...KNOWN_MODULES,
         ...this.typedefRegistry.keys(),
       ]);
       const lower = token.toLowerCase();
@@ -4195,7 +4222,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   ): ReturnsFixData | undefined {
     const arg = e.node.argument;
     if (!arg || arg.type !== 'BinaryExpression') return base;
-    const bin = arg as BinaryExpressionNode;
+    const bin = arg;
     if (bin.operator !== '&&') return base;
     if (bin.left.type !== 'Identifier' && bin.left.type !== 'MemberExpression' && bin.left.type !== 'CallExpression') return base;
     // The annotation shortfall must be EXACTLY the null arm — then dropping it fixes it.
@@ -4256,7 +4283,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (returnEntries.length === 0) {
       // No return statement → the function returns null. The annotation is honoured only if
       // it actually covers null (e.g. `@returns {string|null}`); otherwise it's too narrow.
-      if (this.jsdocAnnotationCovers(declared, UcodeType.NULL as UcodeDataType)) return declared;
+      if (this.jsdocAnnotationCovers(declared, UcodeType.NULL)) return declared;
       this.addDiagnosticErrorCode(
         UcodeErrorCode.JSDOC_TYPE_CONTRADICTS,
         `@returns {${this.jsdocTypeDisplay(declared)}} but the function has no return statement (returns null)`,
@@ -4303,7 +4330,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>> | undefined;
     closedPropertyShape?: boolean | undefined;
   } {
-    if (seen.has(typedef.name)) return { type: UcodeType.OBJECT as UcodeDataType };
+    if (seen.has(typedef.name)) return { type: UcodeType.OBJECT };
     seen.add(typedef.name);
 
     // Alias typedef: no @property list → resolve the base type.
@@ -4312,7 +4339,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const shape = parseInlineObjectShape(base);
       if (shape) {
         return {
-          type: UcodeType.OBJECT as UcodeDataType,
+          type: UcodeType.OBJECT,
           propertyTypes: shape.size > 0 ? shape : undefined,
           closedPropertyShape: shape.size > 0 ? true : undefined,
         };
@@ -4320,12 +4347,12 @@ export class SemanticAnalyzer extends BaseVisitor {
       const resolved = resolveTypeExpression(base);
       // A concrete alias (primitive/union/array/module) is used directly; a bare `object`
       // falls through so a typedef-name base can be looked up below.
-      if (resolved !== null && resolved !== (UcodeType.OBJECT as UcodeDataType)) {
+      if (resolved !== null && resolved !== UcodeType.OBJECT) {
         return { type: resolved };
       }
       const aliased = this.typedefRegistry.get(base);
       if (aliased) return this.typedefToParamInfo(aliased, seen);
-      return { type: resolved ?? (UcodeType.OBJECT as UcodeDataType) };
+      return { type: resolved ?? UcodeType.OBJECT };
     }
 
     // Object typedef with an explicit @property shape.
@@ -4334,7 +4361,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     for (const [name, prop] of typedef.properties) {
       if (prop.children && prop.children.size > 0) {
         // Dotted `pos.x`/`pos.y` → `pos` is an object whose members are the children.
-        propertyTypes.set(name, UcodeType.OBJECT as UcodeDataType);
+        propertyTypes.set(name, UcodeType.OBJECT);
         const nested = new Map<string, UcodeDataType>();
         for (const [cname, cprop] of prop.children) nested.set(cname, this.resolveTypedefPropType(cprop, seen));
         nestedPropertyTypes.set(name, nested);
@@ -4351,7 +4378,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       propertyTypes.set(name, this.resolveTypedefPropType(prop, seen));
     }
     return {
-      type: UcodeType.OBJECT as UcodeDataType,
+      type: UcodeType.OBJECT,
       propertyTypes,
       nestedPropertyTypes: nestedPropertyTypes.size > 0 ? nestedPropertyTypes : undefined,
       closedPropertyShape: true,
@@ -4366,7 +4393,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const ref = this.typedefRegistry.get(prop.typeExpression.trim());
       if (ref) t = this.typedefToParamInfo(ref, seen).type;
     }
-    if (t === null) t = UcodeType.UNKNOWN as UcodeDataType;
+    if (t === null) t = UcodeType.UNKNOWN;
     return prop.optional ? widenWithNull(t) : t;
   }
 
@@ -4378,7 +4405,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (!jsDocNode) {
       // No JSDoc — declare all params as UNKNOWN
       for (const param of params) {
-        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
+        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN, param);
       }
       return;
     }
@@ -4469,7 +4496,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const inlineShape = parseInlineObjectShape(tag.typeExpression);
       if (inlineShape) {
         jsdocParams.set(tag.name, {
-          type: UcodeType.OBJECT as UcodeDataType,
+          type: UcodeType.OBJECT,
           description: tag.description,
           propertyTypes: inlineShape.size > 0 ? inlineShape : undefined,
           closedPropertyShape: inlineShape.size > 0 ? true : undefined,
@@ -4539,7 +4566,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           if (jsdocInfo.closedPropertyShape) sym.closedPropertyShape = true;
         }
       } else {
-        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN as UcodeDataType, param);
+        this.symbolTable.declare(param.name, SymbolType.PARAMETER, UcodeType.UNKNOWN, param);
       }
     }
   }
@@ -4564,8 +4591,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (jsDocValue) {
       documented = new Set(
         parseJsDocComment(jsDocValue).tags
-          .filter(t => t.tag === 'param' && t.name)
-          .map(t => t.name as string)
+          .flatMap(t => (t.tag === 'param' && t.name) ? [t.name] : [])
       );
     }
     const unknownParams = params.filter(p => {
@@ -4587,13 +4613,13 @@ export class SemanticAnalyzer extends BaseVisitor {
   /** Derive a display name for a function expression from its assignment target:
    *  `nft_file.init = fn` → "nft_file.init", `let f = fn` (Identifier) → "f". */
   private assignmentTargetName(target: AstNode): string | null {
-    if (target.type === 'Identifier') return (target as IdentifierNode).name;
+    if (target.type === 'Identifier') return target.name;
     if (target.type === 'MemberExpression') {
-      const m = target as MemberExpressionNode;
+      const m = target;
       if (!m.computed) {
         const prop = this.getStaticPropertyName(m.property);
         if (prop) {
-          if (m.object.type === 'Identifier') return `${(m.object as IdentifierNode).name}.${prop}`;
+          if (m.object.type === 'Identifier') return `${m.object.name}.${prop}`;
           if (m.object.type === 'ThisExpression') return `this.${prop}`;
           return prop;
         }
@@ -4664,7 +4690,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
       return {
-        type: returnInfo.returnType ?? UcodeType.OBJECT as UcodeDataType,
+        type: returnInfo.returnType ?? UcodeType.OBJECT,
         propertyTypes: returnInfo.returnPropertyTypes,
         propertyFunctionReturnTypes: returnInfo.propertyFunctionReturnTypes,
         propertyDefinitionLocations
@@ -4733,7 +4759,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const existing = this.symbolTable.lookupInCurrentScope(name);
       const alreadyHoisted = existing && existing.type === SymbolType.FUNCTION;
       if (!alreadyHoisted) {
-        if (!this.symbolTable.declare(name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType, node.id)) {
+        if (!this.symbolTable.declare(name, SymbolType.FUNCTION, UcodeType.FUNCTION, node.id)) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.FUNCTION_REDECLARATION,
             `Function '${name}' is already declared in this scope`,
@@ -4778,7 +4804,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
-        this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
+        this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY, node.restParam);
         const restSym = this.symbolTable.lookupOpenScopes(node.restParam.name);
         if (restSym) restSym.isRestParam = true;
       }
@@ -4803,7 +4829,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // types are UNKNOWN (checkNode short-circuited), so use the cached return type.
       const returnEntries = this.functionReturnTypes.get(node) || [];
       const returnTypes = returnEntries.map(e => e.type);
-      const inferredReturnType = fnClean ? (fnClean.returnType as UcodeDataType ?? this.typeChecker.getCommonReturnType(returnTypes)) : this.widenReturnForFallthrough(node.body, returnTypes.length, this.typeChecker.getCommonReturnType(returnTypes));
+      const inferredReturnType = fnClean ? (fnClean.returnType ?? this.typeChecker.getCommonReturnType(returnTypes)) : this.widenReturnForFallthrough(node.body, returnTypes.length, this.typeChecker.getCommonReturnType(returnTypes));
       if (fnClean) this.replayCleanBodyTypeDiagnostics(fnClean, fnDiagBefore);
       // Reconcile against a `@returns {T}` annotation: T fills/narrows an opaque body, but a
       // return that provably contradicts T is flagged per-statement (the body type wins). (#61)
@@ -4825,13 +4851,13 @@ export class SemanticAnalyzer extends BaseVisitor {
             const psym = this.symbolTable.lookupOpenScopes(p.name);
             return {
               name: p.name,
-              type: psym ? psym.dataType : (UcodeType.UNKNOWN as UcodeDataType),
+              type: psym ? psym.dataType : UcodeType.UNKNOWN,
               isRest: false,
               ...(psym?.jsdocOptionalParam ? { optional: true } : {})
             };
           });
           if (node.restParam) {
-            paramInfos.push({ name: node.restParam.name, type: UcodeType.ARRAY as UcodeDataType, isRest: true });
+            paramInfos.push({ name: node.restParam.name, type: UcodeType.ARRAY, isRest: true });
           }
           symbol.parameters = paramInfos;
         }
@@ -4881,13 +4907,13 @@ export class SemanticAnalyzer extends BaseVisitor {
       const psym = this.symbolTable.lookupOpenScopes(p.name);
       return {
         name: p.name,
-        type: psym ? psym.dataType : (UcodeType.UNKNOWN as UcodeDataType),
+        type: psym ? psym.dataType : UcodeType.UNKNOWN,
         isRest: false,
         ...(psym?.jsdocOptionalParam ? { optional: true } : {})
       };
     });
     if (node.restParam) {
-      paramInfos.push({ name: node.restParam.name, type: UcodeType.ARRAY as UcodeDataType, isRest: true });
+      paramInfos.push({ name: node.restParam.name, type: UcodeType.ARRAY, isRest: true });
     }
     return paramInfos;
   }
@@ -4899,12 +4925,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     // not the stale declared type. Record a flow-write of null so reads AFTER the delete see
     // null instead of the pre-delete type (07). Non-computed member on a known symbol only.
     if (this.options.enableScopeAnalysis && node.argument.type === 'MemberExpression') {
-      const mem = node.argument as MemberExpressionNode;
+      const mem = node.argument;
       if (!mem.computed && mem.object.type === 'Identifier' && mem.property.type === 'Identifier') {
-        const sym = this.symbolTable.lookupOpenScopes((mem.object as IdentifierNode).name);
-        const prop = (mem.property as IdentifierNode).name;
+        const sym = this.symbolTable.lookupOpenScopes(mem.object.name);
+        const prop = mem.property.name;
         if (sym?.propertyTypes?.has(prop)) {
-          this.recordPropertyWrite(sym, prop, UcodeType.NULL as UcodeDataType, node.end, node.start);
+          this.recordPropertyWrite(sym, prop, UcodeType.NULL, node.end, node.start);
         }
       }
     }
@@ -4987,7 +5013,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         isShallow = true;
       }
       if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) continue;
-      out.set(key, rt as UcodeDataType);
+      out.set(key, rt);
       if (isShallow) shallowOut?.add(key);
     }
     return out.size > 0 ? out : null;
@@ -5005,11 +5031,11 @@ export class SemanticAnalyzer extends BaseVisitor {
    */
   private registerForwardCallDependencyIfShallow(initNode: AstNode, symbol: SymbolEntry): void {
     if (initNode.type !== 'CallExpression') return;
-    const callNode = initNode as CallExpressionNode;
+    const callNode = initNode;
     if (callNode.callee.type !== 'MemberExpression') return;
-    const mem = callNode.callee as MemberExpressionNode;
+    const mem = callNode.callee;
     if (mem.computed || mem.object.type !== 'ThisExpression' || mem.property.type !== 'Identifier') return;
-    const methodName = (mem.property as IdentifierNode).name;
+    const methodName = mem.property.name;
     const thisSym = this.symbolTable.lookupOpenScopes('this');
     if (!thisSym?.propertyReturnTypesShallow?.has(methodName)) return;
     const objNode = this.thisObjectNodeStack[this.thisObjectNodeStack.length - 1];
@@ -5079,7 +5105,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       return rt;
     }
     if (rhs.type === 'Identifier') {
-      return this.resolveIdentifierFunctionReturnType(rhs as IdentifierNode);
+      return this.resolveIdentifierFunctionReturnType(rhs);
     }
     return null;
   }
@@ -5135,7 +5161,7 @@ export class SemanticAnalyzer extends BaseVisitor {
   private collectReturnTypesQuiet(fnNode: FunctionExpressionNode | ArrowFunctionExpressionNode): UcodeDataType {
     // Expression-body arrow: the body IS the returned value.
     if (fnNode.type === 'ArrowFunctionExpression' && fnNode.body && fnNode.body.type !== 'BlockStatement') {
-      return this.typeChecker.checkNodeQuietly(fnNode.body) as UcodeDataType;
+      return this.typeChecker.checkNodeQuietly(fnNode.body);
     }
     const types: UcodeDataType[] = [];
     const walk = (n: AstNode | null | undefined): void => {
@@ -5143,13 +5169,13 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Don't descend into nested functions — their returns aren't this function's.
       if (n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression' || n.type === 'FunctionDeclaration') return;
       if (n.type === 'ReturnStatement') {
-        types.push(n.argument ? (this.typeChecker.checkNodeQuietly(n.argument) as UcodeDataType) : (UcodeType.NULL as UcodeDataType));
+        types.push(n.argument ? (this.typeChecker.checkNodeQuietly(n.argument)) : UcodeType.NULL);
         return;
       }
       for (const c of legacyChildren(n)) walk(c);
     };
     if (fnNode.body) walk(fnNode.body);
-    if (types.length === 0) return UcodeType.UNKNOWN as UcodeDataType;
+    if (types.length === 0) return UcodeType.UNKNOWN;
     return this.typeChecker.getCommonReturnType(types);
   }
 
@@ -5207,7 +5233,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // If the function has a name (named function expression), declare it in the function's own scope
       if (node.id) {
-        this.symbolTable.declare(node.id.name, SymbolType.FUNCTION, UcodeType.UNKNOWN as UcodeDataType, node.id);
+        this.symbolTable.declare(node.id.name, SymbolType.FUNCTION, UcodeType.UNKNOWN, node.id);
       }
 
       // Declare parameters in the function scope. JSDoc annotations win; otherwise, if
@@ -5231,7 +5257,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
-        this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
+        this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY, node.restParam);
         const restSym = this.symbolTable.lookupOpenScopes(node.restParam.name);
         if (restSym) restSym.isRestParam = true;
       }
@@ -5239,7 +5265,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Declare `this` with property types from enclosing object literal
       if (this.thisPropertyStack.length > 0) {
         const thisProps = this.thisPropertyStack[this.thisPropertyStack.length - 1]!;
-        this.symbolTable.declare('this', SymbolType.VARIABLE, UcodeType.OBJECT as UcodeDataType, node);
+        this.symbolTable.declare('this', SymbolType.VARIABLE, UcodeType.OBJECT, node);
         const thisSym = this.symbolTable.lookupOpenScopes('this');
         if (thisSym) {
           thisSym.propertyTypes = new Map(thisProps);
@@ -5275,8 +5301,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (feClean && feThisMap && feClean.thisWrites.length > 0) {
         const thisSym = this.symbolTable.lookupOpenScopes('this');
         for (const [k, v] of feClean.thisWrites) {
-          feThisMap.set(k, v as UcodeDataType);
-          if (thisSym?.propertyTypes) thisSym.propertyTypes.set(k, v as UcodeDataType);
+          feThisMap.set(k, v);
+          if (thisSym?.propertyTypes) thisSym.propertyTypes.set(k, v);
         }
       }
       // Capture this method's this-property writes (post-restore, so they're the real types)
@@ -5291,7 +5317,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // an anonymous function expression has no symbol of its own, so the binding site
       // (variable declarator / assignment) reads `_inferredReturnType` off the node.
       const fnReturnTypes = (this.functionReturnTypes.get(node) || []).map(e => e.type);
-      stampsOf(node)._inferredReturnType = feClean ? (feClean.returnType as UcodeDataType ?? this.typeChecker.getCommonReturnType(fnReturnTypes)) : this.widenReturnForFallthrough(node.body, fnReturnTypes.length, this.typeChecker.getCommonReturnType(fnReturnTypes));
+      stampsOf(node)._inferredReturnType = feClean ? (feClean.returnType ?? this.typeChecker.getCommonReturnType(fnReturnTypes)) : this.widenReturnForFallthrough(node.body, fnReturnTypes.length, this.typeChecker.getCommonReturnType(fnReturnTypes));
       if (feClean) this.replayCleanBodyTypeDiagnostics(feClean, feDiagBefore);
 
       // Stash the param signature (read while still in scope) for the binding site.
@@ -5353,7 +5379,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Declare rest parameter if present (as array type)
       if (node.restParam) {
-        this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY as UcodeDataType, node.restParam);
+        this.symbolTable.declare(node.restParam.name, SymbolType.PARAMETER, UcodeType.ARRAY, node.restParam);
         const restSym = this.symbolTable.lookupOpenScopes(node.restParam.name);
         if (restSym) restSym.isRestParam = true;
       }
@@ -5364,7 +5390,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // called - may-have-run for reads outside the body (docs/type-soundness-audit.md I-4).
       this.branchStack.push({ bs: node.body.start, be: node.body.end, is: node.body.start, ie: node.body.end });
       if (node.body.type === 'BlockStatement') {
-        const blockBody = (node.body as BlockStatementNode).body;
+        const blockBody = node.body.body;
         for (const statement of blockBody) {
           this.visit(statement);
         }
@@ -5385,7 +5411,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       } else {
         // Inference-only: the body was already validated during the visit above, so query
         // its type without re-emitting diagnostics (checkNode would double-report).
-        arrowReturnType = this.typeChecker.checkNodeQuietly(node.body) ?? (UcodeType.UNKNOWN as UcodeDataType);
+        arrowReturnType = this.typeChecker.checkNodeQuietly(node.body) ?? UcodeType.UNKNOWN;
       }
       stampsOf(node)._inferredReturnType = arrowReturnType;
 
@@ -5567,7 +5593,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // This fixes the issue where variables like file_content are marked as unused
       // even when used in member expressions like file_content.read()
       if (!node.computed && node.object.type === 'Identifier') {
-        const objectName = (node.object as IdentifierNode).name;
+        const objectName = node.object.name;
         // Explicitly mark the object identifier as used
         this.symbolTable.markUsed(objectName, node.object.start);
       }
@@ -5611,11 +5637,11 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (node.computed || node.property.type !== 'Identifier' || node.object.type !== 'Identifier') return;
     if (this.assignmentLeftDepth > 0) return; // defining the member, not reading it
 
-    const objectName = (node.object as IdentifierNode).name;
+    const objectName = node.object.name;
     const symbol = this.symbolTable.resolveReference(objectName, node.object.start);
     if (!symbol || !symbol.closedPropertyShape || !symbol.propertyTypes) return;
 
-    const member = (node.property as IdentifierNode).name;
+    const member = node.property.name;
     if (symbol.propertyTypes.has(member)) return;
     if (symbol.nestedPropertyTypes?.has(member)) return;
 
@@ -5643,8 +5669,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       return;
     }
 
-    const objectName = (node.object as IdentifierNode).name;
-    const methodName = (node.property as IdentifierNode).name;
+    const objectName = node.object.name;
+    const methodName = node.property.name;
 
     // Look up the object symbol
     const symbol = this.symbolTable.lookupOpenScopes(objectName);
@@ -5759,11 +5785,11 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   private getStaticPropertyName(propertyNode: AstNode): string | null {
     if (propertyNode.type === 'Identifier') {
-      return (propertyNode as IdentifierNode).name;
+      return propertyNode.name;
     }
 
     if (propertyNode.type === 'Literal') {
-      const literalProperty = propertyNode as LiteralNode;
+      const literalProperty = propertyNode;
       if (literalProperty.value === undefined || literalProperty.value === null) {
         return null;
       }
@@ -5795,7 +5821,7 @@ export class SemanticAnalyzer extends BaseVisitor {
    */
   private resolveExpressionToLiteralKey(node: AstNode): string | null {
     if (node.type === 'Literal') {
-      const lit = node as LiteralNode;
+      const lit = node;
       if (lit.value === undefined || lit.value === null) return null;
       return String(lit.value);
     }
@@ -5808,18 +5834,18 @@ export class SemanticAnalyzer extends BaseVisitor {
       return null;
     }
     if (node.type === 'Identifier') {
-      const sym = this.symbolTable.lookupOpenScopes((node as IdentifierNode).name);
+      const sym = this.symbolTable.lookupOpenScopes(node.name);
       if (sym?.initNode) return this.resolveExpressionToLiteralKey(sym.initNode);
       return null;
     }
     if (node.type === 'MemberExpression') {
-      const mem = node as MemberExpressionNode;
+      const mem = node;
       if (mem.computed) return null;
       // Chained namespace access: base.A.B where base is `import * as base from 'file.uc'`
       if (mem.object.type === 'MemberExpression') {
-        const inner = mem.object as MemberExpressionNode;
+        const inner = mem.object;
         if (!inner.computed && inner.object.type === 'Identifier') {
-          const baseName = (inner.object as IdentifierNode).name;
+          const baseName = inner.object.name;
           const baseSym = this.symbolTable.lookupOpenScopes(baseName);
           const aName = this.getStaticPropertyName(inner.property);
           const bName = this.getStaticPropertyName(mem.property);
@@ -5847,8 +5873,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
 
     if (!candidate && typeof symbol.dataType === 'object' && symbol.dataType !== null) {
-      const dataType = symbol.dataType as { moduleName?: string };
-      if (typeof dataType.moduleName === 'string') {
+      const dataType = symbol.dataType;
+      if ('moduleName' in dataType && typeof dataType.moduleName === 'string') {
         candidate = dataType.moduleName;
       }
     }
@@ -5931,7 +5957,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (this.options.enableScopeAnalysis) {
       // Mark function callee as used if it's an identifier
       if (node.callee.type === 'Identifier') {
-        const functionName = (node.callee as IdentifierNode).name;
+        const functionName = node.callee.name;
         this.symbolTable.markUsed(functionName, node.callee.start);
         // A DIRECT call with no enclosing branch/loop/function frame definitely
         // executes when control reaches this line. Body writes of the callee are
@@ -5952,7 +5978,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // always-run scope pass. Only when the name resolves to the builtin — a user-defined
     // function/variable of the same name (a shadow) is exempt.
     if (node.callee.type === 'Identifier') {
-      const calleeName = (node.callee as IdentifierNode).name;
+      const calleeName = node.callee.name;
       const builtinIntro = VERSION_GLOBAL_BUILTINS[calleeName];
       if (builtinIntro) {
         const sym = this.symbolTable.lookupOpenScopes(calleeName);
@@ -6006,7 +6032,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (node.arguments.length < 2) return;
 
     if (node.callee.type === 'Identifier') {
-      const funcName = (node.callee as IdentifierNode).name;
+      const funcName = node.callee.name;
       if (funcName === 'filter' || funcName === 'map' || funcName === 'sort') {
         const arrType = this.resolveNodeFullType(node.arguments[0]!);
         if (arrType && isArrayType(arrType)) {
@@ -6018,14 +6044,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // replace(subject, pattern, replacement-fn): the callback is invoked with the full
         // match followed by capture groups — all strings. Capture-group count is not known
         // statically, so type every callback parameter as string.
-        this.callbackElementType = UcodeType.STRING as UcodeDataType;
+        this.callbackElementType = UcodeType.STRING;
         this.callbackParamCount = Number.MAX_SAFE_INTEGER;
       }
       return;
     }
 
     if (node.callee.type === 'MemberExpression') {
-      const cb = this.resolveMemberCallbackParamTypes(node.callee as MemberExpressionNode);
+      const cb = this.resolveMemberCallbackParamTypes(node.callee);
       if (cb) {
         this.callbackElementType = cb.type;
         this.callbackParamCount = cb.count;
@@ -6039,17 +6065,17 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    *  it covers, or null when the call isn't a known typed-callback method. */
   private resolveMemberCallbackParamTypes(memberNode: MemberExpressionNode): { type: UcodeDataType; count: number } | null {
     if (memberNode.property.type !== 'Identifier') return null;
-    const methodName = (memberNode.property as IdentifierNode).name;
+    const methodName = memberNode.property.name;
 
     let objType: string | null = null;
     if (memberNode.object.type === 'Identifier') {
-      const symbol = this.symbolTable.lookupOpenScopes((memberNode.object as IdentifierNode).name);
+      const symbol = this.symbolTable.lookupOpenScopes(memberNode.object.name);
       if (symbol) {
         const mt = extractModuleType(symbol.dataType);
         if (mt) objType = mt.moduleName;
       }
     } else if (memberNode.object.type === 'CallExpression') {
-      objType = this.resolveCallExpressionObjectType(memberNode.object as CallExpressionNode);
+      objType = this.resolveCallExpressionObjectType(memberNode.object);
     }
     if (!objType || !isKnownObjectType(objType)) return null;
 
@@ -6070,7 +6096,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   /** Type to declare a callback parameter at position `i` under the current call context. */
   private callbackParamTypeAt(i: number): UcodeDataType {
     if (this.callbackElementType && i < this.callbackParamCount) return this.callbackElementType;
-    return UcodeType.UNKNOWN as UcodeDataType;
+    return UcodeType.UNKNOWN;
   }
 
   override visitSpreadElement(node: SpreadElementNode): void {
@@ -6094,7 +6120,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    *  `const a=[]; a[0]=1`) is legal in ucode, so member targets are left alone. */
   private checkConstReassignment(target: AstNode, isUpdate: boolean): void {
     if (!target || target.type !== 'Identifier') return;
-    const name = (target as IdentifierNode).name;
+    const name = target.name;
     const symbol = this.symbolTable.lookupOpenScopes(name);
     if (!symbol || !symbol.isConstant) return;
     const message = isUpdate
@@ -6114,9 +6140,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    *  at runtime with "Type error: object value is immutable". */
   private checkNamespaceMemberAssignment(target: AstNode): void {
     if (!target || target.type !== 'MemberExpression') return;
-    const base = (target as MemberExpressionNode).object;
+    const base = target.object;
     if (!base || base.type !== 'Identifier') return;
-    const name = (base as IdentifierNode).name;
+    const name = base.name;
     const symbol = this.symbolTable.lookupOpenScopes(name);
     if (!symbol || symbol.type !== SymbolType.IMPORTED || symbol.importSpecifier !== '*') return;
     this.addDiagnosticErrorCode(
@@ -6154,14 +6180,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       const deferredPropertyWrites: Array<() => void> = [];
       // Track assignments to object properties (e.g., obj.foo = "bar", this.prop = val)
       if (node.left.type === 'MemberExpression') {
-        const memberNode = node.left as MemberExpressionNode;
+        const memberNode = node.left;
         if (!memberNode.computed) {
           const propertyName = this.getStaticPropertyName(memberNode.property);
 
           if (propertyName) {
             // obj.prop = val
             if (memberNode.object.type === 'Identifier') {
-              const objectName = (memberNode.object as IdentifierNode).name;
+              const objectName = memberNode.object.name;
               const targetSymbol = this.symbolTable.lookupOpenScopes(objectName);
 
               if (targetSymbol && (objectName === 'global' || (targetSymbol.type !== SymbolType.MODULE && targetSymbol.type !== SymbolType.IMPORTED))) {
@@ -6192,7 +6218,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               // members (`X.docroot`), and later `X.prop = …` property-flow tracking all
               // resolved to `unknown` — there was no symbol to read or attach types to.
               if (objectName === 'global' && node.right.type === 'ObjectExpression') {
-                this.declareGlobalObjectBinding(propertyName, node.right as ObjectExpressionNode);
+                this.declareGlobalObjectBinding(propertyName, node.right);
               }
               // `global.fn = function(){…}` → bare `fn(...)` resolves its return type (12).
               if (objectName === 'global' && (node.right.type === 'FunctionExpression' || node.right.type === 'ArrowFunctionExpression')) {
@@ -6218,11 +6244,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // this, `function warm() { global.CACHE.hot = 1; }` left CACHE.hot unknown
             // while `CACHE.hot = 1` tracked — locals track both.
             if (memberNode.object.type === 'MemberExpression') {
-              const base = memberNode.object as MemberExpressionNode;
+              const base = memberNode.object;
               if (!base.computed && base.object.type === 'Identifier'
-                  && (base.object as IdentifierNode).name === 'global'
+                  && base.object.name === 'global'
                   && base.property.type === 'Identifier') {
-                const globalName = (base.property as IdentifierNode).name;
+                const globalName = base.property.name;
                 const targetSymbol = this.symbolTable.lookupOpenScopes(globalName);
                 if (targetSymbol && targetSymbol.type !== SymbolType.MODULE && targetSymbol.type !== SymbolType.IMPORTED) {
                   const propertyType = this.memberWriteType(node, targetSymbol, propertyName);
@@ -6273,7 +6299,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // This creates symbols for undeclared variables before type checking tries to look them up
       // Only handle cases that need early inference for undeclared variables
       if (node.left.type === 'Identifier') {
-        const variableName = (node.left as IdentifierNode).name;
+        const variableName = node.left.name;
         let symbol = this.symbolTable.lookupOpenScopes(variableName);
         
         // For undeclared variables assigned from module function calls,
@@ -6281,7 +6307,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         if (!symbol && (node.right.type === 'CallExpression' || node.right.type === 'MemberExpression')) {
           const fullType = this.typeChecker.checkNode(node.right);
           if (fullType && fullType !== UcodeType.UNKNOWN) {
-            this.symbolTable.declare(variableName, SymbolType.VARIABLE, fullType, node.left as IdentifierNode);
+            this.symbolTable.declare(variableName, SymbolType.VARIABLE, fullType, node.left);
             const mt = extractModuleType(fullType);
             if (mt && isKnownObjectType(mt.moduleName)) {
               this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, fullType);
@@ -6295,7 +6321,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // "assignment to undeclared" error.
         if (!symbol && this.implicitGlobalNames.has(variableName)) {
           if (node.right.type === 'ObjectExpression') {
-            this.declareGlobalObjectBinding(variableName, node.right as ObjectExpressionNode);
+            this.declareGlobalObjectBinding(variableName, node.right);
           } else if (node.right.type === 'FunctionExpression' || node.right.type === 'ArrowFunctionExpression') {
             this.declareGlobalFunctionBinding(variableName, node.right);
           } else if (node.right.type === 'ArrayExpression') {
@@ -6333,7 +6359,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
       // After type checking, update variable types for general function calls
       if (node.left.type === 'Identifier') {
-        const variableName = (node.left as IdentifierNode).name;
+        const variableName = node.left.name;
         let symbol = this.symbolTable.lookupOpenScopes(variableName);
         
         // require() RHS: the rich module resolution lives in visitVariableDeclarator
@@ -6344,12 +6370,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // type is the checked result (a typed module record for known modules)
         // with an exactly-null result lifted to unknown.
         const isRequireCall = node.right.type === 'CallExpression' &&
-                             (node.right as CallExpressionNode).callee.type === 'Identifier' &&
-                             ((node.right as CallExpressionNode).callee as IdentifierNode).name === 'require';
+                             node.right.callee.type === 'Identifier' &&
+                             (node.right.callee).name === 'require';
         if (isRequireCall && symbol) {
           const checked = this.typeChecker.checkNodeQuietly(node.right);
           const reqType = (checked === UcodeType.NULL || checked === undefined)
-            ? (UcodeType.UNKNOWN as UcodeDataType) : checked;
+            ? UcodeType.UNKNOWN : checked;
           symbol.currentType = reqType;
           symbol.currentTypeEffectiveFrom = node.end;
           this.recordTypeHistory(symbol, node.end, reqType, node.start);
@@ -6377,8 +6403,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           // checkNode result when it resolved to a concrete type, mirroring how the
           // declaration path upgrades only on a non-UNKNOWN result. (Issue 2)
           const isBuiltinCall = node.right.type === 'CallExpression'
-            && (node.right as CallExpressionNode).callee.type === 'Identifier'
-            && allBuiltinFunctions.has(((node.right as CallExpressionNode).callee as IdentifierNode).name);
+            && node.right.callee.type === 'Identifier'
+            && allBuiltinFunctions.has((node.right.callee).name);
 
           if (fsReturnType) {
             dataType = fsReturnType;
@@ -6422,7 +6448,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
             }
           } else if (!symbol) {
-            this.symbolTable.declare(variableName, SymbolType.VARIABLE, dataType, node.left as IdentifierNode);
+            this.symbolTable.declare(variableName, SymbolType.VARIABLE, dataType, node.left);
             const mt = extractModuleType(dataType);
             if (mt && isKnownObjectType(mt.moduleName)) {
               this.symbolTable.forceGlobalDeclaration(variableName, SymbolType.VARIABLE, dataType);
@@ -6450,15 +6476,15 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
           // Case 2: Update propertyTypes on reassignment with object literal
           if (node.right.type === 'ObjectExpression' && symbol) {
-            const propTypes = this.inferObjectLiteralPropertyTypes(node.right as ObjectExpressionNode);
+            const propTypes = this.inferObjectLiteralPropertyTypes(node.right);
             if (propTypes) symbol.propertyTypes = propTypes;
           }
 
           // Propagate return property types from function call at assignment
           if (functionReturnType && symbol && node.right.type === 'CallExpression') {
-            const callExpr = node.right as CallExpressionNode;
+            const callExpr = node.right;
             if (callExpr.callee.type === 'Identifier') {
-              const funcSym = this.symbolTable.lookupOpenScopes((callExpr.callee as IdentifierNode).name);
+              const funcSym = this.symbolTable.lookupOpenScopes(callExpr.callee.name);
               if (funcSym) this.copyFactoryReturnToBinding(symbol, funcSym);
             } else if (callExpr.callee.type === 'ArrowFunctionExpression' || callExpr.callee.type === 'FunctionExpression') {
               const merged = this.mergeReturnPropertyEntries(this.functionReturnPropertyTypes.get(callExpr.callee) ?? []);
@@ -6487,7 +6513,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const site = this.globalDefSites.get(name)?.[0];
     if (!site) return;
     sym.declaredAt = site.start;
-    sym.node = { type: 'Identifier', start: site.start, end: site.end, name } as IdentifierNode;
+    sym.node = { type: 'Identifier', start: site.start, end: site.end, name };
   }
 
   /** Every top-level key of this literal is statically enumerable — no spread (`{...src}`
@@ -6502,14 +6528,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   private declareGlobalObjectBinding(name: string, objNode: ObjectExpressionNode): void {
-    this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, UcodeType.OBJECT as UcodeDataType);
+    this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, UcodeType.OBJECT);
     // UC8006 candidacy requires a fully-enumerable shape; a spread/computed key means the
     // literal itself can carry properties we can't list → never claim "never assigned".
     if (this.isFullyStaticObjectLiteral(objNode)) this.globalObjectBindings.add(name);
     const sym = this.symbolTable.lookupOpenScopes(name);
     if (!sym) return;
     this.stampGlobalSymbolPosition(name, sym);
-    sym.dataType = UcodeType.OBJECT as UcodeDataType;
+    sym.dataType = UcodeType.OBJECT;
     const propTypes = this.inferObjectLiteralPropertyTypes(objNode);
     if (propTypes) sym.propertyTypes = propTypes;
     const fnReturns = this.inferObjectLiteralFunctionReturnTypes(objNode);
@@ -6526,11 +6552,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    * resolves its return type and argument-checks (the fn-value visitor stashed both on the node).
    */
   private declareGlobalFunctionBinding(name: string, fnNode: AstNode): void {
-    this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, UcodeType.FUNCTION as UcodeDataType);
+    this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, UcodeType.FUNCTION);
     const sym = this.symbolTable.lookupOpenScopes(name);
     if (!sym) return;
     this.stampGlobalSymbolPosition(name, sym);
-    sym.dataType = UcodeType.FUNCTION as UcodeDataType;
+    sym.dataType = UcodeType.FUNCTION;
     const rt = stampsOf(fnNode)._inferredReturnType;
     if (rt !== undefined && rt !== null) sym.returnType = rt;
     const params = stampsOf(fnNode)._inferredParams;
@@ -6581,7 +6607,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const rhs = this.inferAssignmentDataType(node.right);
     if (node.operator === '=') return rhs;
     const oldProp = propertyTypeAt(targetSymbol, propertyName, node.start);
-    return this.typeChecker.computeAssignmentResultType(node, oldProp ?? (UcodeType.UNKNOWN as UcodeDataType), rhs);
+    return this.typeChecker.computeAssignmentResultType(node, oldProp ?? UcodeType.UNKNOWN, rhs);
   }
 
   /** Append an entry to a variable's per-assignment type history. Snapshots the
@@ -6626,14 +6652,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private declareGlobalScalarBinding(name: string, type: UcodeType, from: number): void {
     let sym = this.symbolTable.lookupOpenScopes(name);
     if (!sym) {
-      this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, type as UcodeDataType);
+      this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, type);
       sym = this.symbolTable.lookupOpenScopes(name);
       if (!sym) return;
       sym.used = true; // a global is externally observable — never "unused"
       this.stampGlobalSymbolPosition(name, sym);
     }
-    sym.dataType = type as UcodeDataType;
-    this.recordTypeHistory(sym, from, type as UcodeDataType);
+    sym.dataType = type;
+    this.recordTypeHistory(sym, from, type);
   }
 
   override visitUnaryExpression(node: UnaryExpressionNode): void {
@@ -6791,7 +6817,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           // widened `unknown`. checkIdentifier returns the SSA-effective type (guard narrowing
           // deliberately flows through getNarrowedTypeAtPosition, not checkNode).
           if (node.argument.type === 'Identifier') {
-            const narrowed = this.typeChecker.getNarrowedTypeAtPosition((node.argument as IdentifierNode).name, node.argument.start);
+            const narrowed = this.typeChecker.getNarrowedTypeAtPosition(node.argument.name, node.argument.start);
             if (narrowed != null) returnType = narrowed;
           }
         }
@@ -6801,7 +6827,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
         // Collect property types from returned object literals
         if (node.argument?.type === 'ObjectExpression') {
-          const objNode = node.argument as ObjectExpressionNode;
+          const objNode = node.argument;
           const propTypes = this.inferObjectLiteralPropertyTypes(objNode);
           if (propTypes) {
             this.functionReturnPropertyTypes.get(this.currentFunctionNode)?.push(propTypes);
@@ -6831,9 +6857,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // returnPropertyTypes, so `let v = get(x); v.prop` and `get(x).prop`
         // resolve instead of `unknown`. See docs/registry-value-shape-inference.md.
         else if (node.argument?.type === 'MemberExpression'
-                 && (node.argument as MemberExpressionNode).computed
-                 && (node.argument as MemberExpressionNode).object.type === 'Identifier') {
-          const baseName = ((node.argument as MemberExpressionNode).object as IdentifierNode).name;
+                 && node.argument.computed
+                 && node.argument.object.type === 'Identifier') {
+          const baseName = (node.argument.object).name;
           const baseSym = this.symbolTable.resolveReference(baseName, node.argument.start);
           if (baseSym?.valuePropertyTypes && baseSym.valuePropertyTypes.size > 0) {
             this.functionReturnPropertyTypes.get(this.currentFunctionNode)?.push(new Map(baseSym.valuePropertyTypes));
@@ -6921,11 +6947,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private checkEmptyInfiniteLoop(test: AstNode | null | undefined, body: AstNode | null | undefined, start: number, headerEnd: number): void {
     if (!body) return;
     const bodyEmpty = body.type === 'EmptyStatement'
-      || (body.type === 'BlockStatement' && ((body as BlockStatementNode).body?.length ?? 0) === 0);
+      || (body.type === 'BlockStatement' && (body.body?.length ?? 0) === 0);
     if (!bodyEmpty) return;
-    const lit = test as LiteralNode | null | undefined;
     const alwaysTrue = test == null
-      || (test.type === 'Literal' && (lit!.value === true || (typeof lit!.value === 'number' && lit!.value !== 0)));
+      || (test.type === 'Literal' && (test.value === true || (typeof test.value === 'number' && test.value !== 0)));
     if (!alwaysTrue) return;
     this.addDiagnosticErrorCode(
       UcodeErrorCode.EMPTY_INFINITE_LOOP,
@@ -6967,7 +6992,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // (`let x = null, y = 0`) works on ALL versions. Severity uses the strict-gated
     // default: strict = guaranteed runtime reference error, non-strict = silent leak.
     if (node.init && node.init.type === 'VariableDeclaration') {
-      const decl = node.init as VariableDeclarationNode;
+      const decl = node.init;
       const first = decl.declarations[0];
       if (decl.declarations.length >= 2 && first && !first.init) {
         this.flagVersionMin('main',
@@ -7028,7 +7053,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // The iteree is the for-in collection (`for (x in C)` → C), plus any bare-identifier
     // alias it was declared from (`let c = a; for (x in c) push(a, …)`, finding #59).
     if (node.body && node.right?.type === 'Identifier') {
-      this.checkIterateeMutation(node.body, this.resolveIterateeAliasNames((node.right as IdentifierNode).name));
+      this.checkIterateeMutation(node.body, this.resolveIterateeAliasNames(node.right.name));
     }
 
     if (this.options.enableScopeAnalysis) {
@@ -7045,7 +7070,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // type-inference + keys-of provenance treatment as the `let` case
         // below — otherwise `data_generator` here would hover as `unknown`
         // and `obj[data_generator]` wouldn't narrow through propertyTypes.
-        const leftId = node.left as IdentifierNode;
+        const leftId = node.left;
         const iteratorName = leftId.name;
         const iteratorNode = leftId;
 
@@ -7073,11 +7098,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         if (elemType !== null) {
           iterType = elemType; // union-aware: array<T>|null → T, etc.
         } else if (rightBase === UcodeType.OBJECT) {
-          iterType = UcodeType.STRING as UcodeDataType;
+          iterType = UcodeType.STRING;
         } else if (rightBase === UcodeType.STRING) {
-          iterType = UcodeType.STRING as UcodeDataType;
+          iterType = UcodeType.STRING;
         } else {
-          iterType = UcodeType.UNKNOWN as UcodeDataType;
+          iterType = UcodeType.UNKNOWN;
         }
 
         this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, iterType, iteratorNode);
@@ -7093,7 +7118,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         if (iterSym) {
           let keysOf: string | undefined;
           if (node.right.type === 'Identifier') {
-            const rightName = (node.right as IdentifierNode).name;
+            const rightName = node.right.name;
             const rightSym = this.symbolTable.lookupOpenScopes(rightName);
             if (rightSym?.keysOfSymbol) {
               keysOf = rightSym.keysOfSymbol;
@@ -7106,9 +7131,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           }
           if (keysOf) iterSym.keysOfSymbol = keysOf;
         }
-      } else if (node.left && node.left.type === 'VariableDeclaration' && (node.left as VariableDeclarationNode).declarations.length > 0) {
+      } else if (node.left && node.left.type === 'VariableDeclaration' && node.left.declarations.length > 0) {
         // Declaration case: for (let var_name in ...) or for (let i, item in ...)
-        const declarations = (node.left as VariableDeclarationNode).declarations;
+        const declarations = node.left.declarations;
         
         if (declarations.length === 1) {
           // Single variable: gets the value for arrays, the key for objects
@@ -7131,11 +7156,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             if (elemType !== null) {
               iterType = elemType; // union-aware: array<string>|null → string, etc.
             } else if (rightBase === UcodeType.OBJECT) {
-              iterType = UcodeType.STRING as UcodeDataType; // object keys are strings
+              iterType = UcodeType.STRING; // object keys are strings
             } else if (rightBase === UcodeType.STRING) {
-              iterType = UcodeType.STRING as UcodeDataType; // iterating string chars
+              iterType = UcodeType.STRING; // iterating string chars
             } else {
-              iterType = UcodeType.UNKNOWN as UcodeDataType; // unknown → no element info
+              iterType = UcodeType.UNKNOWN; // unknown → no element info
             }
 
             this.symbolTable.declare(iteratorName, SymbolType.VARIABLE, iterType, iteratorNode);
@@ -7165,7 +7190,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             if (iterSym) {
               let keysOf: string | undefined;
               if (node.right.type === 'Identifier') {
-                const rightName = (node.right as IdentifierNode).name;
+                const rightName = node.right.name;
                 const rightSym = this.symbolTable.lookupOpenScopes(rightName);
                 if (rightSym?.keysOfSymbol) {
                   keysOf = rightSym.keysOfSymbol;
@@ -7214,7 +7239,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // array<T>|null → T); object values aren't strings, so object/string members
             // make this give up → value stays unknown (objectAndStringYieldString=false).
             const valueElem = this.iterableElementType(rightFullType, false);
-            const valueType: UcodeDataType = valueElem !== null ? valueElem : (UcodeType.UNKNOWN as UcodeDataType);
+            const valueType: UcodeDataType = valueElem !== null ? valueElem : UcodeType.UNKNOWN;
             this.symbolTable.declare(valueName, SymbolType.VARIABLE, valueType, valueNode);
             this.symbolTable.markUsed(valueName, valueNode.start);
           }
@@ -7293,7 +7318,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    * a provably uniterable iterable makes the whole body dead, so `unknown` there is harmless.
    */
   private iterableKeyType(t: UcodeDataType | null): UcodeDataType {
-    if (!t) return UcodeType.UNKNOWN as UcodeDataType;
+    if (!t) return UcodeType.UNKNOWN;
     const keys: SingleType[] = [];
     for (const member of getUnionTypes(t)) {
       const base = singleTypeToBase(member);
@@ -7310,12 +7335,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
       // else: string/int/bool/double/function/regex/… never iterates — no key, no-op.
     }
-    return keys.length ? createUnionType(keys) : (UcodeType.UNKNOWN as UcodeDataType);
+    return keys.length ? createUnionType(keys) : UcodeType.UNKNOWN;
   }
 
   private getIterableFullType(node: AstNode): UcodeDataType | null {
     if (node.type === 'Identifier') {
-      const id = node as IdentifierNode;
+      const id = node;
       // Prefer the narrowed type at this position (e.g. after `type(x) == 'array'`
       // the union `string | array<T> | null` narrows to `array<T>`), so for-in can
       // recover the element type. Fall back to the declared type.
@@ -7452,7 +7477,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     for (const ref of this.pendingUndefinedRefs) {
       if (!isReadOnlyInjectedGlobal(ref.name)) continue;
       if (this.symbolTable.resolveReference(ref.name, ref.start)) continue;
-      this.symbolTable.forceGlobalDeclaration(ref.name, SymbolType.VARIABLE, UcodeType.UNKNOWN as UcodeDataType);
+      this.symbolTable.forceGlobalDeclaration(ref.name, SymbolType.VARIABLE, UcodeType.UNKNOWN);
       const sym = this.symbolTable.lookupOpenScopes(ref.name);
       if (sym) {
         sym.isAssumedInjectedGlobal = true;
@@ -7633,12 +7658,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // Check if this is a call expression that returns an fs object
     if (node.type !== 'CallExpression') return null;
 
-    const callNode = node as CallExpressionNode;
+    const callNode = node;
 
     // Named import: open(), statvfs(), etc. (Bare `open()` without an import is
     // intentionally treated as the fs builtin — see test-io-module.)
     if (callNode.callee.type === 'Identifier') {
-      const funcName = (callNode.callee as IdentifierNode).name;
+      const funcName = callNode.callee.name;
       // Skip if imported from a non-fs module (e.g. io.open)
       const symbol = this.symbolTable.lookupOpenScopes(funcName);
       if (symbol && symbol.type === SymbolType.IMPORTED && symbol.importedFrom && symbol.importedFrom !== 'fs') {
@@ -7651,13 +7676,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // genuinely-imported fs module. An unimported (or shadowed) `fs` makes
     // `fs.open()` invalid (UC3006), so it must not be typed as fs.file.
     if (callNode.callee.type === 'MemberExpression') {
-      const memberNode = callNode.callee as MemberExpressionNode;
+      const memberNode = callNode.callee;
       if (memberNode.object.type === 'Identifier' &&
-          (memberNode.object as IdentifierNode).name === 'fs' &&
+          memberNode.object.name === 'fs' &&
           memberNode.property.type === 'Identifier') {
         const fsSym = this.symbolTable.lookupOpenScopes('fs');
         if (!fsSym || extractModuleType(fsSym.dataType)?.moduleName !== 'fs') return null;
-        return this.fsObjectDataType((memberNode.property as IdentifierNode).name);
+        return this.fsObjectDataType(memberNode.property.name);
       }
     }
 
@@ -7671,7 +7696,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (!fsType) return null;
     const handle = createFsObjectDataType(fsType);
     return fsReturnIsNullable(funcName)
-      ? createUnionType([handle as SingleType, UcodeType.NULL])
+      ? createUnionType([...getUnionTypes(handle), UcodeType.NULL])
       : handle;
   }
 
@@ -7679,12 +7704,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // Check if this is a call expression on a member expression (method call)
     if (node.type !== 'CallExpression') return null;
 
-    const callNode = node as CallExpressionNode;
+    const callNode = node;
     if (callNode.callee.type !== 'MemberExpression') return null;
 
-    const memberNode = callNode.callee as MemberExpressionNode;
+    const memberNode = callNode.callee;
     if (memberNode.property.type !== 'Identifier') return null;
-    const methodName = (memberNode.property as IdentifierNode).name;
+    const methodName = memberNode.property.name;
 
     // Case 0: local object-literal method — `obj.method()` / `this.method()` resolve to the
     // method's inferred return type (recorded on the receiver symbol's propertyReturnTypes;
@@ -7693,14 +7718,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         && (memberNode.object.type === 'Identifier' || memberNode.object.type === 'ThisExpression')) {
       const recvSym = memberNode.object.type === 'ThisExpression'
         ? this.symbolTable.lookupOpenScopes('this')
-        : this.symbolTable.lookupOpenScopes((memberNode.object as IdentifierNode).name);
+        : this.symbolTable.lookupOpenScopes(memberNode.object.name);
       const rt = recvSym?.propertyReturnTypes?.get(methodName);
       if (rt !== undefined && rt !== UcodeType.UNKNOWN) return rt;
     }
 
     // Case 1: obj.method() where obj is an Identifier in the symbol table
     if (memberNode.object.type === 'Identifier') {
-      const objectName = (memberNode.object as IdentifierNode).name;
+      const objectName = memberNode.object.name;
       const symbol = this.symbolTable.lookupOpenScopes(objectName);
       if (symbol) {
         // Check if this is a uloop object method call
@@ -7737,7 +7762,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // Case 2: Call chain — expr().method() where expr() is a CallExpression
     // e.g., fs.open("/tmp/x").read("all"), cursor().foreach(...)
     if (memberNode.object.type === 'CallExpression') {
-      const innerCall = memberNode.object as CallExpressionNode;
+      const innerCall = memberNode.object;
       const objType = this.resolveCallExpressionObjectType(innerCall);
       if (objType && isKnownObjectType(objType)) {
         const methodSig = OBJECT_REGISTRIES[objType].getMethod(methodName);
@@ -7757,15 +7782,15 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private resolveCallExpressionObjectType(call: CallExpressionNode): string | null {
     // Simple call: cursor()
     if (call.callee.type === 'Identifier') {
-      const funcName = (call.callee as IdentifierNode).name;
+      const funcName = call.callee.name;
       return resolveReturnObjectType(funcName);
     }
     // Member call: fs.open(), uci.cursor()
     if (call.callee.type === 'MemberExpression') {
-      const member = call.callee as MemberExpressionNode;
+      const member = call.callee;
       if (member.object.type === 'Identifier' && member.property.type === 'Identifier') {
-        const moduleName = (member.object as IdentifierNode).name;
-        const funcName = (member.property as IdentifierNode).name;
+        const moduleName = member.object.name;
+        const funcName = member.property.name;
         return resolveReturnObjectType(funcName, moduleName);
       }
     }
@@ -7784,7 +7809,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       return cached;
     }
     if (node.type === 'Identifier') {
-      const sym = this.symbolTable.lookupOpenScopes((node as IdentifierNode).name);
+      const sym = this.symbolTable.lookupOpenScopes(node.name);
       if (sym) return sym.dataType;
     }
     return null;
@@ -7792,7 +7817,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
   private inferAssignmentDataType(expression: AstNode): UcodeDataType {
     if (expression.type === 'Identifier') {
-      const sourceName = (expression as IdentifierNode).name;
+      const sourceName = expression.name;
       const sourceSymbol = this.symbolTable.lookupOpenScopes(sourceName);
       if (sourceSymbol) {
         // Position-aware: the bare currentType slot is the file's LAST write,
@@ -7814,7 +7839,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const functionReturnType = this.inferFunctionCallReturnType(expression);
     if (functionReturnType) return functionReturnType;
 
-    return inferredType as UcodeDataType;
+    return inferredType;
   }
 
   /**
@@ -7869,12 +7894,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // (`{ ...src, x: "s" }` → x is string). Purely additive: only known props are added,
       // so it can never introduce a false "property does not exist". Finding #29 follow-up.
       if (prop.type === 'SpreadElement') {
-        const arg = (prop as SpreadElementNode).argument;
+        const arg = prop.argument;
         let sourceProps: Map<string, UcodeDataType> | null = null;
         if (arg.type === 'ObjectExpression') {
-          sourceProps = this.inferObjectLiteralPropertyTypes(arg as ObjectExpressionNode);
+          sourceProps = this.inferObjectLiteralPropertyTypes(arg);
         } else if (arg.type === 'Identifier') {
-          const sym = this.symbolTable.lookupOpenScopes((arg as IdentifierNode).name);
+          const sym = this.symbolTable.lookupOpenScopes(arg.name);
           sourceProps = sym?.propertyTypes ?? null;
         }
         if (sourceProps) {
@@ -7887,25 +7912,25 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       const val = prop.value;
       let valType: UcodeDataType;
       if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
-        valType = UcodeType.FUNCTION as UcodeDataType;
+        valType = UcodeType.FUNCTION;
       } else if (val.type === 'Identifier') {
-        const sym = this.symbolTable.lookupOpenScopes((val as IdentifierNode).name);
-        valType = sym ? sym.dataType : UcodeType.UNKNOWN as UcodeDataType;
+        const sym = this.symbolTable.lookupOpenScopes(val.name);
+        valType = sym ? sym.dataType : UcodeType.UNKNOWN;
       } else if (val.type === 'Literal') {
-        const lit = val as LiteralNode;
-        if (typeof lit.value === 'string') valType = UcodeType.STRING as UcodeDataType;
-        else if (typeof lit.value === 'boolean') valType = UcodeType.BOOLEAN as UcodeDataType;
+        const lit = val;
+        if (typeof lit.value === 'string') valType = UcodeType.STRING;
+        else if (typeof lit.value === 'boolean') valType = UcodeType.BOOLEAN;
         else if (typeof lit.value === 'number') {
           // Exponent notation (`1e5`) is a double literal (ticket 115).
-          valType = ((lit.literalType === 'double' || !Number.isInteger(lit.value)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType;
-        } else if (lit.value === null) valType = UcodeType.NULL as UcodeDataType;
-        else valType = UcodeType.UNKNOWN as UcodeDataType;
+          valType = ((lit.literalType === 'double' || !Number.isInteger(lit.value)) ? UcodeType.DOUBLE : UcodeType.INTEGER);
+        } else if (lit.value === null) valType = UcodeType.NULL;
+        else valType = UcodeType.UNKNOWN;
       } else if (val.type === 'ObjectExpression') {
-        valType = UcodeType.OBJECT as UcodeDataType;
+        valType = UcodeType.OBJECT;
       } else if (val.type === 'ArrayExpression') {
-        valType = UcodeType.ARRAY as UcodeDataType;
+        valType = UcodeType.ARRAY;
       } else {
-        valType = this.typeChecker.checkNode(val) as UcodeDataType;
+        valType = this.typeChecker.checkNode(val);
       }
       propTypes.set(key, valType);
     }
@@ -7920,13 +7945,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (right.type === 'ArrayExpression') {
       arrNode = right;
     } else if (right.type === 'Identifier') {
-      const sym = this.symbolTable.lookupOpenScopes((right as IdentifierNode).name);
+      const sym = this.symbolTable.lookupOpenScopes(right.name);
       if (sym?.initNode?.type === 'ArrayExpression') arrNode = sym.initNode;
     }
     if (!arrNode) return null;
-    for (const el of ((arrNode as ArrayExpressionNode).elements || [])) {
+    for (const el of (arrNode.elements || [])) {
       if (el?.type === 'ObjectExpression') {
-        const shape = this.inferObjectLiteralPropertyTypes(el as ObjectExpressionNode);
+        const shape = this.inferObjectLiteralPropertyTypes(el);
         if (shape && shape.size > 0) return shape;
       }
     }
@@ -7949,10 +7974,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // nullable-argument diagnostic whose null-guard quick-fix can't yet narrow a
         // two-level path — so we only carry concrete (non-null) nested shapes, leaving
         // nullable leaves to the base member-resolution. (#173)
-        const sub = this.dropNullableEntries(this.inferObjectLiteralPropertyTypes(val as ObjectExpressionNode));
+        const sub = this.dropNullableEntries(this.inferObjectLiteralPropertyTypes(val));
         if (sub && sub.size > 0) nested.set(key, sub);
       } else if (val.type === 'Identifier') {
-        const sym = this.symbolTable.lookupOpenScopes((val as IdentifierNode).name);
+        const sym = this.symbolTable.lookupOpenScopes(val.name);
         const sub = this.dropNullableEntries(sym?.propertyTypes ?? null);
         if (sub && sub.size > 0) nested.set(key, sub);
       }
@@ -7966,8 +7991,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (!map || map.size === 0) return null;
     const out = new Map<string, UcodeDataType>();
     for (const [k, t] of map) {
-      const nullable = t === (UcodeType.NULL as UcodeDataType)
-        || getUnionTypes(t).some(m => m === (UcodeType.NULL as UcodeDataType));
+      const nullable = t === UcodeType.NULL
+        || getUnionTypes(t).some(m => m === UcodeType.NULL);
       if (!nullable) out.set(k, t);
     }
     return out.size > 0 ? out : null;
@@ -8088,9 +8113,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const t = s.get(key);
         if (t !== undefined && dataTypeToBase(t) !== UcodeType.UNKNOWN) concrete.push(t);
       }
-      if (concrete.length === 0) { merged.set(key, UcodeType.UNKNOWN as UcodeDataType); continue; }
+      if (concrete.length === 0) { merged.set(key, UcodeType.UNKNOWN); continue; }
       const bases = [...new Set(concrete.map(t => dataTypeToBase(t)))];
-      merged.set(key, bases.length === 1 ? concrete[0]! : (createUnionType(bases) as UcodeDataType));
+      merged.set(key, bases.length === 1 ? concrete[0]! : (createUnionType(bases)));
     }
     if (merged.size > 0) symbol.valuePropertyTypes = merged;
   }
@@ -8114,7 +8139,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         if (a !== b) {
           const members: SingleType[] = [];
           for (const t of [a, b]) {
-            if (typeof t === 'string') members.push(t as UcodeType);
+            if (typeof t === 'string') members.push(t);
             else members.push(...getUnionTypes(t));
           }
           merged.set(key, createUnionType(members));
@@ -8129,7 +8154,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       return null;
     }
     
-    const callExpr = node as CallExpressionNode;
+    const callExpr = node;
     // IIFE: `(() => {…})()` / `(function(){…})()` — the module-constant initializer
     // idiom (`const _parsed = (() => {… return {…}; return null; })()`). The literal
     // was visited as part of this initializer, which stamped its inferred return
@@ -8142,7 +8167,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       return null;
     }
 
-    const funcName = (callExpr.callee as IdentifierNode).name;
+    const funcName = callExpr.callee.name;
     const symbol = this.symbolTable.lookupOpenScopes(funcName);
     
     if (symbol && (symbol.type === SymbolType.FUNCTION || symbol.type === SymbolType.IMPORTED)) {
@@ -8214,7 +8239,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       case 'ObjectExpression':
         return dataType === UcodeType.OBJECT;
       case 'Literal': {
-        const lit = initNode as LiteralNode;
+        const lit = initNode;
         if (lit.literalType === 'regexp') {
           return dataType === UcodeType.REGEX;
         }
@@ -8232,13 +8257,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    *  inference of the loaded program's return value; null for any other shape. */
   private loadfileCallReturnInfo(init: AstNode): LoadfileProgramReturn | null {
     if (init.type !== 'CallExpression') return null;
-    const outer = init as CallExpressionNode;
+    const outer = init;
     if (outer.callee?.type !== 'CallExpression') return null;
-    const lf = outer.callee as CallExpressionNode;
-    if (lf.callee?.type !== 'Identifier' || (lf.callee as IdentifierNode).name !== 'loadfile') return null;
+    const lf = outer.callee;
+    if (lf.callee?.type !== 'Identifier' || lf.callee.name !== 'loadfile') return null;
     const arg0 = lf.arguments?.[0];
-    if (arg0?.type !== 'Literal' || typeof (arg0 as LiteralNode).value !== 'string') return null;
-    return this.fileResolver.getLoadfileProgramReturn((arg0 as LiteralNode).value as string, this.textDocument.uri);
+    if (arg0?.type !== 'Literal' || typeof arg0.value !== 'string') return null;
+    return this.fileResolver.getLoadfileProgramReturn(arg0.value, this.textDocument.uri);
   }
 
   private processInitializerTypeInference(node: VariableDeclaratorNode, name: string): void {
@@ -8251,7 +8276,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (symbol) {
       // Handle simple aliasing of imported modules (e.g., let alias = fs;)
       if (node.init.type === 'Identifier') {
-        const sourceName = (node.init as IdentifierNode).name;
+        const sourceName = node.init.name;
         const sourceSymbol = this.symbolTable.lookupOpenScopes(sourceName);
 
         if (sourceSymbol && (sourceSymbol.type === SymbolType.IMPORTED || sourceSymbol.type === SymbolType.MODULE)) {
@@ -8296,9 +8321,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
       // Handle default imports accessed via global properties (e.g., let e = global.d;)
       if (node.init.type === 'MemberExpression') {
-        const memberNode = node.init as MemberExpressionNode;
+        const memberNode = node.init;
         if (!memberNode.computed && memberNode.object.type === 'Identifier') {
-          const objectName = (memberNode.object as IdentifierNode).name;
+          const objectName = memberNode.object.name;
           const propertyName = this.getStaticPropertyName(memberNode.property);
 
           if (propertyName) {
@@ -8370,9 +8395,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
           // Propagate return property types from function to variable
           if (node.init!.type === 'CallExpression') {
-            const callExpr = node.init! as CallExpressionNode;
+            const callExpr = node.init!;
             if (callExpr.callee.type === 'Identifier') {
-              const funcSym = this.symbolTable.lookupOpenScopes((callExpr.callee as IdentifierNode).name);
+              const funcSym = this.symbolTable.lookupOpenScopes(callExpr.callee.name);
               if (funcSym) this.copyFactoryReturnToBinding(symbol, funcSym);
             } else if (callExpr.callee.type === 'ArrowFunctionExpression' || callExpr.callee.type === 'FunctionExpression') {
               // IIFE: the literal accumulated its return-object property maps during
@@ -8415,15 +8440,15 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // Mark the exported declaration as used to prevent unused variable warnings
       if (this.options.enableScopeAnalysis) {
         if (node.declaration.type === 'FunctionDeclaration') {
-          const funcDecl = node.declaration as FunctionDeclarationNode;
+          const funcDecl = node.declaration;
           if (funcDecl.id) {
             this.symbolTable.markUsed(funcDecl.id.name, funcDecl.id.start);
           }
         } else if (node.declaration.type === 'VariableDeclaration') {
-          const varDecl = node.declaration as VariableDeclarationNode;
+          const varDecl = node.declaration;
           for (const declarator of varDecl.declarations) {
             if (declarator.id.type === 'Identifier') {
-              const id = declarator.id as IdentifierNode;
+              const id = declarator.id;
               this.symbolTable.markUsed(id.name, id.start);
             }
           }
@@ -8449,13 +8474,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // Mark the exported declaration as used to prevent unused variable warnings
       if (this.options.enableScopeAnalysis) {
         if (node.declaration.type === 'FunctionDeclaration') {
-          const funcDecl = node.declaration as FunctionDeclarationNode;
+          const funcDecl = node.declaration;
           if (funcDecl.id) {
             this.symbolTable.markUsed(funcDecl.id.name, funcDecl.id.start);
           }
         } else if (node.declaration.type === 'Identifier') {
           // export default myVariable;
-          const id = node.declaration as IdentifierNode;
+          const id = node.declaration;
           this.symbolTable.markUsed(id.name, id.start);
         }
       }
@@ -8477,10 +8502,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private forwardTypeCheckerDiagnostics(): void {
     const fresh = this.typeChecker.drainNewDiagnostics();
     for (const error of fresh.errors) {
-      this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data as DiagnosticData | undefined);
+      this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
     }
     for (const warning of fresh.warnings) {
-      this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data as DiagnosticData | undefined);
+      this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
     }
   }
 
@@ -8537,7 +8562,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
       // Mirror addDiagnostic: a `{ unnecessary: true }` data payload fades the range
       // in the editor (e.g. an unused import/variable) via DiagnosticTag.Unnecessary.
-      if (data && typeof data === 'object' && (data as { unnecessary?: boolean }).unnecessary) {
+      if (data && typeof data === 'object' && 'unnecessary' in data && data.unnecessary) {
         diagnostic.tags = [DiagnosticTag.Unnecessary];
       }
 
@@ -8572,9 +8597,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    *  the "too deeply nested" warning lands on the offending statement. Measured ITERATIVELY
    *  (explicit stack) so finding it can't itself overflow. Falls back to `ast`. (#117) */
   private deepestTopLevelStatement(ast: AstNode): AstNode {
-    const body = (ast as { body?: AstNode[] }).body;
+    if (!('body' in ast)) return ast;
+    const body = ast.body;
     if (!Array.isArray(body) || body.length === 0) return ast;
-    let worst = ast, worstDepth = -1;
+    let worst: AstNode = ast, worstDepth = -1;
     for (const stmt of body) {
       const d = this.iterativeMaxDepth(stmt);
       if (d > worstDepth) { worstDepth = d; worst = stmt; }
@@ -8647,7 +8673,7 @@ private addDiagnostic(
         ...(relatedInformation && relatedInformation.length > 0 ? { relatedInformation } : {})
       };
 
-      if (data && typeof data === 'object' && (data as { unnecessary?: boolean }).unnecessary) {
+      if (data && typeof data === 'object' && 'unnecessary' in data && data.unnecessary) {
         diagnostic.tags = [DiagnosticTag.Unnecessary];
       }
       if (tags && tags.length > 0) {
@@ -8679,14 +8705,14 @@ private addDiagnostic(
    *  null and is NOT flagged. */
   private lengthBoundedArrayName(test: AstNode | null | undefined): string | null {
     if (!test || test.type !== 'BinaryExpression') return null;
-    const b = test as BinaryExpressionNode;
+    const b = test;
     if (!['<', '<=', '>', '>='].includes(b.operator)) return null;
     const lenArg = (n: AstNode): string | null => {
       if (n?.type !== 'CallExpression') return null;
-      const c = n as CallExpressionNode;
-      return c.callee?.type === 'Identifier' && (c.callee as IdentifierNode).name === 'length'
+      const c = n;
+      return c.callee?.type === 'Identifier' && c.callee.name === 'length'
         && c.arguments?.length === 1 && c.arguments[0]?.type === 'Identifier'
-        ? (c.arguments[0] as IdentifierNode).name : null;
+        ? c.arguments[0].name : null;
     };
     const leftLen = lenArg(b.left);
     const rightLen = lenArg(b.right);
@@ -8703,7 +8729,7 @@ private addDiagnostic(
     if (!stmt) return false;
     if (stmt.type === 'ReturnStatement' || stmt.type === 'BreakStatement') return true;
     if (stmt.type === 'ExpressionStatement') {
-      return this.isExitingCall((stmt as ExpressionStatementNode).expression);
+      return this.isExitingCall(stmt.expression);
     }
     return false;
   }
@@ -8711,14 +8737,14 @@ private addDiagnostic(
   /** A call that terminates: exit() / die() / assert(<falsy literal>). */
   private isExitingCall(e: AstNode | null | undefined): boolean {
     if (e?.type !== 'CallExpression') return false;
-    const c = e as CallExpressionNode;
+    const c = e;
     if (c.callee?.type !== 'Identifier') return false;
-    const n = (c.callee as IdentifierNode).name;
+    const n = c.callee.name;
     if (n === 'exit' || n === 'die') return true;
     if (n === 'assert') {
       const a = c.arguments?.[0];
       if (a?.type === 'Literal') {
-        const v = (a as LiteralNode).value;
+        const v = a.value;
         return v === false || v === 0 || v === null || v === '';
       }
     }
@@ -8729,12 +8755,12 @@ private addDiagnostic(
    *  an unconditional exit, or a both-branches-exiting if? */
   private blockExitsLoop(node: AstNode | null | undefined): boolean {
     if (!node) return false;
-    const stmts: AstNode[] = node.type === 'BlockStatement' ? (node as BlockStatementNode).body : [node];
+    const stmts: AstNode[] = node.type === 'BlockStatement' ? node.body : [node];
     if (stmts.length === 0) return false;
     const last = stmts[stmts.length - 1]!;
     if (this.isUnconditionalExitStatement(last)) return true;
     if (last.type === 'IfStatement') {
-      const i = last as IfStatementNode;
+      const i = last;
       return this.blockExitsLoop(i.consequent) && !!i.alternate && this.blockExitsLoop(i.alternate);
     }
     return false;
@@ -8832,7 +8858,7 @@ private addDiagnostic(
       const childConditional = conditional || SemanticAnalyzer.CONDITIONAL_CONTAINERS.has(node.type);
       if (node.type === 'CallExpression' && node.callee?.type === 'Identifier'
           && SemanticAnalyzer.ARRAY_MUTATORS.has(node.callee.name)
-          && node.arguments?.[0]?.type === 'Identifier' && nameSet.has((node.arguments[0] as IdentifierNode).name)) {
+          && node.arguments?.[0]?.type === 'Identifier' && nameSet.has(node.arguments[0].name)) {
         if (!this.blockExitsLoop(enclosingBlock)) {
           // A rebind of the iteratee name BEFORE this call means the call operates
           // on a different array object than the one being iterated (finding #58).
@@ -9156,12 +9182,12 @@ private addDiagnostic(
 
   private flagBlockingSocketpairRecv(node: CallExpressionNode): void {
     const callee = node.callee;
-    if (callee.type !== 'MemberExpression' || (callee as MemberExpressionNode).computed) return;
-    const method = this.staticMemberName((callee as MemberExpressionNode).property);
+    if (callee.type !== 'MemberExpression' || callee.computed) return;
+    const method = this.staticMemberName(callee.property);
     if (method !== 'recv' && method !== 'recvmsg') return;
 
     // The socket must provably originate from a blocking socket.pair() call.
-    const pairCall = this.findPairSocketForReceiver((callee as MemberExpressionNode).object, 0);
+    const pairCall = this.findPairSocketForReceiver(callee.object, 0);
     if (!pairCall || !this.pairCallIsBlocking(pairCall)) return;
 
     // A non-blocking recv (MSG_DONTWAIT) returns immediately — never hangs.
@@ -9172,7 +9198,7 @@ private addDiagnostic(
     // pair() call so a send on one pair doesn't silence a blocking recv on another.
     if (this.sentPairCalls().has(pairCall)) return;
 
-    const anchor = (callee as MemberExpressionNode).property;
+    const anchor = callee.property;
     this.addDiagnostic(
       `${method}() on a blocking socketpair waits until the peer sends - with nothing written to the other end this hangs forever (and buffered print() output never appears). Pass MSG_DONTWAIT (e.g. ${method}(len, MSG_DONTWAIT)), create the pair with SOCK_NONBLOCK, or send() on the other socket first.`,
       anchor.start, anchor.end, DiagnosticSeverity.Warning, UcodeErrorCode.BLOCKING_SOCKETPAIR_RECV,
@@ -9207,7 +9233,7 @@ private addDiagnostic(
     const body = this.currentASTRoot?.body ?? [];
     for (const stmt of body) {
       if (stmt?.type !== 'ImportDeclaration') continue;
-      const imp = stmt as ImportDeclarationNode;
+      const imp = stmt;
       if (imp.source?.value !== 'socket') continue;
       for (const spec of imp.specifiers) {
         if (spec.type === 'ImportNamespaceSpecifier') nsName = spec.local.name;
@@ -9224,14 +9250,14 @@ private addDiagnostic(
   private findPairSocketForReceiver(node: AstNode, depth: number): CallExpressionNode | null {
     if (depth > 8 || !node) return null;
     if (node.type === 'MemberExpression') {
-      const m = node as MemberExpressionNode;
+      const m = node;
       if (m.computed) return this.findPairArray(m.object, depth + 1); // arr[idx]
       return null;
     }
     if (node.type === 'Identifier') {
       // Position-aware: the recv may sit in a nested block whose scope has exited by
       // the time this post-pass runs, so lookupAtPosition (not lookup) resolves it.
-      const sym = this.symbolTable.lookupAtPosition((node as IdentifierNode).name, node.start);
+      const sym = this.symbolTable.lookupAtPosition(node.name, node.start);
       if (sym?.initNode) return this.findPairSocketForReceiver(sym.initNode, depth + 1);
     }
     return null;
@@ -9241,10 +9267,10 @@ private addDiagnostic(
   private findPairArray(node: AstNode, depth: number): CallExpressionNode | null {
     if (depth > 8 || !node) return null;
     if (node.type === 'CallExpression') {
-      return this.isSocketPairCall(node as CallExpressionNode) ? (node as CallExpressionNode) : null;
+      return this.isSocketPairCall(node) ? node : null;
     }
     if (node.type === 'Identifier') {
-      const sym = this.symbolTable.lookupAtPosition((node as IdentifierNode).name, node.start);
+      const sym = this.symbolTable.lookupAtPosition(node.name, node.start);
       if (sym?.initNode) return this.findPairArray(sym.initNode, depth + 1);
     }
     return null;
@@ -9254,14 +9280,14 @@ private addDiagnostic(
   private isSocketPairCall(call: CallExpressionNode): boolean {
     const callee = call.callee;
     if (callee.type === 'Identifier') {
-      const sym = this.symbolTable.lookupAtPosition((callee as IdentifierNode).name, callee.start);
+      const sym = this.symbolTable.lookupAtPosition(callee.name, callee.start);
       return sym?.importedFrom === 'socket' && sym.importSpecifier === 'pair';
     }
-    if (callee.type === 'MemberExpression' && !(callee as MemberExpressionNode).computed) {
-      const m = callee as MemberExpressionNode;
+    if (callee.type === 'MemberExpression' && !callee.computed) {
+      const m = callee;
       if (this.staticMemberName(m.property) !== 'pair') return false;
       if (m.object.type === 'Identifier') {
-        const sym = this.symbolTable.lookupAtPosition((m.object as IdentifierNode).name, m.object.start);
+        const sym = this.symbolTable.lookupAtPosition(m.object.name, m.object.start);
         return extractModuleType(sym?.dataType)?.moduleName === 'socket';
       }
     }
@@ -9327,9 +9353,9 @@ private addDiagnostic(
   }
 
   private staticMemberName(prop: AstNode): string | null {
-    if (prop.type === 'Identifier') return (prop as IdentifierNode).name;
-    if (prop.type === 'Literal' && typeof (prop as LiteralNode).value === 'string') {
-      return (prop as LiteralNode).value as string;
+    if (prop.type === 'Identifier') return prop.name;
+    if (prop.type === 'Literal' && typeof prop.value === 'string') {
+      return prop.value;
     }
     return null;
   }
@@ -9352,7 +9378,7 @@ private addDiagnostic(
   private checkHandlerVmAbortingCalls(root: ProgramNode): void {
     const literalArgPath = (c: CallExpressionNode): string | null => {
       const a = c.arguments?.[0];
-      if (a?.type === 'Literal' && typeof (a as LiteralNode).value === 'string') return (a as LiteralNode).value as string;
+      if (a?.type === 'Literal' && typeof a.value === 'string') return a.value;
       return null;
     };
     const visit = (n: AstNode | null | undefined): void => {
@@ -9395,7 +9421,7 @@ private addDiagnostic(
    *  (uhttpd.snd()) flags. Typed as the uhttpd object handle. */
   private declareUhttpdAmbient(): void {
     this.symbolTable.forceGlobalDeclaration('uhttpd', SymbolType.VARIABLE,
-      { type: UcodeType.OBJECT, moduleName: 'uhttpd' } as UcodeDataType);
+      { type: UcodeType.OBJECT, moduleName: 'uhttpd' });
     this.symbolTable.markUsed('uhttpd', 0); // host-injected — never "unused"
   }
 
@@ -9470,7 +9496,7 @@ private addDiagnostic(
       // Flag EVERY netifd member usage (not just the first) — on this target the whole API is
       // unavailable, so a single note would leave later usages looking fine.
       for (const use of uses) this.flagVersionMin(floor, what, use.start, use.end);
-      this.symbolTable.forceGlobalDeclaration('netifd', SymbolType.VARIABLE, { type: UcodeType.OBJECT } as UcodeDataType);
+      this.symbolTable.forceGlobalDeclaration('netifd', SymbolType.VARIABLE, degradedHostObjectType());
       this.symbolTable.markUsed('netifd', 0);
       return;
     }
@@ -9479,7 +9505,7 @@ private addDiagnostic(
 
   private declareNetifdAmbient(shape: 'netifd.daemon' | 'netifd.proto'): void {
     this.symbolTable.forceGlobalDeclaration('netifd', SymbolType.VARIABLE,
-      { type: UcodeType.OBJECT, moduleName: shape } as UcodeDataType);
+      { type: UcodeType.OBJECT, moduleName: shape });
     this.symbolTable.markUsed('netifd', 0); // host-injected — never "unused"
   }
 
@@ -9529,12 +9555,12 @@ private addDiagnostic(
       if (targetLacksFeature(this.targetVersion, '23.05')) {
         const what = `The \`${name}\` global (hostapd/wpa_supplicant ucode support) isn't available on {TARGET} (needs {INTRO}).`;
         for (const use of uses) this.flagVersionMin('23.05', what, use.start, use.end);
-        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, { type: UcodeType.OBJECT } as UcodeDataType);
+        this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE, degradedHostObjectType());
         this.symbolTable.markUsed(name, 0);
         continue;
       }
       this.symbolTable.forceGlobalDeclaration(name, SymbolType.VARIABLE,
-        { type: UcodeType.OBJECT, moduleName: shape } as UcodeDataType);
+        { type: UcodeType.OBJECT, moduleName: shape });
       this.symbolTable.markUsed(name, 0); // host-injected — never "unused"
       // Per-member version floors: the global exists from 23.05, but individual members landed later
       // (verified live — e.g. `udebug_set` was added in 24.10). Flag a usage the target predates.
@@ -9609,26 +9635,26 @@ private addDiagnostic(
     for (const g of LUCI_ENV_GLOBALS) {
       if (selfDeclared.has(g.name)) continue; // the user's own binding wins
       if (g.shape.kind === 'fn') {
-        this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.FUNCTION, UcodeType.FUNCTION as UcodeDataType);
+        this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.FUNCTION, UcodeType.FUNCTION);
         const sym = this.symbolTable.lookupOpenScopes(g.name);
         if (sym) {
-          sym.returnType = (g.shape.returnType === 'string' ? UcodeType.STRING : UcodeType.NULL) as UcodeDataType;
+          sym.returnType = (g.shape.returnType === 'string' ? UcodeType.STRING : UcodeType.NULL);
           sym.parameters = [
-            ...g.shape.params.map((p) => ({ name: p, type: UcodeType.UNKNOWN as UcodeDataType, isRest: false, optional: true })),
+            ...g.shape.params.map((p) => ({ name: p, type: UcodeType.UNKNOWN, isRest: false, optional: true })),
             // The runtime fns are variadic (`(...args) => translate(...args) ?? args[0]`) —
             // a rest tail keeps extra arguments from tripping arity checks.
-            { name: 'args', type: UcodeType.UNKNOWN as UcodeDataType, isRest: true, optional: true },
+            { name: 'args', type: UcodeType.UNKNOWN, isRest: true, optional: true },
           ];
           sym.jsdocDescription = g.doc;
         }
       } else if (g.shape.kind === 'objectType') {
         this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE,
-          { type: UcodeType.OBJECT, moduleName: g.shape.objectType } as UcodeDataType);
+          { type: UcodeType.OBJECT, moduleName: g.shape.objectType });
       } else {
         const t = g.shape.type === 'object' ? UcodeType.OBJECT
           : g.shape.type === 'string' ? UcodeType.STRING
             : g.shape.type === 'boolean' ? UcodeType.BOOLEAN : UcodeType.INTEGER;
-        this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE, t as UcodeDataType);
+        this.symbolTable.forceGlobalDeclaration(g.name, SymbolType.VARIABLE, t);
       }
       const sym = this.symbolTable.lookupOpenScopes(g.name);
       if (sym && !sym.jsdocDescription) sym.jsdocDescription = g.doc;
@@ -9695,13 +9721,13 @@ private addDiagnostic(
        | { mode: 'toGlobalVar'; replaceStart: number; replaceEnd: number };
   } | null {
     const fnNamed = (n: AstNode | null): n is FunctionDeclarationNode =>
-      !!n && n.type === 'FunctionDeclaration' && (n as FunctionDeclarationNode).id?.name === 'handle_request';
+      !!n && n.type === 'FunctionDeclaration' && n.id?.name === 'handle_request';
 
     // export function handle_request(...) {}. Anchor the added `;` on the function BODY's
     // closing brace, not the declaration end — the parser folds the bridged `%}`→`;`
     // terminator into an exported function's end, which would place the `;` past `%}`.
     if (stmt.type === 'ExportNamedDeclaration') {
-      const decl = (stmt as ExportNamedDeclarationNode).declaration;
+      const decl = stmt.declaration;
       if (fnNamed(decl)) {
         return { anchorStart: decl.id.start, anchorEnd: decl.id.end, formLabel: 'exported function',
           fix: { mode: 'toGlobalFunc', replaceStart: stmt.start, replaceEnd: decl.id.end, appendAt: decl.body.end } };
@@ -9709,15 +9735,15 @@ private addDiagnostic(
     }
     // function handle_request(...) {}
     if (fnNamed(stmt)) {
-      const fn = stmt as FunctionDeclarationNode;
+      const fn = stmt;
       return { anchorStart: fn.id.start, anchorEnd: fn.id.end, formLabel: 'local function declaration',
         fix: { mode: 'toGlobalFunc', replaceStart: fn.start, replaceEnd: fn.id.end, appendAt: fn.body.end } };
     }
     // let/const handle_request = <expr>   (single-declarator only, so the rewrite is clean)
     if (stmt.type === 'VariableDeclaration') {
-      const vd = stmt as VariableDeclarationNode;
+      const vd = stmt;
       const d = vd.declarations.length === 1 ? vd.declarations[0] : undefined;
-      if (d?.id?.type === 'Identifier' && (d.id as IdentifierNode).name === 'handle_request' && d.init) {
+      if (d?.id?.type === 'Identifier' && d.id.name === 'handle_request' && d.init) {
         return { anchorStart: d.id.start, anchorEnd: d.id.end, formLabel: `\`${vd.kind}\` binding`,
           fix: { mode: 'toGlobalVar', replaceStart: vd.start, replaceEnd: d.id.end } };
       }
@@ -9786,7 +9812,7 @@ private addDiagnostic(
   private findContainingNullGuard(node: AstNode, variableName: string, position: number): boolean {
     // Check if this is an if statement
     if (node.type === 'IfStatement') {
-      const ifNode = node as IfStatementNode;
+      const ifNode = node;
       
       // Check if the position is within the consequent block
       if (ifNode.consequent && 
@@ -9855,7 +9881,7 @@ private addDiagnostic(
       return false;
     }
 
-    const binaryExpr = testNode as BinaryExpressionNode;
+    const binaryExpr = testNode;
     
     // Check for "variableName != null" pattern
     if ((binaryExpr.operator === '!=' || binaryExpr.operator === '!==') &&
@@ -9891,7 +9917,7 @@ private addDiagnostic(
       // would never enter this set and the CFG would silently lose them.
       const terminators = new Set(['die', 'exit']);
       for (const funcNode of funcNodes) {
-        const name = (funcNode as FunctionDeclarationNode).id?.name;
+        const name = functionNodeName(funcNode);
         if (name && this.symbolTable.resolveReference(name, funcNode.start)?.neverReturns) {
           terminators.add(name);
         }
@@ -9903,7 +9929,7 @@ private addDiagnostic(
       while (changed) {
         changed = false;
         for (const funcNode of funcNodes) {
-          const name = (funcNode as FunctionDeclarationNode).id?.name;
+          const name = functionNodeName(funcNode);
           if (!name || !funcNode.body) continue;
           // Post-traversal fixpoint over ALL functions incl. nested ones whose scopes
           // have exited — the open-chain walk would hit a same-name OUTER function and
@@ -9965,7 +9991,7 @@ private addDiagnostic(
     for (const funcNode of funcNodes) {
       if (!funcNode.body) continue;
       try {
-        const builder = new CFGBuilder((funcNode as FunctionDeclarationNode).id?.name || 'anonymous', terminators);
+        const builder = new CFGBuilder(functionNodeName(funcNode) || 'anonymous', terminators);
         const cfg = builder.build(funcNode.body);
         const engine = new CFGQueryEngine(cfg);
         this.emitUnreachableDiagnostics(engine, cfg);
@@ -10069,7 +10095,7 @@ private addDiagnostic(
     this.functionReturnTypes.set(funcNode, reachableEntries);
 
     // Re-compute and update the function symbol's return type
-    const name = (funcNode as FunctionDeclarationNode).id?.name;
+    const name = functionNodeName(funcNode);
     if (name) {
       // Post-traversal: resolve the function's OWN symbol by position — a nested
       // `function halt()` must not overwrite a same-name outer function's returnType
@@ -10181,7 +10207,7 @@ private addDiagnostic(
     const varName: string = diagnosticData.variableName;
     const argumentOffset: number = diagnosticData.argumentOffset;
 
-    const expectedTypes = diagnosticData.expectedTypes as UcodeType[];
+    const expectedTypes = diagnosticData.expectedTypes;
     const typeNarrowing = this.typeChecker.getTypeNarrowing();
 
     // Use the type checker's comprehensive AST-based guard detection, which
@@ -10214,16 +10240,16 @@ private addDiagnostic(
     const readSource = (init: AstNode | undefined, sym: SymbolEntry): UcodeDataType | undefined => {
       if (!init) return undefined;
       if (init.type === 'Identifier') {
-        const src = this.symbolTable.resolveReference((init as IdentifierNode).name, init.start);
+        const src = this.symbolTable.resolveReference(init.name, init.start);
         if (!src || src === sym || src.type === SymbolType.FUNCTION || src.type === SymbolType.BUILTIN) return undefined;
         return effectiveSymbolType(src, init.start);
       }
       if (init.type === 'MemberExpression') {
-        const m = init as MemberExpressionNode;
+        const m = init;
         if (m.computed || m.object.type !== 'Identifier' || m.property.type !== 'Identifier') return undefined;
-        const src = this.symbolTable.resolveReference((m.object as IdentifierNode).name, m.object.start);
+        const src = this.symbolTable.resolveReference(m.object.name, m.object.start);
         if (!src) return undefined;
-        return propertyTypeAt(src, (m.property as IdentifierNode).name, init.start);
+        return propertyTypeAt(src, m.property.name, init.start);
       }
       return undefined;
     };
@@ -10248,8 +10274,8 @@ private addDiagnostic(
           });
         if (missing.length === 0) continue;
         sym.dataType = createUnionType([
-          ...(isUnionType(sym.dataType) ? getUnionTypes(sym.dataType) : [sym.dataType as SingleType]),
-          ...missing.map(m => m as SingleType),
+          ...(isUnionType(sym.dataType) ? getUnionTypes(sym.dataType) : [sym.dataType]),
+          ...missing.map(m => m),
         ]);
         changed = true;
       }
@@ -10323,7 +10349,7 @@ private addDiagnostic(
           const ok = new Set<string>([...ad.expectedTypes, ...(ad.toleratedTypes ?? [])]);
           const allAcceptable = (t: UcodeDataType | null | undefined): boolean => {
             if (t === null || t === undefined) return false;
-            const members = getUnionTypes(t).map(m => singleTypeToBase(m) as string);
+            const members = getUnionTypes(t).map(m => singleTypeToBase(m));
             return members.length > 0 && members.every(m => ok.has(m));
           };
           if (allAcceptable(this.typeChecker.topLevelFlowTypeAt(ad.variableName, ad.argumentOffset))) return false;
@@ -10346,8 +10372,7 @@ private addDiagnostic(
         // writes): if new type members appeared, the at-emit "can never be" claim
         // no longer holds — drop it. Unchanged types keep the diagnostic, so
         // straight-line true positives survive.
-        const refs = diagnostic.data?.impossibleCompareRefs as
-          Array<{ name: string; offset: number; prop?: string; members: string[] }> | undefined;
+        const refs = diagnostic.data?.impossibleCompareRefs;
         if (refs) {
           // Only growth by a SCALAR-ish member can rescue the comparison: every
           // "impossible" verdict has a scalar side, and references/null still never
@@ -10380,8 +10405,8 @@ private addDiagnostic(
       // (warning; error under 'use strict', matching the direct-emit path).
       // Growth by still-disallowed members keeps the error (still definitely wrong).
       {
-        const sta = diagnostic.data?.staleTypeArg as
-          { name: string; offset: number; prop?: string; members: string[]; funcName: string; argPosition: number; expected: string[] } | undefined;
+        const sta: { name: string; offset: number; prop?: string; members: string[]; funcName: string; argPosition: number; expected: string[] } | undefined
+          = diagnostic.data?.staleTypeArg;
         // Only re-validate the read-before-write SIGNATURE: an at-emit type that
         // includes null (the declared seed of an unwritten `let`). An emit type
         // WITHOUT null came from guard-aware narrowing, which knows MORE than
@@ -10496,7 +10521,7 @@ private addDiagnostic(
             diagnosticData.variableName, this.textDocument.offsetAt(diagnostic.range.start));
           if (sym && sym.dataType !== UcodeType.UNKNOWN && sym.type === SymbolType.VARIABLE) {
             // Re-check: parse the expected type string and verify the final type is compatible
-            const expectedTypes = (diagnosticData.expectedType as string).split(' | ');
+            const expectedTypes = diagnosticData.expectedType.split(' | ');
             const finalTypes = getUnionTypes(sym.dataType);
             // Compare each member's BASE type: a member may be a refined form
             // (ArrayType `array<integer>`) while expectedType is the bare name.
@@ -10529,10 +10554,10 @@ private addDiagnostic(
     const argNode = this.findCallExpressionAt(this.currentASTRoot, argumentOffset);
     if (!argNode || argNode.type !== 'CallExpression') return false;
 
-    const callNode = argNode as CallExpressionNode;
+    const callNode = argNode;
     // Check if it's a null-propagating builtin
     if (callNode.callee.type !== 'Identifier') return false;
-    const funcName = (callNode.callee as IdentifierNode).name;
+    const funcName = callNode.callee.name;
     const nullPropagating = ['keys', 'values', 'length', 'sort', 'reverse', 'uniq',
       'pop', 'shift', 'slice', 'splice', 'join', 'split', 'trim', 'ltrim', 'rtrim',
       'index', 'rindex', 'filter', 'map', 'substr', 'match'];
@@ -10558,14 +10583,14 @@ private addDiagnostic(
    */
   private getMemberExpressionPath(node: AstNode): string | null {
     if (node.type === 'Identifier') {
-      return (node as IdentifierNode).name;
+      return node.name;
     }
     if (node.type === 'MemberExpression') {
-      const member = node as MemberExpressionNode;
+      const member = node;
       if (!member.computed && member.property.type === 'Identifier') {
         const objPath = this.getMemberExpressionPath(member.object);
         if (objPath) {
-          return `${objPath}.${(member.property as IdentifierNode).name}`;
+          return `${objPath}.${member.property.name}`;
         }
       }
     }
@@ -10582,7 +10607,7 @@ private addDiagnostic(
    */
   private hasPropertyAccessGuard(node: AstNode, memberPath: string, position: number): boolean {
     if (node.type === 'IfStatement') {
-      const ifNode = node as IfStatementNode;
+      const ifNode = node;
 
       // Check if position is inside the consequent (then-block)
       if (ifNode.consequent &&
@@ -10637,7 +10662,7 @@ private addDiagnostic(
     if (!condition) return false;
 
     if (condition.type === 'BinaryExpression') {
-      const expr = condition as BinaryExpressionNode;
+      const expr = condition;
 
       // Handle && — check both sides
       if (expr.operator === '&&') {
@@ -10657,7 +10682,7 @@ private addDiagnostic(
 
         // Property access null check: memberPath.X != null or memberPath['X'] != null
         if (nullSide.type === 'MemberExpression') {
-          const parentPath = this.getMemberExpressionPath((nullSide as MemberExpressionNode).object);
+          const parentPath = this.getMemberExpressionPath(nullSide.object);
           if (parentPath === memberPath) return true;
         }
       }
@@ -10665,7 +10690,7 @@ private addDiagnostic(
 
     // Handle LogicalExpression (&&, ||)
     if (condition.type === 'LogicalExpression') {
-      const logical = condition as LogicalExpressionNode;
+      const logical = condition;
       if (logical.operator === '&&') {
         return this.conditionImpliesObjectType(logical.left, memberPath) ||
                this.conditionImpliesObjectType(logical.right, memberPath);
@@ -10676,7 +10701,7 @@ private addDiagnostic(
   }
 
   private isNullLiteral(node: AstNode): boolean {
-    return node.type === 'Literal' && (node as LiteralNode).value === null;
+    return node.type === 'Literal' && node.value === null;
   }
 
   /**
@@ -10747,14 +10772,14 @@ private addDiagnostic(
   private findNullGuardAtPosition(node: AstNode, position: number): boolean {
     // Look for 'in' operators at this position
     if (node.type === 'BinaryExpression') {
-      const binaryNode = node as BinaryExpressionNode;
+      const binaryNode = node;
       if (binaryNode.operator === 'in' && 
           position >= binaryNode.start && 
           position <= binaryNode.end &&
           binaryNode.right && 
           binaryNode.right.type === 'Identifier') {
         
-        const variableName = (binaryNode.right as IdentifierNode).name;
+        const variableName = binaryNode.right.name;
         return this.findContainingNullGuard(this.currentASTRoot!, variableName, position);
       }
     }

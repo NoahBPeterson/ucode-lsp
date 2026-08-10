@@ -32,7 +32,7 @@
  * when the guard test was false, i.e. p was non-null.
  */
 
-import type { AstNode, BinaryExpressionNode, IdentifierNode, LiteralNode, TemplateLiteralNode, UnaryExpressionNode } from '../ast/nodes';
+import type { AstNode } from '../ast/nodes';
 import { astChildren } from '../ast/astChildren';
 
 const contractCache = new WeakMap<AstNode, number[]>();
@@ -49,21 +49,19 @@ export function inferNullGuardParams(funcNode: AstNode): number[] {
 }
 
 function computeNullGuardParams(funcNode: AstNode): number[] {
-  const fn = funcNode as AstNode & {
-    forwardDeclaration?: boolean;
-    params?: Array<{ name: string }>;
-    body?: AstNode & { body?: AstNode[] };
-  };
-  if (fn.forwardDeclaration || !fn.params || fn.params.length === 0) return [];
-  if (!fn.body || fn.body.type !== 'BlockStatement') return [];
-  const indexByName = new Map<string, number>(fn.params.map((p, i) => [p.name, i]));
+  if (funcNode.type !== 'FunctionDeclaration' && funcNode.type !== 'FunctionExpression'
+      && funcNode.type !== 'ArrowFunctionExpression') return [];
+  if (funcNode.type === 'FunctionDeclaration' && funcNode.forwardDeclaration) return [];
+  if (funcNode.params.length === 0) return [];
+  const body = funcNode.body;
+  if (!body || body.type !== 'BlockStatement') return [];
+  const indexByName = new Map<string, number>(funcNode.params.map((p, i) => [p.name, i]));
 
   const flagged = new Set<number>();
-  for (const stmt of fn.body.body ?? []) {
-    const s = stmt as AstNode & { alternate?: AstNode; consequent?: AstNode; test?: AstNode };
-    if (s.type === 'IfStatement' && !s.alternate && s.consequent && s.test
-        && alwaysReturnsTruthy(s.consequent)) {
-      for (const arm of flattenOr(s.test)) {
+  for (const stmt of body.body ?? []) {
+    if (stmt.type === 'IfStatement' && !stmt.alternate && stmt.consequent && stmt.test
+        && alwaysReturnsTruthy(stmt.consequent)) {
+      for (const arm of flattenOr(stmt.test)) {
         const name = nullTestedIdentifier(arm);
         const idx = name !== null ? indexByName.get(name) : undefined;
         if (idx !== undefined) flagged.add(idx);
@@ -79,9 +77,8 @@ function computeNullGuardParams(funcNode: AstNode): number[] {
 
 /** Top-level `||` arms of a test expression (a non-`||` node is its own arm). */
 function flattenOr(node: AstNode): AstNode[] {
-  if (node.type === 'BinaryExpression' && (node as BinaryExpressionNode).operator === '||') {
-    const b = node as BinaryExpressionNode;
-    return [...flattenOr(b.left), ...flattenOr(b.right)];
+  if (node.type === 'BinaryExpression' && node.operator === '||') {
+    return [...flattenOr(node.left), ...flattenOr(node.right)];
   }
   return [node];
 }
@@ -91,22 +88,20 @@ function flattenOr(node: AstNode): AstNode[] {
  *  implies it.) A bare `p` arm is a TRUTHINESS test — the opposite — never a match. */
 function nullTestedIdentifier(arm: AstNode): string | null {
   if (arm.type === 'BinaryExpression') {
-    const b = arm as BinaryExpressionNode;
-    if (b.operator !== '==' && b.operator !== '===') return null;
-    if (b.left.type === 'Identifier' && isNullLiteral(b.right)) return (b.left as IdentifierNode).name;
-    if (b.right.type === 'Identifier' && isNullLiteral(b.left)) return (b.right as IdentifierNode).name;
+    if (arm.operator !== '==' && arm.operator !== '===') return null;
+    if (arm.left.type === 'Identifier' && isNullLiteral(arm.right)) return arm.left.name;
+    if (arm.right.type === 'Identifier' && isNullLiteral(arm.left)) return arm.right.name;
     return null;
   }
   if (arm.type === 'UnaryExpression') {
-    const u = arm as UnaryExpressionNode;
-    if (u.operator === '!' && u.argument?.type === 'Identifier') return (u.argument as IdentifierNode).name;
+    if (arm.operator === '!' && arm.argument?.type === 'Identifier') return arm.argument.name;
   }
   return null;
 }
 
 function isNullLiteral(node: AstNode): boolean {
   return node.type === 'Literal'
-    && ((node as LiteralNode).value === null || (node as LiteralNode).literalType === 'null');
+    && (node.value === null || node.literalType === 'null');
 }
 
 /** Does executing this consequent ALWAYS end in a provably-truthy return?
@@ -115,11 +110,11 @@ function isNullLiteral(node: AstNode): boolean {
  *  conditional return could let execution fall past the block). */
 function alwaysReturnsTruthy(node: AstNode): boolean {
   if (node.type === 'ReturnStatement') {
-    const arg = (node as AstNode & { argument?: AstNode }).argument;
+    const arg = node.argument;
     return !!arg && isProvablyTruthy(arg);
   }
   if (node.type === 'BlockStatement') {
-    const stmts = (node as AstNode & { body?: AstNode[] }).body ?? [];
+    const stmts = node.body ?? [];
     if (stmts.length === 0) return false;
     const last = stmts[stmts.length - 1]!;
     if (last.type !== 'ReturnStatement') return false;
@@ -128,7 +123,7 @@ function alwaysReturnsTruthy(node: AstNode): boolean {
     walkOwn(node, (n) => {
       if (n.type === 'ReturnStatement') {
         returns++;
-        const arg = (n as AstNode & { argument?: AstNode }).argument;
+        const arg = n.argument;
         if (!arg || !isProvablyTruthy(arg)) allTruthy = false;
       }
     });
@@ -142,13 +137,12 @@ function alwaysReturnsTruthy(node: AstNode): boolean {
  *  literal chunk is non-empty (interpolations can't empty it back out). */
 function isProvablyTruthy(expr: AstNode): boolean {
   if (expr.type === 'Literal') {
-    const lit = expr as LiteralNode;
-    if (typeof lit.value === 'string') return lit.value.length > 0;
-    if (typeof lit.value === 'number') return lit.value !== 0;
-    return lit.value === true;
+    if (typeof expr.value === 'string') return expr.value.length > 0;
+    if (typeof expr.value === 'number') return expr.value !== 0;
+    return expr.value === true;
   }
   if (expr.type === 'TemplateLiteral') {
-    return (expr as TemplateLiteralNode).quasis?.some(q => (q.value?.cooked ?? q.value?.raw ?? '').length > 0) ?? false;
+    return expr.quasis?.some(q => (q.value?.cooked ?? q.value?.raw ?? '').length > 0) ?? false;
   }
   return expr.type === 'ObjectExpression' || expr.type === 'ArrayExpression';
 }
@@ -160,7 +154,7 @@ function containsFalsyCapableReturn(stmt: AstNode): boolean {
   let found = false;
   walkOwn(stmt, (n) => {
     if (n.type === 'ReturnStatement') {
-      const arg = (n as AstNode & { argument?: AstNode }).argument;
+      const arg = n.argument;
       if (!arg || !isProvablyTruthy(arg)) found = true;
     }
   });

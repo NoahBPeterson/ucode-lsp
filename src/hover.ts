@@ -10,7 +10,6 @@ import { splitTopLevel } from './analysis/typeStringUtils';
 import { UcodeLexer, TokenType, isKeyword, isMemberAccessDot, decodeEscape, type Token } from './lexer';
 import type {
     AstNode, PropertyNode,
-    LiteralNode, FunctionExpressionNode, ArrowFunctionExpressionNode, FunctionDeclarationNode,
 } from './ast/nodes';
 import { astChildren } from './ast/astChildren';
 import { allBuiltinFunctions } from './builtins';
@@ -143,8 +142,8 @@ function detectMemberHoverContext(position: Position, tokens: Token[], document:
         objectToken.end === dotToken.pos) {
 
         return {
-            objectName: objectToken.value as string,
-            memberName: hoverToken.value as string,
+            objectName: String(objectToken.value),
+            memberName: String(hoverToken.value),
             memberTokenPos: hoverToken.pos,
             memberTokenEnd: hoverToken.end
         };
@@ -156,7 +155,7 @@ function detectMemberHoverContext(position: Position, tokens: Token[], document:
 
         return {
             objectName: 'this',
-            memberName: hoverToken.value as string,
+            memberName: String(hoverToken.value),
             memberTokenPos: hoverToken.pos,
             memberTokenEnd: hoverToken.end
         };
@@ -177,18 +176,18 @@ function detectMemberHoverContext(position: Position, tokens: Token[], document:
         // j now points to the token before the opening paren
         const funcToken = j >= 0 ? tokens[j] : undefined;
         if (funcToken && funcToken.type === TokenType.TK_LABEL) {
-            const funcName = funcToken.value as string;
+            const funcName = String(funcToken.value);
             let moduleName: string | undefined;
             const dotBefore = tokens[j - 1];
             const labelBefore = tokens[j - 2];
             if (j >= 2 && dotBefore && labelBefore && isMemberAccessDot(dotBefore.type) && labelBefore.type === TokenType.TK_LABEL) {
-                moduleName = labelBefore.value as string;
+                moduleName = String(labelBefore.value);
             }
             const objType = resolveReturnObjectType(funcName, moduleName);
             if (objType) {
                 return {
                     objectName: '__call_chain__',
-                    memberName: hoverToken.value as string,
+                    memberName: String(hoverToken.value),
                     memberTokenPos: hoverToken.pos,
                     memberTokenEnd: hoverToken.end,
                     resolvedObjectType: objType
@@ -374,10 +373,10 @@ function detectObjectTypeFromDataType(dataType: UcodeDataType): KnownObjectType 
     if (isUnionType(dataType)) {
         for (const member of getUnionTypes(dataType)) {
             if (isObjectType(member) && isKnownObjectType(member.name)) {
-                return member.name as KnownObjectType;
+                return member.name;
             }
-            const mt = extractModuleType(member as UcodeDataType);
-            if (mt && isKnownObjectType(mt.moduleName)) return mt.moduleName as KnownObjectType;
+            const mt = extractModuleType(member);
+            if (mt && isKnownObjectType(mt.moduleName)) return mt.moduleName;
         }
     }
     // Legacy: ModuleType with known object type name
@@ -500,8 +499,10 @@ function getUnifiedMemberHover(
         if (uri && !uri.startsWith('builtin://')) {
             const fnDef = getHoverFileResolver().findFunctionDefinition(uri, propertyName);
             if (fnDef && fnDef.kind === 'function') {
-                const fnNode = fnDef.node as FunctionDeclarationNode;
-                const params = (fnNode.params || []).map(p => p.name).join(', ');
+                const fnNode = fnDef.node;
+                const fnParams = (fnNode.type === 'FunctionDeclaration' || fnNode.type === 'FunctionExpression'
+                    || fnNode.type === 'ArrowFunctionExpression') ? fnNode.params || [] : [];
+                const params = fnParams.map(p => p.name).join(', ');
                 const moduleLabel = symbol.importedFrom.startsWith('file://')
                     ? (symbol.importedFrom.split('/').pop() || symbol.importedFrom)
                     : symbol.importedFrom;
@@ -561,7 +562,7 @@ function getFormatSpecifierHover(token: Token, tokenIndex: number, tokens: Token
     if (labelIdx < 0) return undefined;
     const labelToken = tokens[labelIdx];
     if (!labelToken || labelToken.type !== TokenType.TK_LABEL) return undefined;
-    const funcName = labelToken.value as string;
+    const funcName = labelToken.value;
     if (funcName !== 'printf' && funcName !== 'sprintf') return undefined;
 
     // Check there are no tokens between LPAREN and our string (it must be the first arg)
@@ -573,7 +574,7 @@ function getFormatSpecifierHover(token: Token, tokenIndex: number, tokens: Token
     if (hasTokensBetween) return undefined;
 
     // Parse the format string (strip quotes)
-    const rawValue = token.value as string;
+    const rawValue = String(token.value);
     const specifiers = parseFormatSpecifiers(rawValue);
     if (specifiers.length === 0) return undefined;
 
@@ -690,14 +691,14 @@ function findImportedNameAtOffset(node: AstNode, offset: number): { moduleName: 
 function formatPropertyValueHover(value: AstNode): string | undefined {
     if (!value || typeof value.type !== 'string') return undefined;
     if (value.type === 'ArrowFunctionExpression' || value.type === 'FunctionExpression') {
-        const fn = value as ArrowFunctionExpressionNode | FunctionExpressionNode;
+        const fn = value;
         const params = (fn.params || []).map((p) => p.name);
         if (fn.restParam) params.push('...' + fn.restParam.name);
         const rest = fn.restParam ? ' with rest parameters' : '';
         if (fn.type === 'ArrowFunctionExpression') {
             let ret = 'unknown';
             if (fn.expression && fn.body && fn.body.type === 'Literal') {
-                const bv = (fn.body as LiteralNode).value;
+                const bv = fn.body.value;
                 if (typeof bv === 'number') ret = 'number';
                 else if (typeof bv === 'string') ret = 'string';
                 else if (typeof bv === 'boolean') ret = 'boolean';
@@ -708,7 +709,7 @@ function formatPropertyValueHover(value: AstNode): string | undefined {
         return `**(function)** **function(${params.join(', ')})**\n\nFunction expression${rest}`;
     }
     if (value.type === 'Literal') {
-        const v = (value as LiteralNode).value;
+        const v = value.value;
         if (typeof v === 'string') return '**(string)** String literal';
         if (typeof v === 'number') return '**(number)** Number literal';
         if (typeof v === 'boolean') return '**(boolean)** Boolean literal';
@@ -1833,8 +1834,8 @@ function detectMemberExpression(offset: number, tokens: Token[]): { objectName: 
             afterNextToken.type === TokenType.TK_LABEL &&
             currentToken.type === TokenType.TK_LABEL) {
             return {
-                objectName: currentToken.value as string,
-                propertyName: afterNextToken.value as string,
+                objectName: String(currentToken.value),
+                propertyName: String(afterNextToken.value),
                 cursorOnObject: true
             };
         }
@@ -1853,21 +1854,21 @@ function detectMemberExpression(offset: number, tokens: Token[]): { objectName: 
             // access like `ns.A.B` surfaces the full chain. Without this, the
             // resolver would see `objectName='A'` and fail to find A as a
             // top-level symbol when A is actually a property of `ns`.
-            const chain: string[] = [beforePrevToken.value as string, currentToken.value as string];
+            const chain: string[] = [String(beforePrevToken.value), String(currentToken.value)];
             let i = currentTokenIndex - 3;
             while (i >= 1) {
                 const dot = tokens[i];
                 const label = tokens[i - 1];
                 if (isMemberAccessDot(dot?.type) && label?.type === TokenType.TK_LABEL) {
-                    chain.unshift(label.value as string);
+                    chain.unshift(String(label.value));
                     i -= 2;
                 } else {
                     break;
                 }
             }
             const result: { objectName: string; propertyName: string; cursorOnObject: boolean; chain?: string[] } = {
-                objectName: beforePrevToken.value as string,
-                propertyName: currentToken.value as string,
+                objectName: String(beforePrevToken.value),
+                propertyName: String(currentToken.value),
                 cursorOnObject: false
             };
             if (chain.length > 2) result.chain = chain;

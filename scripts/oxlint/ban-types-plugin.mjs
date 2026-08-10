@@ -27,5 +27,42 @@ export default {
         };
       },
     },
+    "no-as": {
+      create(context) {
+        const isConstAssertion = (node) =>
+          node.typeAnnotation?.type === "TSTypeReference" &&
+          node.typeAnnotation.typeName?.type === "Identifier" &&
+          node.typeAnnotation.typeName.name === "const";
+        const message =
+          "Type assertions are banned in this codebase (docs/rescript-rewrite-audit.md): an `as` is an " +
+          "unchecked claim the compiler then trusts. Narrow with a `.type`/`typeof`/`in`/`instanceof` check " +
+          "or a type-guard function instead; values already typed `any` by a library assign without a cast. " +
+          "(`as const` and `satisfies` are sound and allowed.)";
+        return {
+          TSAsExpression(node) {
+            if (isConstAssertion(node)) return; // `as const` narrows — sound
+            context.report({ node, message });
+          },
+          TSTypeAssertion(node) {
+            context.report({ node, message }); // angle-bracket form `<T>x`
+          },
+        };
+      },
+    },
+    "no-non-null": {
+      create(context) {
+        return {
+          TSNonNullExpression(node) {
+            context.report({
+              node,
+              message:
+                "Non-null assertions (`x!`) are banned in this codebase (docs/rescript-rewrite-audit.md): " +
+                "`!` is an unchecked nullability claim. Prove it instead — guard with an explicit check, " +
+                "restructure so the value is non-nullable by construction, or throw a descriptive error.",
+            });
+          },
+        };
+      },
+    },
   },
 };

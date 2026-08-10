@@ -66,7 +66,7 @@ export function makeAssignmentTransfer(typeOf: (node: AstNode) => UcodeDataType 
       // the AST but iterator-assigned on every body iteration — recording `null`
       // here would poison every body read once the loop join carries it. Skip; the
       // symbol's element/key type is the fallback the reads should resolve to.
-      if ((stmt as { _forInLoopVar?: boolean })._forInLoopVar) return;
+      if ('_forInLoopVar' in stmt && stmt._forInLoopVar) return;
       for (const d of (stmt.declarations ?? [])) {
         if (d?.id?.type !== 'Identifier') continue;
         if (d.init) {

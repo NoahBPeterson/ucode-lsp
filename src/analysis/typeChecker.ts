@@ -9,8 +9,7 @@ import {
   type ObjectExpressionNode, type ConditionalExpressionNode, type ArrowFunctionExpressionNode,
   type FunctionExpressionNode, type IfStatementNode, type ProgramNode, type BlockStatementNode,
   type ExpressionStatementNode, type VariableDeclarationNode, type ReturnStatementNode,
-  type PropertyNode, type SwitchStatementNode, type SwitchCaseNode,
-  type ForStatementNode, type WhileStatementNode,
+  type SwitchStatementNode, type SwitchCaseNode,
   type TryStatementNode, type CatchClauseNode, type LogicalExpressionNode,
   type DeleteExpressionNode
 } from '../ast/nodes';
@@ -24,6 +23,31 @@ type ScalarLiteralValue = string | number | boolean | null | undefined;
 /** Narrow a possibly-absent AST value to a present, traversable node. */
 function isAstNodeLike(n: AstNode | null | undefined): n is AstNode {
   return n != null && typeof n === 'object' && typeof n.type === 'string';
+}
+
+/** Synthetic inference stamps this checker reads/writes on AST nodes (mirrors the
+ *  semanticAnalyzer's InferenceStamps view — `_`-prefixed fields are skipped by
+ *  generic AST walks). All fields are optional, so viewing any node through this
+ *  shape claims nothing beyond "when a stamp is present, it has this type". */
+interface InferenceStamps {
+  _inferredReturnType?: UcodeDataType;
+  _keysOfSymbol?: string;
+}
+/** View a node's synthetic inference stamps (structurally always admissible). */
+function hasInferenceStamps(n: AstNode): n is AstNode & InferenceStamps {
+  return typeof n === 'object';
+}
+
+/** Defensive view of a `try` node's (grammar-absent) `finally` block — see
+ *  checkTryStatement. All-optional, so structurally always admissible. */
+function mayCarryFinalizer(n: TryStatementNode): n is TryStatementNode & { finalizer?: AstNode } {
+  return typeof n === 'object';
+}
+
+const UCODE_TYPE_NAMES = new Set<string>(Object.values(UcodeType));
+/** Is this string one of the bare UcodeType enum values (e.g. "array", "null")? */
+function isUcodeTypeName(s: string): s is UcodeType {
+  return UCODE_TYPE_NAMES.has(s);
 }
 
 /** The array-valued AST child lists of `node` (statement/expression lists), for
@@ -122,7 +146,8 @@ interface TypeGuardInfo {
   // The narrowed type. When set to UcodeType.NULL with isNegative true, null is removed.
   // When set to UcodeType.NULL with isNegative false, type is narrowed to just null.
   // For other UcodeType values, isNegative false keeps only that type, true removes it.
-  narrowToType: UcodeType | null;
+  // Combined-OR guards (isCombinedOr) store the already-combined UnionType here.
+  narrowToType: UcodeDataType | null;
   // Whether this is a negative narrowing (e.g., removing the type in else block)
   isNegative: boolean;
   // Whether this is a combined OR guard (e.g., type(x) === 'array' || type(x) === 'string')
@@ -218,7 +243,7 @@ export interface TypeCheckResult {
 
 /** Quick-fix payloads carried on a diagnostic's `data` field, read back by the
  *  quick-fix layer (src/server.ts) and the post-analysis filters
- *  (semanticAnalyzer). All fields optional — each diagnostic carries only the
+ *  semanticAnalyzer. All fields optional — each diagnostic carries only the
  *  payload its own code produces. */
 export interface DiagnosticFixData {
   // UC2009 `type(x) == "<wrong>"` → valid type-string rewrite
@@ -751,10 +776,10 @@ export class TypeChecker {
 
   private getStaticPropertyName(node: AstNode): string | null {
     if (node.type === 'Identifier') {
-      return (node as IdentifierNode).name;
+      return node.name;
     }
     if (node.type === 'Literal') {
-      const literal = node as LiteralNode;
+      const literal = node;
       if (literal.value !== undefined && literal.value !== null) {
         return String(literal.value);
       }
@@ -773,7 +798,7 @@ export class TypeChecker {
    */
   private resolvePropertyKeyToString(node: AstNode): string | null {
     if (node.type === 'Literal') {
-      const lit = node as LiteralNode;
+      const lit = node;
       if (lit.value === undefined || lit.value === null) return null;
       return String(lit.value);
     }
@@ -785,19 +810,19 @@ export class TypeChecker {
       return null;
     }
     if (node.type === 'Identifier') {
-      const sym = this.symbolTable.resolveReference((node as IdentifierNode).name, node.start);
+      const sym = this.symbolTable.resolveReference(node.name, node.start);
       if (sym?.initNode) return this.resolvePropertyKeyToString(sym.initNode);
       return null;
     }
     if (node.type === 'MemberExpression') {
-      const mem = node as MemberExpressionNode;
+      const mem = node;
       if (mem.computed) return null;
       // Chained namespace constant: `ns.A.B` where `ns` is `import * as ns from 'file.uc'`.
       // Asks the namespace's source file for the raw literal of inner key B.
       if (this.fileResolver && mem.object.type === 'MemberExpression') {
-        const inner = mem.object as MemberExpressionNode;
+        const inner = mem.object;
         if (!inner.computed && inner.object.type === 'Identifier') {
-          const baseName = (inner.object as IdentifierNode).name;
+          const baseName = inner.object.name;
           const baseSym = this.symbolTable.resolveReference(baseName, node.start);
           const aName = this.getStaticPropertyName(inner.property);
           const bName = this.getStaticPropertyName(mem.property);
@@ -824,11 +849,11 @@ export class TypeChecker {
     const members: SingleType[] = [];
     for (const t of propertyTypes.values()) {
       if (typeof t === 'string') {
-        members.push(t as UcodeType);
+        members.push(t);
       } else if (isUnionType(t)) {
         for (const m of t.types) members.push(m);
       } else if (isObjectType(t) || isArrayType(t)) {
-        members.push(t as SingleType);
+        members.push(t);
       } else {
         // ModuleType etc. — collapse to OBJECT to keep the union renderable
         members.push(UcodeType.OBJECT);
@@ -843,25 +868,25 @@ export class TypeChecker {
   private valuesElementType(arg: AstNode | undefined): UcodeDataType | null {
     if (!arg) return null;
     if (arg.type === 'ObjectExpression') {
-      const props = (arg as ObjectExpressionNode).properties;
+      const props = arg.properties;
       if (!props || props.length === 0) return null;
       const members: SingleType[] = [];
       for (const p of props) {
         // A spread property makes the value set unknowable → bail.
-        if ((p.type as string) === 'SpreadElement' || (p.type as string) === 'RestElement') return null;
-        const valNode = (p as PropertyNode).value;
+        if (p.type !== 'Property') return null;
+        const valNode = p.value;
         if (!valNode) return null;
         const vt = this.checkNode(valNode);
         if (isUnionType(vt)) { for (const m of vt.types) members.push(m); }
-        else if (typeof vt === 'string') members.push(vt as UcodeType);
-        else if (isObjectType(vt) || isArrayType(vt)) members.push(vt as SingleType);
+        else if (typeof vt === 'string') members.push(vt);
+        else if (isObjectType(vt) || isArrayType(vt)) members.push(vt);
         else members.push(UcodeType.OBJECT);
       }
       if (members.length === 0) return null;
       return createUnionType(members);
     }
     if (arg.type === 'Identifier') {
-      const sym = this.symbolTable.resolveReference((arg as IdentifierNode).name, arg.start);
+      const sym = this.symbolTable.resolveReference(arg.name, arg.start);
       if (sym?.propertyTypes && sym.propertyTypes.size > 0) {
         return this.computePropertyValueUnion(sym.propertyTypes);
       }
@@ -978,27 +1003,27 @@ export class TypeChecker {
   private dispatchCheck(node: AstNode): CheckResult {
     switch (node.type) {
       case 'Literal':
-        return this.checkLiteral(node as LiteralNode);
+        return this.checkLiteral(node);
       case 'Identifier':
-        return this.checkIdentifier(node as IdentifierNode);
+        return this.checkIdentifier(node);
       case 'BinaryExpression':
-        return this.checkBinaryExpression(node as BinaryExpressionNode);
+        return this.checkBinaryExpression(node);
       case 'UnaryExpression':
-        return this.checkUnaryExpression(node as UnaryExpressionNode);
+        return this.checkUnaryExpression(node);
       case 'CallExpression':
-        return this.checkCallExpression(node as CallExpressionNode);
+        return this.checkCallExpression(node);
       case 'MemberExpression':
-        return this.checkMemberExpression(node as MemberExpressionNode);
+        return this.checkMemberExpression(node);
       case 'AssignmentExpression':
-        return this.checkAssignmentExpression(node as AssignmentExpressionNode);
+        return this.checkAssignmentExpression(node);
       case 'ArrayExpression':
-        return this.checkArrayExpression(node as ArrayExpressionNode);
+        return this.checkArrayExpression(node);
       case 'ObjectExpression':
-        return this.checkObjectExpression(node as ObjectExpressionNode);
+        return this.checkObjectExpression(node);
       case 'LogicalExpression':
         return this.checkBinaryExpression(node);
       case 'ConditionalExpression':
-        return this.checkConditionalExpression(node as ConditionalExpressionNode);
+        return this.checkConditionalExpression(node);
       case 'ArrowFunctionExpression':
         return this.checkArrowFunctionExpression(node);
       case 'FunctionExpression':
@@ -1008,18 +1033,18 @@ export class TypeChecker {
       case 'IfStatement':
         return this.checkIfStatement(node);
       case 'ExpressionStatement':
-        return this.checkExpressionStatement(node as ExpressionStatementNode);
+        return this.checkExpressionStatement(node);
       case 'VariableDeclaration':
-        return this.checkVariableDeclaration(node as VariableDeclarationNode);
+        return this.checkVariableDeclaration(node);
       case 'BlockStatement':
-        return this.checkBlockStatement(node as BlockStatementNode);
+        return this.checkBlockStatement(node);
       case 'ReturnStatement':
         return this.checkReturnStatement(node);
       case 'BreakStatement':
       case 'ContinueStatement':
         return UcodeType.UNKNOWN;
       case 'SwitchStatement':
-        return this.checkSwitchStatement(node as SwitchStatementNode);
+        return this.checkSwitchStatement(node);
       case 'TryStatement':
         return this.checkTryStatement(node);
       case 'CatchClause':
@@ -1027,7 +1052,7 @@ export class TypeChecker {
       case 'ThisExpression':
         return UcodeType.OBJECT;
       case 'DeleteExpression':
-        return this.checkDeleteExpression(node as DeleteExpressionNode);
+        return this.checkDeleteExpression(node);
       default:
         return UcodeType.UNKNOWN;
     }
@@ -1042,8 +1067,8 @@ export class TypeChecker {
   private checkDeleteExpression(node: DeleteExpressionNode): CheckResult {
     const arg = node.argument;
 
-    if (arg.type === 'MemberExpression' && (arg as MemberExpressionNode).computed) {
-      const objNode = (arg as MemberExpressionNode).object;
+    if (arg.type === 'MemberExpression' && arg.computed) {
+      const objNode = arg.object;
       const objType = this.checkNode(objNode) ?? UcodeType.UNKNOWN;
       // Only when the receiver is DEFINITELY an array (not a union like array|null,
       // not unknown) — otherwise we can't be sure it isn't a deletable object.
@@ -1140,7 +1165,7 @@ export class TypeChecker {
    *  double `0.0`). Used to detect division/modulo by a literal zero. */
   private isLiteralZero(node: AstNode): boolean {
     if (node.type !== 'Literal') return false;
-    const lit = node as LiteralNode;
+    const lit = node;
     return typeof lit.value === 'number' && lit.value === 0
       && (lit.literalType === 'number' || lit.literalType === 'double');
   }
@@ -1306,7 +1331,7 @@ export class TypeChecker {
     // fallback is provably empty. (Bare `[]` is typed UcodeType.ARRAY, which would
     // otherwise dilute the typed-array element type to unknown in the union below.)
     if (rightNode.type === 'ArrayExpression'
-        && (rightNode as ArrayExpressionNode).elements.length === 0
+        && rightNode.elements.length === 0
         && isArrayType(leftNonNull.narrowedType)) {
       return leftNonNull.narrowedType;
     }
@@ -1378,8 +1403,8 @@ export class TypeChecker {
       return true;
     }
     if (base === UcodeType.STRING && node.type === 'Literal' &&
-        typeof (node as LiteralNode).value === 'string') {
-      return this.isNumericStringValue((node as LiteralNode).value as string);
+        typeof node.value === 'string') {
+      return this.isNumericStringValue(node.value);
     }
     return false;
   }
@@ -1404,13 +1429,13 @@ export class TypeChecker {
     let n: AstNode = node;
     let sign = 1;
     if (n.type === 'UnaryExpression') {
-      const u = n as UnaryExpressionNode;
+      const u = n;
       if (u.operator === '-' || u.operator === '+') {
         if (u.operator === '-') sign = -1;
         n = u.argument;
       }
     }
-    if (n.type === 'Literal' && typeof (n as LiteralNode).value === 'number') return sign * ((n as LiteralNode).value as number);
+    if (n.type === 'Literal' && typeof n.value === 'number') return sign * (n.value);
     return null;
   }
 
@@ -1450,7 +1475,7 @@ export class TypeChecker {
    *  tc-negative-array-index.md). Returns null for anything else (variable
    *  index, expression, …). */
   private arrayIndexKeyOf(propNode: AstNode): string | null {
-    if (propNode.type === 'Literal') return String((propNode as LiteralNode).value);
+    if (propNode.type === 'Literal') return String(propNode.value);
     const n = this.numericLiteralValue(propNode);
     return n === null ? null : String(n);
   }
@@ -1472,7 +1497,7 @@ export class TypeChecker {
     const checkTest = (test: AstNode | null | undefined): void => {
       if (proven || !test) return;
       if (test.type === 'BinaryExpression') {
-        const b = test as BinaryExpressionNode;
+        const b = test;
         if (b.operator === '&&') { checkTest(b.left); checkTest(b.right); return; }
         const lowerBound = this.lengthLowerBound(b, arrName);
         if (lowerBound !== null && index < lowerBound) proven = true;
@@ -1485,7 +1510,7 @@ export class TypeChecker {
     const checkNegatedTest = (test: AstNode | null | undefined): void => {
       if (proven || !test) return;
       if (test.type === 'BinaryExpression') {
-        const b = test as BinaryExpressionNode;
+        const b = test;
         if (b.operator === '||') { checkNegatedTest(b.left); checkNegatedTest(b.right); return; }
         const lowerBound = this.lengthLowerBound(b, arrName, /*negate*/ true);
         if (lowerBound !== null && index < lowerBound) proven = true;
@@ -1529,7 +1554,7 @@ export class TypeChecker {
           const inLater = stmts.slice(i + 1).some(
             (sj) => sj && position >= sj.start && position <= sj.end);
           if (inLater && !this.arrLengthInvalidatedBetween(arrName, s.end, position)) {
-            checkNegatedTest((s as IfStatementNode).test);
+            checkNegatedTest(s.test);
           }
         }
       }
@@ -1543,12 +1568,12 @@ export class TypeChecker {
   /** True when `n` is exactly `length(arrName)`. */
   private isLengthCall(n: AstNode, arrName: string): boolean {
     if (n?.type !== 'CallExpression') return false;
-    const c = n as CallExpressionNode;
+    const c = n;
     return c.callee?.type === 'Identifier'
-      && (c.callee as IdentifierNode).name === 'length'
+      && c.callee.name === 'length'
       && c.arguments?.length === 1
       && c.arguments[0]?.type === 'Identifier'
-      && (c.arguments[0] as IdentifierNode).name === arrName;
+      && (c.arguments[0]).name === arrName;
   }
 
   private lengthLowerBound(b: BinaryExpressionNode, arrName: string, negate: boolean = false): number | null {
@@ -1592,7 +1617,7 @@ export class TypeChecker {
 
   /** An `if (TEST) <exit>` guard clause whose consequent ALWAYS leaves the current block
    *  (continue/break/return, or a die()/exit() call) — so the code after it holds `!TEST`. */
-  private isEarlyExitGuard(s: AstNode): boolean {
+  private isEarlyExitGuard(s: AstNode): s is IfStatementNode {
     if (s.type !== 'IfStatement') return false;
     if (s.alternate) return false; // an else means the code after isn't guarded by !TEST alone
     return this.stmtAlwaysExits(s.consequent);
@@ -1608,9 +1633,9 @@ export class TypeChecker {
     if (c.type === 'ExpressionStatement') {
       const e = c.expression;
       if (e?.type === 'CallExpression') {
-        const callee = (e as CallExpressionNode).callee;
+        const callee = e.callee;
         if (callee?.type === 'Identifier') {
-          const n = (callee as IdentifierNode).name;
+          const n = callee.name;
           return n === 'die' || n === 'exit';
         }
       }
@@ -1651,9 +1676,9 @@ export class TypeChecker {
    *  Identifier or a string/number Literal key is trackable (a dynamic expression
    *  key can't be matched across statements). Returns null for anything else. */
   private bucketKeyToken(prop: AstNode): string | null {
-    if (prop.type === 'Identifier') return `id:${(prop as IdentifierNode).name}`;
+    if (prop.type === 'Identifier') return `id:${prop.name}`;
     if (prop.type === 'Literal') {
-      const v = (prop as LiteralNode).value;
+      const v = prop.value;
       if (typeof v === 'string' || typeof v === 'number') return `lit:${String(v)}`;
     }
     return null;
@@ -1666,7 +1691,7 @@ export class TypeChecker {
    *  honest `| null` (docs/type-soundness-audit.md H-3). */
   private keyProvesDictMembership(node: MemberExpressionNode, dictName: string): boolean {
     if (node.property.type !== 'Identifier') return false;
-    const keySym = this.symbolTable.resolveReference((node.property as IdentifierNode).name, node.property.start);
+    const keySym = this.symbolTable.resolveReference(node.property.name, node.property.start);
     return keySym?.keysOfSymbol === dictName;
   }
 
@@ -1686,7 +1711,7 @@ export class TypeChecker {
    *  See docs/nullish-assign-bucket-narrowing.md (design B, the sound minimal slice). */
   private isBucketArrayAccess(node: MemberExpressionNode): boolean {
     if (!node.computed || node.object.type !== 'Identifier') return false;
-    const baseName = (node.object as IdentifierNode).name;
+    const baseName = node.object.name;
     const keyTok = this.bucketKeyToken(node.property);
     if (keyTok === null) return false;
     const ast = this.currentAST;
@@ -1697,7 +1722,7 @@ export class TypeChecker {
     if (!assign) return false;
 
     // No wholesale reassignment of `base` or the key var between the assign & read.
-    const keyVar = node.property.type === 'Identifier' ? (node.property as IdentifierNode).name : null;
+    const keyVar = node.property.type === 'Identifier' ? node.property.name : null;
     if (this.identifierReassignedBetween(ast, assign.end, node.start, baseName, keyVar)) return false;
 
     // (2) Value-shape gate: base is a uniformly array-valued local map.
@@ -1850,7 +1875,7 @@ export class TypeChecker {
   private tryResolveTupleAccess(arrType: UcodeDataType, propNode: AstNode, objNode?: AstNode): UcodeDataType | null {
     if (!isArrayType(arrType) || !arrType.tupleTypes) return null;
     if (objNode && objNode.type === 'Identifier') {
-      const name = (objNode as IdentifierNode).name;
+      const name = objNode.name;
       const symbol = this.symbolTable.resolveReference(name, objNode.start);
       if (symbol) {
         const fromPos = symbol.currentTypeEffectiveFrom ?? symbol.declaredAt;
@@ -1881,10 +1906,10 @@ export class TypeChecker {
    *  induction variable of a `for (i=0; i < length(arr); …)` loop. */
   private computedAccessInBounds(objNode: AstNode, propNode: AstNode, position: number): boolean {
     if (objNode.type !== 'Identifier') return false;
-    const arrName = (objNode as IdentifierNode).name;
+    const arrName = objNode.name;
     const litIdx = this.numericLiteralValue(propNode);
     if (litIdx !== null) return this.arrayIndexProvenInBounds(arrName, litIdx, position);
-    if (propNode.type === 'Identifier') return this.arrayIndexInBoundsViaLoop(arrName, (propNode as IdentifierNode).name, position);
+    if (propNode.type === 'Identifier') return this.arrayIndexInBoundsViaLoop(arrName, propNode.name, position);
     return false;
   }
 
@@ -1898,12 +1923,12 @@ export class TypeChecker {
     const ast = this.currentAST;
     if (!ast) return false;
     const isIdx = (n: AstNode | null | undefined): boolean =>
-      n?.type === 'Identifier' && (n as IdentifierNode).name === idxVar;
+      n?.type === 'Identifier' && n.name === idxVar;
 
     // test guarantees `idxVar < length(arr)` (either operand order).
     const testProvesUpper = (test: AstNode | null): boolean => {
       if (test?.type !== 'BinaryExpression') return false;
-      const b = test as BinaryExpressionNode;
+      const b = test;
       if (b.operator === '<' && isIdx(b.left) && this.isLengthCall(b.right, arrName)) return true;
       if (b.operator === '>' && this.isLengthCall(b.left, arrName) && isIdx(b.right)) return true;
       return false;
@@ -1915,9 +1940,9 @@ export class TypeChecker {
           if (d?.id?.name === idxVar) { const v = d.init ? this.numericLiteralValue(d.init) : null; return v !== null && v >= 0; }
         }
       }
-      const expr = init?.type === 'ExpressionStatement' ? (init as ExpressionStatementNode).expression : init;
+      const expr = init?.type === 'ExpressionStatement' ? init.expression : init;
       if (expr?.type === 'AssignmentExpression') {
-        const a = expr as AssignmentExpressionNode;
+        const a = expr;
         if (a.operator === '=' && isIdx(a.left)) { const v = this.numericLiteralValue(a.right); return v !== null && v >= 0; }
       }
       return false;
@@ -2023,7 +2048,7 @@ export class TypeChecker {
       if (d) return d;
     }
     if (objNode.type === 'Identifier') {
-      const sym = this.symbolTable.resolveReference((objNode as IdentifierNode).name, objNode.start);
+      const sym = this.symbolTable.resolveReference(objNode.name, objNode.start);
       if (sym) return this.detectObjectType(sym.dataType);
     }
     return null;
@@ -2117,8 +2142,8 @@ export class TypeChecker {
 
   /** The node, if it's a string literal. */
   private stringLiteralNode(n: AstNode): LiteralNode | null {
-    return (n?.type === 'Literal' && typeof (n as LiteralNode).value === 'string')
-      ? (n as LiteralNode) : null;
+    return (n?.type === 'Literal' && typeof n.value === 'string')
+      ? n : null;
   }
 
   /**
@@ -2135,7 +2160,8 @@ export class TypeChecker {
     if (this.isTypeCall(node.left)) litNode = this.stringLiteralNode(node.right);
     else if (this.isTypeCall(node.right)) litNode = this.stringLiteralNode(node.left);
     if (!litNode) return;
-    const lit = litNode.value as string;
+    const lit = litNode.value;
+    if (typeof lit !== 'string') return;
     if (TYPE_RESULT_STRINGS.has(lit)) return; // a legitimate type() result
 
     const always = (op === '==' || op === '===') ? 'false' : 'true';
@@ -2159,14 +2185,14 @@ export class TypeChecker {
 
   /** A numeric / string / boolean literal (NOT null, NOT regexp) — a scalar that
    *  could only `==` another scalar under ucode coercion. */
-  private isScalarLiteral(n: AstNode): boolean {
+  private isScalarLiteral(n: AstNode): n is LiteralNode {
     if (n?.type !== 'Literal') return false;
     // A regexp literal's parsed `.value` is `String(pattern)` (primaryExpressions.ts), so
     // `typeof v === 'string'` would misclassify it as a scalar string — but a regexp is a
     // reference value that can never == a scalar. Exclude it so it's treated as the
     // reference operand on EITHER side of ==/!= (fixes asymmetric UC2009). (auto-docs #135)
-    if ((n as LiteralNode).literalType === 'regexp') return false;
-    const v = (n as LiteralNode).value;
+    if (n.literalType === 'regexp') return false;
+    const v = n.value;
     return typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean';
   }
 
@@ -2232,8 +2258,8 @@ export class TypeChecker {
 
     // A scalar literal's raw value refines coercion (`== "5"` can match a number, `== "baz"`
     // cannot). Non-literal / union operands carry no fixed value.
-    const litL = this.isScalarLiteral(node.left) ? (node.left as LiteralNode).value : undefined;
-    const litR = this.isScalarLiteral(node.right) ? (node.right as LiteralNode).value : undefined;
+    const litL = this.isScalarLiteral(node.left) ? node.left.value : undefined;
+    const litR = this.isScalarLiteral(node.right) ? node.right.value : undefined;
 
     const strict = op === '===' || op === '!==';
     const neg = op === '!=' || op === '!==';
@@ -2269,8 +2295,8 @@ export class TypeChecker {
       // re-query it and drop a false positive on an array/object element read in a loop
       // (docs/tc-loop-carried-flow-join.md).
       for (const side of [node.left, node.right]) {
-        if (side.type === 'MemberExpression' && (side as MemberExpressionNode).object.type === 'Identifier') {
-          base.data = { impossibleCompareBase: { name: ((side as MemberExpressionNode).object as IdentifierNode).name, offset: ((side as MemberExpressionNode).object as IdentifierNode).start } };
+        if (side.type === 'MemberExpression' && side.object.type === 'Identifier') {
+          base.data = { impossibleCompareBase: { name: side.object.name, offset: side.object.start } };
           break;
         }
       }
@@ -2280,15 +2306,16 @@ export class TypeChecker {
       // not recorded yet, and the read types as the declared seed — the back edge
       // makes that a false "can never be" (docs/uc2009-loop-read-before-write-null.md).
       const refs: Array<{ name: string; offset: number; prop?: string; members: string[] }> = [];
-      for (const [side, members] of [[node.left, L], [node.right, R]] as Array<[AstNode, UcodeType[]]>) {
+      const sides: Array<[AstNode, UcodeType[]]> = [[node.left, L], [node.right, R]];
+      for (const [side, members] of sides) {
         if (side.type === 'Identifier') {
-          refs.push({ name: (side as IdentifierNode).name, offset: side.start, members: members.map(String) });
+          refs.push({ name: side.name, offset: side.start, members: members.map(String) });
         } else if (side.type === 'MemberExpression') {
-          const m = side as MemberExpressionNode;
+          const m = side;
           if (!m.computed && m.object.type === 'Identifier' && m.property.type === 'Identifier') {
             refs.push({
-              name: (m.object as IdentifierNode).name, offset: m.object.start,
-              prop: (m.property as IdentifierNode).name, members: members.map(String),
+              name: m.object.name, offset: m.object.start,
+              prop: m.property.name, members: members.map(String),
             });
           }
         }
@@ -2306,7 +2333,7 @@ export class TypeChecker {
 
   /** Is this AST node a `null` literal? */
   private isNullLiteral(n: AstNode): boolean {
-    return n?.type === 'Literal' && (n as LiteralNode).literalType === 'null';
+    return n?.type === 'Literal' && n.literalType === 'null';
   }
 
   /**
@@ -2326,7 +2353,7 @@ export class TypeChecker {
    *  occurrence and bails — conservative false negatives, never false positives. */
   private unsharedFreshLiteralVar(operand: AstNode, cmpNode: BinaryExpressionNode): { name: string; init: AstNode } | null {
     if (operand.type !== 'Identifier') return null;
-    const name = (operand as IdentifierNode).name;
+    const name = operand.name;
     const sym = this.symbolTable.resolveReference(name, operand.start);
     if (!sym || sym.type !== SymbolType.VARIABLE) return null;
     if (!sym.initNode || !this.isFreshReferenceLiteral(sym.initNode)) return null;
@@ -2392,13 +2419,13 @@ export class TypeChecker {
       return (inner && inner.kind === 'integer') ? { kind: 'integer', value: -inner.value } : null;
     }
     if (node.type === 'Literal') {
-      const lit = node as LiteralNode;
+      const lit = node;
       if (lit.literalType === 'string' && typeof lit.value === 'string') return { kind: 'string', value: lit.value };
       if (lit.literalType === 'number' && typeof lit.value === 'number' && Number.isInteger(lit.value)) return { kind: 'integer', value: lit.value };
       return null;
     }
     if (node.type === 'Identifier') {
-      const name = (node as IdentifierNode).name;
+      const name = node.name;
       const sym = this.symbolTable.resolveReference(name, node.start);
       if (!sym || sym.type !== SymbolType.VARIABLE || !sym.initNode) return null;
       const marks = seen ?? new Set<UcodeSymbol>();
@@ -2410,9 +2437,9 @@ export class TypeChecker {
       return this.symbolNeverRebound(name, sym) ? value : null;
     }
     if (node.type === 'CallExpression') {
-      const call = node as CallExpressionNode;
+      const call = node;
       if (call.callee?.type !== 'Identifier') return null;
-      const fnName = (call.callee as IdentifierNode).name;
+      const fnName = call.callee.name;
       // A user binding shadowing the builtin means the call isn't the builtin.
       const fnSym = this.symbolTable.resolveReference(fnName, node.start);
       if (fnSym && fnSym.type !== SymbolType.BUILTIN) return null;
@@ -2450,7 +2477,7 @@ export class TypeChecker {
    *  touches it, and it isn't a for-in binding. Same occurrence discipline as
    *  unsharedFreshLiteralVar: same-named identifiers resolving to a DIFFERENT
    *  symbol don't alias this one; spurious property-key resolutions only ever
-   *  BAIL (conservative). `export let` also bails — the binding escapes. */
+   *  BAIL conservative. `export let` also bails — the binding escapes. */
   private symbolNeverRebound(name: string, sym: UcodeSymbol): boolean {
     const ast = this.currentAST;
     if (!ast) return false;
@@ -2539,7 +2566,7 @@ export class TypeChecker {
       case 'ArrowFunctionExpression':
         return true;
       case 'Literal':
-        return (n as LiteralNode).literalType === 'regexp';
+        return n.literalType === 'regexp';
       default:
         return false;
     }
@@ -2611,7 +2638,7 @@ export class TypeChecker {
    *  Such a comparison is fixed by coercing each side to its string form in place, not is_equal. */
   private isRegexpComparison(node: BinaryExpressionNode): boolean {
     const isRe = (n: AstNode): boolean => {
-      if (n.type === 'Literal' && (n as LiteralNode).literalType === 'regexp') return true;
+      if (n.type === 'Literal' && n.literalType === 'regexp') return true;
       const dt = this.getTypeOf(n);
       if (dt === undefined) return false;
       const bases = this.baseMembers(dt);
@@ -2623,7 +2650,7 @@ export class TypeChecker {
 
   /** Emit UC2009 for a comparison against a fresh reference literal: always false
    *  (`!=`/`!==` → always true). A fresh allocation shares its reference with nothing.
-   *  The `is_equal` hint is added only when a structural deep-equal is meaningful (withFix). */
+   *  The `is_equal` hint is added only when a structural deep-equal is meaningful withFix. */
   private emitImpossibleReference(node: BinaryExpressionNode, freshSide: AstNode, withFix: boolean): void {
     const op = node.operator;
     const neg = op === '!=' || op === '!==';
@@ -2690,7 +2717,7 @@ export class TypeChecker {
   }
 
   /** The set of numbers a value of scalar base `base` (optionally a fixed literal) can coerce
-   *  to under ucode `==` (ucv_to_number). 'all' = any finite number, 'none' = ∅ (non-numeric). */
+   *  to under ucode `==` ucv_to_number. 'all' = any finite number, 'none' = ∅ (non-numeric). */
   private numSet(base: UcodeType, lit: ScalarLiteralValue): 'all' | 'none' | number[] {
     if (base === UcodeType.INTEGER || base === UcodeType.DOUBLE)
       return (typeof lit === 'number') ? [lit] : 'all';
@@ -2706,12 +2733,12 @@ export class TypeChecker {
   private numSetsIntersect(a: 'all' | 'none' | number[], b: 'all' | 'none' | number[]): boolean {
     if (a === 'none' || b === 'none') return false;
     if (a === 'all' || b === 'all') return true;
-    return a.some(v => (b as number[]).includes(v));
+    return a.some(v => b.includes(v));
   }
 
   /** Describe an equality operand for a diagnostic: a scalar literal's repr, else its type. */
   private eqOperandDesc(node: AstNode, bases: UcodeType[]): string {
-    if (this.isScalarLiteral(node)) return JSON.stringify((node as LiteralNode).value);
+    if (this.isScalarLiteral(node)) return JSON.stringify(node.value);
     return `a value of type \`${[...new Set(bases.map(m => REF_BASE_DISPLAY[m] ?? String(m)))].join(' | ')}\``;
   }
 
@@ -2724,8 +2751,8 @@ export class TypeChecker {
    */
   private coerceStringForArithmetic(node: AstNode, fullType: UcodeDataType): UcodeDataType {
     if (fullType !== UcodeType.STRING) return fullType;
-    if (node.type === 'Literal' && typeof (node as LiteralNode).value === 'string') {
-      return this.numericStringIsInteger((node as LiteralNode).value as string)
+    if (node.type === 'Literal' && typeof node.value === 'string') {
+      return this.numericStringIsInteger(node.value)
         ? UcodeType.INTEGER
         : UcodeType.DOUBLE;
     }
@@ -2792,9 +2819,9 @@ export class TypeChecker {
       // uc_vm_value_arith turns a null-coercion into ucv_double_new(NAN). A numeric
       // string literal ("42", "4.5") is fine; a non-literal string's value is unknown
       // so it's never flagged (value-dependent). (auto-docs #133)
-      if (opNode && opNode.type === 'Literal' && typeof (opNode as LiteralNode).value === 'string'
-          && !this.isNumericStringValue((opNode as LiteralNode).value as string)) {
-        const desc = `the string ${JSON.stringify((opNode as LiteralNode).value)}`;
+      if (opNode && opNode.type === 'Literal' && typeof opNode.value === 'string'
+          && !this.isNumericStringValue(opNode.value)) {
+        const desc = `the string ${JSON.stringify(opNode.value)}`;
         if (!offenders.includes(desc)) offenders.push(desc);
       }
     };
@@ -2818,7 +2845,7 @@ export class TypeChecker {
 
     // Check for flow-sensitive narrowing using direct AST analysis
     if (node.right.type === 'Identifier') {
-      const variableName = (node.right as IdentifierNode).name;
+      const variableName = node.right.name;
 
       // Guard narrowing for the right operand via the AST guard walk (the
       // canonical collectGuards path; the guardContextStack / FlowSensitiveTypeTracker
@@ -2856,7 +2883,7 @@ export class TypeChecker {
     if (!rightSupportsIn) {
       // Only a provably-non-collection RHS reaches here: an `unknown`-typed RHS is
       // already exempt (isTypeCompatible treats unknown as compatible) and so is
-      // `object|null` / `array|null` (containsType). So what's left — a concrete
+      // `object|null` / `array|null` containsType. So what's left — a concrete
       // scalar/null with no object/array member — makes `in` ALWAYS false. ucode
       // doesn't throw on it, but it's a logic bug, so keep it an error. (The old
       // message claimed `in` "requires" a collection, implying a throw — it doesn't;
@@ -2894,7 +2921,7 @@ export class TypeChecker {
 
 
   private getTypeAsDataType(type: UcodeType): UcodeDataType {
-    return type as UcodeDataType;
+    return type;
   }
 
   private getFullTypeFromNode(node: AstNode): UcodeDataType | null {
@@ -2915,7 +2942,7 @@ export class TypeChecker {
     if (type === UcodeType.ANY) return UcodeType.UNKNOWN;
     if (isUnionType(type)) {
       const types = getUnionTypes(type);
-      return types.map(t => this.getTypeDescription(t as UcodeDataType)).join(' | ');
+      return types.map(t => this.getTypeDescription(t)).join(' | ');
     }
     if (isObjectType(type)) {
       return type.name;
@@ -2939,7 +2966,7 @@ export class TypeChecker {
 
   private getVariableName(node: AstNode): string | null {
     if (node.type === 'Identifier') {
-      return (node as IdentifierNode).name;
+      return node.name;
     }
     // For complex expressions, return null
     return null;
@@ -2954,12 +2981,13 @@ export class TypeChecker {
    * that skips it (or a new rich `UcodeDataType` variant it doesn't yet know about) must not
    * be able to hand a non-string back out to code that assumes strings — enforce it here, once.
    */
-  private getNodeTypeDescription(node: AstNode | undefined): UcodeType {
-    const result = this.getNodeTypeDescriptionImpl(node);
-    return (typeof result === 'string' ? result : UcodeType.UNKNOWN) as UcodeType;
+  private getNodeTypeDescription(node: AstNode | undefined): UcodeType;
+  private getNodeTypeDescription(node: AstNode | undefined): string {
+    const result: string = this.getNodeTypeDescriptionImpl(node);
+    return (typeof result === 'string' ? result : UcodeType.UNKNOWN);
   }
 
-  private getNodeTypeDescriptionImpl(node: AstNode | undefined): UcodeType {
+  private getNodeTypeDescriptionImpl(node: AstNode | undefined): string {
     // A missing argument (e.g. a builtin called with too few args) has no type → UNKNOWN.
     if (!node) return UcodeType.UNKNOWN;
     // For identifiers, check if there's a narrowed type in the current context.
@@ -2971,7 +2999,7 @@ export class TypeChecker {
     // false positives (see test-hover-type-consistency T55); a clean merge needs
     // the unified flow type from Phase B.
     if (node.type === 'Identifier') {
-      const identifierNode = node as IdentifierNode;
+      const identifierNode = node;
       const variableName = identifierNode.name;
 
       // Base type: checked type (carries reassignment narrowing) → symbol → UNKNOWN.
@@ -2988,11 +3016,11 @@ export class TypeChecker {
         for (const guardInfo of guards) {
           narrowedType = this.applyTypeGuard(narrowedType, guardInfo);
         }
-        return this.getTypeDescription(narrowedType) as UcodeType;
+        return this.getTypeDescription(narrowedType);
       }
 
       // Return the base type (possibly narrowed by outer guard)
-      return this.getTypeDescription(baseType) as UcodeType;
+      return this.getTypeDescription(baseType);
     }
 
     // For MemberExpressions, check if there's a guard on the dotted path (e.g., state.errors)
@@ -3005,7 +3033,7 @@ export class TypeChecker {
           for (const guardInfo of guards) {
             baseType = this.applyTypeGuard(baseType, guardInfo);
           }
-          return this.getTypeDescription(baseType) as UcodeType;
+          return this.getTypeDescription(baseType);
         }
       }
     }
@@ -3013,7 +3041,7 @@ export class TypeChecker {
     // For logical expressions (||, &&), resolve narrowed types of sub-expressions
     // so that guards on identifiers/member expressions propagate through e.g. keys(data.platform || {})
     if (node.type === 'BinaryExpression') {
-      const binNode = node as BinaryExpressionNode;
+      const binNode = node;
       if (binNode.operator === '||' || binNode.operator === '&&') {
         // getNodeTypeDescription returns a *string* description (possibly a union
         // like "string | null"); inferLogical*FullType needs STRUCTURED types to
@@ -3025,10 +3053,12 @@ export class TypeChecker {
         const rightType = this.parseReturnType(this.getNodeTypeDescription(binNode.right));
         if (binNode.operator === '||') {
           const result = logicalTypeInference.inferLogicalOrFullType(leftType, rightType);
-          return (isUnionType(result) ? this.getTypeDescription(result) : result) as UcodeType;
+          if (isUnionType(result)) return this.getTypeDescription(result);
+          return typeof result === 'string' ? result : UcodeType.UNKNOWN;
         } else {
           const result = logicalTypeInference.inferLogicalAndFullType(leftType, rightType);
-          return (isUnionType(result) ? this.getTypeDescription(result) : result) as UcodeType;
+          if (isUnionType(result)) return this.getTypeDescription(result);
+          return typeof result === 'string' ? result : UcodeType.UNKNOWN;
         }
       }
     }
@@ -3037,18 +3067,18 @@ export class TypeChecker {
     const fullType = this.getFullTypeFromNode(node);
     if (fullType) {
       // Convert to string description (e.g., "null | object | array")
-      return this.getTypeDescription(fullType) as UcodeType;
+      return this.getTypeDescription(fullType);
     }
 
     // For CallExpressions, get the return type from the function
     if (node.type === 'CallExpression') {
-      const callNode = node as CallExpressionNode;
+      const callNode = node;
       if (callNode.callee.type === 'Identifier') {
-        const funcName = (callNode.callee as IdentifierNode).name;
+        const funcName = callNode.callee.name;
         const symbol = this.symbolTable.resolveReference(funcName, callNode.callee.start);
         if (symbol && symbol.returnType) {
           // Return the full type description of the return type
-          return this.getTypeDescription(symbol.returnType) as UcodeType;
+          return this.getTypeDescription(symbol.returnType);
         }
       }
     }
@@ -3071,12 +3101,12 @@ export class TypeChecker {
         // Typed arrays like "array<string>"
         if (typeStr.startsWith('array<') && typeStr.endsWith('>')) {
           const innerType = typeStr.slice(6, -1);
-          return createArrayType(this.parseSingleType(innerType) as UcodeDataType);
+          return createArrayType(this.parseSingleType(innerType));
         }
         // Postfix array syntax like "string[]" → array<string> (keeps the element
         // type instead of collapsing to a bare array).
         if (typeStr.endsWith('[]')) {
-          return createArrayType(this.parseSingleType(typeStr.slice(0, -2)) as UcodeDataType);
+          return createArrayType(this.parseSingleType(typeStr.slice(0, -2)));
         }
         // Known object types like "fs.file", "uci.cursor", "io.handle"
         // Create ModuleType (not ObjectType) so downstream code that checks
@@ -3086,7 +3116,7 @@ export class TypeChecker {
           // A ModuleType is not a SingleType, but the runtime shape is what every
           // consumer keys on ('moduleName' in dataType) — smuggle it through the
           // declared type exactly as before.
-          return mod as UcodeDataType as SingleType;
+          return mod;
         }
         return UcodeType.UNKNOWN;
     }
@@ -3158,7 +3188,8 @@ export class TypeChecker {
       return UcodeType.NULL;
     }
     if (allArgsMatch && nonNullMembers.length > 0) {
-      return nonNullMembers.length === 1 ? nonNullMembers[0] as UcodeDataType : createUnionType(nonNullMembers);
+      const only = nonNullMembers[0];
+      return nonNullMembers.length === 1 && only !== undefined ? only : createUnionType(nonNullMembers);
     }
     // Mixed — keep the full union
     return returnType;
@@ -3244,7 +3275,7 @@ export class TypeChecker {
 
   private checkCallExpression(node: CallExpressionNode): CheckResult {
     if (node.callee.type === 'Identifier') {
-      const funcName = (node.callee as IdentifierNode).name;
+      const funcName = node.callee.name;
 
       // First check if it's a user-defined function, imported function, or variable containing a function
       // Use lookupAtPosition to properly handle local variables in nested scopes
@@ -3404,7 +3435,7 @@ export class TypeChecker {
 
     // Handle member expression calls (e.g., fs.open, obj.method)
     if (node.callee.type === 'MemberExpression') {
-      const memberCallee = node.callee as MemberExpressionNode;
+      const memberCallee = node.callee;
       // Mark this member as a call callee so checkMemberExpression treats an
       // unknown member as a method call (runtime error) rather than a property
       // read (returns null) — ticket 145.
@@ -3416,16 +3447,16 @@ export class TypeChecker {
           && (memberCallee.object.type === 'Identifier' || memberCallee.object.type === 'ThisExpression')) {
         const recvSym = memberCallee.object.type === 'ThisExpression'
           ? this.symbolTable.lookupOpenScopes('this')
-          : this.symbolTable.resolveReference((memberCallee.object as IdentifierNode).name, memberCallee.object.start);
-        const rt = recvSym?.propertyReturnTypes?.get((memberCallee.property as IdentifierNode).name);
+          : this.symbolTable.resolveReference(memberCallee.object.name, memberCallee.object.start);
+        const rt = recvSym?.propertyReturnTypes?.get(memberCallee.property.name);
         if (rt !== undefined) {
-          return rt as UcodeType;
+          return rt;
         }
       }
       // Check propertyFunctionReturnTypes for factory-returned method calls
       if (memberCallee.object.type === 'Identifier' && memberCallee.property.type === 'Identifier') {
-        const objName = (memberCallee.object as IdentifierNode).name;
-        const methodName = (memberCallee.property as IdentifierNode).name;
+        const objName = memberCallee.object.name;
+        const methodName = memberCallee.property.name;
         const objSym = this.symbolTable.resolveReference(objName, memberCallee.object.start);
         if (objSym?.propertyFunctionReturnTypes?.has(methodName)) {
           const returnHint = objSym.propertyFunctionReturnTypes.get(methodName)!;
@@ -3441,14 +3472,14 @@ export class TypeChecker {
       }
       // Namespace module calls: import * as io from 'io'; io.open()
       if (memberCallee.object.type === 'Identifier' && memberCallee.property.type === 'Identifier') {
-        const objName = (memberCallee.object as IdentifierNode).name;
-        const methodName = (memberCallee.property as IdentifierNode).name;
+        const objName = memberCallee.object.name;
+        const methodName = memberCallee.property.name;
         const objSym = this.symbolTable.resolveReference(objName, memberCallee.object.start);
         const objData = objSym?.dataType;
         if (objSym && typeof objData === 'object' && objData !== null &&
             'moduleName' in objData && isKnownModule(objData.moduleName)) {
           const modName = objData.moduleName;
-          const registry = MODULE_REGISTRIES[modName as keyof typeof MODULE_REGISTRIES];
+          const registry = MODULE_REGISTRIES[modName];
           const funcOpt = registry.getFunction(methodName);
           if (Option.isSome(funcOpt)) {
             this.checkModuleArgumentTypes(node, funcOpt.value.parameters, `${modName}.${methodName}`);
@@ -3467,8 +3498,8 @@ export class TypeChecker {
       // imported call (`fs.file | null`). Once imported, fs has a symbol and the
       // namespace branch above resolves the real return type.
       if (memberCallee.object.type === 'Identifier' && memberCallee.property.type === 'Identifier'
-          && !this.symbolTable.resolveReference((memberCallee.object as IdentifierNode).name, memberCallee.object.start)
-          && isKnownModule((memberCallee.object as IdentifierNode).name)) {
+          && !this.symbolTable.resolveReference(memberCallee.object.name, memberCallee.object.start)
+          && isKnownModule(memberCallee.object.name)) {
         return UcodeType.UNKNOWN;
       }
 
@@ -3485,8 +3516,8 @@ export class TypeChecker {
         const recvType = this.checkNodeQuietly(memberCallee.object);
         const modInfo = extractModuleType(recvType);
         if (modInfo && isKnownModule(modInfo.moduleName)) {
-          const methodName = (memberCallee.property as IdentifierNode).name;
-          const registry = MODULE_REGISTRIES[modInfo.moduleName as keyof typeof MODULE_REGISTRIES];
+          const methodName = memberCallee.property.name;
+          const registry = MODULE_REGISTRIES[modInfo.moduleName];
           const funcOpt = registry.getFunction(methodName);
           if (Option.isSome(funcOpt)) {
             this.checkModuleArgumentTypes(node, funcOpt.value.parameters, `${modInfo.moduleName}.${methodName}`);
@@ -3517,13 +3548,14 @@ export class TypeChecker {
     // already ran, else a quiet walk over the literal's OWN return statements (plus
     // null when control can fall off the end).
     if (node.callee.type === 'ArrowFunctionExpression' || node.callee.type === 'FunctionExpression') {
-      const stamped = (node.callee as AstNode & { _inferredReturnType?: UcodeDataType })._inferredReturnType;
+      const stamped = hasInferenceStamps(node.callee) ? node.callee._inferredReturnType : undefined;
       if (stamped !== undefined && stamped !== null) return stamped;
-      return this.inferFunctionLiteralReturnType(node.callee as ArrowFunctionExpressionNode | FunctionExpressionNode);
+      return this.inferFunctionLiteralReturnType(node.callee);
     }
 
     // For other callees (but not Identifiers, which we already handled above)
-    if ((node.callee.type as string) !== 'Identifier') {
+    const calleeKind: string = node.callee.type;
+    if (calleeKind !== 'Identifier') {
       const calleeType = this.dataTypeToUcodeType(this.checkNode(node.callee));
       if (!this.typeCompatibility.isValidCallTarget(calleeType)) {
         this.errors.push({
@@ -3546,12 +3578,12 @@ export class TypeChecker {
    *  returns and fall-off-the-end paths. Quiet — the body's diagnostics belong to
    *  the visitor pass, not to this inference. */
   private inferFunctionLiteralReturnType(fn: ArrowFunctionExpressionNode | FunctionExpressionNode): UcodeDataType {
-    if (fn.type === 'ArrowFunctionExpression' && (fn as ArrowFunctionExpressionNode).expression) {
-      return this.checkNodeQuietly(fn.body as AstNode);
+    if (fn.type === 'ArrowFunctionExpression' && fn.expression) {
+      return this.checkNodeQuietly(fn.body);
     }
     const types: UcodeDataType[] = [];
     let sawBare = false;
-    const stack: AstNode[] = [fn.body as AstNode];
+    const stack: AstNode[] = [fn.body];
     while (stack.length) {
       const n = stack.pop()!;
       if (n !== fn.body
@@ -3559,15 +3591,15 @@ export class TypeChecker {
         continue;
       }
       if (n.type === 'ReturnStatement') {
-        const arg = (n as ReturnStatementNode).argument;
+        const arg = n.argument;
         if (arg) types.push(this.checkNodeQuietly(arg));
         else sawBare = true;
         continue;
       }
       stack.push(...astChildren(n));
     }
-    if (sawBare || !this.blockAlwaysTerminates(fn.body as AstNode)) types.push(UcodeType.NULL as UcodeDataType);
-    if (types.length === 0) return UcodeType.NULL as UcodeDataType;
+    if (sawBare || !this.blockAlwaysTerminates(fn.body)) types.push(UcodeType.NULL);
+    if (types.length === 0) return UcodeType.NULL;
     return this.getCommonReturnType(types);
   }
 
@@ -3582,10 +3614,10 @@ export class TypeChecker {
   private narrowFilterElementType(node: CallExpressionNode, currentElement: UcodeDataType): UcodeDataType | null {
     const cb = node.arguments[1];
     if (!cb || (cb.type !== 'ArrowFunctionExpression' && cb.type !== 'FunctionExpression')) return null;
-    const params = (cb as ArrowFunctionExpressionNode | FunctionExpressionNode).params;
+    const params = cb.params;
     const subject = params?.[0]?.name;
     if (!subject) return null;
-    const test = this.extractPredicateTest(cb as ArrowFunctionExpressionNode | FunctionExpressionNode);
+    const test = this.extractPredicateTest(cb);
     if (!test) return null;
     this.transitiveTypeAliases = [];
     const guards: TypeGuardInfo[] = [];
@@ -3603,11 +3635,11 @@ export class TypeChecker {
    *  `return <expr>`. Multi-statement bodies are skipped (return null → no narrowing). */
   private extractPredicateTest(cb: ArrowFunctionExpressionNode | FunctionExpressionNode): AstNode | null {
     if (cb.type === 'ArrowFunctionExpression' && cb.expression) return cb.body;
-    const body = cb.body as BlockStatementNode | undefined;
+    const body = cb.body;
     if (body && body.type === 'BlockStatement' && Array.isArray(body.body)) {
       const stmts = body.body.filter((s) => s.type !== 'EmptyStatement');
       if (stmts.length === 1 && stmts[0]?.type === 'ReturnStatement') {
-        return (stmts[0] as ReturnStatementNode).argument;
+        return (stmts[0]).argument;
       }
     }
     return null;
@@ -3633,9 +3665,9 @@ export class TypeChecker {
       // builtin module; file-path requires (./…) need cross-file resolution → TODO.
       if (signature.name === 'require') {
         const reqArg = node.arguments[0];
-        if (reqArg && reqArg.type === 'Literal' && typeof (reqArg as LiteralNode).value === 'string'
-            && isKnownModule((reqArg as LiteralNode).value as string)) {
-          return { type: UcodeType.OBJECT, moduleName: (reqArg as LiteralNode).value as string } as UcodeDataType;
+        if (reqArg && reqArg.type === 'Literal' && typeof reqArg.value === 'string'
+            && isKnownModule(reqArg.value)) {
+          return { type: UcodeType.OBJECT, moduleName: reqArg.value };
         }
       }
       // filter(arr, (x) => GUARD(x)) is a type-narrowing construct: it keeps only the
@@ -3645,7 +3677,7 @@ export class TypeChecker {
       if (signature.name === 'filter' && narrowed !== null) {
         const curElem = isArrayType(narrowed)
           ? getArrayElementType(narrowed)
-          : (narrowed === UcodeType.ARRAY ? (UcodeType.UNKNOWN as UcodeDataType) : null);
+          : (narrowed === UcodeType.ARRAY ? (UcodeType.UNKNOWN) : null);
         if (curElem !== null) {
           const refined = this.narrowFilterElementType(node, curElem);
           if (refined !== null) narrowed = createArrayType(refined);
@@ -3799,7 +3831,7 @@ export class TypeChecker {
       // the null-safety diagnostics (UC5005/UC5006), or it is the FORWARD-DECLARATION
       // idiom — `let cb; ... function schedule() { uloop.timer(ms, cb); } ... cb = fn;`
       // where the SSA type at the read is `null` but the value at call time is a
-      // function (mwan4track.uc). Flagging it here reproduces the
+      // function mwan4track.uc. Flagging it here reproduces the
       // docs/forward-let-fn-uc1002.md false positive one layer down.
       const members = allMembers.filter(m => m !== UcodeType.NULL);
       if (members.length === 0) continue;
@@ -3841,7 +3873,7 @@ export class TypeChecker {
    *  argument validation): `if (type(x) == 'string') fs.open(x)` must not warn. */
   private applyArgumentGuards(arg: AstNode, actualTypeData: UcodeDataType): UcodeDataType {
     if (arg.type === 'Identifier' && (isUnionType(actualTypeData) || actualTypeData === UcodeType.UNKNOWN)) {
-      const guards = this.getGuardsForPosition(this.currentAST, (arg as IdentifierNode).name, arg.start);
+      const guards = this.getGuardsForPosition(this.currentAST, arg.name, arg.start);
       let narrowed: UcodeDataType = actualTypeData;
       for (const g of guards) narrowed = this.applyTypeGuard(narrowed, g);
       return narrowed;
@@ -3870,7 +3902,7 @@ export class TypeChecker {
 
       // Apply AST-based guard narrowing for identifier arguments
       if (arg.type === 'Identifier' && (isUnionType(actualTypeData) || actualTypeData === UcodeType.UNKNOWN)) {
-        const varName = (arg as IdentifierNode).name;
+        const varName = arg.name;
         const guards = this.getGuardsForPosition(this.currentAST, varName, arg.start);
         if (guards.length > 0) {
           let narrowed: UcodeDataType = actualTypeData;
@@ -3928,7 +3960,7 @@ export class TypeChecker {
         const diagData = {
           functionName: fnName,
           argumentIndex: i,
-          expectedType: expectedType as string,
+          expectedType: expectedType,
           actualType: actualTypeData,
           variableName: this.getVariableName(arg),
           // Whether a type guard could ever rescue this call: true when the actual
@@ -3962,11 +3994,11 @@ export class TypeChecker {
             .map(m => String(dataTypeToBase(m)));
           let staleRef: { name: string; offset: number; prop?: string; members: string[]; funcName: string; argPosition: number; expected: string[] } | undefined;
           if (arg.type === 'Identifier') {
-            staleRef = { name: (arg as IdentifierNode).name, offset: arg.start, members: emitMembers, funcName: fnName, argPosition: i + 1, expected: [String(expectedType)] };
+            staleRef = { name: arg.name, offset: arg.start, members: emitMembers, funcName: fnName, argPosition: i + 1, expected: [String(expectedType)] };
           } else if (arg.type === 'MemberExpression') {
-            const m = arg as MemberExpressionNode;
+            const m = arg;
             if (!m.computed && m.object.type === 'Identifier' && m.property.type === 'Identifier') {
-              staleRef = { name: (m.object as IdentifierNode).name, offset: m.object.start, prop: (m.property as IdentifierNode).name, members: emitMembers, funcName: fnName, argPosition: i + 1, expected: [String(expectedType)] };
+              staleRef = { name: m.object.name, offset: m.object.start, prop: m.property.name, members: emitMembers, funcName: fnName, argPosition: i + 1, expected: [String(expectedType)] };
             }
           }
           this.errors.push({
@@ -3991,8 +4023,12 @@ export class TypeChecker {
   private checkUserFunctionCall(node: CallExpressionNode, funcSymbol: UcodeSymbol): void {
     const params = funcSymbol.parameters;
     if (!params || params.length === 0 && node.arguments.length === 0) return;
-    // Spread arg → argument count/positions are unknowable; skip entirely (sound).
-    if (node.arguments.some(a => a && (a.type === 'SpreadElement' || (a.type as string) === 'RestElement'))) return;
+    // Spread arg → argument count/positions are unknowable; skip entirely sound.
+    if (node.arguments.some(a => {
+      if (!a) return false;
+      const kind: string = a.type;
+      return kind === 'SpreadElement' || kind === 'RestElement';
+    })) return;
 
     const fnName = funcSymbol.name;
     const variadic = params.some(p => p.isRest);
@@ -4000,7 +4036,7 @@ export class TypeChecker {
     const argCount = node.arguments.length;
 
     // Argument TYPE checking — collapse each declared param type to a base; a
-    // union/unknown type yields UNKNOWN (skipped). Bail on unknown actual args.
+    // union/unknown type yields UNKNOWN skipped. Bail on unknown actual args.
     const expectedBases: UcodeType[] = positional.map(p =>
       isUnionType(p.type) ? UcodeType.UNKNOWN : dataTypeToBase(p.type));
     this.checkArgumentTypes(node, expectedBases, fnName, { flagUnknownActual: false, softSeverity: true });
@@ -4111,7 +4147,8 @@ export class TypeChecker {
     if (allArgsMatch) {
       // Remove null from the union
       const nonNullMembers = members.filter(m => m !== UcodeType.NULL);
-      if (nonNullMembers.length === 1) return nonNullMembers[0] as UcodeDataType;
+      const only = nonNullMembers[0];
+      if (nonNullMembers.length === 1 && only !== undefined) return only;
       return createUnionType(nonNullMembers);
     }
 
@@ -4295,8 +4332,8 @@ export class TypeChecker {
     // flow-sensitive filter can re-query the (now-built) flow engine's loop-carried
     // JOIN for this receiver and downgrade/suppress a definite-null claim the
     // straight-line emission made (docs/tc-loop-carried-flow-join.md).
-    if (node.object.type === 'Identifier') nullAccess.objName = (node.object as IdentifierNode).name;
-    if (!node.computed && node.property.type === 'Identifier') nullAccess.propName = (node.property as IdentifierNode).name;
+    if (node.object.type === 'Identifier') nullAccess.objName = node.object.name;
+    if (!node.computed && node.property.type === 'Identifier') nullAccess.propName = node.property.name;
     return { nullAccess };
   }
 
@@ -4313,11 +4350,11 @@ export class TypeChecker {
     if (!members.some(m => singleTypeToBase(m) === UcodeType.NULL)) return;
     const nonNull = members.filter(m => singleTypeToBase(m) !== UcodeType.NULL);
     if (nonNull.length === 0 || !nonNull.every(m => singleTypeToBase(m) === UcodeType.OBJECT)) return;
-    const who = node.object.type === 'Identifier' ? `'${(node.object as IdentifierNode).name}'` : 'this value';
+    const who = node.object.type === 'Identifier' ? `'${node.object.name}'` : 'this value';
     const isWrite = this.isAssignmentTargetContext();
     const verb = isWrite ? 'setting' : 'accessing';
     const base = {
-      message: `${who} may be null here - ${verb} property '${(node.property as IdentifierNode).name}' will fail at runtime if it is null. Guard against null${isWrite ? '' : ', or use optional chaining (?.)'}.`,
+      message: `${who} may be null here - ${verb} property '${node.property.name}' will fail at runtime if it is null. Guard against null${isWrite ? '' : ', or use optional chaining (?.)'}.`,
       start: node.property.start,
       end: node.property.end,
       code: UcodeErrorCode.POSSIBLY_NULL_MEMBER_ACCESS,
@@ -4361,9 +4398,9 @@ export class TypeChecker {
     // the imported file. Only the immediate `base.A.B` pattern is covered —
     // matches the depth our nestedPropertyTypes map holds.
     if (!node.computed && node.object.type === 'MemberExpression') {
-      const inner = node.object as MemberExpressionNode;
+      const inner = node.object;
       if (!inner.computed && inner.object.type === 'Identifier') {
-        const baseName = (inner.object as IdentifierNode).name;
+        const baseName = inner.object.name;
         const baseSym = this.symbolTable.resolveReference(baseName, inner.object.start);
         const aName = this.getStaticPropertyName(inner.property);
         const bName = this.getStaticPropertyName(node.property);
@@ -4411,8 +4448,8 @@ export class TypeChecker {
       // there. Mirrors the `let v = call(); v.prop` binding-copy path for the
       // direct-chain case. See docs/registry-value-shape-inference.md Gap 2.
       if (node.object.type === 'CallExpression'
-          && (node.object as CallExpressionNode).callee.type === 'Identifier') {
-        const calleeName = ((node.object as CallExpressionNode).callee as IdentifierNode).name;
+          && node.object.callee.type === 'Identifier') {
+        const calleeName = node.object.callee.name;
         const calleeSym = this.symbolTable.resolveReference(calleeName, node.object.start);
         const propName = this.getStaticPropertyName(node.property);
         if (calleeSym?.returnPropertyTypes && propName) {
@@ -4428,9 +4465,9 @@ export class TypeChecker {
       if (thisSym && thisSym.propertyTypes && !node.computed) {
         let propertyName: string | null = null;
         if (node.property.type === 'Identifier') {
-          propertyName = (node.property as IdentifierNode).name;
+          propertyName = node.property.name;
         } else if (node.property.type === 'Literal') {
-          const lit = node.property as LiteralNode;
+          const lit = node.property;
           if (lit.value !== undefined && lit.value !== null) {
             propertyName = String(lit.value);
           }
@@ -4446,7 +4483,7 @@ export class TypeChecker {
 
     // Check if the object is a module
     if (node.object.type === 'Identifier') {
-      const symbol = this.symbolTable.resolveReference((node.object as IdentifierNode).name, node.object.start);
+      const symbol = this.symbolTable.resolveReference(node.object.name, node.object.start);
 
       // If symbol doesn't exist, let the semantic analyzer handle the "Undefined variable" error
       // Don't duplicate the error here by calling checkNode(node.object)
@@ -4460,7 +4497,7 @@ export class TypeChecker {
       // would otherwise never reach the late Tier-2 site. Uses the flow-narrowed type so guards
       // silence it. Does not return — the existing resolution still computes the member type.
       {
-        const ntp = this.getNarrowedTypeAtPosition((node.object as IdentifierNode).name, node.object.start);
+        const ntp = this.getNarrowedTypeAtPosition(node.object.name, node.object.start);
         this.warnPossiblyNullMember(node, ntp ?? effectiveSymbolType(symbol, node.object.start));
       }
 
@@ -4469,9 +4506,9 @@ export class TypeChecker {
           node.object.type === 'Identifier') {
         let propertyName: string | null = null;
         if (node.property.type === 'Identifier') {
-          propertyName = (node.property as IdentifierNode).name;
+          propertyName = node.property.name;
         } else {
-          const literalProperty = node.property as LiteralNode;
+          const literalProperty = node.property;
           if (literalProperty.value !== undefined && literalProperty.value !== null) {
             propertyName = String(literalProperty.value);
           }
@@ -4503,8 +4540,8 @@ export class TypeChecker {
 
       // Check if this is a known object type (fs.file/dir/proc, io.handle, uloop.*, uci.cursor, nl80211.listener)
       const detectedObjectType = isModuleNamespace ? null : this.detectObjectType(symbol.dataType);
-      if (detectedObjectType && !node.computed) {
-        const methodName = (node.property as IdentifierNode).name;
+      if (detectedObjectType && !node.computed && node.property.type === 'Identifier') {
+        const methodName = node.property.name;
         const method = OBJECT_REGISTRIES[detectedObjectType].getMethod(methodName);
         if (Option.isSome(method)) {
           // Return the full method return type (preserves unions) directly.
@@ -4521,7 +4558,7 @@ export class TypeChecker {
         // is a bug worth flagging, matching the existing closed-shape contract.
         // Anchor on the PROPERTY id alone — the base object (`uci`) is fine; only the
         // member name is wrong, and the squiggle should say so.
-        const propNode = node.property as IdentifierNode;
+        const propNode = node.property;
         const propStart = typeof propNode.start === 'number' ? propNode.start : node.start;
         const propEnd = typeof propNode.end === 'number' ? propNode.end : node.end;
         if (this.calleeMemberNodes.has(node)) {
@@ -4555,7 +4592,7 @@ export class TypeChecker {
         // object (same type the aliased `import { 'const' as C }` form gets), so
         // the chained `mod.const.NL80211_*` member types as integer below.
         if (memberName === 'const' && (modName === 'nl80211' || modName === 'rtnl')) {
-          return { type: UcodeType.OBJECT, moduleName: `${modName}-const` } as UcodeDataType;
+          return { type: UcodeType.OBJECT, moduleName: `${modName}-const` };
         }
         if (memberName && MODULE_REGISTRIES[modName].getFunctionNames().includes(memberName)) {
           return UcodeType.FUNCTION;
@@ -4568,7 +4605,7 @@ export class TypeChecker {
         // object type so `fs.stdin.read(...)` chains and hover shows the handle type.
         const objExportType = memberName ? MODULE_REGISTRIES[modName].getObjectExportType(memberName) : null;
         if (objExportType) {
-          return { type: UcodeType.OBJECT, moduleName: objExportType } as UcodeDataType;
+          return { type: UcodeType.OBJECT, moduleName: objExportType };
         }
       }
 
@@ -4580,7 +4617,7 @@ export class TypeChecker {
         }
         if (!rtnlTypeRegistry.isRtnlConstant(propertyName)) {
           const objectName = node.object.type === 'Identifier'
-            ? (node.object as IdentifierNode).name
+            ? node.object.name
             : null;
           if (objectName && this.isAssignmentTargetContext()) {
             this.recordConstantAssignment(objectName, propertyName);
@@ -4610,7 +4647,7 @@ export class TypeChecker {
         }
         if (!nl80211TypeRegistry.isNl80211Constant(propertyName)) {
           const objectName = node.object.type === 'Identifier'
-            ? (node.object as IdentifierNode).name
+            ? node.object.name
             : null;
           if (objectName && this.isAssignmentTargetContext()) {
             this.recordConstantAssignment(objectName, propertyName);
@@ -4638,11 +4675,11 @@ export class TypeChecker {
     // local map is provably a (non-null) array. Checked before the dictionary
     // value-shape branch so the group-by/bucket pattern stops false-flagging.
     if (node.object.type === 'Identifier' && node.computed && this.isBucketArrayAccess(node)) {
-      return UcodeType.ARRAY as UcodeDataType;
+      return UcodeType.ARRAY;
     }
 
     // Dictionary value-type FIRST: `O[expr]` where O is a string-keyed map whose
-    // VALUE shape was inferred (valuePropertyTypes). Any key yields a value of
+    // VALUE shape was inferred valuePropertyTypes. Any key yields a value of
     // that shape OR null — a missing key reads as null, and nothing proves the
     // key present (docs/type-soundness-audit.md H-3) — UNLESS the key carries
     // keys-of provenance for this very map (`for (let k in O) O[k]`), which does
@@ -4650,11 +4687,11 @@ export class TypeChecker {
     // in the analyzer. Checked before the per-key keys-of union so a map with an
     // incidental static property still reads as its value shape.
     if (node.object.type === 'Identifier' && node.computed) {
-      const dictName = (node.object as IdentifierNode).name;
+      const dictName = node.object.name;
       const dictSym = this.symbolTable.resolveReference(dictName, node.start);
       if (dictSym?.valuePropertyTypes && dictSym.valuePropertyTypes.size > 0) {
         if (this.keyProvesDictMembership(node, dictName)) {
-          return UcodeType.OBJECT as UcodeDataType;
+          return UcodeType.OBJECT;
         }
         return createUnionType([UcodeType.OBJECT, UcodeType.NULL]);
       }
@@ -4665,7 +4702,7 @@ export class TypeChecker {
     // constant) OR through keys-of provenance (the key carries a tag that
     // proves it's one of the object's known keys).
     if (node.object.type === 'Identifier' && node.computed) {
-      const objSym = this.symbolTable.resolveReference((node.object as IdentifierNode).name, node.start);
+      const objSym = this.symbolTable.resolveReference(node.object.name, node.start);
       // Effective type at the access position. For `let x = {...}` the
       // declarator stamps dataType=OBJECT directly. For `let x; x = {...}`
       // the assignment-handler instead writes currentType (SSA) and leaves
@@ -4691,10 +4728,10 @@ export class TypeChecker {
           // prove the key is missing if the object was mutated since declaration).
         }
         // 2. Keys-of provenance: `obj[k]` where k.keysOfSymbol === obj's name.
-        const keyName = (node.property.type === 'Identifier') ? (node.property as IdentifierNode).name : null;
+        const keyName = (node.property.type === 'Identifier') ? node.property.name : null;
         if (keyName) {
           const keySym = this.symbolTable.resolveReference(keyName, node.start);
-          if (keySym?.keysOfSymbol && keySym.keysOfSymbol === (node.object as IdentifierNode).name) {
+          if (keySym?.keysOfSymbol && keySym.keysOfSymbol === node.object.name) {
             const valueUnion = this.computePropertyValueUnion(objSym.propertyTypes);
             if (valueUnion !== null) {
               return valueUnion;
@@ -4706,18 +4743,18 @@ export class TypeChecker {
 
     // For computed property access on arrays (e.g., uuid[0]), check if we have type info
     if (node.object.type === 'Identifier' && node.computed) {
-      const symbol = this.symbolTable.resolveReference((node.object as IdentifierNode).name, node.object.start);
-      if (symbol && (symbol.dataType === UcodeType.ARRAY || isArrayType(symbol.dataType as UcodeDataType))) {
+      const symbol = this.symbolTable.resolveReference(node.object.name, node.object.start);
+      if (symbol && (symbol.dataType === UcodeType.ARRAY || isArrayType(symbol.dataType))) {
         // Propagate keys-of provenance: indexing a tagged array yields one of
         // the tagged object's keys. `let ks = keys(obj); ks[i]` → keysOfSymbol=obj.
-        if (symbol.keysOfSymbol) {
-          (node as MemberExpressionNode & { _keysOfSymbol?: string })._keysOfSymbol = symbol.keysOfSymbol;
+        if (symbol.keysOfSymbol && hasInferenceStamps(node)) {
+          node._keysOfSymbol = symbol.keysOfSymbol;
         }
         // Tuple-shaped array (match() capture groups): a literal index — including
         // negative, `numericLiteralValue` unwraps a unary minus — resolves through
         // the per-slot table before anything else (it already encodes exactly which
         // slots are nullable, so it's more precise than the general fallback below).
-        const tupleResolved = this.tryResolveTupleAccess(symbol.dataType as UcodeDataType, node.property, node.object);
+        const tupleResolved = this.tryResolveTupleAccess(symbol.dataType, node.property, node.object);
         if (tupleResolved !== null) return tupleResolved;
         // Check for per-index property types first (incl. a negative literal
         // index — arrayIndexKeyOf resolves it to the same key a matching
@@ -4728,8 +4765,8 @@ export class TypeChecker {
           return symbol.propertyTypes.get(indexKey)!;
         }
         // Fall back to ArrayType element type (element | null since index may be out of bounds)
-        if (isArrayType(symbol.dataType as UcodeDataType)) {
-          const elemType = getArrayElementType(symbol.dataType as UcodeDataType);
+        if (isArrayType(symbol.dataType)) {
+          const elemType = getArrayElementType(symbol.dataType);
           // An index proven in bounds (literal under a `length` guard, or the
           // induction var of a `for (i=0; i<length(arr); …)` loop) can't miss →
           // drop the null.
@@ -4739,7 +4776,7 @@ export class TypeChecker {
           // Return the rich `element | null` union directly, preserving a handle
           // element type (e.g. `array<socket>[i]` → `socket | null`) so a chained
           // `arr[i].method()` still resolves — collapsing to the base would drop it.
-          return createUnionType([...((isUnionType(elemType) ? getUnionTypes(elemType) : [elemType]) as SingleType[]), UcodeType.NULL]);
+          return createUnionType([...((isUnionType(elemType) ? getUnionTypes(elemType) : [elemType])), UcodeType.NULL]);
         }
       }
     }
@@ -4751,7 +4788,7 @@ export class TypeChecker {
     // branches above never see it). Constants are integers; unknown names flag.
     if (!node.computed) {
       const richObj = this.getTypeOf(node.object) ?? objectType;
-      const constMod = extractModuleType(richObj as UcodeDataType)?.moduleName;
+      const constMod = extractModuleType(richObj)?.moduleName;
       if (constMod === 'nl80211-const' || constMod === 'rtnl-const') {
         const propertyName = this.getStaticPropertyName(node.property);
         if (!propertyName) return UcodeType.UNKNOWN;
@@ -4787,8 +4824,8 @@ export class TypeChecker {
         const parts: SingleType[] = [];
         let hasUnknown = false;
         for (const m of arrMembers) {
-          const et = isArrayType(m) ? getArrayElementType(m) : (UcodeType.UNKNOWN as UcodeDataType);
-          for (const u of getUnionTypes(et) as SingleType[]) {
+          const et = isArrayType(m) ? getArrayElementType(m) : (UcodeType.UNKNOWN);
+          for (const u of getUnionTypes(et)) {
             if (u === UcodeType.UNKNOWN) hasUnknown = true;
             else parts.push(u);
           }
@@ -4797,8 +4834,8 @@ export class TypeChecker {
           // An unknown-element member stays IN the union (we cannot claim the
           // read is confined to the known members) — dropping it would narrow
           // types we have no evidence for.
-          if (hasUnknown) parts.push(UcodeType.UNKNOWN as SingleType);
-          parts.push(UcodeType.NULL as SingleType);
+          if (hasUnknown) parts.push(UcodeType.UNKNOWN);
+          parts.push(UcodeType.NULL);
           return createUnionType(parts);
         }
       }
@@ -4810,7 +4847,7 @@ export class TypeChecker {
         // path and the general element-type fallback.
         let narrowedNonNullArr: UcodeDataType | null = null;
         if (node.object.type === 'Identifier') {
-          const nt = this.getNarrowedTypeAtPosition((node.object as IdentifierNode).name, node.object.start);
+          const nt = this.getNarrowedTypeAtPosition(node.object.name, node.object.start);
           if (nt && isArrayType(nt)) narrowedNonNullArr = nt;
         }
         // Tuple-shaped array member (match() capture groups — see ArrayType.tupleTypes):
@@ -4836,7 +4873,7 @@ export class TypeChecker {
           return getArrayElementType(narrowedNonNullArr);
         }
         // Preserve the rich element type (handle moduleName) in the union.
-        return createUnionType([...((isUnionType(elemType) ? getUnionTypes(elemType) : [elemType]) as SingleType[]), UcodeType.NULL]);
+        return createUnionType([...((isUnionType(elemType) ? getUnionTypes(elemType) : [elemType])), UcodeType.NULL]);
       }
     }
 
@@ -4855,7 +4892,7 @@ export class TypeChecker {
         }
         // Return the rich `element | null` union directly, preserving a handle
         // element type so `f()[i].method()` resolves.
-        return createUnionType([...((isUnionType(elemType) ? getUnionTypes(elemType) : [elemType]) as SingleType[]), UcodeType.NULL]);
+        return createUnionType([...((isUnionType(elemType) ? getUnionTypes(elemType) : [elemType])), UcodeType.NULL]);
       }
     }
 
@@ -4870,7 +4907,7 @@ export class TypeChecker {
     // validated for invalid member access below. Equals objectBase otherwise.
     let narrowedBase = objectBase;
     if (!node.computed && objectBase === UcodeType.UNKNOWN && node.object.type === 'Identifier') {
-      const nt = this.getNarrowedTypeAtPosition((node.object as IdentifierNode).name, node.object.start);
+      const nt = this.getNarrowedTypeAtPosition(node.object.name, node.object.start);
       if (nt && !isUnionType(nt)) narrowedBase = this.dataTypeToUcodeType(nt);
     }
 
@@ -4886,7 +4923,7 @@ export class TypeChecker {
     // position is no longer null, so don't flag. Only flag when x is STILL null here.
     let baseIsNull = (objectBase === UcodeType.NULL || narrowedBase === UcodeType.NULL);
     if (node.object.type === 'Identifier') {
-      const nt = this.getNarrowedTypeAtPosition((node.object as IdentifierNode).name, node.object.start);
+      const nt = this.getNarrowedTypeAtPosition(node.object.name, node.object.start);
       if (nt !== null && nt !== undefined) {
         baseIsNull = (this.dataTypeToUcodeType(nt) === UcodeType.NULL);
       }
@@ -4894,13 +4931,13 @@ export class TypeChecker {
     if (baseIsNull) {
       if (!node.optional) {
         const who = node.object.type === 'Identifier'
-          ? ` ('${(node.object as IdentifierNode).name}' is null here)`
+          ? ` ('${node.object.name}' is null here)`
           : '';
         // A write target (`x.foo = 1`) is a *different* ucode error than a read
         // ("Type error: attempt to set property on null value" vs "Reference error: …"),
         // and optional chaining can't be used on an assignment LHS — so tailor the message.
         const isWrite = this.isAssignmentTargetContext();
-        const prop = node.computed ? null : (node.property as IdentifierNode).name;
+        const prop = !node.computed && node.property.type === 'Identifier' ? node.property.name : null;
         let message: string;
         if (isWrite) {
           const what = prop ? `set property '${prop}' on` : 'set an element of';
@@ -4936,7 +4973,7 @@ export class TypeChecker {
       // type for any expression; the SSA/declared type for an identifier).
       let dt: UcodeDataType = objectType;
       if (node.object.type === 'Identifier') {
-        const sym = this.symbolTable.resolveReference((node.object as IdentifierNode).name, node.object.start);
+        const sym = this.symbolTable.resolveReference(node.object.name, node.object.start);
         // Position-aware: the bare currentType slot reflects the LAST write in the
         // file regardless of position, which typed reads that precede the write
         // (docs/type-soundness-audit.md I-2).
@@ -4951,8 +4988,8 @@ export class TypeChecker {
       }
 
       const propertyName = node.property.type === 'Identifier'
-        ? (node.property as IdentifierNode).name
-        : String((node.property as LiteralNode).value);
+        ? node.property.name
+        : String(node.property.type === 'Literal' ? node.property.value : undefined);
 
       if (hasArray && !hasObject) {
         // Pure array (or array | null | scalar) — arrays have no named members. Hard error.
@@ -5003,7 +5040,7 @@ export class TypeChecker {
       // union's string member fired UC5003 straight through the guard.
       let receiverType: UcodeDataType = objectType;
       if (node.object.type === 'Identifier') {
-        const nt = this.getNarrowedTypeAtPosition((node.object as IdentifierNode).name, node.object.start);
+        const nt = this.getNarrowedTypeAtPosition(node.object.name, node.object.start);
         if (nt !== null && nt !== undefined) receiverType = nt;
       }
       if (receiverType === UcodeType.STRING) {
@@ -5012,9 +5049,9 @@ export class TypeChecker {
         receiverHasString = getUnionTypes(receiverType).some(m => singleTypeToBase(m) === UcodeType.STRING);
       }
     }
-    if (receiverHasString && !node.computed) {
+    if (receiverHasString && !node.computed && node.property.type === 'Identifier') {
       // String has no properties.
-      const propertyName = (node.property as IdentifierNode).name;
+      const propertyName = node.property.name;
       const hint = SCALAR_MEMBER_HINTS[propertyName];
       this.errors.push({
         message: `Property '${propertyName}' does not exist on string type. Strings in ucode have no member variables or functions.${hint ? ' ' + hint : ''}`,
@@ -5057,8 +5094,9 @@ export class TypeChecker {
     // `b.foo`, `fn.prop` raise the same runtime reference error (ucode functions
     // are not objects; you cannot attach properties to them). Driven by
     // narrowedBase so a value narrowed to one of these by a guard is caught too.
-    if (!node.computed && (narrowedBase === UcodeType.INTEGER || narrowedBase === UcodeType.DOUBLE || narrowedBase === UcodeType.BOOLEAN || narrowedBase === UcodeType.FUNCTION)) {
-      const propertyName = (node.property as IdentifierNode).name;
+    if (!node.computed && node.property.type === 'Identifier'
+        && (narrowedBase === UcodeType.INTEGER || narrowedBase === UcodeType.DOUBLE || narrowedBase === UcodeType.BOOLEAN || narrowedBase === UcodeType.FUNCTION)) {
+      const propertyName = node.property.name;
       const hint = SCALAR_MEMBER_HINTS[propertyName];
       this.errors.push({
         message: `Property '${propertyName}' does not exist on ${narrowedBase} type. ucode ${narrowedBase}s are not objects.${hint ? ' ' + hint : ''}`,
@@ -5070,9 +5108,9 @@ export class TypeChecker {
       return UcodeType.UNKNOWN;
     }
 
-    if (objectBase === UcodeType.REGEX && !node.computed) {
+    if (objectBase === UcodeType.REGEX && !node.computed && node.property.type === 'Identifier') {
       // Regex objects have no properties or methods at all
-      const propertyName = (node.property as IdentifierNode).name;
+      const propertyName = node.property.name;
 
       // Invalid property/method access on regex
       this.errors.push({
@@ -5102,13 +5140,13 @@ export class TypeChecker {
 
     // Track array element types
     if (node.operator === '=' && node.left.type === 'MemberExpression') {
-      const memberExpr = node.left as MemberExpressionNode;
+      const memberExpr = node.left;
       if (memberExpr.object.type === 'Identifier' && memberExpr.computed) {
-        const arrayName = (memberExpr.object as IdentifierNode).name;
+        const arrayName = memberExpr.object.name;
         const symbol = this.symbolTable.resolveReference(arrayName, memberExpr.object.start);
 
         // If this is an array variable, track the element type
-        if (symbol && (symbol.dataType === UcodeType.ARRAY || isArrayType(symbol.dataType as UcodeDataType))) {
+        if (symbol && (symbol.dataType === UcodeType.ARRAY || isArrayType(symbol.dataType))) {
           // Get the index if it's a literal (incl. a negative literal — see
           // arrayIndexKeyOf, docs/tc-negative-array-index.md).
           const indexKey = this.arrayIndexKeyOf(memberExpr.property);
@@ -5259,12 +5297,12 @@ export class TypeChecker {
         // Otherwise store as-is (mixed rich types can't form a standard union).
         const allSimple = elementDataTypes.every(t => typeof t === 'string');
         if (allSimple) {
-          elementType = createUnionType(elementDataTypes as UcodeType[]);
+          elementType = createUnionType(elementDataTypes);
         } else {
           // Mix of rich types — flatten simple types into union, keep first rich type
           // This handles cases like [[1], "two"] → array<array<integer> | string>
           elementType = createUnionType(
-            elementDataTypes.map(t => typeof t === 'string' ? t as UcodeType : UcodeType.ARRAY)
+            elementDataTypes.map(t => typeof t === 'string' ? t : UcodeType.ARRAY)
           );
         }
       }
@@ -5358,7 +5396,7 @@ export class TypeChecker {
   blockAlwaysTerminates(block: AstNode): boolean {
     let statements: AstNode[];
     if (block.type === 'BlockStatement') {
-      statements = (block as BlockStatementNode).body;
+      statements = block.body;
     } else {
       statements = [block];
     }
@@ -5371,11 +5409,11 @@ export class TypeChecker {
 
     // die(), exit(), or user-defined neverReturns function call
     if (last.type === 'ExpressionStatement') {
-      const expr = (last as ExpressionStatementNode).expression;
+      const expr = last.expression;
       if (expr.type === 'CallExpression') {
-        const call = expr as CallExpressionNode;
+        const call = expr;
         if (call.callee.type === 'Identifier') {
-          const name = (call.callee as IdentifierNode).name;
+          const name = call.callee.name;
           if (name === 'die' || name === 'exit') return true;
           const sym = this.symbolTable.resolveReference(name, call.callee.start);
           if (sym?.neverReturns) return true;
@@ -5386,7 +5424,7 @@ export class TypeChecker {
     // try { … } catch { … }: terminates when the try block always terminates AND
     // (there's no catch — an uncaught throw exits — OR the catch also terminates).
     if (last.type === 'TryStatement') {
-      const t = last as TryStatementNode;
+      const t = last;
       if (!this.blockAlwaysTerminates(t.block)) return false;
       return !t.handler || this.blockAlwaysTerminates(t.handler.body);
     }
@@ -5394,7 +5432,7 @@ export class TypeChecker {
     // if/else where BOTH branches always terminate (an else is required — a bare
     // `if` can fall through when the condition is false).
     if (last.type === 'IfStatement') {
-      const ifStmt = last as IfStatementNode;
+      const ifStmt = last;
       return !!ifStmt.consequent && this.blockAlwaysTerminates(ifStmt.consequent)
         && !!ifStmt.alternate && this.blockAlwaysTerminates(ifStmt.alternate);
     }
@@ -5431,9 +5469,9 @@ export class TypeChecker {
       return null;
     }
 
-    const callExpr = discriminant as CallExpressionNode;
+    const callExpr = discriminant;
     if (callExpr.callee.type !== 'Identifier' ||
-        (callExpr.callee as IdentifierNode).name !== 'type') {
+        callExpr.callee.name !== 'type') {
       return null;
     }
 
@@ -5441,7 +5479,7 @@ export class TypeChecker {
       return null;
     }
 
-    const variableName = (callExpr.arguments[0] as IdentifierNode).name;
+    const variableName = (callExpr.arguments[0]).name;
     return { variableName };
   }
 
@@ -5497,7 +5535,7 @@ export class TypeChecker {
 
     // Check finally block. NOTE: TryStatementNode has no `finalizer` in the grammar
     // (ucode `try` has no `finally`), so this branch is effectively dead; kept for safety.
-    const finalizer = (node as { finalizer?: AstNode }).finalizer;
+    const finalizer = mayCarryFinalizer(node) ? node.finalizer : undefined;
     if (finalizer) {
       this.checkNode(finalizer);
     }
@@ -5635,8 +5673,8 @@ export class TypeChecker {
    *  result mask the honest one). */
   private moreNarrowed(engineResult: UcodeDataType, legacyResult: UcodeDataType): UcodeDataType {
     if (this.dataTypesCanonicalEqual(engineResult, legacyResult)) return engineResult;
-    const engineMembers = getUnionTypes(engineResult) as SingleType[];
-    const legacyMembers = getUnionTypes(legacyResult) as SingleType[];
+    const engineMembers = getUnionTypes(engineResult);
+    const legacyMembers = getUnionTypes(legacyResult);
     // legacy ⊆ engine → legacy is more narrowed (e.g. ternary the engine missed).
     if (this.typeNarrowing.isSubtypeOfUnion(legacyResult, engineMembers)) return legacyResult;
     // engine ⊆ legacy → engine is more narrowed (e.g. reassignment the legacy missed).
@@ -5727,7 +5765,7 @@ export class TypeChecker {
 
   /** The flow engine's reassignment-narrowed base for `varName` at `position`,
    *  using the INNERMOST enclosing function's engine. Empty (→ undefined) during
-   *  the main analysis pass, so it only augments post-analysis queries (hover). */
+   *  the main analysis pass, so it only augments post-analysis queries hover. */
   private flowBaseAt(variableName: string, position: number): UcodeDataType | undefined {
     let best: { start: number; end: number; engine: FlowTypeEngine } | undefined;
     for (const fe of this.flowEngines) {
@@ -5758,10 +5796,10 @@ export class TypeChecker {
     const cached = this.getTypeOf(node);
     if (cached !== undefined) return cached;
     if (node.type === 'Literal') {
-      const v = (node as LiteralNode).value;
+      const v = node.value;
       if (typeof v === 'string') return UcodeType.STRING;
       // Exponent notation (`1e5`) is a double literal even when integer-valued (ticket 115).
-      if (typeof v === 'number') return ((node as LiteralNode).literalType === 'double' || !Number.isInteger(v)) ? UcodeType.DOUBLE : UcodeType.INTEGER;
+      if (typeof v === 'number') return (node.literalType === 'double' || !Number.isInteger(v)) ? UcodeType.DOUBLE : UcodeType.INTEGER;
       if (typeof v === 'boolean') return UcodeType.BOOLEAN;
       if (v === null) return UcodeType.NULL;
     }
@@ -5860,18 +5898,18 @@ export class TypeChecker {
     const walk = (n: AstNode | null | undefined): void => {
       if (!n || typeof n !== 'object') return;
       if (n.type === 'AssignmentExpression') {
-        const a = n as AssignmentExpressionNode;
+        const a = n;
         if (a.operator === '=' && a.left.type === 'Identifier') {
-          out.push({ name: (a.left as IdentifierNode).name, rhs: a.right });
+          out.push({ name: a.left.name, rhs: a.right });
         }
         return; // don't descend into the RHS
       }
       if (n.type === 'BinaryExpression') {
-        walk((n as BinaryExpressionNode).left);
-        walk((n as BinaryExpressionNode).right);
+        walk(n.left);
+        walk(n.right);
         return;
       }
-      if (n.type === 'UnaryExpression') { walk((n as UnaryExpressionNode).argument); return; }
+      if (n.type === 'UnaryExpression') { walk(n.argument); return; }
     };
     walk(node);
     return out;
@@ -5896,7 +5934,7 @@ export class TypeChecker {
         guards.push({ ...guardInfo, isNegative: !guardInfo.isNegative });
       }
       if (condition.type === 'UnaryExpression') {
-        const unary = condition as UnaryExpressionNode;
+        const unary = condition;
         if (unary.operator === '!' && unary.argument
             && (unary.argument.type === 'Identifier' || unary.argument.type === 'MemberExpression')
             && this.getDottedPath(unary.argument) === variableName) {
@@ -5939,20 +5977,23 @@ export class TypeChecker {
       return null;
     }
 
-    const positiveTypes = guards
-      .filter(guard => !guard.isNegative && guard.narrowToType !== null)
-      .map(guard => guard.narrowToType as UcodeType);
+    const positiveTypes: UcodeDataType[] = [];
+    for (const guard of guards) {
+      if (!guard.isNegative && guard.narrowToType !== null) positiveTypes.push(guard.narrowToType);
+    }
 
     if (positiveTypes.length === 0) {
       return null;
     }
 
     const uniqueTypes = Array.from(new Set(positiveTypes));
-    if (uniqueTypes.length === 1) {
-      return uniqueTypes[0] as UcodeDataType;
+    const only = uniqueTypes[0];
+    if (uniqueTypes.length === 1 && only !== undefined) {
+      return only;
     }
 
-    return createUnionType(uniqueTypes);
+    // Flatten so a combined-OR guard's UnionType contributes its members.
+    return createUnionType(uniqueTypes.flatMap(t => getUnionTypes(t)));
   }
 
   /** Intersect an equality/comparison-guard's narrow type with the base type.
@@ -6000,7 +6041,7 @@ export class TypeChecker {
     // Normalize string union types (e.g., "null | array") to structured UnionType objects
     // This can happen when types come from CFG or symbol table as strings
     if (typeof baseType === 'string' && baseType.includes(' | ')) {
-      const parts = baseType.split(' | ').map(s => s.trim()) as UcodeType[];
+      const parts = baseType.split(' | ').map(s => s.trim()).filter(isUcodeTypeName);
       baseType = createUnionType(parts);
     }
 
@@ -6013,10 +6054,10 @@ export class TypeChecker {
       // variable AS integer|double (glinet firewall.uc is_valid_clean_port).
       if (guard.isNegative) {
         return this.typeNarrowing.removeTypesFromUnion(
-          baseType, getUnionTypes(guard.narrowToType as UcodeDataType) as UcodeType[]).narrowedType;
+          baseType, getUnionTypes(guard.narrowToType)).narrowedType;
       }
       // The narrowToType is already the narrowed union type (e.g., 'array' from 'array | object')
-      return guard.narrowToType as UcodeDataType;
+      return guard.narrowToType;
     }
 
     if (guard.narrowToType === UcodeType.NULL) {
@@ -6041,12 +6082,12 @@ export class TypeChecker {
 
     if (guard.isNegative) {
       // Remove the specified type in negative branch
-      const narrowingResult = this.typeNarrowing.removeTypesFromUnion(baseType, [guard.narrowToType]);
+      const narrowingResult = this.typeNarrowing.removeTypesFromUnion(baseType, getUnionTypes(guard.narrowToType));
       return narrowingResult.narrowedType;
     }
 
     // Positive branch keeps only the specified type
-    const narrowingResult = this.typeNarrowing.keepOnlyTypes(baseType, [guard.narrowToType]);
+    const narrowingResult = this.typeNarrowing.keepOnlyTypes(baseType, getUnionTypes(guard.narrowToType));
     return narrowingResult.narrowedType;
   }
 
@@ -6091,7 +6132,7 @@ export class TypeChecker {
     // extractTypeGuard handles single conditions; findGuardInCondition walks `&&`.
     let guardInfo = this.extractTypeGuard(test, variableName);
     if (!guardInfo && test.type === 'BinaryExpression'
-        && (test as BinaryExpressionNode).operator === '&&') {
+        && test.operator === '&&') {
       guardInfo = this.findGuardInCondition(test, variableName);
     }
     if (guardInfo) guards.push(guardInfo);
@@ -6106,10 +6147,10 @@ export class TypeChecker {
     // `(x = expr) && …` — a truthy left means the assigned target `x` is non-null in the branch
     // (e.g. the while-body of `while ((chunk = read()) && length(chunk))`).
     if (test.type === 'BinaryExpression') {
-      const tb = test as BinaryExpressionNode;
+      const tb = test;
       if (tb.operator === '&&') {
-        const left = tb.left.type === 'AssignmentExpression' && (tb.left as AssignmentExpressionNode).operator === '='
-          ? (tb.left as AssignmentExpressionNode).left : tb.left;
+        const left = tb.left.type === 'AssignmentExpression' && tb.left.operator === '='
+          ? tb.left.left : tb.left;
         if ((left.type === 'Identifier' || left.type === 'MemberExpression')
             && this.getDottedPath(left) === variableName) {
           guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
@@ -6136,7 +6177,7 @@ export class TypeChecker {
     // `T | null` producer (e.g. fs handle read()), so it must narrow the target. Plain `=` only;
     // `||=`/`??=`/etc. have different truthiness semantics.
     if (test.type === 'AssignmentExpression') {
-      const asn = test as AssignmentExpressionNode;
+      const asn = test;
       if (asn.operator === '='
           && (asn.left.type === 'Identifier' || asn.left.type === 'MemberExpression')
           && this.getDottedPath(asn.left) === variableName) {
@@ -6202,7 +6243,7 @@ export class TypeChecker {
    * (`let err = require_param('x', v) || validate_name(v) || …`), the FALSY side
    * of the test proves every argument in a null-guard position non-null: err
    * falsy means every `||` arm evaluated falsy, and a falsy null-guard result
-   * proves its flagged argument was non-null (nullGuardContract.ts).
+   * proves its flagged argument was non-null nullGuardContract.ts.
    *
    * Returns the dotted paths (identifiers and constant member paths — rpcd
    * passes `req.args.id`) proven non-null on that falsy side. Every implication
@@ -6217,7 +6258,7 @@ export class TypeChecker {
    */
   private falsyImpliedNonNullPaths(test: AstNode | null | undefined, position: number): string[] {
     if (!test || test.type !== 'Identifier') return [];
-    const flagName = (test as IdentifierNode).name;
+    const flagName = test.name;
     const flagSym = this.symbolTable.resolveReference(flagName, test.start);
     const init = flagSym?.initNode;
     if (!flagSym || !init) return [];
@@ -6239,9 +6280,9 @@ export class TypeChecker {
     const out: string[] = [];
     for (const arm of this.flattenOrChain(chainExpr)) {
       if (arm.type !== 'CallExpression') continue;
-      const call = arm as CallExpressionNode;
+      const call = arm;
       if (call.callee.type !== 'Identifier') continue;
-      const guardIndices = this.nullGuardParamIndices((call.callee as IdentifierNode).name, call.callee.start);
+      const guardIndices = this.nullGuardParamIndices(call.callee.name, call.callee.start);
       for (const idx of guardIndices) {
         const arg = call.arguments?.[idx];
         if (!arg || (arg.type !== 'Identifier' && arg.type !== 'MemberExpression')) continue;
@@ -6257,21 +6298,21 @@ export class TypeChecker {
    *  truthy — the positive-branch entry points for the error-flag narrowing
    *  (`if (!err) { use(v) }` / `!err ? use(v) : …`). */
   private negatedIdentifierConjuncts(test: AstNode): IdentifierNode[] {
-    if (test.type === 'BinaryExpression' && (test as BinaryExpressionNode).operator === '&&') {
-      const b = test as BinaryExpressionNode;
+    if (test.type === 'BinaryExpression' && test.operator === '&&') {
+      const b = test;
       return [...this.negatedIdentifierConjuncts(b.left), ...this.negatedIdentifierConjuncts(b.right)];
     }
     if (test.type === 'UnaryExpression') {
-      const u = test as UnaryExpressionNode;
-      if (u.operator === '!' && u.argument?.type === 'Identifier') return [u.argument as IdentifierNode];
+      const u = test;
+      if (u.operator === '!' && u.argument?.type === 'Identifier') return [u.argument];
     }
     return [];
   }
 
   /** Top-level `||` arms of an initializer (a non-`||` expression is its own arm). */
   private flattenOrChain(node: AstNode): AstNode[] {
-    if (node.type === 'BinaryExpression' && (node as BinaryExpressionNode).operator === '||') {
-      const b = node as BinaryExpressionNode;
+    if (node.type === 'BinaryExpression' && node.operator === '||') {
+      const b = node;
       return [...this.flattenOrChain(b.left), ...this.flattenOrChain(b.right)];
     }
     return [node];
@@ -6298,7 +6339,7 @@ export class TypeChecker {
       return sym.initNode;
     }
     if (sym.initNode?.type === 'Identifier' && hops < 4) {
-      const src = this.symbolTable.resolveReference((sym.initNode as IdentifierNode).name, sym.initNode.start);
+      const src = this.symbolTable.resolveReference(sym.initNode.name, sym.initNode.start);
       if (src && src !== sym) return this.functionNodeForSymbol(src, hops + 1);
     }
     if (sym.type !== SymbolType.FUNCTION || !this.currentAST) return null;
@@ -6373,7 +6414,7 @@ export class TypeChecker {
     }
 
     if (node.type === 'BinaryExpression') {
-      const binaryNode = node as BinaryExpressionNode;
+      const binaryNode = node;
 
       if (binaryNode.operator === '&&' &&
           position >= binaryNode.right.start && position <= binaryNode.right.end) {
@@ -6386,8 +6427,8 @@ export class TypeChecker {
         // length(chunk)`. findGuardInCondition covers type-guard LHSs but not a bare truthy
         // assignment target, so narrow it here (mirrors the identifier `x && …` form).
         const asnLeft = binaryNode.left.type === 'AssignmentExpression'
-          && (binaryNode.left as AssignmentExpressionNode).operator === '='
-          ? (binaryNode.left as AssignmentExpressionNode).left : null;
+          && binaryNode.left.operator === '='
+          ? binaryNode.left.left : null;
         if (asnLeft && (asnLeft.type === 'Identifier' || asnLeft.type === 'MemberExpression')
             && this.getDottedPath(asnLeft) === variableName) {
           guards.push({ variableName, narrowToType: UcodeType.NULL, isNegative: true });
@@ -6439,7 +6480,7 @@ export class TypeChecker {
     }
 
     if (node.type === 'IfStatement') {
-      const ifNode = node as IfStatementNode;
+      const ifNode = node;
 
       if (ifNode.consequent &&
           position >= ifNode.consequent.start &&
@@ -6514,7 +6555,7 @@ export class TypeChecker {
     // body gets the same positive guards as an if-consequent (e.g. `while (x)` or
     // `while ((line = fh.read('line')))` narrows the subject to non-null in the body).
     if (node.type === 'WhileStatement') {
-      const whileNode = node as WhileStatementNode;
+      const whileNode = node;
       if (whileNode.body &&
           position >= whileNode.body.start &&
           position <= whileNode.body.end) {
@@ -6531,7 +6572,7 @@ export class TypeChecker {
     // `for (init; test; update) body` — same as `while`: the test is truthy in the
     // body. (A `for` with no test imposes no guard.)
     if (node.type === 'ForStatement') {
-      const forNode = node as ForStatementNode;
+      const forNode = node;
       if (forNode.test && forNode.body &&
           position >= forNode.body.start &&
           position <= forNode.body.end) {
@@ -6549,7 +6590,7 @@ export class TypeChecker {
     // The consequent runs only when `test` is truthy, so it gets the same positive
     // guards (e.g. `parts[5] ? uc(parts[5]) : null` narrows parts[5] to non-null).
     if (node.type === 'ConditionalExpression') {
-      const cond = node as ConditionalExpressionNode;
+      const cond = node;
       if (position >= cond.consequent.start && position <= cond.consequent.end) {
         // Skip the stale guard if the subject was reassigned before the position in
         // the consequent (ticket 140). Rare in a ternary but kept for consistency.
@@ -6583,7 +6624,7 @@ export class TypeChecker {
     }
 
     if (node.type === 'SwitchStatement') {
-      const switchNode = node as SwitchStatementNode;
+      const switchNode = node;
       const switchInfo = this.getTypeSwitchVariable(switchNode.discriminant);
 
       if (switchInfo && switchInfo.variableName === variableName) {
@@ -6594,7 +6635,7 @@ export class TypeChecker {
         for (const caseNode of switchNode.cases) {
           let testedType: UcodeType | null = null;
           if (caseNode.test && caseNode.test.type === 'Literal') {
-            const caseLiteral = caseNode.test as LiteralNode;
+            const caseLiteral = caseNode.test;
             if (typeof caseLiteral.value === 'string') {
               testedType = this.stringLiteralToUcodeType(caseLiteral.value);
               if (testedType && !handledTypes.includes(testedType)) {
@@ -6667,7 +6708,7 @@ export class TypeChecker {
               // Multiple types due to fall-through in non-default case — combine into single union guard
               guards.push({
                 variableName,
-                narrowToType: createUnionType(reachableTypes) as UcodeType,
+                narrowToType: createUnionType(reachableTypes),
                 isNegative: false,
                 isCombinedOr: true
               });
@@ -6688,7 +6729,7 @@ export class TypeChecker {
         for (let j = 0; j < i; j++) {
           const sibling = children[j]!;
           if (sibling.type === 'IfStatement') {
-            const sibIf = sibling as IfStatementNode;
+            const sibIf = sibling;
             if (sibIf.consequent && this.blockAlwaysTerminates(sibIf.consequent)) {
               // Apply negative narrowing (condition was false for code to be reachable)
               const guardInfo = this.extractTypeGuard(sibIf.test, variableName);
@@ -6713,10 +6754,10 @@ export class TypeChecker {
                   if (types.length >= 2) {
                     guards.push({
                       variableName,
-                      narrowToType: createUnionType(types) as UcodeType,
+                      narrowToType: createUnionType(types),
                       isNegative: false,
                       isCombinedOr: true
-                    } as TypeGuardInfo);
+                    });
                   }
                 }
                 // Handle OR chains: if (type(x) != "string" || !x) return;
@@ -6760,7 +6801,7 @@ export class TypeChecker {
                     // type in). After `if (!x) <early-exit>`, x is provably non-null on the
                     // fall-through path, so narrow to UNKNOWN — its real type is unknown to us,
                     // but it is NOT null here. This suppresses the false provably-null
-                    // member-access error (UC5005).
+                    // member-access error UC5005.
                     //
                     // SOUNDNESS GATE: only when there is NO reassignment of x between the guard
                     // and the use. `if (!x) return; x = null; x.foo` must still flag — the
@@ -6826,10 +6867,10 @@ export class TypeChecker {
     // Check top-level body for variable declarations
     const body = isFn ? funcNode.body : undefined;
     if (body && body.type === 'BlockStatement') {
-      for (const stmt of (body as BlockStatementNode).body) {
+      for (const stmt of body.body) {
         if (stmt.type === 'VariableDeclaration') {
-          for (const decl of (stmt as VariableDeclarationNode).declarations) {
-            if (decl.id?.type === 'Identifier' && (decl.id as IdentifierNode).name === variableName) {
+          for (const decl of stmt.declarations) {
+            if (decl.id?.type === 'Identifier' && decl.id.name === variableName) {
               return true;
             }
           }
@@ -6851,7 +6892,7 @@ export class TypeChecker {
 
     // Check if it's a nested AND
     if (condition.type === 'BinaryExpression') {
-      const binaryNode = condition as BinaryExpressionNode;
+      const binaryNode = condition;
       if (binaryNode.operator === '&&') {
         // Check both sides
         const leftGuard = this.findGuardInCondition(binaryNode.left, variableName);
@@ -6878,17 +6919,17 @@ export class TypeChecker {
    *  narrows `m` exactly as `m != null` would (docs/tc-assignment-expression-guard-narrowing.md).
    *  Returns null for anything else. */
   private guardedOperandName(node: AstNode): string | null {
-    if (node.type === 'Identifier') return (node as IdentifierNode).name;
+    if (node.type === 'Identifier') return node.name;
     if (node.type === 'AssignmentExpression') {
-      const asn = node as AssignmentExpressionNode;
-      if (asn.operator === '=' && asn.left.type === 'Identifier') return (asn.left as IdentifierNode).name;
+      const asn = node;
+      if (asn.operator === '=' && asn.left.type === 'Identifier') return asn.left.name;
     }
     return null;
   }
 
   private isNullGuardCondition(condition: AstNode, variableName: string): boolean {
     if (condition.type === 'BinaryExpression') {
-      const binaryExpr = condition as BinaryExpressionNode;
+      const binaryExpr = condition;
 
       // Check for != null or !== null patterns (a != null), incl. `(a = rhs) != null`
       if ((binaryExpr.operator === '!=' || binaryExpr.operator === '!==') &&
@@ -6910,7 +6951,7 @@ export class TypeChecker {
     // Check for truthy guard (if (a)) — bare identifier only; the `if ((a = rhs))`
     // truthiness form is handled by collectPositiveTestGuards.
     if (condition.type === 'Identifier' &&
-        (condition as IdentifierNode).name === variableName) {
+        condition.name === variableName) {
       return true;
     }
 
@@ -6923,7 +6964,7 @@ export class TypeChecker {
    */
   private isNullCheckCondition(condition: AstNode, variableName: string): boolean {
     if (condition.type === 'BinaryExpression') {
-      const binaryExpr = condition as BinaryExpressionNode;
+      const binaryExpr = condition;
 
       // Check for == null or === null patterns (a == null), incl. `(a = rhs) == null`
       if ((binaryExpr.operator === '==' || binaryExpr.operator === '===') &&
@@ -6958,14 +6999,14 @@ export class TypeChecker {
     }
 
     let count = 0;
-    if (expr.left.type === 'BinaryExpression' && (expr.left as BinaryExpressionNode).operator === '||') {
-      count += this.countOrBranches(expr.left as BinaryExpressionNode);
+    if (expr.left.type === 'BinaryExpression' && expr.left.operator === '||') {
+      count += this.countOrBranches(expr.left);
     } else {
       count += 1;
     }
 
-    if (expr.right.type === 'BinaryExpression' && (expr.right as BinaryExpressionNode).operator === '||') {
-      count += this.countOrBranches(expr.right as BinaryExpressionNode);
+    if (expr.right.type === 'BinaryExpression' && expr.right.operator === '||') {
+      count += this.countOrBranches(expr.right);
     } else {
       count += 1;
     }
@@ -6975,9 +7016,9 @@ export class TypeChecker {
 
   private getNullPropagatingArg(node: AstNode): { funcName: string; arg: AstNode } | null {
     if (node.type !== 'CallExpression') return null;
-    const call = node as CallExpressionNode;
+    const call = node;
     if (call.callee.type !== 'Identifier') return null;
-    const funcName = (call.callee as IdentifierNode).name;
+    const funcName = call.callee.name;
     const argIndex = NULL_PROPAGATING_BUILTINS[funcName];
     if (argIndex === undefined) return null;
     const arg = call.arguments[argIndex];
@@ -6993,7 +7034,7 @@ export class TypeChecker {
    *  `stat()` is never matched. Returns null otherwise. */
   private getStringContractArg(node: AstNode): { arg: AstNode } | null {
     if (node.type !== 'CallExpression') return null;
-    const call = node as CallExpressionNode;
+    const call = node;
 
     // Position-aware lookup (keyed off the call's offset) so LOCAL aliases like
     // `let stat = _fs.stat;` inside a function body resolve — a plain lookup() runs
@@ -7003,7 +7044,7 @@ export class TypeChecker {
 
     let argIndex: number | undefined;
     if (call.callee.type === 'Identifier') {
-      const name = (call.callee as IdentifierNode).name;
+      const name = call.callee.name;
       const sym = lookupSym(name);
       if (sym?.importedFrom === 'fs') {
         // fs function reached via import or a `let stat = fs.stat` alias.
@@ -7016,12 +7057,12 @@ export class TypeChecker {
         argIndex = STRING_CONTRACT_GLOBAL_BUILTINS[name];
       }
     } else if (call.callee.type === 'MemberExpression') {
-      const m = call.callee as MemberExpressionNode;
+      const m = call.callee;
       if (m.object.type === 'Identifier' && m.property.type === 'Identifier') {
-        const objSym = lookupSym((m.object as IdentifierNode).name);
+        const objSym = lookupSym(m.object.name);
         const isFsObject = objSym?.importedFrom === 'fs'
-          || extractModuleType(objSym?.dataType as UcodeDataType)?.moduleName === 'fs';
-        if (isFsObject) argIndex = STRING_CONTRACT_FS_BUILTINS[(m.property as IdentifierNode).name];
+          || extractModuleType(objSym?.dataType)?.moduleName === 'fs';
+        if (isFsObject) argIndex = STRING_CONTRACT_FS_BUILTINS[m.property.name];
       }
     }
     if (argIndex === undefined) return null;
@@ -7036,9 +7077,9 @@ export class TypeChecker {
   private collectNegatedStringContractGuards(test: AstNode, variableName: string, guards: TypeGuardInfo[]): void {
     const disjuncts: AstNode[] = [];
     const split = (n: AstNode): void => {
-      if (n.type === 'BinaryExpression' && (n as BinaryExpressionNode).operator === '||') {
-        split((n as BinaryExpressionNode).left);
-        split((n as BinaryExpressionNode).right);
+      if (n.type === 'BinaryExpression' && n.operator === '||') {
+        split(n.left);
+        split(n.right);
       } else {
         disjuncts.push(n);
       }
@@ -7083,7 +7124,7 @@ export class TypeChecker {
   }
 
   private getArgVariableName(node: AstNode): string | null {
-    if (node.type === 'Identifier') return (node as IdentifierNode).name;
+    if (node.type === 'Identifier') return node.name;
     return null;
   }
 
@@ -7115,15 +7156,15 @@ export class TypeChecker {
 
     // Check: variableName on left, other identifier on right
     if (binaryExpr.left.type === 'Identifier' &&
-        (binaryExpr.left as IdentifierNode).name === variableName &&
+        binaryExpr.left.name === variableName &&
         binaryExpr.right.type === 'Identifier') {
-      otherVarName = (binaryExpr.right as IdentifierNode).name;
+      otherVarName = binaryExpr.right.name;
     }
     // Check: variableName on right, other identifier on left
     else if (binaryExpr.right.type === 'Identifier' &&
-             (binaryExpr.right as IdentifierNode).name === variableName &&
+             binaryExpr.right.name === variableName &&
              binaryExpr.left.type === 'Identifier') {
-      otherVarName = (binaryExpr.left as IdentifierNode).name;
+      otherVarName = binaryExpr.left.name;
     }
 
     if (!otherVarName) return null;
@@ -7131,7 +7172,7 @@ export class TypeChecker {
     // Look up the other variable's symbol — try regular lookup first, then position-aware
     // (imports/outer-scope variables may not be in the current scope after analysis)
     const otherNode = (binaryExpr.left.type === 'Identifier' &&
-      (binaryExpr.left as IdentifierNode).name === otherVarName)
+      binaryExpr.left.name === otherVarName)
       ? binaryExpr.left : binaryExpr.right;
     const otherSymbol = this.symbolTable.resolveReference(otherVarName, otherNode.start);
     if (!otherSymbol) return null;
@@ -7162,7 +7203,7 @@ export class TypeChecker {
   private extractTypeGuard(condition: AstNode, variableName: string): TypeGuardInfo | null {
     // Handle OR operator for combining type guards
     if (condition.type === 'BinaryExpression') {
-      const binaryExpr = condition as BinaryExpressionNode;
+      const binaryExpr = condition;
 
       if (binaryExpr.operator === '||') {
         // Count total branches in the OR chain
@@ -7196,7 +7237,7 @@ export class TypeChecker {
             if (types.length >= 2) {
               return {
                 variableName,
-                narrowToType: createUnionType(types) as UcodeType,
+                narrowToType: createUnionType(types),
                 isNegative: false,
                 isCombinedOr: true
               };
@@ -7264,7 +7305,7 @@ export class TypeChecker {
           const finalType = createUnionType(satisfyingTypes);
           return {
             variableName,
-            narrowToType: finalType as UcodeType,
+            narrowToType: finalType,
             isNegative: false,
             isCombinedOr: true
           };
@@ -7298,7 +7339,7 @@ export class TypeChecker {
     // truthy objects are eliminated), so it must be tagged isTruthiness so applyTypeGuard
     // doesn't "keep only null" on the flip. Checked BEFORE isNullGuardCondition so the
     // bare-identifier case is tagged rather than treated as `x != null`.
-    if (condition.type === 'Identifier' && (condition as IdentifierNode).name === variableName) {
+    if (condition.type === 'Identifier' && condition.name === variableName) {
       return {
         variableName,
         narrowToType: UcodeType.NULL,
@@ -7341,7 +7382,7 @@ export class TypeChecker {
 
     // Pattern: builtinCall(x) <op> literal — narrows x to non-null
     if (condition.type === 'BinaryExpression') {
-      const binaryExpr = condition as BinaryExpressionNode;
+      const binaryExpr = condition;
       const npLeft = this.getNullPropagatingArg(binaryExpr.left);
       if (npLeft && binaryExpr.right.type === 'Literal') {
         const argVarName = this.getArgVariableName(npLeft.arg);
@@ -7374,7 +7415,7 @@ export class TypeChecker {
     // base, so a refined base survives and `unknown` narrows to the literal's type); the
     // branch machinery flips isNegative for the `!==`/else edges just like var-to-var equality.
     if (condition.type === 'BinaryExpression') {
-      const binaryExpr = condition as BinaryExpressionNode;
+      const binaryExpr = condition;
       if (binaryExpr.operator === '===' || binaryExpr.operator === '!==') {
         const isEquality = binaryExpr.operator === '===';
         const lit = binaryExpr.left.type === 'Literal' ? binaryExpr.left
@@ -7382,7 +7423,7 @@ export class TypeChecker {
         const other = lit === binaryExpr.left ? binaryExpr.right : binaryExpr.left;
         if (lit && (other.type === 'Identifier' || other.type === 'MemberExpression')
             && this.getDottedPath(other) === variableName) {
-          const litType = this.literalNodeType(lit as LiteralNode);
+          const litType = this.literalNodeType(lit);
           // `=== null` is already handled by isNullCheckCondition above; skip null here.
           if (litType !== null && litType !== UcodeType.NULL) {
             return {
@@ -7401,7 +7442,7 @@ export class TypeChecker {
     // narrow variableName to the other variable's type. Loose ==/!= is gated to
     // reference-exact other types inside the extractor (N-1).
     if (condition.type === 'BinaryExpression') {
-      const binaryExpr = condition as BinaryExpressionNode;
+      const binaryExpr = condition;
       if (binaryExpr.operator === '==' || binaryExpr.operator === '===' ||
           binaryExpr.operator === '!=' || binaryExpr.operator === '!==') {
         const isEquality = binaryExpr.operator === '==' || binaryExpr.operator === '===';
@@ -7423,7 +7464,7 @@ export class TypeChecker {
     // So: refine an already-known union by removing those members; produce no guard
     // for an unknown base or when nothing is removable.
     if (condition.type === 'BinaryExpression') {
-      const binaryExpr = condition as BinaryExpressionNode;
+      const binaryExpr = condition;
       if (binaryExpr.operator === '<' || binaryExpr.operator === '>' ||
           binaryExpr.operator === '<=' || binaryExpr.operator === '>=') {
         let matchedName: string | null = null;
@@ -7464,7 +7505,7 @@ export class TypeChecker {
           if (zeroPasses) passable.push(UcodeType.NULL);
 
           const sym = this.symbolTable.resolveReference(variableName, idNode.start);
-          const baseType = sym ? this.getEffectiveSymbolDataType(sym, idNode.start) : UcodeType.UNKNOWN as UcodeDataType;
+          const baseType = sym ? this.getEffectiveSymbolDataType(sym, idNode.start) : UcodeType.UNKNOWN;
           if (baseType === UcodeType.UNKNOWN || baseType === UcodeType.ANY) {
             // From unknown, the true edge soundly proves membership in the
             // passable set — every member of it really can pass, and nothing
@@ -7512,7 +7553,7 @@ export class TypeChecker {
     const guards: TypeGuardInfo[] = [];
 
     if (condition.type === 'BinaryExpression') {
-      const binaryExpr = condition as BinaryExpressionNode;
+      const binaryExpr = condition;
 
       if (binaryExpr.operator === '||') {
         // Recursively collect from both sides
@@ -7586,10 +7627,10 @@ export class TypeChecker {
    */
   private getDottedPath(node: AstNode): string | null {
     if (node.type === 'Identifier') {
-      return (node as IdentifierNode).name;
+      return node.name;
     }
     if (node.type === 'MemberExpression') {
-      const member = node as MemberExpressionNode;
+      const member = node;
       const objPath = this.getDottedPath(member.object);
       if (!objPath) return null;
       if (member.computed) {
@@ -7597,7 +7638,7 @@ export class TypeChecker {
         // it (e.g. `parts[5] ? uc(parts[5]) : null`) can be tracked. A variable
         // index (`parts[i]`) can change between guard and use → not trackable.
         if (member.property.type === 'Literal') {
-          const v = (member.property as LiteralNode).value;
+          const v = member.property.value;
           if (typeof v === 'number' || typeof v === 'string') {
             return `${objPath}[${JSON.stringify(v)}]`;
           }
@@ -7605,7 +7646,7 @@ export class TypeChecker {
         return null;
       }
       if (member.property.type === 'Identifier') {
-        return `${objPath}.${(member.property as IdentifierNode).name}`;
+        return `${objPath}.${member.property.name}`;
       }
       return null;
     }
@@ -7621,7 +7662,7 @@ export class TypeChecker {
       const single = this.extractTypeGuard(condition, variableName);
       return single ? [single] : [];
     }
-    const bin = condition as BinaryExpressionNode;
+    const bin = condition;
     if (bin.operator === '&&') {
       const left = this.extractAndChainGuards(bin.left, variableName);
       const right = this.extractAndChainGuards(bin.right, variableName);
@@ -7641,7 +7682,7 @@ export class TypeChecker {
       const single = this.extractTypeGuard(condition, variableName);
       return single ? [single] : [];
     }
-    const bin = condition as BinaryExpressionNode;
+    const bin = condition;
     if (bin.operator === '||') {
       const left = this.extractOrChainGuards(bin.left, variableName);
       const right = this.extractOrChainGuards(bin.right, variableName);
@@ -7660,8 +7701,8 @@ export class TypeChecker {
       return test.operator === '!' && test.argument?.type === 'Identifier'
         && test.argument.name === variableName;
     }
-    if (test.type === 'BinaryExpression' && (test as BinaryExpressionNode).operator === '||') {
-      const b = test as BinaryExpressionNode;
+    if (test.type === 'BinaryExpression' && test.operator === '||') {
+      const b = test;
       return this.earlyExitNegatesIdentifier(b.left, variableName)
         || this.earlyExitNegatesIdentifier(b.right, variableName);
     }
@@ -7673,7 +7714,7 @@ export class TypeChecker {
       return null;
     }
 
-    const binaryExpr = condition as BinaryExpressionNode;
+    const binaryExpr = condition;
 
     // Check for type(a) == 'typename' or 'typename' == type(a)
     if (binaryExpr.operator !== '==' && binaryExpr.operator !== '===') {
@@ -7686,14 +7727,14 @@ export class TypeChecker {
     // Check left side for type() call, right side for string literal
     if (binaryExpr.left.type === 'CallExpression' &&
         binaryExpr.right.type === 'Literal') {
-      typeCall = binaryExpr.left as CallExpressionNode;
-      typeLiteral = binaryExpr.right as LiteralNode;
+      typeCall = binaryExpr.left;
+      typeLiteral = binaryExpr.right;
     }
     // Check right side for type() call, left side for string literal
     else if (binaryExpr.right.type === 'CallExpression' &&
              binaryExpr.left.type === 'Literal') {
-      typeCall = binaryExpr.right as CallExpressionNode;
-      typeLiteral = binaryExpr.left as LiteralNode;
+      typeCall = binaryExpr.right;
+      typeLiteral = binaryExpr.left;
     }
 
     // Indirect pattern: t == "object" where t = type(variable)
@@ -7713,7 +7754,7 @@ export class TypeChecker {
 
     // Verify it's a call to type() function
     if (typeCall.callee.type !== 'Identifier' ||
-        (typeCall.callee as IdentifierNode).name !== 'type') {
+        typeCall.callee.name !== 'type') {
       return null;
     }
 
@@ -7762,7 +7803,7 @@ export class TypeChecker {
       return null;
     }
 
-    const binaryExpr = condition as BinaryExpressionNode;
+    const binaryExpr = condition;
 
     // Check for type(a) !== 'typename' or 'typename' !== type(a)
     if (binaryExpr.operator !== '!=' && binaryExpr.operator !== '!==') {
@@ -7775,14 +7816,14 @@ export class TypeChecker {
     // Check left side for type() call, right side for string literal
     if (binaryExpr.left.type === 'CallExpression' &&
         binaryExpr.right.type === 'Literal') {
-      typeCall = binaryExpr.left as CallExpressionNode;
-      typeLiteral = binaryExpr.right as LiteralNode;
+      typeCall = binaryExpr.left;
+      typeLiteral = binaryExpr.right;
     }
     // Check right side for type() call, left side for string literal
     else if (binaryExpr.right.type === 'CallExpression' &&
              binaryExpr.left.type === 'Literal') {
-      typeCall = binaryExpr.right as CallExpressionNode;
-      typeLiteral = binaryExpr.left as LiteralNode;
+      typeCall = binaryExpr.right;
+      typeLiteral = binaryExpr.left;
     }
 
     // Indirect pattern: t != "object" where t = type(variable)
@@ -7802,7 +7843,7 @@ export class TypeChecker {
 
     // Verify it's a call to type() function
     if (typeCall.callee.type !== 'Identifier' ||
-        (typeCall.callee as IdentifierNode).name !== 'type') {
+        typeCall.callee.name !== 'type') {
       return null;
     }
 
@@ -7855,11 +7896,11 @@ export class TypeChecker {
     let literalNode: LiteralNode | null = null;
 
     if (binaryExpr.left.type === 'Identifier' && binaryExpr.right.type === 'Literal') {
-      identNode = binaryExpr.left as IdentifierNode;
-      literalNode = binaryExpr.right as LiteralNode;
+      identNode = binaryExpr.left;
+      literalNode = binaryExpr.right;
     } else if (binaryExpr.right.type === 'Identifier' && binaryExpr.left.type === 'Literal') {
-      identNode = binaryExpr.right as IdentifierNode;
-      literalNode = binaryExpr.left as LiteralNode;
+      identNode = binaryExpr.right;
+      literalNode = binaryExpr.left;
     }
 
     if (!identNode || !literalNode || typeof literalNode.value !== 'string') {
@@ -7872,9 +7913,9 @@ export class TypeChecker {
       return null;
     }
 
-    const initCall = sym.initNode as CallExpressionNode;
+    const initCall = sym.initNode;
     if (initCall.callee.type !== 'Identifier' ||
-        (initCall.callee as IdentifierNode).name !== 'type' ||
+        initCall.callee.name !== 'type' ||
         initCall.arguments.length !== 1 || !initCall.arguments[0]) {
       return null;
     }
@@ -7900,19 +7941,19 @@ export class TypeChecker {
    */
   private getTypeCallVariable(node: AstNode): string | null {
     if (node.type === 'CallExpression') {
-      const call = node as CallExpressionNode;
+      const call = node;
       if (call.callee.type === 'Identifier' &&
-          (call.callee as IdentifierNode).name === 'type' &&
+          call.callee.name === 'type' &&
           call.arguments.length === 1 && call.arguments[0]) {
         return this.getDottedPath(call.arguments[0]);
       }
     } else if (node.type === 'Identifier') {
-      const ident = node as IdentifierNode;
+      const ident = node;
       const sym = this.symbolTable.resolveReference(ident.name, ident.start);
       if (sym?.initNode?.type === 'CallExpression') {
-        const initCall = sym.initNode as CallExpressionNode;
+        const initCall = sym.initNode;
         if (initCall.callee.type === 'Identifier' &&
-            (initCall.callee as IdentifierNode).name === 'type' &&
+            initCall.callee.name === 'type' &&
             initCall.arguments.length === 1 && initCall.arguments[0]) {
           return this.getDottedPath(initCall.arguments[0]);
         }
@@ -7927,7 +7968,7 @@ export class TypeChecker {
    */
   private detectTypeEqualityAlias(condition: AstNode): { var1: string, var2: string } | null {
     if (condition.type !== 'BinaryExpression') return null;
-    const bin = condition as BinaryExpressionNode;
+    const bin = condition;
     if (bin.operator !== '!=' && bin.operator !== '!==') return null;
 
     const leftVar = this.getTypeCallVariable(bin.left);

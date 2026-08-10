@@ -36,7 +36,7 @@ export interface ObjectExportDefinition {
 }
 
 export interface ModuleDefinition {
-  readonly name: string;
+  readonly name: KnownModule;
   readonly functions: ReadonlyMap<string, FunctionSignature>;
   readonly constants?: ReadonlyMap<string, ConstantDefinition>;
   readonly constantDocumentation?: ReadonlyMap<string, string>;
@@ -49,7 +49,7 @@ export interface ModuleDefinition {
 }
 
 export interface ObjectTypeDefinition {
-  readonly typeName: string;
+  readonly typeName: KnownObjectType;
   readonly isPropertyBased?: boolean;
   readonly methods: ReadonlyMap<string, FunctionSignature>;
   readonly properties?: ReadonlyMap<string, PropertyDefinition>;
@@ -116,7 +116,7 @@ export function createModuleRegistry(def: ModuleDefinition): ModuleRegistry {
   const allImports = [...functionNames, ...constantNames, ...objectExportNames];
 
   return {
-    moduleName: def.name as KnownModule,
+    moduleName: def.name,
     getFunctionNames: () => functionNames,
     getFunction: (name: string) => Option.fromNullable(def.functions.get(name)),
     getFunctionDocumentation: (name: string) => {
@@ -154,7 +154,9 @@ export function createObjectTypeRegistry(def: ObjectTypeDefinition): ObjectTypeR
   if (def.isPropertyBased && def.properties) {
     const propertyNames = Array.from(def.properties.keys());
     return {
-      objectType: def.typeName as KnownObjectType,
+      // Cross-file blocked: honest typing needs ObjectTypeDefinition.typeName to be
+      // KnownObjectType, which requires widening ubusTypes' string-typed helper first.
+      objectType: def.typeName,
       isPropertyBased: true,
       ...(def.openMembers ? { openMembers: true as const } : {}),
       getMethodNames: () => propertyNames,
@@ -182,7 +184,9 @@ export function createObjectTypeRegistry(def: ObjectTypeDefinition): ObjectTypeR
   // Method-based types use the methods map
   const methodNames = Array.from(def.methods.keys());
   return {
-    objectType: def.typeName as KnownObjectType,
+    // Cross-file blocked: honest typing needs ObjectTypeDefinition.typeName to be
+    // KnownObjectType, which requires widening ubusTypes' string-typed helper first.
+    objectType: def.typeName,
     ...(def.isPropertyBased !== undefined ? { isPropertyBased: def.isPropertyBased } : {}),
     ...(def.openMembers ? { openMembers: true as const } : {}),
     getMethodNames: () => methodNames,

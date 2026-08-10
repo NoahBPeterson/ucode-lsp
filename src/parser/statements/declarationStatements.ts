@@ -194,7 +194,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     // selects the colon-block, which runs statements up to `endfunction`.
     const body = this.check(TokenType.TK_COLON)
       ? (this.parseColonEndBlock(TokenType.TK_ENDFUNC, "endfunction")
-         ?? { type: 'BlockStatement', start: this.previous()!.end, end: this.previous()!.end, body: [] } as BlockStatementNode)
+         ?? ({ type: 'BlockStatement', start: this.previous()!.end, end: this.previous()!.end, body: [] } satisfies BlockStatementNode))
       : this.parseBlockStatement(this.consume(TokenType.TK_LBRACE, "Expected '{' or ':' to start the function body"), "function body");
 
     // A trailing semicolon after a function declaration is optional — ucode
@@ -461,7 +461,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
         declaration,
         specifiers: [],
         source: null,
-        ...(isFuncDecl ? { declarationHadSemicolon: (declaration as FunctionDeclarationNode).hadSemicolon === true } : {}),
+        ...(isFuncDecl ? { declarationHadSemicolon: declaration.type === 'FunctionDeclaration' && declaration.hadSemicolon === true } : {}),
       };
     }
 

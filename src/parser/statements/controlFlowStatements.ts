@@ -112,7 +112,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
       start,
       end: this.previous()!.end,
       body: statements
-    } as BlockStatementNode;
+    };
   }
 
   protected parseIfStatement(): IfStatementNode | null {
@@ -170,7 +170,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
       start,
       end: this.previous()?.end ?? start,
       body: statements
-    } as BlockStatementNode;
+    };
   }
 
   /** `if (test): … [elif (c): …]* [else …] endif`. The whole chain shares ONE `endif`:
@@ -257,7 +257,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     do {
       if (this.check(TokenType.TK_LABEL)) {
         const idStart = this.peek()?.pos || 0;
-        const name = this.advance()!.value as string;
+        const name = String(this.advance()!.value);
         
         const declarator: VariableDeclaratorNode = {
           type: 'VariableDeclarator',

@@ -1,7 +1,7 @@
 import { UcodeLexer } from '../lexer';
 import { detectTemplateModeForFile, bridgeTemplateTokens } from '../lexer/templateMode';
 import { UcodeParser } from '../parser';
-import { type FunctionDeclarationNode, type FunctionExpressionNode, type ArrowFunctionExpressionNode, type AstNode, type ExportNamedDeclarationNode, type IdentifierNode, type ObjectExpressionNode, type PropertyNode } from '../ast/nodes';
+import { type FunctionDeclarationNode, type FunctionExpressionNode, type ArrowFunctionExpressionNode, type AstNode, type ObjectExpressionNode, type PropertyNode } from '../ast/nodes';
 import { forEachAstChild, walkAst } from '../ast/astChildren';
 import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
 import { UcodeType, type UcodeDataType, type SingleType, createUnionType, isUnionType, isObjectType, isArrayType, typeToString, widenWithNull, type ParamInfo } from './symbolTable';
@@ -510,7 +510,7 @@ export class FileResolver {
             const last = body[body.length - 1];
             retNode = last?.type === 'ExpressionStatement' ? last.expression : null;
         }
-        if (retNode === null) return { dataType: UcodeType.NULL as UcodeDataType };
+        if (retNode === null) return { dataType: UcodeType.NULL };
 
         // `return M;` — one-hop trace to M's last top-level initializer/assignment.
         if (retNode.type === 'Identifier') {
@@ -532,7 +532,7 @@ export class FileResolver {
 
         switch (retNode.type) {
             case 'ObjectExpression': {
-                const out: LoadfileProgramReturn = { dataType: UcodeType.OBJECT as UcodeDataType };
+                const out: LoadfileProgramReturn = { dataType: UcodeType.OBJECT };
                 const propTypes = this.inferObjectLiteralPropertyTypesShallow(retNode);
                 if (propTypes.size > 0) out.propertyTypes = propTypes;
                 const fnReturns = new Map<string, string>();
@@ -550,19 +550,19 @@ export class FileResolver {
                 return out;
             }
             case 'ArrayExpression':
-                return { dataType: UcodeType.ARRAY as UcodeDataType };
+                return { dataType: UcodeType.ARRAY };
             case 'FunctionExpression':
             case 'ArrowFunctionExpression':
-                return { dataType: UcodeType.FUNCTION as UcodeDataType };
+                return { dataType: UcodeType.FUNCTION };
             case 'Literal': {
-                if (retNode.literalType === 'regexp') return { dataType: UcodeType.REGEX as UcodeDataType };
+                if (retNode.literalType === 'regexp') return { dataType: UcodeType.REGEX };
                 const v = retNode.value;
-                if (typeof v === 'string') return { dataType: UcodeType.STRING as UcodeDataType };
-                if (typeof v === 'boolean') return { dataType: UcodeType.BOOLEAN as UcodeDataType };
-                if (v === null) return { dataType: UcodeType.NULL as UcodeDataType };
+                if (typeof v === 'string') return { dataType: UcodeType.STRING };
+                if (typeof v === 'boolean') return { dataType: UcodeType.BOOLEAN };
+                if (v === null) return { dataType: UcodeType.NULL };
                 if (typeof v === 'number') {
                     // Exponent notation (`1e5`) is a double literal (ticket 115).
-                    return { dataType: ((retNode.literalType === 'double' || !Number.isInteger(v)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType };
+                    return { dataType: ((retNode.literalType === 'double' || !Number.isInteger(v)) ? UcodeType.DOUBLE : UcodeType.INTEGER) };
                 }
                 return null;
             }
@@ -621,7 +621,7 @@ export class FileResolver {
                 if (!defaultExport || defaultExport.isFunction) return null; // handled by requireModuleIsFunction path
                 const propInfo = this.getDefaultExportPropertyTypes(resolvedUri);
                 if (propInfo) {
-                    const out: LoadfileProgramReturn = { dataType: UcodeType.OBJECT as UcodeDataType, propertyTypes: propInfo.propertyTypes };
+                    const out: LoadfileProgramReturn = { dataType: UcodeType.OBJECT, propertyTypes: propInfo.propertyTypes };
                     if (propInfo.functionReturnTypes && propInfo.functionReturnTypes.size > 0) {
                         const pfrt = new Map<string, string>();
                         for (const [k, v] of propInfo.functionReturnTypes) pfrt.set(k, typeof v === 'string' ? v : 'unknown');
@@ -629,7 +629,7 @@ export class FileResolver {
                     }
                     return out;
                 }
-                return { dataType: UcodeType.OBJECT as UcodeDataType };
+                return { dataType: UcodeType.OBJECT };
             }
 
             // No export syntax at all — legacy require()-only module: the value is
@@ -1349,11 +1349,11 @@ export class FileResolver {
                 ...(exportedName !== undefined ? { exportedName } : {})
             });
         } else if (node.type === 'ExportNamedDeclaration') {
-            const exportNode = node as ExportNamedDeclarationNode;
+            const exportNode = node;
             if (exportNode.declaration) {
                 // export function foo() {} or export let x = 1
                 if (exportNode.declaration.type === 'FunctionDeclaration') {
-                    const funcDecl = exportNode.declaration as FunctionDeclarationNode;
+                    const funcDecl = exportNode.declaration;
                     exports.push({
                         name: funcDecl.id.name,
                         type: 'named',
@@ -1472,7 +1472,7 @@ export class FileResolver {
         const fromJsDoc = this.functionReturnTypeFromJsDoc(funcNode);
         if (fromJsDoc !== null) return typeToString(fromJsDoc);
         const inferred = this.inferFunctionReturnType(funcNode);
-        if (inferred !== null && inferred !== (UcodeType.UNKNOWN as UcodeDataType)) {
+        if (inferred !== null && inferred !== (UcodeType.UNKNOWN)) {
             const s = typeToString(inferred);
             if (s && s !== 'unknown') return s;
         }
@@ -1514,7 +1514,7 @@ export class FileResolver {
                     if (nsUri && nsUri.startsWith('file://')) {
                         const nsInfo = this.getNamespaceExportInfo(nsUri);
                         if (nsInfo && nsInfo.types.size > 0) {
-                            types.set(name, UcodeType.OBJECT as UcodeDataType);
+                            types.set(name, UcodeType.OBJECT);
                             nested.set(name, nsInfo.types);
                             return;
                         }
@@ -1563,7 +1563,7 @@ export class FileResolver {
                     if (stmt.type === 'ExportNamedDeclaration') {
                         const decl = stmt.declaration;
                         if (decl?.type === 'FunctionDeclaration' && decl.id.name) {
-                            types.set(decl.id.name, UcodeType.FUNCTION as UcodeDataType);
+                            types.set(decl.id.name, UcodeType.FUNCTION);
                             // Carry the function's return type (JSDoc @returns first, else
                             // body inference) so `ns.fn()` call sites resolve a real type
                             // instead of `unknown`.
@@ -1603,27 +1603,27 @@ export class FileResolver {
     }
 
     private inferShallowType(node: AstNode | null | undefined): UcodeDataType {
-        if (!node) return UcodeType.UNKNOWN as UcodeDataType;
+        if (!node) return UcodeType.UNKNOWN;
         switch (node.type) {
             case 'FunctionDeclaration':
             case 'FunctionExpression':
             case 'ArrowFunctionExpression':
-                return UcodeType.FUNCTION as UcodeDataType;
+                return UcodeType.FUNCTION;
             case 'ArrayExpression':
-                return UcodeType.ARRAY as UcodeDataType;
+                return UcodeType.ARRAY;
             case 'ObjectExpression':
-                return UcodeType.OBJECT as UcodeDataType;
+                return UcodeType.OBJECT;
             case 'Literal': {
                 const lit = node;
-                if (lit.literalType === 'string' || typeof lit.value === 'string') return UcodeType.STRING as UcodeDataType;
-                if (lit.literalType === 'double' || (typeof lit.value === 'number' && !Number.isInteger(lit.value))) return UcodeType.DOUBLE as UcodeDataType;
-                if (typeof lit.value === 'number') return UcodeType.INTEGER as UcodeDataType;
-                if (lit.literalType === 'boolean' || typeof lit.value === 'boolean') return UcodeType.BOOLEAN as UcodeDataType;
-                if (lit.literalType === 'null' || lit.value === null) return UcodeType.NULL as UcodeDataType;
-                return UcodeType.UNKNOWN as UcodeDataType;
+                if (lit.literalType === 'string' || typeof lit.value === 'string') return UcodeType.STRING;
+                if (lit.literalType === 'double' || (typeof lit.value === 'number' && !Number.isInteger(lit.value))) return UcodeType.DOUBLE;
+                if (typeof lit.value === 'number') return UcodeType.INTEGER;
+                if (lit.literalType === 'boolean' || typeof lit.value === 'boolean') return UcodeType.BOOLEAN;
+                if (lit.literalType === 'null' || lit.value === null) return UcodeType.NULL;
+                return UcodeType.UNKNOWN;
             }
             default:
-                return UcodeType.UNKNOWN as UcodeDataType;
+                return UcodeType.UNKNOWN;
         }
     }
 
@@ -1692,17 +1692,17 @@ export class FileResolver {
                 if (prop.type !== 'Property') continue;
                 const rawKey = propertyKeyValue(prop);
                 if (!rawKey) continue;
-                const key = rawKey as string;
+                const key = typeof rawKey === 'string' ? rawKey : String(rawKey);
 
                 const val = prop.value;
 
                 if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
-                    propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                    propertyTypes.set(key, UcodeType.FUNCTION);
                     // Infer return type of inline function
                     const retType = this.inferFunctionReturnType(val);
                     if (retType) functionReturnTypes.set(key, retType);
                 } else if (val.type === 'Identifier' && funcNames.has(val.name)) {
-                    propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                    propertyTypes.set(key, UcodeType.FUNCTION);
                     // Infer return type of referenced top-level function
                     const funcNode = funcNodes.get(val.name);
                     if (funcNode) {
@@ -1711,23 +1711,23 @@ export class FileResolver {
                     }
                 } else if (val.type === 'Literal') {
                     if (typeof val.value === 'number') {
-                        propertyTypes.set(key, UcodeType.INTEGER as UcodeDataType);
+                        propertyTypes.set(key, UcodeType.INTEGER);
                     } else if (typeof val.value === 'string') {
-                        propertyTypes.set(key, UcodeType.STRING as UcodeDataType);
+                        propertyTypes.set(key, UcodeType.STRING);
                     } else if (typeof val.value === 'boolean') {
-                        propertyTypes.set(key, UcodeType.BOOLEAN as UcodeDataType);
+                        propertyTypes.set(key, UcodeType.BOOLEAN);
                     } else {
-                        propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                        propertyTypes.set(key, UcodeType.UNKNOWN);
                     }
                 } else if (val.type === 'ObjectExpression') {
-                    propertyTypes.set(key, UcodeType.OBJECT as UcodeDataType);
+                    propertyTypes.set(key, UcodeType.OBJECT);
                     // Extract nested property types for object-valued properties
                     const nested = this.extractObjectPropertyTypes(val, funcNodes, varInits, new Map());
                     if (nested.size > 0) {
                         nestedPropertyTypes.set(key, nested);
                     }
                 } else if (val.type === 'ArrayExpression') {
-                    propertyTypes.set(key, UcodeType.ARRAY as UcodeDataType);
+                    propertyTypes.set(key, UcodeType.ARRAY);
                 } else if (val.type === 'Identifier') {
                     // Resolve variable identifier against known initializers
                     const init = varInits.get(val.name);
@@ -1741,10 +1741,10 @@ export class FileResolver {
                             }
                         }
                     } else {
-                        propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                        propertyTypes.set(key, UcodeType.UNKNOWN);
                     }
                 } else {
-                    propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                    propertyTypes.set(key, UcodeType.UNKNOWN);
                 }
             }
 
@@ -1769,11 +1769,11 @@ export class FileResolver {
                     const val = expr.right;
 
                     if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
-                        propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                        propertyTypes.set(key, UcodeType.FUNCTION);
                         const retType = this.inferFunctionReturnType(val);
                         if (retType) functionReturnTypes.set(key, retType);
                     } else if (val.type === 'Identifier' && funcNames.has(val.name)) {
-                        propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                        propertyTypes.set(key, UcodeType.FUNCTION);
                         const funcNode = funcNodes.get(val.name);
                         if (funcNode) {
                             const retType = this.inferFunctionReturnType(funcNode);
@@ -1788,26 +1788,26 @@ export class FileResolver {
                                 if (nested.size > 0) nestedPropertyTypes.set(key, nested);
                             }
                         } else {
-                            propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                            propertyTypes.set(key, UcodeType.UNKNOWN);
                         }
                     } else if (val.type === 'Literal') {
                         if (typeof val.value === 'number') {
-                            propertyTypes.set(key, UcodeType.INTEGER as UcodeDataType);
+                            propertyTypes.set(key, UcodeType.INTEGER);
                         } else if (typeof val.value === 'string') {
-                            propertyTypes.set(key, UcodeType.STRING as UcodeDataType);
+                            propertyTypes.set(key, UcodeType.STRING);
                         } else if (typeof val.value === 'boolean') {
-                            propertyTypes.set(key, UcodeType.BOOLEAN as UcodeDataType);
+                            propertyTypes.set(key, UcodeType.BOOLEAN);
                         } else {
-                            propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                            propertyTypes.set(key, UcodeType.UNKNOWN);
                         }
                     } else if (val.type === 'ObjectExpression') {
-                        propertyTypes.set(key, UcodeType.OBJECT as UcodeDataType);
+                        propertyTypes.set(key, UcodeType.OBJECT);
                         const nested = this.extractObjectPropertyTypes(val, funcNodes, varInits, new Map());
                         if (nested.size > 0) nestedPropertyTypes.set(key, nested);
                     } else if (val.type === 'ArrayExpression') {
-                        propertyTypes.set(key, UcodeType.ARRAY as UcodeDataType);
+                        propertyTypes.set(key, UcodeType.ARRAY);
                     } else {
-                        propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                        propertyTypes.set(key, UcodeType.UNKNOWN);
                     }
                 }
             }
@@ -1881,7 +1881,7 @@ export class FileResolver {
                     if (exportNode.declaration.type === 'FunctionDeclaration') {
                         const funcDecl = exportNode.declaration;
                         if (funcDecl.id.name === exportName) {
-                            return { type: UcodeType.FUNCTION as UcodeDataType };
+                            return { type: UcodeType.FUNCTION };
                         }
                     } else if (exportNode.declaration.type === 'VariableDeclaration') {
                         const varDecl = exportNode.declaration;
@@ -1889,7 +1889,7 @@ export class FileResolver {
                             if (declarator.id.name !== exportName) continue;
 
                             const init = declarator.init;
-                            if (!init) return { type: UcodeType.UNKNOWN as UcodeDataType };
+                            if (!init) return { type: UcodeType.UNKNOWN };
 
                             // `export const VAL2 = VAL;` where VAL is an import binding in
                             // this file — follow the import chain into the source module
@@ -1923,13 +1923,13 @@ export class FileResolver {
                                     if (prop.type !== 'Property') continue;
                                     const rawKey = propertyKeyValue(prop);
                                     if (!rawKey) continue;
-                                    const key = rawKey as string;
+                                    const key = typeof rawKey === 'string' ? rawKey : String(rawKey);
 
                                     const val = prop.value;
                                     if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
-                                        propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                                        propertyTypes.set(key, UcodeType.FUNCTION);
                                     } else if (val.type === 'ObjectExpression') {
-                                        propertyTypes.set(key, UcodeType.OBJECT as UcodeDataType);
+                                        propertyTypes.set(key, UcodeType.OBJECT);
                                         const nested = this.extractObjectPropertyTypes(val, funcNodes, varInits, new Map());
                                         if (nested.size > 0) nestedPropertyTypes.set(key, nested);
                                     } else {
@@ -1958,7 +1958,7 @@ export class FileResolver {
 
                         // Check if it's a function
                         if (funcNames.has(localName)) {
-                            return { type: UcodeType.FUNCTION as UcodeDataType };
+                            return { type: UcodeType.FUNCTION };
                         }
 
                         // Check if it's a variable with an initializer
@@ -1995,7 +1995,7 @@ export class FileResolver {
                             return { type: nodeType };
                         }
 
-                        return { type: UcodeType.UNKNOWN as UcodeDataType };
+                        return { type: UcodeType.UNKNOWN };
                     }
                 }
             }
@@ -2031,12 +2031,12 @@ export class FileResolver {
                     propertyTypes?: Map<string, UcodeDataType>;
                     nestedPropertyTypes?: Map<string, Map<string, UcodeDataType>>;
                     propertyFunctionReturnTypes?: Map<string, string>;
-                } = { type: UcodeType.OBJECT as UcodeDataType, propertyTypes: nsInfo.types };
+                } = { type: UcodeType.OBJECT, propertyTypes: nsInfo.types };
                 if (nsInfo.nested.size > 0) nsResult.nestedPropertyTypes = nsInfo.nested;
                 if (nsInfo.functionReturnTypes.size > 0) nsResult.propertyFunctionReturnTypes = nsInfo.functionReturnTypes;
                 return nsResult;
             }
-            return { type: UcodeType.OBJECT as UcodeDataType };
+            return { type: UcodeType.OBJECT };
         }
         const reexp = this.findReexportedSource(fileUri, name);
         if (!reexp) return null;
@@ -2111,7 +2111,7 @@ export class FileResolver {
             // "this is a function" via a non-null result so the caller can upgrade
             // the symbol's dataType. See the matching comment in
             // getNamedExportFunctionReturnInfo for the rationale.
-            return { returnType: UcodeType.UNKNOWN as UcodeDataType, returnPropertyTypes: new Map() };
+            return { returnType: UcodeType.UNKNOWN, returnPropertyTypes: new Map() };
         } catch {
             return null;
         }
@@ -2249,7 +2249,7 @@ export class FileResolver {
             // dataType from UNKNOWN to FUNCTION — otherwise hover shows `unknown`
             // for an imported name we already know is callable, which is worse than
             // showing `function` with an unknown return.
-            return { returnType: UcodeType.UNKNOWN as UcodeDataType, returnPropertyTypes: new Map() };
+            return { returnType: UcodeType.UNKNOWN, returnPropertyTypes: new Map() };
         } catch {
             return null;
         }
@@ -2440,7 +2440,7 @@ export class FileResolver {
         }
 
         const result: ParamInfo[] = params.map((p) => {
-            const declared = jsdocTypes.get(p.name) ?? (UcodeType.UNKNOWN as UcodeDataType);
+            const declared = jsdocTypes.get(p.name) ?? (UcodeType.UNKNOWN);
             const optional = jsdocOptional.has(p.name);
             return {
                 name: p.name,
@@ -2451,7 +2451,7 @@ export class FileResolver {
             };
         });
         if (restParam) {
-            result.push({ name: restParam.name, type: UcodeType.ARRAY as UcodeDataType, isRest: true });
+            result.push({ name: restParam.name, type: UcodeType.ARRAY, isRest: true });
         }
         return result;
     }
@@ -2521,7 +2521,7 @@ export class FileResolver {
 
         // A body that can fall off the end returns null implicitly.
         if (!this.blockAlwaysReturns(funcBody)) {
-            extraReturnTypes.push(UcodeType.NULL as UcodeDataType);
+            extraReturnTypes.push(UcodeType.NULL);
         }
 
         // Definition locations taken from the first return branch (offsets are
@@ -2544,7 +2544,7 @@ export class FileResolver {
         // The returned OBJECT is joined with every non-object branch (and the
         // implicit fall-through null) — a caller deref without a guard is the
         // exact crash the null-safety warnings exist for.
-        let returnType: UcodeDataType = UcodeType.OBJECT as UcodeDataType;
+        let returnType: UcodeDataType = UcodeType.OBJECT;
         for (const t of extraReturnTypes) {
             returnType = this.unionTypes(returnType, t);
         }
@@ -2590,7 +2590,7 @@ export class FileResolver {
                     // anything else is typed like inferFunctionReturnType would.
                     extraReturnTypes.push(arg
                         ? this.inferReturnArgType(arg, localVarInits)
-                        : UcodeType.NULL as UcodeDataType);
+                        : UcodeType.NULL);
                 }
             } else if (stmt.type === 'FunctionDeclaration') {
                 // Skip nested function bodies
@@ -2613,11 +2613,11 @@ export class FileResolver {
         const members: SingleType[] = [];
         for (const t of [a, b]) {
             if (typeof t === 'string') {
-                members.push(t as UcodeType);
+                members.push(t);
             } else if (isUnionType(t)) {
                 members.push(...t.types);
             } else if (isObjectType(t) || isArrayType(t)) {
-                members.push(t as SingleType);
+                members.push(t);
             } else {
                 members.push(UcodeType.UNKNOWN);
             }
@@ -2673,12 +2673,12 @@ export class FileResolver {
             if (prop.type !== 'Property') continue;
             const rawKey = propertyKeyValue(prop);
             if (!rawKey) continue;
-            const key = rawKey as string;
+            const key = typeof rawKey === 'string' ? rawKey : String(rawKey);
 
             const val = prop.value;
 
             if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
-                propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                propertyTypes.set(key, UcodeType.FUNCTION);
                 // Inline method: jump to the function expression itself.
                 setLoc(key, val);
             } else if (val.type === 'Identifier') {
@@ -2687,35 +2687,35 @@ export class FileResolver {
                 // `function exec()` rather than the `exec` reference in the return object.
                 const declNode = localFuncNodes.get(name) || topLevelFuncs.get(name);
                 if (declNode) {
-                    propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
+                    propertyTypes.set(key, UcodeType.FUNCTION);
                     setLoc(key, declNode);
                 } else if (localVarInits.has(name)) {
                     const init = localVarInits.get(name)!;
                     propertyTypes.set(key, this.inferNodeType(init));
                     setLoc(key, init);
                 } else {
-                    propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                    propertyTypes.set(key, UcodeType.UNKNOWN);
                 }
             } else if (val.type === 'Literal') {
                 if (typeof val.value === 'number') {
                     // Exponent notation (`1e5`) is a double literal (ticket 115).
-                    propertyTypes.set(key, ((val.literalType === 'double' || !Number.isInteger(val.value)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType);
+                    propertyTypes.set(key, ((val.literalType === 'double' || !Number.isInteger(val.value)) ? UcodeType.DOUBLE : UcodeType.INTEGER));
                 } else if (typeof val.value === 'string') {
-                    propertyTypes.set(key, UcodeType.STRING as UcodeDataType);
+                    propertyTypes.set(key, UcodeType.STRING);
                 } else if (typeof val.value === 'boolean') {
-                    propertyTypes.set(key, UcodeType.BOOLEAN as UcodeDataType);
+                    propertyTypes.set(key, UcodeType.BOOLEAN);
                 } else {
-                    propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                    propertyTypes.set(key, UcodeType.UNKNOWN);
                 }
                 setLoc(key, val);
             } else if (val.type === 'ObjectExpression') {
-                propertyTypes.set(key, UcodeType.OBJECT as UcodeDataType);
+                propertyTypes.set(key, UcodeType.OBJECT);
                 setLoc(key, val);
             } else if (val.type === 'ArrayExpression') {
-                propertyTypes.set(key, UcodeType.ARRAY as UcodeDataType);
+                propertyTypes.set(key, UcodeType.ARRAY);
                 setLoc(key, val);
             } else {
-                propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
+                propertyTypes.set(key, UcodeType.UNKNOWN);
             }
         }
         return propertyTypes;
@@ -2738,11 +2738,11 @@ export class FileResolver {
         // Build a set of parameter names for heuristic module detection
         const paramNames = new Set<string>();
         for (const p of params) {
-            if (p.type === 'Identifier') paramNames.add((p as IdentifierNode).name);
+            if (p.type === 'Identifier') paramNames.add(p.name);
         }
 
         for (const [propName, propType] of propertyTypes) {
-            if (propType !== UcodeType.FUNCTION as UcodeDataType) continue;
+            if (propType !== UcodeType.FUNCTION) continue;
 
             // Find the function node for this property
             const funcNode = localFuncNodes.get(propName) || topLevelFuncs.get(propName);
@@ -3071,11 +3071,11 @@ export class FileResolver {
      */
     private inferNodeType(node: AstNode): UcodeDataType {
         switch (node.type) {
-            case 'ObjectExpression': return UcodeType.OBJECT as UcodeDataType;
-            case 'ArrayExpression': return UcodeType.ARRAY as UcodeDataType;
+            case 'ObjectExpression': return UcodeType.OBJECT;
+            case 'ArrayExpression': return UcodeType.ARRAY;
             case 'FunctionExpression':
-            case 'ArrowFunctionExpression': return UcodeType.FUNCTION as UcodeDataType;
-            case 'TemplateLiteral': return UcodeType.STRING as UcodeDataType;
+            case 'ArrowFunctionExpression': return UcodeType.FUNCTION;
+            case 'TemplateLiteral': return UcodeType.STRING;
             case 'UnaryExpression': {
                 // ucode parses negative number literals as `-` UnaryExpression over a
                 // Literal, so `INVALID_PARAMS: -32602` is a UnaryExpression, not a Literal.
@@ -3083,23 +3083,23 @@ export class FileResolver {
                 // UNKNOWN at the import site (positive `NONE: 0` worked). `+x`/`-x` follow
                 // the operand's numeric type; `!x` is boolean; `~x` is integer.
                 const un = node;
-                if (un.operator === '!') return UcodeType.BOOLEAN as UcodeDataType;
-                if (un.operator === '~') return UcodeType.INTEGER as UcodeDataType;
+                if (un.operator === '!') return UcodeType.BOOLEAN;
+                if (un.operator === '~') return UcodeType.INTEGER;
                 if (un.operator === '-' || un.operator === '+') {
                     const operand = this.inferNodeType(un.argument);
                     if (operand === UcodeType.INTEGER || operand === UcodeType.DOUBLE) return operand;
-                    return UcodeType.INTEGER as UcodeDataType;
+                    return UcodeType.INTEGER;
                 }
-                return UcodeType.UNKNOWN as UcodeDataType;
+                return UcodeType.UNKNOWN;
             }
             case 'Literal': {
                 const val = node.value;
-                if (typeof val === 'string') return UcodeType.STRING as UcodeDataType;
+                if (typeof val === 'string') return UcodeType.STRING;
                 // Exponent notation (`1e5`) is a double literal (ticket 115).
-                if (typeof val === 'number') return ((node.literalType === 'double' || !Number.isInteger(val)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType;
-                if (typeof val === 'boolean') return UcodeType.BOOLEAN as UcodeDataType;
-                if (val === null) return UcodeType.NULL as UcodeDataType;
-                return UcodeType.UNKNOWN as UcodeDataType;
+                if (typeof val === 'number') return ((node.literalType === 'double' || !Number.isInteger(val)) ? UcodeType.DOUBLE : UcodeType.INTEGER);
+                if (typeof val === 'boolean') return UcodeType.BOOLEAN;
+                if (val === null) return UcodeType.NULL;
+                return UcodeType.UNKNOWN;
             }
             case 'BinaryExpression': {
                 // String concatenation: any + with a string operand → string
@@ -3109,24 +3109,24 @@ export class FileResolver {
                     const leftType = this.inferNodeType(binNode.left);
                     const rightType = this.inferNodeType(binNode.right);
                     if (leftType === UcodeType.STRING || rightType === UcodeType.STRING) {
-                        return UcodeType.STRING as UcodeDataType;
+                        return UcodeType.STRING;
                     }
                     // Numeric operations
                     if ((leftType === UcodeType.INTEGER || leftType === UcodeType.DOUBLE) &&
                         (rightType === UcodeType.INTEGER || rightType === UcodeType.DOUBLE)) {
                         return (leftType === UcodeType.DOUBLE || rightType === UcodeType.DOUBLE)
-                            ? UcodeType.DOUBLE as UcodeDataType : UcodeType.INTEGER as UcodeDataType;
+                            ? UcodeType.DOUBLE : UcodeType.INTEGER;
                     }
                 }
                 // Comparison operators return boolean
                 if (['==', '!=', '<', '>', '<=', '>=', '===', '!=='].includes(binOp)) {
-                    return UcodeType.BOOLEAN as UcodeDataType;
+                    return UcodeType.BOOLEAN;
                 }
                 // Arithmetic operators with known numeric operands
                 if (['-', '*', '/', '%'].includes(binOp)) {
-                    return UcodeType.INTEGER as UcodeDataType;
+                    return UcodeType.INTEGER;
                 }
-                return UcodeType.UNKNOWN as UcodeDataType;
+                return UcodeType.UNKNOWN;
             }
             case 'CallExpression': {
                 // sprintf always returns string
@@ -3135,21 +3135,21 @@ export class FileResolver {
                     const name = callNode.callee.name;
                     if (name === 'sprintf' || name === 'substr' || name === 'trim' || name === 'ltrim' || name === 'rtrim' ||
                         name === 'join' || name === 'replace' || name === 'uchr' || name === 'lc' || name === 'uc') {
-                        return UcodeType.STRING as UcodeDataType;
+                        return UcodeType.STRING;
                     }
                     if (name === 'length' || name === 'index' || name === 'rindex' || name === 'ord' ||
                         name === 'hex' || name === 'int' || name === 'time' || name === 'printf') {
-                        return UcodeType.INTEGER as UcodeDataType;
+                        return UcodeType.INTEGER;
                     }
                     if (name === 'split' || name === 'keys' || name === 'values' || name === 'sort' || name === 'reverse' ||
                         name === 'splice' || name === 'filter' || name === 'map') {
-                        return UcodeType.ARRAY as UcodeDataType;
+                        return UcodeType.ARRAY;
                     }
-                    if (name === 'type') return UcodeType.STRING as UcodeDataType;
+                    if (name === 'type') return UcodeType.STRING;
                 }
-                return UcodeType.UNKNOWN as UcodeDataType;
+                return UcodeType.UNKNOWN;
             }
-            default: return UcodeType.UNKNOWN as UcodeDataType;
+            default: return UcodeType.UNKNOWN;
         }
     }
 
@@ -3194,11 +3194,11 @@ export class FileResolver {
         for (const t of returnTypes) {
             if (t === UcodeType.UNKNOWN) { hasUnknown = true; continue; }
             if (typeof t === 'string') {
-                members.push(t as UcodeType);
+                members.push(t);
             } else if (isUnionType(t)) {
                 for (const m of t.types) members.push(m);
             } else if (isObjectType(t) || isArrayType(t)) {
-                members.push(t as SingleType);
+                members.push(t);
             } else {
                 hasUnknown = true; // ModuleType/DefaultImportType — out of scope here
             }
@@ -3230,7 +3230,7 @@ export class FileResolver {
                     result.push(this.inferReturnArgType(arg, localVarInits));
                 } else {
                     // `return;` (no argument) → null in ucode
-                    result.push(UcodeType.NULL as UcodeDataType);
+                    result.push(UcodeType.NULL);
                 }
                 continue;
             }

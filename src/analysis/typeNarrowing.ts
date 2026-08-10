@@ -79,10 +79,10 @@ export class TypeNarrowingEngine {
   removeTypesFromUnion(type: UcodeDataType, typesToRemove: SingleType[]): TypeNarrowingResult {
     if (!isUnionType(type)) {
       // Single type - check if it should be removed
-      if (singleTypeIn(type as SingleType, typesToRemove)) {
+      if (singleTypeIn(type, typesToRemove)) {
         return {
           narrowedType: UcodeType.UNKNOWN, // Completely narrowed away
-          excludedTypes: [type as SingleType]
+          excludedTypes: [type]
         };
       }
       return {
@@ -107,7 +107,7 @@ export class TypeNarrowingEngine {
   keepOnlyTypes(type: UcodeDataType, typesToKeep: SingleType[]): TypeNarrowingResult {
     if (!isUnionType(type)) {
       // Single type - check if it should be kept
-      if (singleTypeIn(type as SingleType, typesToKeep)) {
+      if (singleTypeIn(type, typesToKeep)) {
         return {
           narrowedType: type,
           excludedTypes: []
@@ -118,13 +118,13 @@ export class TypeNarrowingEngine {
       // anything" — a type guard narrows it to the tested type.
       if ((type === UcodeType.UNKNOWN || type === UcodeType.ANY) && typesToKeep.length > 0) {
         return {
-          narrowedType: typesToKeep.length === 1 ? typesToKeep[0]! as UcodeDataType : createUnionType(typesToKeep),
+          narrowedType: typesToKeep.length === 1 ? typesToKeep[0]! : createUnionType(typesToKeep),
           excludedTypes: []
         };
       }
       return {
         narrowedType: UcodeType.UNKNOWN, // Completely narrowed away
-        excludedTypes: [type as SingleType]
+        excludedTypes: [type]
       };
     }
 

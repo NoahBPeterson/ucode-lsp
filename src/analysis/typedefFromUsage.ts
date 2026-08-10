@@ -14,7 +14,7 @@
  * member both called and dotted-through renders `function|object`).
  */
 
-import type { AstNode, MemberExpressionNode, IdentifierNode, CallExpressionNode, BinaryExpressionNode, AssignmentExpressionNode, LiteralNode } from '../ast/nodes';
+import type { AstNode, MemberExpressionNode, IdentifierNode, FunctionDeclarationNode, FunctionExpressionNode, ArrowFunctionExpressionNode } from '../ast/nodes';
 import { astChildren } from '../ast/astChildren';
 
 export interface MinedProperty {
@@ -30,11 +30,16 @@ interface PropNode {
   order: number; // first-seen order, so the rendered block mirrors the code
 }
 
-const FUNCTION_KINDS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+type FunctionLikeNode = FunctionDeclarationNode | FunctionExpressionNode | ArrowFunctionExpressionNode;
+
+function asFunctionLike(node: AstNode): FunctionLikeNode | null {
+  return node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression'
+    ? node : null;
+}
 
 function literalTypeName(node: AstNode): string | null {
   if (node.type !== 'Literal') return null;
-  const lit = node as LiteralNode;
+  const lit = node;
   switch (lit.literalType) {
     case 'number': return typeof lit.value === 'number' && lit.value % 1 === 0 ? 'integer' : 'double';
     case 'double': return 'double';
@@ -50,17 +55,17 @@ function chainOf(node: MemberExpressionNode): { base: IdentifierNode; segs: Arra
   const links: MemberExpressionNode[] = [];
   let cur: AstNode = node;
   while (cur.type === 'MemberExpression') {
-    links.unshift(cur as MemberExpressionNode);
-    cur = (cur as MemberExpressionNode).object;
+    links.unshift(cur);
+    cur = cur.object;
   }
   if (cur.type !== 'Identifier') return null;
   const segs: Array<{ name: string }> = [];
   for (const link of links) {
     if (link.computed || link.property.type !== 'Identifier') break;
-    segs.push({ name: (link.property as IdentifierNode).name });
+    segs.push({ name: link.property.name });
   }
   if (segs.length === 0) return null;
-  return { base: cur as IdentifierNode, segs };
+  return { base: cur, segs };
 }
 
 /**
@@ -71,7 +76,7 @@ function chainOf(node: MemberExpressionNode): { base: IdentifierNode; segs: Arra
  * skipped — those accesses belong to the shadow, not this parameter.
  */
 export function mineParamShape(fnNode: AstNode, paramName: string): MinedProperty[] | null {
-  const body = (fnNode as { body?: AstNode }).body;
+  const body = asFunctionLike(fnNode)?.body;
   if (!body) return null;
   const root: PropNode = { hints: new Set(), children: new Map(), order: 0 };
   let counter = 0;
@@ -89,15 +94,16 @@ export function mineParamShape(fnNode: AstNode, paramName: string): MinedPropert
     if (leafHint) cur.hints.add(leafHint);
   };
 
-  const shadowedIn = (node: AstNode): boolean => {
-    const params = (node as { params?: IdentifierNode[] }).params ?? [];
-    const rest = (node as { restParam?: IdentifierNode }).restParam;
+  const shadowedIn = (node: FunctionLikeNode): boolean => {
+    const params = node.params ?? [];
+    const rest = node.restParam;
     return params.some((p) => p?.name === paramName) || rest?.name === paramName;
   };
 
   const visit = (node: AstNode, parent: AstNode | null): void => {
-    if (FUNCTION_KINDS.has(node.type) && node !== fnNode && shadowedIn(node)) return;
-    if (node.type === 'VariableDeclarator' && ((node as { id?: IdentifierNode }).id)?.name === paramName) {
+    const fnLike = asFunctionLike(node);
+    if (fnLike && node !== fnNode && shadowedIn(fnLike)) return;
+    if (node.type === 'VariableDeclarator' && node.id?.name === paramName) {
       // A redeclaration anywhere below makes later reads ambiguous — record nothing
       // from the initializer's siblings is overkill; just skip THIS declarator's
       // subtree (its init may still read the param, but the ambiguity isn't worth it).
@@ -106,21 +112,21 @@ export function mineParamShape(fnNode: AstNode, paramName: string): MinedPropert
 
     if (node.type === 'MemberExpression') {
       // Only the OUTERMOST link of a chain — inner links are re-visited via chainOf.
-      const isInnerLink = parent?.type === 'MemberExpression' && (parent as MemberExpressionNode).object === node;
+      const isInnerLink = parent?.type === 'MemberExpression' && parent.object === node;
       if (!isInnerLink) {
-        const chain = chainOf(node as MemberExpressionNode);
+        const chain = chainOf(node);
         if (chain && chain.base.name === paramName) {
           let hint: string | null = null;
-          if (parent?.type === 'CallExpression' && (parent as CallExpressionNode).callee === node) {
+          if (parent?.type === 'CallExpression' && parent.callee === node) {
             hint = 'function';
           } else if (parent?.type === 'BinaryExpression') {
-            const bin = parent as BinaryExpressionNode;
+            const bin = parent;
             if (['==', '===', '!=', '!=='].includes(bin.operator)) {
               const other = bin.left === node ? bin.right : bin.left;
               hint = literalTypeName(other);
             }
-          } else if (parent?.type === 'AssignmentExpression' && (parent as AssignmentExpressionNode).left === node) {
-            const rhs = (parent as AssignmentExpressionNode).right;
+          } else if (parent?.type === 'AssignmentExpression' && parent.left === node) {
+            const rhs = parent.right;
             hint = literalTypeName(rhs)
               ?? (rhs.type === 'ObjectExpression' ? 'object' : rhs.type === 'ArrayExpression' ? 'array' : null);
           }
@@ -260,7 +266,7 @@ export function planTypedefExtension(existing: Map<string, ExistingTypedef>, min
  */
 export function propertyKeyName(prop: { computed?: boolean; key?: AstNode }): string | null {
   if (prop.computed || !prop.key) return null;
-  if (prop.key.type === 'Identifier') return (prop.key as IdentifierNode).name;
+  if (prop.key.type === 'Identifier') return prop.key.name;
   if (prop.key.type === 'Literal') {
     const v = prop.key.value;
     return typeof v === 'string' ? v : null;
@@ -283,13 +289,12 @@ export function propertyKeyName(prop: { computed?: boolean; key?: AstNode }): st
  */
 export function siblingExampleSeeds(siblingName: string, siblingObject: AstNode): Map<string, string> {
   const seeds = new Map<string, string>();
-  const props = (siblingObject as { properties?: AstNode[] }).properties ?? [];
+  const props = siblingObject.type === 'ObjectExpression' ? siblingObject.properties : [];
   for (const p of props) {
     if (p.type !== 'Property') continue;
-    const prop = p as { computed?: boolean; key?: AstNode; value?: AstNode };
-    const name = propertyKeyName(prop);
-    if (!name || !prop.value) continue;
-    const t = literalTypeName(prop.value);
+    const name = propertyKeyName(p);
+    if (!name || !p.value) continue;
+    const t = literalTypeName(p.value);
     if (t) seeds.set(`${siblingName}.${name}`, t);
   }
   return seeds;

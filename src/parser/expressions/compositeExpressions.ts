@@ -7,8 +7,7 @@ import { TokenType, type Token } from '../../lexer';
 import { UcodeErrorCode } from '../../analysis/errorConstants';
 import {
   type AstNode, type IdentifierNode, type ArrayExpressionNode, type ObjectExpressionNode,
-  type PropertyNode, type MemberExpressionNode, type LiteralNode, type SpreadElementNode,
-  type FunctionExpressionNode, type ArrowFunctionExpressionNode
+  type PropertyNode, type MemberExpressionNode, type SpreadElementNode
 } from '../../ast/nodes';
 import { PrimaryExpressions } from './primaryExpressions';
 
@@ -96,7 +95,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
 
         if (this.match(TokenType.TK_LBRACK)) {
           computed = true;
-          key = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
+          key = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' };
           this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property key");
         } else if (this.check(TokenType.TK_LABEL) || this.canUseAsIdentifier()) {
           // Handle identifier property keys - could be shorthand or regular
@@ -113,8 +112,8 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
               value: identifierName,
               raw: identifierName,
               literalType: 'string'
-            } as LiteralNode;
-            
+            };
+
             // Value is the same identifier reference
             const value: IdentifierNode = {
               type: 'Identifier',
@@ -143,7 +142,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
               value: identifierName,
               raw: identifierName,
               literalType: 'string'
-            } as LiteralNode;
+            };
           }
         } else if (this.check(TokenType.TK_NUMBER) || this.check(TokenType.TK_DOUBLE)) {
           // A bare numeric key is a JS-ism ucode rejects at parse time: its object parser
@@ -162,10 +161,10 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
             type: 'Literal',
             start: token.pos,
             end: token.end,
-            value: token.value as string,
-            raw: token.value as string,
+            value: token.value,
+            raw: String(token.value),
             literalType: 'string'
-          } as LiteralNode;
+          };
         } else if (this.check(TokenType.TK_STRING)) {
           this.advance();
           key = this.parseLiteral('string');
@@ -188,8 +187,8 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
         // node for hover. Mirrors the VariableDeclaration → init propagation.
         if (propJsDoc
             && (value.type === 'FunctionExpression' || value.type === 'ArrowFunctionExpression')
-            && !(value as FunctionExpressionNode | ArrowFunctionExpressionNode).leadingJsDoc) {
-          (value as FunctionExpressionNode | ArrowFunctionExpressionNode).leadingJsDoc = propJsDoc;
+            && !value.leadingJsDoc) {
+          value.leadingJsDoc = propJsDoc;
         }
 
         properties.push({
@@ -224,7 +223,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
     let endPos: number;
 
     if (computed) {
-      property = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
+      property = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' };
       this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property");
       // Use position after ']' for consistent exclusive end
       endPos = this.previous()!.end;
@@ -237,7 +236,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
         this.errorAt("Expected property name after '.' or '?.'", operatorToken.pos, operatorToken.end);
         return null;
       }
-      property = this.parseIdentifierName() || { type: 'Identifier', start: 0, end: 0, name: '' } as IdentifierNode;
+      property = this.parseIdentifierName() || { type: 'Identifier', start: 0, end: 0, name: '' };
       endPos = property.end;
     }
 
@@ -279,7 +278,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
   protected getTokenAsIdentifierName(token: Token): string {
     // If it's already a label token, use its value
     if (token.type === TokenType.TK_LABEL) {
-      return token.value as string;
+      return String(token.value);
     }
     
     // For keyword tokens, get the keyword string
@@ -309,6 +308,6 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
       [TokenType.TK_DELETE]: 'delete'
     };
     
-    return keywordMap[token.type] || (token.value as string) || '';
+    return keywordMap[token.type] || String(token.value) || '';
   }
 }

@@ -251,8 +251,7 @@ Regular expressions are independent objects used for pattern matching and text p
   extractPattern(regexValue: string): { pattern: string; flags?: string } {
     const m = typeof regexValue === 'string' ? regexValue.match(/^\/(.*)\/([a-z]*)$/s) : null;
     if (m) {
-      const pattern = m[1] as string;
-      const flags = m[2] as string;
+      const [, pattern = '', flags = ''] = m;
       return flags ? { pattern, flags } : { pattern };
     }
     return { pattern: '' };

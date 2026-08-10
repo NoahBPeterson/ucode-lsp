@@ -5,17 +5,21 @@
  */
 import { TextEdit } from 'vscode-languageserver';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import type { AstNode, ProgramNode, ExpressionStatementNode, LiteralNode, ImportDeclarationNode, ImportSpecifierNode } from './ast/nodes';
+import type { AstNode, ImportDeclarationNode, ImportSpecifierNode } from './ast/nodes';
+
+/** The statement list of a body-carrying root (Program/BlockStatement), else empty. */
+function rootBody(ast: AstNode | null | undefined): AstNode[] {
+    return (ast && (ast.type === 'Program' || ast.type === 'BlockStatement')) ? ast.body : [];
+}
 
 /** Offset at the end of the leading imports / 'use strict' run, or -1 if none. */
 export function leadingImportAnchor(ast: AstNode | null | undefined): number {
     let anchorEnd = -1;
-    const body: AstNode[] = (ast && Array.isArray((ast as ProgramNode).body)) ? (ast as ProgramNode).body : [];
-    for (const stmt of body) {
+    for (const stmt of rootBody(ast)) {
         if (stmt?.type === 'ImportDeclaration') anchorEnd = stmt.end;
         else if (anchorEnd === -1 && stmt?.type === 'ExpressionStatement'
-            && (stmt as ExpressionStatementNode).expression?.type === 'Literal'
-            && ((stmt as ExpressionStatementNode).expression as LiteralNode).value === 'use strict') anchorEnd = stmt.end;
+            && stmt.expression?.type === 'Literal'
+            && stmt.expression.value === 'use strict') anchorEnd = stmt.end;
         else break;
     }
     return anchorEnd;
@@ -32,10 +36,9 @@ export function computeImportInsertEdit(ast: AstNode | null | undefined, documen
 /** An existing `import { … } from '<module>'` (with at least one NAMED specifier) so a
  *  new named import can be merged into its brace list instead of adding a second line. */
 function findMergeableNamedImport(ast: AstNode | null | undefined, module: string): ImportDeclarationNode | null {
-    const body: AstNode[] = (ast && Array.isArray((ast as ProgramNode).body)) ? (ast as ProgramNode).body : [];
-    for (const stmt of body) {
+    for (const stmt of rootBody(ast)) {
         if (stmt?.type !== 'ImportDeclaration') continue;
-        const decl = stmt as ImportDeclarationNode;
+        const decl = stmt;
         if (decl.source?.value !== module) continue;
         if (decl.specifiers?.some(s => s.type === 'ImportSpecifier')) return decl;
     }
@@ -54,10 +57,12 @@ export function computeNamedImportEdit(
 ): TextEdit | null {
     const existing = findMergeableNamedImport(ast, module);
     if (existing) {
-        const named = existing.specifiers.filter(s => s.type === 'ImportSpecifier') as ImportSpecifierNode[];
+        const named = existing.specifiers.filter((s): s is ImportSpecifierNode => s.type === 'ImportSpecifier');
         // Already present (by local binding or imported name) → no edit needed.
         if (named.some(s => s.local?.name === name || s.imported?.name === name)) return null;
-        const last = named.reduce((a, b) => (b.end > a.end ? b : a), named[0]!);
+        const first = named[0];
+        if (!first) return null;
+        const last = named.reduce((a, b) => (b.end > a.end ? b : a), first);
         return TextEdit.insert(document.positionAt(last.end), `, ${name}`);
     }
     return computeImportInsertEdit(ast, document, `import { ${name} } from '${module}';`);

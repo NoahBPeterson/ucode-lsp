@@ -10,7 +10,10 @@
 // shadows the function name could be over-counted. That's rare; cross-file
 // references are out of scope for now (in-file only).
 
-import { type AstNode, type IdentifierNode } from './ast/nodes';
+import {
+    type ArrowFunctionExpressionNode, type AstNode, type FunctionDeclarationNode,
+    type FunctionExpressionNode, type IdentifierNode,
+} from './ast/nodes';
 import { astChildren, walkAst } from './ast/astChildren';
 
 export interface SourceSpan {
@@ -18,9 +21,13 @@ export interface SourceSpan {
     end: number;   // character offset (exclusive)
 }
 
-const FUNCTIONISH = new Set([
-    'FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression',
-]);
+type FunctionishNode =
+    FunctionDeclarationNode | FunctionExpressionNode | ArrowFunctionExpressionNode;
+
+function isFunctionish(node: AstNode): node is FunctionishNode {
+    return node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression'
+        || node.type === 'ArrowFunctionExpression';
+}
 
 /**
  * The identifier children the generic child enumeration deliberately omits
@@ -70,12 +77,12 @@ export function findFunctionReferences(
             // An object-literal key: `{ funcName: ... }` — not a reference.
             const isObjectKey = parent?.type === 'Property'
                 && parent.key === node && !parent.computed;
+            const fnParent = parent !== null && isFunctionish(parent) ? parent : null;
             // A parameter name in any function — a different binding (shadow).
-            const isParam = parent !== null && FUNCTIONISH.has(parent.type)
-                && (parent as { params?: IdentifierNode[] }).params?.includes(node) === true;
+            const isParam = fnParent !== null && fnParent.params.includes(node);
             // Another function/declaration's own name of the same spelling.
-            const isOtherDeclId = parent !== null && FUNCTIONISH.has(parent.type)
-                && (parent as { id?: IdentifierNode | null }).id === node;
+            const isOtherDeclId = fnParent !== null
+                && fnParent.type !== 'ArrowFunctionExpression' && fnParent.id === node;
             // An import binding or export specifier — `import name from …`,
             // `export default name`, `export { name }`. These are not usages: an
             // import may even be unused, and an export just re-publishes the

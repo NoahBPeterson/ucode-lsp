@@ -8,18 +8,15 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { TextDocument } from 'vscode-languageserver-textdocument';
-import { DiagnosticSeverity, MarkupKind } from 'vscode-languageserver/node';
-import type { Diagnostic, TextDocuments } from 'vscode-languageserver/node';
+import { DiagnosticSeverity, MarkupKind, TextDocuments } from 'vscode-languageserver/node';
+import type { Diagnostic } from 'vscode-languageserver/node';
 import { UcodeLexer, detectTemplateMode, bridgeTemplateTokens, type Token } from './lexer';
 import { UcodeParser } from './parser';
 import { SemanticAnalyzer, type SemanticAnalysisResult } from './analysis';
 import { UcodeErrorCode } from './analysis/errorConstants';
 import { UCODE_TARGET_VERSIONS, DEFAULT_TARGET_VERSION, type UcodeTargetVersion } from './analysis/ucodeVersions';
 import { handleHover } from './hover';
-import type {
-    AstNode, IdentifierNode, MemberExpressionNode, PropertyNode,
-    ImportSpecifierNode, ExportSpecifierNode, ExportAllDeclarationNode,
-} from './ast/nodes';
+import type { AstNode, IdentifierNode } from './ast/nodes';
 
 // Read the version from package.json at build time so `--version` never drifts
 // from the published version. Bundled by webpack into dist/cli.js.
@@ -278,7 +275,7 @@ function analyzeFile(filePath: string, targetVersion: UcodeTargetVersion): FileA
 
     // Lexer side-channel errors (#56) surface alongside parser errors.
     const diagnostics: Diagnostic[] = [...lexer.errors, ...parseResult.errors].map(err => ({
-        severity: (err as { severity?: string }).severity === 'warning' ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error,
+        severity: err.severity === 'warning' ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error,
         range: {
             start: textDocument.positionAt(err.start),
             end: textDocument.positionAt(err.end),
@@ -317,6 +314,17 @@ function analyzeFile(filePath: string, targetVersion: UcodeTargetVersion): FileA
  *     stays included as the local binding
  * Deduped by start offset (shared imported/local nodes are reachable twice).
  */
+/** What an AST node property may hold when walked reflectively: child nodes and
+ *  node arrays (as plain objects — `isAstNode` tells them apart from the odd
+ *  non-node record like a template element's `value`), scalars, or nothing. */
+type AstChildValue = object | (object | null)[] | string | number | boolean | null | undefined;
+
+/** Structural node test, mirroring the parser's own shape: anything carrying a
+ *  string `type` tag. Non-node records (no `type`) are filtered before descent. */
+function isAstNode(v: object): v is AstNode {
+    return 'type' in v && typeof v.type === 'string';
+}
+
 function collectVariableIdentifiers(root: AstNode): IdentifierNode[] {
     const out: IdentifierNode[] = [];
     const seen = new Set<number>();
@@ -325,10 +333,9 @@ function collectVariableIdentifiers(root: AstNode): IdentifierNode[] {
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
 
         if (node.type === 'Identifier') {
-            const id = node as IdentifierNode;
-            if (typeof id.start === 'number' && !seen.has(id.start)) {
-                seen.add(id.start);
-                out.push(id);
+            if (typeof node.start === 'number' && !seen.has(node.start)) {
+                seen.add(node.start);
+                out.push(node);
             }
             return;
         }
@@ -338,40 +345,36 @@ function collectVariableIdentifiers(root: AstNode): IdentifierNode[] {
         const skip = new Set<AstNode>();
         switch (node.type) {
             case 'MemberExpression': {
-                const m = node as MemberExpressionNode;
-                if (!m.computed) skip.add(m.property);
+                if (!node.computed) skip.add(node.property);
                 break;
             }
             case 'Property': {
-                const p = node as PropertyNode;
-                if (!p.computed) skip.add(p.key);
+                if (!node.computed) skip.add(node.key);
                 break;
             }
             case 'ImportSpecifier': {
-                const s = node as ImportSpecifierNode;
-                if (s.imported !== s.local) skip.add(s.imported);
+                if (node.imported !== node.local) skip.add(node.imported);
                 break;
             }
             case 'ExportSpecifier': {
-                const s = node as ExportSpecifierNode;
-                if (s.exported !== s.local) skip.add(s.exported);
+                if (node.exported !== node.local) skip.add(node.exported);
                 break;
             }
             case 'ExportAllDeclaration': {
-                const s = node as ExportAllDeclarationNode;
-                if (s.exported) skip.add(s.exported);
+                if (node.exported) skip.add(node.exported);
                 break;
             }
         }
 
-        for (const [key, value] of Object.entries(node)) {
+        const entries: [string, AstChildValue][] = Object.entries(node);
+        for (const [key, value] of entries) {
             if (key === 'type' || key === 'start' || key === 'end' || key === 'leadingJsDoc') continue;
             if (Array.isArray(value)) {
                 for (const item of value) {
-                    if (item && typeof item === 'object' && !skip.has(item)) visit(item as AstNode);
+                    if (item && typeof item === 'object' && isAstNode(item) && !skip.has(item)) visit(item);
                 }
-            } else if (value && typeof value === 'object' && !skip.has(value)) {
-                visit(value as AstNode);
+            } else if (value && typeof value === 'object' && isAstNode(value) && !skip.has(value)) {
+                visit(value);
             }
         }
     };
@@ -387,6 +390,21 @@ function hoverDisplayedType(markdown: string): string | null {
     const firstLine = markdown.split('\n', 1)[0] ?? '';
     const m = firstLine.match(/\*\*\s*:\s*`([^`]+)`/);
     return m ? m[1]! : null;
+}
+
+/** A real TextDocuments collection backed by the single analyzed document —
+ *  handleHover only ever calls `.get(uri)` on it. */
+class SingleDocumentCollection extends TextDocuments<TextDocument> {
+    private readonly doc: TextDocument;
+
+    constructor(doc: TextDocument) {
+        super(TextDocument);
+        this.doc = doc;
+    }
+
+    override get(uri: string): TextDocument | undefined {
+        return uri === this.doc.uri ? this.doc : undefined;
+    }
 }
 
 interface CoverageIssue {
@@ -407,9 +425,7 @@ function auditTypeCoverage(analysis: FileAnalysis): { issues: CoverageIssue[]; p
     if (!result?.ast) return { issues: [], probed: 0 };
 
     // handleHover only needs `.get(uri)` from the documents collection.
-    const documents = {
-        get: (uri: string) => (uri === document.uri ? document : undefined),
-    } as Partial<TextDocuments<TextDocument>> as TextDocuments<TextDocument>;
+    const documents = new SingleDocumentCollection(document);
 
     const identifiers = collectVariableIdentifiers(result.ast)
         .sort((a, b) => a.start - b.start);
@@ -448,10 +464,11 @@ function auditTypeCoverage(analysis: FileAnalysis): { issues: CoverageIssue[]; p
 function parseTargetVersion(args: string[]): { targetVersion: UcodeTargetVersion; rest: string[] } {
     let targetVersion: UcodeTargetVersion = DEFAULT_TARGET_VERSION;
     const rest: string[] = [];
-    const valid = UCODE_TARGET_VERSIONS as readonly string[];
-    const fail = (val: string) => {
+    const valid: readonly string[] = UCODE_TARGET_VERSIONS;
+    const isTargetVersion = (v: string): v is UcodeTargetVersion => valid.includes(v);
+    const fail = (val: string): never => {
         process.stderr.write(`ucode-lsp: invalid --target-version '${val}'. Valid: ${UCODE_TARGET_VERSIONS.join(', ')}\n`);
-        process.exit(2);
+        return process.exit(2);
     };
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
@@ -467,8 +484,8 @@ function parseTargetVersion(args: string[]): { targetVersion: UcodeTargetVersion
             rest.push(a);
             continue;
         }
-        if (val === undefined || !valid.includes(val)) fail(val ?? '');
-        targetVersion = val as UcodeTargetVersion;
+        if (val === undefined || !isTargetVersion(val)) fail(val ?? '');
+        else targetVersion = val;
     }
     return { targetVersion, rest };
 }

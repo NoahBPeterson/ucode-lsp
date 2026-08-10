@@ -24,7 +24,7 @@ export abstract class PrimaryExpressions extends ParseRules {
       type: 'Identifier',
       start: token.pos,
       end: token.end,
-      name: token.value as string
+      name: String(token.value)
     };
   }
 
@@ -39,7 +39,7 @@ export abstract class PrimaryExpressions extends ParseRules {
       type: 'Identifier',
       start: token.pos,
       end: token.end,
-      name: token.value as string
+      name: String(token.value)
     };
   }
 
@@ -66,7 +66,7 @@ export abstract class PrimaryExpressions extends ParseRules {
         type: 'Identifier',
         start: token.pos,
         end: token.end,
-        name: token.value as string // Remove quotes from string value
+        name: String(token.value) // Remove quotes from string value
       };
     } else {
       this.error("Expected identifier or string literal in import specifier");
@@ -74,7 +74,7 @@ export abstract class PrimaryExpressions extends ParseRules {
     }
   }
 
-  protected parseLiteral(literalType: string): LiteralNode {
+  protected parseLiteral(literalType: LiteralNode['literalType']): LiteralNode {
     const token = this.previous()!;
     let value: string | number | boolean | null;
 
@@ -107,7 +107,7 @@ export abstract class PrimaryExpressions extends ParseRules {
       end: token.end,
       value,
       raw: String(token.value),
-      literalType: literalType as LiteralNode['literalType']
+      literalType
     };
   }
 
@@ -217,7 +217,7 @@ export abstract class PrimaryExpressions extends ParseRules {
                 type: 'Identifier',
                 start: token.pos,
                 end: token.end,
-                name: token.value as string
+                name: String(token.value)
               };
               const spreadElement: SpreadElementNode = {
                 type: 'SpreadElement',
@@ -243,7 +243,7 @@ export abstract class PrimaryExpressions extends ParseRules {
               type: 'Identifier',
               start: token.pos,
               end: token.end,
-              name: token.value as string
+              name: String(token.value)
             };
             params.push(identifier);
           }
@@ -264,7 +264,7 @@ export abstract class PrimaryExpressions extends ParseRules {
           start: 0,
           end: 0,
           name: '__arrow_params__'
-        } as IdentifierNode,
+        },
         arguments: params
       };
       return paramList;
@@ -323,7 +323,7 @@ export abstract class PrimaryExpressions extends ParseRules {
     // the params selects the colon-block, running statements up to `endfunction`).
     const body = this.check(TokenType.TK_COLON)
       ? (this.parseColonEndBlock(TokenType.TK_ENDFUNC, "endfunction")
-         ?? { type: 'BlockStatement', start: this.previous()!.end, end: this.previous()!.end, body: [] } as BlockStatementNode)
+         ?? ({ type: 'BlockStatement', start: this.previous()!.end, end: this.previous()!.end, body: [] } satisfies BlockStatementNode))
       : this.parseBlockStatement(this.consume(TokenType.TK_LBRACE, "Expected '{' or ':' to start the function body"), "function expression body");
 
     const result: FunctionExpressionNode = {

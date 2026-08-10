@@ -22,9 +22,6 @@ import {
   type BlockStatementNode,
   type ConditionalExpressionNode,
   type LogicalExpressionNode,
-  type ExpressionStatementNode,
-  type VariableDeclarationNode,
-  type AssignmentExpressionNode,
 } from '../../ast/nodes';
 import { type ControlFlowGraph, type BasicBlock, type Edge } from './types';
 
@@ -167,46 +164,46 @@ export class CFGBuilder {
   private visitNode(node: AstNode): void {
     switch (node.type) {
       case 'Program':
-        this.visitProgram(node as ProgramNode);
+        this.visitProgram(node);
         break;
 
       // Control flow statements
       case 'IfStatement':
-        this.visitIfStatement(node as IfStatementNode);
+        this.visitIfStatement(node);
         break;
       case 'WhileStatement':
-        this.visitWhileStatement(node as WhileStatementNode);
+        this.visitWhileStatement(node);
         break;
       case 'ForStatement':
-        this.visitForStatement(node as ForStatementNode);
+        this.visitForStatement(node);
         break;
       case 'ForInStatement':
-        this.visitForInStatement(node as ForInStatementNode);
+        this.visitForInStatement(node);
         break;
       case 'SwitchStatement':
-        this.visitSwitchStatement(node as SwitchStatementNode);
+        this.visitSwitchStatement(node);
         break;
       case 'TryStatement':
-        this.visitTryStatement(node as TryStatementNode);
+        this.visitTryStatement(node);
         break;
 
       // Jump statements
       case 'ReturnStatement':
-        this.visitReturnStatement(node as ReturnStatementNode);
+        this.visitReturnStatement(node);
         break;
       case 'BreakStatement':
-        this.visitBreakStatement(node as BreakStatementNode);
+        this.visitBreakStatement(node);
         break;
       case 'ContinueStatement':
-        this.visitContinueStatement(node as ContinueStatementNode);
+        this.visitContinueStatement(node);
         break;
       case 'ThrowStatement':
-        this.visitThrowStatement(node as ThrowStatementNode);
+        this.visitThrowStatement(node);
         break;
 
       // Block statement
       case 'BlockStatement':
-        this.visitBlockStatement(node as BlockStatementNode);
+        this.visitBlockStatement(node);
         break;
 
       // Function declarations create new CFGs (not handled here)
@@ -220,20 +217,19 @@ export class CFGBuilder {
 
       // Expressions with control flow implications
       case 'ConditionalExpression':
-        this.visitConditionalExpression(node as ConditionalExpressionNode);
+        this.visitConditionalExpression(node);
         break;
       case 'LogicalExpression':
-        this.visitLogicalExpression(node as LogicalExpressionNode);
+        this.visitLogicalExpression(node);
         break;
 
       // Expression statements: a terminator call cuts the flow — `die();` directly, or as an
       // assignment RHS `x = die();` (the assignment never completes because die() throws).
       case 'ExpressionStatement': {
-        const exprStmt = node as ExpressionStatementNode;
         this.addStatement(node);
-        const expr = exprStmt.expression;
-        const asnRhs = expr.type === 'AssignmentExpression' && (expr as AssignmentExpressionNode).operator === '='
-          ? (expr as AssignmentExpressionNode).right : null;
+        const expr = node.expression;
+        const asnRhs = expr.type === 'AssignmentExpression' && expr.operator === '='
+          ? expr.right : null;
         if (this.isTerminatorCall(expr) || this.isTerminatorCall(asnRhs)) {
           this.cutToExit();
         }
@@ -248,8 +244,7 @@ export class CFGBuilder {
       // die() throws before the binding is ever made, so anything after is unreachable.
       case 'VariableDeclaration': {
         this.addStatement(node);
-        const decl = node as VariableDeclarationNode;
-        if ((decl.declarations || []).some((d) => this.isTerminatorCall(d?.init))) {
+        if ((node.declarations || []).some((d) => this.isTerminatorCall(d?.init))) {
           this.cutToExit();
         }
         break;
@@ -523,7 +518,8 @@ export class CFGBuilder {
     // Left untracked, body reads fall back to the symbol's stamped element/key
     // type. The old intersection meet happened to drop the key; the widened loop
     // fixpoint would make the stale `null` stick.
-    (node.left as { _forInLoopVar?: boolean })._forInLoopVar = true;
+    const loopVarStamp: { type: string; _forInLoopVar?: boolean } = node.left;
+    loopVarStamp._forInLoopVar = true;
     this.addStatement(node.left);
     this.addStatement(node.right);
 

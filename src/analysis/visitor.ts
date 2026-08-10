@@ -102,145 +102,145 @@ export class BaseVisitor implements VisitorMethods {
   private dispatch(node: AstNode): void {
     switch (node.type) {
       case 'Program':
-        this.visitProgram(node as ProgramNode);
+        this.visitProgram(node);
         break;
       case 'Literal':
-        this.visitLiteral(node as LiteralNode);
+        this.visitLiteral(node);
         break;
       case 'Identifier':
-        this.visitIdentifier(node as IdentifierNode);
+        this.visitIdentifier(node);
         break;
       case 'BinaryExpression':
-        this.visitBinaryExpression(node as BinaryExpressionNode);
+        this.visitBinaryExpression(node);
         break;
       case 'UnaryExpression':
-        this.visitUnaryExpression(node as UnaryExpressionNode);
+        this.visitUnaryExpression(node);
         break;
       case 'CallExpression':
-        this.visitCallExpression(node as CallExpressionNode);
+        this.visitCallExpression(node);
         break;
       case 'MemberExpression':
-        this.visitMemberExpression(node as MemberExpressionNode);
+        this.visitMemberExpression(node);
         break;
       case 'AssignmentExpression':
-        this.visitAssignmentExpression(node as AssignmentExpressionNode);
+        this.visitAssignmentExpression(node);
         break;
       case 'ArrayExpression':
-        this.visitArrayExpression(node as ArrayExpressionNode);
+        this.visitArrayExpression(node);
         break;
       case 'ObjectExpression':
-        this.visitObjectExpression(node as ObjectExpressionNode);
+        this.visitObjectExpression(node);
         break;
       case 'Property':
-        this.visitProperty(node as PropertyNode);
+        this.visitProperty(node);
         break;
       case 'BlockStatement':
-        this.visitBlockStatement(node as BlockStatementNode);
+        this.visitBlockStatement(node);
         break;
       case 'ExpressionStatement':
-        this.visitExpressionStatement(node as ExpressionStatementNode);
+        this.visitExpressionStatement(node);
         break;
       case 'VariableDeclaration':
-        this.visitVariableDeclaration(node as VariableDeclarationNode);
+        this.visitVariableDeclaration(node);
         break;
       case 'VariableDeclarator':
-        this.visitVariableDeclarator(node as VariableDeclaratorNode);
+        this.visitVariableDeclarator(node);
         break;
       case 'IfStatement':
-        this.visitIfStatement(node as IfStatementNode);
+        this.visitIfStatement(node);
         break;
       case 'ForStatement':
-        this.visitForStatement(node as ForStatementNode);
+        this.visitForStatement(node);
         break;
       case 'ForInStatement':
-        this.visitForInStatement(node as ForInStatementNode);
+        this.visitForInStatement(node);
         break;
       case 'WhileStatement':
-        this.visitWhileStatement(node as WhileStatementNode);
+        this.visitWhileStatement(node);
         break;
       case 'FunctionDeclaration':
-        this.visitFunctionDeclaration(node as FunctionDeclarationNode);
+        this.visitFunctionDeclaration(node);
         break;
       case 'FunctionExpression':
-        this.visitFunctionExpression(node as FunctionExpressionNode);
+        this.visitFunctionExpression(node);
         break;
       case 'ReturnStatement':
-        this.visitReturnStatement(node as ReturnStatementNode);
+        this.visitReturnStatement(node);
         break;
       case 'BreakStatement':
-        this.visitBreakStatement(node as BreakStatementNode);
+        this.visitBreakStatement(node);
         break;
       case 'ContinueStatement':
-        this.visitContinueStatement(node as ContinueStatementNode);
+        this.visitContinueStatement(node);
         break;
       case 'TryStatement':
-        this.visitTryStatement(node as TryStatementNode);
+        this.visitTryStatement(node);
         break;
       case 'CatchClause':
-        this.visitCatchClause(node as CatchClauseNode);
+        this.visitCatchClause(node);
         break;
       case 'SwitchStatement':
-        this.visitSwitchStatement(node as SwitchStatementNode);
+        this.visitSwitchStatement(node);
         break;
       case 'SwitchCase':
-        this.visitSwitchCase(node as SwitchCaseNode);
+        this.visitSwitchCase(node);
         break;
       case 'ConditionalExpression':
-        this.visitConditionalExpression(node as ConditionalExpressionNode);
+        this.visitConditionalExpression(node);
         break;
       case 'EmptyStatement':
-        this.visitEmptyStatement(node as EmptyStatementNode);
+        this.visitEmptyStatement(node);
         break;
       case 'ThisExpression':
-        this.visitThisExpression(node as ThisExpressionNode);
+        this.visitThisExpression(node);
         break;
       case 'DeleteExpression':
-        this.visitDeleteExpression(node as DeleteExpressionNode);
+        this.visitDeleteExpression(node);
         break;
       case 'ImportDeclaration':
-        this.visitImportDeclaration(node as ImportDeclarationNode);
+        this.visitImportDeclaration(node);
         break;
       case 'ImportSpecifier':
-        this.visitImportSpecifier(node as ImportSpecifierNode);
+        this.visitImportSpecifier(node);
         break;
       case 'ImportDefaultSpecifier':
-        this.visitImportDefaultSpecifier(node as ImportDefaultSpecifierNode);
+        this.visitImportDefaultSpecifier(node);
         break;
       case 'ImportNamespaceSpecifier':
-        this.visitImportNamespaceSpecifier(node as ImportNamespaceSpecifierNode);
+        this.visitImportNamespaceSpecifier(node);
         break;
       case 'ArrowFunctionExpression':
-        this.visitArrowFunctionExpression(node as ArrowFunctionExpressionNode);
+        this.visitArrowFunctionExpression(node);
         break;
       case 'ExportNamedDeclaration':
-        this.visitExportNamedDeclaration(node as ExportNamedDeclarationNode);
+        this.visitExportNamedDeclaration(node);
         break;
       case 'ExportDefaultDeclaration':
-        this.visitExportDefaultDeclaration(node as ExportDefaultDeclarationNode);
+        this.visitExportDefaultDeclaration(node);
         break;
       case 'TemplateLiteral':
-        this.visitTemplateLiteral(node as TemplateLiteralNode);
+        this.visitTemplateLiteral(node);
         break;
       case 'SpreadElement':
-        this.visitSpreadElement(node as SpreadElementNode);
+        this.visitSpreadElement(node);
         break;
       case 'LogicalExpression':
-        this.visitLogicalExpression(node as LogicalExpressionNode);
+        this.visitLogicalExpression(node);
         break;
       case 'ThrowStatement':
-        this.visitThrowStatement(node as ThrowStatementNode);
+        this.visitThrowStatement(node);
         break;
       case 'TemplateElement':
-        this.visitTemplateElement(node as TemplateElementNode);
+        this.visitTemplateElement(node);
         break;
       case 'JsDocComment':
-        this.visitJsDocComment(node as JsDocCommentNode);
+        this.visitJsDocComment(node);
         break;
       case 'ExportAllDeclaration':
-        this.visitExportAllDeclaration(node as ExportAllDeclarationNode);
+        this.visitExportAllDeclaration(node);
         break;
       case 'ExportSpecifier':
-        this.visitExportSpecifier(node as ExportSpecifierNode);
+        this.visitExportSpecifier(node);
         break;
       default: {
         // Exhaustive: a new AstNodeKind won't compile until it's dispatched here.

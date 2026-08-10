@@ -3,7 +3,7 @@
  * Manages variable scoping and symbol resolution
  */
 
-import { type AstNode, type IdentifierNode } from '../ast/nodes';
+import { type AstNode } from '../ast/nodes';
 import { Match } from 'effect';
 
 export enum SymbolType {
@@ -44,8 +44,13 @@ export interface ObjectType {
   name: string;
 }
 
-/** A concrete (non-union) type — can appear as a union member */
-export type SingleType = UcodeType | ObjectType | ArrayType;
+/** A concrete (non-union) type — can appear as a union member. ModuleType and
+ *  DefaultImportType are honest members: the runtime has always stored them in
+ *  union slots (`?socket` = module | null), it just used to be smuggled through
+ *  double-casts. Discriminate them from ObjectType via `'moduleName' in t` /
+ *  `'isDefaultImport' in t` (all three share `type: UcodeType.OBJECT` or
+ *  'objectKind'). */
+export type SingleType = UcodeType | ObjectType | ArrayType | ModuleType | DefaultImportType;
 
 export interface UnionType {
   type: UcodeType.UNION;
@@ -80,7 +85,7 @@ export interface ArrayType {
   tupleTypes?: UcodeDataType[];
 }
 
-export type UcodeDataType = UcodeType | UnionType | ModuleType | DefaultImportType | ArrayType | ObjectType;
+export type UcodeDataType = SingleType | UnionType;
 
 // --- ObjectType helpers ---
 
@@ -112,7 +117,7 @@ export function extractModuleType(dataType: UcodeDataType | undefined | null): M
   if (isUnionType(dataType)) {
     for (const member of dataType.types) {
       if (typeof member === 'object' && 'moduleName' in member) {
-        return member as { moduleName: string } as ModuleType;
+        return member;
       }
     }
   }
@@ -125,7 +130,7 @@ export function extractModuleType(dataType: UcodeDataType | undefined | null): M
  *  behave exactly like UNKNOWN in every compatibility/narrowing check that
  *  consumes the base kind instead of the raw type (see UcodeType.ANY's doc). */
 export const singleTypeToBase: (t: SingleType) => UcodeType = Match.type<SingleType>().pipe(
-  Match.when(Match.string, (s) => (s === UcodeType.ANY ? UcodeType.UNKNOWN : (s as UcodeType))),
+  Match.when(Match.string, (s) => (s === UcodeType.ANY ? UcodeType.UNKNOWN : s)),
   Match.when({ type: 'objectKind' as const }, () => UcodeType.OBJECT),
   Match.when({ type: UcodeType.ARRAY }, () => UcodeType.ARRAY),
   Match.orElse((t) => {
@@ -151,12 +156,13 @@ export function createUnionType(types: SingleType[]): UcodeDataType {
     }
   }
 
-  if (uniqueTypes.length === 0) {
+  const first = uniqueTypes[0];
+  if (first === undefined) {
     return UcodeType.UNKNOWN;
   }
 
   if (uniqueTypes.length === 1) {
-    return uniqueTypes[0] as UcodeDataType;
+    return first;
   }
 
   return {
@@ -174,7 +180,7 @@ export function createUnionType(types: SingleType[]): UcodeDataType {
  * would win the join and re-widen the sibling path. Represented as an empty union
  * (no member is possible); `createUnionType([])` collapses to UNKNOWN, so this
  * sentinel is the ONLY empty-union value and is detected structurally. */
-export const NEVER_TYPE: UnionType = Object.freeze({ type: UcodeType.UNION, types: [] as SingleType[] }) as UnionType;
+export const NEVER_TYPE: UnionType = Object.freeze({ type: UcodeType.UNION, types: [] });
 
 /** True for the BOTTOM/`never` sentinel (an empty union — no possible member). */
 export function isNeverType(type: UcodeDataType): boolean {
@@ -191,7 +197,7 @@ export function widenWithNull(type: UcodeDataType): UcodeDataType {
     return createUnionType([...type.types, UcodeType.NULL]);
   }
   if (typeof type === 'string' || isArrayType(type) || isObjectType(type)) {
-    return createUnionType([type as SingleType, UcodeType.NULL]);
+    return createUnionType([type, UcodeType.NULL]);
   }
   return type;
 }
@@ -219,7 +225,7 @@ export function getUnionTypes(type: UcodeDataType): SingleType[] {
   if (isObjectType(type)) {
     return [type];
   }
-  return [type as UcodeType];
+  return [type];
 }
 
 export function isArrayType(type: UcodeDataType): type is ArrayType {
@@ -258,7 +264,7 @@ export function resolveTupleIndex(
   const len = type.tupleTypes.length;
   const real = index < 0 ? index + len : index;
   if (real < 0 || real >= len) return { outOfRange: true, length: len };
-  return { type: type.tupleTypes[real] as UcodeDataType };
+  return { type: type.tupleTypes[real] ?? UcodeType.UNKNOWN };
 }
 
 /**
@@ -275,13 +281,13 @@ export function resolveTupleIndex(
  */
 export function dataTypeToBase(type: UcodeDataType): UcodeType {
   if (type === UcodeType.ANY) return UcodeType.UNKNOWN;
-  if (typeof type === 'string') return type as UcodeType;
+  if (typeof type === 'string') return type;
   if (isArrayType(type)) return UcodeType.ARRAY;
   if (isObjectType(type)) return UcodeType.OBJECT;
   if (isUnionType(type)) return UcodeType.UNKNOWN;
   if (extractModuleType(type)) return UcodeType.OBJECT;
   const t = type.type;
-  return typeof t === 'string' ? (t as UcodeType) : UcodeType.UNKNOWN;
+  return typeof t === 'string' ? t : UcodeType.UNKNOWN;
 }
 
 /** One SSA write in a symbol's history. `from` = write END (reads at/after see it),
@@ -379,7 +385,7 @@ function unionInto(a: UcodeDataType, b: UcodeDataType): UcodeDataType {
   const parts: SingleType[] = [];
   for (const t of [a, b]) {
     if (isUnionType(t)) parts.push(...t.types);
-    else parts.push(t as SingleType);
+    else parts.push(t);
   }
   return createUnionType(parts);
 }
@@ -446,7 +452,7 @@ export const singleTypeToString: (t: SingleType) => string = Match.type<SingleTy
     // ModuleType: { type: 'object', moduleName: string } — appears as union member
     // when type checker creates e.g. io.handle | null
     if (typeof t === 'object' && t !== null && 'moduleName' in t) {
-      return (t as ModuleType).moduleName;
+      return t.moduleName;
     }
     return 'unknown';
   })
@@ -570,7 +576,7 @@ function unionMemberTypes(a: UcodeDataType | undefined, b: UcodeDataType): Ucode
   const parts: SingleType[] = [];
   for (const t of [a ?? UcodeType.UNKNOWN, b]) {
     if (isUnionType(t)) parts.push(...t.types);
-    else parts.push(t as SingleType);
+    else parts.push(t);
   }
   return createUnionType(parts);
 }
@@ -646,12 +652,13 @@ export function typeToString(type: UcodeDataType): string {
   if (typeof type === 'object') {
     // ModuleType — only bare ModuleType reaches here (unions caught above)
     if ('moduleName' in type) {
-      const moduleType = type as ModuleType;
+      const moduleType = type;
       // For handle/object types (fs.file, uci.cursor, struct.buffer, zlib.deflate, socket, …)
       // return the specific type name bare; only genuine module references get the " module"
       // suffix. Lazy require avoids a static import cycle (symbolTable → moduleDispatch → fsTypes
       // → symbolTable); isKnownObjectType is only called here at runtime, after init completes.
-      const { isKnownObjectType } = require('./moduleDispatch') as typeof import('./moduleDispatch');
+      const moduleDispatch: typeof import('./moduleDispatch') = require('./moduleDispatch');
+      const { isKnownObjectType } = moduleDispatch;
       if (isKnownObjectType(moduleType.moduleName)) {
         return moduleType.moduleName;
       }
@@ -672,7 +679,7 @@ export function typeToString(type: UcodeDataType): string {
   }
 
   // Plain UcodeType enum value (string)
-  return displayEnumName(type as string);
+  return displayEnumName(type);
 }
 
 export function isTypeCompatible(actual: UcodeDataType, expected: UcodeDataType): boolean {
@@ -909,7 +916,7 @@ export class SymbolTable {
           start: 0,
           end: 0,
           name: builtin.name
-        } as IdentifierNode,
+        },
         declaredAt: 0,
         usedAt: []
       });
@@ -928,7 +935,7 @@ export class SymbolTable {
         start: 0,
         end: 0,
         name: 'ARGV'
-      } as IdentifierNode,
+      },
       declaredAt: 0,
       usedAt: []
     });
@@ -937,7 +944,7 @@ export class SymbolTable {
     this.globalScope.set('NaN', {
       name: 'NaN',
       type: SymbolType.VARIABLE,
-      dataType: UcodeType.DOUBLE as UcodeDataType,
+      dataType: UcodeType.DOUBLE,
       scope: 0,
       declared: true,
       used: false,
@@ -946,7 +953,7 @@ export class SymbolTable {
         start: 0,
         end: 0,
         name: 'NaN'
-      } as IdentifierNode,
+      },
       declaredAt: 0,
       usedAt: []
     });
@@ -954,7 +961,7 @@ export class SymbolTable {
     this.globalScope.set('Infinity', {
       name: 'Infinity',
       type: SymbolType.VARIABLE,
-      dataType: UcodeType.DOUBLE as UcodeDataType,
+      dataType: UcodeType.DOUBLE,
       scope: 0,
       declared: true,
       used: false,
@@ -963,7 +970,7 @@ export class SymbolTable {
         start: 0,
         end: 0,
         name: 'Infinity'
-      } as IdentifierNode,
+      },
       declaredAt: 0,
       usedAt: []
     });
@@ -982,7 +989,7 @@ export class SymbolTable {
         start: 0,
         end: 0,
         name: 'REQUIRE_SEARCH_PATH'
-      } as IdentifierNode,
+      },
       declaredAt: 0,
       usedAt: []
     });
@@ -990,7 +997,7 @@ export class SymbolTable {
     this.globalScope.set('modules', {
       name: 'modules',
       type: SymbolType.VARIABLE,
-      dataType: UcodeType.OBJECT as UcodeDataType,
+      dataType: UcodeType.OBJECT,
       scope: 0,
       declared: true,
       used: false,
@@ -999,7 +1006,7 @@ export class SymbolTable {
         start: 0,
         end: 0,
         name: 'modules'
-      } as IdentifierNode,
+      },
       declaredAt: 0,
       usedAt: []
     });
@@ -1007,7 +1014,7 @@ export class SymbolTable {
     this.globalScope.set('global', {
       name: 'global',
       type: SymbolType.VARIABLE,
-      dataType: UcodeType.OBJECT as UcodeDataType,
+      dataType: UcodeType.OBJECT,
       scope: 0,
       declared: true,
       used: false,
@@ -1016,7 +1023,7 @@ export class SymbolTable {
         start: 0,
         end: 0,
         name: 'global'
-      } as IdentifierNode,
+      },
       declaredAt: 0,
       usedAt: [],
       propertyTypes: new Map()
@@ -1276,7 +1283,7 @@ export class SymbolTable {
         start: 0,
         end: 0,
         name: name
-      } as IdentifierNode;
+      };
       declaredAtPos = 0;
     }
     

@@ -6,6 +6,7 @@
   },
   "rules": {
     "typescript/no-explicit-any": "error",
-    "ban-types/no-unknown": "error"
+    "ban-types/no-unknown": "error",
+    "ban-types/no-as": "error"
   }
 }

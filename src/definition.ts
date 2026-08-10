@@ -90,7 +90,10 @@ export function handleDefinition(
                 && (objIsThis || (objToken?.type === TokenType.TK_LABEL && typeof objToken.value === 'string'));
 
             if (isMemberProperty) {
-                const objName = objIsThis ? 'this' : (objToken!.value as string);
+                // isMemberProperty already proved the non-`this` base is a label with a
+                // string value, so the fallback arm is unreachable.
+                const objName = objIsThis ? 'this'
+                    : (typeof objToken?.value === 'string' ? objToken.value : '');
                 const memberDef = resolveMemberDefinition(
                     symbolName, objName, tokens, tokenIndex, offset,
                     analysisResult, document, documents, fileResolver);

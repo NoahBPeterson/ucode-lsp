@@ -3,7 +3,7 @@
  * Based on ucode/lib/ubus.c global_fns[]
  */
 
-import type { FunctionSignature } from './moduleTypes';
+import type { FunctionSignature, KnownObjectType } from './moduleTypes';
 import type { ModuleDefinition, ConstantDefinition, ObjectTypeDefinition } from './registryFactory';
 import { formatFunctionDoc, formatFunctionSignature } from './registryFactory';
 
@@ -113,7 +113,7 @@ export const ubusConnectionObjectType: ObjectTypeDefinition = {
 };
 
 // Helper to build an ObjectTypeDefinition for a ubus handle.
-const ubusObjectType = (typeName: string, methods: Map<string, FunctionSignature>): ObjectTypeDefinition => ({
+const ubusObjectType = (typeName: KnownObjectType, methods: Map<string, FunctionSignature>): ObjectTypeDefinition => ({
   typeName,
   methods,
   formatDoc: (_name: string, sig: FunctionSignature) =>

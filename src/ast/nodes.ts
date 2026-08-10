@@ -93,7 +93,8 @@ export interface BinaryExpressionNode extends AstNodeBase {
             '==' | '!=' | '===' | '!==' | '<' | '>' | '<=' | '>=' |
             '&&' | '||' | '&' | '|' | '^' | '<<' | '>>' | 
             'in' | '??' | '+=' | '-=' | '*=' | '/=' | '%=' | '**=' |
-            '<<=' | '>>=' | '&=' | '^=' | '|=' | '&&=' | '||=' | '??=';
+            '<<=' | '>>=' | '&=' | '^=' | '|=' | '&&=' | '||=' | '??=' |
+            ','; // ucode's comma/sequence operator parses as a BinaryExpression
   left: AstNode;
   right: AstNode;
 }

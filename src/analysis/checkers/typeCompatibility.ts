@@ -94,14 +94,14 @@ export class TypeCompatibilityChecker {
     }
 
     if (validTypes.length === 1) {
-      return validTypes[0] as UcodeDataType;
+      return validTypes[0] ?? UcodeType.NULL;
     }
 
     // For dynamic languages like ucode, we want to preserve type information
     // rather than defaulting to UNKNOWN for mixed types
 
     // Check if all types are numeric - if so, promote to the widest numeric type
-    const allNumeric = validTypes.every(t => this.isNumericType(t as UcodeType));
+    const allNumeric = validTypes.every(t => typeof t === 'string' && this.isNumericType(t));
     if (allNumeric) {
       return validTypes.some(t => t === UcodeType.DOUBLE) ? UcodeType.DOUBLE : UcodeType.INTEGER;
     }

@@ -29,8 +29,7 @@ type FnTypeAnnotations = {
 export type CleanBody = { bodyEnd: number; returnType: UcodeDataType | undefined; diagnostics: Diagnostic[]; thisWrites: Array<[string, UcodeDataType]> };
 
 function reanchor(rel: RelDiagnostic, bodyStart: number, doc: TextDocument): Diagnostic {
-  const diag = rel.diag as Partial<Diagnostic>;
-  return { ...diag, range: { start: doc.positionAt(bodyStart + rel.relStart), end: doc.positionAt(bodyStart + rel.relEnd) } } as Diagnostic;
+  return { ...rel.diag, range: { start: doc.positionAt(bodyStart + rel.relStart), end: doc.positionAt(bodyStart + rel.relEnd) } };
 }
 
 /** Which unchanged+pure bodies can have type checking skipped this run, keyed by current body
@@ -51,17 +50,24 @@ export function planClean(
     if (prev.bodyHash !== bodyHashOf(text, u)) continue;
     clean.set(u.bodyStart, {
       bodyEnd: u.bodyEnd,
-      returnType: prev.returnType as UcodeDataType | undefined,
+      returnType: prev.returnType,
       diagnostics: prev.relDiagnostics.map((rd) => reanchor(rd, u.bodyStart, doc)),
-      thisWrites: prev.thisWrites as Array<[string, UcodeDataType]>,
+      thisWrites: prev.thisWrites,
     });
   }
   return clean;
 }
 
+/** The unit's function node viewed through its analyzer-stamped annotations — the ONE
+ *  place the cross-file stamp contract (semanticAnalyzer writes, this module reads) is
+ *  expressed. Plain widening assignment, checked by the compiler. */
+function fnAnnotations(fnNode: AstNode): FnTypeAnnotations & { type: string } {
+  return fnNode;
+}
+
 function unitReturnType(u: UnitRange, symbolTable: SymbolTable | undefined): UcodeDataType | undefined {
   if (u.kind === 'function') return symbolTable?.lookupOpenScopes(u.name)?.returnType;
-  return (u.fnNode as AstNode & FnTypeAnnotations)._inferredReturnType;
+  return fnAnnotations(u.fnNode)._inferredReturnType;
 }
 
 /** A value stableJson can serialize: primitives, plus arrays/Maps/plain data objects. */
@@ -89,7 +95,7 @@ function stableJson(v: StableJsonValue): string {
  *  — its return type, its returned-object shape, and the `this.<prop>` types it writes. */
 function unitSig(u: UnitRange, symbolTable: SymbolTable | undefined): string {
   const rt = unitReturnType(u, symbolTable);
-  const fn = u.fnNode as AstNode & FnTypeAnnotations;
+  const fn = fnAnnotations(u.fnNode);
   const rpt = u.kind === 'function' ? symbolTable?.lookupOpenScopes(u.name)?.returnPropertyTypes : fn._inferredReturnPropertyTypes;
   const tw = fn._thisWrites ?? [];
   return stableJson([rt, rpt, tw]);
@@ -141,7 +147,7 @@ export function buildCache(
       cls: classifyBody(u),
       returnType: unitReturnType(u, symbolTable),
       relDiagnostics: rel,
-      thisWrites: (u.fnNode as AstNode & FnTypeAnnotations)._thisWrites ?? [],
+      thisWrites: fnAnnotations(u.fnNode)._thisWrites ?? [],
       sig: unitSig(u, symbolTable),
     });
   }

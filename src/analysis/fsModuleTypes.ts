@@ -5,6 +5,7 @@
 
 import { FsObjectType } from './fsTypes';
 import type { ModuleDefinition, PropertyDefinition, ObjectTypeDefinition, ObjectExportDefinition } from './registryFactory';
+import type { KnownObjectType } from './moduleTypes';
 
 /**
  * fs object-handle exports: the module adds stdin/stdout/stderr to its scope as
@@ -508,7 +509,7 @@ export const statvfsObjectType: ObjectTypeDefinition = {
   typeName: 'fs.statvfs',
   isPropertyBased: true,
   methods: new Map(),
-  properties: statvfsProperties as ReadonlyMap<string, PropertyDefinition>,
+  properties: statvfsProperties,
   formatPropertyDoc: (_name: string, prop: PropertyDefinition) =>
     `**(fs.statvfs property) ${prop.name}**: \`${prop.type}\`\n\n${prop.description}`,
 };
@@ -552,11 +553,11 @@ export const statProperties: Map<string, StatvfsPropertySignature> = new Map([
   ["type", { name: "type", type: "string", description: 'File type: "file", "directory", "char", "block", "fifo", "link", "socket", or "unknown"' }],
 ]);
 
-const makeStatObjectType = (typeName: string, props: Map<string, StatvfsPropertySignature>): ObjectTypeDefinition => ({
+const makeStatObjectType = (typeName: KnownObjectType, props: Map<string, StatvfsPropertySignature>): ObjectTypeDefinition => ({
   typeName,
   isPropertyBased: true,
   methods: new Map(),
-  properties: props as ReadonlyMap<string, PropertyDefinition>,
+  properties: props,
   formatPropertyDoc: (_name: string, prop: PropertyDefinition) =>
     `**(${typeName} property) ${prop.name}**: \`${prop.type}\`\n\n${prop.description}`,
 });

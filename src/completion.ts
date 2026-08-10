@@ -9,8 +9,7 @@ import {
     InsertTextFormat
 } from 'vscode-languageserver/node';
 import type {
-    AstNode, ObjectExpressionNode, PropertyNode, IdentifierNode, LiteralNode,
-    CallExpressionNode, AssignmentExpressionNode, VariableDeclaratorNode, MemberExpressionNode,
+    AstNode, ObjectExpressionNode, PropertyNode,
 } from './ast/nodes';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -152,7 +151,8 @@ export function handleCompletion(
         // everything else when `{` was the trigger. `triggerCharacter` is only
         // populated for an actual keypress trigger, so manual invocation
         // (Ctrl+Space) after a `{` is unaffected.
-        const triggerCharacter = (textDocumentPositionParams as CompletionParams).context?.triggerCharacter;
+        const triggerCharacter = 'context' in textDocumentPositionParams
+            ? textDocumentPositionParams.context?.triggerCharacter : undefined;
         if (triggerCharacter === '{') {
             return [];
         }
@@ -577,8 +577,8 @@ function resolveCalleeSignatureForArgs(
 ): { fn: FunctionSignature; moduleName: string } | null {
     const st = analysisResult.symbolTable!;
     const nameTok = tokens[openParen - 1];
-    if (!nameTok || nameTok.type !== TokenType.TK_LABEL) return null;
-    const method = nameTok.value as string;
+    if (!nameTok || nameTok.type !== TokenType.TK_LABEL || typeof nameTok.value !== 'string') return null;
+    const method = nameTok.value;
     const dotTok = tokens[openParen - 2];
     const recvTok = tokens[openParen - 3];
     // Indexed receiver: `arr[i].method(` — resolve arr's element object-type (e.g. a
@@ -591,8 +591,8 @@ function resolveCalleeSignatureForArgs(
             else if (tk.type === TokenType.TK_LBRACK) { bdepth--; if (bdepth === 0) break; }
         }
         const arrTok = k > 0 ? tokens[k - 1] : undefined;
-        if (!arrTok || arrTok.type !== TokenType.TK_LABEL) return null;
-        const arrSym = st.resolveReference(arrTok.value as string, arrTok.pos);
+        if (!arrTok || arrTok.type !== TokenType.TK_LABEL || typeof arrTok.value !== 'string') return null;
+        const arrSym = st.resolveReference(arrTok.value, arrTok.pos);
         const elemType = arrayElementObjectType(arrSym?.dataType);
         if (elemType && isKnownObjectType(elemType)) {
             const m = OBJECT_REGISTRIES[elemType].getMethod(method);
@@ -600,8 +600,9 @@ function resolveCalleeSignatureForArgs(
         }
         return null;
     }
-    if (dotTok && isMemberAccessDot(dotTok.type) && recvTok && recvTok.type === TokenType.TK_LABEL) {
-        const recvSym = st.resolveReference(recvTok.value as string, recvTok.pos);
+    if (dotTok && isMemberAccessDot(dotTok.type) && recvTok && recvTok.type === TokenType.TK_LABEL
+        && typeof recvTok.value === 'string') {
+        const recvSym = st.resolveReference(recvTok.value, recvTok.pos);
         const mt = recvSym?.dataType !== undefined ? extractModuleType(recvSym.dataType) : null;
         if (!mt) return null;
         const tn = mt.moduleName;
@@ -757,7 +758,7 @@ function detectMemberCompletionContext(offset: number, tokens: Token[]): { objec
                 const nextToken = tokens[currentTokenIndex + 1];
                 if (nextToken && isMemberAccessDot(nextToken.type) && token.end === nextToken.pos) {
                     // This label is connected to a dot, add it to the chain
-                    propertyChain.unshift(token.value as string);
+                    propertyChain.unshift(String(token.value));
 
                     // Look for another dot before this label
                     if (currentTokenIndex > 0) {
@@ -804,14 +805,16 @@ function detectMemberCompletionContext(offset: number, tokens: Token[]): { objec
             }
             // j now points to the token before the opening paren
             const calleeToken = j >= 0 ? tokens[j] : undefined;
-            if (calleeToken && calleeToken.type === TokenType.TK_LABEL) {
-                const funcName = calleeToken.value as string;
+            if (calleeToken && calleeToken.type === TokenType.TK_LABEL
+                && typeof calleeToken.value === 'string') {
+                const funcName = calleeToken.value;
                 let moduleName: string | undefined;
                 // Check for module prefix: LABEL DOT LABEL(...)
                 const modDot = j >= 2 ? tokens[j - 1] : undefined;
                 const modLabel = j >= 2 ? tokens[j - 2] : undefined;
-                if (modDot && modLabel && isMemberAccessDot(modDot.type) && modLabel.type === TokenType.TK_LABEL) {
-                    moduleName = modLabel.value as string;
+                if (modDot && modLabel && isMemberAccessDot(modDot.type) && modLabel.type === TokenType.TK_LABEL
+                    && typeof modLabel.value === 'string') {
+                    moduleName = modLabel.value;
                 }
                 const objType = resolveReturnObjectType(funcName, moduleName);
                 if (objType) {
@@ -1538,11 +1541,11 @@ function resolveDefaultExportObject(
     }
 
     if (declaration.type === 'ObjectExpression') {
-        return declaration as ObjectExpressionNode;
+        return declaration;
     }
 
     if (declaration.type === 'Identifier') {
-        const name = (declaration as IdentifierNode).name;
+        const name = declaration.name;
         if (!name || visited.has(name)) {
             return null;
         }
@@ -1555,7 +1558,7 @@ function resolveDefaultExportObject(
     }
 
     if (declaration.type === 'CallExpression') {
-        for (const arg of (declaration as CallExpressionNode).arguments || []) {
+        for (const arg of declaration.arguments || []) {
             const resolved = resolveDefaultExportObject(arg, variableInitializers, visited);
             if (resolved) {
                 return resolved;
@@ -1565,11 +1568,11 @@ function resolveDefaultExportObject(
     }
 
     if (declaration.type === 'AssignmentExpression') {
-        return resolveDefaultExportObject((declaration as AssignmentExpressionNode).right, variableInitializers, visited);
+        return resolveDefaultExportObject(declaration.right, variableInitializers, visited);
     }
 
     if (declaration.type === 'VariableDeclarator') {
-        return resolveDefaultExportObject((declaration as VariableDeclaratorNode).init, variableInitializers, visited);
+        return resolveDefaultExportObject(declaration.init, variableInitializers, visited);
     }
 
     return null;
@@ -1580,20 +1583,19 @@ function resolveDefaultExportObject(
  *  Returns null if it doesn't resolve to an object literal. (#19) */
 function resolveToObjectLiteral(node: AstNode | null | undefined, analysisResult: SemanticAnalysisResult | undefined, offset: number | undefined, visited = new Set<string>()): ObjectExpressionNode | null {
     if (!node || typeof node !== 'object') return null;
-    if (node.type === 'ObjectExpression') return node as ObjectExpressionNode;
+    if (node.type === 'ObjectExpression') return node;
     if (node.type === 'Identifier') {
-        const ident = node as IdentifierNode;
-        if (visited.has(ident.name)) return null;
-        visited.add(ident.name);
-        const sym = analysisResult ? lookupSymbol(ident.name, analysisResult, offset) : undefined;
+        if (visited.has(node.name)) return null;
+        visited.add(node.name);
+        const sym = analysisResult ? lookupSymbol(node.name, analysisResult, offset) : undefined;
         return sym ? resolveToObjectLiteral(sym.initNode, analysisResult, offset, visited) : null;
     }
     if (node.type === 'MemberExpression') {
-        const mem = node as MemberExpressionNode;
-        if (!mem.computed && mem.property?.type === 'Identifier') {
-            const objLit = resolveToObjectLiteral(mem.object, analysisResult, offset, visited);
+        if (!node.computed && node.property?.type === 'Identifier') {
+            const propName = node.property.name;
+            const objLit = resolveToObjectLiteral(node.object, analysisResult, offset, visited);
             if (!objLit) return null;
-            const prop = (objLit.properties || []).find((p): p is PropertyNode => p?.type === 'Property' && extractDefaultExportPropertyName(p) === (mem.property as IdentifierNode).name);
+            const prop = (objLit.properties || []).find((p): p is PropertyNode => p?.type === 'Property' && extractDefaultExportPropertyName(p) === propName);
             return prop ? resolveToObjectLiteral(prop.value, analysisResult, offset, visited) : null;
         }
     }
@@ -1664,7 +1666,7 @@ function extractDefaultExportPropertyName(property: PropertyNode | null | undefi
         return null;
     }
 
-    const key = property.key as LiteralNode | IdentifierNode | undefined;
+    const key = property.key;
 
     if (property.computed) {
         if (key?.type === 'Literal' && key.value !== undefined && key.value !== null) {
@@ -1697,7 +1699,7 @@ function inferDefaultExportPropertyType(valueNode: AstNode | null | undefined): 
         case 'ArrowFunctionExpression':
             return 'function';
         case 'Literal': {
-            const literalType = (valueNode as LiteralNode).literalType;
+            const literalType = valueNode.literalType;
             if (literalType === 'string') {
                 return 'string';
             }
@@ -1866,9 +1868,9 @@ function detectLoadfilePathContext(offset: number, tokens: Token[]): { currentPa
         const callee = tokens[i - 2];
         if (lparen?.type === TokenType.TK_LPAREN
             && callee?.type === TokenType.TK_LABEL
-            && PATH_BUILTINS.has(callee.value as string)) {
+            && typeof callee.value === 'string' && PATH_BUILTINS.has(callee.value)) {
             const start = str.pos + 1;                                 // skip opening quote
-            return { currentPath: str.value !== undefined ? (str.value as string).slice(0, Math.max(0, offset - start)) : '' };
+            return { currentPath: typeof str.value === 'string' ? str.value.slice(0, Math.max(0, offset - start)) : '' };
         }
         return undefined; // cursor is in a string that isn't a path-builtin arg
     }
@@ -1888,7 +1890,7 @@ function detectRequireCompletionContext(offset: number, tokens: Token[]): { curr
             && callee?.type === TokenType.TK_LABEL
             && callee.value === 'require') {
             const start = str.pos + 1;                                 // skip opening quote
-            return { currentPath: str.value !== undefined ? (str.value as string).slice(0, Math.max(0, offset - start)) : '' };
+            return { currentPath: typeof str.value === 'string' ? str.value.slice(0, Math.max(0, offset - start)) : '' };
         }
         return undefined; // cursor is in a string that isn't a require() arg
     }
@@ -2037,7 +2039,7 @@ function detectDestructuredImportContext(offset: number, tokens: Token[]): { mod
                     fromTokenIndex = j;
                 } else if (nextToken.type === TokenType.TK_STRING && stringTokenIndex === -1 && fromTokenIndex !== -1) {
                     stringTokenIndex = j;
-                    moduleName = nextToken.value as string;
+                    moduleName = String(nextToken.value);
                     break; // Found complete import statement
                 } else if (nextToken.type === TokenType.TK_IMPORT) {
                     // Hit another import statement, break out to process it separately
@@ -2056,8 +2058,8 @@ function detectDestructuredImportContext(offset: number, tokens: Token[]): { mod
                     const alreadyImported: string[] = [];
                     for (let k = lbraceTokenIndex + 1; k < fromTokenIndex; k++) {
                         const kt = tokens[k];
-                        if (kt && kt.type === TokenType.TK_LABEL) {
-                            alreadyImported.push(kt.value as string);
+                        if (kt && kt.type === TokenType.TK_LABEL && typeof kt.value === 'string') {
+                            alreadyImported.push(kt.value);
                         }
                     }
                     return { moduleName, alreadyImported };
@@ -2200,7 +2202,7 @@ function createDestructuredImportCompletions(moduleName: string, alreadyImported
         // constants — they live under the nested `const` object, not the module scope, so
         // `import { NLM_F_ACK } from 'nl80211'` is invalid (#23/#24). socket/io/etc. keep their
         // constants (legitimately top-level). isValidImport is the single source of truth.
-        const reg = isKnownModule(moduleName) ? MODULE_REGISTRIES[moduleName as keyof typeof MODULE_REGISTRIES] : undefined;
+        const reg = isKnownModule(moduleName) ? MODULE_REGISTRIES[moduleName] : undefined;
         if (reg) {
             members = members.filter(m => reg.isValidImport(m.name));
         }

@@ -10,8 +10,8 @@ import {
 import { extractModuleType, SymbolType, type SymbolTable, type UcodeDataType } from './analysis/symbolTable';
 import { isKnownModule, isKnownObjectType, MODULE_REGISTRIES, OBJECT_REGISTRIES } from './analysis/moduleDispatch';
 import type {
-    AstNode, CallExpressionNode, MemberExpressionNode, IdentifierNode, LiteralNode,
-    ObjectExpressionNode, PropertyNode, FunctionExpressionNode, ArrowFunctionExpressionNode,
+    AstNode, CallExpressionNode,
+    ObjectExpressionNode, FunctionExpressionNode, ArrowFunctionExpressionNode,
 } from './ast/nodes';
 import { walkAst } from './ast/astChildren';
 import { Option } from 'effect';
@@ -22,7 +22,7 @@ interface ParamInfo { name: string; type?: UcodeDataType; isRest?: boolean }
  *  active argument index. The arg region is `(callee.end, node.end]` — being past
  *  the callee but within the call node means we're in the parentheses. */
 function findEnclosingCall(ast: AstNode | null | undefined, offset: number): { call: CallExpressionNode; activeParam: number } | null {
-    let best: CallExpressionNode | null = null;
+    const found: { best: CallExpressionNode | null } = { best: null };
     if (ast) walkAst(ast, (node) => {
         if (node.type === 'CallExpression') {
             // An unterminated call (no closing `)`) has its `end` truncated to the
@@ -33,12 +33,13 @@ function findEnclosingCall(ast: AstNode | null | undefined, offset: number): { c
                 && (offset <= node.end || node.unclosed === true);
             if (inArgRegion) {
                 // innermost wins (smallest span)
-                if (!best || (node.end - node.start) < (best.end - best.start)) best = node;
+                if (!found.best || (node.end - node.start) < (found.best.end - found.best.start)) found.best = node;
             }
         }
     });
+    const best = found.best;
     if (!best) return null;
-    const args: AstNode[] = (best as CallExpressionNode).arguments || [];
+    const args: AstNode[] = best.arguments || [];
     // active index: first arg whose end is at/after the cursor; else past the last
     // (typing a fresh trailing argument).
     let activeParam = args.length;
@@ -135,9 +136,8 @@ function selectActiveOverload(sets: string[][], arg0: AstNode | undefined, activ
     const restIdx = sets.findIndex(hasRestParam);
     const nonRestIdx = sets.findIndex(s => !hasRestParam(s));
     if (arg0) {
-        const t = arg0.type;
-        if ((t === 'ArrowFunctionExpression' || t === 'FunctionExpression') && restIdx >= 0) return restIdx;
-        if (t === 'Literal' && typeof (arg0 as LiteralNode).value === 'string' && nonRestIdx >= 0) return nonRestIdx;
+        if ((arg0.type === 'ArrowFunctionExpression' || arg0.type === 'FunctionExpression') && restIdx >= 0) return restIdx;
+        if (arg0.type === 'Literal' && typeof arg0.value === 'string' && nonRestIdx >= 0) return nonRestIdx;
     }
     if (restIdx >= 0 && nonRestIdx >= 0 && activeParam >= sets[nonRestIdx]!.length) return restIdx;
     return 0;
@@ -185,15 +185,15 @@ function paramsFromFunctionNode(fn: FunctionExpressionNode | ArrowFunctionExpres
 function objectLiteralMethodSignature(obj: ObjectExpressionNode, method: string, displayName: string): CalleeSignature | null {
     for (const prop of obj.properties || []) {
         if (prop.type !== 'Property') continue;
-        const p = prop as PropertyNode;
+        const p = prop;
         if (p.computed) continue;
-        const keyName = p.key?.type === 'Identifier' ? (p.key as IdentifierNode).name
-            : (p.key?.type === 'Literal' && typeof (p.key as LiteralNode).value === 'string') ? String((p.key as LiteralNode).value)
+        const keyName = p.key?.type === 'Identifier' ? p.key.name
+            : (p.key?.type === 'Literal' && typeof p.key.value === 'string') ? String(p.key.value)
             : undefined;
         if (keyName !== method) continue;
         const v = p.value;
         if (v && (v.type === 'FunctionExpression' || v.type === 'ArrowFunctionExpression')) {
-            return { displayName, params: paramsFromFunctionNode(v as FunctionExpressionNode | ArrowFunctionExpressionNode) };
+            return { displayName, params: paramsFromFunctionNode(v) };
         }
         return null;
     }
@@ -206,16 +206,16 @@ function objectLiteralMethodSignature(obj: ObjectExpressionNode, method: string,
  *  so callers that lack them (inlay hints) still resolve the method. */
 export function localObjectLiteralMethodParams(initNode: AstNode | undefined, methodName: string): CalleeParam[] | null {
     if (!initNode || initNode.type !== 'ObjectExpression') return null;
-    for (const p of (initNode as ObjectExpressionNode).properties || []) {
-        if (!p || p.type !== 'Property' || (p as PropertyNode).computed) continue;
-        const key = (p as PropertyNode).key;
-        const keyName = key?.type === 'Identifier' ? (key as IdentifierNode).name
-            : key?.type === 'Literal' && typeof (key as LiteralNode).value === 'string' ? (key as LiteralNode).value as string
+    for (const p of initNode.properties || []) {
+        if (!p || p.type !== 'Property' || p.computed) continue;
+        const key = p.key;
+        const keyName = key?.type === 'Identifier' ? key.name
+            : key?.type === 'Literal' && typeof key.value === 'string' ? key.value
             : null;
         if (keyName !== methodName) continue;
-        const val = (p as PropertyNode).value;
+        const val = p.value;
         if (val?.type === 'FunctionExpression' || val?.type === 'ArrowFunctionExpression') {
-            return paramsFromFunctionNode(val as FunctionExpressionNode | ArrowFunctionExpressionNode);
+            return paramsFromFunctionNode(val);
         }
         return null; // member exists but isn't a function
     }
@@ -272,11 +272,11 @@ export function resolveCalleeParameters(
     // `this.method(…)` inside an object-literal method — resolve the sibling
     // property's function params straight from the AST (#84).
     if (callee?.type === 'MemberExpression'
-        && !(callee as MemberExpressionNode).computed
-        && (callee as MemberExpressionNode).property?.type === 'Identifier'
-        && (callee as MemberExpressionNode).object?.type === 'ThisExpression'
+        && !callee.computed
+        && callee.property?.type === 'Identifier'
+        && callee.object?.type === 'ThisExpression'
         && ast && typeof offset === 'number') {
-        const method = ((callee as MemberExpressionNode).property as IdentifierNode).name;
+        const method = callee.property.name;
         const obj = findThisReceiverObject(ast, offset);
         if (obj) {
             const sig = objectLiteralMethodSignature(obj, method, `this.${method}`);
@@ -285,12 +285,11 @@ export function resolveCalleeParameters(
         return null;
     }
     if (callee?.type === 'MemberExpression'
-        && !(callee as MemberExpressionNode).computed
-        && (callee as MemberExpressionNode).property?.type === 'Identifier'
-        && (callee as MemberExpressionNode).object?.type === 'Identifier') {
-        const mem = callee as MemberExpressionNode;
-        const method: string = (mem.property as IdentifierNode).name;
-        const obj = mem.object as IdentifierNode;
+        && !callee.computed
+        && callee.property?.type === 'Identifier'
+        && callee.object?.type === 'Identifier') {
+        const method: string = callee.property.name;
+        const obj = callee.object;
         const objSym = symbolTable?.resolveReference(obj.name, obj.start);
         const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
         // Factory-object / namespace-import / local-object fallback: resolve the method's
@@ -340,7 +339,7 @@ export function resolveCalleeParameters(
     }
 
     if (callee?.type !== 'Identifier') return null;
-    const name: string = (callee as IdentifierNode).name;
+    const name: string = callee.name;
 
     // User function first (so a local function shadowing a builtin name wins).
     const sym = symbolTable?.resolveReference(name, callee.start);
@@ -400,12 +399,11 @@ export function resolveCalleeParameters(
 export function resolveMemberCallParameterTypes(
     callee: AstNode | null | undefined, symbolTable: SymbolTable | undefined
 ): Array<{ name: string; type: string; optional: boolean }> | null {
-    if (!(callee?.type === 'MemberExpression' && !(callee as MemberExpressionNode).computed
-        && (callee as MemberExpressionNode).property?.type === 'Identifier'
-        && (callee as MemberExpressionNode).object?.type === 'Identifier')) return null;
-    const mem = callee as MemberExpressionNode;
-    const method: string = (mem.property as IdentifierNode).name;
-    const obj = mem.object as IdentifierNode;
+    if (!(callee?.type === 'MemberExpression' && !callee.computed
+        && callee.property?.type === 'Identifier'
+        && callee.object?.type === 'Identifier')) return null;
+    const method: string = callee.property.name;
+    const obj = callee.object;
     const objSym = symbolTable?.resolveReference(obj.name, obj.start);
     const mt = objSym?.dataType !== undefined ? extractModuleType(objSym.dataType) : null;
     if (!mt) return null;

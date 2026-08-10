@@ -2,8 +2,8 @@
  * Built-in function validation for ucode semantic analysis
  */
 
-import { type AstNode, type CallExpressionNode, type LiteralNode, type ObjectExpressionNode, type PropertyNode, type IdentifierNode } from '../../ast/nodes';
-import { UcodeType, type UcodeDataType, type SingleType, createUnionType, createArrayType, createTupleArrayType, isArrayType, getArrayElementType, extractModuleType, getObjectTypeName, isUnionType, getUnionTypes, widenWithNull } from '../symbolTable';
+import { type AstNode, type CallExpressionNode, type LiteralNode } from '../../ast/nodes';
+import { UcodeType, type UcodeDataType, createUnionType, createArrayType, createTupleArrayType, isArrayType, getArrayElementType, extractModuleType, getObjectTypeName, isUnionType, getUnionTypes, widenWithNull } from '../symbolTable';
 import { type TypeError, type TypeWarning } from '../types';
 import { UcodeErrorCode } from '../errorConstants';
 import { isKnownObjectType, OBJECT_REGISTRIES } from '../moduleDispatch';
@@ -328,8 +328,8 @@ function intCallBase(node: CallExpressionNode): number | null {
   if (node.arguments.length === 1) return 10;
   if (node.arguments.length === 2) {
     const b = node.arguments[1];
-    if (b && b.type === 'Literal' && (b as LiteralNode).literalType === 'number') {
-      const v = (b as LiteralNode).value;
+    if (b && b.type === 'Literal' && b.literalType === 'number') {
+      const v = b.value;
       if (typeof v === 'number' && Number.isInteger(v) && v >= 2 && v <= 36) return v;
     }
   }
@@ -350,6 +350,27 @@ function intStringParsesToInteger(value: string, base: number): boolean {
   return digit < base;
 }
 
+/** Membership test of a display-string type token (a piece of an `a | b` display
+ *  string, or a UcodeType value) against a list of concrete UcodeType values. */
+function tokenIn(list: readonly UcodeType[], token: string): boolean {
+  for (const t of list) {
+    if (t === token) return true;
+  }
+  return false;
+}
+
+/** The `list` members named by `tokens`, in token order (one push per matching token) —
+ *  the no-assertion equivalent of `tokens.filter(t => list.includes(t))`. */
+function matchTokens(tokens: readonly string[], list: readonly UcodeType[]): UcodeType[] {
+  const out: UcodeType[] = [];
+  for (const token of tokens) {
+    for (const t of list) {
+      if (t === token) out.push(t);
+    }
+  }
+  return out;
+}
+
 function isNumericConvertibleType(type: UcodeType): boolean {
   const allowedTypes = [
     UcodeType.NULL, UcodeType.BOOLEAN, UcodeType.INTEGER,
@@ -358,7 +379,7 @@ function isNumericConvertibleType(type: UcodeType): boolean {
   // A union is convertible iff EVERY member is — checked per-member, not against the whole
   // union string (so `unknown | double` is accepted, not rejected as one opaque string). (#144)
   if (typeof type === 'string' && type.includes(' | ')) {
-    return type.split(' | ').every(t => allowedTypes.includes(t.trim() as UcodeType));
+    return type.split(' | ').every(t => tokenIn(allowedTypes, t.trim()));
   }
   return allowedTypes.includes(type);
 }
@@ -414,19 +435,19 @@ export class BuiltinValidator {
   private narrowForArgType(arg: AstNode | undefined, validTypes: UcodeType[], returnTypeIfValid: UcodeType): void {
     if (!arg) return;
     const argType = this.getNodeType(arg);
-    if (validTypes.includes(argType as UcodeType)) {
+    if (validTypes.includes(argType)) {
       this.narrowedReturnType = returnTypeIfValid;
     } else if (argType === UcodeType.UNKNOWN) {
       // Unknown arg could be any type — return includes null since C returns NULL for wrong types
-      this.narrowedReturnType = createUnionType([returnTypeIfValid, UcodeType.NULL]) as UcodeType;
+      this.narrowedReturnType = createUnionType([returnTypeIfValid, UcodeType.NULL]);
     } else if (argType.includes(' | ')) {
       const argTypes = argType.split(' | ').map(t => t.trim());
-      const allValid = argTypes.every(t => validTypes.includes(t as UcodeType));
+      const allValid = argTypes.every(t => tokenIn(validTypes, t));
       if (allValid) {
         this.narrowedReturnType = returnTypeIfValid;
       } else {
         // Some types would cause NULL return
-        this.narrowedReturnType = createUnionType([returnTypeIfValid, UcodeType.NULL]) as UcodeType;
+        this.narrowedReturnType = createUnionType([returnTypeIfValid, UcodeType.NULL]);
       }
     } else {
       this.narrowedReturnType = UcodeType.NULL;
@@ -480,7 +501,7 @@ export class BuiltinValidator {
     arg: AstNode, members: string[], funcName: string, argPosition: number, expected: string[],
   ): { name: string; offset: number; prop?: string; members: string[]; funcName: string; argPosition: number; expected: string[] } | undefined {
     if (arg.type === 'Identifier') {
-      return { name: (arg as IdentifierNode).name, offset: arg.start, members, funcName, argPosition, expected };
+      return { name: arg.name, offset: arg.start, members, funcName, argPosition, expected };
     }
     if (arg.type === 'MemberExpression') {
       if (!arg.computed && arg.object.type === 'Identifier' && arg.property.type === 'Identifier') {
@@ -537,7 +558,7 @@ export class BuiltinValidator {
     }
 
     if (argType === UcodeType.STRING && arg.type === 'Literal') {
-      const literal = arg as LiteralNode;
+      const literal = arg;
       if (typeof literal.value === 'string' && !isNumberLikeString(literal.value)) {
         flag(
           `String "${literal.value}" cannot be converted to a number for ${funcName}() argument ${argPosition}.`,
@@ -591,7 +612,7 @@ export class BuiltinValidator {
         && arg.operator === '||' && arg.left && arg.right) {
       const fallbackType = this.getNodeType(arg.right);
       const fallbackTypes = fallbackType.split(' | ').map((t: string) => t.trim());
-      fallbackValid = fallbackTypes.every(t => allowedTypes.includes(t as UcodeType));
+      fallbackValid = fallbackTypes.every(t => tokenIn(allowedTypes, t));
 
       // Always narrow diagnostic to left operand — the fallback isn't the problem
       diagStart = arg.left.start;
@@ -620,10 +641,10 @@ export class BuiltinValidator {
     if (isUnion) {
       // For union types, check if ANY type is allowed
       const hasAllowedType = argTypes.some(t =>
-        t !== UcodeType.UNKNOWN && effectiveAllowed.includes(t as UcodeType)
+        t !== UcodeType.UNKNOWN && tokenIn(effectiveAllowed, t)
       );
       const disallowedTypes = argTypes.filter(t =>
-        !effectiveAllowed.includes(t as UcodeType)
+        !tokenIn(effectiveAllowed, t)
       );
 
       if (!hasAllowedType && !argTypes.includes(UcodeType.UNKNOWN)) {
@@ -662,7 +683,7 @@ export class BuiltinValidator {
         // 'use strict' (strict alters undeclared-name access, not length()'s return), so
         // suppress here even though strict mode disables tolerance for VALUE uses.
         if (toleratedTypes && toleratedTypes.length > 0
-            && disallowedTypes.every(t => toleratedTypes.includes(t as UcodeType) || t === UcodeType.UNKNOWN)
+            && disallowedTypes.every(t => tokenIn(toleratedTypes, t) || t === UcodeType.UNKNOWN)
             && safeInTestContext && this.inTruthinessContext) {
           return true;
         }
@@ -759,7 +780,7 @@ export class BuiltinValidator {
       }
     } else {
       // Single known type - check if it's allowed
-      if (!effectiveAllowed.includes(argType as UcodeType)) {
+      if (!effectiveAllowed.includes(argType)) {
         // A string-coercing builtin (match subject): a DEFINITE non-string, non-null arg is
         // stringified at runtime → strict-gated WARNING + "coerce to string" quick-fix, not a
         // hard error (#32). null is excluded (it's the "possibly null" concern, not coercion).
@@ -914,7 +935,7 @@ export class BuiltinValidator {
    *  statically known. */
   private tryAnalyzeRegexLiteralGroups(node: AstNode | undefined): CaptureGroupInfo | null {
     if (!node || node.type !== 'Literal') return null;
-    const lit = node as LiteralNode;
+    const lit = node;
     if (lit.literalType !== 'regexp') return null;
     const { pattern } = regexTypeRegistry.extractPattern(String(lit.value));
     return analyzeCaptureGroups(pattern);
@@ -963,7 +984,7 @@ export class BuiltinValidator {
         matchArrayType = createArrayType(UcodeType.STRING); // dynamic pattern: unchanged
       }
       const returnArrayType = hasG ? createArrayType(matchArrayType) : matchArrayType;
-      this.narrowedReturnType = createUnionType([returnArrayType, UcodeType.NULL]) as UcodeType;
+      this.narrowedReturnType = createUnionType([returnArrayType, UcodeType.NULL]);
     } else {
       // regex arg is definitely the wrong type → match() always returns null.
       this.narrowedReturnType = UcodeType.NULL;
@@ -1022,7 +1043,7 @@ export class BuiltinValidator {
       // elements are always strings. So `array<string> | null`, not bare
       // `array | null`: keeping the element type lets `result[i]` resolve to
       // `string | null` downstream instead of collapsing to unknown.
-      this.narrowedReturnType = createUnionType([createArrayType(UcodeType.STRING), UcodeType.NULL]) as UcodeType;
+      this.narrowedReturnType = createUnionType([createArrayType(UcodeType.STRING), UcodeType.NULL]);
     }
 
     if (textArg) {
@@ -1185,7 +1206,7 @@ export class BuiltinValidator {
         if (flagsArg && flagsArg.type === 'Literal') {
           const literal = flagsArg;
           if (literal.literalType === 'string') {
-            const flags = literal.value as string;
+            const flags = typeof literal.value === 'string' ? literal.value : '';
             const validFlags = new Set(['i', 's', 'g']);
             const invalidChars: string[] = [];
             
@@ -1235,7 +1256,7 @@ export class BuiltinValidator {
     // Currently not used in validation but available for enhancement
 
     if (patternArg && patternArg.type === 'Literal') {
-      const lit = patternArg as LiteralNode & { valueStart?: number; valueEnd?: number };
+      const lit: LiteralNode & { valueStart?: number; valueEnd?: number } = patternArg;
       if (lit.literalType === 'string') {
         const pattern: string = String(lit.value ?? '');
         const valueStart: number = (lit.valueStart ?? (patternArg.start + 1));
@@ -1617,7 +1638,7 @@ export class BuiltinValidator {
     if (objName) names.push(objName);
     if (isUnionType(fullType)) {
       for (const member of getUnionTypes(fullType)) {
-        const n = getObjectTypeName(member as UcodeDataType);
+        const n = getObjectTypeName(member);
         if (n) names.push(n);
       }
     }
@@ -1691,9 +1712,9 @@ export class BuiltinValidator {
       const signalType = this.getNodeType(signalArg);
       
       if (signalArg.type === 'Literal') {
-        const literal = signalArg as LiteralNode;
+        const literal = signalArg;
         if (literal.value !== null) {
-            signalValue = literal.value as string | number;
+            if (typeof literal.value === 'string' || typeof literal.value === 'number') signalValue = literal.value;
             if (signalType === UcodeType.INTEGER) {
                 if (typeof literal.value === 'number' && (literal.value < 1 || literal.value > 31)) {
                     this.errors.push({ message: `Signal number must be between 1 and 31, got ${literal.value}`, start: signalArg.start, end: signalArg.end, severity: 'error', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
@@ -1721,7 +1742,7 @@ export class BuiltinValidator {
       if (handlerArg) {
         const handlerType = this.getNodeType(handlerArg);
         if (handlerType === UcodeType.STRING && handlerArg.type === 'Literal') {
-          const literal = handlerArg as LiteralNode;
+          const literal = handlerArg;
           if (typeof literal.value === 'string' && literal.value !== 'ignore' && literal.value !== 'default') {
             this.warnings.push({ message: `Invalid signal handler string "${literal.value}". Did you mean 'ignore' or 'default'?`, start: handlerArg.start, end: handlerArg.end, severity: 'warning', code: UcodeErrorCode.INVALID_PARAMETER_TYPE });
           }
@@ -1850,8 +1871,8 @@ export class BuiltinValidator {
     if (spec.expectedTypes.includes(argType)) return false;
     if (argType === UcodeType.STRING && isNumericFormatConversion(spec.specifier)) {
       return arg.type === 'Literal'
-        && typeof (arg as LiteralNode).value === 'string'
-        && !isNumberLikeString((arg as LiteralNode).value as string);
+        && typeof arg.value === 'string'
+        && !isNumberLikeString(arg.value);
     }
     return true;
   }
@@ -1859,7 +1880,7 @@ export class BuiltinValidator {
   private validateFormatString(node: CallExpressionNode, funcName: string): void {
     const formatArg = node.arguments[0];
     if (!formatArg || formatArg.type !== 'Literal') return;
-    const literal = formatArg as LiteralNode;
+    const literal = formatArg;
     if (typeof literal.value !== 'string') return;
 
     const { specifiers: allSpecifiers, invalid } = scanFormat(literal.value);
@@ -1928,7 +1949,7 @@ export class BuiltinValidator {
         if (!arg) continue;
         const argType = this.getNodeType(arg);
         if (argType === UcodeType.UNKNOWN || argType.includes(' | ')) continue;
-        if (this.formatArgMismatches(spec, arg, argType as UcodeType)) {
+        if (this.formatArgMismatches(spec, arg, argType)) {
           const expectedStr = spec.expectedTypes.map(t => t.toLowerCase()).join(' or ');
           this.warnings.push({
             message: `${funcName}(): argument ${spec.argIndex} has type '${argType.toLowerCase()}' but format specifier '%${spec.argIndex}$${spec.specifier}' expects ${expectedStr}`,
@@ -1978,7 +1999,7 @@ export class BuiltinValidator {
       const argType = this.getNodeType(arg);
       if (argType === UcodeType.UNKNOWN || argType.includes(' | ')) continue; // Don't flag unknowns or unions
 
-      if (this.formatArgMismatches(spec, arg, argType as UcodeType)) {
+      if (this.formatArgMismatches(spec, arg, argType)) {
         const expectedStr = spec.expectedTypes.map(t => t.toLowerCase()).join(' or ');
         this.warnings.push({
           message: `${funcName}(): argument ${i + 2} has type '${argType.toLowerCase()}' but format specifier '%${spec.specifier}' expects ${expectedStr}`,
@@ -2022,9 +2043,9 @@ export class BuiltinValidator {
       const alwaysInteger: UcodeType[] = [UcodeType.INTEGER, UcodeType.DOUBLE, UcodeType.BOOLEAN, UcodeType.NULL];
       const alwaysNaN: UcodeType[] = [UcodeType.ARRAY, UcodeType.OBJECT, UcodeType.FUNCTION, UcodeType.REGEX];
 
-      if (alwaysInteger.includes(argType as UcodeType)) {
+      if (alwaysInteger.includes(argType)) {
         this.narrowedReturnType = UcodeType.INTEGER;
-      } else if (alwaysNaN.includes(argType as UcodeType)) {
+      } else if (alwaysNaN.includes(argType)) {
         this.narrowedReturnType = UcodeType.DOUBLE;
       } else if (argType === UcodeType.STRING) {
         // A string LITERAL's content is decidable: int() skips leading whitespace + an optional
@@ -2033,8 +2054,8 @@ export class BuiltinValidator {
         // Verified vs the interpreter. The base is 10 for the 1-arg form, or a literal 2nd arg
         // (2–36); a non-literal string or a non-literal/out-of-range base stays `integer | double`.
         const arg0 = node.arguments[0];
-        if (arg0.type === 'Literal' && (arg0 as LiteralNode).literalType === 'string') {
-          const lit = arg0 as LiteralNode;
+        if (arg0.type === 'Literal' && arg0.literalType === 'string') {
+          const lit = arg0;
           const value = String(lit.value);
           const base = intCallBase(node);
           if (base !== null) {
@@ -2173,7 +2194,7 @@ export class BuiltinValidator {
           return { inBounds: pos >= 0 && pos < len, offArg, offValue: off.value, subjectValue: subject.value, len };
         })();
         if (!verdict) {
-          this.narrowedReturnType = createUnionType([UcodeType.INTEGER, UcodeType.NULL]) as UcodeType;
+          this.narrowedReturnType = createUnionType([UcodeType.INTEGER, UcodeType.NULL]);
         } else if (!verdict.inBounds) {
           const anchor = verdict.offArg ?? arg0;
           const message = verdict.offArg
@@ -2217,8 +2238,8 @@ export class BuiltinValidator {
       // resolve — the call throws unconditionally, try/catch or not — so this is a
       // hard error, not an "unguarded call" warning. (docs/ucode-module-resolution.md §4)
       const arg0 = node.arguments[0];
-      if (arg0.type === 'Literal' && typeof (arg0 as LiteralNode).value === 'string') {
-        const name = (arg0 as LiteralNode).value as string;
+      if (arg0.type === 'Literal' && typeof arg0.value === 'string') {
+        const name = arg0.value;
         if (/[^A-Za-z0-9_.]/.test(name)) {
           this.errors.push({
             message: `require() cannot load a path - module names may only contain letters, digits, `
@@ -2316,8 +2337,8 @@ export class BuiltinValidator {
     // corpus idiom is an absolute path (netifd builds them at runtime). String
     // literals only; a variable argument is left alone. include()/render() resolve
     // against the including file and are NOT affected. (docs/ucode-module-resolution.md)
-    if (arg.type === 'Literal' && typeof (arg as LiteralNode).value === 'string') {
-      const rawPath = (arg as LiteralNode).value as string;
+    if (arg.type === 'Literal' && typeof arg.value === 'string') {
+      const rawPath = arg.value;
       if (!rawPath.startsWith('/')) {
         this.warnings.push({
           message: `loadfile() resolves '${rawPath}' against the ucode process's working `
@@ -2348,16 +2369,16 @@ export class BuiltinValidator {
    */
   private validateParseConfigObject(optionsArg: AstNode | undefined, fnName: string): void {
     if (!optionsArg || optionsArg.type !== 'ObjectExpression') return;
-    const objExpr = optionsArg as ObjectExpressionNode;
+    const objExpr = optionsArg;
     if (!Array.isArray(objExpr.properties)) return;
     for (const prop of objExpr.properties) {
-      if (!prop || prop.type !== 'Property' || (prop as PropertyNode).computed) continue;
-      const key = (prop as PropertyNode).key;
+      if (!prop || prop.type !== 'Property' || prop.computed) continue;
+      const key = prop.key;
       const keyName = key && key.type === 'Literal'
-        ? (key as LiteralNode).value
-        : (key && key.type === 'Identifier' ? (key as IdentifierNode).name : undefined);
+        ? key.value
+        : (key && key.type === 'Identifier' ? key.name : undefined);
       if (typeof keyName !== 'string') continue;
-      const value = (prop as PropertyNode).value;
+      const value = prop.value;
       if (PARSE_CONFIG_BOOLEAN_KEYS.has(keyName)) {
         const vt = this.getNodeType(value);
         if (vt !== UcodeType.UNKNOWN && vt !== UcodeType.BOOLEAN) {
@@ -2414,8 +2435,9 @@ export class BuiltinValidator {
     // ucode is permissive with argument counts, extra arguments are ignored.
 
     // Validate first parameter (depth) if present - should be number
-    if (argCount >= 1 && node.arguments[0] && node.arguments[0].type === "Literal") {
-      const literalCommand = node.arguments[0] as LiteralNode;
+    const gcCmdArg = node.arguments[0];
+    if (argCount >= 1 && gcCmdArg && gcCmdArg.type === "Literal") {
+      const literalCommand = gcCmdArg;
       if (typeof literalCommand.value === 'string' && 
         literalCommand.value !== 'collect' && 
         literalCommand.value !== 'start' && 
@@ -2424,15 +2446,16 @@ export class BuiltinValidator {
         this.errors.push(
         {
           message: `Invalid garbage collection command "${literalCommand.value}". Did you mean 'collect', or 'start', 'stop', or 'count'?`,
-          start: node.arguments[0].start,
-          end: node.arguments[0].end,
+          start: literalCommand.start,
+          end: literalCommand.end,
           severity: 'error',
           code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
         });
       }
-      if (argCount >= 2 && node.arguments[1]) {
-        if ((node.arguments[1] as AstNode).type === "Literal") {
-          const literalArgument = node.arguments[1] as LiteralNode;
+      const gcIntervalArg = node.arguments[1];
+      if (argCount >= 2 && gcIntervalArg) {
+        if (gcIntervalArg.type === "Literal") {
+          const literalArgument = gcIntervalArg;
           var message: string = '';
           var error: boolean = false;
           if (typeof literalCommand.value === 'string' && literalCommand.value === 'start') {
@@ -2455,12 +2478,12 @@ export class BuiltinValidator {
             this.errors.push(
             {
               message: message,
-              start: node.arguments[1].start,
-              end: node.arguments[1].end,
+              start: literalArgument.start,
+              end: literalArgument.end,
               severity: 'error',
               code: UcodeErrorCode.INVALID_PARAMETER_TYPE,
             });
-        } else if ((node.arguments[1] as AstNode).type === "Identifier") {
+        } else if (gcIntervalArg.type === "Identifier") {
           // ToDo- Advanced type inference
         }
       }
@@ -2473,8 +2496,8 @@ export class BuiltinValidator {
     // gc("count") → integer
     if (argCount === 0) {
       this.narrowedReturnType = UcodeType.BOOLEAN;
-    } else if (argCount >= 1 && node.arguments[0]?.type === 'Literal') {
-      const lit = node.arguments[0] as LiteralNode;
+    } else if (argCount >= 1 && gcCmdArg?.type === 'Literal') {
+      const lit = gcCmdArg;
       if (typeof lit.value === 'string') {
         switch (lit.value) {
           case 'collect': this.narrowedReturnType = UcodeType.BOOLEAN; break;
@@ -2649,18 +2672,18 @@ export class BuiltinValidator {
       this.narrowedReturnType = UcodeType.STRING;
     } else if (argType === UcodeType.UNKNOWN) {
       // Unknown arg could be any type — include null since C returns NULL for wrong types
-      this.narrowedReturnType = createUnionType([UcodeType.ARRAY, UcodeType.STRING, UcodeType.NULL]) as UcodeType;
+      this.narrowedReturnType = createUnionType([UcodeType.ARRAY, UcodeType.STRING, UcodeType.NULL]);
     } else if (argType.includes(' | ')) {
       const argTypes = argType.split(' | ').map(t => t.trim());
       const validTypes = [UcodeType.ARRAY, UcodeType.STRING];
-      const matchedTypes = argTypes.filter(t => validTypes.includes(t as UcodeType));
-      const hasInvalid = argTypes.some(t => !validTypes.includes(t as UcodeType));
+      const matchedTypes = matchTokens(argTypes, validTypes);
+      const hasInvalid = argTypes.some(t => !tokenIn(validTypes, t));
       if (matchedTypes.length > 0 && hasInvalid) {
         // Some valid, some invalid — return matched types + null
-        this.narrowedReturnType = createUnionType([...matchedTypes as UcodeType[], UcodeType.NULL]) as UcodeType;
+        this.narrowedReturnType = createUnionType([...matchedTypes, UcodeType.NULL]);
       } else if (matchedTypes.length > 0) {
         // All valid
-        this.narrowedReturnType = createUnionType(matchedTypes as UcodeType[]) as UcodeType;
+        this.narrowedReturnType = createUnionType(matchedTypes);
       } else {
         this.narrowedReturnType = UcodeType.NULL;
       }
@@ -2710,7 +2733,7 @@ export class BuiltinValidator {
       // member to array<string>, keeping the | null wrong-type path.
       const parts = getUnionTypes(this.narrowedReturnType)
         .map(m => m === UcodeType.ARRAY ? createArrayType(UcodeType.STRING) : m);
-      this.narrowedReturnType = createUnionType(parts as SingleType[]);
+      this.narrowedReturnType = createUnionType(parts);
     }
     this.validateArgumentType(node.arguments[0], 'keys', 1, [UcodeType.OBJECT]);
     // Tag the call result with keys-of provenance. When the argument is a
@@ -2721,7 +2744,8 @@ export class BuiltinValidator {
     // skipped (no chasing aliases here — we'd lose soundness on mutation).
     const arg = node.arguments?.[0];
     if (arg?.type === 'Identifier') {
-      (node as CallExpressionNode & { _keysOfSymbol?: string })._keysOfSymbol = arg.name;
+      const stamped: CallExpressionNode & { _keysOfSymbol?: string } = node;
+      stamped._keysOfSymbol = arg.name;
     }
     return true;
   }

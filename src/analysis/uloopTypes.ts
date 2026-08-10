@@ -436,11 +436,15 @@ export const uloopTypeRegistry = {
   getValidImports: () => [...Array.from(functions.keys()), ...Array.from(uloopConstants.keys())],
 };
 
+function isUloopObjectTypeName(name: string): name is UloopObjectType {
+  return name in objectMethodMaps;
+}
+
 export const uloopObjectRegistry = {
   getUloopType: (typeName: string) => {
     const methods = objectMethodMaps[typeName];
-    if (!methods) return undefined;
-    return { type: typeName as UloopObjectType, methods };
+    if (!methods || !isUloopObjectTypeName(typeName)) return undefined;
+    return { type: typeName, methods };
   },
   isUloopType: (typeName: string) => typeName in objectMethodMaps,
   getUloopMethod: (typeName: string, methodName: string) => {
@@ -455,8 +459,8 @@ export const uloopObjectRegistry = {
     if (typeof dataType === 'string') return null;
     const moduleType = extractModuleType(dataType);
     if (moduleType) {
-      if (moduleType.moduleName in objectMethodMaps) {
-        return moduleType.moduleName as UloopObjectType;
+      if (isUloopObjectTypeName(moduleType.moduleName)) {
+        return moduleType.moduleName;
       }
     }
     return null;

@@ -68,18 +68,10 @@ import type {
     AstNode,
     ProgramNode,
     IdentifierNode,
-    MemberExpressionNode,
     FunctionDeclarationNode,
     FunctionExpressionNode,
     ArrowFunctionExpressionNode,
-    ImportDeclarationNode,
-    JsDocCommentNode,
     ObjectExpressionNode,
-    PropertyNode,
-    VariableDeclarationNode,
-    VariableDeclaratorNode,
-    AssignmentExpressionNode,
-    LiteralNode,
 } from './ast/nodes';
 import { forEachAstChild, walkAst } from './ast/astChildren';
 import { UCODE_TARGET_VERSIONS, type UcodeTargetVersion, DEFAULT_TARGET_VERSION } from './analysis/ucodeVersions';
@@ -195,38 +187,47 @@ interface DiagnosticData {
     typeStringFix?: string[];
     litStart?: number;
     litEnd?: number;
+    /** UC1001/UC1002/UC8004/UC8005: the undeclared/uncertain global's name, and whether
+     *  the assignment was a bare `x = …` (implicit) vs an explicit `global.x = …`. */
+    globalName?: string;
+    implicit?: boolean;
 }
 
 /** Narrow a diagnostic's opaque `data` payload to our known shape. */
 function diagData(diagnostic: Diagnostic): DiagnosticData {
-    return (diagnostic.data ?? {}) as DiagnosticData;
+    const data: DiagnosticData | undefined = diagnostic.data;
+    return data ?? {};
 }
 
-// The generic AST walkers in this file descend via `Object.keys(node)`, indexing
-// fields by name. `AstNode` only exposes type/start/end, so this view lets a walker
-// read arbitrary child fields (which are themselves nodes, node arrays, or scalars)
-// without resorting to `any`. Specific field reads after a `node.type` check are done
-// through a cast to the matching node interface instead.
+// The generic AST walkers in this file descend via a node's own [field, value]
+// entries — they must see EVERY node-valued field (specifier identifiers, import
+// sources, labels, leadingJsDoc), which the curated astChildren stream deliberately
+// omits. Specific field reads after a `node.type` check use the discriminated union
+// directly instead.
 /** What an arbitrary AST node field can hold: a child node, a list of children, a
  *  scalar (operator/name/flag), or the TemplateElement cooked/raw pair. */
 type AstFieldValue =
-    | WalkableNode
-    | (WalkableNode | null)[]
+    | AstNode
+    | (AstNode | null)[]
     | string | number | boolean | null | undefined
     | { raw: string; cooked: string };
-interface WalkableFields { [key: string]: AstFieldValue }
-type WalkableNode = AstNode & WalkableFields;
-const asWalkable = (node: AstNode): WalkableNode => node as WalkableNode;
+/** A node's own [field, value] pairs for the generic walkers. `Object.entries`
+ *  types the values `any` for this input; the annotation pins them to the audited
+ *  field-value union (no assertion involved). */
+const astFieldEntries = (node: AstNode): [string, AstFieldValue][] => Object.entries(node);
 
-/** Top-level statement list of a Program-shaped node, as walkable nodes (empty if absent). */
-const astBody = (ast: AstNode | null | undefined): WalkableNode[] => {
-    const body = ast ? asWalkable(ast).body : undefined;
-    return Array.isArray(body) ? (body as WalkableNode[]) : [];
-};
+/** Top-level statement list of a Program-shaped node (empty if absent). */
+const astBody = (ast: AstNode | null | undefined): AstNode[] =>
+    (ast && (ast.type === 'Program' || ast.type === 'BlockStatement')) ? ast.body : [];
 
 // The three function-shaped nodes (declaration / expression / arrow), which share
 // `params`, `restParam`, and `body` — what the JSDoc/guard quick-fix walkers operate on.
 type FunctionLikeNode = FunctionDeclarationNode | FunctionExpressionNode | ArrowFunctionExpressionNode;
+
+/** Is `n` one of the three function-shaped node kinds? */
+function isFunctionLikeNode(n: AstNode | null | undefined): n is FunctionLikeNode {
+    return n?.type === 'FunctionDeclaration' || n?.type === 'FunctionExpression' || n?.type === 'ArrowFunctionExpression';
+}
 
 // #117 — every feature-provider handler runs its OWN recursive AST walk (folding, document
 // links, code lens, signature help, hover, …) and is otherwise unguarded, so a deeply-nested
@@ -246,7 +247,10 @@ type FunctionLikeNode = FunctionDeclarationNode | FunctionExpressionNode | Arrow
     type WrappedResult = object | null | undefined;
     type WrappedHandler = (...args: never[]) => WrappedResult;
     interface WrappableConnection { [method: string]: (handler: WrappedHandler) => void }
-    const wrappable = connection as object as WrappableConnection;
+    // Single-argument `Object.assign` is the identity function, typed `any` by the
+    // standard library — so the annotation (not an assertion) applies the structural
+    // registration-table view at this JS-library boundary.
+    const wrappable: WrappableConnection = Object.assign(connection);
     const wrapRegistration = (name: string, fallback: object | null) => {
         const orig = wrappable[name];
         if (typeof orig !== 'function') return;
@@ -368,6 +372,11 @@ let ucodeAssumeUndefinedGlobalsDefined = false;
 // 'errorInStrict' (default) = warn, error under 'use strict'; 'warn' = always warn; 'off'.
 let ucodeUncertainGlobalScope: 'off' | 'warn' | 'errorInStrict' = 'errorInStrict';
 
+/** Is `v` one of the supported `ucode.targetVersion` values? */
+function isUcodeTargetVersion(v: string): v is UcodeTargetVersion {
+    return UCODE_TARGET_VERSIONS.some((t) => t === v);
+}
+
 async function refreshTargetVersion(): Promise<{ targetChanged: boolean; strictChanged: boolean }> {
     const prevVersion = ucodeTargetVersion;
     const prevStrictUnknown = ucodeStrictUnknownArguments;
@@ -387,8 +396,8 @@ async function refreshTargetVersion(): Promise<{ targetChanged: boolean; strictC
         try {
             const cfg = await connection.workspace.getConfiguration({ section: 'ucode' });
             const v = cfg?.targetVersion;
-            if (typeof v === 'string' && (UCODE_TARGET_VERSIONS as readonly string[]).includes(v)) {
-                nextVersion = v as UcodeTargetVersion;
+            if (typeof v === 'string' && isUcodeTargetVersion(v)) {
+                nextVersion = v;
             }
             if (typeof cfg?.strictUnknownArguments === 'boolean') {
                 nextStrictUnknown = cfg.strictUnknownArguments;
@@ -479,7 +488,7 @@ async function scanDirectoryRecursively(dir: string, ucodeFiles: string[]): Prom
         }
     } catch (error) {
         // Silently ignore permission errors and continue scanning
-        const code = (error as { code?: string }).code;
+        const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
         if (code !== 'EACCES' && code !== 'EPERM') {
             connection.console.warn(`Error reading directory ${dir}: ${error}`);
         }
@@ -791,7 +800,7 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
     const parserBareSuppressedCodes = new Map<number, Set<string>>();
     let diagnostics: Diagnostic[] = [...lexer.errors, ...parseResult.errors].map(err => {
         const diagnostic: Diagnostic = {
-            severity: (err as { severity?: string }).severity === 'warning' ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error,
+            severity: err.severity === 'warning' ? DiagnosticSeverity.Warning : DiagnosticSeverity.Error,
             range: {
                 start: textDocument.positionAt(err.start),
                 end: textDocument.positionAt(err.end),
@@ -826,6 +835,7 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
     });
 
     if (parseResult.ast) {
+        const parsedAst = parseResult.ast;
         // One analysis pass with a given skip set; reused by runIncremental (which may invoke
         // it twice: incremental, then a sound full fall-back if a signature/shape changed).
         const runAnalysis = (cleanBodies: Map<number, CleanBody>) => {
@@ -852,7 +862,7 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
                 if (scope) analyzer.setInjectedScope(scope.injectedNames, scope.injectedTypes);
             } catch { /* index/path failure must never break analysis */ }
             if (cleanBodies.size > 0) analyzer.setCleanBodies(cleanBodies);
-            return analyzer.analyze(parseResult.ast!);
+            return analyzer.analyze(parsedAst);
         };
         // Function-level incremental analysis (sound — verified by
         // tests/test-incremental-analysis.test.js). forceFull disables it so cursor-context
@@ -861,7 +871,10 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
         let cleanCount = 0;
         try {
             const prev = forceFull ? undefined : incrementalCacheByUri.get(textDocument.uri);
-            const inc = runIncremental(textDocument, parseResult.ast as ProgramNode, prev, runAnalysis);
+            // The parser's non-null root is always a Program; an unexpected shape throws
+            // into the plain-full-analysis fallback below.
+            if (parsedAst.type !== 'Program') throw new Error(`unexpected AST root ${parsedAst.type}`);
+            const inc = runIncremental(textDocument, parsedAst, prev, runAnalysis);
             analysisResult = inc.result;
             cleanCount = inc.skipped;
             incrementalCacheByUri.set(textDocument.uri, inc.cache);
@@ -1218,10 +1231,9 @@ function findEnclosingExpressionStatement(ast: AstNode, offset: number): AstNode
             && offset >= node.start && offset <= node.end && node.type === 'ExpressionStatement') {
             found = node; // keep descending so the innermost wins
         }
-        for (const k of Object.keys(node)) {
-            const v = asWalkable(node)[k];
-            if (Array.isArray(v)) { for (const e of v) walk(e as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') walk(v as AstNode);
+        for (const [, v] of astFieldEntries(node)) {
+            if (Array.isArray(v)) { for (const e of v) if (e) walk(e); }
+            else if (v && typeof v === 'object' && 'type' in v && typeof v.type === 'string') walk(v);
         }
     };
     walk(ast);
@@ -1406,7 +1418,7 @@ function generateRelativeToDottedImportActions(
 
     for (const stmt of ast.body) {
         if (stmt.type !== 'ImportDeclaration') continue;
-        const imp = stmt as ImportDeclarationNode;
+        const imp = stmt;
         if (imp.end < reqStart || imp.start > reqEnd) continue;
         const source = imp.source;
         const raw = typeof source.value === 'string' ? source.value : null;
@@ -1475,7 +1487,7 @@ function topInsertPosition(document: TextDocument): { line: number; character: n
 function generateDeclareGlobalQuickFix(diagnostic: Diagnostic, document: TextDocument, uri: string): CodeAction[] {
     // UC8004 carries the exact name (the range covers the whole `global.X = …` assignment);
     // UC1001/UC1002 ranges start at the bare name or the call — take the leading identifier.
-    const carried = (diagnostic.data as { globalName?: string } | undefined)?.globalName;
+    const carried = diagData(diagnostic).globalName;
     const m = carried ? [carried] : document.getText(diagnostic.range).match(/^[A-Za-z_]\w*/);
     if (!m) return [];
     const name = m[0];
@@ -1586,7 +1598,7 @@ function generateMarkParamOptionalQuickFix(
 // (the conditional site then merely reassigns it). Inserts `global.X = null;` at the top of
 // the file (after shebang / 'use strict').
 function generateSeedGlobalDefaultQuickFix(diagnostic: Diagnostic, document: TextDocument, uri: string): CodeAction[] {
-    const data = diagnostic.data as { globalName?: string; implicit?: boolean } | undefined;
+    const data = diagData(diagnostic);
     const name = data?.globalName;
     if (!name) return [];
     const at = topInsertPosition(document);
@@ -1606,7 +1618,7 @@ function generateSeedGlobalDefaultQuickFix(diagnostic: Diagnostic, document: Tex
 // at the top of the file (after shebang / 'use strict'), making it a real module-local shared by
 // the file's functions. Preferred over the explicit-global options (the common intent).
 function generateDeclareLocalQuickFix(diagnostic: Diagnostic, document: TextDocument, uri: string): CodeAction[] {
-    const data = diagnostic.data as { globalName?: string; implicit?: boolean } | undefined;
+    const data = diagData(diagnostic);
     const name = data?.globalName;
     // Only for a bare `x = …` (a forgotten `let`); an explicit `global.x = …` is a real global.
     if (!name || data?.implicit === false) return [];
@@ -1728,7 +1740,6 @@ function generateTypedefFromUsageActions(
     for (const m of text.matchAll(/@typedef\s*(?:\{[^}]*\}\s*)?(\w+)/g)) existingTypedefs.add(m[1]!);
     const existingShapes = parseExistingTypedefs(text);
 
-    const FN_KINDS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
     // The JSDoc anchors on the construct that NAMES the function, which differs by form:
     //   function f(req) {}         → the declaration id  (gap may hold export/async/function)
     //   call: function(req) {}     → the property key    (gap is pure whitespace + colon)
@@ -1736,36 +1747,32 @@ function generateTypedefFromUsageActions(
     //   obj.f = function(req) {}   → the assignment LHS  (gap is pure whitespace)
     const candidateOf = (node: AstNode): { fn: FunctionLikeNode; anchor: number; stripRe: RegExp; owner: string } | null => {
         if (node.type === 'FunctionDeclaration') {
-            const fn = node as FunctionDeclarationNode;
-            if (!fn.id || !fn.body) return null;
-            return { fn, anchor: fn.id.start, stripRe: /\bexport\b|\bfunction\b|\basync\b|\s+/g, owner: fn.id.name };
+            if (!node.id || !node.body) return null;
+            return { fn: node, anchor: node.id.start, stripRe: /\bexport\b|\bfunction\b|\basync\b|\s+/g, owner: node.id.name };
         }
         if (node.type === 'Property') {
-            const prop = node as PropertyNode;
-            if (!FN_KINDS.has(prop.value?.type ?? '') || prop.computed) return null;
+            if (!isFunctionLikeNode(node.value) || node.computed) return null;
             // Collision-fallback identity: the ENCLOSING property when there is one —
             // in dispatch-style objects the inner key names the role (`call`, `handler`)
             // while the outer key names the method (`containers_list`), and the method
             // is the identity worth baking into a typedef name. No role name is special.
             const owner = (enclosingKeys.length > 0 ? enclosingKeys[enclosingKeys.length - 1] : null)
-                ?? propertyKeyName(prop) ?? '';
-            return { fn: prop.value as FunctionLikeNode, anchor: prop.key.start, stripRe: /\s+/g, owner };
+                ?? propertyKeyName(node) ?? '';
+            return { fn: node.value, anchor: node.key.start, stripRe: /\s+/g, owner };
         }
         if (node.type === 'VariableDeclarator') {
-            const decl = node as VariableDeclaratorNode;
-            if (!decl.init || !FN_KINDS.has(decl.init.type)) return null;
-            return { fn: decl.init as FunctionLikeNode, anchor: decl.id.start, stripRe: /\blet\b|\bconst\b|\bexport\b|\s+/g, owner: decl.id.name };
+            if (!isFunctionLikeNode(node.init)) return null;
+            return { fn: node.init, anchor: node.id.start, stripRe: /\blet\b|\bconst\b|\bexport\b|\s+/g, owner: node.id.name };
         }
         if (node.type === 'AssignmentExpression') {
-            const asg = node as AssignmentExpressionNode;
-            if (asg.operator !== '=' || !FN_KINDS.has(asg.right?.type ?? '')) return null;
-            const left = asg.left;
+            if (node.operator !== '=' || !isFunctionLikeNode(node.right)) return null;
+            const left = node.left;
             const owner = left.type === 'Identifier'
-                ? (left as IdentifierNode).name
-                : (left.type === 'MemberExpression' && (left as MemberExpressionNode).property.type === 'Identifier'
-                    ? ((left as MemberExpressionNode).property as IdentifierNode).name
+                ? left.name
+                : (left.type === 'MemberExpression' && left.property.type === 'Identifier'
+                    ? left.property.name
                     : '');
-            return { fn: asg.right as FunctionLikeNode, anchor: left.start, stripRe: /\s+/g, owner };
+            return { fn: node.right, anchor: left.start, stripRe: /\s+/g, owner };
         }
         return null;
     };
@@ -1788,11 +1795,11 @@ function generateTypedefFromUsageActions(
             // are the common instance, but nothing is name-special).
             let argsSeed: Map<string, string> | null = null;
             if (node.type === 'Property' && objStack.length > 0) {
-                for (const s of objStack[objStack.length - 1]!.properties ?? []) {
+                for (const s of objStack[objStack.length - 1]?.properties ?? []) {
                     if (s === node || s?.type !== 'Property') continue;
-                    const sibName = propertyKeyName(s as PropertyNode);
-                    if (!sibName || (s as PropertyNode).value?.type !== 'ObjectExpression') continue;
-                    for (const [k, v] of siblingExampleSeeds(sibName, (s as PropertyNode).value)) {
+                    const sibName = propertyKeyName(s);
+                    if (!sibName || s.value?.type !== 'ObjectExpression') continue;
+                    for (const [k, v] of siblingExampleSeeds(sibName, s.value)) {
                         if (!argsSeed) argsSeed = new Map();
                         argsSeed.set(k, v);
                     }
@@ -1913,7 +1920,7 @@ function generateTypedefFromUsageActions(
             : null;
         if (keyName) enclosingKeys.push(keyName);
         const isObj = node.type === 'ObjectExpression';
-        if (isObj) objStack.push(node as ObjectExpressionNode);
+        if (node.type === 'ObjectExpression') objStack.push(node);
         forEachAstChild(node, visit);
         if (isObj) objStack.pop();
         if (keyName) enclosingKeys.pop();
@@ -2843,7 +2850,7 @@ type CodeLensData =
     | { kind: 'refs'; uri: string; nameStart: number; name: string };
 
 connection.onCodeLensResolve((lens: CodeLens): CodeLens => {
-    const data = lens.data as CodeLensData | undefined;
+    const data: CodeLensData | undefined = lens.data;
     if (!data) return lens;
 
     // References lens: count in-file references to the function and wire a peek.
@@ -3011,15 +3018,13 @@ function resolveImportedCanonical(uri: string, name: string): { canonicalUri: st
  *  intentionally omits declaration ids. */
 function findTopLevelDeclId(ast: AstNode | null | undefined, name: string): { start: number; end: number } | null {
     if (!ast) return null;
-    const body = (asWalkable(ast).body ?? []) as WalkableNode[];
-    for (const stmt of body) {
-        const decl = (stmt?.type === 'ExportNamedDeclaration' || stmt?.type?.startsWith('ExportDefault'))
-            ? (stmt.declaration as WalkableNode | undefined) : stmt;
-        const declId = decl?.id as WalkableNode | undefined;
-        if (decl?.type === 'FunctionDeclaration' && declId?.name === name) return { start: declId.start, end: declId.end };
+    for (const stmt of astBody(ast)) {
+        const decl = (stmt?.type === 'ExportNamedDeclaration' || stmt?.type === 'ExportDefaultDeclaration')
+            ? stmt.declaration : stmt;
+        if (decl?.type === 'FunctionDeclaration' && decl.id?.name === name) return { start: decl.id.start, end: decl.id.end };
         if (decl?.type === 'VariableDeclaration') {
-            for (const d of ((decl.declarations as WalkableNode[] | undefined) ?? [])) {
-                const id = d?.id as WalkableNode | undefined;
+            for (const d of (decl.declarations ?? [])) {
+                const id = d?.id;
                 if (id?.type === 'Identifier' && id.name === name) return { start: id.start, end: id.end };
             }
         }
@@ -3049,17 +3054,15 @@ function findMemberPropertyAt(ast: AstNode | null | undefined, offset: number): 
     let found: { object: AstNode; property: IdentifierNode } | null = null;
     const visit = (node: AstNode): void => {
         if (found || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
-        const mem = node as MemberExpressionNode;
-        if (node.type === 'MemberExpression' && !mem.computed && (mem.property as AstNode)?.type === 'Identifier'
-            && offset >= mem.property.start && offset <= mem.property.end) {
-            found = { object: mem.object, property: mem.property as IdentifierNode };
+        if (node.type === 'MemberExpression' && !node.computed && node.property.type === 'Identifier'
+            && offset >= node.property.start && offset <= node.property.end) {
+            found = { object: node.object, property: node.property };
             return;
         }
-        for (const k of Object.keys(node)) {
+        for (const [k, v] of astFieldEntries(node)) {
             if (k === 'leadingJsDoc') continue;
-            const v = asWalkable(node)[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode);
+            if (Array.isArray(v)) { for (const it of v) if (it) visit(it); }
+            else if (v && typeof v === 'object' && 'type' in v && typeof v.type === 'string') visit(v);
         }
     };
     if (ast) visit(ast);
@@ -3076,7 +3079,7 @@ function resolveMemberCanonical(uri: string, position: { line: number; character
     if (!entry || !document) return null;
     const member = findMemberPropertyAt(entry.result.ast, document.offsetAt(position));
     if (!member || member.object.type !== 'Identifier') return null;
-    const objName = (member.object as IdentifierNode).name;
+    const objName = member.object.name;
     const propName = member.property.name;
 
     // Namespace import: `import * as lib` → `lib.prop` is the named export `prop`.
@@ -3101,14 +3104,14 @@ function resolveMemberCanonical(uri: string, position: { line: number; character
  *  references can surface the definition site. */
 function objectLiteralMethodKey(objLit: AstNode | undefined, methodName: string): { start: number; end: number } | null {
     if (!objLit || objLit.type !== 'ObjectExpression') return null;
-    for (const p of (objLit as ObjectExpressionNode).properties || []) {
-        if (!p || p.type !== 'Property' || (p as PropertyNode).computed) continue;
-        const key = (p as PropertyNode).key;
-        const keyName = key?.type === 'Identifier' ? (key as IdentifierNode).name
-            : key?.type === 'Literal' && typeof (key as LiteralNode).value === 'string' ? (key as LiteralNode).value as string
+    for (const p of objLit.properties || []) {
+        if (!p || p.type !== 'Property' || p.computed) continue;
+        const key = p.key;
+        const keyName = key?.type === 'Identifier' ? key.name
+            : key?.type === 'Literal' && typeof key.value === 'string' ? key.value
             : null;
         if (keyName !== methodName) continue;
-        const val = (p as PropertyNode).value;
+        const val = p.value;
         if ((val?.type === 'FunctionExpression' || val?.type === 'ArrowFunctionExpression') && key) {
             return { start: key.start, end: key.end };
         }
@@ -3126,13 +3129,13 @@ function findObjectMethodKeyBinding(ast: AstNode | null | undefined, offset: num
     let found: { objName: string; methodName: string } | null = null;
     const check = (objName: string, init: AstNode | null | undefined): boolean => {
         if (!init || init.type !== 'ObjectExpression') return false;
-        for (const p of (init as ObjectExpressionNode).properties || []) {
-            if (!p || p.type !== 'Property' || (p as PropertyNode).computed) continue;
-            const key = (p as PropertyNode).key;
+        for (const p of init.properties || []) {
+            if (!p || p.type !== 'Property' || p.computed) continue;
+            const key = p.key;
             if (!key || offset < key.start || offset > key.end) continue;
-            const val = (p as PropertyNode).value;
-            const keyName = key.type === 'Identifier' ? (key as IdentifierNode).name
-                : key.type === 'Literal' && typeof (key as LiteralNode).value === 'string' ? (key as LiteralNode).value as string
+            const val = p.value;
+            const keyName = key.type === 'Identifier' ? key.name
+                : key.type === 'Literal' && typeof key.value === 'string' ? key.value
                 : null;
             if (keyName && (val?.type === 'FunctionExpression' || val?.type === 'ArrowFunctionExpression')) {
                 found = { objName, methodName: keyName };
@@ -3144,20 +3147,18 @@ function findObjectMethodKeyBinding(ast: AstNode | null | undefined, offset: num
     const visit = (node: AstNode): void => {
         if (found || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
         if (node.type === 'VariableDeclaration') {
-            for (const d of (node as VariableDeclarationNode).declarations || []) {
-                if (d?.id?.type === 'Identifier' && check((d.id as IdentifierNode).name, d.init)) return;
+            for (const d of node.declarations || []) {
+                if (d?.id?.type === 'Identifier' && check(d.id.name, d.init)) return;
             }
         }
         if (node.type === 'AssignmentExpression') {
-            const asn = node as { operator?: string; left?: AstNode; right?: AstNode };
-            if (asn.operator === '=' && asn.left?.type === 'Identifier'
-                && check((asn.left as IdentifierNode).name, asn.right)) return;
+            if (node.operator === '=' && node.left?.type === 'Identifier'
+                && check(node.left.name, node.right)) return;
         }
-        for (const k of Object.keys(node)) {
+        for (const [k, v] of astFieldEntries(node)) {
             if (k === 'leadingJsDoc') continue;
-            const v = asWalkable(node)[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode);
+            if (Array.isArray(v)) { for (const it of v) if (it) visit(it); }
+            else if (v && typeof v === 'object' && 'type' in v && typeof v.type === 'string') visit(v);
         }
     };
     if (ast) visit(ast);
@@ -3180,7 +3181,7 @@ function collectLocalObjectMethodReferences(uri: string, position: { line: numbe
     let methodName: string | undefined;
     const member = findMemberPropertyAt(ast, offset);
     if (member && member.object.type === 'Identifier') {
-        objName = (member.object as IdentifierNode).name;
+        objName = member.object.name;
         methodName = member.property.name;
     } else {
         const hit = findObjectMethodKeyBinding(ast, offset);
@@ -3235,8 +3236,8 @@ function collectReferences(uri: string, position: { line: number; character: num
             seenM.add(key);
             out.push(Location.create(u, range));
         };
-        for (const r of collectInFileRefsByName(memberCanon.canonicalUri, memberCanon.canonicalName)) addM(r.uri, r.range as Range);
-        for (const r of findCrossFileReferences(memberCanon.canonicalUri, memberCanon.canonicalName)) addM(r.uri, r.range as Range);
+        for (const r of collectInFileRefsByName(memberCanon.canonicalUri, memberCanon.canonicalName)) addM(r.uri, r.range);
+        for (const r of findCrossFileReferences(memberCanon.canonicalUri, memberCanon.canonicalName)) addM(r.uri, r.range);
         return out;
     }
 
@@ -3270,14 +3271,14 @@ function collectReferences(uri: string, position: { line: number; character: num
     const sym: Symbol | null | undefined = entry.result.symbolTable?.resolveReference(name, declaredAt ?? document.offsetAt(position));
     const canon = sym?.type === SymbolType.IMPORTED ? resolveImportedCanonical(uri, name) : null;
     if (canon) {
-        for (const r of collectInFileRefsByName(canon.canonicalUri, canon.canonicalName)) add(r.uri, r.range as Range);
-        for (const r of findCrossFileReferences(canon.canonicalUri, canon.canonicalName)) add(r.uri, r.range as Range);
+        for (const r of collectInFileRefsByName(canon.canonicalUri, canon.canonicalName)) add(r.uri, r.range);
+        for (const r of findCrossFileReferences(canon.canonicalUri, canon.canonicalName)) add(r.uri, r.range);
     } else {
-        for (const r of findCrossFileReferences(uri, name)) add(r.uri, r.range as Range);
+        for (const r of findCrossFileReferences(uri, name)) add(r.uri, r.range);
         // If `name` is a function-valued GLOBAL defined in THIS file (`global.X = fn` /
         // bare `X = fn`), its references also live in loadfile()() callers — follow those.
         if (collectCodeLensFunctions(entry.result.ast).some(f => f.isGlobal && f.name === name)) {
-            for (const r of findLoadfileCallerReferences(uri, name)) add(r.uri, r.range as Range);
+            for (const r of findLoadfileCallerReferences(uri, name)) add(r.uri, r.range);
         }
     }
     return locs;
@@ -3345,12 +3346,11 @@ function findFunctionNodeAt(ast: AstNode | null | undefined, start: number): Fun
     const visit = (node: AstNode): void => {
         if (found || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
         if ((node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression' || node.type === 'FunctionDeclaration')
-            && node.start === start) { found = node as FunctionLikeNode; return; }
-        for (const k of Object.keys(node)) {
+            && node.start === start) { found = node; return; }
+        for (const [k, v] of astFieldEntries(node)) {
             if (k === 'leadingJsDoc') continue;
-            const v = asWalkable(node)[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode);
+            if (Array.isArray(v)) { for (const it of v) if (it) visit(it); }
+            else if (v && typeof v === 'object' && 'type' in v && typeof v.type === 'string') visit(v);
         }
     };
     if (ast) visit(ast);
@@ -3366,8 +3366,8 @@ function resolveMemberParamsAt(uri: string, fnStart: number): Array<{ name: stri
     if (!fn) return null;
     // ucode function params are plain Identifiers; rest params are NOT in `params` (they
     // live on the separate `restParam` field, handled just below).
-    const out = (fn.params ?? []).map((param: AstNode) => {
-        const name = (param as IdentifierNode).name ?? '';
+    const out = (fn.params ?? []).map((param) => {
+        const name = param.name ?? '';
         return { name, label: name, isRest: false };
     });
     // Rest params are parsed onto a separate `restParam` field, not into `params`.
@@ -3494,23 +3494,19 @@ connection.onWorkspaceSymbol((params: WorkspaceSymbolParams): SymbolInformation[
 /** Is `name` exported from this file (inline `export function/let`, an
  *  `export { name }` specifier, or `export default name`)? */
 function isExportedName(ast: AstNode | null | undefined, name: string): boolean {
-    const body = ast ? asWalkable(ast).body : undefined;
-    if (!Array.isArray(body)) return false;
-    for (const stmt of body as WalkableNode[]) {
-        const t = stmt?.type;
-        if (t === 'ExportNamedDeclaration') {
-            const decl = stmt.declaration as WalkableNode | undefined;
-            const declId = decl?.id as WalkableNode | undefined;
-            if (decl?.type === 'FunctionDeclaration' && declId?.name === name) return true;
+    for (const stmt of astBody(ast)) {
+        if (stmt?.type === 'ExportNamedDeclaration') {
+            const decl = stmt.declaration;
+            if (decl?.type === 'FunctionDeclaration' && decl.id?.name === name) return true;
             if (decl?.type === 'VariableDeclaration'
-                && ((decl.declarations as WalkableNode[] | undefined) || []).some((d) => (d?.id as WalkableNode | undefined)?.name === name)) return true;
-            for (const spec of ((stmt.specifiers as WalkableNode[] | undefined) || [])) {
-                if ((spec?.local as WalkableNode | undefined)?.name === name || (spec?.exported as WalkableNode | undefined)?.name === name) return true;
+                && (decl.declarations || []).some((d) => d?.id?.name === name)) return true;
+            for (const spec of (stmt.specifiers || [])) {
+                if (spec?.local?.name === name || spec?.exported?.name === name) return true;
             }
-        } else if (t && t.startsWith('ExportDefault')) {
-            const d = stmt.declaration as WalkableNode | undefined;
+        } else if (stmt?.type === 'ExportDefaultDeclaration') {
+            const d = stmt.declaration;
             if (d?.type === 'Identifier' && d.name === name) return true;
-            if ((d?.id as WalkableNode | undefined)?.name === name) return true;
+            if ((d?.type === 'FunctionDeclaration' || d?.type === 'FunctionExpression') && d.id?.name === name) return true;
         }
     }
     return false;
@@ -3539,15 +3535,13 @@ function hasAliasedImporter(canonicalUri: string, canonicalName: string): boolea
         if (!ad) continue;
         for (const stmt of (astBody(ad.ast))) {
             if (stmt?.type !== 'ImportDeclaration') continue;
-            const sourceValue = (stmt.source as WalkableNode | undefined)?.value as string | undefined;
-            if (sourceValue === undefined) continue;
+            const sourceValue = stmt.source?.value;
+            if (typeof sourceValue !== 'string') continue;
             const resolved = resolver.resolveImportPath(sourceValue, uri);
             if (!resolved || path.resolve(uriToFilePath(resolved)) !== targetPath) continue;
-            for (const spec of ((stmt.specifiers as WalkableNode[] | undefined) ?? [])) {
-                const imported = spec.imported as WalkableNode | undefined;
-                const local = spec.local as WalkableNode | undefined;
-                if (spec.type === 'ImportSpecifier' && imported?.name === canonicalName
-                    && local?.name !== canonicalName) return true;
+            for (const spec of (stmt.specifiers ?? [])) {
+                if (spec.type === 'ImportSpecifier' && spec.imported?.name === canonicalName
+                    && spec.local?.name !== canonicalName) return true;
             }
         }
     }
@@ -3568,8 +3562,8 @@ function collectSpecifierSpansForRename(canonicalUri: string, canonicalName: str
     if (src) {
         for (const stmt of (astBody(src.ast))) {
             if (stmt?.type === 'ExportNamedDeclaration' && !stmt.declaration) {
-                for (const spec of ((stmt.specifiers as WalkableNode[] | undefined) ?? [])) {
-                    const local = spec.local as WalkableNode | undefined;
+                for (const spec of (stmt.specifiers ?? [])) {
+                    const local = spec.local;
                     if (local?.name === canonicalName) out.push({ uri: canonicalUri, range: rangeOf(local, src.doc) });
                 }
             }
@@ -3583,15 +3577,13 @@ function collectSpecifierSpansForRename(canonicalUri: string, canonicalName: str
         if (!ad) continue;
         for (const stmt of (astBody(ad.ast))) {
             if (stmt?.type !== 'ImportDeclaration') continue;
-            const source = stmt.source as WalkableNode | undefined;
-            const sourceValue = source?.value as string | undefined;
-            if (sourceValue === undefined) continue;
+            const sourceValue = stmt.source?.value;
+            if (typeof sourceValue !== 'string') continue;
             const resolved = resolver.resolveImportPath(sourceValue, uri);
             if (!resolved || path.resolve(uriToFilePath(resolved)) !== targetPath) continue;
-            for (const spec of ((stmt.specifiers as WalkableNode[] | undefined) ?? [])) {
-                const imported = spec.imported as WalkableNode | undefined;
-                if (spec.type === 'ImportSpecifier' && imported?.name === canonicalName) {
-                    out.push({ uri, range: rangeOf(imported, ad.doc) });
+            for (const spec of (stmt.specifiers ?? [])) {
+                if (spec.type === 'ImportSpecifier' && spec.imported?.name === canonicalName) {
+                    out.push({ uri, range: rangeOf(spec.imported, ad.doc) });
                 }
             }
         }
@@ -3607,25 +3599,22 @@ function hasNestedShadow(ast: AstNode | null | undefined, name: string): boolean
     let found = false;
     const visit = (node: AstNode, depth: number): void => {
         if (found || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
-        const n = asWalkable(node);
-        const isFn = node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression';
+        const isFn = isFunctionLikeNode(node);
         if (depth > 0) {
-            const id = n.id as WalkableNode | undefined;
-            if (node.type === 'FunctionDeclaration' && id?.name === name) { found = true; return; }
-            if (node.type === 'VariableDeclarator' && id?.type === 'Identifier' && id.name === name) { found = true; return; }
+            if (node.type === 'FunctionDeclaration' && node.id?.name === name) { found = true; return; }
+            if (node.type === 'VariableDeclarator' && node.id?.type === 'Identifier' && node.id.name === name) { found = true; return; }
         }
-        if (isFn) {
-            for (const p of ((n.params as WalkableNode[] | undefined) ?? [])) {
-                if ((p?.name ?? (p?.argument as WalkableNode | undefined)?.name) === name) { found = true; return; }
+        if (isFunctionLikeNode(node)) {
+            for (const p of (node.params ?? [])) {
+                if (p?.name === name) { found = true; return; }
             }
-            if ((n.restParam as WalkableNode | undefined)?.name === name) { found = true; return; }
+            if (node.restParam?.name === name) { found = true; return; }
         }
         const childDepth = isFn ? depth + 1 : depth;
-        for (const k of Object.keys(node)) {
+        for (const [k, v] of astFieldEntries(node)) {
             if (k === 'leadingJsDoc') continue;
-            const v = n[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode, childDepth); }
-            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode, childDepth);
+            if (Array.isArray(v)) { for (const it of v) if (it) visit(it, childDepth); }
+            else if (v && typeof v === 'object' && 'type' in v && typeof v.type === 'string') visit(v, childDepth);
         }
     };
     if (ast) visit(ast, 0);
@@ -3647,8 +3636,8 @@ function renameHasShadowingConflict(canonicalUri: string, canonicalName: string)
         let importsTarget = false;
         for (const stmt of (astBody(ad.ast))) {
             if (stmt?.type !== 'ImportDeclaration') continue;
-            const sourceValue = (stmt.source as WalkableNode | undefined)?.value as string | undefined;
-            if (sourceValue === undefined) continue;
+            const sourceValue = stmt.source?.value;
+            if (typeof sourceValue !== 'string') continue;
             const r = resolver.resolveImportPath(sourceValue, uri);
             if (r && path.resolve(uriToFilePath(r)) === targetPath) { importsTarget = true; break; }
         }
@@ -3808,8 +3797,7 @@ function findEnclosingContext(ast: AstNode | null | undefined, document: TextDoc
 
     const offset = document.offsetAt(position);
 
-    function walk(nodeArg: AstNode, inFunc: boolean, inLoop: boolean, inLoopHeader: boolean, inCondition: boolean, condOwner: AstNode | null): void {
-        const node = asWalkable(nodeArg);
+    function walk(node: AstNode, inFunc: boolean, inLoop: boolean, inLoopHeader: boolean, inCondition: boolean, condOwner: AstNode | null): void {
         if (!node || typeof node !== 'object' || typeof node.start !== 'number') return;
         if (offset < node.start || offset > node.end) return;
 
@@ -3826,9 +3814,9 @@ function findEnclosingContext(ast: AstNode | null | undefined, document: TextDoc
         const newInLoop = isFunc ? false : (isLoop || inLoop);
 
         result.inFunction = newInFunc;
-        if (isFunc) {
+        if (isFunctionLikeNode(node)) {
             result.enclosingFunctionLine = document.positionAt(node.start).line;
-            result.enclosingFunction = nodeArg as FunctionLikeNode;
+            result.enclosingFunction = node;
         }
         result.inLoop = newInLoop;
         result.inLoopHeader = inLoopHeader;
@@ -3838,8 +3826,8 @@ function findEnclosingContext(ast: AstNode | null | undefined, document: TextDoc
         }
 
         // Track enclosing control structure for body-position diagnostics
-        if (isControl) {
-            const bodyNode = (node.type === 'IfStatement' ? node.consequent : node.body) as AstNode | undefined;
+        if (node.type === 'IfStatement' || node.type === 'ForStatement' || node.type === 'ForInStatement' || node.type === 'WhileStatement') {
+            const bodyNode = node.type === 'IfStatement' ? node.consequent : node.body;
             if (bodyNode && offset >= bodyNode.start && offset <= bodyNode.end) {
                 result.enclosingControl = node;
                 result.enclosingControlBody = bodyNode;
@@ -3879,9 +3867,8 @@ function findEnclosingContext(ast: AstNode | null | undefined, document: TextDoc
         }
 
         // Visit all child nodes
-        for (const key of Object.keys(node)) {
+        for (const [key, val] of astFieldEntries(node)) {
             if (key === 'type' || key === 'start' || key === 'end') continue;
-            const val = node[key];
             // Only set inLoop for the loop body, not the header (init/test/update/right).
             const isHeader = isLoop && key !== 'body';
             const childInLoop = isHeader ? inLoop : newInLoop;
@@ -3890,15 +3877,15 @@ function findEnclosingContext(ast: AstNode | null | undefined, document: TextDoc
             const isCondKey = (isControl && key === 'test') ||
                               (isLoop && (key === 'init' || key === 'update' || key === 'right'));
             const childInCondition = isCondKey ? true : (isControl && (key === 'body' || key === 'consequent' || key === 'alternate') ? false : inCondition);
-            const childCondOwner: AstNode | null = isCondKey ? (node as AstNode) : (isControl && !isCondKey ? null : condOwner);
+            const childCondOwner: AstNode | null = isCondKey ? node : (isControl && !isCondKey ? null : condOwner);
             if (Array.isArray(val)) {
                 for (const item of val) {
-                    if (item && typeof item === 'object' && typeof (item as AstNode).start === 'number') {
-                        walk(item as AstNode, newInFunc, childInLoop, childInLoopHeader, childInCondition, childCondOwner);
+                    if (item && typeof item === 'object' && typeof item.start === 'number') {
+                        walk(item, newInFunc, childInLoop, childInLoopHeader, childInCondition, childCondOwner);
                     }
                 }
-            } else if (val && typeof val === 'object' && typeof (val as AstNode).start === 'number') {
-                walk(val as AstNode, newInFunc, childInLoop, childInLoopHeader, childInCondition, childCondOwner);
+            } else if (val && typeof val === 'object' && 'start' in val && typeof val.start === 'number') {
+                walk(val, newInFunc, childInLoop, childInLoopHeader, childInCondition, childCondOwner);
             }
         }
     }
@@ -4198,9 +4185,9 @@ function splitTypeUnion(t: string): string[] {
  *  +/- on a numeric literal (`case -1:`). `null` literals return null — they
  *  don't constrain a type. */
 function literalTypeName(node: AstNode | null | undefined): string | null {
-    let n = node as WalkableNode | null | undefined;
-    if (n?.type === 'UnaryExpression' && (n.operator === '-' || n.operator === '+') && (n.argument as WalkableNode | undefined)?.type === 'Literal') {
-        n = n.argument as WalkableNode;
+    let n = node;
+    if (n?.type === 'UnaryExpression' && (n.operator === '-' || n.operator === '+') && n.argument?.type === 'Literal') {
+        n = n.argument;
     }
     if (n?.type !== 'Literal') return null;
     const v = n.value;
@@ -4259,14 +4246,13 @@ function inferParamTypesFromUsage(
     //     `[1,2] * 2` returns "NaN", `null * 2` returns 0.
     //
     // Both expressed user *intent*, not type proof. Removed.
-    const walk = (nodeArg: AstNode): void => {
-        const node = asWalkable(nodeArg);
+    const walk = (node: AstNode): void => {
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
 
-        const callee = node.callee as WalkableNode | undefined;
+        const callee = node.type === 'CallExpression' ? node.callee : undefined;
         if (node.type === 'CallExpression' && callee?.type === 'Identifier') {
-            const fname = callee.name as string;
-            const args = node.arguments as WalkableNode[] | undefined;
+            const fname = callee.name;
+            const args = node.arguments;
 
             // Source 2: direct builtin arg positions. Sound because the validator
             // already fires diagnostics on type mismatches, and at runtime each
@@ -4279,8 +4265,8 @@ function inferParamTypesFromUsage(
                     const arg = args[i];
                     const allowed = builtinConstraints[i];
                     if (!arg || !allowed) continue;
-                    if (arg.type === 'Identifier' && paramNames.has(arg.name as string)) {
-                        addConstraint(arg.name as string, allowed);
+                    if (arg.type === 'Identifier' && paramNames.has(arg.name)) {
+                        addConstraint(arg.name, allowed);
                     }
                 }
             }
@@ -4293,12 +4279,12 @@ function inferParamTypesFromUsage(
                     if (calleeInferences) {
                         for (let i = 0; i < args.length; i++) {
                             const arg = args[i];
-                            if (!arg || arg.type !== 'Identifier' || !paramNames.has(arg.name as string)) continue;
+                            if (!arg || arg.type !== 'Identifier' || !paramNames.has(arg.name)) continue;
                             const calleeParamName = calleeFn.params[i]?.name;
                             if (!calleeParamName) continue;
                             const calleeType = calleeInferences.get(calleeParamName);
                             if (!calleeType || calleeType === 'unknown') continue;
-                            addConstraint(arg.name as string, splitTypeUnion(calleeType));
+                            addConstraint(arg.name, splitTypeUnion(calleeType));
                         }
                     }
                 }
@@ -4315,14 +4301,14 @@ function inferParamTypesFromUsage(
         //   - A NUMERIC key — `x[0]`, `x[i]`, or even `x["0"]` (ucode coerces a
         //     numeric-looking string to an array index, and a numeric index to
         //     an object's string key) — is genuinely ambiguous. → `array | object`.
-        const memberObject = node.object as WalkableNode | undefined;
+        const memberObject = node.type === 'MemberExpression' ? node.object : undefined;
         if (node.type === 'MemberExpression'
             && memberObject?.type === 'Identifier'
-            && paramNames.has(memberObject.name as string)) {
-            const prop = node.property as WalkableNode | undefined;
+            && paramNames.has(memberObject.name)) {
+            const prop = node.property;
             const namedKey = !node.computed // dot access — always a non-numeric identifier
                 || (prop?.type === 'Literal' && typeof prop.value === 'string' && !/^-?\d+$/.test(prop.value));
-            addConstraint(memberObject.name as string, namedKey ? ['object'] : ['array', 'object']);
+            addConstraint(memberObject.name, namedKey ? ['object'] : ['array', 'object']);
         }
 
         // Source 5: switch discriminant matched against literal case labels —
@@ -4333,23 +4319,23 @@ function inferParamTypesFromUsage(
         // editable JSDoc suggestion — never a live diagnostic. Conservative: if
         // ANY non-default label isn't a literal (e.g. `case SOME_CONST:`), the
         // discriminant's type is unprovable, so we add nothing.
-        const discriminant = node.discriminant as WalkableNode | undefined;
+        const discriminant = node.type === 'SwitchStatement' ? node.discriminant : undefined;
         if (node.type === 'SwitchStatement'
             && discriminant?.type === 'Identifier'
-            && paramNames.has(discriminant.name as string)
+            && paramNames.has(discriminant.name)
             && Array.isArray(node.cases)) {
             const labelTypes = new Set<string>();
             let allLiteral = true;
             let hasLabel = false;
-            for (const c of node.cases as WalkableNode[]) {
+            for (const c of node.cases) {
                 if (!c || c.test == null) continue; // default clause
                 hasLabel = true;
-                const t = literalTypeName(c.test as AstNode);
+                const t = literalTypeName(c.test);
                 if (!t) { allLiteral = false; break; }
                 labelTypes.add(t);
             }
             if (hasLabel && allLiteral && labelTypes.size > 0) {
-                addConstraint(discriminant.name as string, [...labelTypes]);
+                addConstraint(discriminant.name, [...labelTypes]);
             }
         }
 
@@ -4362,15 +4348,15 @@ function inferParamTypesFromUsage(
         // as a suggestion: the method errors at runtime on the wrong type.
         if (node.type === 'CallExpression' && callee?.type === 'MemberExpression'
             && symbolTable && Array.isArray(node.arguments)) {
-            const memberArgs = node.arguments as WalkableNode[];
+            const memberArgs = node.arguments;
             const params = resolveMemberCallParameterTypes(callee, symbolTable);
             if (params) {
                 for (let i = 0; i < memberArgs.length && i < params.length; i++) {
                     const arg = memberArgs[i];
                     const ptype = params[i]?.type;
-                    if (!arg || arg.type !== 'Identifier' || !paramNames.has(arg.name as string) || !ptype) continue;
+                    if (!arg || arg.type !== 'Identifier' || !paramNames.has(arg.name) || !ptype) continue;
                     const allowed = splitTypeUnion(ptype).filter(t => t !== 'unknown' && t !== 'any');
-                    if (allowed.length > 0) addConstraint(arg.name as string, allowed);
+                    if (allowed.length > 0) addConstraint(arg.name, allowed);
                 }
             }
         }
@@ -4382,25 +4368,23 @@ function inferParamTypesFromUsage(
         //   - object-literal spread (`{...p}`) accepts an array OR an object (an
         //     array spreads as index→value keys). → `array | object`.
         if (node.type === 'CallExpression' || node.type === 'ArrayExpression' || node.type === 'ObjectExpression') {
-            const items = (node.type === 'CallExpression' ? node.arguments
+            const items = node.type === 'CallExpression' ? node.arguments
                 : node.type === 'ArrayExpression' ? node.elements
-                : node.properties) as WalkableNode[] | undefined;
+                : node.properties;
             if (Array.isArray(items)) {
                 const allowed = node.type === 'ObjectExpression' ? ['array', 'object'] : ['array'];
                 for (const it of items) {
-                    const itArg = it?.argument as WalkableNode | undefined;
-                    if (it?.type === 'SpreadElement' && itArg?.type === 'Identifier' && paramNames.has(itArg.name as string)) {
-                        addConstraint(itArg.name as string, allowed);
+                    if (it?.type === 'SpreadElement' && it.argument?.type === 'Identifier' && paramNames.has(it.argument.name)) {
+                        addConstraint(it.argument.name, allowed);
                     }
                 }
             }
         }
 
-        for (const key of Object.keys(node)) {
+        for (const [key, v] of astFieldEntries(node)) {
             if (key === 'leadingJsDoc' || key === '_fullType' || key === '_specCache') continue;
-            const v = node[key];
-            if (Array.isArray(v)) { for (const it of v) walk(it as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') { walk(v as AstNode); }
+            if (Array.isArray(v)) { for (const it of v) if (it) walk(it); }
+            else if (v && typeof v === 'object' && 'type' in v && typeof v.type === 'string') { walk(v); }
         }
     };
     walk(funcNode.body);
@@ -4551,7 +4535,7 @@ function generateJsDocQuickFix(
 
     // ── Partial JSDoc: append the missing @param lines into the EXISTING block ──
     // (ticket 95 — the fix used to bail whenever any leading JSDoc was present).
-    const existingJsDoc = (funcNode as { leadingJsDoc?: JsDocCommentNode }).leadingJsDoc;
+    const existingJsDoc = funcNode.leadingJsDoc;
     if (existingJsDoc) {
         const missing = undocumentedParams(funcNode);
         if (missing.length === 0) return null; // fully documented — nothing to add
@@ -4593,12 +4577,12 @@ function generateJsDocQuickFix(
     // attachment point — inserting the block before the enclosing statement detaches it
     // and never annotates the param. Don't offer the fix there.
     if (funcNode.type !== 'FunctionDeclaration') {
-        const p = parent ? asWalkable(parent) : null;
+        const p = parent;
         const attachable = !!p && (
             (p.type === 'VariableDeclarator' && p.init === funcNode) ||
             (p.type === 'AssignmentExpression' && p.right === funcNode) ||
             (p.type === 'Property' && p.value === funcNode) ||
-            (typeof p.type === 'string' && p.type.startsWith('ExportDefault'))
+            p.type === 'ExportDefaultDeclaration'
         );
         if (!attachable) return null;
     }
@@ -4662,49 +4646,41 @@ function generateJsDocQuickFix(
  *  from an inline callback argument (it doesn't). */
 function findFunctionWithParentAtOffset(ast: AstNode, offset: number): { fn: FunctionLikeNode; parent: AstNode | null } | null {
     let best: { fn: FunctionLikeNode; parent: AstNode | null } | null = null;
-    const visit = (nodeArg: AstNode, parent: AstNode | null): void => {
-        const node = asWalkable(nodeArg);
+    const visit = (node: AstNode, parent: AstNode | null): void => {
         if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
         if ((node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression')
             && typeof node.start === 'number' && offset >= node.start && offset <= node.end) {
-            best = { fn: nodeArg as FunctionLikeNode, parent }; // keep descending → innermost wins
+            best = { fn: node, parent }; // keep descending → innermost wins
         }
-        for (const k of Object.keys(node)) {
+        for (const [k, v] of astFieldEntries(node)) {
             if (k === 'leadingJsDoc') continue;
-            const v = node[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode, nodeArg); }
-            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode, nodeArg);
+            if (Array.isArray(v)) { for (const it of v) if (it) visit(it, node); }
+            else if (v && typeof v === 'object' && 'type' in v && typeof v.type === 'string') visit(v, node);
         }
     };
     visit(ast, null);
     return best;
 }
 
-function findFunctionAtOffset(nodeArg: AstNode, offset: number): FunctionLikeNode | null {
-    const node = asWalkable(nodeArg);
+function findFunctionAtOffset(node: AstNode, offset: number): FunctionLikeNode | null {
     if (!node || typeof node !== 'object') return null;
     if (node.start > offset || node.end < offset) return null;
 
     // Check if this node is a function
-    const isFunctionNode = node.type === 'FunctionDeclaration' ||
-                           node.type === 'FunctionExpression' ||
-                           node.type === 'ArrowFunctionExpression';
-
-    let deepest: FunctionLikeNode | null = isFunctionNode ? (nodeArg as FunctionLikeNode) : null;
+    let deepest: FunctionLikeNode | null = isFunctionLikeNode(node) ? node : null;
 
     // Recurse into children
-    for (const key of Object.keys(node)) {
+    for (const [key, child] of astFieldEntries(node)) {
         if (key === 'leadingJsDoc') continue;
-        const child = node[key];
         if (Array.isArray(child)) {
             for (const item of child) {
                 if (item && typeof item === 'object' && 'type' in item) {
-                    const found = findFunctionAtOffset(item as AstNode, offset);
+                    const found = findFunctionAtOffset(item, offset);
                     if (found) deepest = found;
                 }
             }
         } else if (child && typeof child === 'object' && 'type' in child) {
-            const found = findFunctionAtOffset(child as AstNode, offset);
+            const found = findFunctionAtOffset(child, offset);
             if (found) deepest = found;
         }
     }
@@ -4875,26 +4851,24 @@ function nodeSource(document: TextDocument, node: { start: number; end: number }
  */
 function findBracelessControlBody(ast: AstNode | null | undefined, offset: number): { control: AstNode; body: AstNode } | null {
     let found: { control: AstNode; body: AstNode } | null = null;
-    function walk(nodeArg: AstNode): void {
-        const node = asWalkable(nodeArg);
+    function walk(node: AstNode): void {
         if (!node || typeof node !== 'object' || typeof node.start !== 'number') return;
         if (offset < node.start || offset > node.end) return;
         const bodies: (AstNode | null | undefined)[] =
-            node.type === 'IfStatement' ? [node.consequent as AstNode, node.alternate as AstNode]
-            : (node.type === 'WhileStatement' || node.type === 'ForStatement' || node.type === 'ForInStatement') ? [node.body as AstNode]
+            node.type === 'IfStatement' ? [node.consequent, node.alternate]
+            : (node.type === 'WhileStatement' || node.type === 'ForStatement' || node.type === 'ForInStatement') ? [node.body]
             : [];
         for (const b of bodies) {
             // `else if` → alternate is an IfStatement; skip it here and let the walk
             // descend into it so we land on the inner consequent instead.
             if (b && b.type !== 'BlockStatement' && b.type !== 'IfStatement'
                 && offset >= b.start && offset <= b.end) {
-                found = { control: nodeArg, body: b }; // deepest match wins as we descend
+                found = { control: node, body: b }; // deepest match wins as we descend
             }
         }
-        for (const key of Object.keys(node)) {
-            const v = node[key];
-            if (Array.isArray(v)) v.forEach((c) => walk(c as AstNode));
-            else if (v && typeof v === 'object') walk(v as AstNode);
+        for (const [, v] of astFieldEntries(node)) {
+            if (Array.isArray(v)) v.forEach((c) => { if (c) walk(c); });
+            else if (v && typeof v === 'object' && 'type' in v) walk(v);
         }
     }
     if (ast) walk(ast);
@@ -4937,19 +4911,17 @@ function makeBracelessGuardAction(
  */
 function findSameLineDeclEnd(ast: AstNode | null | undefined, name: string, diagOffset: number, document: TextDocument, diagLine: number): number | null {
     let res: number | null = null;
-    function walk(nodeArg: AstNode): void {
-        const node = asWalkable(nodeArg);
+    function walk(node: AstNode): void {
         if (!node || typeof node !== 'object') return;
         if (node.type === 'VariableDeclaration' && Array.isArray(node.declarations)
             && typeof node.end === 'number' && node.end <= diagOffset
             && document.positionAt(node.start).line === diagLine
-            && (node.declarations as WalkableNode[]).some((d) => (d?.id as WalkableNode | undefined)?.name === name)) {
+            && node.declarations.some((d) => d?.id?.name === name)) {
             if (res == null || node.end > res) res = node.end;
         }
-        for (const key of Object.keys(node)) {
-            const v = node[key];
-            if (Array.isArray(v)) v.forEach((c) => walk(c as AstNode));
-            else if (v && typeof v === 'object') walk(v as AstNode);
+        for (const [, v] of astFieldEntries(node)) {
+            if (Array.isArray(v)) v.forEach((c) => { if (c) walk(c); });
+            else if (v && typeof v === 'object' && 'type' in v) walk(v);
         }
     }
     if (ast) walk(ast);
@@ -5040,9 +5012,8 @@ function generateTypeNarrowingQuickFixes(
     // Does the enclosing statement declare a variable used later? (Wrapping it in an
     // if-block would scope it inside.) Read from the AST, not a line regex.
     const declStmt = ctx.enclosingStatement;
-    const declStmtW = declStmt ? asWalkable(declStmt) : null;
-    const declaredVar: string | undefined = declStmtW && declStmtW.type === 'VariableDeclaration'
-        ? ((declStmtW.declarations as WalkableNode[] | undefined)?.[0]?.id as WalkableNode | undefined)?.name as string | undefined : undefined;
+    const declaredVar: string | undefined = declStmt?.type === 'VariableDeclaration'
+        ? declStmt.declarations?.[0]?.id?.name : undefined;
     const varUsedLater = declaredVar ? isVariableUsedAfterLine(document, line, declaredVar) : false;
 
     // A same-line `let NAME = …;` declaration of the guard subject (single-line
@@ -5110,15 +5081,15 @@ function generateTypeNarrowingQuickFixes(
     // no return/continue to hang an early guard on (e.g. top-level code). `let` only (a `const`
     // must be initialised at its declaration).
     const pushSplitDecl = (title: string, cond: string): void => {
-        if (!declStmt || !declStmtW || declStmtW.type !== 'VariableDeclaration') return;
-        if ((declStmtW.kind as string) === 'const') return;
-        const decls = declStmtW.declarations as WalkableNode[] | undefined;
+        if (!declStmt || declStmt.type !== 'VariableDeclaration') return;
+        if (declStmt.kind === 'const') return;
+        const decls = declStmt.declarations;
         if (!decls || decls.length !== 1) return;
-        const id = (decls[0]!.id as WalkableNode | undefined)?.name as string | undefined;
-        const init = decls[0]!.init as WalkableNode | undefined;
+        const id = decls[0]?.id?.name;
+        const init = decls[0]?.init;
         if (!id || !init || typeof init.start !== 'number' || typeof init.end !== 'number') return;
         const base = indentOf(document, declStmt.start);
-        const kw = (declStmtW.kind as string) || 'let';
+        const kw = declStmt.kind || 'let';
         const initSrc = document.getText({ start: document.positionAt(init.start), end: document.positionAt(init.end) });
         const replacement = `${kw} ${id};\n${base}if (${cond})\n${base}${unit}${id} = ${initSrc};`;
         actions.push({
@@ -5297,12 +5268,11 @@ function generateTypeNarrowingQuickFixes(
             const prelude = `let ${vn} = ${exprText};\n${base}`;
             let newText: string;
             if (varUsedLater && declaredVar && declStmt.type === 'VariableDeclaration') {
-                const declStmtNode = asWalkable(declStmt);
-                const declr = (declStmtNode.declarations as WalkableNode[])[0]!;
-                const declrInit = declr.init as (WalkableNode & { start: number; end: number }) | undefined;
-                const declrId = declr.id as WalkableNode;
+                // `declaredVar` is declarations[0].id.name (computed above), so it doubles
+                // as the declarator's name here.
+                const declrInit = declStmt.declarations[0]?.init;
                 const initSrc = declrInit ? nodeSourceWith(document, declrInit, flagStart, flagEnd, vn) : vn;
-                newText = `${prelude}${declStmtNode.kind as string} ${declrId.name as string} = ${wrapCond} ? ${initSrc} : null;`;
+                newText = `${prelude}${declStmt.kind} ${declaredVar} = ${wrapCond} ? ${initSrc} : null;`;
             } else {
                 const stmtSrc = nodeSourceWith(document, declStmt, flagStart, flagEnd, vn);
                 newText = `${prelude}if (${wrapCond}) {\n${base}${unit}${stmtSrc}\n${base}}`;
@@ -5380,8 +5350,7 @@ function findTightestTypeConstraint(ast: AstNode | null | undefined, varName: st
 
     const constraints: string[][] = [];
 
-    function walk(nodeArg: AstNode): void {
-        const node = asWalkable(nodeArg);
+    function walk(node: AstNode): void {
         if (!node || typeof node !== 'object') return;
         if (typeof node.start === 'number' && node.start < afterOffset) {
             // Skip nodes entirely before the diagnostic — but still descend
@@ -5403,11 +5372,11 @@ function findTightestTypeConstraint(ast: AstNode | null | undefined, varName: st
             }
         }
 
-        const callee = node.callee as WalkableNode | undefined;
+        const callee = node.type === 'CallExpression' ? node.callee : undefined;
         if (node.type === 'CallExpression' && callee?.type === 'Identifier') {
-            const funcName = callee.name as string;
+            const funcName = callee.name;
             const argTypes = builtinArgTypesByPos[funcName];
-            const callArgs = node.arguments as WalkableNode[] | undefined;
+            const callArgs = node.arguments;
             if (argTypes && callArgs) {
                 for (let i = 0; i < callArgs.length; i++) {
                     const arg = callArgs[i];
@@ -5419,13 +5388,12 @@ function findTightestTypeConstraint(ast: AstNode | null | undefined, varName: st
             }
         }
 
-        for (const key of Object.keys(node)) {
+        for (const [key, val] of astFieldEntries(node)) {
             if (key === 'type' || key === 'start' || key === 'end') continue;
-            const val = node[key];
             if (Array.isArray(val)) {
-                for (const item of val) walk(item as AstNode);
-            } else if (val && typeof val === 'object' && typeof (val as AstNode).type === 'string') {
-                walk(val as AstNode);
+                for (const item of val) if (item) walk(item);
+            } else if (val && typeof val === 'object' && 'type' in val && typeof val.type === 'string') {
+                walk(val);
             }
         }
     }
@@ -5458,14 +5426,13 @@ function findInnerGuardTarget(ast: AstNode | null | undefined, offset: number): 
     return traceCallToGuardTarget(node);
 }
 
-function traceCallToGuardTarget(nodeArg: AstNode): { varName: string; expectedTypes: string[] } | null {
-    const node = asWalkable(nodeArg);
+function traceCallToGuardTarget(node: AstNode): { varName: string; expectedTypes: string[] } | null {
     if (node.type !== 'CallExpression') return null;
-    const callee = node.callee as WalkableNode | undefined;
+    const callee = node.callee;
     if (callee?.type !== 'Identifier') return null;
 
-    const funcName = callee.name as string;
-    const arg = (node.arguments as WalkableNode[] | undefined)?.[0];
+    const funcName = callee.name;
+    const arg = node.arguments?.[0];
     if (!arg) return null;
 
     // If the argument is a simple identifier or member expression, return it
@@ -5484,7 +5451,7 @@ function traceCallToGuardTarget(nodeArg: AstNode): { varName: string; expectedTy
 
     // If the argument is X || fallback, check X
     if (arg.type === 'BinaryExpression' && (arg.operator === '||' || arg.operator === '??')) {
-        const leftName = getDottedPath(arg.left as AstNode);
+        const leftName = getDottedPath(arg.left);
         if (leftName) {
             const expectedTypes = builtinArgTypes[funcName];
             if (expectedTypes) {
@@ -5496,12 +5463,11 @@ function traceCallToGuardTarget(nodeArg: AstNode): { varName: string; expectedTy
     return null;
 }
 
-function getDottedPath(nodeArg: AstNode): string | null {
-    const node = asWalkable(nodeArg);
-    if (node.type === 'Identifier') return node.name as string;
+function getDottedPath(node: AstNode): string | null {
+    if (node.type === 'Identifier') return node.name;
     if (node.type === 'MemberExpression' && !node.computed) {
-        const objPath = getDottedPath(node.object as AstNode);
-        const property = node.property as WalkableNode | undefined;
+        const objPath = getDottedPath(node.object);
+        const property = node.property;
         if (objPath && property?.type === 'Identifier') {
             return `${objPath}.${property.name}`;
         }
@@ -5510,8 +5476,7 @@ function getDottedPath(nodeArg: AstNode): string | null {
 }
 
 /** Find the innermost CallExpression at or containing the given offset */
-function findCallExpressionAtOffset(nodeArg: AstNode | null | undefined, offset: number): AstNode | null {
-    const node = nodeArg ? asWalkable(nodeArg) : null;
+function findCallExpressionAtOffset(node: AstNode | null | undefined, offset: number): AstNode | null {
     if (!node || typeof node !== 'object' || typeof node.start !== 'number') return null;
     if (offset < node.start || offset > node.end) return null;
 
@@ -5519,27 +5484,26 @@ function findCallExpressionAtOffset(nodeArg: AstNode | null | undefined, offset:
     // don't recurse into the call — the null comes from the member access, not the call's args.
     // Guarding the inner call's argument won't fix the nullable result of indexing.
     if (node.type === 'MemberExpression' && node.computed &&
-        (node.object as WalkableNode | undefined)?.type === 'CallExpression') {
+        node.object?.type === 'CallExpression') {
         return null;
     }
 
     // Try to find a more specific CallExpression in children
-    for (const key of Object.keys(node)) {
+    for (const [key, val] of astFieldEntries(node)) {
         if (key === 'type' || key === 'start' || key === 'end') continue;
-        const val = node[key];
         if (Array.isArray(val)) {
             for (const item of val) {
-                const found = findCallExpressionAtOffset(item as AstNode, offset);
+                const found = findCallExpressionAtOffset(item, offset);
                 if (found) return found;
             }
-        } else if (val && typeof val === 'object' && typeof (val as AstNode).start === 'number') {
-            const found = findCallExpressionAtOffset(val as AstNode, offset);
+        } else if (val && typeof val === 'object' && 'start' in val && typeof val.start === 'number') {
+            const found = findCallExpressionAtOffset(val, offset);
             if (found) return found;
         }
     }
 
     // No child CallExpression found — return this node if it's a CallExpression
-    return node.type === 'CallExpression' ? nodeArg! : null;
+    return node.type === 'CallExpression' ? node : null;
 }
 
 // ucode reserved words — never emit one as a generated variable name (e.g. a

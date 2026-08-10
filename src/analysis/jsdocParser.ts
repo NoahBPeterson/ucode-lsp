@@ -294,7 +294,7 @@ function asUnionMember(t: UcodeDataType): UcodeDataType {
   if (t && typeof t === 'object' && t.type === UcodeType.OBJECT
       && 'moduleName' in t && typeof t.moduleName === 'string'
       && isKnownObjectType(t.moduleName)) {
-    return { type: 'objectKind', name: t.moduleName } as UcodeDataType;
+    return { type: 'objectKind', name: t.moduleName };
   }
   return t;
 }
@@ -305,7 +305,7 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
   // Closure-style function type: `function(integer): string`, `function()`.
   // Parameter/return modeling is not carried; the value is a callable.
   if (/^function\s*\(/.test(typeExpr)) {
-    return UcodeType.FUNCTION as UcodeDataType;
+    return UcodeType.FUNCTION;
   }
 
   // Handle nullable/optional type sugar — all mean `type|null` (in ucode an
@@ -327,7 +327,7 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
   // property map, so the shape collapses to `object` here; per-property detail is
   // preserved only on the dedicated @param symbol path (parseInlineObjectShape there).
   if (typeExpr.startsWith('{') && typeExpr.endsWith('}')) {
-    return parseInlineObjectShape(typeExpr) !== null ? (UcodeType.OBJECT as UcodeDataType) : null;
+    return parseInlineObjectShape(typeExpr) !== null ? UcodeType.OBJECT : null;
   }
 
   // Handle union types: type1|type2 — split at TOP LEVEL only, so a `|` inside an
@@ -341,7 +341,7 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
         if (resolved0 === null) return null;
         const resolved = asUnionMember(resolved0); // known-object handles keep their identity in unions
         if (typeof resolved === 'string') {
-          types.push(resolved as UcodeType);
+          types.push(resolved);
         } else if (typeof resolved === 'object' && resolved.type === UcodeType.UNION) {
           types.push(...resolved.types);
         } else if (isObjectType(resolved) || isArrayType(resolved)) {
@@ -349,7 +349,7 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
           types.push(resolved);
         } else {
           // Complex type in union (a true MODULE type etc.) — flatten to base
-          types.push((resolved as { type: UcodeType }).type);
+          types.push(resolved.type);
         }
       }
       return createUnionType(types);
@@ -365,7 +365,7 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
   const bracketMatch = typeExpr.match(/^(.+)\[\]$/);
   const elementExpr = angleMatch ? angleMatch[1] : (bracketMatch ? bracketMatch[1] : null);
   if (elementExpr) {
-    const elementType = resolveTypeExpression(elementExpr.trim()) ?? (UcodeType.UNKNOWN as UcodeDataType);
+    const elementType = resolveTypeExpression(elementExpr.trim()) ?? UcodeType.UNKNOWN;
     return createArrayType(elementType);
   }
 
@@ -386,7 +386,7 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
   // Handle primitive types
   const lower = typeExpr.toLowerCase();
   if (lower in JSDOC_PRIMITIVE_MAP) {
-    return JSDOC_PRIMITIVE_MAP[lower]! as UcodeDataType;
+    return JSDOC_PRIMITIVE_MAP[lower]!;
   }
 
   // Bare module names: 'fs', 'uci', etc. → module type (no 'module:' prefix needed)
@@ -416,8 +416,8 @@ export function resolveTypeExpressionDetailed(typeExpr: string): { type: UcodeDa
       for (const part of parts) {
         const r = resolveTypeExpression(part);
         if (r === null) { unresolved.push(part); continue; }
-        if (typeof r === 'string') types.push(r as UcodeType);
-        else if (typeof r === 'object' && r.type === UcodeType.UNION) types.push(...(r as UnionTypeLike).types);
+        if (typeof r === 'string') types.push(r);
+        else if (typeof r === 'object' && r.type === UcodeType.UNION) types.push(...r.types);
         else if (isObjectType(r) || isArrayType(r)) types.push(r);
         else types.push(r.type);
       }
@@ -427,8 +427,6 @@ export function resolveTypeExpressionDetailed(typeExpr: string): { type: UcodeDa
   const r = resolveTypeExpression(trimmed);
   return { type: r, unresolved: r === null ? [trimmed] : [] };
 }
-
-interface UnionTypeLike { types: SingleType[]; }
 
 /** Parse an inline object-shape type `{ a: string, b: integer }` into a property map.
  *  Returns null when `expr` isn't a `{…}` object shape. Nested inline shapes collapse to
@@ -447,7 +445,7 @@ export function parseInlineObjectShape(expr: string): Map<string, UcodeDataType>
     const key = parts[0]!.trim().replace(/^['"]|['"]$/g, '');
     const valExpr = parts.slice(1).join(':').trim();
     if (!key) return null;
-    props.set(key, resolveTypeExpression(valExpr) ?? (UcodeType.UNKNOWN as UcodeDataType));
+    props.set(key, resolveTypeExpression(valExpr) ?? UcodeType.UNKNOWN);
   }
   return props;
 }
@@ -498,12 +496,12 @@ export function extractTypedef(parsed: ParsedJsDoc): ParsedTypedef | null {
       const seg = path[i]!;
       let node = map.get(seg);
       if (!node) {
-        node = { typeExpression: '', type: UcodeType.OBJECT as UcodeDataType, optional: false, children: new Map() };
+        node = { typeExpression: '', type: UcodeType.OBJECT, optional: false, children: new Map() };
         map.set(seg, node);
       } else if (!node.children) {
         node.children = new Map();
       }
-      node.type = UcodeType.OBJECT as UcodeDataType;
+      node.type = UcodeType.OBJECT;
       map = node.children!;
     }
 
