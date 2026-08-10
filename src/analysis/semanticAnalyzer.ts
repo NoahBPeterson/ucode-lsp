@@ -318,7 +318,8 @@ export class SemanticAnalyzer extends BaseVisitor {
   private replayCleanBodyTypeDiagnostics(clean: { diagnostics: Diagnostic[] }, before: number): void {
     const fresh = new Set<string>();
     for (let i = before; i < this.diagnostics.length; i++) {
-      const d = this.diagnostics[i]!;
+      const d = this.diagnostics[i];
+      if (d === undefined) continue;
       fresh.add(`${d.range.start.line}:${d.range.start.character}:${d.code}:${d.message}`);
     }
     for (const d of clean.diagnostics) {
@@ -356,7 +357,8 @@ export class SemanticAnalyzer extends BaseVisitor {
   /** The innermost function-body frame (with a resolvable named symbol), if any. */
   private innermostBodyFrame(): { fnSym: SymbolEntry; bs: number; be: number } | null {
     for (let i = this.branchStack.length - 1; i >= 0; i--) {
-      const f = this.branchStack[i]!;
+      const f = this.branchStack[i];
+      if (f === undefined) continue;
       if (f.fnSym) return { fnSym: f.fnSym, bs: f.bs, be: f.be };
     }
     return null;
@@ -887,7 +889,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         const left = n.left;
         // `global.X = <expr>`: an object literal refreshes the shape; anything else taints.
         const reName = left ? globalRefName(left) : null;
-        if (reName && left!.type === 'MemberExpression') {
+        if (reName && left && left.type === 'MemberExpression') {
           if (n.right?.type !== 'ObjectExpression') tainted.add(reName);
           walk(n.right);
           return;
@@ -1470,7 +1472,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           for (let i = 0; i < cases.length; i++) {
             const entry = new Set<string>();
             outer: for (let j = i; j < cases.length; j++) {
-              for (const stmt of (cases[j]!.consequent || [])) {
+              for (const stmt of (cases[j]?.consequent || [])) {
                 for (const nm of definitelyAssigns(stmt)) entry.add(nm);
                 if (mayDivert(stmt, 0)) break outer; // break/return ends this entry's path
               }
@@ -1657,7 +1659,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       group.push(s);
     }
     for (const s of flagged) {
-      const siblings = byName.get(s.name)!.filter(o => o !== s);
+      const siblings = (byName.get(s.name) ?? []).filter(o => o !== s);
       const related: DiagnosticRelatedInformation[] = siblings.map(o => ({
         location: {
           uri: this.textDocument.uri,
@@ -1693,7 +1695,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     const readSeverity = (mode === 'errorInStrict' && this.strictMode)
       ? DiagnosticSeverity.Warning : DiagnosticSeverity.Information;
     const defSitesFor = (name: string): DiagnosticRelatedInformation[] =>
-      byName.get(name)!.map(o => ({
+      (byName.get(name) ?? []).map(o => ({
         location: {
           uri: this.textDocument.uri,
           range: { start: this.textDocument.positionAt(o.start), end: this.textDocument.positionAt(o.end) },
@@ -1843,16 +1845,17 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (entering) nextFn = (n.type === 'ArrowFunctionExpression' ? undefined : n.id?.name) ?? undefined;
       if (n.type === 'AssignmentExpression' && n.operator === '=') {
         const a = n;
-        const name = targetName(a.left);
+        const aLeft = a.left;
+        const name = targetName(aLeft);
         // Bare `X =` counts only when X is an implicit global (non-strict); `global.X =` always.
-        const isGlobalTarget = a.left?.type === 'MemberExpression'
-          || (a.left?.type === 'Identifier' && this.implicitGlobalNames.has(name || ''));
-        if (name && isGlobalTarget && !localNames.has(name)) {
+        const isGlobalTarget = aLeft?.type === 'MemberExpression'
+          || (aLeft?.type === 'Identifier' && this.implicitGlobalNames.has(name || ''));
+        if (name && aLeft && isGlobalTarget && !localNames.has(name)) {
           const ty = coarse(a.right);
           if (ty !== 'unknown') {
             let list = assigns.get(name);
             if (!list) { list = []; assigns.set(name, list); }
-            list.push({ type: ty, inFunc, fnName: inFunc ? fnName : undefined, start: a.left!.start, end: (a.right ?? a.left!).end });
+            list.push({ type: ty, inFunc, fnName: inFunc ? fnName : undefined, start: aLeft.start, end: (a.right ?? aLeft).end });
           }
         }
       }
@@ -2155,7 +2158,9 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (!insideTry) {
         let i = 0;
         while (i < stmts.length) {
-          const call = firstThrowAtLevel(stmts[i]);
+          const cur = stmts[i];
+          if (cur === undefined) { i++; continue; }
+          const call = firstThrowAtLevel(cur);
           if (!call) { i++; continue; }
           // firstThrowAtLevel only returns calls whose callee is an Identifier.
           if (call.callee?.type !== 'Identifier') { i++; continue; }
@@ -2201,13 +2206,17 @@ export class SemanticAnalyzer extends BaseVisitor {
           // depends on its result. Unrelated trailing code (e.g. an independent `require()`) is
           // left OUT of the try — and gets its own diagnostic on the next loop iteration. Stops
           // at a boundary (function/import/export) that can't be wrapped.
-          const produced = new Set<string>(producedNames(stmts[i]!));
+          const produced = new Set<string>(producedNames(cur));
           let endIdx = i;
+          let endStmt = cur;
           for (let j = i + 1; j < stmts.length; j++) {
-            if (isWrapBoundary(stmts[j])) break;
-            if (produced.size > 0 && stmtRefsAny(stmts[j], produced)) {
+            const sj = stmts[j];
+            if (sj === undefined) break;
+            if (isWrapBoundary(sj)) break;
+            if (produced.size > 0 && stmtRefsAny(sj, produced)) {
               endIdx = j;
-              for (const nm of producedNames(stmts[j]!)) produced.add(nm);
+              endStmt = sj;
+              for (const nm of producedNames(sj)) produced.add(nm);
             }
           }
           // Warning by default. Escalates to Error under 'use strict' only for builtins that
@@ -2233,7 +2242,7 @@ export class SemanticAnalyzer extends BaseVisitor {
             message,
             call.start, call.end, severity,
             UcodeErrorCode.UNGUARDED_THROWING_CALL,
-            { wrapTryCatch: { start: stmts[i]!.start, end: stmts[endIdx]!.end, fn: throwName } },
+            { wrapTryCatch: { start: cur.start, end: endStmt.end, fn: throwName } },
           );
           i = endIdx + 1; // continue AFTER this wrap — later independent throwers get flagged too
         }
@@ -2792,7 +2801,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     const containsReturn = (node: AstNode): boolean => {
       const stack: AstNode[] = [node];
       while (stack.length) {
-        const n = stack.pop()!;
+        const n = stack.pop();
+        if (n === undefined) break;
         if (n.type === 'ReturnStatement') return true;
         // A nested function's returns are its own, not the outer body's.
         if (n !== node && (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression')) continue;
@@ -2922,7 +2932,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (!root) return false;
     const stack: AstNode[] = [root];
     while (stack.length) {
-      const node = stack.pop()!;
+      const node = stack.pop();
+      if (node === undefined) break;
       if (node.type === 'VariableDeclarator' && node.id?.name === name) return true;
       if (node.type === 'FunctionDeclaration' && node.id?.name === name) return true;
       if ((node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression')
@@ -2937,7 +2948,8 @@ export class SemanticAnalyzer extends BaseVisitor {
   private identifierAppearsIn(root: AstNode, name: string): boolean {
     const stack: AstNode[] = [root];
     while (stack.length) {
-      const node = stack.pop()!;
+      const node = stack.pop();
+      if (node === undefined) break;
       if (node.type === 'Identifier' && node.name === name) return true;
       for (const c of legacyChildren(node)) stack.push(c);
     }
@@ -3163,10 +3175,12 @@ export class SemanticAnalyzer extends BaseVisitor {
               };
               
               // Store the import info for the new variable
-              this.commonjsImports.set(name, {
-                importedFrom: sourceSymbol.importedFrom!,
-                importSpecifier: 'default'
-              });
+              if (sourceSymbol.importedFrom !== undefined) {
+                this.commonjsImports.set(name, {
+                  importedFrom: sourceSymbol.importedFrom,
+                  importSpecifier: 'default'
+                });
+              }
             }
           }
         }
@@ -4082,7 +4096,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // exist on the deployed device. Bind the specifiers untyped and stay silent.
       const selfPath = this.uriToFsPath(this.textDocument.uri);
       const inLuciTree = modulePath.startsWith('luci.') && selfPath !== null && findLuciWorkspace(selfPath) !== null;
-      if (!inLuciTree) {
+      if (!inLuciTree || selfPath === null) {
         // Module cannot be resolved - add a warning on the source path, not the imported identifier
         this.addDiagnosticErrorCode(
           UcodeErrorCode.MODULE_NOT_FOUND,
@@ -4096,7 +4110,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         // unresolvable luci.* that is a close match to a module the repo itself ships
         // (`luci.podman_validated` vs shipped `luci.podman_validate`) is almost certainly
         // a typo of the shipped one — say so instead of staying silent.
-        const suggestion = suggestLuciModuleName(selfPath!, modulePath);
+        const suggestion = suggestLuciModuleName(selfPath, modulePath);
         if (suggestion) {
           this.addDiagnosticErrorCode(
             UcodeErrorCode.MODULE_NOT_FOUND,
@@ -4141,8 +4155,8 @@ export class SemanticAnalyzer extends BaseVisitor {
   private emitUnknownJsDocType(typeExpr: string, jsDocNode: JsDocCommentNode, tagLabel: string, unresolvedToken?: string): void {
     // Strip nullable/optional sugar and array wrappers down to the name to match on.
     let token = (unresolvedToken ?? typeExpr).trim().replace(/^\?/, '').replace(/[?=]$/, '');
-    const angle = token.match(/^[Aa]rray<(.+)>$/);
-    if (angle) token = angle[1]!.trim();
+    const angleInner = token.match(/^[Aa]rray<(.+)>$/)?.[1];
+    if (angleInner !== undefined) token = angleInner.trim();
     token = token.replace(/\[\]$/, '');
     let suggestion: string | null = null;
     if (/^[A-Za-z_$][\w.$]*$/.test(token)) {
@@ -4877,7 +4891,8 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (returnLocEntries.length > 0) {
           const mergedLocs = new Map(returnLocEntries[0]);
           for (let i = 1; i < returnLocEntries.length; i++) {
-            const entry = returnLocEntries[i]!;
+            const entry = returnLocEntries[i];
+            if (entry === undefined) continue;
             for (const key of [...mergedLocs.keys()]) {
               if (!entry.has(key)) mergedLocs.delete(key);
             }
@@ -5195,7 +5210,7 @@ export class SemanticAnalyzer extends BaseVisitor {
             && (hexE === 'e' || hexE === 'E')) {
           // Show the user their own token as old ucode lexes it: literal + sign +
           // whatever digits follow (`0x1e+2`), so the message names the exact code.
-          const rest = /^[0-9a-fA-F]*/.exec(src.slice(node.end + 1))![0];
+          const rest = /^[0-9a-fA-F]*/.exec(src.slice(node.end + 1))?.[0] ?? '';
           const lexeme = `${text}${next}${rest}`;
           this.flagVersionMin('main',
             `\`${lexeme}\` is an "Invalid number literal" on {TARGET}. Write \`${text} ${next}${rest ? ` ${rest}` : ' ...'}\`.`,
@@ -5241,7 +5256,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       // uci.foreach), infer its params from the enclosing call context; else UNKNOWN.
       if (!node.leadingJsDoc && this.callbackElementType) {
         for (let i = 0; i < node.params.length; i++) {
-          const param = node.params[i]!;
+          const param = node.params[i];
+          if (param === undefined) continue;
           this.symbolTable.declare(param.name, SymbolType.PARAMETER, this.callbackParamTypeAt(i), param);
         }
       } else {
@@ -5251,8 +5267,10 @@ export class SemanticAnalyzer extends BaseVisitor {
       // UC7003 for method-style function expressions (those with a derivable
       // name from their assignment target). Anonymous callbacks have no name and
       // are skipped, so `map(x => …)` etc. don't get noisy hints.
-      if (exprName && node.params.length > 0) {
-        this.emitMissingParamAnnotations(exprName, node.params, node.params[0]!.start, node.params[node.params.length - 1]!.end, node.leadingJsDoc?.value);
+      const firstParam = node.params[0];
+      const lastParam = node.params[node.params.length - 1];
+      if (exprName && firstParam !== undefined && lastParam !== undefined) {
+        this.emitMissingParamAnnotations(exprName, node.params, firstParam.start, lastParam.end, node.leadingJsDoc?.value);
       }
 
       // Declare rest parameter if present (as array type)
@@ -5263,8 +5281,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
 
       // Declare `this` with property types from enclosing object literal
-      if (this.thisPropertyStack.length > 0) {
-        const thisProps = this.thisPropertyStack[this.thisPropertyStack.length - 1]!;
+      const thisProps = this.thisPropertyStack[this.thisPropertyStack.length - 1];
+      if (thisProps !== undefined) {
         this.symbolTable.declare('this', SymbolType.VARIABLE, UcodeType.OBJECT, node);
         const thisSym = this.symbolTable.lookupOpenScopes('this');
         if (thisSym) {
@@ -5289,7 +5307,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       const feDiagBefore = feClean ? this.diagnostics.length : 0;
       // Snapshot the enclosing object's property map so we can capture (and, for a skipped
       // body, restore) the `this.<prop> = …` types this method writes.
-      const feThisMap = this.thisPropertyStack.length > 0 ? this.thisPropertyStack[this.thisPropertyStack.length - 1]! : null;
+      const feThisMap = this.thisPropertyStack[this.thisPropertyStack.length - 1] ?? null;
       const feThisBefore = feThisMap ? new Map(feThisMap) : null;
       // A function body's writes to OUTER symbols only run if/when the function is
       // called - may-have-run for reads outside the body (docs/type-soundness-audit.md I-4).
@@ -5366,15 +5384,18 @@ export class SemanticAnalyzer extends BaseVisitor {
         // For callback parameters (filter/map/sort/replace/uci.foreach), infer param types
         // from the enclosing call context.
         for (let i = 0; i < node.params.length; i++) {
-          const param = node.params[i]!;
+          const param = node.params[i];
+          if (param === undefined) continue;
           this.symbolTable.declare(param.name, SymbolType.PARAMETER, this.callbackParamTypeAt(i), param);
         }
       }
 
       // UC7003 only for arrows with a derivable name (assigned to a member/var),
       // never for bare callbacks.
-      if (exprName && node.params.length > 0) {
-        this.emitMissingParamAnnotations(exprName, node.params, node.params[0]!.start, node.params[node.params.length - 1]!.end, node.leadingJsDoc?.value);
+      const firstParam = node.params[0];
+      const lastParam = node.params[node.params.length - 1];
+      if (exprName && firstParam !== undefined && lastParam !== undefined) {
+        this.emitMissingParamAnnotations(exprName, node.params, firstParam.start, lastParam.end, node.leadingJsDoc?.value);
       }
 
       // Declare rest parameter if present (as array type)
@@ -6034,7 +6055,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (node.callee.type === 'Identifier') {
       const funcName = node.callee.name;
       if (funcName === 'filter' || funcName === 'map' || funcName === 'sort') {
-        const arrType = this.resolveNodeFullType(node.arguments[0]!);
+        const arrArg = node.arguments[0];
+        if (arrArg === undefined) return;
+        const arrType = this.resolveNodeFullType(arrArg);
         if (arrType && isArrayType(arrType)) {
           this.callbackElementType = getArrayElementType(arrType);
           // sort's comparator receives TWO elements; filter/map receive one.
@@ -6083,10 +6106,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (Option.isNone(methodSig)) return null;
 
     for (const p of methodSig.value.parameters) {
-      if (p.type === 'function' && p.callbackParamTypes && p.callbackParamTypes.length > 0) {
+      const firstCallbackParamType = p.type === 'function' ? p.callbackParamTypes?.[0] : undefined;
+      if (firstCallbackParamType !== undefined && p.callbackParamTypes) {
         // Uniform-type callbacks only (all covered params share callbackParamTypes[0]);
         // sufficient for uci foreach's single section-object parameter.
-        const parsed = this.typeChecker.parseReturnTypePublic(p.callbackParamTypes[0]!);
+        const parsed = this.typeChecker.parseReturnTypePublic(firstCallbackParamType);
         return { type: parsed, count: p.callbackParamTypes.length };
       }
     }
@@ -6619,7 +6643,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // else path x is provably T (the identifier twin of recordPropertyWrite's stamp).
     let elseType: UcodeDataType | undefined;
     for (let i = this.branchStack.length - 1; i >= 0; i--) {
-      const f = this.branchStack[i]!;
+      const f = this.branchStack[i];
+      if (f === undefined) continue;
       if (f.guardBase === symbol.name && f.guardProp === undefined && f.guardElseType !== undefined) {
         elseType = f.guardElseType; break;
       }
@@ -7740,8 +7765,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         }
 
         // Check propertyFunctionReturnTypes — e.g., config.uci_ctx() -> uci.cursor
-        if (symbol.propertyFunctionReturnTypes?.has(methodName)) {
-          const returnTypeHint = symbol.propertyFunctionReturnTypes.get(methodName)!;
+        const returnTypeHint = symbol.propertyFunctionReturnTypes?.get(methodName);
+        if (returnTypeHint !== undefined) {
           return this.typeChecker.parseReturnTypePublic(returnTypeHint);
         }
 
@@ -7870,7 +7895,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // else path x.p is provably T, so stamp T as this entry's elseType.
     let elseType: UcodeDataType | undefined;
     for (let i = this.branchStack.length - 1; i >= 0; i--) {
-      const f = this.branchStack[i]!;
+      const f = this.branchStack[i];
+      if (f === undefined) continue;
       if (f.guardBase === symbol.name && f.guardProp === propName) { elseType = f.guardElseType; break; }
     }
     const bodyFrame = this.innermostBodyFrame();
@@ -8106,16 +8132,19 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // if they DIFFER, union the distinct bases (honest `integer | string` rather
     // than silently picking one). All-unknown → unknown.
     const merged = new Map<string, UcodeDataType>();
-    for (const key of shapes[0]!.keys()) {
+    const firstShape = shapes[0];
+    if (firstShape === undefined) return;
+    for (const key of firstShape.keys()) {
       if (!shapes.every(s => s.has(key))) continue;
       const concrete: UcodeDataType[] = [];
       for (const s of shapes) {
         const t = s.get(key);
         if (t !== undefined && dataTypeToBase(t) !== UcodeType.UNKNOWN) concrete.push(t);
       }
-      if (concrete.length === 0) { merged.set(key, UcodeType.UNKNOWN); continue; }
+      const firstConcrete = concrete[0];
+      if (firstConcrete === undefined) { merged.set(key, UcodeType.UNKNOWN); continue; }
       const bases = [...new Set(concrete.map(t => dataTypeToBase(t)))];
-      merged.set(key, bases.length === 1 ? concrete[0]! : (createUnionType(bases)));
+      merged.set(key, bases.length === 1 ? firstConcrete : (createUnionType(bases)));
     }
     if (merged.size > 0) symbol.valuePropertyTypes = merged;
   }
@@ -8128,14 +8157,16 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (entries.length === 0) return null;
     const merged = new Map<string, UcodeDataType>(entries[0]);
     for (let i = 1; i < entries.length; i++) {
-      const entry = entries[i]!;
+      const entry = entries[i];
+      if (entry === undefined) continue;
       for (const key of [...merged.keys()]) {
-        if (!entry.has(key)) {
+        const b = entry.get(key);
+        if (b === undefined) {
           merged.delete(key);
           continue;
         }
-        const a = merged.get(key)!;
-        const b = entry.get(key)!;
+        const a = merged.get(key);
+        if (a === undefined) continue;
         if (a !== b) {
           const members: SingleType[] = [];
           for (const t of [a, b]) {
@@ -8267,7 +8298,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   }
 
   private processInitializerTypeInference(node: VariableDeclaratorNode, name: string): void {
-    if (!node.init) {
+    const init = node.init;
+    if (!init) {
       return;
     }
 
@@ -8275,8 +8307,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const symbol = this.symbolTable.lookupOpenScopes(name);
     if (symbol) {
       // Handle simple aliasing of imported modules (e.g., let alias = fs;)
-      if (node.init.type === 'Identifier') {
-        const sourceName = node.init.name;
+      if (init.type === 'Identifier') {
+        const sourceName = init.name;
         const sourceSymbol = this.symbolTable.lookupOpenScopes(sourceName);
 
         if (sourceSymbol && (sourceSymbol.type === SymbolType.IMPORTED || sourceSymbol.type === SymbolType.MODULE)) {
@@ -8305,7 +8337,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           // NOT the original `null` from data's declaration site.
           let effSourceType: UcodeDataType = sourceSymbol.dataType;
           if (sourceSymbol.currentType !== undefined && sourceSymbol.currentTypeEffectiveFrom !== undefined
-              && node.init.start >= sourceSymbol.currentTypeEffectiveFrom) {
+              && init.start >= sourceSymbol.currentTypeEffectiveFrom) {
             effSourceType = sourceSymbol.currentType;
           }
           symbol.dataType = effSourceType;
@@ -8320,22 +8352,23 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       }
 
       // Handle default imports accessed via global properties (e.g., let e = global.d;)
-      if (node.init.type === 'MemberExpression') {
-        const memberNode = node.init;
+      if (init.type === 'MemberExpression') {
+        const memberNode = init;
         if (!memberNode.computed && memberNode.object.type === 'Identifier') {
           const objectName = memberNode.object.name;
           const propertyName = this.getStaticPropertyName(memberNode.property);
 
           if (propertyName) {
             const objectSymbol = this.symbolTable.lookupOpenScopes(objectName);
-            if (objectSymbol && objectSymbol.propertyTypes && objectSymbol.propertyTypes.has(propertyName)) {
-              const propertyType = objectSymbol.propertyTypes.get(propertyName)!;
+            const propertyType = objectSymbol?.propertyTypes?.get(propertyName);
+            if (objectSymbol && propertyType !== undefined) {
               symbol.dataType = propertyType;
               this.symbolTable.updateSymbolType(name, propertyType);
               this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
               // Propagate nested property types (e.g., _pkg_mod.pkg → pkg with its own propertyTypes)
-              if (objectSymbol.nestedPropertyTypes && objectSymbol.nestedPropertyTypes.has(propertyName)) {
-                symbol.propertyTypes = objectSymbol.nestedPropertyTypes.get(propertyName)!;
+              const nestedTypes = objectSymbol.nestedPropertyTypes?.get(propertyName);
+              if (nestedTypes) {
+                symbol.propertyTypes = nestedTypes;
               }
               return;
             }
@@ -8347,7 +8380,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       // by the rich-type path in visitVariableDeclarator — no per-module cascade needed.
       // Exception: bare builtin fs functions (open, popen, mkstemp) that are available
       // without import still need inferFsType since they're not in the type checker's builtins.
-      const fsType = this.inferFsType(node.init!);
+      const fsType = this.inferFsType(init);
       if (fsType) {
         symbol.dataType = fsType;
         // Only surface a function-local fs handle (e.g. `let p = popen(...)`) into
@@ -8362,9 +8395,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
       // Don't overwrite module types, imported types, or literal types that were set during declaration
       if (symbol.type !== SymbolType.MODULE && symbol.type !== SymbolType.IMPORTED && 
-          !this.isLiteralType(symbol.dataType, node.init)) {
+          !this.isLiteralType(symbol.dataType, init)) {
         // Check if this is an imported fs function call and assign the proper union return type
-        const importedFsReturnType = this.inferImportedFsFunctionReturnType(node.init!);
+        const importedFsReturnType = this.inferImportedFsFunctionReturnType(init);
         if (importedFsReturnType) {
           symbol.dataType = importedFsReturnType;
           this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
@@ -8373,7 +8406,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
         // `loadfile("x.uc")()` — keep the cross-file program-return inference from the
         // declaration pass; the generic checkNode fallback below would reset it to unknown.
-        const loadfileInfo = this.loadfileCallReturnInfo(node.init!);
+        const loadfileInfo = this.loadfileCallReturnInfo(init);
         if (loadfileInfo) {
           symbol.dataType = loadfileInfo.dataType;
           this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
@@ -8381,7 +8414,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         }
 
         // Check if this is a method call chain and resolve the return type
-        const methodReturnType = this.inferMethodReturnType(node.init!);
+        const methodReturnType = this.inferMethodReturnType(init);
         if (methodReturnType) {
           symbol.dataType = methodReturnType;
           this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
@@ -8389,13 +8422,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         }
 
         // Check if this is a function call and preserve the return type (including unions)
-        const functionReturnType = this.inferFunctionCallReturnType(node.init!);
+        const functionReturnType = this.inferFunctionCallReturnType(init);
         if (functionReturnType) {
           symbol.dataType = functionReturnType;
           this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
           // Propagate return property types from function to variable
-          if (node.init!.type === 'CallExpression') {
-            const callExpr = node.init!;
+          if (init.type === 'CallExpression') {
+            const callExpr = init;
             if (callExpr.callee.type === 'Identifier') {
               const funcSym = this.symbolTable.lookupOpenScopes(callExpr.callee.name);
               if (funcSym) this.copyFactoryReturnToBinding(symbol, funcSym);
@@ -8413,12 +8446,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         // validation was already done during the visit pass.
         this.typeChecker.setTruthinessDepth(1);
         // checkNode returns the rich type directly (preserves unions).
-        const initType = this.typeChecker.checkNode(node.init);
+        const initType = this.typeChecker.checkNode(init);
         this.typeChecker.setTruthinessDepth(0);
         symbol.dataType = initType;
         this.setDeclarationTypeIfUnset(symbol, symbol.dataType);
         // Debug logging for arrow function variables
-        if (node.init.type === 'ArrowFunctionExpression') {
+        if (init.type === 'ArrowFunctionExpression') {
           // Function type detected
         }
       }
@@ -8613,7 +8646,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const stack: Array<{ node: AstNode; depth: number }> = [{ node: root, depth: 1 }];
     while (stack.length > 0) {
       if (++iterations > 500000) break; // safety cap; we only need a rough "which is deepest"
-      const { node, depth } = stack.pop()!;
+      const entry = stack.pop();
+      if (entry === undefined) break;
+      const { node, depth } = entry;
       if (depth > max) max = depth;
       for (const child of legacyChildren(node)) {
         stack.push({ node: child, depth: depth + 1 });
@@ -8757,7 +8792,8 @@ private addDiagnostic(
     if (!node) return false;
     const stmts: AstNode[] = node.type === 'BlockStatement' ? node.body : [node];
     if (stmts.length === 0) return false;
-    const last = stmts[stmts.length - 1]!;
+    const last = stmts[stmts.length - 1];
+    if (last === undefined) return false;
     if (this.isUnconditionalExitStatement(last)) return true;
     if (last.type === 'IfStatement') {
       const i = last;
@@ -8845,8 +8881,8 @@ private addDiagnostic(
   private checkIterateeMutation(loopBody: AstNode, iteree: string | string[] | null): void {
     if (!iteree || !loopBody) return;
     const itereeNames = Array.isArray(iteree) ? iteree : [iteree];
-    if (itereeNames.length === 0) return;
-    const primaryName = itereeNames[0]!;
+    const primaryName = itereeNames[0];
+    if (primaryName === undefined) return;
     const nameSet = new Set(itereeNames);
     const bodyHasExit = this.bodyContainsLoopExit(loopBody);
     // A rebind of ANY alias name before a mutator makes that mutator touch a different
@@ -8932,7 +8968,8 @@ private addDiagnostic(
     const jsdocRegex = /\/\*\*([\s\S]*?)\*\//g;
     let match: RegExpExecArray | null;
     while ((match = jsdocRegex.exec(text)) !== null) {
-      const commentBody = match[1]!;
+      const commentBody = match[1];
+      if (commentBody === undefined) continue;
       if (!/@(?:typedef|callback|template|property|enum)\b/.test(commentBody)) continue;
       const parsed = parseJsDocComment(commentBody);
       const commentStart = match.index;
@@ -8949,9 +8986,9 @@ private addDiagnostic(
         // the enum's values", i.e. the enum's value type T.
         if (tag.tag === 'enum') {
           const after = text.slice(commentEnd, commentEnd + 200);
-          const declMatch = after.match(/^\s*(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)/);
-          if (declMatch && !this.typedefRegistry.has(declMatch[1]!)) {
-            this.typedefRegistry.set(declMatch[1]!, { name: declMatch[1]!, baseType: tag.typeExpression, properties: new Map() });
+          const declName = after.match(/^\s*(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)/)?.[1];
+          if (declName !== undefined && !this.typedefRegistry.has(declName)) {
+            this.typedefRegistry.set(declName, { name: declName, baseType: tag.typeExpression, properties: new Map() });
           }
         }
       }
@@ -9009,8 +9046,8 @@ private addDiagnostic(
     const jsdocRegex = /\/\*\*([\s\S]*?)\*\//g;
     let match: RegExpExecArray | null;
     while ((match = jsdocRegex.exec(text)) !== null) {
-      const body = match[1]!;
-      if (!body.includes('@global')) continue;
+      const body = match[1];
+      if (body === undefined || !body.includes('@global')) continue;
       for (const tag of parseJsDocComment(body).tags) {
         if (tag.tag === 'global' && tag.name) this.declaredGlobalNames.set(tag.name, tag.typeExpression || '');
       }
@@ -9019,7 +9056,8 @@ private addDiagnostic(
       const tagRe = /@global\s+(?:\{[^}]*\}\s+)?([A-Za-z_]\w*)/g;
       let tm: RegExpExecArray | null;
       while ((tm = tagRe.exec(match[0])) !== null) {
-        const name = tm[1]!;
+        const name = tm[1];
+        if (name === undefined) continue;
         const nameOfs = match.index + tm.index + tm[0].lastIndexOf(name);
         let list = this.globalDefSites.get(name);
         if (!list) { list = []; this.globalDefSites.set(name, list); }
@@ -10012,7 +10050,8 @@ private addDiagnostic(
     const reachable = new Set<number>();
     const queue = [cfg.entry];
     while (queue.length > 0) {
-      const current = queue.shift()!;
+      const current = queue.shift();
+      if (current === undefined) break;
       if (reachable.has(current.id)) continue;
       reachable.add(current.id);
       for (const edge of current.successors) {
@@ -10030,7 +10069,8 @@ private addDiagnostic(
         // Empty block reaching exit = fall-through = function can return
         return false;
       }
-      const lastStmt = pred.statements[pred.statements.length - 1]!;
+      const lastStmt = pred.statements[pred.statements.length - 1];
+      if (lastStmt === undefined) continue;
       if (lastStmt.type === 'ThrowStatement') {
         // Abnormal termination — doesn't count as normal return
         continue;
@@ -10060,8 +10100,9 @@ private addDiagnostic(
       if (block.statements.length === 0) continue;
       if (block === cfg.exit) continue;
 
-      const firstStmt = block.statements[0]!;
-      const lastStmt = block.statements[block.statements.length - 1]!;
+      const firstStmt = block.statements[0];
+      const lastStmt = block.statements[block.statements.length - 1];
+      if (firstStmt === undefined || lastStmt === undefined) continue;
 
       this.addDiagnostic(
         'Unreachable code detected',
@@ -10296,9 +10337,9 @@ private addDiagnostic(
       // partners assigned LATER in the file are already stamped.
       // (docs/forward-declared-function-valued-let-uc1002.md)
       if (diagnostic.code === UcodeErrorCode.NOT_CALLABLE) {
-        const calleeMatch = diagnostic.message.match(/^'(\w+)' is not a function/);
-        if (calleeMatch && this.typeChecker.isDeferredCallableFalsePositive(
-              calleeMatch[1]!, this.textDocument.offsetAt(diagnostic.range.start))) {
+        const calleeName = diagnostic.message.match(/^'(\w+)' is not a function/)?.[1];
+        if (calleeName !== undefined && this.typeChecker.isDeferredCallableFalsePositive(
+              calleeName, this.textDocument.offsetAt(diagnostic.range.start))) {
           return false;
         }
       }
@@ -10780,7 +10821,9 @@ private addDiagnostic(
           binaryNode.right.type === 'Identifier') {
         
         const variableName = binaryNode.right.name;
-        return this.findContainingNullGuard(this.currentASTRoot!, variableName, position);
+        const astRoot = this.currentASTRoot;
+        if (astRoot === null) return false;
+        return this.findContainingNullGuard(astRoot, variableName, position);
       }
     }
     

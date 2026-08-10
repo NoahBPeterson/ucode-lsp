@@ -52,13 +52,15 @@ function readName(s: string): { name: string; optional: boolean; rest: string } 
     const close = t.indexOf(']');
     if (close < 0) return null;
     const inner = t.slice(1, close);
-    const name = inner.split('=')[0]!.trim();
+    const [innerName = ''] = inner.split('=');
+    const name = innerName.trim();
     if (!name) return null;
     return { name, optional: true, rest: t.slice(close + 1).replace(/^\s+/, '') };
   }
   const m = /^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)/.exec(t);
   if (!m) return null;
-  return { name: m[1]!, optional: false, rest: t.slice(m[1]!.length).replace(/^\s+/, '') };
+  const [, matchedName = ''] = m;
+  return { name: matchedName, optional: false, rest: t.slice(matchedName.length).replace(/^\s+/, '') };
 }
 
 /** A trailing tag description; a leading `-` separator is stripped. */
@@ -99,11 +101,12 @@ function scanRawTags(fullText: string): { tag: string; body: string; tagStart: n
   const marks: { tag: string; bodyStart: number; tagStart: number }[] = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(fullText)) !== null) {
-    marks.push({ tag: m[2]!, bodyStart: re.lastIndex, tagStart: m.index + m[1]!.length });
+    const [, lead = '', tag = ''] = m;
+    marks.push({ tag, bodyStart: re.lastIndex, tagStart: m.index + lead.length });
   }
   return marks.map((mk, i) => ({
     tag: mk.tag,
-    body: fullText.slice(mk.bodyStart, i + 1 < marks.length ? marks[i + 1]!.tagStart : fullText.length).trim(),
+    body: fullText.slice(mk.bodyStart, marks[i + 1]?.tagStart ?? fullText.length).trim(),
     tagStart: mk.tagStart,
   }));
 }
@@ -127,7 +130,7 @@ export function parseJsDocComment(value: string): ParsedJsDoc {
   const rawTags = scanRawTags(fullText);
 
   // Leading description = everything before the first tag.
-  const firstTagStart = rawTags.length ? rawTags[0]!.tagStart : -1;
+  const firstTagStart = rawTags[0]?.tagStart ?? -1;
   const description = firstTagStart === -1
     ? (fullText || undefined)
     : (fullText.slice(0, firstTagStart).trim() || undefined);
@@ -385,8 +388,9 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
 
   // Handle primitive types
   const lower = typeExpr.toLowerCase();
-  if (lower in JSDOC_PRIMITIVE_MAP) {
-    return JSDOC_PRIMITIVE_MAP[lower]!;
+  const primitive = JSDOC_PRIMITIVE_MAP[lower];
+  if (primitive !== undefined) {
+    return primitive;
   }
 
   // Bare module names: 'fs', 'uci', etc. → module type (no 'module:' prefix needed)
@@ -442,7 +446,8 @@ export function parseInlineObjectShape(expr: string): Map<string, UcodeDataType>
     if (!part) continue;
     const parts = splitTopLevel(part, ':');
     if (parts.length < 2) return null; // not `key: type`
-    const key = parts[0]!.trim().replace(/^['"]|['"]$/g, '');
+    const [keyPart = ''] = parts;
+    const key = keyPart.trim().replace(/^['"]|['"]$/g, '');
     const valExpr = parts.slice(1).join(':').trim();
     if (!key) return null;
     props.set(key, resolveTypeExpression(valExpr) ?? UcodeType.UNKNOWN);
@@ -493,19 +498,24 @@ export function extractTypedef(parsed: ParsedJsDoc): ParsedTypedef | null {
     // Walk/create nested container maps for a dotted path (`pos.x`).
     let map = properties;
     for (let i = 0; i < path.length - 1; i++) {
-      const seg = path[i]!;
+      const seg = path[i];
+      if (seg === undefined) continue;
       let node = map.get(seg);
+      let children = node?.children;
       if (!node) {
-        node = { typeExpression: '', type: UcodeType.OBJECT, optional: false, children: new Map() };
+        children = new Map();
+        node = { typeExpression: '', type: UcodeType.OBJECT, optional: false, children };
         map.set(seg, node);
-      } else if (!node.children) {
-        node.children = new Map();
+      } else if (!children) {
+        children = new Map();
+        node.children = children;
       }
       node.type = UcodeType.OBJECT;
-      map = node.children!;
+      map = children;
     }
 
-    const leaf = path[path.length - 1]!;
+    const leaf = path[path.length - 1];
+    if (leaf === undefined) continue;
     const existing = map.get(leaf);
     if (existing && existing.typeExpression !== '') duplicates.push(tag.name);
     map.set(leaf, {
@@ -538,8 +548,9 @@ export interface ImportTypeExpression {
 export function parseImportTypeExpression(typeExpr: string): ImportTypeExpression | null {
   const match = /^import\(\s*['"]([^'"]+)['"]\s*\)(?:\.(\w+))?$/.exec(typeExpr.trim());
   if (!match) return null;
+  const [, modulePath = ''] = match;
   return {
-    modulePath: match[1]!,
+    modulePath,
     propertyName: match[2]
   };
 }

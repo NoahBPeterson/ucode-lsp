@@ -129,9 +129,10 @@ export function findLuciWorkspace(filePath: string): LuciWorkspace | null {
   // for every visited dir only when the walk hit the filesystem root; on MAX_ASCENT
   // exhaustion an ancestor's own (higher-reaching) window wasn't covered, so only the
   // starting dir may cache it.
-  const cacheable = ws === null
+  const wsRoot = ws?.root;
+  const cacheable = wsRoot === undefined
     ? (reachedTop ? visited : visited.slice(0, 1))
-    : visited.filter((d) => d === ws!.root || d.startsWith(ws!.root + path.sep));
+    : visited.filter((d) => d === wsRoot || d.startsWith(wsRoot + path.sep));
   for (const d of cacheable) wsCache.set(d, { ws, at: now });
   return ws;
 }
@@ -223,7 +224,8 @@ export function resolveLuciTemplatePattern(includerPath: string, pattern: string
   const out: string[] = [];
   const matchFrom = (dir: string, i: number): void => {
     if (i === segs.length - 1) {
-      const last = segs[i]!;
+      const last = segs[i];
+      if (last === undefined) return;
       if (last.includes('*')) {
         const re = new RegExp(`^${last.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}\\.ut$`);
         let names: string[] = [];
@@ -235,7 +237,8 @@ export function resolveLuciTemplatePattern(includerPath: string, pattern: string
       }
       return;
     }
-    const seg = segs[i]!;
+    const seg = segs[i];
+    if (seg === undefined) return;
     if (seg.includes('*')) {
       const re = new RegExp(`^${seg.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^/]*')}$`);
       let names: string[] = [];

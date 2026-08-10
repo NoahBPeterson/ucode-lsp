@@ -267,8 +267,9 @@ export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSit
         }
       });
       if (found.length === 0 || found.some((f) => f === null)) return null;
-      const first = found[0]!;
-      return found.every((f) => f!.path === first.path && f!.isPattern === first.isPattern) ? first : null;
+      const first = found[0];
+      if (!first) return null;
+      return found.every((f) => f !== null && f.path === first.path && f.isPattern === first.isPattern) ? first : null;
     }
     return null;
   };
@@ -488,7 +489,8 @@ export function buildIncludeScopeIndex(
     if (t === 'unknown') return false;
     const ck = `${target}\0${name}`;
     if (conflict.has(ck)) return false;
-    const tmap = typeOf.get(target)!;
+    const tmap = typeOf.get(target);
+    if (!tmap) return false;
     const prev = tmap.get(name);
     if (prev === undefined) { tmap.set(name, t); return true; }
     if (prev !== t) { conflict.add(ck); tmap.delete(name); return true; }
@@ -500,14 +502,15 @@ export function buildIncludeScopeIndex(
     changed = false;
     for (const s of sites) {
       // names
-      const av = available.get(s.target)!;
+      const av = available.get(s.target);
+      if (!av) continue;
       const before = av.size;
       for (const k of s.keys) av.add(k);
       const incAv = available.get(s.includer); // an includer with no entry is a root (received nothing)
       if (incAv) for (const k of incAv) av.add(k);
       if (av.size !== before) changed = true;
       // completeness — exhaustive iff the site is static AND the includer's own scope is.
-      const incComplete = complete.has(s.includer) ? complete.get(s.includer)! : true;
+      const incComplete = complete.get(s.includer) ?? true;
       if ((s.dynamic || !incComplete) && complete.get(s.target) !== false) {
         complete.set(s.target, false);
         changed = true;

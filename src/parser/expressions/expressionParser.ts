@@ -33,7 +33,7 @@ export abstract class ExpressionParser extends CallExpressions {
         // quiet (no cascade). Then skip the rest of this over-nested expression up to the
         // next statement boundary so the parser makes progress and terminates cleanly.
         this.errorAt("Expression is too deeply nested to parse", pos, end);
-        while (!this.isAtEnd() && !STATEMENT_SYNC_TOKENS.includes(this.peek()!.type)) {
+        while (!this.isAtEnd() && !STATEMENT_SYNC_TOKENS.includes(this.currentToken().type)) {
           this.advance();
         }
         return null;
@@ -41,7 +41,7 @@ export abstract class ExpressionParser extends CallExpressions {
 
       // Handle error tokens in expressions too
       if (this.check(TokenType.TK_ERROR)) {
-        const errorToken = this.advance()!;
+        const errorToken = this.advanceToken();
         const message = errorToken.value ? String(errorToken.value) : "Unexpected token";
         this.lexerErrorAt(message, errorToken.pos, errorToken.end);
         return null;

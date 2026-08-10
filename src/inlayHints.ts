@@ -77,7 +77,8 @@ export function computeRawInlayHints(
             if (node.arguments.length) {
                 const sig = resolveCalleeParameters(node.callee, symbolTable, builtins);
                 if (sig && sig.params.length) {
-                    const lastIsRest = sig.params[sig.params.length - 1]!.isRest;
+                    const lastParam = sig.params[sig.params.length - 1];
+                    const lastIsRest = lastParam !== undefined && lastParam.isRest;
                     for (let i = 0; i < node.arguments.length; i++) {
                         const arg = node.arguments[i];
                         if (!arg) continue;

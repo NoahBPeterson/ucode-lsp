@@ -38,7 +38,8 @@ export class ParserUtils {
     // TRANSPARENT — they don't sever the attachment — but any real code in the gap does.
     let gapEnd = nodeStartPos;
     for (let i = this.comments.length - 1; i >= 0; i--) {
-      const c = this.comments[i]!;
+      const c = this.comments[i];
+      if (!c) continue; // dead: i is within [0, length)
       if (c.end > gapEnd) continue;          // comment lies after the running boundary
       if (c.end < nodeStartPos - 500) break; // too far away
       // Only whitespace may sit between this comment and the running boundary; non-comment
@@ -127,6 +128,32 @@ export class ParserUtils {
   protected advance(): Token | null {
     if (!this.isAtEnd()) this.current++;
     return this.previous();
+  }
+
+  // Checked token reads for call sites whose invariant guarantees the token exists
+  // (a preceding check()/match(), a just-consumed token, a bounds test). A miss is a
+  // parser bug: throw, which the statement/expression recovery catches exactly like
+  // the TypeError an unchecked read raised on the same (dead) path.
+
+  /** peek() under the invariant that a current token exists. */
+  protected currentToken(): Token {
+    const token = this.peek();
+    if (!token) throw new Error('Parser invariant violated: expected a current token');
+    return token;
+  }
+
+  /** previous() under the invariant that a token was already consumed. */
+  protected prevToken(): Token {
+    const token = this.previous();
+    if (!token) throw new Error('Parser invariant violated: expected a previous token');
+    return token;
+  }
+
+  /** advance() under the invariant that a token is available to consume. */
+  protected advanceToken(): Token {
+    const token = this.advance();
+    if (!token) throw new Error('Parser invariant violated: expected a token to consume');
+    return token;
   }
 
   protected check(type: TokenType): boolean {

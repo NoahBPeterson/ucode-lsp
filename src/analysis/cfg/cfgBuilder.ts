@@ -573,7 +573,8 @@ export class CFGBuilder {
 
     // Create blocks for each case
     for (let i = 0; i < node.cases.length; i++) {
-      const caseNode = node.cases[i]!;
+      const caseNode = node.cases[i];
+      if (!caseNode) continue;
       const label = caseNode.test ? `switch.case${i}` : 'switch.default';
       const caseBlock = this.createBlock(label);
       caseBlocks.push(caseBlock);
@@ -602,8 +603,9 @@ export class CFGBuilder {
 
     // Visit each case
     for (let i = 0; i < node.cases.length; i++) {
-      const caseNode = node.cases[i]!;
-      const caseBlock = caseBlocks[i]!;
+      const caseNode = node.cases[i];
+      const caseBlock = caseBlocks[i];
+      if (!caseNode || !caseBlock) continue;
 
       this.currentBlock = caseBlock;
 
@@ -622,7 +624,8 @@ export class CFGBuilder {
         this.currentBlock.successors.length === 0 &&
         i < node.cases.length - 1
       ) {
-        this.connect(this.currentBlock, caseBlocks[i + 1]!);
+        const nextCaseBlock = caseBlocks[i + 1];
+        if (nextCaseBlock) this.connect(this.currentBlock, nextCaseBlock);
       } else if (
         this.currentBlock.successors.length === 0 &&
         i === node.cases.length - 1

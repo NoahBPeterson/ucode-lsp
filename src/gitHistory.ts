@@ -172,15 +172,18 @@ export function parseGitLogLOutput(stdout: string): GitSummary | null {
         if (!line) continue;
         const parts = line.split(FS_CHAR);
         if (parts.length < 4) continue;
+        const [hash, author, relDate] = parts;
+        if (hash === undefined || author === undefined || relDate === undefined) continue;
         commits.push({
-            hash: parts[0]!,
-            author: parts[1]!,
-            relDate: parts[2]!,
+            hash,
+            author,
+            relDate,
             subject: parts.slice(3).join(FS_CHAR), // subject can't contain \x1f, but be safe
         });
     }
-    if (commits.length === 0) return null;
-    return { count: commits.length, last: commits[0]!, commits };
+    const last = commits[0];
+    if (last === undefined) return null;
+    return { count: commits.length, last, commits };
 }
 
 /** First whitespace-delimited token of an author name, to keep the lens short. */

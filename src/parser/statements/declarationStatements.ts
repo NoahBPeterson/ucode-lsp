@@ -31,9 +31,9 @@ export abstract class DeclarationStatements extends ExpressionParser {
   }
 
   protected parseVariableDeclaration(jsdocAnchorPos?: number): VariableDeclarationNode {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
     const leadingJsDoc = this.findLeadingJsDoc(jsdocAnchorPos ?? start);
-    const kind = this.previous()!.type === TokenType.TK_CONST ? 'const' : 'let';
+    const kind = this.prevToken().type === TokenType.TK_CONST ? 'const' : 'let';
     const declarations: VariableDeclaratorNode[] = [];
 
     do {
@@ -66,7 +66,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     const result: VariableDeclarationNode = {
       type: 'VariableDeclaration',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       kind,
       declarations
     };
@@ -92,7 +92,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     // continue the declarator normally, so the `= 1` still attaches to `caf`
     // instead of orphaning into a misleading "Unexpected token" statement.
     while (this.check(TokenType.TK_ERROR)) {
-      const errTok = this.advance()!;
+      const errTok = this.advanceToken();
       this.lexerErrorAt(errTok.value ? String(errTok.value) : 'Unexpected token', errTok.pos, errTok.end);
     }
 
@@ -112,7 +112,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     const declarator: VariableDeclaratorNode = {
       type: 'VariableDeclarator',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       id,
       init
     };
@@ -121,7 +121,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
   }
 
   protected parseFunctionDeclaration(isExported: boolean = false, jsdocAnchorPos?: number): FunctionDeclarationNode | FunctionExpressionNode | null {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
     const leadingJsDoc = this.findLeadingJsDoc(jsdocAnchorPos ?? start);
 
     // For export default functions, the name is optional (anonymous functions allowed)
@@ -140,7 +140,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     // Forward declaration: `function name;` — a name with no parameter list or
     // body. Enables use-before-definition and mutual recursion (upstream d9e24e4).
     if (id && this.check(TokenType.TK_SCOL)) {
-      const semi = this.advance()!;
+      const semi = this.advanceToken();
       const fwd: FunctionDeclarationNode = {
         type: 'FunctionDeclaration',
         start,
@@ -172,7 +172,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
             // Emit exactly one diagnostic on the comma, then keep parsing the
             // trailing params so they stay declared and the body still analyzes.
             if (this.check(TokenType.TK_COMMA)) {
-              const comma = this.peek()!;
+              const comma = this.currentToken();
               this.errorAt("a rest parameter ('...') must be the final parameter",
                            comma.pos, comma.end, UcodeErrorCode.PARAM_AFTER_REST);
               this.panicMode = false;
@@ -194,7 +194,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     // selects the colon-block, which runs statements up to `endfunction`.
     const body = this.check(TokenType.TK_COLON)
       ? (this.parseColonEndBlock(TokenType.TK_ENDFUNC, "endfunction")
-         ?? ({ type: 'BlockStatement', start: this.previous()!.end, end: this.previous()!.end, body: [] } satisfies BlockStatementNode))
+         ?? ({ type: 'BlockStatement', start: this.prevToken().end, end: this.prevToken().end, body: [] } satisfies BlockStatementNode))
       : this.parseBlockStatement(this.consume(TokenType.TK_LBRACE, "Expected '{' or ':' to start the function body"), "function body");
 
     // A trailing semicolon after a function declaration is optional — ucode
@@ -210,7 +210,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
       const result: FunctionDeclarationNode = {
         type: 'FunctionDeclaration',
         start,
-        end: hadSemicolon ? this.previous()!.end : body.end,
+        end: hadSemicolon ? this.prevToken().end : body.end,
         id,
         params,
         body,
@@ -230,7 +230,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
       const result: FunctionExpressionNode = {
         type: 'FunctionExpression',
         start,
-        end: hadSemicolon ? this.previous()!.end : body.end,
+        end: hadSemicolon ? this.prevToken().end : body.end,
         id: null,
         params,
         body
@@ -248,7 +248,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
   }
 
   protected parseImportDeclaration(): ImportDeclarationNode | null {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
     const specifiers: (ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode)[] = [];
     // `import {} from "m"` produces no specifiers but IS a binding form, so it still expects
     // `from`. Without this the empty-brace case falls through to the bare side-effect-import
@@ -259,7 +259,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     // Parse import specifiers
     if (this.match(TokenType.TK_LBRACE)) {
       // Named imports: import { name1, name2 } from 'module'
-      const openBrace = this.previous()!;
+      const openBrace = this.prevToken();
       sawBindingSyntax = true;
       if (!this.check(TokenType.TK_RBRACE)) {
         do {
@@ -289,7 +289,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     } else if (this.match(TokenType.TK_MUL)) {
       // Namespace import: import * as name from 'module'
       this.consume(TokenType.TK_LABEL, "Expected 'as' after '*' in import");
-      if (this.previous()!.value !== 'as') {
+      if (this.prevToken().value !== 'as') {
         this.error("Expected 'as' after '*' in import");
         return null;
       }
@@ -299,7 +299,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
 
       specifiers.push({
         type: 'ImportNamespaceSpecifier',
-        start: this.previous()!.pos,
+        start: this.prevToken().pos,
         end: local.end,
         local
       });
@@ -326,7 +326,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
         if (this.match(TokenType.TK_MUL)) {
           // Namespace import after default: import name, * as ns from 'module'
           this.consume(TokenType.TK_LABEL, "Expected 'as' after '*' in import");
-          if (this.previous()!.value !== 'as') {
+          if (this.prevToken().value !== 'as') {
             this.error("Expected 'as' after '*' in import");
             return null;
           }
@@ -336,13 +336,13 @@ export abstract class DeclarationStatements extends ExpressionParser {
 
           specifiers.push({
             type: 'ImportNamespaceSpecifier',
-            start: this.previous()!.pos,
+            start: this.prevToken().pos,
             end: nsLocal.end,
             local: nsLocal
           });
         } else if (this.match(TokenType.TK_LBRACE)) {
           // Parse named imports after default
-          const openBrace = this.previous()!;
+          const openBrace = this.prevToken();
           if (!this.check(TokenType.TK_RBRACE)) {
             do {
               const imported = this.parseImportSpecifierName();
@@ -388,7 +388,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
       return null;
     }
 
-    const source = this.advance()!;
+    const source = this.advanceToken();
     const sourceLiteral: LiteralNode = {
       type: 'Literal',
       start: source.pos,
@@ -403,14 +403,14 @@ export abstract class DeclarationStatements extends ExpressionParser {
     return {
       type: 'ImportDeclaration',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       specifiers,
       source: sourceLiteral
     };
   }
 
   protected parseExportDeclaration(): ExportNamedDeclarationNode | ExportDefaultDeclarationNode | ExportAllDeclarationNode | null {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
 
     // Check for export default
     if (this.match(TokenType.TK_DEFAULT)) {
@@ -508,7 +508,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
       return null;
     }
 
-    const source = this.advance()!;
+    const source = this.advanceToken();
     const sourceLiteral: LiteralNode = {
       type: 'Literal',
       start: source.pos,
@@ -523,7 +523,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     return {
       type: 'ExportAllDeclaration',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       source: sourceLiteral,
       exported
     };
@@ -531,7 +531,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
 
   private parseExportNamedDeclaration(start: number): ExportNamedDeclarationNode | null {
     const specifiers: ExportSpecifierNode[] = [];
-    const openBrace = this.previous()!;
+    const openBrace = this.prevToken();
 
     // Parse export specifiers
     if (this.check(TokenType.TK_RBRACE)) {
@@ -547,7 +547,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
           if (this.check(TokenType.TK_DEFAULT)) {
             // export { x as default } — alias a local binding to the default export.
             // Valid in ucode on all versions (oracle-verified). Finding #11.
-            const token = this.advance()!;
+            const token = this.advanceToken();
             parsedExported = { type: 'Identifier', start: token.pos, end: token.end, name: 'default' };
           } else {
             parsedExported = this.parseIdentifierName();
@@ -575,7 +575,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
         return null;
       }
 
-      const sourceToken = this.advance()!;
+      const sourceToken = this.advanceToken();
       source = {
         type: 'Literal',
         start: sourceToken.pos,
@@ -591,7 +591,7 @@ export abstract class DeclarationStatements extends ExpressionParser {
     return {
       type: 'ExportNamedDeclaration',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       declaration: null,
       specifiers,
       source

@@ -427,9 +427,10 @@ function isDeclaratorNameContext(offset: number, tokens: Token[]): boolean {
  *  predecessors count, so a block `{` never suppresses completion. (#99) */
 function isObjectLiteralBrace(tokens: Token[], braceIdx: number): boolean {
     let j = braceIdx - 1;
-    while (j >= 0 && (tokens[j]!.type === TokenType.TK_NEWLINE)) j--;
+    while (j >= 0 && (tokens[j]?.type === TokenType.TK_NEWLINE)) j--;
     if (j < 0) return false;
-    const p = tokens[j]!.type;
+    const p = tokens[j]?.type;
+    if (p === undefined) return false;
     return p === TokenType.TK_ASSIGN || p === TokenType.TK_LPAREN || p === TokenType.TK_LBRACK
         || p === TokenType.TK_COMMA || p === TokenType.TK_COLON || p === TokenType.TK_RETURN
         || p === TokenType.TK_QMARK;
@@ -441,8 +442,8 @@ function isObjectLiteralBrace(tokens: Token[], braceIdx: number): boolean {
 function isObjectLiteralKeyPosition(offset: number, tokens: Token[]): boolean {
     let idx = -1;
     for (let i = 0; i < tokens.length; i++) {
-        const t = tokens[i]!;
-        if (t.type === TokenType.TK_EOF) continue;
+        const t = tokens[i];
+        if (!t || t.type === TokenType.TK_EOF) continue;
         if (t.pos < offset) idx = i; else break;
     }
     if (idx < 0) return false;
@@ -450,7 +451,9 @@ function isObjectLiteralKeyPosition(offset: number, tokens: Token[]): boolean {
     let sawColon = false;
     let delimited = false; // passed the current property's leading `,` → prior colons are irrelevant
     for (let i = idx; i >= 0; i--) {
-        const tt = tokens[i]!.type;
+        const tok = tokens[i];
+        if (!tok) continue;
+        const tt = tok.type;
         if (tt === TokenType.TK_RPAREN || tt === TokenType.TK_RBRACK || tt === TokenType.TK_RBRACE) {
             depth++;
             continue;
@@ -519,7 +522,11 @@ function getArgumentConstantCompletions(
     // 1. Walk back from the cursor to the enclosing call's `(`, counting top-level commas
     //    (the active argument index) and skipping balanced nested brackets/parens.
     let i = tokens.length - 1;
-    while (i >= 0 && tokens[i] && tokens[i]!.pos >= offset) i--;
+    while (i >= 0) {
+        const t = tokens[i];
+        if (!t || t.pos < offset) break;
+        i--;
+    }
     let depth = 0, argIndex = 0, openParen = -1;
     for (; i >= 0; i--) {
         const t = tokens[i]; if (!t) continue;
@@ -535,13 +542,14 @@ function getArgumentConstantCompletions(
     const resolved = resolveCalleeSignatureForArgs(tokens, openParen, analysisResult);
     if (!resolved) return [];
     const param = resolved.fn.parameters[argIndex];
-    if (!param?.constantPrefixes || param.constantPrefixes.length === 0) return [];
+    const constantPrefixes = param?.constantPrefixes;
+    if (!param || !constantPrefixes || constantPrefixes.length === 0) return [];
     if (!isKnownModule(resolved.moduleName)) return [];
 
     // 3. Collect the module's constants matching the family, with auto-import matching how the
     //    module is already imported (namespace → `ns.NAME`; named/absent → bare + import edit).
     const reg = MODULE_REGISTRIES[resolved.moduleName];
-    const names = reg.getConstantNames().filter(n => param.constantPrefixes!.some(p => n.startsWith(p)));
+    const names = reg.getConstantNames().filter(n => constantPrefixes.some(p => n.startsWith(p)));
     if (names.length === 0) return [];
     const imp = scanModuleImport(resolved.moduleName, analysisResult.ast);
     const items: CompletionItem[] = [];
@@ -575,7 +583,7 @@ function getArgumentConstantCompletions(
 function resolveCalleeSignatureForArgs(
     tokens: Token[], openParen: number, analysisResult: SemanticAnalysisResult
 ): { fn: FunctionSignature; moduleName: string } | null {
-    const st = analysisResult.symbolTable!;
+    const st = analysisResult.symbolTable;
     const nameTok = tokens[openParen - 1];
     if (!nameTok || nameTok.type !== TokenType.TK_LABEL || typeof nameTok.value !== 'string') return null;
     const method = nameTok.value;
@@ -596,7 +604,7 @@ function resolveCalleeSignatureForArgs(
         const elemType = arrayElementObjectType(arrSym?.dataType);
         if (elemType && isKnownObjectType(elemType)) {
             const m = OBJECT_REGISTRIES[elemType].getMethod(method);
-            if (Option.isSome(m)) return { fn: m.value, moduleName: elemType.split('.')[0]! };
+            if (Option.isSome(m)) return { fn: m.value, moduleName: elemType.split('.')[0] ?? elemType };
         }
         return null;
     }
@@ -616,7 +624,7 @@ function resolveCalleeSignatureForArgs(
         }
         if (isKnownObjectType(tn)) {
             const m = OBJECT_REGISTRIES[tn].getMethod(method);
-            if (Option.isSome(m)) return { fn: m.value, moduleName: tn.split('.')[0]! };
+            if (Option.isSome(m)) return { fn: m.value, moduleName: tn.split('.')[0] ?? tn };
         }
         if (isKnownModule(tn)) {
             const f = MODULE_REGISTRIES[tn].getFunction(method);
@@ -1355,10 +1363,11 @@ function getPropertyChainCompletions(objectName: string, propertyChain: string[]
     // Pattern: <module-namespace>.<objectExport>.  (e.g. `fs.stdin.`) → the handle's
     // methods. The namespace symbol carries moduleName='fs'; the member is an object
     // export typed as fs.file, so offer that object type's methods.
-    if (symbol.type === SymbolType.IMPORTED && propertyChain.length === 1) {
+    const chainHead = propertyChain[0];
+    if (symbol.type === SymbolType.IMPORTED && propertyChain.length === 1 && chainHead !== undefined) {
         const modName = extractModuleType(symbol.dataType)?.moduleName ?? symbol.importedFrom;
         if (modName && isKnownModule(modName)) {
-            const objType = MODULE_REGISTRIES[modName].getObjectExportType(propertyChain[0]!);
+            const objType = MODULE_REGISTRIES[modName].getObjectExportType(chainHead);
             if (objType && isKnownObjectType(objType)) {
                 return objectTypeMethodCompletions(objType);
             }
@@ -1414,8 +1423,8 @@ function getPropertyChainCompletions(objectName: string, propertyChain: string[]
     // Generic nested object properties: `obj.prop.` completes prop's sub-keys
     // from the symbol's nestedPropertyTypes (one level deep — the only depth the
     // analyzer records). e.g. `let o = { inner: { z: 1 } }; o.inner.` → `z`.
-    if (propertyChain.length === 1 && symbol.nestedPropertyTypes) {
-        const nested = symbol.nestedPropertyTypes.get(propertyChain[0]!);
+    if (propertyChain.length === 1 && chainHead !== undefined && symbol.nestedPropertyTypes) {
+        const nested = symbol.nestedPropertyTypes.get(chainHead);
         if (nested && nested.size > 0) {
             const items: CompletionItem[] = [];
             for (const [name, ptype] of nested) {

@@ -134,7 +134,8 @@ export function handleDefinition(
                     uri: document.uri,
                     range: { start: document.positionAt(s.start), end: document.positionAt(s.end) },
                 }));
-                return locs.length === 1 ? locs[0]! : locs;
+                const [only] = locs;
+                return locs.length === 1 && only !== undefined ? only : locs;
             }
         }
     } catch (error) {

@@ -108,14 +108,14 @@ export function analyzeCaptureGroups(pattern: string): CaptureGroupInfo {
 
       if (c === '(') {
         const node: GroupNode = { index: groupCount++, children: [], ownQuantifierOptional: false, bodyHasAlt: false };
-        stack[stack.length - 1]!.children.push(node);
+        (stack[stack.length - 1] ?? root).children.push(node);
         stack.push({ node, hasAlt: false, children: [] });
         i++;
         continue;
       }
 
       if (c === ')') {
-        const closed = stack.length > 1 ? stack.pop()! : stack[0]!; // tolerate stray ')'
+        const closed = (stack.length > 1 ? stack.pop() : undefined) ?? root; // tolerate stray ')'
         if (closed.node) {
           closed.node.children = closed.children;
           closed.node.bodyHasAlt = closed.hasAlt;
@@ -126,7 +126,7 @@ export function analyzeCaptureGroups(pattern: string): CaptureGroupInfo {
       }
 
       if (c === '|') {
-        stack[stack.length - 1]!.hasAlt = true;
+        (stack[stack.length - 1] ?? root).hasAlt = true;
         i++;
         continue;
       }
@@ -135,8 +135,9 @@ export function analyzeCaptureGroups(pattern: string): CaptureGroupInfo {
     }
 
     // Finalize the (possibly still-open, on unbalanced input) root frame.
-    root.hasAlt = stack[0]!.hasAlt;
-    root.children = stack[0]!.children;
+    const bottom = stack[0] ?? root;
+    root.hasAlt = bottom.hasAlt;
+    root.children = bottom.children;
 
     const walk = (children: GroupNode[], frameHasAlt: boolean, parentOptional: boolean): void => {
       for (const node of children) {
@@ -177,7 +178,7 @@ export class RegexTypeRegistry {
     const decoded: string[] = [];
     const seen = new Set<string>();
     for (const m of pattern.matchAll(/\\(.)/g)) {
-      const c = m[1]!;
+      const [, c = ''] = m;
       if (seen.has(c)) continue;
       seen.add(c);
       decoded.push(CLASS_ESCAPES[c] ? `\`\\${c}\` = ${CLASS_ESCAPES[c]}` : `\`\\${c}\` = a literal \`${c}\``);

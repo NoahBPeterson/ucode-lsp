@@ -376,8 +376,8 @@ function typeWriteInvisible(e: TypeHistoryEntry, readPos: number): boolean {
 
 function typeWriteDefinite(e: TypeHistoryEntry, readPos: number): boolean {
   if (e.inLoop) return false;
-  if (!e.branches || e.branches.length === 0) return true;
-  const inner = e.branches[e.branches.length - 1]!;
+  const inner = e.branches?.[e.branches.length - 1];
+  if (inner === undefined) return true;
   return readPos >= inner.bs && readPos <= inner.be;
 }
 
@@ -529,8 +529,8 @@ function writeDominatesIteration(
   if (!li || readPos < li.ls || readPos > li.le) return false;
   if (writeEnd > readPos) return false;
   if (e.branches && e.branches.length) {
-    const inner = e.branches[e.branches.length - 1]!;
-    if (!(readPos >= inner.bs && readPos <= inner.be)) return false;
+    const inner = e.branches[e.branches.length - 1];
+    if (inner && !(readPos >= inner.bs && readPos <= inner.be)) return false;
   }
   if (e.fnx) {
     for (const f of e.fnx) {
@@ -566,8 +566,8 @@ function writeInvisibleToRead(e: PropertyWriteEntry, readPos: number): boolean {
  *  (docs/type-soundness-audit.md I-3, soundness ruling 2026-08-04). */
 function writeDefiniteForRead(e: PropertyWriteEntry, readPos: number): boolean {
   if (e.loop) return false;
-  if (!e.branches || e.branches.length === 0) return true;
-  const inner = e.branches[e.branches.length - 1]!;
+  const inner = e.branches?.[e.branches.length - 1];
+  if (inner === undefined) return true;
   return readPos >= inner.bs && readPos <= inner.be;
 }
 
@@ -606,8 +606,9 @@ export function propertyTypeAt(
     // value; one that only may have run (conditional, read outside its branch)
     // UNIONS in — keeping the fall-through possibility visible, exactly like the
     // 0.7.81 identifier fix. Seed: the declared baseline, else "no info".
+    const seed = visible[0];
     let value: UcodeDataType | undefined =
-      visible.length && visible[0]!.pos < 0 ? visible[0]!.type : undefined;
+      seed && seed.pos < 0 ? seed.type : undefined;
     let sawWrite = false;
     for (const e of visible) {
       if (e.pos < 0) continue;

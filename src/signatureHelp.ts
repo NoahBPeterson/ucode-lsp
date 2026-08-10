@@ -55,7 +55,10 @@ function paramNamesFromBlock(block: string): string[] {
     const names: string[] = [];
     const re = /^\s*[-*]\s*`([^`]+)`/gm;
     let bullet: RegExpExecArray | null;
-    while ((bullet = re.exec(block)) !== null) names.push(bullet[1]!.trim());
+    while ((bullet = re.exec(block)) !== null) {
+        const name = bullet[1];
+        if (name !== undefined) names.push(name.trim());
+    }
     return names;
 }
 
@@ -65,7 +68,10 @@ function builtinParamNameSets(doc: string): string[][] {
     const re = /\*\*Parameters:\*\*\s*([\s\S]*?)(?:\n\s*\n|\*\*Returns|\*\*Note|\*\*Example|$)/g;
     const sets: string[][] = [];
     let m: RegExpExecArray | null;
-    while ((m = re.exec(doc)) !== null) sets.push(paramNamesFromBlock(m[1]!));
+    while ((m = re.exec(doc)) !== null) {
+        const body = m[1];
+        if (body !== undefined) sets.push(paramNamesFromBlock(body));
+    }
     return sets;
 }
 
@@ -97,7 +103,7 @@ export function compactBuiltinSignature(name: string, doc: string): string | nul
 }
 
 function hasRestParam(paramLabels: string[]): boolean {
-    return paramLabels.length > 0 && /^\.\.\./.test(paramLabels[paramLabels.length - 1]!);
+    return paramLabels.length > 0 && /^\.\.\./.test(paramLabels[paramLabels.length - 1] ?? '');
 }
 
 /** One SignatureInformation with [start,end) label offsets into `label` so the editor
@@ -139,7 +145,8 @@ function selectActiveOverload(sets: string[][], arg0: AstNode | undefined, activ
         if ((arg0.type === 'ArrowFunctionExpression' || arg0.type === 'FunctionExpression') && restIdx >= 0) return restIdx;
         if (arg0.type === 'Literal' && typeof arg0.value === 'string' && nonRestIdx >= 0) return nonRestIdx;
     }
-    if (restIdx >= 0 && nonRestIdx >= 0 && activeParam >= sets[nonRestIdx]!.length) return restIdx;
+    const nonRestSet = nonRestIdx >= 0 ? sets[nonRestIdx] : undefined;
+    if (restIdx >= 0 && nonRestSet !== undefined && activeParam >= nonRestSet.length) return restIdx;
     return 0;
 }
 
@@ -147,7 +154,7 @@ function selectActiveOverload(sets: string[][], arg0: AstNode | undefined, activ
 function buildOverloadedSignature(name: string, paramSets: string[][], arg0: AstNode | undefined, activeParam: number, doc?: string): SignatureHelp {
     const activeSignature = selectActiveOverload(paramSets, arg0, activeParam);
     const signatures = paramSets.map(labels => makeSignatureInformation(name, labels, doc));
-    return { signatures, activeSignature, activeParameter: clampActiveParam(paramSets[activeSignature]!, activeParam) };
+    return { signatures, activeSignature, activeParameter: clampActiveParam(paramSets[activeSignature] ?? [], activeParam) };
 }
 
 export interface CalleeParam { name: string; label: string; isRest: boolean }

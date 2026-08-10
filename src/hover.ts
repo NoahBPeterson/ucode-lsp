@@ -92,7 +92,8 @@ function tokenIndexAtOffset(tokens: Token[], offset: number): number {
     let lo = 0, hi = tokens.length - 1;
     while (lo <= hi) {
         const mid = (lo + hi) >> 1;
-        const t = tokens[mid]!;
+        const t = tokens[mid];
+        if (!t) return -1;
         if (offset < t.pos) hi = mid - 1;
         else if (offset >= t.end) lo = mid + 1;
         else return mid;
@@ -405,14 +406,17 @@ function getUnifiedMemberHover(
     if (chain && chain.length >= 3) {
         // Position-aware lookup: the base is often a function PARAM or local, which a
         // bare global lookup never finds (scope-correct API is lookupAtPosition).
-        const baseSym = (offset !== undefined ? analysisResult.symbolTable.resolveReference(chain[0]!, offset) : null);
-        if (baseSym) {
+        const chainBase = chain[0];
+        const aName = chain[chain.length - 2];
+        const bName = chain[chain.length - 1];
+        const baseSym = (chainBase !== undefined && offset !== undefined ? analysisResult.symbolTable.resolveReference(chainBase, offset) : null);
+        if (baseSym && aName !== undefined && bName !== undefined) {
             // `nl80211.const.NL80211_*` / `rtnl.const.*` on a namespace import:
             // the leaf is an integer constant with registry documentation.
             const nsModule = baseSym.type === SymbolType.IMPORTED && baseSym.importSpecifier === '*'
                 ? baseSym.importedFrom : null;
-            if ((nsModule === 'nl80211' || nsModule === 'rtnl') && chain[chain.length - 2] === 'const') {
-                const constName = chain[chain.length - 1]!;
+            if ((nsModule === 'nl80211' || nsModule === 'rtnl') && aName === 'const') {
+                const constName = bName;
                 const reg = nsModule === 'nl80211' ? nl80211TypeRegistry : rtnlTypeRegistry;
                 const isConst = nsModule === 'nl80211'
                     ? nl80211TypeRegistry.isNl80211Constant(constName)
@@ -426,13 +430,11 @@ function getUnifiedMemberHover(
             if (baseObjType) {
                 const owner = resolveChainOwnerObjectType(baseObjType, chain.slice(1, -1));
                 if (owner) {
-                    const doc = getObjectMethodDocumentation(owner, chain[chain.length - 1]!);
+                    const doc = getObjectMethodDocumentation(owner, bName);
                     if (Option.isSome(doc)) return appendBuiltinNote(doc.value);
                 }
             }
 
-            const aName = chain[chain.length - 2]!;
-            const bName = chain[chain.length - 1]!;
             const inner = baseSym.nestedPropertyTypes?.get(aName);
             const innerType = inner?.get(bName);
             if (innerType !== undefined) {
@@ -543,7 +545,8 @@ function getFormatSpecifierHover(token: Token, tokenIndex: number, tokens: Token
     // Pattern: LABEL LPAREN STRING ...
     let lparenIdx = -1;
     for (let i = tokenIndex - 1; i >= 0; i--) {
-        const t = tokens[i]!;
+        const t = tokens[i];
+        if (!t) continue;
         if (t.type === TokenType.TK_LPAREN) {
             lparenIdx = i;
             break;
@@ -790,7 +793,7 @@ function escapeSequenceHover(text: string, offset: number, tokens: Token[], docu
                 const shownRaw = text.slice(rangeStart, rangeEnd);
                 let body: string;
                 if (char.length === 2) {
-                    body = `${mdCode(shownRaw)} → ${mdCode(char)} — ${formatCodepoint(char.codePointAt(0)!)} (surrogate pair)`;
+                    body = `${mdCode(shownRaw)} → ${mdCode(char)} — ${formatCodepoint(char.codePointAt(0) ?? cp)} (surrogate pair)`;
                 } else if (cp >= 0xD800 && cp <= 0xDFFF) {
                     const half = cp <= 0xDBFF ? 'low' : 'high';
                     body = `${mdCode(shownRaw)} → unpaired surrogate half ${formatCodepoint(cp)} — ucode substitutes U+FFFD (\`�\`) unless paired with a ${half} half`;
@@ -798,8 +801,8 @@ function escapeSequenceHover(text: string, offset: number, tokens: Token[], docu
                     body = `${mdCode(shownRaw)} → ${CONTROL_CHAR_NAMES[cp] ?? 'control character'} — ${formatCodepoint(cp)}`;
                 } else {
                     body = `${mdCode(shownRaw)} → ${mdCode(char)} — ${formatCodepoint(cp)}`;
-                    const kind = shownRaw[1]!;
-                    if (!'abefnrtvux'.includes(kind) && !(kind >= '0' && kind <= '7') && !'\\\'"`$'.includes(kind)) {
+                    const kind = shownRaw[1];
+                    if (kind !== undefined && !'abefnrtvux'.includes(kind) && !(kind >= '0' && kind <= '7') && !'\\\'"`$'.includes(kind)) {
                         body += '\n\nUnknown escape — ucode passes the character through unchanged';
                     }
                 }
@@ -954,11 +957,12 @@ export function handleHover(
             // Look up the object in the symbol table to determine its module
             if (analysisResult && analysisResult.symbolTable) {
                 const symbol = analysisResult.symbolTable.resolveReference(objectName, offset);
-                if (symbol && symbol.propertyTypes && symbol.propertyTypes.has(memberName)) {
+                const knownProperty = symbol?.propertyTypes?.get(memberName);
+                if (symbol && knownProperty !== undefined) {
                     // Flow-sensitive: show the most-recent write at/before the hovered position,
                     // so `rv.days` reads `object` before `rv.days = keys(rv.days)` and
                     // `array<string>` after — not one type for every occurrence.
-                    const baseProperty = propertyTypeAt(symbol, memberName, offset) ?? symbol.propertyTypes.get(memberName)!;
+                    const baseProperty = propertyTypeAt(symbol, memberName, offset) ?? knownProperty;
                     // Prefer a guard-narrowed type for the member path inside a guarded
                     // branch (`if (o.x) { o.x… }` → `string`, not `string | null`) — the
                     // known propertyType seeds the narrowing (ticket 139).
@@ -1887,12 +1891,13 @@ function getWordRangeAtPosition(text: string, offset: number): { start: number; 
     if (offset < 0 || offset > text.length) return undefined;
 
     let start = offset;
-    while (start > 0 && isIdentChar(text[start - 1]!)) start--;
+    while (start > 0 && isIdentChar(text[start - 1] ?? '')) start--;
     let end = offset;
-    while (end < text.length && isIdentChar(text[end]!)) end++;
+    while (end < text.length && isIdentChar(text[end] ?? '')) end++;
 
     if (start === end) return undefined;               // not on a word
-    const first = text[start]!;
+    const first = text[start];
+    if (first === undefined) return undefined;
     if (first >= '0' && first <= '9') return undefined; // identifiers don't start with a digit
     return { start, end };
 }

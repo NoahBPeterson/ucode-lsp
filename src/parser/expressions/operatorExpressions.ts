@@ -91,7 +91,7 @@ const ASSIGNMENT_OPERATOR_BY_TOKEN: Partial<Record<TokenType, AssignmentExpressi
 export abstract class OperatorExpressions extends CompositeExpressions {
 
   protected parseUnary(): UnaryExpressionNode | null {
-    const operatorToken = this.previous()!;
+    const operatorToken = this.prevToken();
     const operator = UNARY_OPERATOR_BY_TOKEN[operatorToken.type];
     let argument = this.parseExpression(Precedence.UNARY);
     let absorbedAssignment = false;
@@ -134,7 +134,7 @@ export abstract class OperatorExpressions extends CompositeExpressions {
   }
 
   protected parseBinary(left: AstNode): BinaryExpressionNode | null {
-    const operatorToken = this.previous()!;
+    const operatorToken = this.prevToken();
     // TK_COMMA (the sequence operator — reachable via `(a, b)` and `for (i = 0, j = 1; …)`)
     // is the one binary-rule token whose operator is missing from
     // BinaryExpressionNode['operator']; see BINARY_OPERATOR_BY_TOKEN.
@@ -155,7 +155,7 @@ export abstract class OperatorExpressions extends CompositeExpressions {
   }
 
   protected parseAssignment(left: AstNode): AssignmentExpressionNode | null {
-    const operatorToken = this.previous()!;
+    const operatorToken = this.prevToken();
     const operator = ASSIGNMENT_OPERATOR_BY_TOKEN[operatorToken.type];
 
     if (left.type !== 'Identifier' && left.type !== 'MemberExpression') {
@@ -179,7 +179,7 @@ export abstract class OperatorExpressions extends CompositeExpressions {
   }
 
   protected parsePostfix(left: AstNode): UnaryExpressionNode {
-    const operatorToken = this.previous()!;
+    const operatorToken = this.prevToken();
     // Only TK_INC/TK_DEC are registered as postfix rules.
     const operator: UnaryExpressionNode['operator'] = operatorToken.type === TokenType.TK_DEC ? '--' : '++';
 

@@ -31,7 +31,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
    */
   protected parseControlFlowBody(construct: string): AstNode | null {
     if (this.check(TokenType.TK_LOCAL) || this.check(TokenType.TK_CONST)) {
-      const kw = this.peek()!;
+      const kw = this.currentToken();
       const kind = kw.type === TokenType.TK_CONST ? 'const' : 'let';
       this.errorAt(
         `a '${kind}' declaration cannot be the body of ${construct}; wrap it in a block { … }`,
@@ -51,7 +51,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
    * skip an `elif`'s `(condition)` and any trailing `:` so the body still parses.
    */
   protected parseStrayColonBlockKeyword(): AstNode | null {
-    const tok = this.advance()!; // consume the keyword
+    const tok = this.advanceToken(); // consume the keyword
     const KW: Partial<Record<TokenType, string>> = {
       [TokenType.TK_ELIF]: 'elif', [TokenType.TK_ENDIF]: 'endif', [TokenType.TK_ENDFOR]: 'endfor',
       [TokenType.TK_ENDWHILE]: 'endwhile', [TokenType.TK_ENDFUNC]: 'endfunction',
@@ -110,13 +110,13 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     return {
       type: 'BlockStatement',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       body: statements
     };
   }
 
   protected parseIfStatement(): IfStatementNode | null {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
 
     this.consume(TokenType.TK_LPAREN, "Expected '(' after 'if'");
     // Parse at COMMA precedence so the sequence operator is accepted in the condition
@@ -182,7 +182,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
    *  — and DO NOT panic, so the block still parses and later constructs aren't cascade-suppressed. */
   private expectColonBlockColon(): void {
     if (this.check(TokenType.TK_COLON)) { this.advance(); return; }
-    const prev = this.previous()!; // the condition's `)`
+    const prev = this.prevToken(); // the condition's `)`
     this.errorAt("expected ':' after this condition (ucode's colon-block `if (…): …` form)",
                  prev.pos, prev.end, UcodeErrorCode.STRAY_COLON_BLOCK_KEYWORD);
     this.panicMode = false;
@@ -195,21 +195,21 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     let alternate: AstNode | null = null;
 
     if (this.check(TokenType.TK_ELIF)) {
-      const elifStart = this.peek()!.pos;
+      const elifStart = this.currentToken().pos;
       this.advance(); // 'elif'
       this.consume(TokenType.TK_LPAREN, "Expected '(' after 'elif'");
       const elifTest = this.parseExpression(Precedence.COMMA);
       this.consume(TokenType.TK_RPAREN, "Expected ')' after elif condition");
       // Recurse — the nested if consumes the shared `endif`.
       alternate = elifTest ? this.parseColonIfStatement(elifStart, elifTest) : null;
-      return { type: 'IfStatement', start, end: this.previous()!.end, test, consequent, alternate };
+      return { type: 'IfStatement', start, end: this.prevToken().end, test, consequent, alternate };
     }
 
     if (this.match(TokenType.TK_ELSE)) {
       // ucode's colon-block `else` takes NO `:` — unlike `if (x):` / `elif (y):`. A colon here
       // is a syntax error in ucode ("Expecting expression": it parses the `:` as the else body).
       if (this.check(TokenType.TK_COLON)) {
-        const colon = this.peek()!;
+        const colon = this.currentToken();
         this.errorAt("`else` takes no ':' in ucode's colon-block form (only `if`/`elif` do)",
                      colon.pos, colon.end, UcodeErrorCode.UNEXPECTED_TOKEN);
         this.panicMode = false;
@@ -219,11 +219,11 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     }
 
     this.consume(TokenType.TK_ENDIF, "Expected 'endif' to close if block");
-    return { type: 'IfStatement', start, end: this.previous()!.end, test, consequent, alternate };
+    return { type: 'IfStatement', start, end: this.prevToken().end, test, consequent, alternate };
   }
 
   protected parseWhileStatement(): WhileStatementNode | null {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
 
     this.consume(TokenType.TK_LPAREN, "Expected '(' after 'while'");
     // COMMA precedence — `while (a = next(), b = next())` is valid ucode (the sequence
@@ -249,24 +249,24 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
   }
 
   private parseVariableDeclarationWithoutSemicolon(): VariableDeclarationNode {
-    const start = this.previous()!.pos;
-    const kind = this.previous()!.type === TokenType.TK_CONST ? 'const' : 'let';
+    const start = this.prevToken().pos;
+    const kind = this.prevToken().type === TokenType.TK_CONST ? 'const' : 'let';
     const declarations: VariableDeclaratorNode[] = [];
 
     // Parse variable declarators for for-in loops (supports 1 or 2 variables)
     do {
       if (this.check(TokenType.TK_LABEL)) {
         const idStart = this.peek()?.pos || 0;
-        const name = String(this.advance()!.value);
+        const name = String(this.advanceToken().value);
         
         const declarator: VariableDeclaratorNode = {
           type: 'VariableDeclarator',
           start: idStart,
-          end: this.previous()!.end,
+          end: this.prevToken().end,
           id: {
             type: 'Identifier',
             start: idStart,
-            end: this.previous()!.end,
+            end: this.prevToken().end,
             name
           },
           init: null // No initialization in for-in loops
@@ -286,14 +286,14 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     return {
       type: 'VariableDeclaration',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       kind,
       declarations
     };
   }
 
   protected parseForStatement(): ForStatementNode | ForInStatementNode | null {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
 
     this.consume(TokenType.TK_LPAREN, "Expected '(' after 'for'");
 
@@ -355,7 +355,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     if (!this.check(TokenType.TK_SCOL)) {
       if (this.match(TokenType.TK_LOCAL, TokenType.TK_CONST)) {
         // Same JS-ism in the C-style form: `for (const i = 0; …)` fails to compile.
-        const kw = this.previous()!;
+        const kw = this.prevToken();
         if (kw.type === TokenType.TK_CONST) {
           this.errorAt("ucode does not allow 'const' in a for loop; use 'let'",
                        kw.pos, kw.end, UcodeErrorCode.FOR_LOOP_CONST);
@@ -404,7 +404,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
   }
 
   protected parseReturnStatement(): ReturnStatementNode {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
     
     let argument: AstNode | null = null;
     // ucode's `return` compiles via uc_compiler_compile_expstmt (compiler.c): a bare `;` is
@@ -417,7 +417,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     if (!this.check(TokenType.TK_SCOL)) {
       if (this.check(TokenType.TK_RBRACE) || this.isAtEnd()) {
         const tok = this.peek();
-        const pos = tok?.pos ?? this.previous()!.end;
+        const pos = tok?.pos ?? this.prevToken().end;
         const end = tok?.end ?? pos;
         this.errorAt("Expected an expression after 'return' (or ';' for a value-less return)",
                      pos, end, UcodeErrorCode.MISSING_SEMICOLON);
@@ -436,20 +436,20 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     return {
       type: 'ReturnStatement',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       argument
     };
   }
 
   protected parseBreakStatement(): BreakStatementNode {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
 
     let label: IdentifierNode | null = null;
     if (this.check(TokenType.TK_LABEL)) {
       // Labelled break is a JS-ism: ucode has no labels — uc_compiler_compile_control
       // takes no operand, so the statement must end at `;` ("Expecting ';'"). Consume
       // the label for recovery (nothing downstream validates it) but surface the error.
-      const labelToken = this.peek()!;
+      const labelToken = this.currentToken();
       label = this.parseIdentifierName();
       this.errorAt("ucode does not support labels; expected ';' after 'break'",
                    labelToken.pos, labelToken.end, UcodeErrorCode.LABELED_BREAK_CONTINUE);
@@ -461,18 +461,18 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     return {
       type: 'BreakStatement',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       label
     };
   }
 
   protected parseContinueStatement(): ContinueStatementNode {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
 
     let label: IdentifierNode | null = null;
     if (this.check(TokenType.TK_LABEL)) {
       // Same JS-ism as labelled break — see parseBreakStatement.
-      const labelToken = this.peek()!;
+      const labelToken = this.currentToken();
       label = this.parseIdentifierName();
       this.errorAt("ucode does not support labels; expected ';' after 'continue'",
                    labelToken.pos, labelToken.end, UcodeErrorCode.LABELED_BREAK_CONTINUE);
@@ -484,20 +484,20 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     return {
       type: 'ContinueStatement',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       label
     };
   }
 
   protected parseTryStatement(): TryStatementNode | null {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
     
     const openingBrace = this.consume(TokenType.TK_LBRACE, "Expected '{' after 'try'");
     const block = this.parseBlockStatement(openingBrace, "try block");
     
     let handler: CatchClauseNode | null = null;
     if (this.match(TokenType.TK_CATCH)) {
-      const catchStart = this.previous()!.pos;
+      const catchStart = this.prevToken().pos;
       
       let param: IdentifierNode | null = null;
       if (this.match(TokenType.TK_LPAREN)) {
@@ -532,7 +532,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
   }
 
   protected parseSwitchStatement(): SwitchStatementNode | null {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
     
     this.consume(TokenType.TK_LPAREN, "Expected '(' after 'switch'");
     // COMMA precedence — `switch (a, b)` is valid ucode (the discriminant is a full
@@ -569,10 +569,11 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
         }
       }
       
+      const lastConsequent = consequent[consequent.length - 1];
       cases.push({
         type: 'SwitchCase',
         start: caseStart,
-        end: consequent.length > 0 ? consequent[consequent.length - 1]!.end : caseStart,
+        end: lastConsequent !== undefined ? lastConsequent.end : caseStart,
         test,
         consequent
       });
@@ -583,7 +584,7 @@ export abstract class ControlFlowStatements extends DeclarationStatements {
     return {
       type: 'SwitchStatement',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       discriminant,
       cases
     };

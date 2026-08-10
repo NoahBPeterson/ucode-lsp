@@ -122,6 +122,8 @@ export function scanFormat(format: string): ScannedFormat {
   const invalid: InvalidFormatSpecifier[] = [];
   const n = format.length;
   const isDigit = (c: string | undefined) => c !== undefined && c >= '0' && c <= '9';
+  const isNonzeroDigit = (c: string | undefined) => c !== undefined && c >= '1' && c <= '9';
+  const isFlagChar = (c: string | undefined) => c !== undefined && '#0- +'.includes(c);
   let i = 0;
 
   while (i < n) {
@@ -132,23 +134,23 @@ export function scanFormat(format: string): ScannedFormat {
     let flags = '', width = '', precision = '';
 
     // A leading 1-9 digit run is either a positional index (if `$` follows) or the width.
-    if (format[p] !== undefined && format[p]! >= '1' && format[p]! <= '9') {
+    if (isNonzeroDigit(format[p])) {
       let digits = '';
       while (isDigit(format[p])) digits += format[p++];
       if (format[p] === '$') {
         argIndex = parseInt(digits, 10);
         p++;
         // flags + width may follow a positional prefix
-        while (p < n && '#0- +'.includes(format[p]!)) flags += format[p++];
-        if (format[p] !== undefined && format[p]! >= '1' && format[p]! <= '9') {
+        while (p < n && isFlagChar(format[p])) flags += format[p++];
+        if (isNonzeroDigit(format[p])) {
           while (isDigit(format[p])) width += format[p++];
         }
       } else {
         width = digits;          // it was the width; flags cannot follow (C jumps to precision)
       }
     } else {
-      while (p < n && '#0- +'.includes(format[p]!)) flags += format[p++];
-      if (format[p] !== undefined && format[p]! >= '1' && format[p]! <= '9') {
+      while (p < n && isFlagChar(format[p])) flags += format[p++];
+      if (isNonzeroDigit(format[p])) {
         while (isDigit(format[p])) width += format[p++];
       }
     }
@@ -185,8 +187,8 @@ export function scanFormat(format: string): ScannedFormat {
         // a trailing conversion letter so the diagnostic can quote the whole intended sequence.
         let textEnd = endPosition;
         if (kind !== 'conversion') {
-          while (textEnd < n && /[-#+ 0-9.*lhzjt]/.test(format[textEnd]!)) textEnd++;
-          if (textEnd < n && /[a-zA-Z]/.test(format[textEnd]!)) textEnd++;
+          while (textEnd < n && /[-#+ 0-9.*lhzjt]/.test(format[textEnd] ?? '')) textEnd++;
+          if (textEnd < n && /[a-zA-Z]/.test(format[textEnd] ?? '')) textEnd++;
         }
         invalid.push({ char: conv, text: format.slice(start, textEnd), kind, position: start, endPosition });
       }
@@ -1914,8 +1916,9 @@ export class BuiltinValidator {
     // supplied (too-few); a positional format may legitimately skip or reuse indices, so
     // don't flag "extra". Type-check each positional spec against the argument it names.
     const positionalSpecs = specifiers.filter(s => s.argIndex !== undefined);
+    const positionalIndices = specifiers.flatMap(s => s.argIndex !== undefined ? [s.argIndex] : []);
     if (positionalSpecs.length > 0) {
-      const maxIdx = Math.max(...positionalSpecs.map(s => s.argIndex!));
+      const maxIdx = Math.max(...positionalIndices);
       if (argCount < maxIdx) {
         this.warnings.push({
           message: `${funcName}(): format references argument ${maxIdx} but only ${argCount} argument${argCount === 1 ? ' is' : 's are'} provided`,
@@ -1930,10 +1933,11 @@ export class BuiltinValidator {
       // when enough args were supplied (argCount >= maxIdx) — otherwise the too-few warning above
       // already covers the same off-by-one, and flagging the leftover arg too is double-reporting.
       if (argCount >= maxIdx) {
-        const referenced = new Set(positionalSpecs.map(s => s.argIndex!));
+        const referenced = new Set(positionalIndices);
         for (let idx = 1; idx <= argCount; idx++) {
           if (referenced.has(idx)) continue;
-          const arg = dataArgs[idx - 1]!;
+          const arg = dataArgs[idx - 1];
+          if (arg === undefined) continue;
           this.warnings.push({
             message: `${funcName}(): argument ${idx} is not referenced by the format string (ignored)`,
             start: arg.start,
@@ -1945,7 +1949,9 @@ export class BuiltinValidator {
       }
       for (const spec of positionalSpecs) {
         if (spec.expectedTypes.length === 0) continue;
-        const arg = dataArgs[spec.argIndex! - 1];
+        const specArgIndex = spec.argIndex;
+        if (specArgIndex === undefined) continue;
+        const arg = dataArgs[specArgIndex - 1];
         if (!arg) continue;
         const argType = this.getNodeType(arg);
         if (argType === UcodeType.UNKNOWN || argType.includes(' | ')) continue;
@@ -1977,20 +1983,23 @@ export class BuiltinValidator {
       // has an invalid C-ism: that diagnostic already explains why an argument goes unconsumed, so
       // a second "extra arguments" note would be redundant noise. A genuine too-few (above) still
       // fires regardless, since it's a real shortfall independent of the bogus specifier.
-      const firstExtra = dataArgs[specCount]!;
-      const lastExtra = dataArgs[argCount - 1]!;
-      this.warnings.push({
-        message: `${funcName}(): format string has ${specCount} specifier${specCount === 1 ? '' : 's'} but ${argCount} argument${argCount === 1 ? '' : 's'} provided (extra arguments are ignored)`,
-        start: firstExtra.start,
-        end: lastExtra.end,
-        severity: 'warning',
-        code: UcodeErrorCode.FORMAT_ARG_COUNT_MISMATCH
-      });
+      const firstExtra = dataArgs[specCount];
+      const lastExtra = dataArgs[argCount - 1];
+      if (firstExtra !== undefined && lastExtra !== undefined) {
+        this.warnings.push({
+          message: `${funcName}(): format string has ${specCount} specifier${specCount === 1 ? '' : 's'} but ${argCount} argument${argCount === 1 ? '' : 's'} provided (extra arguments are ignored)`,
+          start: firstExtra.start,
+          end: lastExtra.end,
+          severity: 'warning',
+          code: UcodeErrorCode.FORMAT_ARG_COUNT_MISMATCH
+        });
+      }
     }
 
     // Type mismatch check for each specifier
     for (let i = 0; i < Math.min(specCount, argCount); i++) {
-      const spec = specifiers[i]!;
+      const spec = specifiers[i];
+      if (spec === undefined) continue;
       if (spec.expectedTypes.length === 0) continue; // %s, %J, etc. accept any type
 
       const arg = dataArgs[i];

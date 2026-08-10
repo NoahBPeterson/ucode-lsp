@@ -133,15 +133,15 @@ export function joinTypes(a: UcodeDataType, b: UcodeDataType): UcodeDataType {
  * predecessors (the entry block) the environment is empty.
  */
 export function joinEnvironments(envs: FlowEnvironment[]): FlowEnvironment {
-  if (envs.length === 0) return new Map();
-  if (envs.length === 1) return envs[0]!;
-  const [first, ...rest] = envs;
+  const first = envs[0];
+  if (first === undefined) return new Map();
+  if (envs.length === 1) return first; // hot straight-line path: no allocation
   const out = new Map<LValueKey, UcodeDataType>();
-  for (const [key, type] of first!) {
+  for (const [key, type] of first) {
     let joined: UcodeDataType = type;
     let inAll = true;
-    for (const other of rest) {
-      const t = other.get(key);
+    for (let i = 1; i < envs.length; i++) {
+      const t = envs[i]?.get(key);
       if (t === undefined) { inAll = false; break; }
       joined = joinTypes(joined, t);
     }
@@ -219,7 +219,7 @@ function widenEnv(oldEnv: FlowEnvironment, newEnv: FlowEnvironment): FlowEnviron
   for (const k of keys) {
     const o = oldEnv.get(k);
     const n = newEnv.get(k);
-    if (o === undefined) out.set(k, n!);            // first appearance — keep precise
+    if (o === undefined) { if (n !== undefined) out.set(k, n); } // first appearance — keep precise
     else if (n === undefined) out.set(k, o);        // retained (monotone: never drop)
     else if (typesEqual(o, n)) out.set(k, o);
     else out.set(k, widenType(o, n));               // changed — widen to bounded base-union
@@ -279,7 +279,8 @@ export class FlowTypeEngine {
     const seen = new Set<number>();
     const stack: BasicBlock[] = [this.cfg.entry];
     while (stack.length > 0) {
-      const b = stack.pop()!;
+      const b = stack.pop();
+      if (b === undefined) break;
       if (seen.has(b.id)) continue;
       seen.add(b.id);
       for (const edge of b.successors) {
@@ -327,7 +328,8 @@ export class FlowTypeEngine {
     while (worklist.length > 0) {
       if (++guard > cap) break; // widening backstop — should never trigger in practice
       this.iterations = guard;
-      const block = worklist.shift()!;
+      const block = worklist.shift();
+      if (block === undefined) break;
 
       // Entry seeds with parameters; every other reachable block joins its
       // REACHABLE, ALREADY-VISITED predecessors (an unreachable pred contributes
@@ -373,6 +375,6 @@ export class FlowTypeEngine {
         if (!best || (stmt.end - stmt.start) < (best.end - best.start)) best = stmt; // innermost
       }
     }
-    return best ? this.stmtEntry.get(best)!.get(varName) : undefined;
+    return best ? this.stmtEntry.get(best)?.get(varName) : undefined;
   }
 }

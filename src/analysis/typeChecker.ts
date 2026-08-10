@@ -935,7 +935,8 @@ export class TypeChecker {
     let lo = 0, hi = this.cleanRanges.length - 1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      const r = this.cleanRanges[mid]!;
+      const r = this.cleanRanges[mid];
+      if (r === undefined) break;
       if (off < r.start) hi = mid - 1;
       else if (off >= r.end) lo = mid + 1;
       else return true;
@@ -2243,9 +2244,9 @@ export class TypeChecker {
     // comparison is reachable via loop back-edges, so it disqualifies too.
     const freshVarL = this.unsharedFreshLiteralVar(node.left, node);
     const freshVarR = freshVarL ? null : this.unsharedFreshLiteralVar(node.right, node);
-    if (freshVarL || freshVarR) {
-      const info = (freshVarL ?? freshVarR)!;
-      this.emitImpossibleFreshVariable(node, info.name, info.init);
+    const freshVar = freshVarL ?? freshVarR;
+    if (freshVar) {
+      this.emitImpossibleFreshVariable(node, freshVar.name, freshVar.init);
       return;
     }
 
@@ -3458,8 +3459,8 @@ export class TypeChecker {
         const objName = memberCallee.object.name;
         const methodName = memberCallee.property.name;
         const objSym = this.symbolTable.resolveReference(objName, memberCallee.object.start);
-        if (objSym?.propertyFunctionReturnTypes?.has(methodName)) {
-          const returnHint = objSym.propertyFunctionReturnTypes.get(methodName)!;
+        const returnHint = objSym?.propertyFunctionReturnTypes?.get(methodName);
+        if (returnHint !== undefined) {
           // parseReturnType handles unions ("object | null"), arrays, and known
           // object types alike — a plain switch dropped unions to UNKNOWN, which is
           // why a namespace member like `session.get()` (return "object | null")
@@ -3585,7 +3586,8 @@ export class TypeChecker {
     let sawBare = false;
     const stack: AstNode[] = [fn.body];
     while (stack.length) {
-      const n = stack.pop()!;
+      const n = stack.pop();
+      if (n === undefined) break;
       if (n !== fn.body
           && (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression')) {
         continue;
@@ -3797,7 +3799,7 @@ export class TypeChecker {
     fnDisplayName: string,
   ): void {
     if (!parameters || parameters.length === 0) return;
-    if (MODULES_WITHOUT_POSITIONAL_ARG_CONTRACT.has(fnDisplayName.split('.')[0]!)) return;
+    if (MODULES_WITHOUT_POSITIONAL_ARG_CONTRACT.has(fnDisplayName.split('.')[0] ?? '')) return;
 
     for (let i = 0; i < node.arguments.length; i++) {
       const param = parameters[i];
@@ -4057,10 +4059,12 @@ export class TypeChecker {
     // is no arity check at the call site), so a superfluous arg is legal-but-useless,
     // not a hard error. Keep it a warning always. (auto-docs #142)
     if (!variadic && argCount > positional.length) {
-      const firstExtra = node.arguments[positional.length]!;
-      const lastArg = node.arguments[argCount - 1]!;
-      emit(`Function '${fnName}' expects at most ${positional.length} argument${positional.length === 1 ? '' : 's'}, got ${argCount} (extra arguments are ignored)`,
-        firstExtra.start, lastArg.end, /*forceWarning*/ true);
+      const firstExtra = node.arguments[positional.length];
+      const lastArg = node.arguments[argCount - 1];
+      if (firstExtra !== undefined && lastArg !== undefined) {
+        emit(`Function '${fnName}' expects at most ${positional.length} argument${positional.length === 1 ? '' : 's'}, got ${argCount} (extra arguments are ignored)`,
+          firstExtra.start, lastArg.end, /*forceWarning*/ true);
+      }
     }
 
     // Too few arguments — only for missing params with a declared, NON-optional
@@ -4069,7 +4073,8 @@ export class TypeChecker {
     // ucode passes null for the missing ones. A union WITHOUT a null member
     // (e.g. `{object|string}`) is required: null satisfies none of its arms.
     for (let i = argCount; i < positional.length; i++) {
-      const p = positional[i]!;
+      const p = positional[i];
+      if (p === undefined) continue;
       if (p.optional === true) continue;
       const members = isUnionType(p.type) ? getUnionTypes(p.type) : null;
       const nullable = members
@@ -4472,9 +4477,10 @@ export class TypeChecker {
             propertyName = String(lit.value);
           }
         }
-        if (propertyName && thisSym.propertyTypes.has(propertyName)) {
+        const storedThisPropType = propertyName ? thisSym.propertyTypes.get(propertyName) : undefined;
+        if (propertyName && storedThisPropType !== undefined) {
           // Flow-sensitive: the most-recent write at/before this read position.
-          const propType = propertyTypeAt(thisSym, propertyName, node.start) ?? thisSym.propertyTypes.get(propertyName)!;
+          const propType = propertyTypeAt(thisSym, propertyName, node.start) ?? storedThisPropType;
           return this.dataTypeToUcodeType(propType);
         }
       }
@@ -4514,7 +4520,8 @@ export class TypeChecker {
           }
         }
 
-        if (propertyName && symbol.propertyTypes && symbol.propertyTypes.has(propertyName)) {
+        const storedPropType = propertyName ? symbol.propertyTypes?.get(propertyName) : undefined;
+        if (propertyName && storedPropType !== undefined) {
           // Don't trust stale propertyTypes once the variable has been reassigned to null
           // (its object-ness is gone). Most-recent type wins: `let x = {a:1}; x = null; x.a`
           // must see x as null here — not the dead {a:1} shape — so it falls through to the
@@ -4523,7 +4530,7 @@ export class TypeChecker {
             // Return the rich property type directly — flow-sensitive to the read position
             // (most-recent write at/before it), so `rv.days` reads `object` before the
             // `rv.days = keys(rv.days)` reassignment and `array<string>` after.
-            return propertyTypeAt(symbol, propertyName, node.start) ?? symbol.propertyTypes.get(propertyName)!;
+            return propertyTypeAt(symbol, propertyName, node.start) ?? storedPropType;
           }
         }
       }
@@ -4760,9 +4767,10 @@ export class TypeChecker {
         // index — arrayIndexKeyOf resolves it to the same key a matching
         // negative-indexed write used, see docs/tc-negative-array-index.md).
         const indexKey = this.arrayIndexKeyOf(node.property);
-        if (indexKey !== null && symbol.propertyTypes && symbol.propertyTypes.has(indexKey)) {
+        const perIndexType = indexKey !== null ? symbol.propertyTypes?.get(indexKey) : undefined;
+        if (perIndexType !== undefined) {
           // Return the rich per-index element type directly.
-          return symbol.propertyTypes.get(indexKey)!;
+          return perIndexType;
         }
         // Fall back to ArrayType element type (element | null since index may be out of bounds)
         if (isArrayType(symbol.dataType)) {
@@ -5290,8 +5298,9 @@ export class TypeChecker {
     // Store Array<T> as _fullType if we inferred element types
     if (elementDataTypes.length > 0) {
       let elementType: UcodeDataType;
-      if (elementDataTypes.length === 1) {
-        elementType = elementDataTypes[0]!;
+      const soleElementType = elementDataTypes.length === 1 ? elementDataTypes[0] : undefined;
+      if (soleElementType !== undefined) {
+        elementType = soleElementType;
       } else {
         // For multiple element types: if all are simple UcodeType strings, use createUnionType.
         // Otherwise store as-is (mixed rich types can't form a standard union).
@@ -5401,7 +5410,8 @@ export class TypeChecker {
       statements = [block];
     }
     if (statements.length === 0) return false;
-    const last = statements[statements.length - 1]!;
+    const last = statements[statements.length - 1];
+    if (last === undefined) return false;
 
     if (last.type === 'ReturnStatement') return true;
     if (last.type === 'BreakStatement') return true;
@@ -5485,12 +5495,14 @@ export class TypeChecker {
 
   private getCaseRange(caseNode: SwitchCaseNode): { start: number; end: number } {
     if (caseNode.consequent.length > 0) {
-      const first = caseNode.consequent[0]!;
-      const last = caseNode.consequent[caseNode.consequent.length - 1]!;
-      return {
-        start: first.start,
-        end: last.end
-      };
+      const first = caseNode.consequent[0];
+      const last = caseNode.consequent[caseNode.consequent.length - 1];
+      if (first !== undefined && last !== undefined) {
+        return {
+          start: first.start,
+          end: last.end
+        };
+      }
     }
 
     return { start: caseNode.start, end: caseNode.end };
@@ -5882,7 +5894,9 @@ export class TypeChecker {
       for (const varName of env.keys()) {
         const guards = this.guardsFromEdgeCondition(condition, isNegative, varName);
         if (guards.length === 0) continue;
-        let t = env.get(varName)!;
+        const seed = env.get(varName);
+        if (seed === undefined) continue;
+        let t = seed;
         for (const g of guards) t = this.applyTypeGuard(t, g);
         env.set(varName, t);
       }
@@ -6364,7 +6378,7 @@ export class TypeChecker {
    *  (`req.args = …` invalidates `req.args.id`) counts. A write to a DEEPER path
    *  does not — it mutates a property of the guarded value, which stays non-null. */
   private isPathAssignedBetween(root: AstNode | null, path: string, after: number, before: number): boolean {
-    const rootName = path.split(/[.[]/, 1)[0]!;
+    const rootName = path.split(/[.[]/, 1)[0] ?? path;
     if (this.isVariableAssignedBetween(root, rootName, after, before)) return true;
     if (rootName === path) return false;
     let found = false;
@@ -6723,11 +6737,13 @@ export class TypeChecker {
 
     const children = this.getChildNodes(node);
     for (let i = 0; i < children.length; i++) {
-      const child = children[i]!;
+      const child = children[i];
+      if (child === undefined) continue;
       if (position >= child.start && position <= child.end) {
         // Scan earlier siblings for early-exit ifs (post-early-exit narrowing)
         for (let j = 0; j < i; j++) {
-          const sibling = children[j]!;
+          const sibling = children[j];
+          if (sibling === undefined) continue;
           if (sibling.type === 'IfStatement') {
             const sibIf = sibling;
             if (sibIf.consequent && this.blockAlwaysTerminates(sibIf.consequent)) {

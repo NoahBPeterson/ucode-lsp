@@ -32,7 +32,7 @@ export abstract class CallExpressions extends OperatorExpressions {
           if (argument) {
             const spreadElement: SpreadElementNode = {
               type: 'SpreadElement',
-              start: this.previous()!.pos,
+              start: this.prevToken().pos,
               end: argument.end,
               argument
             };
@@ -50,7 +50,7 @@ export abstract class CallExpressions extends OperatorExpressions {
     return {
       type: 'CallExpression',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       callee: left,
       arguments: args,
       optional,
@@ -88,7 +88,7 @@ export abstract class CallExpressions extends OperatorExpressions {
   }
 
   protected parseDelete(): DeleteExpressionNode | null {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
     const argument = this.parseExpression(Precedence.UNARY);
     if (!argument) return null;
 

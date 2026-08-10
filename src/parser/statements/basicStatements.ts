@@ -31,7 +31,7 @@ export abstract class BasicStatements extends ControlFlowStatements {
     return {
       type: 'BlockStatement',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       body
     };
   }
@@ -59,13 +59,12 @@ export abstract class BasicStatements extends ControlFlowStatements {
         // slash starts a regex that swallows everything to the next `/`, and every
         // diagnostic after it is noise - often a whole CASCADE of regex-led
         // statements. Point at the root cause ONCE and silence the echoes.
-        const regexLead = firstTok?.type === TokenType.TK_REGEXP;
-        if (regexLead) {
+        if (firstTok && firstTok.type === TokenType.TK_REGEXP) {
           if (!this.regexCommentHintEmitted) {
             this.regexCommentHintEmitted = true;
-            this.regexCommentHintLine = firstTok!.line ?? -1;
+            this.regexCommentHintLine = firstTok.line ?? -1;
             this.errorAt("This '/' starts a regex literal (running to the next unescaped '/', possibly across lines). If a comment was intended, use '//'. Diagnostics after this point may be side effects of the mis-lexed region.",
-                         firstTok!.pos, firstTok!.pos + 1,
+                         firstTok.pos, firstTok.pos + 1,
                          UcodeErrorCode.MISSING_SEMICOLON);
           }
           // Subsequent regex-led failures are the documented side effects - silent.
@@ -100,13 +99,13 @@ export abstract class BasicStatements extends ControlFlowStatements {
     return {
       type: 'ExpressionStatement',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       expression
     };
   }
 
   protected parseEmptyStatement(): EmptyStatementNode {
-    const token = this.previous()!;
+    const token = this.prevToken();
     return {
       type: 'EmptyStatement',
       start: token.pos,

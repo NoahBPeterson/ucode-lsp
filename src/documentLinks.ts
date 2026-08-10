@@ -67,7 +67,7 @@ export function provideDocumentLinks(
                 // include('…') — file-relative, or a LuCI template-root name ('header').
                 if (node.callee.type === 'Identifier' && node.callee.name === 'include'
                     && node.arguments.length >= 1 && fileResolver.resolveIncludeTarget) {
-                    addLink(node.arguments[0], (raw) => fileResolver.resolveIncludeTarget!(raw, uri));
+                    addLink(node.arguments[0], (raw) => fileResolver.resolveIncludeTarget?.(raw, uri) ?? null);
                 }
                 break;
             }

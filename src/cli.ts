@@ -389,7 +389,7 @@ function collectVariableIdentifiers(root: AstNode): IdentifierNode[] {
 function hoverDisplayedType(markdown: string): string | null {
     const firstLine = markdown.split('\n', 1)[0] ?? '';
     const m = firstLine.match(/\*\*\s*:\s*`([^`]+)`/);
-    return m ? m[1]! : null;
+    return m?.[1] ?? null;
 }
 
 /** A real TextDocuments collection backed by the single analyzed document —

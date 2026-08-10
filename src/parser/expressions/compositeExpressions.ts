@@ -14,7 +14,7 @@ import { PrimaryExpressions } from './primaryExpressions';
 export abstract class CompositeExpressions extends PrimaryExpressions {
 
   protected parseArray(): ArrayExpressionNode {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
     const elements: (AstNode | null)[] = [];
 
     if (!this.check(TokenType.TK_RBRACK)) {
@@ -24,14 +24,14 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
           // ("Expecting expression"; trailing commas are fine — verified vs
           // uc_compiler_compile_array). Keep the null element so downstream indices
           // stay aligned, but surface the compile error the interpreter would raise.
-          const comma = this.peek()!;
+          const comma = this.currentToken();
           this.errorAt("ucode does not allow array holes; expected expression before ','",
                        comma.pos, comma.end, UcodeErrorCode.ARRAY_HOLE);
           this.panicMode = false; // recovery is exact — don't suppress later diagnostics
           elements.push(null);
         } else if (this.match(TokenType.TK_ELLIP)) {
           // Handle spread element: ...expression
-          const spreadStart = this.previous()!.pos;
+          const spreadStart = this.prevToken().pos;
           const argument = this.parseExpression();
           if (argument) {
             const spreadElement: SpreadElementNode = {
@@ -54,20 +54,20 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
     return {
       type: 'ArrayExpression',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       elements
     };
   }
 
   protected parseObject(): ObjectExpressionNode {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
     const properties: (PropertyNode | SpreadElementNode)[] = [];
 
     if (!this.check(TokenType.TK_RBRACE)) {
       do {
         // Handle spread element in objects: ...expression
         if (this.match(TokenType.TK_ELLIP)) {
-          const spreadStart = this.previous()!.pos;
+          const spreadStart = this.prevToken().pos;
           const argument = this.parseExpression();
           if (argument) {
             const spreadElement: SpreadElementNode = {
@@ -99,7 +99,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
           this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property key");
         } else if (this.check(TokenType.TK_LABEL) || this.canUseAsIdentifier()) {
           // Handle identifier property keys - could be shorthand or regular
-          const token = this.advance()!;
+          const token = this.advanceToken();
           const identifierName = this.getTokenAsIdentifierName(token);
           
           // Check for shorthand property syntax (no colon after identifier)
@@ -149,7 +149,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
           // matches only TK_LABEL or TK_STRING here (compiler.c:2246-2250, "Expecting label"),
           // with computed `[1]: …` as the escape hatch. Report it, but keep parsing the
           // property as a string key so the rest of the literal still types and hovers.
-          const token = this.advance()!;
+          const token = this.advanceToken();
           this.selfContainedErrorAt(
             `Numeric object key ${token.value} is not valid in ucode - object keys must be a label or a string. ` +
             `Use a quoted key ("${token.value}": …) or a computed key ([${token.value}]: …).`,
@@ -208,13 +208,13 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
     return {
       type: 'ObjectExpression',
       start,
-      end: this.previous()!.end,
+      end: this.prevToken().end,
       properties
     };
   }
 
   protected parseMemberAccess(left: AstNode): MemberExpressionNode | null {
-    const operatorToken = this.previous()!;
+    const operatorToken = this.prevToken();
     const computed = operatorToken.type === TokenType.TK_LBRACK || operatorToken.type === TokenType.TK_QLBRACK;
     const optional = operatorToken.type === TokenType.TK_QDOT || operatorToken.type === TokenType.TK_QLBRACK;
     
@@ -226,7 +226,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
       property = this.parseExpression() || { type: 'Identifier', start: 0, end: 0, name: '' };
       this.consume(TokenType.TK_RBRACK, "Expected ']' after computed property");
       // Use position after ']' for consistent exclusive end
-      endPos = this.previous()!.end;
+      endPos = this.prevToken().end;
     } else {
       if (!this.check(TokenType.TK_LABEL)) {
         // Point the diagnostic at the DOT operator itself, not the next token.

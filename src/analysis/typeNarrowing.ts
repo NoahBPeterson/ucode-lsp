@@ -117,8 +117,9 @@ export class TypeNarrowingEngine {
       // which behaves exactly like UNKNOWN in every check) means "could be
       // anything" — a type guard narrows it to the tested type.
       if ((type === UcodeType.UNKNOWN || type === UcodeType.ANY) && typesToKeep.length > 0) {
+        const [soleKeep] = typesToKeep;
         return {
-          narrowedType: typesToKeep.length === 1 ? typesToKeep[0]! : createUnionType(typesToKeep),
+          narrowedType: typesToKeep.length === 1 && soleKeep !== undefined ? soleKeep : createUnionType(typesToKeep),
           excludedTypes: []
         };
       }

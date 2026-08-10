@@ -60,7 +60,8 @@ function visualizeBlockText(block: BasicBlock): string {
   lines.push(`  Statements: ${block.statements.length}`);
   if (block.statements.length > 0) {
     for (let i = 0; i < Math.min(block.statements.length, 5); i++) {
-      const stmt = block.statements[i]!;
+      const stmt = block.statements[i];
+      if (!stmt) continue;
       lines.push(`    ${i + 1}. ${stmt.type} (${stmt.start}-${stmt.end})`);
     }
     if (block.statements.length > 5) {
@@ -186,7 +187,8 @@ export function printCFGSummary(cfg: ControlFlowGraph): void {
   const reachable = new Set<number>();
   const queue = [cfg.entry];
   while (queue.length > 0) {
-    const block = queue.shift()!;
+    const block = queue.shift();
+    if (!block) break;
     if (reachable.has(block.id)) continue;
     reachable.add(block.id);
     for (const edge of block.successors) {
@@ -292,7 +294,8 @@ export function computeCFGStats(cfg: ControlFlowGraph): CFGStats {
   const reachable = new Set<number>();
   const queue = [cfg.entry];
   while (queue.length > 0) {
-    const block = queue.shift()!;
+    const block = queue.shift();
+    if (!block) break;
     if (reachable.has(block.id)) continue;
     reachable.add(block.id);
     for (const edge of block.successors) {

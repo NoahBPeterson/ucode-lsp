@@ -182,21 +182,26 @@ export function parseExistingTypedefs(text: string): Map<string, ExistingTypedef
   for (const block of text.matchAll(/\/\*\*[\s\S]*?\*\//g)) {
     const m = /@typedef\s*\{\s*object\s*\}\s*(\w+)/.exec(block[0]);
     if (!m) continue;
-    const blockStart = block.index!;
+    const [, typedefName = ''] = m;
+    const blockStart = block.index;
+    if (blockStart === undefined) continue;
     const props: MinedProperty[] = [];
     const typeSpans = new Map<string, { start: number; end: number }>();
     for (const pm of block[0].matchAll(/@property\s*\{([^}]*)\}\s+([\w.]+)/g)) {
-      props.push({ path: pm[2]!, type: pm[1]!.trim() });
-      const typeStart = blockStart + pm.index! + pm[0].indexOf('{') + 1;
-      typeSpans.set(pm[2]!, { start: typeStart, end: typeStart + pm[1]!.length });
+      const [pmFull = '', pmType = '', pmPath = ''] = pm;
+      const pmIndex = pm.index;
+      if (pmIndex === undefined) continue;
+      props.push({ path: pmPath, type: pmType.trim() });
+      const typeStart = blockStart + pmIndex + pmFull.indexOf('{') + 1;
+      typeSpans.set(pmPath, { start: typeStart, end: typeStart + pmType.length });
     }
     const lineStartOf = (off: number): number => text.lastIndexOf('\n', off - 1) + 1;
     const closeOff = blockStart + block[0].lastIndexOf('*/');
     const firstLineStart = lineStartOf(blockStart);
     const closeLineStart = lineStartOf(closeOff);
     const indentText = text.slice(firstLineStart, blockStart);
-    out.set(m[1]!, {
-      name: m[1]!,
+    out.set(typedefName, {
+      name: typedefName,
       props,
       insertOffset: closeLineStart > firstLineStart ? closeLineStart : -1,
       indent: /^\s*$/.test(indentText) ? indentText : '',
@@ -316,7 +321,11 @@ export function mergeSiblingDeclaredKeys(mined: MinedProperty[], seeds: Map<stri
     if (!group) { group = []; byBase.set(base, group); }
     group.push({ path, type });
   }
-  let out = mined.map((mp) => mp.type === 'unknown' && seeds.has(mp.path) ? { ...mp, type: seeds.get(mp.path)! } : mp);
+  let out = mined.map((mp) => {
+    if (mp.type !== 'unknown') return mp;
+    const seeded = seeds.get(mp.path);
+    return seeded === undefined ? mp : { ...mp, type: seeded };
+  });
   for (const [base, group] of byBase) {
     if (!out.some((mp) => mp.path === base || mp.path.startsWith(base + '.'))) continue;
     const have = new Set(out.map((mp) => mp.path));
@@ -328,7 +337,8 @@ export function mergeSiblingDeclaredKeys(mined: MinedProperty[], seeds: Map<stri
     // Insert after the last entry of the base's subtree, keeping declaration order.
     let insertAt = -1;
     for (let i = 0; i < out.length; i++) {
-      if (out[i]!.path === base || out[i]!.path.startsWith(base + '.')) insertAt = i;
+      const entry = out[i];
+      if (entry && (entry.path === base || entry.path.startsWith(base + '.'))) insertAt = i;
     }
     out = [...out.slice(0, insertAt + 1), ...missing, ...out.slice(insertAt + 1)];
   }

@@ -116,8 +116,8 @@ function alwaysReturnsTruthy(node: AstNode): boolean {
   if (node.type === 'BlockStatement') {
     const stmts = node.body ?? [];
     if (stmts.length === 0) return false;
-    const last = stmts[stmts.length - 1]!;
-    if (last.type !== 'ReturnStatement') return false;
+    const last = stmts[stmts.length - 1];
+    if (!last || last.type !== 'ReturnStatement') return false;
     let returns = 0;
     let allTruthy = true;
     walkOwn(node, (n) => {
@@ -165,7 +165,8 @@ function containsFalsyCapableReturn(stmt: AstNode): boolean {
 function walkOwn(node: AstNode, visit: (n: AstNode) => void): void {
   const stack: AstNode[] = [node];
   while (stack.length > 0) {
-    const n = stack.pop()!;
+    const n = stack.pop();
+    if (!n) break;
     if (n !== node && (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression')) continue;
     visit(n);
     for (const child of astChildren(n)) stack.push(child);

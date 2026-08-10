@@ -96,7 +96,7 @@ export function parseDisableDirectives(text: string): DisableDirective[] {
     const m = DIRECTIVE_RE.exec(line) ?? TEMPLATE_DIRECTIVE_RE.exec(line);
     if (!m) continue;
 
-    const keyword = m[1]!;
+    const keyword = m[1] ?? '';
     const rest = m[2] ?? '';
     const commentCol = m.index;
     const markerEndCol = commentCol + (m[0].length - rest.length);

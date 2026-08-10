@@ -13,7 +13,7 @@ export function splitTopLevel(s: string, sep: string): string[] {
   let depth = 0;
   let start = 0;
   for (let i = 0; i < s.length; i++) {
-    const ch = s[i]!;
+    const ch = s.charAt(i);
     if (ch === '{' || ch === '[' || ch === '(' || ch === '<') depth++;
     else if (ch === '}' || ch === ']' || ch === ')' || ch === '>') depth--;
     else if (ch === sep && depth === 0) { out.push(s.slice(start, i)); start = i + 1; }
@@ -28,19 +28,21 @@ export function editDistanceAtMost(a: string, b: string, maxDist: number): numbe
   const prev = new Array(b.length + 1).fill(0).map((_, i) => i);
   for (let i = 1; i <= a.length; i++) {
     let best = Infinity;
-    let diag = prev[0]!;
+    let diag = prev[0] ?? 0;
     prev[0] = i;
     for (let j = 1; j <= b.length; j++) {
+      const up = prev[j] ?? 0;
       const cur = Math.min(
-        prev[j]! + 1,
-        prev[j - 1]! + 1,
+        up + 1,
+        (prev[j - 1] ?? 0) + 1,
         diag + (a[i - 1] === b[j - 1] ? 0 : 1),
       );
-      diag = prev[j]!;
+      diag = up;
       prev[j] = cur;
       if (cur < best) best = cur;
     }
     if (best > maxDist) return null;
   }
-  return prev[b.length]! <= maxDist ? prev[b.length]! : null;
+  const dist = prev[b.length];
+  return dist !== undefined && dist <= maxDist ? dist : null;
 }

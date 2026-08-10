@@ -948,7 +948,8 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
             const includerPath = path.resolve(uriToFilePath(textDocument.uri));
             const freeVarCache = new Map<string, Set<string> | null>();
             const getTargetFreeVars = (target: string): Set<string> | null => {
-                if (freeVarCache.has(target)) return freeVarCache.get(target)!;
+                const cached = freeVarCache.get(target);
+                if (cached !== undefined) return cached;
                 let result: Set<string> | null = null;
                 const wf = getWorkspaceFile(target);
                 if (wf?.ast) result = computeFreeVariables(wf.ast);
@@ -1032,7 +1033,8 @@ async function invalidateDependents(changedUri: string): Promise<void> {
     const visited = new Set<string>([changedUri]);
     const queue = [changedUri];
     while (queue.length > 0) {
-        const cur = queue.shift()!;
+        const cur = queue.shift();
+        if (cur === undefined) break;
         const importers = reverseDeps.get(cur);
         if (!importers) continue;
         for (const dep of importers) {
@@ -1182,8 +1184,8 @@ function appendCrossFileAutoImports(
     // Never in member position (`o.foo|` / `o.|`, including across whitespace and
     // newlines like `o.\n  foo|`): a property is not a top-level name.
     let i = offset - 1;
-    while (i >= 0 && /[A-Za-z0-9_$]/.test(text[i]!)) i--;
-    while (i >= 0 && /\s/.test(text[i]!)) i--; // skip whitespace incl. newlines/CR
+    while (i >= 0 && /[A-Za-z0-9_$]/.test(text[i] ?? '')) i--;
+    while (i >= 0 && /\s/.test(text[i] ?? '')) i--; // skip whitespace incl. newlines/CR
     if (i >= 0 && text[i] === '.') return base;
 
     const inScope = new Set(base.map(i => i.label)); // locals, builtins, existing imports
@@ -1582,7 +1584,9 @@ function generateMarkParamOptionalQuickFix(
     const esc = paramName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const m = new RegExp(`(@param\\s*\\{[^}]*\\}\\s+)(${esc})\\b`).exec(commentText);
     if (!m) return [];
-    const nameStart = best.pos + m.index + m[1]!.length;
+    const typePrefix = m[1];
+    if (typePrefix === undefined) return [];
+    const nameStart = best.pos + m.index + typePrefix.length;
     return [{
         title: `Mark '${paramName}' optional in its @param ([${paramName}])`,
         kind: CodeActionKind.QuickFix,
@@ -1733,11 +1737,14 @@ function generateTypedefFromUsageActions(
     const cursor = document.offsetAt(range.start);
     const actions: CodeAction[] = [];
 
-    const pascal = (s: string): string => s.split(/[_\-\s]+/).filter(Boolean).map((w) => w[0]!.toUpperCase() + w.slice(1)).join('');
+    const pascal = (s: string): string => s.split(/[_\-\s]+/).filter(Boolean).map((w) => (w[0] ?? '').toUpperCase() + w.slice(1)).join('');
     // Names of ALL typedefs (any type) for collision avoidance; parsed object-typedef
     // shapes for same-shape reuse instead of minting a duplicate block.
     const existingTypedefs = new Set<string>();
-    for (const m of text.matchAll(/@typedef\s*(?:\{[^}]*\}\s*)?(\w+)/g)) existingTypedefs.add(m[1]!);
+    for (const m of text.matchAll(/@typedef\s*(?:\{[^}]*\}\s*)?(\w+)/g)) {
+        const name = m[1];
+        if (name !== undefined) existingTypedefs.add(name);
+    }
     const existingShapes = parseExistingTypedefs(text);
 
     // The JSDoc anchors on the construct that NAMES the function, which differs by form:
@@ -1869,9 +1876,10 @@ function generateTypedefFromUsageActions(
                     } else {
                         edits.push(TextEdit.insert(lineStart, renderTypedefBlock(typeName, props, indent) + (effJsdoc ? '\n' : '')));
                     }
-                    if (objectParam) {
+                    const objectParamPrefix = objectParam?.[1];
+                    if (objectParam && effJsdoc && objectParamPrefix !== undefined) {
                         // Rewrite the existing `{object}` annotation in place.
-                        const objStart = effJsdoc!.pos + objectParam.index + objectParam[1]!.length;
+                        const objStart = effJsdoc.pos + objectParam.index + objectParamPrefix.length;
                         edits.push(TextEdit.replace(
                             { start: document.positionAt(objStart), end: document.positionAt(objStart + 'object'.length) },
                             typeName,
@@ -2044,8 +2052,9 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // UC3002 with a shipped-module suggestion: rewrite the import string in place.
             // The diagnostic range covers the string literal INCLUDING its quotes — the
             // edit replaces the inner text only, preserving the author's quote style.
-            if (diagnostic.code === 'UC3002' && diagData(diagnostic).luciModuleSuggestion?.replaceWith) {
-                const replaceWith = diagData(diagnostic).luciModuleSuggestion!.replaceWith!;
+            const luciReplaceWith = diagnostic.code === 'UC3002' ? diagData(diagnostic).luciModuleSuggestion?.replaceWith : undefined;
+            if (luciReplaceWith) {
+                const replaceWith = luciReplaceWith;
                 const inner = {
                     start: { line: diagnostic.range.start.line, character: diagnostic.range.start.character + 1 },
                     end: { line: diagnostic.range.end.line, character: diagnostic.range.end.character - 1 },
@@ -2256,12 +2265,12 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                     });
                 }
                 if (feature === 'named-funcexpr-in-init' && typeof d6005.nameStart === 'number'
-                        && !d6005.nameUsedInBody) {
+                        && typeof d6005.nameEnd === 'number' && !d6005.nameUsedInBody) {
                     // Deleting the name is only offered when the body never references it -
                     // for self-recursion the remedy is a function declaration (message says so),
                     // which is a rewrite we don't automate. AST offsets stamped by the analyzer.
                     const nameStart = d6005.nameStart;
-                    const nameEnd = d6005.nameEnd!;
+                    const nameEnd = d6005.nameEnd;
                     codeActions.push({
                         title: 'Remove the function name',
                         kind: CodeActionKind.QuickFix,
@@ -2405,10 +2414,11 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // type string (e.g. "number", "integer", "boolean") with the correct
             // ucode type name(s) ("int"/"double", "int", "bool").
             const d2009 = diagData(diagnostic);
-            if (diagnostic.code === 'UC2009' && d2009.typeStringFix) {
+            if (diagnostic.code === 'UC2009' && d2009.typeStringFix
+                    && typeof d2009.litStart === 'number' && typeof d2009.litEnd === 'number') {
                 const range = {
-                    start: document.positionAt(d2009.litStart!),
-                    end: document.positionAt(d2009.litEnd!),
+                    start: document.positionAt(d2009.litStart),
+                    end: document.positionAt(d2009.litEnd),
                 };
                 const suggestions: string[] = d2009.typeStringFix;
                 for (const suggestion of suggestions) {
@@ -2434,8 +2444,8 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                     const tokenRe = new RegExp(`\\b${esc}\\b`);
                     for (const braced of slice.matchAll(/\{[^}]*\}/g)) {
                         const m = tokenRe.exec(braced[0]);
-                        if (!m) continue;
-                        const at = spanStart + braced.index! + m.index;
+                        if (!m || braced.index === undefined) continue;
+                        const at = spanStart + braced.index + m.index;
                         codeActions.push({
                             title: `Change type to '${sug.corrected ?? sug.replaceWith}'`,
                             kind: CodeActionKind.QuickFix,
@@ -3677,10 +3687,11 @@ function analyzeRenameTarget(uri: string, position: { line: number; character: n
     if (!canonical) return { kind: 'local' };
 
     // Cross-file safety: only NAMED exports with no aliased importers.
+    const canonicalName = canonical.canonicalName;
     const resolver = getCrossRefResolver();
     const exps = resolver.getModuleExports(canonical.canonicalUri);
-    const isNamed = !!exps?.some(e => e.type === 'named' && e.name === canonical!.canonicalName);
-    const isDefault = !!exps?.some(e => e.type === 'default' && e.exportedName === canonical!.canonicalName);
+    const isNamed = !!exps?.some(e => e.type === 'named' && e.name === canonicalName);
+    const isDefault = !!exps?.some(e => e.type === 'default' && e.exportedName === canonicalName);
     if (!isNamed) {
         return isDefault
             ? { kind: 'blocked', reason: `'${name}' is a default export - importers bind it positionally; rename each import's local name individually` }
@@ -3910,7 +3921,8 @@ function guardAlreadyExists(document: TextDocument, beforeLine: number, guardCon
             // e.g., `if (type(x) != "string" && type(x) != "array")` narrows to
             // string|array, NOT just string — so the individual guard doesn't apply.
             const condMatch = lineText.match(/if\s*\((.+)\)/);
-            if (condMatch && condMatch[1]!.includes('&&') || condMatch && condMatch[1]!.includes('||')) {
+            const cond = condMatch?.[1];
+            if (cond !== undefined && (cond.includes('&&') || cond.includes('||'))) {
                 continue;
             }
             // Check if this line or the next has return/continue (handles multi-line guards)
@@ -4098,7 +4110,10 @@ const MODULE_ARG_CONSTRAINTS: Record<string, (string[] | null)[]> = (() => {
         float: 'double', boolean: 'boolean', bool: 'boolean', array: 'array', object: 'object',
     };
     const toConstraints = (params: ReadonlyArray<{ type: string }>): (string[] | null)[] =>
-        params.map(p => (PRIM[p.type] ? [PRIM[p.type]!] : null));
+        params.map(p => {
+            const prim = PRIM[p.type];
+            return prim ? [prim] : null;
+        });
     const sameShape = (a: (string[] | null)[], b: (string[] | null)[]) =>
         JSON.stringify(a) === JSON.stringify(b);
 
@@ -4111,8 +4126,9 @@ const MODULE_ARG_CONSTRAINTS: Record<string, (string[] | null)[]> = (() => {
             if (!Option.isSome(sig)) continue;
             const c = toConstraints(sig.value.parameters || []);
             if (!c.some(x => x)) continue; // no concrete constraint anywhere
-            if (name in out) {
-                if (!sameShape(out[name]!, c)) { delete out[name]; ambiguous.add(name); }
+            const existing = out[name];
+            if (existing !== undefined) {
+                if (!sameShape(existing, c)) { delete out[name]; ambiguous.add(name); }
             } else {
                 out[name] = c;
             }
@@ -4130,7 +4146,10 @@ function documentedParamNames(jsDocValue: string): Set<string> {
     // @param {type} name  |  @param name  |  @param {type} [name]  |  @param [name=default]
     const re = /@param\s+(?:\{[^}]*\}\s*)?\[?\s*([A-Za-z_$][\w$]*)/g;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(jsDocValue)) !== null) names.add(m[1]!);
+    while ((m = re.exec(jsDocValue)) !== null) {
+        const name = m[1];
+        if (name !== undefined) names.add(name);
+    }
     return names;
 }
 
@@ -4398,11 +4417,13 @@ function inferParamTypesFromUsage(
         }
         let intersection = new Set(lists[0]);
         for (let i = 1; i < lists.length; i++) {
-            const next = lists[i]!;
+            const next = lists[i];
+            if (!next) continue;
             intersection = new Set([...intersection].filter(t => next.has(t)));
         }
-        if (intersection.size === 0) result.set(paramName, 'unknown');
-        else if (intersection.size === 1) result.set(paramName, [...intersection][0]!);
+        const [single] = [...intersection];
+        if (intersection.size === 0 || single === undefined) result.set(paramName, 'unknown');
+        else if (intersection.size === 1) result.set(paramName, single);
         else result.set(paramName, [...intersection].sort().join(' | '));
     }
     return result;
@@ -4455,7 +4476,8 @@ function inferAllParamTypesFromUsage(ast: AstNode, allDiagnostics: Diagnostic[],
         let changed = false;
         for (const fn of funcs) {
             const next = inferParamTypesFromUsage(fn, allDiagnostics, result, funcsByName, symbolTable);
-            const cur = result.get(fn)!;
+            const cur = result.get(fn);
+            if (!cur) continue;
             for (const [paramName, newType] of next) {
                 if (cur.get(paramName) !== newType) {
                     cur.set(paramName, newType);
@@ -4492,25 +4514,29 @@ function generateColonBlockQuickFix(diagnostic: Diagnostic, document: TextDocume
         [TokenType.TK_WHILE]: 'while', [TokenType.TK_FUNC]: 'function',
     };
     for (let j = kwIdx - 1; j >= 0; j--) {
-        if (!OPENER_TYPES.includes(tokens[j]!.type)) continue;
+        const opener = tokens[j];
+        if (!opener || !OPENER_TYPES.includes(opener.type)) continue;
         // Find the opener's first `(` and match it to its closing `)`.
         let k = j + 1;
-        while (k < kwIdx && tokens[k]!.type !== TokenType.TK_LPAREN) k++;
+        while (k < kwIdx && tokens[k]?.type !== TokenType.TK_LPAREN) k++;
         if (k >= kwIdx) continue;
         let depth = 0, close = -1;
         for (; k < tokens.length; k++) {
-            if (tokens[k]!.type === TokenType.TK_LPAREN) depth++;
-            else if (tokens[k]!.type === TokenType.TK_RPAREN && --depth === 0) { close = k; break; }
+            const tk = tokens[k];
+            if (!tk) continue;
+            if (tk.type === TokenType.TK_LPAREN) depth++;
+            else if (tk.type === TokenType.TK_RPAREN && --depth === 0) { close = k; break; }
         }
-        if (close < 0) continue;
+        const closeTok = close >= 0 ? tokens[close] : undefined;
+        if (closeTok === undefined) continue;
         if (tokens[close + 1]?.type === TokenType.TK_COLON) continue; // already colon-terminated
-        const name = NAME[tokens[j]!.type] ?? 'if';
+        const name = NAME[opener.type] ?? 'if';
         return {
             title: `Add ':' after the '${name}' condition (colon-block form)`,
             kind: CodeActionKind.QuickFix,
             diagnostics: [diagnostic],
             isPreferred: true,
-            edit: { changes: { [uri]: [TextEdit.insert(document.positionAt(tokens[close]!.end), ':')] } },
+            edit: { changes: { [uri]: [TextEdit.insert(document.positionAt(closeTok.end), ':')] } },
         };
     }
     return null;
@@ -4719,14 +4745,14 @@ function generateAddImportQuickFix(
     const nsImport = `import * as ${moduleName} from '${moduleName}';`;
     // Namespace import is always a fresh line (it isn't a named-list form to merge into).
     const nsEdit = computeImportInsertEdit(ast, document, nsImport);
-    if (methodName) {
+    if (methodName && m) {
         // `module.method(...)` form. The namespace import makes `module.method()` work as-is
         // (and covers every other `module.x` use), so it's the safe default. (#92)
         actions.push(mkAction(`Add ${nsImport}`, nsEdit, true));
         // Named-import alternative: ALSO rewrite this call `module.method(` → `method(`, so it
         // doesn't reference an unbound `module` (the old preferred fix left the call broken).
         // Merge into an existing `import { … } from '${moduleName}'` when present (ticket 93).
-        const methodNameStart = tailStart + m![0].length - methodName.length;
+        const methodNameStart = tailStart + m[0].length - methodName.length;
         const dropReceiver = TextEdit.del({ start: diagnostic.range.start, end: document.positionAt(methodNameStart) });
         const namedEdit = computeNamedImportEdit(ast, document, moduleName, methodName)
             ?? computeImportInsertEdit(ast, document, `import { ${methodName} } from '${moduleName}';`);
@@ -4746,8 +4772,8 @@ function generateImportTypeQuickFix(
 
     // Extract type name from message: "Unknown type 'xxx' in @param annotation"
     const typeMatch = /Unknown type '([^']+)'/.exec(diagnostic.message);
-    if (!typeMatch) return actions;
-    const typeName = typeMatch[1]!;
+    const typeName = typeMatch?.[1];
+    if (typeName === undefined) return actions;
 
     // Find the {typeName} in the JSDoc comment to get exact replacement range
     // The diagnostic range covers the JSDoc comment
@@ -4766,7 +4792,7 @@ function generateImportTypeQuickFix(
     const replaceEnd = document.positionAt(diagStartOffset + braceMatch.index + braceMatch[0].length - 1); // -1 to skip }
 
     // Try to resolve as a module file
-    const workspaceRoot = workspaceFolders.length > 0 ? workspaceFolders[0]! : path.dirname(uri.replace('file://', ''));
+    const workspaceRoot = workspaceFolders[0] ?? path.dirname(uri.replace('file://', ''));
     const fileResolver = new FileResolver(workspaceRoot);
     const resolvedUri = fileResolver.resolveImportPath(typeName, uri);
 
@@ -4830,8 +4856,8 @@ function indentUnit(document: TextDocument): string {
     const lines = document.getText().split(/\r?\n/);
     for (const line of lines) {
         if (line.startsWith('\t')) return '\t';
-        const m = line.match(/^( +)\S/);
-        if (m) return m[1]!;
+        const indent = line.match(/^( +)\S/)?.[1];
+        if (indent !== undefined) return indent;
     }
     return '    ';
 }

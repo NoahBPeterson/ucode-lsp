@@ -12,7 +12,7 @@ export abstract class StatementParser extends BasicStatements {
   protected parseStatement(): AstNode | null {
     // Handle error tokens
     if (this.check(TokenType.TK_ERROR)) {
-      const errorToken = this.advance()!;
+      const errorToken = this.advanceToken();
       const message = errorToken.value ? String(errorToken.value) : "Unexpected token";
       this.lexerErrorAt(message, errorToken.pos, errorToken.end);
       return null;
@@ -72,7 +72,7 @@ export abstract class StatementParser extends BasicStatements {
           // 'try' is not followed by '{', treat it as an identifier
           // Back up one token so it can be parsed as an expression
           this.current--;
-          this.warningAt("'try' keyword used as identifier", this.peek()!.pos, this.peek()!.end);
+          this.warningAt("'try' keyword used as identifier", this.currentToken().pos, this.currentToken().end);
           return this.parseExpressionStatement();
         }
       }
@@ -83,7 +83,7 @@ export abstract class StatementParser extends BasicStatements {
 
       // Block statements
       if (this.match(TokenType.TK_LBRACE)) {
-        const openingBrace = this.previous()!;
+        const openingBrace = this.prevToken();
         return this.parseBlockStatement(openingBrace, "block statement");
       }
 

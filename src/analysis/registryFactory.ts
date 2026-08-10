@@ -152,16 +152,15 @@ export function createModuleRegistry(def: ModuleDefinition): ModuleRegistry {
 export function createObjectTypeRegistry(def: ObjectTypeDefinition): ObjectTypeRegistry {
   // Property-based types use the properties map
   if (def.isPropertyBased && def.properties) {
-    const propertyNames = Array.from(def.properties.keys());
+    const properties = def.properties;
+    const propertyNames = Array.from(properties.keys());
     return {
-      // Cross-file blocked: honest typing needs ObjectTypeDefinition.typeName to be
-      // KnownObjectType, which requires widening ubusTypes' string-typed helper first.
       objectType: def.typeName,
       isPropertyBased: true,
       ...(def.openMembers ? { openMembers: true as const } : {}),
       getMethodNames: () => propertyNames,
       getMethod: (name: string) => {
-        const prop = def.properties!.get(name);
+        const prop = properties.get(name);
         if (!prop) return Option.none();
         return Option.some({
           name: prop.name,
@@ -171,7 +170,7 @@ export function createObjectTypeRegistry(def: ObjectTypeDefinition): ObjectTypeR
         });
       },
       getMethodDocumentation: (name: string) => {
-        const prop = def.properties!.get(name);
+        const prop = properties.get(name);
         if (!prop) return Option.none();
         const doc = def.formatPropertyDoc
           ? def.formatPropertyDoc(name, prop)
@@ -184,8 +183,6 @@ export function createObjectTypeRegistry(def: ObjectTypeDefinition): ObjectTypeR
   // Method-based types use the methods map
   const methodNames = Array.from(def.methods.keys());
   return {
-    // Cross-file blocked: honest typing needs ObjectTypeDefinition.typeName to be
-    // KnownObjectType, which requires widening ubusTypes' string-typed helper first.
     objectType: def.typeName,
     ...(def.isPropertyBased !== undefined ? { isPropertyBased: def.isPropertyBased } : {}),
     ...(def.openMembers ? { openMembers: true as const } : {}),

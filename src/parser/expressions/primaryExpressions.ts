@@ -12,7 +12,7 @@ import { Precedence } from '../types';
 export abstract class PrimaryExpressions extends ParseRules {
 
   protected parseIdentifier(): IdentifierNode | null {
-    const token = this.previous()!;
+    const token = this.prevToken();
 
 
     if (token.type !== TokenType.TK_LABEL) {
@@ -34,7 +34,7 @@ export abstract class PrimaryExpressions extends ParseRules {
       return null;
     }
 
-    const token = this.advance()!;
+    const token = this.advanceToken();
     return {
       type: 'Identifier',
       start: token.pos,
@@ -52,7 +52,7 @@ export abstract class PrimaryExpressions extends ParseRules {
     } else if (this.check(TokenType.TK_DEFAULT)) {
       // 'default' names the module's default export: import { default as X } from '…'
       // (valid in ucode on all versions — oracle-verified). Finding #11.
-      const token = this.advance()!;
+      const token = this.advanceToken();
       return {
         type: 'Identifier',
         start: token.pos,
@@ -60,7 +60,7 @@ export abstract class PrimaryExpressions extends ParseRules {
         name: 'default'
       };
     } else if (this.check(TokenType.TK_STRING)) {
-      const token = this.advance()!;
+      const token = this.advanceToken();
       // Convert string literal to identifier for import specifier
       return {
         type: 'Identifier',
@@ -75,7 +75,7 @@ export abstract class PrimaryExpressions extends ParseRules {
   }
 
   protected parseLiteral(literalType: LiteralNode['literalType']): LiteralNode {
-    const token = this.previous()!;
+    const token = this.prevToken();
     let value: string | number | boolean | null;
 
     switch (literalType) {
@@ -112,7 +112,7 @@ export abstract class PrimaryExpressions extends ParseRules {
   }
 
   protected parseThis(): ThisExpressionNode {
-    const token = this.previous()!;
+    const token = this.prevToken();
     return {
       type: 'ThisExpression',
       start: token.pos,
@@ -121,7 +121,7 @@ export abstract class PrimaryExpressions extends ParseRules {
   }
 
   protected parseRegex(): LiteralNode {
-    const token = this.previous()!;
+    const token = this.prevToken();
     return {
       type: 'Literal',
       start: token.pos,
@@ -210,9 +210,9 @@ export abstract class PrimaryExpressions extends ParseRules {
         do {
           if (this.match(TokenType.TK_ELLIP)) {
             // Handle rest parameter: ...args
-            const spreadStart = this.previous()!.pos;
+            const spreadStart = this.prevToken().pos;
             if (this.check(TokenType.TK_LABEL)) {
-              const token = this.advance()!;
+              const token = this.advanceToken();
               const restParam: IdentifierNode = {
                 type: 'Identifier',
                 start: token.pos,
@@ -229,7 +229,7 @@ export abstract class PrimaryExpressions extends ParseRules {
               // ucode expects `)` right after a rest param — one diagnostic on the
               // comma; keep collecting trailing params for recovery.
               if (this.check(TokenType.TK_COMMA)) {
-                const comma = this.peek()!;
+                const comma = this.currentToken();
                 this.errorAt("a rest parameter ('...') must be the final parameter",
                              comma.pos, comma.end, UcodeErrorCode.PARAM_AFTER_REST);
                 this.panicMode = false;
@@ -238,7 +238,7 @@ export abstract class PrimaryExpressions extends ParseRules {
               this.error("Expected parameter name after '...'");
             }
           } else if (this.check(TokenType.TK_LABEL)) {
-            const token = this.advance()!;
+            const token = this.advanceToken();
             const identifier: IdentifierNode = {
               type: 'Identifier',
               start: token.pos,
@@ -255,9 +255,10 @@ export abstract class PrimaryExpressions extends ParseRules {
       // Create a fake CallExpression node with parameters as arguments
       // This is what the arrow function parser expects
       const prevToken = this.previous();
+      const firstParam = params[0];
       const paramList: CallExpressionNode = {
         type: 'CallExpression',
-        start: params.length > 0 ? params[0]!.start : (prevToken?.pos || 0),
+        start: firstParam !== undefined ? firstParam.start : (prevToken?.pos || 0),
         end: prevToken?.end || 0,
         callee: {
           type: 'Identifier',
@@ -277,7 +278,7 @@ export abstract class PrimaryExpressions extends ParseRules {
   }
 
   protected parseFunctionExpression(): FunctionExpressionNode | null {
-    const start = this.previous()!.pos;
+    const start = this.prevToken().pos;
     const leadingJsDoc = this.findLeadingJsDoc(start);
 
     // Function expressions can be anonymous, so ID is optional
@@ -302,7 +303,7 @@ export abstract class PrimaryExpressions extends ParseRules {
             // "Expecting ')'" compile error. One diagnostic on the comma; keep
             // parsing trailing params so the body still analyzes (recovery).
             if (this.check(TokenType.TK_COMMA)) {
-              const comma = this.peek()!;
+              const comma = this.currentToken();
               this.errorAt("a rest parameter ('...') must be the final parameter",
                            comma.pos, comma.end, UcodeErrorCode.PARAM_AFTER_REST);
               this.panicMode = false;
@@ -323,7 +324,7 @@ export abstract class PrimaryExpressions extends ParseRules {
     // the params selects the colon-block, running statements up to `endfunction`).
     const body = this.check(TokenType.TK_COLON)
       ? (this.parseColonEndBlock(TokenType.TK_ENDFUNC, "endfunction")
-         ?? ({ type: 'BlockStatement', start: this.previous()!.end, end: this.previous()!.end, body: [] } satisfies BlockStatementNode))
+         ?? ({ type: 'BlockStatement', start: this.prevToken().end, end: this.prevToken().end, body: [] } satisfies BlockStatementNode))
       : this.parseBlockStatement(this.consume(TokenType.TK_LBRACE, "Expected '{' or ':' to start the function body"), "function expression body");
 
     const result: FunctionExpressionNode = {
@@ -346,7 +347,7 @@ export abstract class PrimaryExpressions extends ParseRules {
   }
 
   protected parseTemplateLiteral(): TemplateLiteralNode {
-    const startToken = this.previous()!;
+    const startToken = this.prevToken();
     const start = startToken.pos;
     const quasis: TemplateElementNode[] = [];
     const expressions: AstNode[] = [];
@@ -380,7 +381,7 @@ export abstract class PrimaryExpressions extends ParseRules {
 
       // Now we should have another TK_TEMPLATE token (or we're done)
       if (this.match(TokenType.TK_TEMPLATE)) {
-        const quasi = this.previous()!;
+        const quasi = this.prevToken();
         quasis.push({
           type: 'TemplateElement',
           start: quasi.pos,

@@ -1677,8 +1677,9 @@ export class FileResolver {
             // (`someVar.x = …`), so it is NOT closed.
             const isInlineLiteral = defaultDecl.type === 'ObjectExpression';
             let objNode = defaultDecl;
-            if (objNode.type === 'Identifier' && varInits.has(objNode.name)) {
-                objNode = varInits.get(objNode.name)!;
+            if (objNode.type === 'Identifier') {
+                const aliasedInit = varInits.get(objNode.name);
+                if (aliasedInit) objNode = aliasedInit;
             }
 
             // Must be an ObjectExpression
@@ -2090,9 +2091,7 @@ export class FileResolver {
                 funcNode = defaultDecl;
             } else if (defaultDecl.type === 'Identifier') {
                 const name = defaultDecl.name;
-                if (topLevelFuncs.has(name)) {
-                    funcNode = topLevelFuncs.get(name)!;
-                }
+                funcNode = topLevelFuncs.get(name) ?? null;
             }
             if (!funcNode) return null;
 
@@ -2197,8 +2196,9 @@ export class FileResolver {
                         if (specifier.exported.name !== exportName) continue;
                         matched = true;
                         const localName = specifier.local.name;
-                        if (topLevelFuncs.has(localName)) {
-                            funcNode = topLevelFuncs.get(localName)!;
+                        const localFunc = topLevelFuncs.get(localName);
+                        if (localFunc) {
+                            funcNode = localFunc;
                         } else {
                             const init = topLevelVarInits.get(localName);
                             if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) {
@@ -2342,8 +2342,9 @@ export class FileResolver {
                         if (specifier.exported.name !== exportName) continue;
                         matched = true;
                         const localName = specifier.local.name;
-                        if (topLevelFuncs.has(localName)) {
-                            funcNode = topLevelFuncs.get(localName)!;
+                        const localFunc = topLevelFuncs.get(localName);
+                        if (localFunc) {
+                            funcNode = localFunc;
                         } else {
                             const init = topLevelVarInits.get(localName);
                             if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) {
@@ -2401,7 +2402,7 @@ export class FileResolver {
                 funcNode = defaultDecl;
             } else if (defaultDecl.type === 'Identifier') {
                 const name = defaultDecl.name;
-                if (topLevelFuncs.has(name)) funcNode = topLevelFuncs.get(name)!;
+                funcNode = topLevelFuncs.get(name) ?? null;
             }
 
             return funcNode ? this.extractFunctionParameters(funcNode) : null;
@@ -2505,14 +2506,16 @@ export class FileResolver {
         // (`{v: 1}` / `{v: "s"}` must read back as `integer | string`).
         const merged = new Map<string, UcodeDataType>(returnPropMaps[0]);
         for (let i = 1; i < returnPropMaps.length; i++) {
-            const entry = returnPropMaps[i]!;
+            const entry = returnPropMaps[i];
+            if (entry === undefined) continue;
             for (const key of [...merged.keys()]) {
-                if (!entry.has(key)) {
+                const b = entry.get(key);
+                if (b === undefined) {
                     merged.delete(key);
                     continue;
                 }
-                const a = merged.get(key)!;
-                const b = entry.get(key)!;
+                const a = merged.get(key);
+                if (a === undefined) continue;
                 if (a !== b) merged.set(key, this.unionTypes(a, b));
             }
         }
@@ -2633,7 +2636,8 @@ export class FileResolver {
         if (!block || typeof block !== 'object') return false;
         const stmts: AstNode[] = block.type === 'BlockStatement' ? block.body : [block];
         if (stmts.length === 0) return false;
-        const last = stmts[stmts.length - 1]!;
+        const last = stmts[stmts.length - 1];
+        if (last === undefined) return false;
         if (last.type === 'ReturnStatement') return true;
         if (last.type === 'ExpressionStatement') {
             const expr = last.expression;
@@ -2686,13 +2690,13 @@ export class FileResolver {
                 // Prefer the referenced declaration's location so go-to-def lands on
                 // `function exec()` rather than the `exec` reference in the return object.
                 const declNode = localFuncNodes.get(name) || topLevelFuncs.get(name);
+                const varInit = localVarInits.get(name);
                 if (declNode) {
                     propertyTypes.set(key, UcodeType.FUNCTION);
                     setLoc(key, declNode);
-                } else if (localVarInits.has(name)) {
-                    const init = localVarInits.get(name)!;
-                    propertyTypes.set(key, this.inferNodeType(init));
-                    setLoc(key, init);
+                } else if (varInit) {
+                    propertyTypes.set(key, this.inferNodeType(varInit));
+                    setLoc(key, varInit);
                 } else {
                     propertyTypes.set(key, UcodeType.UNKNOWN);
                 }
@@ -2808,7 +2812,10 @@ export class FileResolver {
             if (t) types.add(t);
         }
         if (types.size === 0) return null;
-        if (types.size === 1) return [...types][0]!;
+        if (types.size === 1) {
+            const [only] = types;
+            if (only !== undefined) return only;
+        }
         // Multiple types — return as union
         return [...types].join(' | ');
     }

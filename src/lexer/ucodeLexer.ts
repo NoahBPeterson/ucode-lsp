@@ -49,10 +49,11 @@ export interface DecodedEscape {
  */
 export function decodeEscape(source: string, pos: number): DecodedEscape {
     let i = pos + 1; // past the backslash
-    if (i >= source.length) {
+    const escaped = source[i];
+    if (escaped === undefined) {
         return { length: 1, value: '' }; // trailing backslash — caller ends in "Unterminated"
     }
-    const escaped = source[i++]!;
+    i++;
 
     switch (escaped) {
         case 'a': return { length: 2, value: '\x07' };
@@ -66,36 +67,43 @@ export function decodeEscape(source: string, pos: number): DecodedEscape {
         case 'u': {
             let code = 0;
             for (let n = 0; n < 4; n++) {
-                if (i >= source.length || !isHexDigit(source[i]!)) {
+                const digit = source[i];
+                if (digit === undefined || !isHexDigit(digit)) {
                     return {
                         length: i - pos,
                         value: 'u', // recovery: pass through; the rest lexes as literal text
                         error: "Invalid escape sequence: '\\u' requires exactly 4 hex digits (ucode has no '\\u{…}' form)",
                     };
                 }
-                code = code * 16 + parseInt(source[i++]!, 16);
+                code = code * 16 + parseInt(digit, 16);
+                i++;
             }
             return { length: i - pos, value: String.fromCharCode(code) };
         }
         case 'x': {
             let code = 0;
             for (let n = 0; n < 2; n++) {
-                if (i >= source.length || !isHexDigit(source[i]!)) {
+                const digit = source[i];
+                if (digit === undefined || !isHexDigit(digit)) {
                     return {
                         length: i - pos,
                         value: 'x',
                         error: "Invalid escape sequence: '\\x' requires exactly 2 hex digits",
                     };
                 }
-                code = code * 16 + parseInt(source[i++]!, 16);
+                code = code * 16 + parseInt(digit, 16);
+                i++;
             }
             return { length: i - pos, value: String.fromCharCode(code) };
         }
         default: {
             if (escaped >= '0' && escaped <= '7') {
                 let digits = escaped;
-                while (digits.length < 3 && i < source.length && source[i]! >= '0' && source[i]! <= '7') {
-                    digits += source[i++]!;
+                while (digits.length < 3) {
+                    const d = source[i];
+                    if (d === undefined || d < '0' || d > '7') break;
+                    digits += d;
+                    i++;
                 }
                 const code = parseInt(digits, 8);
                 if (code > 255) {
@@ -651,9 +659,10 @@ export class UcodeLexer {
         else if (buf[p] === '+') { p++; }
 
         // if (*p != 0 && !isxdigit(*p)) return NULL;
-        if (p < buf.length && !this.isXDigit(buf[p]!)) return null;
+        const firstChar = buf[p];
+        if (firstChar !== undefined && !this.isXDigit(firstChar)) return null;
 
-        let base = 10;
+        let base: 2 | 8 | 10 | 16 = 10;
         if (buf[p] === '0') {
             const c = (buf[p + 1] ?? '').toLowerCase();
             if (c >= '0' && c <= '7') base = 8;         // octal=true: a leading zero is octal
@@ -680,17 +689,17 @@ export class UcodeLexer {
         // Integer: any leftover character means the literal was malformed. Say WHY:
         // which character broke it and what digits the base actually allows.
         if (u.end !== buf.length) {
-            const c = buf[u.end]!;
+            const c = stop; // `stop` is buf[u.end] (non-empty here: u.end < buf.length)
             if (base === 16 && u.end === p + 1 && (buf[p + 1] === 'x' || buf[p + 1] === 'X')) {
                 return { error: `'0x' must be followed by at least one hex digit (0-9, a-f)` };
             }
-            const BASE_INFO: Record<number, { name: string; digits: string }> = {
+            const BASE_INFO: Record<2 | 8 | 10 | 16, { name: string; digits: string }> = {
                 2: { name: 'binary (0b)', digits: '0 and 1' },
                 8: { name: 'octal (0o or leading 0)', digits: '0-7' },
                 10: { name: 'decimal', digits: '0-9' },
                 16: { name: 'hexadecimal (0x)', digits: '0-9, a-f' },
             };
-            const info = BASE_INFO[base]!;
+            const info = BASE_INFO[base];
             if (/[0-9a-fA-F]/.test(c)) {
                 return { error: `'${c}' is not a valid digit in a ${info.name} literal - allowed digits are ${info.digits}` };
             }
@@ -714,7 +723,9 @@ export class UcodeLexer {
         const digStart = i;
         let value = 0;
         while (i < buf.length) {
-            const d = this.digitValue(buf[i]!);
+            const c = buf[i];
+            if (c === undefined) break; // dead: i < buf.length
+            const d = this.digitValue(c);
             if (d < 0 || d >= base) break;
             value = value * base + d;
             i++;
@@ -889,14 +900,16 @@ export class UcodeLexer {
                 // for a regex whose body spans lines - those "flags" are almost always
                 // prose swallowed by a broken `//` comment (a lone `/`), and the
                 // per-letter errors only amplified that cascade.
-                if (badFlags.length > 0 && !value.includes('\n')) {
+                const firstBad = badFlags[0];
+                const lastBad = badFlags[badFlags.length - 1];
+                if (firstBad !== undefined && lastBad !== undefined && !value.includes('\n')) {
                     const list = badFlags.map(b => `'${b.flag}'`).join(', ');
                     this.errors.push({
                         message: badFlags.length === 1
                             ? `Unsupported regex flag ${list}. Supported flags are: g, i, s`
                             : `Unsupported regex flags ${list}. Supported flags are: g, i, s`,
-                        start: badFlags[0]!.pos,
-                        end: badFlags[badFlags.length - 1]!.pos + 1,
+                        start: firstBad.pos,
+                        end: lastBad.pos + 1,
                         code: UcodeErrorCode.SYNTAX_ERROR,
                     });
                 }
@@ -956,7 +969,8 @@ export class UcodeLexer {
         let inClass = false;
         let classLen = 0; // body chars seen in the current class (a leading '^' is not counted)
         for (let i = 0; i < body.length; i++) {
-            const ch = body[i]!;
+            const ch = body[i];
+            if (ch === undefined) break; // dead: i < body.length
             // Escaped char: skip it and its operand. Inside a class it is still a
             // class MEMBER — without counting it, `[^\/]`'s closing `]` would be
             // read as the leading-literal-`]` form and the class would swallow
@@ -966,10 +980,11 @@ export class UcodeLexer {
                 if (ch === '^' && classLen === 0) { continue; }       // negation marker
                 if (ch === ']' && classLen > 0) { inClass = false; continue; } // ']' first is literal
                 if (ch === '-' && classLen > 0 && i + 1 < body.length) {
-                    const a = body[i - 1]!;
-                    const b = body[i + 1]!;
+                    const a = body[i - 1]; // defined: classLen > 0 implies i >= 1
+                    const b = body[i + 1]; // defined: i + 1 < body.length
                     const aEscaped = i >= 2 && body[i - 2] === '\\';
-                    if (!aEscaped && this.isRegexRangeAtom(a) && this.isRegexRangeAtom(b)
+                    if (a !== undefined && b !== undefined
+                        && !aEscaped && this.isRegexRangeAtom(a) && this.isRegexRangeAtom(b)
                         && a.charCodeAt(0) > b.charCodeAt(0)) {
                         this.errors.push({
                             message: 'Invalid character range in regular expression: range endpoints are out of order',
