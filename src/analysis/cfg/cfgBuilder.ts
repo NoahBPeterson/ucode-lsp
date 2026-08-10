@@ -14,6 +14,7 @@ import {
   type ForStatementNode,
   type ForInStatementNode,
   type SwitchStatementNode,
+  type SwitchCaseNode,
   type TryStatementNode,
   type ReturnStatementNode,
   type BreakStatementNode,
@@ -569,15 +570,16 @@ export class CFGBuilder {
     const discriminantBlock = this.currentBlock;
 
     const afterSwitchBlock = this.createBlock('switch.after');
-    const caseBlocks: BasicBlock[] = [];
+    // Case and block are PAIRED, not two arrays indexed in lockstep: a skipped
+    // entry in one loop would silently misalign the other and wire fall-through
+    // edges to the wrong case.
+    const cases: Array<{ caseNode: SwitchCaseNode; caseBlock: BasicBlock }> = [];
 
     // Create blocks for each case
-    for (let i = 0; i < node.cases.length; i++) {
-      const caseNode = node.cases[i];
-      if (!caseNode) continue;
+    for (const [i, caseNode] of node.cases.entries()) {
       const label = caseNode.test ? `switch.case${i}` : 'switch.default';
       const caseBlock = this.createBlock(label);
-      caseBlocks.push(caseBlock);
+      cases.push({ caseNode, caseBlock });
 
       // Connect discriminant to case (conditional edge based on test)
       if (caseNode.test) {
@@ -602,11 +604,7 @@ export class CFGBuilder {
     });
 
     // Visit each case
-    for (let i = 0; i < node.cases.length; i++) {
-      const caseNode = node.cases[i];
-      const caseBlock = caseBlocks[i];
-      if (!caseNode || !caseBlock) continue;
-
+    for (const [i, { caseNode, caseBlock }] of cases.entries()) {
       this.currentBlock = caseBlock;
 
       // Add case test to the block (for debugging)
@@ -622,13 +620,13 @@ export class CFGBuilder {
       // If no explicit break, fall through to next case
       if (
         this.currentBlock.successors.length === 0 &&
-        i < node.cases.length - 1
+        i < cases.length - 1
       ) {
-        const nextCaseBlock = caseBlocks[i + 1];
-        if (nextCaseBlock) this.connect(this.currentBlock, nextCaseBlock);
+        const next = cases[i + 1];
+        if (next) this.connect(this.currentBlock, next.caseBlock);
       } else if (
         this.currentBlock.successors.length === 0 &&
-        i === node.cases.length - 1
+        i === cases.length - 1
       ) {
         // Last case falls through to after block
         this.connect(this.currentBlock, afterSwitchBlock);

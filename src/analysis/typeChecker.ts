@@ -1288,6 +1288,11 @@ export class TypeChecker {
       case 'in':
         return this.checkInOperator(node, this.dataTypeToUcodeType(leftType), this.dataTypeToUcodeType(rightType));
 
+      case ',':
+        // The comma operator evaluates both sides and yields the RIGHT one
+        // (ucode/compiler.c uc_compiler_compile_comma) — `(a, "x")` is a string.
+        return rightType;
+
       default:
         return UcodeType.UNKNOWN;
     }
