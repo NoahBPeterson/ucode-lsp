@@ -3,6 +3,15 @@
 Status: research audit, 2026-08-09 (requested immediately after the 0.8.8
 banned-types eradication landed). Verdict at the bottom; numbers first.
 
+**FOLLOW-THROUGH DONE (2026-08-10):** the recommendation below was executed —
+all 1,444 `as` assertions (commit b61c819) and all 380 `!` assertions (commit
+6d79d4f) are gone from src/, with `ban-types/no-as` + `ban-types/no-non-null`
+added to the oxlint gate. The `UcodeDataType` representation fix landed too
+(`SingleType` now includes `ModuleType | DefaultImportType`). So the table
+below is HISTORICAL: every escape-hatch count in it is now **0**, and the
+remaining ReScript delta is narrower still — nominal types, native
+exhaustiveness at every match site, and `option` instead of null/undefined.
+
 ## Where the codebase stands (post-0.8.8 census)
 
 59,622 lines of TypeScript in src/, under a maximal-strictness tsconfig
