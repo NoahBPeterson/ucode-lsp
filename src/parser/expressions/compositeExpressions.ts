@@ -62,7 +62,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
 
   protected parseObject(): ObjectExpressionNode {
     const start = this.previous()!.pos;
-    const properties: PropertyNode[] = [];
+    const properties: (PropertyNode | SpreadElementNode)[] = [];
 
     if (!this.check(TokenType.TK_RBRACE)) {
       do {
@@ -78,7 +78,7 @@ export abstract class CompositeExpressions extends PrimaryExpressions {
               argument
             };
             // Add spread element as a special property
-            properties.push(spreadElement as any);
+            properties.push(spreadElement);
           }
           continue; // Skip regular property parsing
         }

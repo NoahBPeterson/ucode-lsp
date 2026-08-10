@@ -48,8 +48,10 @@ export type AstNodeKind =
   | AstContainerKind | AstStatementKind | AstFunctionKind
   | AstExpressionKind | AstLeafKind | AstModuleKind | AstSubNodeKind;
 
-// Base AST Node with position tracking
-export interface AstNode {
+// Base AST Node with position tracking. Every concrete node interface extends
+// this; consumer code should use `AstNode` (the discriminated union below), on
+// which `node.type === '…'` narrows without casts.
+export interface AstNodeBase {
   type: AstNodeKind;
   start: number;
   end: number;
@@ -57,13 +59,13 @@ export interface AstNode {
 }
 
 // JSDoc comment node (attached to function declarations/expressions)
-export interface JsDocCommentNode extends AstNode {
+export interface JsDocCommentNode extends AstNodeBase {
   type: 'JsDocComment';
   value: string;       // Raw comment text (between /** and */)
 }
 
 // Program root - contains all top-level statements
-export interface ProgramNode extends AstNode {
+export interface ProgramNode extends AstNodeBase {
   type: 'Program';
   body: AstNode[];
 }
@@ -71,7 +73,7 @@ export interface ProgramNode extends AstNode {
 // ========== EXPRESSIONS ==========
 
 // Literal values
-export interface LiteralNode extends AstNode {
+export interface LiteralNode extends AstNodeBase {
   type: 'Literal';
   value: string | number | boolean | null;
   raw: string;
@@ -79,13 +81,13 @@ export interface LiteralNode extends AstNode {
 }
 
 // Variable/function identifiers
-export interface IdentifierNode extends AstNode {
+export interface IdentifierNode extends AstNodeBase {
   type: 'Identifier';
   name: string;
 }
 
 // Binary operations: +, -, *, /, %, ==, !=, <, >, etc.
-export interface BinaryExpressionNode extends AstNode {
+export interface BinaryExpressionNode extends AstNodeBase {
   type: 'BinaryExpression';
   operator: '+' | '-' | '*' | '/' | '%' | '**' | 
             '==' | '!=' | '===' | '!==' | '<' | '>' | '<=' | '>=' |
@@ -97,7 +99,7 @@ export interface BinaryExpressionNode extends AstNode {
 }
 
 // Unary operations: +, -, !, ~, ++, --
-export interface UnaryExpressionNode extends AstNode {
+export interface UnaryExpressionNode extends AstNodeBase {
   type: 'UnaryExpression';
   operator: '+' | '-' | '!' | '~' | '++' | '--';
   argument: AstNode;
@@ -109,7 +111,7 @@ export interface UnaryExpressionNode extends AstNode {
 }
 
 // Assignment expressions: x = y
-export interface AssignmentExpressionNode extends AstNode {
+export interface AssignmentExpressionNode extends AstNodeBase {
   type: 'AssignmentExpression';
   operator: '=' | '+=' | '-=' | '*=' | '/=' | '%=' | '**=' |
             '<<=' | '>>=' | '&=' | '^=' | '|=' | '&&=' | '||=' | '??=';
@@ -118,7 +120,7 @@ export interface AssignmentExpressionNode extends AstNode {
 }
 
 // Function calls: func(arg1, arg2)
-export interface CallExpressionNode extends AstNode {
+export interface CallExpressionNode extends AstNodeBase {
   type: 'CallExpression';
   callee: AstNode;
   arguments: AstNode[];
@@ -127,13 +129,13 @@ export interface CallExpressionNode extends AstNode {
 }
 
 // Spread elements: ...args
-export interface SpreadElementNode extends AstNode {
+export interface SpreadElementNode extends AstNodeBase {
   type: 'SpreadElement';
   argument: AstNode;
 }
 
 // Property access: obj.prop or obj[prop]
-export interface MemberExpressionNode extends AstNode {
+export interface MemberExpressionNode extends AstNodeBase {
   type: 'MemberExpression';
   object: AstNode;
   property: AstNode;
@@ -142,19 +144,19 @@ export interface MemberExpressionNode extends AstNode {
 }
 
 // Array literals: [1, 2, 3]
-export interface ArrayExpressionNode extends AstNode {
+export interface ArrayExpressionNode extends AstNodeBase {
   type: 'ArrayExpression';
   elements: (AstNode | null)[]; // null for sparse arrays [1, , 3]
 }
 
 // Object literals: {key: value, ...}
-export interface ObjectExpressionNode extends AstNode {
+export interface ObjectExpressionNode extends AstNodeBase {
   type: 'ObjectExpression';
   properties: (PropertyNode | SpreadElementNode)[];
 }
 
 // Object property: key: value
-export interface PropertyNode extends AstNode {
+export interface PropertyNode extends AstNodeBase {
   type: 'Property';
   key: AstNode;
   value: AstNode;
@@ -163,7 +165,7 @@ export interface PropertyNode extends AstNode {
 }
 
 // Conditional expression: test ? consequent : alternate
-export interface ConditionalExpressionNode extends AstNode {
+export interface ConditionalExpressionNode extends AstNodeBase {
   type: 'ConditionalExpression';
   test: AstNode;
   consequent: AstNode;
@@ -171,7 +173,7 @@ export interface ConditionalExpressionNode extends AstNode {
 }
 
 // Logical expressions: &&, ||, ??
-export interface LogicalExpressionNode extends AstNode {
+export interface LogicalExpressionNode extends AstNodeBase {
   type: 'LogicalExpression';
   operator: '&&' | '||' | '??';
   left: AstNode;
@@ -179,18 +181,18 @@ export interface LogicalExpressionNode extends AstNode {
 }
 
 // This expression
-export interface ThisExpressionNode extends AstNode {
+export interface ThisExpressionNode extends AstNodeBase {
   type: 'ThisExpression';
 }
 
 // Template literal interpolation: ${expression}
-export interface TemplateLiteralNode extends AstNode {
+export interface TemplateLiteralNode extends AstNodeBase {
   type: 'TemplateLiteral';
   expressions: AstNode[];
   quasis: TemplateElementNode[];
 }
 
-export interface TemplateElementNode extends AstNode {
+export interface TemplateElementNode extends AstNodeBase {
   type: 'TemplateElement';
   value: {
     raw: string;
@@ -202,26 +204,26 @@ export interface TemplateElementNode extends AstNode {
 // ========== STATEMENTS ==========
 
 // Block of statements: { ... }
-export interface BlockStatementNode extends AstNode {
+export interface BlockStatementNode extends AstNodeBase {
   type: 'BlockStatement';
   body: AstNode[];
 }
 
 // Expression used as statement
-export interface ExpressionStatementNode extends AstNode {
+export interface ExpressionStatementNode extends AstNodeBase {
   type: 'ExpressionStatement';
   expression: AstNode;
 }
 
 // Variable declarations: let x = 5; const y = 10;
-export interface VariableDeclarationNode extends AstNode {
+export interface VariableDeclarationNode extends AstNodeBase {
   type: 'VariableDeclaration';
   kind: 'let' | 'const';
   declarations: VariableDeclaratorNode[];
   leadingJsDoc?: JsDocCommentNode;
 }
 
-export interface VariableDeclaratorNode extends AstNode {
+export interface VariableDeclaratorNode extends AstNodeBase {
   type: 'VariableDeclarator';
   id: IdentifierNode;
   init: AstNode | null;
@@ -235,7 +237,7 @@ export interface VariableDeclaratorNode extends AstNode {
 }
 
 // If statements: if (test) consequent else alternate
-export interface IfStatementNode extends AstNode {
+export interface IfStatementNode extends AstNodeBase {
   type: 'IfStatement';
   test: AstNode;
   consequent: AstNode;
@@ -243,7 +245,7 @@ export interface IfStatementNode extends AstNode {
 }
 
 // For loops: for (init; test; update) body
-export interface ForStatementNode extends AstNode {
+export interface ForStatementNode extends AstNodeBase {
   type: 'ForStatement';
   init: AstNode | null;
   test: AstNode | null;
@@ -252,7 +254,7 @@ export interface ForStatementNode extends AstNode {
 }
 
 // For-in loops: for (left in right) body
-export interface ForInStatementNode extends AstNode {
+export interface ForInStatementNode extends AstNodeBase {
   type: 'ForInStatement';
   left: AstNode;
   right: AstNode;
@@ -260,14 +262,14 @@ export interface ForInStatementNode extends AstNode {
 }
 
 // While loops: while (test) body
-export interface WhileStatementNode extends AstNode {
+export interface WhileStatementNode extends AstNodeBase {
   type: 'WhileStatement';
   test: AstNode;
   body: AstNode;
 }
 
 // Function declarations: function name(params) { body }
-export interface FunctionDeclarationNode extends AstNode {
+export interface FunctionDeclarationNode extends AstNodeBase {
   type: 'FunctionDeclaration';
   id: IdentifierNode;
   params: IdentifierNode[];
@@ -285,7 +287,7 @@ export interface FunctionDeclarationNode extends AstNode {
 }
 
 // Function expressions: function(params) { body }
-export interface FunctionExpressionNode extends AstNode {
+export interface FunctionExpressionNode extends AstNodeBase {
   type: 'FunctionExpression';
   id: IdentifierNode | null;
   params: IdentifierNode[];
@@ -295,7 +297,7 @@ export interface FunctionExpressionNode extends AstNode {
 }
 
 // Arrow functions: (params) => body
-export interface ArrowFunctionExpressionNode extends AstNode {
+export interface ArrowFunctionExpressionNode extends AstNodeBase {
   type: 'ArrowFunctionExpression';
   params: IdentifierNode[];
   restParam?: IdentifierNode; // for ...args parameters
@@ -305,94 +307,94 @@ export interface ArrowFunctionExpressionNode extends AstNode {
 }
 
 // Return statements: return value;
-export interface ReturnStatementNode extends AstNode {
+export interface ReturnStatementNode extends AstNodeBase {
   type: 'ReturnStatement';
   argument: AstNode | null;
 }
 
 // Break statements: break;
-export interface BreakStatementNode extends AstNode {
+export interface BreakStatementNode extends AstNodeBase {
   type: 'BreakStatement';
   label: IdentifierNode | null;
 }
 
 // Continue statements: continue;
-export interface ContinueStatementNode extends AstNode {
+export interface ContinueStatementNode extends AstNodeBase {
   type: 'ContinueStatement';
   label: IdentifierNode | null;
 }
 
 // Try-catch statements: try { } catch (param) { }
-export interface TryStatementNode extends AstNode {
+export interface TryStatementNode extends AstNodeBase {
   type: 'TryStatement';
   block: BlockStatementNode;
   handler: CatchClauseNode | null;
 }
 
-export interface CatchClauseNode extends AstNode {
+export interface CatchClauseNode extends AstNodeBase {
   type: 'CatchClause';
   param: IdentifierNode | null;
   body: BlockStatementNode;
 }
 
 // Throw statements: throw expression;
-export interface ThrowStatementNode extends AstNode {
+export interface ThrowStatementNode extends AstNodeBase {
   type: 'ThrowStatement';
   argument: AstNode;
 }
 
 // Switch statements: switch (discriminant) { cases }
-export interface SwitchStatementNode extends AstNode {
+export interface SwitchStatementNode extends AstNodeBase {
   type: 'SwitchStatement';
   discriminant: AstNode;
   cases: SwitchCaseNode[];
 }
 
-export interface SwitchCaseNode extends AstNode {
+export interface SwitchCaseNode extends AstNodeBase {
   type: 'SwitchCase';
   test: AstNode | null; // null for default case
   consequent: AstNode[];
 }
 
 // Delete expression: delete obj.prop
-export interface DeleteExpressionNode extends AstNode {
+export interface DeleteExpressionNode extends AstNodeBase {
   type: 'DeleteExpression';
   argument: AstNode;
 }
 
 // Empty statement: ;
-export interface EmptyStatementNode extends AstNode {
+export interface EmptyStatementNode extends AstNodeBase {
   type: 'EmptyStatement';
 }
 
 // Import statements: import { name } from 'module';
-export interface ImportDeclarationNode extends AstNode {
+export interface ImportDeclarationNode extends AstNodeBase {
   type: 'ImportDeclaration';
   specifiers: (ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode)[];
   source: LiteralNode;
 }
 
 // Import specifiers: { name } or { name as alias }
-export interface ImportSpecifierNode extends AstNode {
+export interface ImportSpecifierNode extends AstNodeBase {
   type: 'ImportSpecifier';
   imported: IdentifierNode;
   local: IdentifierNode;
 }
 
 // Import default specifier: name
-export interface ImportDefaultSpecifierNode extends AstNode {
+export interface ImportDefaultSpecifierNode extends AstNodeBase {
   type: 'ImportDefaultSpecifier';
   local: IdentifierNode;
 }
 
 // Import namespace specifier: * as name
-export interface ImportNamespaceSpecifierNode extends AstNode {
+export interface ImportNamespaceSpecifierNode extends AstNodeBase {
   type: 'ImportNamespaceSpecifier';
   local: IdentifierNode;
 }
 
 // Export statements: export function name() {}
-export interface ExportNamedDeclarationNode extends AstNode {
+export interface ExportNamedDeclarationNode extends AstNodeBase {
   type: 'ExportNamedDeclaration';
   declaration: AstNode | null;
   specifiers: ExportSpecifierNode[];
@@ -404,20 +406,20 @@ export interface ExportNamedDeclarationNode extends AstNode {
 }
 
 // Export default: export default function() {}
-export interface ExportDefaultDeclarationNode extends AstNode {
+export interface ExportDefaultDeclarationNode extends AstNodeBase {
   type: 'ExportDefaultDeclaration';
   declaration: AstNode;
 }
 
 // Export specifiers: { name } or { name as alias }
-export interface ExportSpecifierNode extends AstNode {
+export interface ExportSpecifierNode extends AstNodeBase {
   type: 'ExportSpecifier';
   local: IdentifierNode;
   exported: IdentifierNode;
 }
 
 // Export all: export * from 'module'
-export interface ExportAllDeclarationNode extends AstNode {
+export interface ExportAllDeclarationNode extends AstNodeBase {
   type: 'ExportAllDeclaration';
   source: LiteralNode;
   exported: IdentifierNode | null;
@@ -467,10 +469,21 @@ export type Statement =
   | ExportDefaultDeclarationNode
   | ExportAllDeclarationNode;
 
-// All AST node types
-export type AstNodeType = ProgramNode | Expression | Statement | 
-  VariableDeclaratorNode | PropertyNode | TemplateElementNode | 
-  CatchClauseNode | SwitchCaseNode;
+// All AST node types — TOTAL over AstNodeKind (statically asserted below).
+export type AstNodeType = ProgramNode | Expression | Statement |
+  VariableDeclaratorNode | PropertyNode | TemplateElementNode |
+  CatchClauseNode | SwitchCaseNode | JsDocCommentNode |
+  ImportSpecifierNode | ImportDefaultSpecifierNode | ImportNamespaceSpecifierNode |
+  ExportSpecifierNode;
+
+/** The canonical node type: a discriminated union, so `node.type === '…'`
+ *  narrows to the concrete interface with no casts. */
+export type AstNode = AstNodeType;
+
+// Static totality proof: if a new AstNodeKind is added without a corresponding
+// interface in AstNodeType, this line becomes a compile error.
+const _astNodeUnionIsTotal: Exclude<AstNodeKind, AstNodeType['type']> extends never ? true : never = true;
+void _astNodeUnionIsTotal;
 
 // Helper type guards
 export function isStatement(node: AstNode): node is Statement {

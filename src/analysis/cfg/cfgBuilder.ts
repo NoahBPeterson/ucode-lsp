@@ -23,7 +23,6 @@ import {
   type ConditionalExpressionNode,
   type LogicalExpressionNode,
   type ExpressionStatementNode,
-  type CallExpressionNode,
   type VariableDeclarationNode,
   type AssignmentExpressionNode,
 } from '../../ast/nodes';
@@ -77,17 +76,15 @@ export class CFGBuilder {
    */
   constructor(name?: string, terminators?: Set<string>) {
     this.terminatorNames = terminators || new Set(['die', 'exit']);
-    // Initialize empty CFG first
+    // Create entry and exit blocks (ids 0 and 1, registered in creation order)
+    const entry: BasicBlock = { id: this.nextBlockId++, statements: [], predecessors: [], successors: [], label: 'entry' };
+    const exit: BasicBlock = { id: this.nextBlockId++, statements: [], predecessors: [], successors: [], label: 'exit' };
     this.cfg = {
-      entry: undefined as any, // Will be set below
-      exit: undefined as any, // Will be set below
-      blocks: [],
+      entry,
+      exit,
+      blocks: [entry, exit],
       ...(name && { name }),
     };
-
-    // Now create entry and exit blocks
-    this.cfg.entry = this.createBlock('entry');
-    this.cfg.exit = this.createBlock('exit');
     this.currentBlock = this.cfg.entry;
   }
 
@@ -270,8 +267,8 @@ export class CFGBuilder {
    *  die() : y`, where termination isn't unconditional (a wrong cut would be a false "unreachable"). */
   private isTerminatorCall(expr: AstNode | null | undefined): boolean {
     if (!expr || expr.type !== 'CallExpression') return false;
-    const call = expr as CallExpressionNode;
-    const calleeName = call.callee.type === 'Identifier' ? (call.callee as any).name : null;
+    const call = expr;
+    const calleeName = call.callee.type === 'Identifier' ? call.callee.name : null;
     return !!calleeName && this.terminatorNames.has(calleeName);
   }
 
@@ -367,7 +364,7 @@ export class CFGBuilder {
    */
   private isConstantTruthyTest(node: AstNode): boolean {
     if (node.type !== 'Literal') return false;
-    const value = (node as { value?: unknown }).value;
+    const value = node.value;
     if (value === true) return true;
     if (typeof value === 'number' && value !== 0) return true;
     return false;

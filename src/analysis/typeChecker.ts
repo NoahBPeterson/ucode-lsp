@@ -8,24 +8,110 @@ import {
   type CallExpressionNode, type MemberExpressionNode, type AssignmentExpressionNode, type ArrayExpressionNode,
   type ObjectExpressionNode, type ConditionalExpressionNode, type ArrowFunctionExpressionNode,
   type FunctionExpressionNode, type IfStatementNode, type ProgramNode, type BlockStatementNode,
-  type ExpressionStatementNode, type FunctionDeclarationNode, type VariableDeclarationNode,
-  type VariableDeclaratorNode, type ExportDefaultDeclarationNode, type ReturnStatementNode,
-  type PropertyNode, type SwitchStatementNode, type SwitchCaseNode, type ForInStatementNode,
-  type ExportNamedDeclarationNode, type ForStatementNode, type WhileStatementNode,
-  type ThrowStatementNode, type TryStatementNode, type CatchClauseNode, type LogicalExpressionNode,
-  type DeleteExpressionNode, type SpreadElementNode, type TemplateLiteralNode,
-  type ImportDeclarationNode
+  type ExpressionStatementNode, type VariableDeclarationNode, type ReturnStatementNode,
+  type PropertyNode, type SwitchStatementNode, type SwitchCaseNode,
+  type ForStatementNode, type WhileStatementNode,
+  type TryStatementNode, type CatchClauseNode, type LogicalExpressionNode,
+  type DeleteExpressionNode
 } from '../ast/nodes';
+import { astChildren, walkAst } from '../ast/astChildren';
 import { AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
 
-/** An AST node viewed as an open record, for dynamic traversal/field access. The base
- *  `AstNode` interface only enumerates `type`/`start`/`end`; specific node kinds carry many
- *  more fields that the generic walkers read after a `type`-string guard. */
-type AnyNode = AstNode & Record<string, unknown>;
+/** A scalar literal's runtime value (`LiteralNode.value`), or undefined when the
+ *  operand isn't a scalar literal. */
+type ScalarLiteralValue = string | number | boolean | null | undefined;
 
-/** Narrow an arbitrary value to a traversable AST-like node (an object with a string `type`). */
-function isAstNodeLike(n: unknown): n is AnyNode {
-  return !!n && typeof n === 'object' && typeof (n as { type?: unknown }).type === 'string';
+/** Narrow a possibly-absent AST value to a present, traversable node. */
+function isAstNodeLike(n: AstNode | null | undefined): n is AstNode {
+  return n != null && typeof n === 'object' && typeof n.type === 'string';
+}
+
+/** The array-valued AST child lists of `node` (statement/expression lists), for
+ *  sibling-scanning walks. Mirrors the historical field-order traversal: every
+ *  AST-node array field is a potential list, including each SwitchCase's own
+ *  consequent (which `astChildren` deliberately flattens away). */
+function astChildLists(node: AstNode): ReadonlyArray<ReadonlyArray<AstNode | null>> {
+  switch (node.type) {
+    case 'Program':
+    case 'BlockStatement':
+      return [node.body];
+    case 'VariableDeclaration':
+      return [node.declarations];
+    case 'SwitchStatement':
+      return [node.cases];
+    case 'SwitchCase':
+      return [node.consequent];
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+    case 'ArrowFunctionExpression':
+      return [node.params];
+    case 'CallExpression':
+      return [node.arguments];
+    case 'ArrayExpression':
+      return [node.elements];
+    case 'ObjectExpression':
+      return [node.properties];
+    case 'TemplateLiteral':
+      return [node.expressions, node.quasis];
+    case 'ImportDeclaration':
+      return [node.specifiers];
+    case 'ExportNamedDeclaration':
+      return [node.specifiers];
+    default:
+      return [];
+  }
+}
+
+/** `astChildren`, except SwitchStatement yields its SwitchCase nodes unflattened —
+ *  sibling-scanning walks need to reach each case's consequent as a LIST. */
+function childrenWithSwitchCases(node: AstNode): AstNode[] {
+  if (node.type === 'SwitchStatement') return [node.discriminant, ...node.cases];
+  return astChildren(node);
+}
+
+/** EVERY AST-valued field of `node` — including the label / specifier /
+ *  rest-param / catch-param identifiers that `astChildren` deliberately skips.
+ *  The whole-file identifier-OCCURRENCE scans need the complete field set:
+ *  an `export { name }` specifier or a catch param IS an occurrence for them
+ *  (their conservatism depends on spurious occurrences BAILING). */
+function astAllNodeFields(node: AstNode): AstNode[] {
+  switch (node.type) {
+    case 'BreakStatement':
+    case 'ContinueStatement':
+      return node.label ? [node.label] : [];
+    case 'ImportDeclaration':
+      return [...node.specifiers, node.source];
+    case 'ImportSpecifier':
+      return [node.imported, node.local];
+    case 'ImportDefaultSpecifier':
+    case 'ImportNamespaceSpecifier':
+      return [node.local];
+    case 'ExportSpecifier':
+      return [node.local, node.exported];
+    case 'ExportNamedDeclaration': {
+      const out: AstNode[] = node.declaration ? [node.declaration] : [];
+      out.push(...node.specifiers);
+      if (node.source) out.push(node.source);
+      return out;
+    }
+    case 'ExportAllDeclaration':
+      return node.exported ? [node.source, node.exported] : [node.source];
+    case 'TemplateLiteral':
+      return [...node.expressions, ...node.quasis];
+    case 'CatchClause':
+      return node.param ? [node.param, node.body] : [node.body];
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+    case 'ArrowFunctionExpression': {
+      const out = astChildren(node);
+      if (node.restParam) out.push(node.restParam);
+      return out;
+    }
+    case 'SwitchStatement':
+      return [node.discriminant, ...node.cases];
+    default:
+      return astChildren(node);
+  }
 }
 
 /**
@@ -61,7 +147,7 @@ interface TypeGuardInfo {
   // guarded scalar to `unknown` past its `if`). See docs/tc-falsy-branch-narrow-to-unknown.md.
   isTruthiness?: boolean;
 }
-import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, type SingleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, resolveTupleIndex, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, propertyTypeAt, isNeverType, NEVER_TYPE, type Symbol as UcodeSymbol } from './symbolTable';
+import { SymbolTable, SymbolType, UcodeType, type UcodeDataType, type SingleType, type ModuleType, isUnionType, getUnionTypes, createUnionType, isArrayType, createArrayType, getArrayElementType, resolveTupleIndex, isObjectType, singleTypeToBase, dataTypeToBase, extractModuleType, effectiveSymbolType, propertyTypeAt, isNeverType, NEVER_TYPE, type Symbol as UcodeSymbol } from './symbolTable';
 import { FlowTypeEngine, makeAssignmentTransfer, type FlowEnvironment, type EdgeGuardFn } from './flowTypeEngine';
 import { inferNullGuardParams } from './nullGuardContract';
 import { CFGBuilder } from './cfg/cfgBuilder';
@@ -130,13 +216,71 @@ export interface TypeCheckResult {
   warnings: TypeWarning[];
 }
 
+/** Quick-fix payloads carried on a diagnostic's `data` field, read back by the
+ *  quick-fix layer (src/server.ts) and the post-analysis filters
+ *  (semanticAnalyzer). All fields optional — each diagnostic carries only the
+ *  payload its own code produces. */
+export interface DiagnosticFixData {
+  // UC2009 `type(x) == "<wrong>"` → valid type-string rewrite
+  typeStringFix?: string[];
+  litStart?: number;
+  litEnd?: number;
+  // Reference-equality rewrite (`is_equal` / string-coercion) offsets
+  referenceEquality?: {
+    negate: boolean; coerce: boolean;
+    exprStart: number; exprEnd: number;
+    leftStart: number; leftEnd: number;
+    rightStart: number; rightEnd: number;
+  };
+  // Loop-carried-join re-validation refs (docs/uc2009-loop-read-before-write-null.md)
+  impossibleCompareBase?: { name: string; offset: number };
+  impossibleCompareRefs?: Array<{ name: string; offset: number; prop?: string; members: string[] }>;
+  // Argument-mismatch payload (guard / coerce quick fixes)
+  functionName?: string;
+  argumentIndex?: number;
+  expectedType?: string;
+  expectedTypes?: string[];
+  actualType?: UcodeDataType | string;
+  variableName?: string | null;
+  argumentOffset?: number;
+  narrowable?: boolean;
+  coerceToString?: boolean;
+  argNeedsParens?: boolean;
+  toleratedTypes?: string[];
+  fallbackStart?: number;
+  fallbackEnd?: number;
+  fullExprStart?: number;
+  fullExprEnd?: number;
+  staleTypeArg?: {
+    name: string; offset: number; prop?: string; members: string[];
+    funcName: string; argPosition: number; expected: string[];
+  };
+  // `s[i]` → `substr(s, i, 1)` fix offsets
+  stringIndexFix?: {
+    objStart: number; objEnd: number;
+    idxStart: number; idxEnd: number;
+    exprStart: number; exprEnd: number;
+  };
+  // Null-access fixes (optional chaining / null guard)
+  nullAccess?: {
+    objStart: number; objEnd: number; propStart: number;
+    computed: boolean; isWrite: boolean; isIdentifier: boolean;
+    objName?: string; propName?: string;
+  };
+  // match() string-literal → regex-literal fix
+  convertStringToRegex?: boolean;
+  loadfileRelPath?: { raw: string; litStart: number; litEnd: number };
+  // "Mark the callee's @param optional" fix
+  missingOptionalParam?: { funcName: string; paramName: string };
+}
+
 export interface TypeError {
   message: string;
   start: number;
   end: number;
   severity: 'error';
   code?: string; // Diagnostic code for quick fixes
-  data?: unknown;    // Additional data for quick fixes
+  data?: DiagnosticFixData;    // Additional data for quick fixes
 }
 
 export interface TypeWarning {
@@ -145,7 +289,7 @@ export interface TypeWarning {
   end: number;
   severity: 'warning';
   code?: string;
-  data?: unknown;
+  data?: DiagnosticFixData;
 }
 
 /**
@@ -634,9 +778,9 @@ export class TypeChecker {
       return String(lit.value);
     }
     if (node.type === 'UnaryExpression') {
-      const u = node as any;
-      if (u.operator === '-' && u.argument?.type === 'Literal' && typeof u.argument.value === 'number') {
-        return String(-u.argument.value);
+      const arg = node.argument;
+      if (node.operator === '-' && arg?.type === 'Literal' && typeof arg.value === 'number') {
+        return String(-arg.value);
       }
       return null;
     }
@@ -852,17 +996,17 @@ export class TypeChecker {
       case 'ObjectExpression':
         return this.checkObjectExpression(node as ObjectExpressionNode);
       case 'LogicalExpression':
-        return this.checkBinaryExpression(node as BinaryExpressionNode);
+        return this.checkBinaryExpression(node);
       case 'ConditionalExpression':
         return this.checkConditionalExpression(node as ConditionalExpressionNode);
       case 'ArrowFunctionExpression':
-        return this.checkArrowFunctionExpression(node as any);
+        return this.checkArrowFunctionExpression(node);
       case 'FunctionExpression':
-        return this.checkFunctionExpression(node as any);
+        return this.checkFunctionExpression(node);
       case 'TemplateLiteral':
         return UcodeType.STRING;
       case 'IfStatement':
-        return this.checkIfStatement(node as any);
+        return this.checkIfStatement(node);
       case 'ExpressionStatement':
         return this.checkExpressionStatement(node as ExpressionStatementNode);
       case 'VariableDeclaration':
@@ -870,16 +1014,16 @@ export class TypeChecker {
       case 'BlockStatement':
         return this.checkBlockStatement(node as BlockStatementNode);
       case 'ReturnStatement':
-        return this.checkReturnStatement(node as any);
+        return this.checkReturnStatement(node);
       case 'BreakStatement':
       case 'ContinueStatement':
         return UcodeType.UNKNOWN;
       case 'SwitchStatement':
         return this.checkSwitchStatement(node as SwitchStatementNode);
       case 'TryStatement':
-        return this.checkTryStatement(node as any);
+        return this.checkTryStatement(node);
       case 'CatchClause':
-        return this.checkCatchClause(node as any);
+        return this.checkCatchClause(node);
       case 'ThisExpression':
         return UcodeType.OBJECT;
       case 'DeleteExpression':
@@ -1001,7 +1145,7 @@ export class TypeChecker {
       && (lit.literalType === 'number' || lit.literalType === 'double');
   }
 
-  private checkBinaryExpression(node: BinaryExpressionNode): CheckResult {
+  private checkBinaryExpression(node: BinaryExpressionNode | LogicalExpressionNode): CheckResult {
     const leftType = this.checkNode(node.left);
     const rightType = this.checkNode(node.right);
 
@@ -1347,20 +1491,18 @@ export class TypeChecker {
         if (lowerBound !== null && index < lowerBound) proven = true;
       }
     };
-    const walk = (node: unknown): void => {
-      if (proven || !isAstNodeLike(node)) return;
+    walkAst(ast, (node): boolean | void => {
+      if (proven) return false;
       // Prune: every node that does useful work here (an IfStatement whose consequent
       // holds `position`, or a block whose body has an early-exit guard dominating a
       // later sibling containing `position`) must itself span `position`. Skipping
       // subtrees that don't contain `position` cannot drop any match — it only avoids
       // the whole-AST walk, turning this from O(nodes) into O(path-to-position).
-      if (typeof node.start === 'number' && typeof node.end === 'number'
-          && (position < node.start || position > node.end)) return;
+      if (position < node.start || position > node.end) return false;
       if (node.type === 'IfStatement') {
-        const ifNode = node as unknown as IfStatementNode;
-        if (ifNode.consequent
-            && position >= ifNode.consequent.start && position <= ifNode.consequent.end) {
-          checkTest(ifNode.test);
+        if (node.consequent
+            && position >= node.consequent.start && position <= node.consequent.end) {
+          checkTest(node.test);
         }
       }
       // A `while`/`for` loop test holds at the TOP of every iteration, so it narrows
@@ -1370,36 +1512,28 @@ export class TypeChecker {
       // access AFTER the shift is not. Skip `do-while` (its test runs AFTER the first
       // iteration, so it doesn't hold on entry). Ticket: array-index-narrowing-loops.
       if (node.type === 'WhileStatement' || node.type === 'ForStatement') {
-        const loop = node as unknown as { test?: AstNode | null; body?: AstNode };
-        if (loop.body && loop.test
-            && position >= loop.body.start && position <= loop.body.end
-            && !this.arrLengthInvalidatedBetween(arrName, loop.body.start, position)) {
-          checkTest(loop.test);
+        if (node.body && node.test
+            && position >= node.body.start && position <= node.body.end
+            && !this.arrLengthInvalidatedBetween(arrName, node.body.start, position)) {
+          checkTest(node.test);
         }
       }
       // Scan a statement list for an early-exit guard that dominates `position` (a preceding
       // sibling `if (TEST) <exit>`), then apply its negated test — unless `arrName` is
       // length-reduced or reassigned between the guard and the access (bound would be stale).
-      const stmts = (node as { body?: unknown }).body;
-      if (Array.isArray(stmts)) {
+      const stmts = (node.type === 'Program' || node.type === 'BlockStatement') ? node.body : null;
+      if (stmts) {
         for (let i = 0; i < stmts.length && !proven; i++) {
-          const s = stmts[i] as AstNode | undefined;
+          const s = stmts[i];
           if (!s || !this.isEarlyExitGuard(s)) continue;
           const inLater = stmts.slice(i + 1).some(
-            (sj) => sj && position >= (sj as AstNode).start && position <= (sj as AstNode).end);
+            (sj) => sj && position >= sj.start && position <= sj.end);
           if (inLater && !this.arrLengthInvalidatedBetween(arrName, s.end, position)) {
-            checkNegatedTest((s as unknown as IfStatementNode).test);
+            checkNegatedTest((s as IfStatementNode).test);
           }
         }
       }
-      for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc') continue;
-        const v = node[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
-    };
-    walk(ast);
+    });
     return proven;
   }
 
@@ -1460,20 +1594,19 @@ export class TypeChecker {
    *  (continue/break/return, or a die()/exit() call) — so the code after it holds `!TEST`. */
   private isEarlyExitGuard(s: AstNode): boolean {
     if (s.type !== 'IfStatement') return false;
-    const ifNode = s as unknown as IfStatementNode;
-    if (ifNode.alternate) return false; // an else means the code after isn't guarded by !TEST alone
-    return this.stmtAlwaysExits(ifNode.consequent);
+    if (s.alternate) return false; // an else means the code after isn't guarded by !TEST alone
+    return this.stmtAlwaysExits(s.consequent);
   }
 
   private stmtAlwaysExits(c: AstNode | null | undefined): boolean {
     if (!c) return false;
     if (c.type === 'ContinueStatement' || c.type === 'BreakStatement' || c.type === 'ReturnStatement') return true;
     if (c.type === 'BlockStatement') {
-      const body = (c as unknown as { body: AstNode[] }).body;
+      const body = c.body;
       return Array.isArray(body) && body.length > 0 && this.stmtAlwaysExits(body[body.length - 1]);
     }
     if (c.type === 'ExpressionStatement') {
-      const e = (c as unknown as { expression: AstNode }).expression;
+      const e = c.expression;
       if (e?.type === 'CallExpression') {
         const callee = (e as CallExpressionNode).callee;
         if (callee?.type === 'Identifier') {
@@ -1492,34 +1625,25 @@ export class TypeChecker {
     const ast = this.currentAST;
     if (!ast) return false;
     let hit = false;
-    const walk = (n: unknown): void => {
-      if (hit || !isAstNodeLike(n)) return;
+    walkAst(ast, (n): boolean | void => {
+      if (hit) return false;
       // Prune: a matching node is fully contained in [from, to], so any node whose span
       // doesn't overlap [from, to] has no descendant that could match. Skipping those
       // subtrees is sound (a contained node's ancestors all overlap the span).
-      if (typeof n.start === 'number' && typeof n.end === 'number'
-          && (n.end < from || n.start > to)) return;
+      if (n.end < from || n.start > to) return false;
       if (n.start >= from && n.end <= to) {
         if (n.type === 'CallExpression') {
-          const c = n as unknown as CallExpressionNode;
-          const name = c.callee?.type === 'Identifier' ? (c.callee as IdentifierNode).name : null;
+          const name = n.callee?.type === 'Identifier' ? n.callee.name : null;
+          const arg0 = n.arguments?.[0];
           if ((name === 'shift' || name === 'pop' || name === 'splice')
-              && c.arguments?.[0]?.type === 'Identifier'
-              && (c.arguments[0] as IdentifierNode).name === arrName) { hit = true; return; }
+              && arg0?.type === 'Identifier'
+              && arg0.name === arrName) { hit = true; return false; }
         }
         if (n.type === 'AssignmentExpression') {
-          const a = n as unknown as AssignmentExpressionNode;
-          if (a.left?.type === 'Identifier' && (a.left as IdentifierNode).name === arrName) { hit = true; return; }
+          if (n.left?.type === 'Identifier' && n.left.name === arrName) { hit = true; return false; }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
-    };
-    walk(ast);
+    });
     return hit;
   }
 
@@ -1585,22 +1709,22 @@ export class TypeChecker {
    *  domination. Returns the AssignmentExpression node, or null. */
   private findDominatingNullishArrayAssign(ast: ProgramNode, read: AstNode, baseName: string, keyTok: string): AssignmentExpressionNode | null {
     let result: AssignmentExpressionNode | null = null;
-    const matchAssign = (n: unknown): AssignmentExpressionNode | null => {
+    const matchAssign = (n: AstNode | null | undefined): AssignmentExpressionNode | null => {
       if (!isAstNodeLike(n)) return null;
       // Unwrap an ExpressionStatement to its assignment.
-      const inner = n.type === 'ExpressionStatement' ? (n as unknown as ExpressionStatementNode).expression : n;
+      const inner = n.type === 'ExpressionStatement' ? n.expression : n;
       if (!isAstNodeLike(inner) || inner.type !== 'AssignmentExpression') return null;
-      const a = inner as unknown as AssignmentExpressionNode;
+      const a = inner;
       if (a.operator !== '??=' && a.operator !== '||=') return null;
       const left = a.left;
       if (!isAstNodeLike(left) || left.type !== 'MemberExpression') return null;
-      const m = left as unknown as MemberExpressionNode;
-      if (!m.computed || m.object.type !== 'Identifier' || (m.object as IdentifierNode).name !== baseName) return null;
+      const m = left;
+      if (!m.computed || m.object.type !== 'Identifier' || m.object.name !== baseName) return null;
       if (this.bucketKeyToken(m.property) !== keyTok) return null;
       if (!isAstNodeLike(a.right) || a.right.type !== 'ArrayExpression') return null;
       return a;
     };
-    const scanList = (stmts: unknown): void => {
+    const scanList = (stmts: ReadonlyArray<AstNode | null>): void => {
       if (result || !Array.isArray(stmts)) return;
       // The statement (element) whose span contains the read.
       let containerIdx = -1;
@@ -1615,20 +1739,15 @@ export class TypeChecker {
         if (cand) { result = cand; return; }
       }
     };
-    const walk = (n: unknown): void => {
+    const walk = (n: AstNode | null | undefined): void => {
       if (result || !isAstNodeLike(n)) return;
       // Span pruning: scanList only matches a list with an element CONTAINING the
       // read, and children lie within their parent's span — so a subtree that
       // doesn't contain read.start can't contribute.
-      if (typeof n.start === 'number' && typeof n.end === 'number'
-        && (read.start < n.start || read.start >= n.end)) return;
+      if (read.start < n.start || read.start >= n.end) return;
       // Any array-valued child is a potential statement list (body/consequent/…).
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { scanList(v); for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
+      for (const list of astChildLists(n)) scanList(list);
+      for (const child of childrenWithSwitchCases(n)) walk(child);
     };
     walk(ast);
     return result;
@@ -1642,27 +1761,19 @@ export class TypeChecker {
     const names = new Set<string>([name]);
     if (keyVar) names.add(keyVar);
     let hit = false;
-    const walk = (n: unknown): void => {
-      if (hit || !isAstNodeLike(n)) return;
+    walkAst(ast, (n): boolean | void => {
+      if (hit) return false;
       if (n.start >= from && n.end <= to) {
         if (n.type === 'AssignmentExpression') {
-          const a = n as unknown as AssignmentExpressionNode;
-          if (a.left?.type === 'Identifier' && names.has((a.left as IdentifierNode).name)) { hit = true; return; }
+          if (n.left?.type === 'Identifier' && names.has(n.left.name)) { hit = true; return false; }
         }
         if (n.type === 'VariableDeclaration') {
-          for (const d of (n as unknown as VariableDeclarationNode).declarations || []) {
-            if (d?.id?.type === 'Identifier' && names.has((d.id as IdentifierNode).name)) { hit = true; return; }
+          for (const d of n.declarations || []) {
+            if (d?.id?.type === 'Identifier' && names.has(d.id.name)) { hit = true; return false; }
           }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
-    };
-    walk(ast);
+    });
     return hit;
   }
 
@@ -1677,47 +1788,39 @@ export class TypeChecker {
     let emptyLiteralDecl = false;
     let ok = true;
     let sawArrayWrite = false;
-    const isEmptyLiteral = (init: unknown): boolean =>
+    const isEmptyLiteral = (init: AstNode | null | undefined): boolean =>
       isAstNodeLike(init) &&
-      ((init.type === 'ObjectExpression' && ((init as unknown as ObjectExpressionNode).properties || []).length === 0) ||
-       (init.type === 'ArrayExpression' && ((init as unknown as ArrayExpressionNode).elements || []).length === 0));
-    const walk = (n: unknown): void => {
-      if (!ok || !isAstNodeLike(n)) return;
+      ((init.type === 'ObjectExpression' && (init.properties || []).length === 0) ||
+       (init.type === 'ArrayExpression' && (init.elements || []).length === 0));
+    walkAst(ast, (n): boolean | void => {
+      if (!ok) return false;
       if (n.type === 'VariableDeclaration') {
-        for (const d of (n as unknown as VariableDeclarationNode).declarations || []) {
-          if (d?.id?.type === 'Identifier' && (d.id as IdentifierNode).name === baseName) {
+        for (const d of n.declarations || []) {
+          if (d?.id?.type === 'Identifier' && d.id.name === baseName) {
             declCount++;
             if (isEmptyLiteral(d.init)) emptyLiteralDecl = true;
           }
         }
       } else if (n.type === 'AssignmentExpression') {
-        const a = n as unknown as AssignmentExpressionNode;
-        const left = a.left;
+        const left = n.left;
         // Wholesale reassignment `base = …` → not a stable map.
-        if (isAstNodeLike(left) && left.type === 'Identifier' && (left as unknown as IdentifierNode).name === baseName) {
-          ok = false; return;
+        if (isAstNodeLike(left) && left.type === 'Identifier' && left.name === baseName) {
+          ok = false; return false;
         }
         // Member write `base[*] = / ??= / ||= …` (computed or `base.p`) → RHS must be an array literal.
         if (isAstNodeLike(left) && left.type === 'MemberExpression'
-            && (left as unknown as MemberExpressionNode).object?.type === 'Identifier'
-            && ((left as unknown as MemberExpressionNode).object as IdentifierNode).name === baseName) {
-          if (a.operator === '=' || a.operator === '??=' || a.operator === '||=') {
-            if (isAstNodeLike(a.right) && a.right.type === 'ArrayExpression') { sawArrayWrite = true; }
-            else { ok = false; return; }
+            && left.object?.type === 'Identifier'
+            && left.object.name === baseName) {
+          if (n.operator === '=' || n.operator === '??=' || n.operator === '||=') {
+            if (isAstNodeLike(n.right) && n.right.type === 'ArrayExpression') { sawArrayWrite = true; }
+            else { ok = false; return false; }
           } else {
             // `base[k] += …` and friends can introduce a non-array → decline.
-            ok = false; return;
+            ok = false; return false;
           }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc') continue;
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
-    };
-    walk(ast);
+    });
     return ok && declCount === 1 && emptyLiteralDecl && sawArrayWrite;
   }
 
@@ -1808,8 +1911,8 @@ export class TypeChecker {
     // init establishes `idxVar = <non-negative literal>`.
     const initProvesLower = (init: AstNode | null): boolean => {
       if (init?.type === 'VariableDeclaration') {
-        for (const d of (init as VariableDeclarationNode).declarations || []) {
-          if ((d as any)?.id?.name === idxVar) { const v = this.numericLiteralValue((d as any).init); return v !== null && v >= 0; }
+        for (const d of init.declarations || []) {
+          if (d?.id?.name === idxVar) { const v = d.init ? this.numericLiteralValue(d.init) : null; return v !== null && v >= 0; }
         }
       }
       const expr = init?.type === 'ExpressionStatement' ? (init as ExpressionStatementNode).expression : init;
@@ -1828,58 +1931,40 @@ export class TypeChecker {
     const SHRINKERS = new Set(['pop', 'shift', 'splice']);
     const reassignedInBody = (body: AstNode): boolean => {
       let found = false;
-      const scan = (n: unknown): void => {
-        if (found || !isAstNodeLike(n)) return;
+      walkAst(body, (n): boolean | void => {
+        if (found) return false;
         if (n.type === 'AssignmentExpression') {
-          const a = n as unknown as AssignmentExpressionNode;
-          if (a.left?.type === 'Identifier'
-              && ((a.left as IdentifierNode).name === idxVar || (a.left as IdentifierNode).name === arrName)) { found = true; return; }
+          if (n.left?.type === 'Identifier'
+              && (n.left.name === idxVar || n.left.name === arrName)) { found = true; return false; }
         }
         if (n.type === 'UnaryExpression') {
-          const u = n as unknown as UnaryExpressionNode;
-          if ((u.operator === '++' || u.operator === '--')
-              && u.argument?.type === 'Identifier' && (u.argument as IdentifierNode).name === idxVar) { found = true; return; }
+          if ((n.operator === '++' || n.operator === '--')
+              && n.argument?.type === 'Identifier' && n.argument.name === idxVar) { found = true; return false; }
         }
         if (n.type === 'CallExpression') {
-          const c = n as unknown as CallExpressionNode;
-          if (c.callee?.type === 'Identifier' && SHRINKERS.has((c.callee as IdentifierNode).name)
-              && c.arguments?.[0]?.type === 'Identifier' && (c.arguments[0] as IdentifierNode).name === arrName) { found = true; return; }
+          const arg0 = n.arguments?.[0];
+          if (n.callee?.type === 'Identifier' && SHRINKERS.has(n.callee.name)
+              && arg0?.type === 'Identifier' && arg0.name === arrName) { found = true; return false; }
         }
-        for (const k of Object.keys(n)) {
-          if (k === 'leadingJsDoc') continue;
-          const v = n[k];
-          if (Array.isArray(v)) { for (const it of v) scan(it); }
-          else if (isAstNodeLike(v)) scan(v);
-        }
-      };
-      scan(body);
+      });
       return found;
     };
 
     let proven = false;
-    const walk = (node: unknown): void => {
-      if (proven || !isAstNodeLike(node)) return;
+    walkAst(ast, (node): boolean | void => {
+      if (proven) return false;
       // Prune: the only match is a ForStatement whose body holds `position`, so it (and
       // all its ancestors) span `position`. Subtrees not containing `position` can't match.
-      if (typeof node.start === 'number' && typeof node.end === 'number'
-          && (position < node.start || position > node.end)) return;
+      if (position < node.start || position > node.end) return false;
       if (node.type === 'ForStatement') {
-        const forNode = node as unknown as ForStatementNode;
-        if (forNode.body
-            && position >= forNode.body.start && position <= forNode.body.end
-            && testProvesUpper(forNode.test) && initProvesLower(forNode.init) && !reassignedInBody(forNode.body)) {
+        if (node.body
+            && position >= node.body.start && position <= node.body.end
+            && testProvesUpper(node.test) && initProvesLower(node.init) && !reassignedInBody(node.body)) {
           proven = true;
-          return;
+          return false;
         }
       }
-      for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc') continue;
-        const v = node[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
-    };
-    walk(ast);
+    });
     return proven;
   }
 
@@ -1890,7 +1975,7 @@ export class TypeChecker {
    *  mis-flagged. Global builtins (index/length/…) match by bare name. */
   private resolveRangedCall(node: AstNode): typeof BUILTIN_RETURN_RANGE[string] | null {
     if (node?.type !== 'CallExpression') return null;
-    const callee = (node as any).callee;
+    const callee = node.callee;
     if (callee?.type === 'Identifier') {
       const range = BUILTIN_RETURN_RANGE[callee.name];
       if (!range) return null;
@@ -2026,8 +2111,8 @@ export class TypeChecker {
 
   private isTypeCall(n: AstNode): boolean {
     return n?.type === 'CallExpression'
-      && (n as any).callee?.type === 'Identifier'
-      && (n as any).callee.name === 'type';
+      && n.callee?.type === 'Identifier'
+      && n.callee.name === 'type';
   }
 
   /** The node, if it's a string literal. */
@@ -2253,9 +2338,9 @@ export class TypeChecker {
     // special case: the specifier is an Identifier occurrence.)
     for (const stmt of (ast.body || [])) {
       if (stmt.type !== 'ExportNamedDeclaration') continue;
-      const decl = (stmt as unknown as { declaration?: AstNode }).declaration;
+      const decl = stmt.declaration;
       if (decl?.type === 'VariableDeclaration') {
-        for (const d of ((decl as unknown as { declarations?: Array<{ id?: IdentifierNode }> }).declarations || [])) {
+        for (const d of (decl.declarations || [])) {
           if (d?.id?.name === name) return null;
         }
       }
@@ -2270,29 +2355,23 @@ export class TypeChecker {
     // resolves them to the in-scope symbol — a spurious count, which only ever
     // BAILS (conservative: false negatives, never false positives).
     let inCmp = 0;
-    const stack: unknown[] = [ast];
+    const stack: AstNode[] = [ast];
     while (stack.length) {
       const cur = stack.pop();
-      if (!cur || typeof cur !== 'object' || typeof (cur as { type?: unknown }).type !== 'string') continue;
-      const anode = cur as AstNode;
-      if (anode.type === 'Identifier' && (anode as IdentifierNode).name === name) {
-        if (anode.start === sym.declaredAt) {
+      if (!isAstNodeLike(cur)) continue;
+      if (cur.type === 'Identifier' && cur.name === name) {
+        if (cur.start === sym.declaredAt) {
           // the declarator's own id
-        } else if (this.symbolTable.resolveReference(name, anode.start) !== sym) {
+        } else if (this.symbolTable.resolveReference(name, cur.start) !== sym) {
           // a different symbol with the same name — cannot alias this one
-        } else if (anode.start >= cmpNode.start && anode.end <= cmpNode.end) {
+        } else if (cur.start >= cmpNode.start && cur.end <= cmpNode.end) {
           inCmp++;
           if (inCmp > 1) return null; // e.g. `yy == yy` — same ref, always TRUE
         } else {
           return null;
         }
       }
-      for (const k of Object.keys(anode)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-        const v = (anode as unknown as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) stack.push(it); }
-        else stack.push(v);
-      }
+      stack.push(...astAllNodeFields(cur));
     }
     if (inCmp !== 1) return null;
     return { name, init: sym.initNode };
@@ -2308,8 +2387,8 @@ export class TypeChecker {
    *  beyond bails to null. Under-approximates: unknown shapes yield null. */
   private constantLiteralValue(node: AstNode | undefined, seen?: Set<UcodeSymbol>): ConstantValue | null {
     if (!node) return null;
-    if (node.type === 'UnaryExpression' && (node as unknown as { operator?: string }).operator === '-') {
-      const inner = this.constantLiteralValue((node as unknown as { argument?: AstNode }).argument, seen);
+    if (node.type === 'UnaryExpression' && node.operator === '-') {
+      const inner = this.constantLiteralValue(node.argument, seen);
       return (inner && inner.kind === 'integer') ? { kind: 'integer', value: -inner.value } : null;
     }
     if (node.type === 'Literal') {
@@ -2377,44 +2456,38 @@ export class TypeChecker {
     if (!ast) return false;
     for (const stmt of (ast.body || [])) {
       if (stmt.type !== 'ExportNamedDeclaration') continue;
-      const decl = (stmt as unknown as { declaration?: AstNode }).declaration;
+      const decl = stmt.declaration;
       if (decl?.type === 'VariableDeclaration') {
-        for (const d of ((decl as unknown as { declarations?: Array<{ id?: IdentifierNode }> }).declarations || [])) {
+        for (const d of (decl.declarations || [])) {
           if (d?.id?.name === name) return false;
         }
       }
     }
-    const subtreeScan = (root: unknown, matchSymbol: boolean): boolean => {
-      const stack: unknown[] = [root];
+    const subtreeScan = (root: AstNode | null | undefined, matchSymbol: boolean): boolean => {
+      const stack: Array<AstNode | null | undefined> = [root];
       while (stack.length) {
         const cur = stack.pop();
-        if (!cur || typeof cur !== 'object' || typeof (cur as { type?: unknown }).type !== 'string') continue;
-        const anode = cur as AstNode;
-        if (anode.type === 'Identifier' && (anode as IdentifierNode).name === name
-            && (!matchSymbol || this.symbolTable.resolveReference(name, anode.start) === sym)) return true;
-        for (const k of Object.keys(anode)) {
-          if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-          const v = (anode as unknown as Record<string, unknown>)[k];
-          if (Array.isArray(v)) { for (const it of v) stack.push(it); }
-          else stack.push(v);
-        }
+        if (!isAstNodeLike(cur)) continue;
+        if (cur.type === 'Identifier' && cur.name === name
+            && (!matchSymbol || this.symbolTable.resolveReference(name, cur.start) === sym)) return true;
+        stack.push(...astAllNodeFields(cur));
       }
       return false;
     };
-    const subtreeHitsSym = (root: unknown): boolean => subtreeScan(root, true);
-    const subtreeMentionsName = (root: unknown): boolean => subtreeScan(root, false);
-    const stack: unknown[] = [ast];
+    const subtreeHitsSym = (root: AstNode | null | undefined): boolean => subtreeScan(root, true);
+    const subtreeMentionsName = (root: AstNode | null | undefined): boolean => subtreeScan(root, false);
+    const stack: AstNode[] = [ast];
     while (stack.length) {
       const cur = stack.pop();
-      if (!cur || typeof cur !== 'object' || typeof (cur as { type?: unknown }).type !== 'string') continue;
-      const anode = cur as AstNode;
+      if (!isAstNodeLike(cur)) continue;
+      const anode = cur;
       if (anode.type === 'AssignmentExpression') {
-        if (subtreeHitsSym((anode as unknown as { left?: unknown }).left)) return false;
+        if (subtreeHitsSym(anode.left)) return false;
       } else if (anode.type === 'UnaryExpression') {
-        const op = (anode as unknown as { operator?: string }).operator;
-        if ((op === '++' || op === '--') && subtreeHitsSym((anode as unknown as { argument?: unknown }).argument)) return false;
+        const op = anode.operator;
+        if ((op === '++' || op === '--') && subtreeHitsSym(anode.argument)) return false;
       } else if (anode.type === 'ForInStatement') {
-        const left = (anode as unknown as { left?: AstNode }).left;
+        const left = anode.left;
         if (left && left.type !== 'VariableDeclaration') {
           // BARE head: `for (name in …)` rebinds the binding visible in the
           // scope ENCLOSING the loop. Symbol identity at the head can't see
@@ -2431,12 +2504,7 @@ export class TypeChecker {
           if (subtreeHitsSym(left)) return false;
         }
       }
-      for (const k of Object.keys(anode)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-        const v = (anode as unknown as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) stack.push(it); }
-        else stack.push(v);
-      }
+      stack.push(...astAllNodeFields(anode));
     }
     return true;
   }
@@ -2529,7 +2597,7 @@ export class TypeChecker {
   /** Quick-fix payload for the value-comparison rewrite: operand + whole-expression source
    *  offsets, negation, and whether it is a regexp comparison (→ in-place `"" +` coercion
    *  rather than the `is_equal` helper). */
-  private referenceEqualityData(node: BinaryExpressionNode): unknown {
+  private referenceEqualityData(node: BinaryExpressionNode): DiagnosticFixData {
     return { referenceEquality: {
       negate: node.operator === '!=' || node.operator === '!==',
       coerce: this.isRegexpComparison(node),
@@ -2601,7 +2669,7 @@ export class TypeChecker {
    *   'coercing'   — `==`/`!=` possible ONLY via coercion; `===` would be always-false
    *   'impossible' — no value pair can satisfy it (always false, or always true for `!=`/`!==`)
    */
-  private classifyEquality(L: UcodeType[], R: UcodeType[], litL: unknown, litR: unknown, strict: boolean): 'ok' | 'coercing' | 'impossible' {
+  private classifyEquality(L: UcodeType[], R: UcodeType[], litL: ScalarLiteralValue, litR: ScalarLiteralValue, strict: boolean): 'ok' | 'coercing' | 'impossible' {
     const shares = L.some(a => R.includes(a));
     if (strict) return shares ? 'ok' : 'impossible';    // `===` is true only between same-type values
     const possible = L.some(a => R.some(b => this.pairCanEqual(a, b, litL, litR)));
@@ -2615,7 +2683,7 @@ export class TypeChecker {
 
   /** Can a value of base `a` ever `==` a value of base `b` (with optional fixed literal
    *  values)? Reference/null bases match only their own kind; distinct scalars coerce to number. */
-  private pairCanEqual(a: UcodeType, b: UcodeType, litL: unknown, litR: unknown): boolean {
+  private pairCanEqual(a: UcodeType, b: UcodeType, litL: ScalarLiteralValue, litR: ScalarLiteralValue): boolean {
     if (a === b) return true;                                       // same base — value equality left to constant checks
     if (REF_EQ_BASES.has(a) || REF_EQ_BASES.has(b)) return false;   // array/object/fn/regex/null vs a different base → NaN / never equal
     return this.numSetsIntersect(this.numSet(a, litL), this.numSet(b, litR));   // distinct scalars coerce to number
@@ -2623,7 +2691,7 @@ export class TypeChecker {
 
   /** The set of numbers a value of scalar base `base` (optionally a fixed literal) can coerce
    *  to under ucode `==` (ucv_to_number). 'all' = any finite number, 'none' = ∅ (non-numeric). */
-  private numSet(base: UcodeType, lit: unknown): 'all' | 'none' | number[] {
+  private numSet(base: UcodeType, lit: ScalarLiteralValue): 'all' | 'none' | number[] {
     if (base === UcodeType.INTEGER || base === UcodeType.DOUBLE)
       return (typeof lit === 'number') ? [lit] : 'all';
     if (base === UcodeType.STRING) {
@@ -2683,7 +2751,7 @@ export class TypeChecker {
    * empty/ambiguous string returns a number (never null), so we never ERROR on a
    * loose comparison we're unsure about — the worst case is a UC2015 warning.
    */
-  private scalarValueAsNumber(v: unknown): number | null {
+  private scalarValueAsNumber(v: ScalarLiteralValue): number | null {
     if (typeof v === 'number') return v;
     if (typeof v === 'boolean') return v ? 1 : 0;
     if (typeof v === 'string') {
@@ -3014,7 +3082,11 @@ export class TypeChecker {
         // Create ModuleType (not ObjectType) so downstream code that checks
         // 'moduleName' in dataType works for method resolution, hover, and completions
         if (isKnownObjectType(typeStr)) {
-          return { type: UcodeType.OBJECT, moduleName: typeStr } as any;
+          const mod: ModuleType = { type: UcodeType.OBJECT, moduleName: typeStr };
+          // A ModuleType is not a SingleType, but the runtime shape is what every
+          // consumer keys on ('moduleName' in dataType) — smuggle it through the
+          // declared type exactly as before.
+          return mod as UcodeDataType as SingleType;
         }
         return UcodeType.UNKNOWN;
     }
@@ -3372,9 +3444,10 @@ export class TypeChecker {
         const objName = (memberCallee.object as IdentifierNode).name;
         const methodName = (memberCallee.property as IdentifierNode).name;
         const objSym = this.symbolTable.resolveReference(objName, memberCallee.object.start);
-        if (objSym && typeof objSym.dataType === 'object' && objSym.dataType !== null &&
-            'moduleName' in objSym.dataType && isKnownModule((objSym.dataType as any).moduleName)) {
-          const modName = (objSym.dataType as any).moduleName as string;
+        const objData = objSym?.dataType;
+        if (objSym && typeof objData === 'object' && objData !== null &&
+            'moduleName' in objData && isKnownModule(objData.moduleName)) {
+          const modName = objData.moduleName;
           const registry = MODULE_REGISTRIES[modName as keyof typeof MODULE_REGISTRIES];
           const funcOpt = registry.getFunction(methodName);
           if (Option.isSome(funcOpt)) {
@@ -3444,7 +3517,7 @@ export class TypeChecker {
     // already ran, else a quiet walk over the literal's OWN return statements (plus
     // null when control can fall off the end).
     if (node.callee.type === 'ArrowFunctionExpression' || node.callee.type === 'FunctionExpression') {
-      const stamped = (node.callee as unknown as { _inferredReturnType?: UcodeDataType })._inferredReturnType;
+      const stamped = (node.callee as AstNode & { _inferredReturnType?: UcodeDataType })._inferredReturnType;
       if (stamped !== undefined && stamped !== null) return stamped;
       return this.inferFunctionLiteralReturnType(node.callee as ArrowFunctionExpressionNode | FunctionExpressionNode);
     }
@@ -3491,15 +3564,7 @@ export class TypeChecker {
         else sawBare = true;
         continue;
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-        const v = (n as unknown as Record<string, unknown>)[k];
-        if (Array.isArray(v)) {
-          for (const it of v) { if (it && typeof (it as AstNode).type === 'string') stack.push(it as AstNode); }
-        } else if (v && typeof (v as AstNode).type === 'string') {
-          stack.push(v as AstNode);
-        }
-      }
+      stack.push(...astChildren(n));
     }
     if (sawBare || !this.blockAlwaysTerminates(fn.body as AstNode)) types.push(UcodeType.NULL as UcodeDataType);
     if (types.length === 0) return UcodeType.NULL as UcodeDataType;
@@ -3943,7 +4008,7 @@ export class TypeChecker {
     // Emit at warning severity, escalated to error under `'use strict'`. The
     // range defaults to the callee (not the whole call — flagging every
     // argument for a MISSING one reads as if the present args were wrong).
-    const emit = (message: string, start = node.callee.start, end = node.callee.end, forceWarning = false, data?: Record<string, unknown>) => {
+    const emit = (message: string, start = node.callee.start, end = node.callee.end, forceWarning = false, data?: DiagnosticFixData) => {
       const d = { message, start, end, code: UcodeErrorCode.INVALID_PARAMETER_COUNT, ...(data ? { data } : {}) };
       if (this.strictMode && !forceWarning) this.errors.push({ ...d, severity: 'error' });
       else this.warnings.push({ ...d, severity: 'warning' });
@@ -4612,7 +4677,7 @@ export class TypeChecker {
       }
       const objIsObject = effType !== undefined
         && (effType === UcodeType.OBJECT
-            || (typeof effType === 'object' && (effType as any).type === UcodeType.OBJECT));
+            || (typeof effType === 'object' && effType.type === UcodeType.OBJECT));
       if (objSym && objIsObject && objSym.propertyTypes) {
         // 1. Static key resolution: `obj[LIT]`, `obj[const_ident]`, `obj[ns.A.B]`
         const keyStr = this.resolvePropertyKeyToString(node.property);
@@ -4646,7 +4711,7 @@ export class TypeChecker {
         // Propagate keys-of provenance: indexing a tagged array yields one of
         // the tagged object's keys. `let ks = keys(obj); ks[i]` → keysOfSymbol=obj.
         if (symbol.keysOfSymbol) {
-          (node as any)._keysOfSymbol = symbol.keysOfSymbol;
+          (node as MemberExpressionNode & { _keysOfSymbol?: string })._keysOfSymbol = symbol.keysOfSymbol;
         }
         // Tuple-shaped array (match() capture groups): a literal index — including
         // negative, `numericLiteralValue` unwraps a unary minus — resolves through
@@ -5476,7 +5541,7 @@ export class TypeChecker {
       }
       // Check inside block statements
       if (statement.type === 'BlockStatement') {
-        const blockNode = statement as any;
+        const blockNode = statement;
         if (blockNode.body && Array.isArray(blockNode.body)) {
           for (const innerStmt of blockNode.body) {
             if (innerStmt.type === 'BreakStatement' || innerStmt.type === 'ReturnStatement') {
@@ -5514,7 +5579,7 @@ export class TypeChecker {
     // Check first statement for 'use strict'; directive
     const first = ast.body[0];
     if (first?.type === 'ExpressionStatement') {
-      const expr = (first as any).expression;
+      const expr = first.expression;
       if (expr?.type === 'Literal' && expr.value === 'use strict') {
         return true;
       }
@@ -5727,7 +5792,7 @@ export class TypeChecker {
     // redeclaration hovers) — refine-only consumption sidesteps all of that.
     this.topLevelEngine = null;
     try {
-      const topBody = { type: 'BlockStatement', body: ast.body, start: ast.start, end: ast.end } as unknown as AstNode;
+      const topBody: BlockStatementNode = { type: 'BlockStatement', body: ast.body, start: ast.start, end: ast.end };
       const cfg = new CFGBuilder('top').build(topBody);
       const engine = new FlowTypeEngine(cfg, transfer, new Map(), edgeGuard);
       engine.compute();
@@ -5736,10 +5801,9 @@ export class TypeChecker {
 
     const visit = (node: AstNode): void => {
       if (!node || typeof node !== 'object') return;
-      const t = node.type;
-      if ((t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression')
-          && (node as any).body && !(node as any).forwardDeclaration) {
-        const fnBody = (node as any).body;
+      if ((node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression')
+          && node.body && !(node.type === 'FunctionDeclaration' && node.forwardDeclaration)) {
+        const fnBody = node.body;
         if (fnBody.type === 'BlockStatement') {
           try {
             const cfg = new CFGBuilder('fn').build(fnBody);
@@ -5750,11 +5814,7 @@ export class TypeChecker {
           } catch { /* never let engine construction break analysis */ }
         }
       }
-      for (const key of Object.keys(node)) {
-        const child = (node as any)[key];
-        if (Array.isArray(child)) child.forEach(c => { if (c && typeof c === 'object' && c.type) visit(c); });
-        else if (child && typeof child === 'object' && child.type) visit(child);
-      }
+      for (const child of astChildren(node)) visit(child);
     };
     visit(ast);
   }
@@ -5851,7 +5911,8 @@ export class TypeChecker {
    *  signature types (from the function symbol's ParamInfo). */
   private functionParamEnv(fnNode: AstNode): FlowEnvironment {
     const env = new Map<string, UcodeDataType>();
-    const name = (fnNode as any).id?.name;
+    const name = (fnNode.type === 'FunctionDeclaration' || fnNode.type === 'FunctionExpression')
+      ? fnNode.id?.name : undefined;
     if (name) {
       const sym = this.symbolTable.resolveReference(name, fnNode.start);
       for (const p of (sym?.parameters ?? [])) env.set(p.name, p.type);
@@ -5944,7 +6005,7 @@ export class TypeChecker {
     }
 
     // Handle combined OR guards (e.g., type(x) === 'array' || type(x) === 'string')
-    if ((guard as any).isCombinedOr) {
+    if (guard.isCombinedOr) {
       // NEGATED combined guard — the else/fall-through edge of the OR chain
       // (`if (t == "int" || t == "double") return …;` fall-through): REMOVE every
       // member instead of narrowing TO the union. Ignoring isNegative here was an
@@ -6090,10 +6151,10 @@ export class TypeChecker {
    *  could have changed the variable (so `if (!x) return; x = null; x.foo` still flags). */
   private isVariableAssignedBetween(root: AstNode | null, name: string, after: number, before: number): boolean {
     let found = false;
-    const targetsName = (t: unknown): boolean => isAstNodeLike(t) && t.type === 'Identifier' && t.name === name;
-    const walk = (n: unknown): void => {
-      if (found || !isAstNodeLike(n)) return;
-      if (typeof n.start === 'number' && n.start > after && n.start < before) {
+    const targetsName = (t: AstNode | null | undefined): boolean => isAstNodeLike(t) && t.type === 'Identifier' && t.name === name;
+    if (root) walkAst(root, (n): boolean | void => {
+      if (found) return false;
+      if (n.start > after && n.start < before) {
         // NB: only `=`/compound-assign and re-declaration invalidate the guard here.
         // ucode's ++/-- is a UnaryExpression, but `x++`/`x--` can't turn `x` back into
         // null, so it must NOT count as an invalidating reassignment for a null-guard —
@@ -6103,17 +6164,10 @@ export class TypeChecker {
         if ((n.type === 'AssignmentExpression' && targetsName(n.left))
             || (n.type === 'VariableDeclarator' && targetsName(n.id))) {
           found = true;
-          return;
+          return false;
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'parent' || k === 'leadingJsDoc') continue;
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
-    };
-    walk(root);
+    });
     return found;
   }
 
@@ -6124,27 +6178,20 @@ export class TypeChecker {
    *  don't surface imprecision in a producer's return type as a false positive. */
   private isVariableAssignedNullBetween(root: AstNode | null, name: string, after: number, before: number): boolean {
     let found = false;
-    const targetsName = (t: unknown): boolean => isAstNodeLike(t) && t.type === 'Identifier' && t.name === name;
-    const isNullLiteral = (t: unknown): boolean => isAstNodeLike(t) && t.type === 'Literal'
-      && ((t as unknown as LiteralNode).value === null || (t as unknown as LiteralNode).literalType === 'null');
-    const walk = (n: unknown): void => {
-      if (found || !isAstNodeLike(n)) return;
-      if (typeof n.start === 'number' && n.start > after && n.start < before
+    const targetsName = (t: AstNode | null | undefined): boolean => isAstNodeLike(t) && t.type === 'Identifier' && t.name === name;
+    const isNullLiteral = (t: AstNode | null | undefined): boolean => isAstNodeLike(t) && t.type === 'Literal'
+      && (t.value === null || t.literalType === 'null');
+    if (root) walkAst(root, (n): boolean | void => {
+      if (found) return false;
+      if (n.start > after && n.start < before
           && n.type === 'AssignmentExpression'
-          && (n as unknown as AssignmentExpressionNode).operator === '='
-          && targetsName((n as unknown as AssignmentExpressionNode).left)
-          && isNullLiteral((n as unknown as AssignmentExpressionNode).right)) {
+          && n.operator === '='
+          && targetsName(n.left)
+          && isNullLiteral(n.right)) {
         found = true;
-        return;
+        return false;
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'parent' || k === 'leadingJsDoc') continue;
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
-    };
-    walk(root);
+    });
     return found;
   }
 
@@ -6258,21 +6305,13 @@ export class TypeChecker {
     let index = this.fnDeclByIdStart.get(this.currentAST);
     if (!index) {
       index = new Map<number, AstNode>();
-      const stack: AstNode[] = [this.currentAST];
-      while (stack.length > 0) {
-        const n = stack.pop()!;
-        if (!isAstNodeLike(n)) continue;
+      const builtIndex = index;
+      walkAst(this.currentAST, (n) => {
         if (n.type === 'FunctionDeclaration') {
-          const id = (n as unknown as { id?: AstNode }).id;
-          if (id && typeof id.start === 'number') index.set(id.start, n);
+          const id = n.id;
+          if (id && typeof id.start === 'number') builtIndex.set(id.start, n);
         }
-        for (const key of Object.keys(n)) {
-          if (key === 'parent' || key === 'leadingJsDoc') continue;
-          const v = (n as unknown as Record<string, unknown>)[key];
-          if (Array.isArray(v)) { for (const it of v) if (it && typeof it === 'object') stack.push(it as AstNode); }
-          else if (v && typeof v === 'object') stack.push(v as AstNode);
-        }
-      }
+      });
       this.fnDeclByIdStart.set(this.currentAST, index);
     }
     return index.get(sym.node.start) ?? null;
@@ -6288,27 +6327,20 @@ export class TypeChecker {
     if (this.isVariableAssignedBetween(root, rootName, after, before)) return true;
     if (rootName === path) return false;
     let found = false;
-    const walk = (n: unknown): void => {
-      if (found || !isAstNodeLike(n)) return;
-      if (typeof n.start === 'number' && n.start > after && n.start < before
+    if (root) walkAst(root, (n): boolean | void => {
+      if (found) return false;
+      if (n.start > after && n.start < before
           && n.type === 'AssignmentExpression') {
-        const lhs = (n as unknown as AssignmentExpressionNode).left;
+        const lhs = n.left;
         if (lhs?.type === 'MemberExpression') {
           const written = this.getDottedPath(lhs);
           if (written && (path === written || path.startsWith(written + '.') || path.startsWith(written + '['))) {
             found = true;
-            return;
+            return false;
           }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'parent' || k === 'leadingJsDoc') continue;
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
-    };
-    walk(root);
+    });
     return found;
   }
 
@@ -6320,21 +6352,12 @@ export class TypeChecker {
    *  the loop too, every iteration re-captures, so the positional check suffices. */
   private loopCarriedWriteInvalidates(declPos: number, position: number, paths: string[]): boolean {
     const loops: AstNode[] = [];
-    const collect = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
-      if (typeof n.start === 'number' && typeof n.end === 'number'
-          && (position < n.start || position > n.end)) return;
+    if (this.currentAST) walkAst(this.currentAST, (n): boolean | void => {
+      if (position < n.start || position > n.end) return false;
       if (n.type === 'WhileStatement' || n.type === 'ForStatement' || n.type === 'ForInStatement') {
-        loops.push(n as AstNode);
+        loops.push(n);
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'parent' || k === 'leadingJsDoc') continue;
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) collect(it); }
-        else if (isAstNodeLike(v)) collect(v);
-      }
-    };
-    collect(this.currentAST);
+    });
     for (const loop of loops) {
       if (declPos >= loop.start && declPos <= loop.end) continue;
       for (const p of paths) {
@@ -6464,7 +6487,7 @@ export class TypeChecker {
         }
         // Negated identifier: if (!x) { ... } else { ... } → x is non-null in else
         if (ifNode.test.type === 'UnaryExpression' && !reassignedInElse) {
-          const unary = ifNode.test as any;
+          const unary = ifNode.test;
           if (unary.operator === '!' && unary.argument?.type === 'Identifier' &&
               unary.argument.name === variableName) {
             guards.push({
@@ -6791,15 +6814,17 @@ export class TypeChecker {
     // Dotted paths (e.g., pkg.prop) can't be directly shadowed by declarations
     if (variableName.includes('.')) return false;
 
+    const isFn = funcNode.type === 'FunctionDeclaration' || funcNode.type === 'FunctionExpression'
+      || funcNode.type === 'ArrowFunctionExpression';
     // Check parameters
-    const params = (funcNode as any).params || [];
+    const params = (isFn && funcNode.params) || [];
     for (const param of params) {
-      if (param.type === 'Identifier' && (param as IdentifierNode).name === variableName) {
+      if (param.type === 'Identifier' && param.name === variableName) {
         return true;
       }
     }
     // Check top-level body for variable declarations
-    const body = (funcNode as any).body;
+    const body = isFn ? funcNode.body : undefined;
     if (body && body.type === 'BlockStatement') {
       for (const stmt of (body as BlockStatementNode).body) {
         if (stmt.type === 'VariableDeclaration') {
@@ -6869,7 +6894,7 @@ export class TypeChecker {
       if ((binaryExpr.operator === '!=' || binaryExpr.operator === '!==') &&
           this.guardedOperandName(binaryExpr.left) === variableName &&
           binaryExpr.right.type === 'Literal' &&
-          (binaryExpr.right as any).value === null) {
+          binaryExpr.right.value === null) {
         return true;
       }
 
@@ -6877,7 +6902,7 @@ export class TypeChecker {
       if ((binaryExpr.operator === '!=' || binaryExpr.operator === '!==') &&
           this.guardedOperandName(binaryExpr.right) === variableName &&
           binaryExpr.left.type === 'Literal' &&
-          (binaryExpr.left as any).value === null) {
+          binaryExpr.left.value === null) {
         return true;
       }
     }
@@ -6904,7 +6929,7 @@ export class TypeChecker {
       if ((binaryExpr.operator === '==' || binaryExpr.operator === '===') &&
           this.guardedOperandName(binaryExpr.left) === variableName &&
           binaryExpr.right.type === 'Literal' &&
-          (binaryExpr.right as any).value === null) {
+          binaryExpr.right.value === null) {
         return true;
       }
 
@@ -6912,7 +6937,7 @@ export class TypeChecker {
       if ((binaryExpr.operator === '==' || binaryExpr.operator === '===') &&
           this.guardedOperandName(binaryExpr.right) === variableName &&
           binaryExpr.left.type === 'Literal' &&
-          (binaryExpr.left as any).value === null) {
+          binaryExpr.left.value === null) {
         return true;
       }
     }
@@ -7020,8 +7045,8 @@ export class TypeChecker {
     };
     split(test);
     for (const d of disjuncts) {
-      if (d.type === 'UnaryExpression' && (d as any).operator === '!') {
-        const sc = this.getStringContractArg((d as any).argument);
+      if (d.type === 'UnaryExpression' && d.operator === '!') {
+        const sc = this.getStringContractArg(d.argument);
         if (sc && this.getArgVariableName(sc.arg) === variableName) {
           guards.push({ variableName, narrowToType: UcodeType.STRING, isNegative: false });
         }
@@ -7321,7 +7346,7 @@ export class TypeChecker {
       if (npLeft && binaryExpr.right.type === 'Literal') {
         const argVarName = this.getArgVariableName(npLeft.arg);
         if (argVarName === variableName) {
-          const literalValue = (binaryExpr.right as any).value;
+          const literalValue = binaryExpr.right.value;
           if (this.comparisonExcludesNull(binaryExpr.operator, literalValue, true)) {
             return { variableName, narrowToType: UcodeType.NULL, isNegative: true, isNullPropagation: true };
           }
@@ -7332,7 +7357,7 @@ export class TypeChecker {
       if (npRight && binaryExpr.left.type === 'Literal') {
         const argVarName = this.getArgVariableName(npRight.arg);
         if (argVarName === variableName) {
-          const literalValue = (binaryExpr.left as any).value;
+          const literalValue = binaryExpr.left.value;
           if (this.comparisonExcludesNull(binaryExpr.operator, literalValue, false)) {
             return { variableName, narrowToType: UcodeType.NULL, isNegative: true, isNullPropagation: true };
           }
@@ -7406,15 +7431,15 @@ export class TypeChecker {
         let litValue: number | null = null;
         let op = binaryExpr.operator;
         if (binaryExpr.left.type === 'Identifier' && binaryExpr.right.type === 'Literal' &&
-            typeof (binaryExpr.right as any).value === 'number') {
-          matchedName = (binaryExpr.left as any).name;
+            typeof binaryExpr.right.value === 'number') {
+          matchedName = binaryExpr.left.name;
           idNode = binaryExpr.left;
-          litValue = (binaryExpr.right as any).value;
+          litValue = binaryExpr.right.value;
         } else if (binaryExpr.right.type === 'Identifier' && binaryExpr.left.type === 'Literal' &&
-                   typeof (binaryExpr.left as any).value === 'number') {
-          matchedName = (binaryExpr.right as any).name;
+                   typeof binaryExpr.left.value === 'number') {
+          matchedName = binaryExpr.right.name;
           idNode = binaryExpr.right;
-          litValue = (binaryExpr.left as any).value;
+          litValue = binaryExpr.left.value;
           // `K < x` ⇔ `x > K`: mirror the operator so the 0-exclusion test below
           // always reads as <variable> <op> <literal>.
           op = op === '<' ? '>' : op === '>' ? '<' : op === '<=' ? '>=' : '<=';
@@ -7632,9 +7657,8 @@ export class TypeChecker {
   private earlyExitNegatesIdentifier(test: AstNode | null | undefined, variableName: string): boolean {
     if (!test) return false;
     if (test.type === 'UnaryExpression') {
-      const u = test as unknown as { operator: string; argument?: AstNode };
-      return u.operator === '!' && u.argument?.type === 'Identifier'
-        && (u.argument as IdentifierNode).name === variableName;
+      return test.operator === '!' && test.argument?.type === 'Identifier'
+        && test.argument.name === variableName;
     }
     if (test.type === 'BinaryExpression' && (test as BinaryExpressionNode).operator === '||') {
       const b = test as BinaryExpressionNode;
@@ -7915,232 +7939,9 @@ export class TypeChecker {
     return null;
   }
 
-  /**
-   * Get child nodes of an AST node for traversal
-   */
+  /** Child nodes for traversal — delegates to the shared total astChildren utility. */
   private getChildNodes(node: AstNode): AstNode[] {
-    const children: AstNode[] = [];
-
-    switch (node.type) {
-      // Container nodes
-      case 'Program':
-        children.push(...(node as ProgramNode).body);
-        break;
-      case 'BlockStatement':
-        children.push(...(node as BlockStatementNode).body);
-        break;
-
-      // Statements
-      case 'ExpressionStatement':
-        children.push((node as ExpressionStatementNode).expression);
-        break;
-      case 'VariableDeclaration':
-        for (const declarator of (node as VariableDeclarationNode).declarations) {
-          children.push(declarator);
-        }
-        break;
-      case 'VariableDeclarator': {
-        const decl = node as VariableDeclaratorNode;
-        children.push(decl.id);
-        if (decl.init) children.push(decl.init);
-        break;
-      }
-      case 'IfStatement': {
-        const ifNode = node as IfStatementNode;
-        children.push(ifNode.test, ifNode.consequent);
-        if (ifNode.alternate) children.push(ifNode.alternate);
-        break;
-      }
-      case 'ForStatement': {
-        const forNode = node as ForStatementNode;
-        if (forNode.init) children.push(forNode.init);
-        if (forNode.test) children.push(forNode.test);
-        if (forNode.update) children.push(forNode.update);
-        children.push(forNode.body);
-        break;
-      }
-      case 'ForInStatement': {
-        const fin = node as ForInStatementNode;
-        children.push(fin.left, fin.right, fin.body);
-        break;
-      }
-      case 'WhileStatement': {
-        const wh = node as WhileStatementNode;
-        children.push(wh.test, wh.body);
-        break;
-      }
-      case 'ReturnStatement': {
-        const ret = node as ReturnStatementNode;
-        if (ret.argument) children.push(ret.argument);
-        break;
-      }
-      case 'ThrowStatement': {
-        const thr = node as ThrowStatementNode;
-        if (thr.argument) children.push(thr.argument);
-        break;
-      }
-      case 'BreakStatement':
-      case 'ContinueStatement':
-      case 'EmptyStatement':
-        // Leaf statements — no children
-        break;
-      case 'SwitchStatement': {
-        const sw = node as SwitchStatementNode;
-        children.push(sw.discriminant);
-        if (sw.cases) {
-          for (const c of sw.cases) {
-            if (c.test) children.push(c.test);
-            children.push(...c.consequent);
-          }
-        }
-        break;
-      }
-      case 'SwitchCase':
-        // Handled inline by SwitchStatement above; if reached standalone:
-        break;
-      case 'TryStatement': {
-        const tr = node as TryStatementNode;
-        children.push(tr.block);
-        if (tr.handler) children.push(tr.handler);
-        break;
-      }
-      case 'CatchClause': {
-        const cc = node as CatchClauseNode;
-        children.push(cc.body);
-        break;
-      }
-
-      // Functions
-      case 'FunctionDeclaration': {
-        const fd = node as FunctionDeclarationNode;
-        children.push(fd.id, ...fd.params, fd.body);
-        break;
-      }
-      case 'FunctionExpression': {
-        const fe = node as FunctionExpressionNode;
-        if (fe.id) children.push(fe.id);
-        children.push(...fe.params, fe.body);
-        break;
-      }
-      case 'ArrowFunctionExpression': {
-        const ae = node as ArrowFunctionExpressionNode;
-        children.push(...ae.params);
-        if (ae.body && typeof ae.body === 'object') {
-          children.push(ae.body as AstNode);
-        }
-        break;
-      }
-
-      // Expressions
-      case 'BinaryExpression': {
-        const bin = node as BinaryExpressionNode;
-        children.push(bin.left, bin.right);
-        break;
-      }
-      case 'LogicalExpression': {
-        const log = node as LogicalExpressionNode;
-        children.push(log.left, log.right);
-        break;
-      }
-      case 'UnaryExpression': {
-        const un = node as UnaryExpressionNode;
-        children.push(un.argument);
-        break;
-      }
-      case 'AssignmentExpression': {
-        const asg = node as AssignmentExpressionNode;
-        children.push(asg.left, asg.right);
-        break;
-      }
-      case 'ConditionalExpression': {
-        const cond = node as ConditionalExpressionNode;
-        children.push(cond.test, cond.consequent, cond.alternate);
-        break;
-      }
-      case 'CallExpression': {
-        const call = node as CallExpressionNode;
-        children.push(call.callee);
-        children.push(...call.arguments.filter(arg => arg != null));
-        break;
-      }
-      case 'MemberExpression': {
-        const mem = node as MemberExpressionNode;
-        children.push(mem.object, mem.property);
-        break;
-      }
-      case 'DeleteExpression': {
-        const del = node as DeleteExpressionNode;
-        children.push(del.argument);
-        break;
-      }
-      case 'SpreadElement': {
-        const spr = node as SpreadElementNode;
-        children.push(spr.argument);
-        break;
-      }
-
-      // Literals and atoms
-      case 'ObjectExpression':
-        for (const prop of (node as ObjectExpressionNode).properties) {
-          children.push(prop);
-        }
-        break;
-      case 'Property': {
-        const prop = node as PropertyNode;
-        if (prop.key) children.push(prop.key);
-        if (prop.value) children.push(prop.value);
-        break;
-      }
-      case 'ArrayExpression':
-        children.push(...(node as ArrayExpressionNode).elements.filter(el => el != null));
-        break;
-      case 'TemplateLiteral': {
-        const tl = node as TemplateLiteralNode;
-        for (const expr of tl.expressions) children.push(expr);
-        break;
-      }
-      case 'TemplateElement':
-      case 'Literal':
-      case 'Identifier':
-      case 'ThisExpression':
-      case 'JsDocComment':
-        // Leaf nodes — no children to traverse
-        break;
-
-      // Imports/exports
-      case 'ImportDeclaration': {
-        const imp = node as ImportDeclarationNode;
-        children.push(...imp.specifiers);
-        break;
-      }
-      case 'ImportSpecifier':
-      case 'ImportDefaultSpecifier':
-      case 'ImportNamespaceSpecifier':
-      case 'ExportSpecifier':
-        // Leaf specifier nodes
-        break;
-      case 'ExportDefaultDeclaration': {
-        const ed = node as ExportDefaultDeclarationNode;
-        if (ed.declaration) children.push(ed.declaration);
-        break;
-      }
-      case 'ExportNamedDeclaration': {
-        const en = node as ExportNamedDeclarationNode;
-        if (en.declaration) children.push(en.declaration);
-        break;
-      }
-      case 'ExportAllDeclaration':
-        break;
-
-      default: {
-        // Exhaustive check — if this errors, a new AstNodeKind was added without a case here
-        const _exhaustive: never = node.type;
-        void _exhaustive;
-        break;
-      }
-    }
-
-    return children.filter(child => child != null);
+    return astChildren(node);
   }
 
 }

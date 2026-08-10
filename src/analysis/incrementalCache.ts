@@ -21,7 +21,10 @@
 // Correctness is continuously checked by tests/test-incremental-analysis.test.js, which
 // asserts incremental diagnostics ≡ full-analysis diagnostics across many edit sequences.
 
-import { type ProgramNode, type AstNode, type FunctionDeclarationNode, type VariableDeclarationNode, type ObjectExpressionNode, type PropertyNode, type FunctionExpressionNode } from '../ast/nodes';
+import { type ProgramNode, type AstNode, type FunctionDeclarationNode, type FunctionExpressionNode, type ObjectExpressionNode } from '../ast/nodes';
+import { forEachAstChild } from '../ast/astChildren';
+import type { Diagnostic } from 'vscode-languageserver/node';
+import type { UcodeDataType } from './symbolTable';
 
 export interface UnitRange {
   key: string;                 // stable identity within the file (name#ordinal)
@@ -35,15 +38,15 @@ export interface UnitRange {
 export interface RelDiagnostic {
   relStart: number;
   relEnd: number;
-  diag: any; // LSP Diagnostic with range removed-and-recomputed on replay
+  diag: Omit<Diagnostic, 'range'>; // range removed here, recomputed on replay
 }
 
 export interface UnitState {
   bodyHash: string;
   cls: BodyClass;               // pure | thisSafe | impure — only the first two are skippable
-  returnType: unknown;          // cached inferred return type (UcodeDataType)
+  returnType: UcodeDataType | undefined; // cached inferred return type
   relDiagnostics: RelDiagnostic[]; // ALL diagnostics inside the body, offsets relative to bodyStart
-  thisWrites: Array<[string, unknown]>; // for a thisSafe body: the `this.<prop> = …` types it sets, replayed on skip so siblings see real types
+  thisWrites: Array<[string, UcodeDataType]>; // for a thisSafe body: the `this.<prop> = …` types it sets, replayed on skip so siblings see real types
   sig: string;                  // this unit's externally-visible signature (return type + return shape + this-writes); feeds the semantic fingerprint
 }
 
@@ -75,33 +78,34 @@ export function extractUnits(ast: ProgramNode): UnitRange[] {
   const addObjectMethods = (obj: ObjectExpressionNode) => {
     for (const prop of obj.properties || []) {
       if (!prop || prop.type !== 'Property') continue;
-      const p = prop as PropertyNode;
-      const val = p.value as any;
+      const val = prop.value;
       if (val && val.type === 'FunctionExpression') {
-        const nm = (p.key as any)?.name ?? (p.key as any)?.value ?? 'method';
-        add('method', String(nm), val, (val as FunctionExpressionNode).body);
+        const key = prop.key;
+        const nm = (key.type === 'Identifier' ? key.name : undefined)
+          ?? (key.type === 'Literal' ? key.value : undefined)
+          ?? 'method';
+        add('method', String(nm), val, val.body);
       }
     }
   };
   for (const stmt of ast.body || []) {
     if (!stmt) continue;
     if (stmt.type === 'FunctionDeclaration') {
-      const fn = stmt as FunctionDeclarationNode;
-      if (!fn.forwardDeclaration) add('function', fn.id?.name ?? 'anon', fn, fn.body);
+      if (!stmt.forwardDeclaration) add('function', stmt.id?.name ?? 'anon', stmt, stmt.body);
     } else if (stmt.type === 'VariableDeclaration') {
       // `let/const obj = { m: function(){…}, … };`
-      for (const decl of (stmt as VariableDeclarationNode).declarations || []) {
-        const init = (decl as any).init;
-        if (init && init.type === 'ObjectExpression') addObjectMethods(init as ObjectExpressionNode);
+      for (const decl of stmt.declarations || []) {
+        const init = decl.init;
+        if (init && init.type === 'ObjectExpression') addObjectMethods(init);
       }
     } else if (stmt.type === 'ReturnStatement') {
       // Module-return pattern: `… ; return { method: function(){…}, … };` (firewall4 fw4.uc).
-      const arg = (stmt as any).argument;
-      if (arg && arg.type === 'ObjectExpression') addObjectMethods(arg as ObjectExpressionNode);
+      const arg = stmt.argument;
+      if (arg && arg.type === 'ObjectExpression') addObjectMethods(arg);
     } else if (stmt.type === 'ExpressionStatement') {
       // `export default { … }` lowers to an expression in some shapes; also a bare object expr.
-      const expr = (stmt as any).expression;
-      if (expr && expr.type === 'ObjectExpression') addObjectMethods(expr as ObjectExpressionNode);
+      const expr = stmt.expression;
+      if (expr && expr.type === 'ObjectExpression') addObjectMethods(expr);
     }
   }
   return units;
@@ -142,7 +146,9 @@ export function bodyHashOf(text: string, u: UnitRange): string {
 export type BodyClass = 'pure' | 'thisSafe' | 'impure';
 
 export function classifyBody(u: UnitRange): BodyClass {
-  const fn = u.fnNode as any;
+  const fn: FunctionDeclarationNode | FunctionExpressionNode | null =
+    (u.fnNode.type === 'FunctionDeclaration' || u.fnNode.type === 'FunctionExpression') ? u.fnNode : null;
+  if (!fn) return 'pure'; // extractUnits only produces function nodes; match the historical no-op result
   // Only methods (which have a `this`) can be thisSafe; a top-level function writing `this`
   // is meaningless, so treat any non-local write there as impure.
   const allowThis = u.kind === 'method';
@@ -151,29 +157,27 @@ export function classifyBody(u: UnitRange): BodyClass {
   for (const p of fn.params ?? []) if (p?.type === 'Identifier') local.add(p.name);
   if (fn.restParam?.name) local.add(fn.restParam.name);
   // all let/const/param/nested-fn names declared anywhere inside the body
-  const collectLocals = (n: any): void => {
-    if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
-    if (n.type === 'VariableDeclarator' && n.id?.type === 'Identifier') local.add(n.id.name);
-    if ((n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression')) {
+  const collectLocals = (n: AstNode | null | undefined): void => {
+    if (!n) return;
+    if (n.type === 'VariableDeclarator' && n.id.type === 'Identifier') local.add(n.id.name);
+    if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression') {
       if (n.id?.name) local.add(n.id.name);
       for (const p of n.params ?? []) if (p?.type === 'Identifier') local.add(p.name);
       if (n.restParam?.name) local.add(n.restParam.name);
+    } else if (n.type === 'ArrowFunctionExpression') {
+      for (const p of n.params ?? []) if (p?.type === 'Identifier') local.add(p.name);
+      if (n.restParam?.name) local.add(n.restParam.name);
     }
-    if (n.type === 'ForInStatement' && n.left?.type === 'Identifier') local.add(n.left.name);
-    for (const k of Object.keys(n)) {
-      if (k === 'parent' || k === 'leadingJsDoc') continue;
-      const v = n[k];
-      if (Array.isArray(v)) v.forEach(collectLocals);
-      else if (v && typeof v === 'object' && v.type) collectLocals(v);
-    }
+    if (n.type === 'ForInStatement' && n.left.type === 'Identifier') local.add(n.left.name);
+    forEachAstChild(n, collectLocals);
   };
   collectLocals(fn.body);
 
   // root of an assignment/delete target: a name, the marker 'this', or null (other → impure)
-  const rootName = (t: any): string | null => {
-    if (!t || typeof t !== 'object') return null;
+  const rootName = (t: AstNode | null | undefined): string | null => {
+    if (!t) return null;
     if (t.type === 'Identifier') return t.name;
-    if (t.type === 'ThisExpression') return ' this';
+    if (t.type === 'ThisExpression') return ' this';
     if (t.type === 'MemberExpression') return rootName(t.object);
     return null; // CallExpression base, etc.
   };
@@ -181,20 +185,15 @@ export function classifyBody(u: UnitRange): BodyClass {
   let cls: BodyClass = 'pure';
   const note = (root: string | null) => {
     if (root !== null && local.has(root)) return;        // local write → fine
-    if (root === ' this' && allowThis) { if (cls === 'pure') cls = 'thisSafe'; return; }
+    if (root === ' this' && allowThis) { if (cls === 'pure') cls = 'thisSafe'; return; }
     cls = 'impure';
   };
-  const walk = (n: any): void => {
-    if (cls === 'impure' || !n || typeof n !== 'object' || typeof n.type !== 'string') return;
+  const walk = (n: AstNode | null | undefined): void => {
+    if (cls === 'impure' || !n) return;
     if (n.type === 'AssignmentExpression') note(rootName(n.left));
-    else if (n.type === 'UpdateExpression') note(rootName(n.argument));
+    else if (n.type === 'UnaryExpression' && (n.operator === '++' || n.operator === '--')) note(rootName(n.argument));
     else if (n.type === 'DeleteExpression') note(rootName(n.argument));
-    for (const k of Object.keys(n)) {
-      if (k === 'parent' || k === 'leadingJsDoc') continue;
-      const v = n[k];
-      if (Array.isArray(v)) v.forEach(walk);
-      else if (v && typeof v === 'object' && v.type) walk(v);
-    }
+    forEachAstChild(n, walk);
   };
   walk(fn.body);
   return cls;

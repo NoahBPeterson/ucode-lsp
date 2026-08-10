@@ -22,7 +22,7 @@ import { UcodeParser } from './parser';
 import { allBuiltinFunctions } from './builtins';
 import { compactBuiltinSignature } from './signatureHelp';
 import { type SemanticAnalysisResult, SymbolType, type Symbol as UcodeSymbol } from './analysis';
-import { extractModuleType, typeToString } from './analysis/symbolTable';
+import { extractModuleType, typeToString, isUnionType, isArrayType, type UcodeDataType } from './analysis/symbolTable';
 import { nl80211TypeRegistry } from './analysis/nl80211Types';
 import { rtnlTypeRegistry } from './analysis/rtnlTypes';
 import { Option } from 'effect';
@@ -30,7 +30,6 @@ import { MODULE_REGISTRIES, OBJECT_REGISTRIES, isKnownModule, isKnownObjectType,
 import { FileResolver } from './analysis/fileResolver';
 import { computeImportInsertEdit } from './importEdit';
 import type { FunctionSignature } from './analysis/moduleTypes';
-import type { ImportDeclarationNode } from './ast/nodes';
 
 const defaultExportPropertiesCache = new Map<string, { content: string; properties: { name: string; type: string }[] }>();
 
@@ -634,13 +633,13 @@ function resolveCalleeSignatureForArgs(
 
 /** The object-type name of an array's elements (`array<socket>` → 'socket'), digging through
  *  a `T[] | null` union. Null when the type isn't an array of a known object handle. */
-function arrayElementObjectType(dataType: unknown): string | null {
-    const candidates: any[] = (dataType && typeof dataType === 'object' && (dataType as any).type === 'union')
-        ? (dataType as any).types : [dataType];
+function arrayElementObjectType(dataType: UcodeDataType | undefined): string | null {
+    if (dataType === undefined) return null;
+    const candidates: UcodeDataType[] = isUnionType(dataType) ? dataType.types : [dataType];
     for (const c of candidates) {
-        if (c && typeof c === 'object' && c.type === 'array' && c.elementType) {
+        if (isArrayType(c)) {
             const el = c.elementType;
-            if (el && typeof el === 'object' && el.type === 'object' && typeof el.moduleName === 'string') {
+            if (typeof el === 'object' && 'moduleName' in el && typeof el.moduleName === 'string') {
                 return el.moduleName;
             }
         }
@@ -653,11 +652,11 @@ function arrayElementObjectType(dataType: unknown): string | null {
 function scanModuleImport(moduleName: string, ast: AstNode | undefined): { namespace?: string; named: Set<string> } {
     const named = new Set<string>();
     let namespace: string | undefined;
-    const body: AstNode[] = (ast && Array.isArray((ast as any).body)) ? (ast as any).body : [];
+    const body: AstNode[] = ast?.type === 'Program' ? ast.body : [];
     for (const stmt of body) {
-        if (stmt?.type !== 'ImportDeclaration') continue;
-        const imp = stmt as ImportDeclarationNode;
-        if (imp.source?.value !== moduleName) continue;
+        if (stmt.type !== 'ImportDeclaration') continue;
+        const imp = stmt;
+        if (imp.source.value !== moduleName) continue;
         for (const spec of imp.specifiers) {
             if (spec.type === 'ImportNamespaceSpecifier') namespace = spec.local.name;
             else if (spec.type === 'ImportSpecifier') named.add(spec.imported.name);
@@ -1496,21 +1495,21 @@ function extractDefaultExportProperties(fileContent: string, filePath?: string):
             return properties;
         }
 
-        const program = parseResult.ast as any;
+        const programBody: AstNode[] = parseResult.ast.type === 'Program' ? parseResult.ast.body : [];
         const variableInitializers = new Map<string, AstNode | null>();
 
-        for (const statement of program.body || []) {
-            if (statement?.type === 'VariableDeclaration') {
-                for (const declarator of statement.declarations || []) {
-                    if (declarator?.id?.type === 'Identifier') {
+        for (const statement of programBody) {
+            if (statement.type === 'VariableDeclaration') {
+                for (const declarator of statement.declarations) {
+                    if (declarator.id.type === 'Identifier') {
                         variableInitializers.set(declarator.id.name, declarator.init || null);
                     }
                 }
             }
         }
 
-        for (const statement of program.body || []) {
-            if (statement?.type === 'ExportDefaultDeclaration') {
+        for (const statement of programBody) {
+            if (statement.type === 'ExportDefaultDeclaration') {
                 const resolved = resolveDefaultExportObject(statement.declaration, variableInitializers, new Set<string>());
                 if (resolved && resolved.type === 'ObjectExpression') {
                     properties = extractPropertiesFromObjectExpression(resolved);
@@ -1587,7 +1586,7 @@ function resolveToObjectLiteral(node: AstNode | null | undefined, analysisResult
         if (visited.has(ident.name)) return null;
         visited.add(ident.name);
         const sym = analysisResult ? lookupSymbol(ident.name, analysisResult, offset) : undefined;
-        return sym ? resolveToObjectLiteral((sym as any).initNode, analysisResult, offset, visited) : null;
+        return sym ? resolveToObjectLiteral(sym.initNode, analysisResult, offset, visited) : null;
     }
     if (node.type === 'MemberExpression') {
         const mem = node as MemberExpressionNode;
@@ -1621,7 +1620,7 @@ function objectLiteralAtChain(rootLit: ObjectExpressionNode | null, chain: strin
 function objectLiteralChainCompletions(objectName: string, propertyChain: string[] | undefined, analysisResult: SemanticAnalysisResult | undefined, offset: number | undefined): CompletionItem[] {
     const sym = analysisResult ? lookupSymbol(objectName, analysisResult, offset) : undefined;
     if (!sym) return [];
-    const rootLit = resolveToObjectLiteral((sym as any).initNode, analysisResult, offset);
+    const rootLit = resolveToObjectLiteral(sym.initNode, analysisResult, offset);
     if (!rootLit) return [];
     const target = objectLiteralAtChain(rootLit, propertyChain ?? [], analysisResult, offset);
     if (!target) return [];

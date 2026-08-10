@@ -244,7 +244,7 @@ export class BaseVisitor implements VisitorMethods {
         break;
       default: {
         // Exhaustive: a new AstNodeKind won't compile until it's dispatched here.
-        const _exhaustive: never = node.type;
+        const _exhaustive: never = node;
         void _exhaustive;
         break;
       }

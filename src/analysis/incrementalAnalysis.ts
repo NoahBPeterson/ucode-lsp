@@ -12,14 +12,21 @@
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { Diagnostic } from 'vscode-languageserver/node';
-import { type ProgramNode } from '../ast/nodes';
-import { type SymbolTable } from './symbolTable';
+import { type AstNode, type ProgramNode } from '../ast/nodes';
+import { type SymbolTable, type UcodeDataType } from './symbolTable';
 import {
   extractUnits, computeFingerprint, bodyHashOf, classifyBody, hashString,
   type IncrementalCacheEntry, type UnitState, type UnitRange, type RelDiagnostic,
 } from './incrementalCache';
 
-export type CleanBody = { bodyEnd: number; returnType: unknown; diagnostics: Diagnostic[]; thisWrites: Array<[string, unknown]> };
+/** Analyzer-stamped annotations read off a unit's function node. */
+type FnTypeAnnotations = {
+  _inferredReturnType?: UcodeDataType;
+  _inferredReturnPropertyTypes?: Map<string, UcodeDataType>;
+  _thisWrites?: Array<[string, UcodeDataType]>;
+};
+
+export type CleanBody = { bodyEnd: number; returnType: UcodeDataType | undefined; diagnostics: Diagnostic[]; thisWrites: Array<[string, UcodeDataType]> };
 
 function reanchor(rel: RelDiagnostic, bodyStart: number, doc: TextDocument): Diagnostic {
   const diag = rel.diag as Partial<Diagnostic>;
@@ -44,31 +51,34 @@ export function planClean(
     if (prev.bodyHash !== bodyHashOf(text, u)) continue;
     clean.set(u.bodyStart, {
       bodyEnd: u.bodyEnd,
-      returnType: prev.returnType,
+      returnType: prev.returnType as UcodeDataType | undefined,
       diagnostics: prev.relDiagnostics.map((rd) => reanchor(rd, u.bodyStart, doc)),
-      thisWrites: prev.thisWrites,
+      thisWrites: prev.thisWrites as Array<[string, UcodeDataType]>,
     });
   }
   return clean;
 }
 
-function unitReturnType(u: UnitRange, symbolTable: SymbolTable | undefined): unknown {
+function unitReturnType(u: UnitRange, symbolTable: SymbolTable | undefined): UcodeDataType | undefined {
   if (u.kind === 'function') return symbolTable?.lookupOpenScopes(u.name)?.returnType;
-  return (u.fnNode as any)._inferredReturnType;
+  return (u.fnNode as AstNode & FnTypeAnnotations)._inferredReturnType;
 }
 
+/** A value stableJson can serialize: primitives, plus arrays/Maps/plain data objects. */
+type StableJsonValue = string | number | boolean | null | undefined | object;
+
 // Stable JSON for a value that may contain Maps (rich types / property shapes).
-function stableJson(v: unknown): string {
+function stableJson(v: StableJsonValue): string {
   const seen = new WeakSet<object>();
-  const enc = (x: unknown): unknown => {
+  const enc = (x: StableJsonValue): StableJsonValue => {
     if (x instanceof Map) return ['Map', [...x.entries()].map(([k, val]) => [k, enc(val)]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))];
     if (x && typeof x === 'object') {
       if (seen.has(x)) return '[circular]';
       seen.add(x);
       if (Array.isArray(x)) return x.map(enc);
-      const rec = x as Record<string, unknown>;
-      const keys = Object.keys(rec).sort();
-      return keys.map((k) => [k, enc(rec[k])]);
+      const rec = new Map(Object.entries(x));
+      const keys = [...rec.keys()].sort();
+      return keys.map((k) => [k, enc(rec.get(k))]);
     }
     return x;
   };
@@ -79,8 +89,9 @@ function stableJson(v: unknown): string {
  *  — its return type, its returned-object shape, and the `this.<prop>` types it writes. */
 function unitSig(u: UnitRange, symbolTable: SymbolTable | undefined): string {
   const rt = unitReturnType(u, symbolTable);
-  const rpt = u.kind === 'function' ? symbolTable?.lookupOpenScopes(u.name)?.returnPropertyTypes : (u.fnNode as any)._inferredReturnPropertyTypes;
-  const tw = ((u.fnNode as any)._thisWrites ?? []) as Array<[string, unknown]>;
+  const fn = u.fnNode as AstNode & FnTypeAnnotations;
+  const rpt = u.kind === 'function' ? symbolTable?.lookupOpenScopes(u.name)?.returnPropertyTypes : fn._inferredReturnPropertyTypes;
+  const tw = fn._thisWrites ?? [];
   return stableJson([rt, rpt, tw]);
 }
 
@@ -113,7 +124,15 @@ export function buildCache(
         rel.push({
           relStart: off - u.bodyStart,
           relEnd: doc.offsetAt(d.range.end) - u.bodyStart,
-          diag: { severity: d.severity, message: d.message, source: d.source, code: d.code, data: (d as any).data, tags: d.tags, relatedInformation: d.relatedInformation },
+          diag: {
+            message: d.message,
+            ...(d.severity !== undefined ? { severity: d.severity } : {}),
+            ...(d.source !== undefined ? { source: d.source } : {}),
+            ...(d.code !== undefined ? { code: d.code } : {}),
+            ...(d.data !== undefined ? { data: d.data } : {}),
+            ...(d.tags !== undefined ? { tags: d.tags } : {}),
+            ...(d.relatedInformation !== undefined ? { relatedInformation: d.relatedInformation } : {}),
+          },
         });
       }
     }
@@ -122,7 +141,7 @@ export function buildCache(
       cls: classifyBody(u),
       returnType: unitReturnType(u, symbolTable),
       relDiagnostics: rel,
-      thisWrites: ((u.fnNode as any)._thisWrites ?? []) as Array<[string, unknown]>,
+      thisWrites: (u.fnNode as AstNode & FnTypeAnnotations)._thisWrites ?? [],
       sig: unitSig(u, symbolTable),
     });
   }

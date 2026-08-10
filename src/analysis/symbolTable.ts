@@ -85,7 +85,7 @@ export type UcodeDataType = UcodeType | UnionType | ModuleType | DefaultImportTy
 // --- ObjectType helpers ---
 
 export function isObjectType(type: UcodeDataType): type is ObjectType {
-  return typeof type === 'object' && type !== null && (type as any).type === 'objectKind';
+  return typeof type === 'object' && type !== null && type.type === 'objectKind';
 }
 
 export function getObjectTypeName(type: UcodeDataType): string | null {
@@ -104,15 +104,15 @@ export function extractModuleType(dataType: UcodeDataType | undefined | null): M
   if (!dataType || typeof dataType !== 'object') return null;
 
   // Direct ModuleType: { type: 'object', moduleName: string }
-  if ('moduleName' in dataType && (dataType as any).type === UcodeType.OBJECT) {
-    return dataType as ModuleType;
+  if ('moduleName' in dataType && dataType.type === UcodeType.OBJECT) {
+    return dataType;
   }
 
   // UnionType containing a ModuleType (e.g., io.handle | null)
   if (isUnionType(dataType)) {
     for (const member of dataType.types) {
       if (typeof member === 'object' && 'moduleName' in member) {
-        return member as unknown as ModuleType;
+        return member as { moduleName: string } as ModuleType;
       }
     }
   }
@@ -205,7 +205,7 @@ function singleTypeKey(t: SingleType): string {
 }
 
 export function isUnionType(type: UcodeDataType): type is UnionType {
-  return typeof type === 'object' && (type as any).type === UcodeType.UNION;
+  return typeof type === 'object' && type.type === UcodeType.UNION;
 }
 
 export function getUnionTypes(type: UcodeDataType): SingleType[] {
@@ -223,7 +223,7 @@ export function getUnionTypes(type: UcodeDataType): SingleType[] {
 }
 
 export function isArrayType(type: UcodeDataType): type is ArrayType {
-  return typeof type === 'object' && type !== null && (type as any).type === UcodeType.ARRAY && 'elementType' in type;
+  return typeof type === 'object' && type !== null && type.type === UcodeType.ARRAY && 'elementType' in type;
 }
 
 export function createArrayType(elementType: UcodeDataType): ArrayType {
@@ -280,7 +280,7 @@ export function dataTypeToBase(type: UcodeDataType): UcodeType {
   if (isObjectType(type)) return UcodeType.OBJECT;
   if (isUnionType(type)) return UcodeType.UNKNOWN;
   if (extractModuleType(type)) return UcodeType.OBJECT;
-  const t = (type as any).type;
+  const t = type.type;
   return typeof t === 'string' ? (t as UcodeType) : UcodeType.UNKNOWN;
 }
 
@@ -446,7 +446,7 @@ export const singleTypeToString: (t: SingleType) => string = Match.type<SingleTy
     // ModuleType: { type: 'object', moduleName: string } — appears as union member
     // when type checker creates e.g. io.handle | null
     if (typeof t === 'object' && t !== null && 'moduleName' in t) {
-      return (t as any).moduleName as string;
+      return (t as ModuleType).moduleName;
     }
     return 'unknown';
   })
@@ -665,8 +665,7 @@ export function typeToString(type: UcodeDataType): string {
     }
 
     // Generic object with 'type' property - return the type value
-    // Cast to any to avoid TypeScript narrowing issues
-    const objType = type as any;
+    const objType: { type?: string } = type;
     if ('type' in objType && typeof objType.type === 'string') {
       return objType.type; // e.g., 'object', 'array', etc.
     }

@@ -67,7 +67,7 @@ export function makeAssignmentTransfer(typeOf: (node: AstNode) => UcodeDataType 
       // here would poison every body read once the loop join carries it. Skip; the
       // symbol's element/key type is the fallback the reads should resolve to.
       if ((stmt as { _forInLoopVar?: boolean })._forInLoopVar) return;
-      for (const d of ((stmt as any).declarations ?? [])) {
+      for (const d of (stmt.declarations ?? [])) {
         if (d?.id?.type !== 'Identifier') continue;
         if (d.init) {
           const t = typeOf(d.init);
@@ -77,7 +77,7 @@ export function makeAssignmentTransfer(typeOf: (node: AstNode) => UcodeDataType 
         }
       }
     } else if (stmt.type === 'ExpressionStatement') {
-      const expr = (stmt as any).expression;
+      const expr = stmt.expression;
       if (expr?.type === 'AssignmentExpression' && expr.left?.type === 'Identifier') {
         if (expr.operator === '=') {
           const t = typeOf(expr.right);

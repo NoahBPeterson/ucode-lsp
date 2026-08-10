@@ -8,7 +8,8 @@
 // matching how function/object folds behave elsewhere. Single-line spans never fold.
 
 import { FoldingRange, FoldingRangeKind } from 'vscode-languageserver/node';
-import type { AstNode, ProgramNode } from './ast/nodes';
+import type { AstNode } from './ast/nodes';
+import { walkAst } from './ast/astChildren';
 import type { Token } from './lexer';
 
 type LineAt = (offset: number) => number;
@@ -41,39 +42,27 @@ export function provideFoldingRanges(
     };
 
     // 1) Block-bearing AST nodes.
-    const visit = (node: AstNode): void => {
-        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
-        if (BLOCK_NODE_TYPES.has(node.type) && typeof node.start === 'number' && typeof node.end === 'number') {
+    if (ast) walkAst(ast, (node) => {
+        if (BLOCK_NODE_TYPES.has(node.type)) {
             add(lineAt(node.start), lineAt(node.end - 1));
         }
         // Per-case folds inside a switch: each case/default clause folds from its
         // own start line to just before the next clause (or the switch's closing
         // brace for the last clause).
         if (node.type === 'SwitchStatement') {
-            const sw = node as unknown as { cases?: AstNode[]; end?: number };
-            const cases = Array.isArray(sw.cases) ? sw.cases : [];
+            const cases = node.cases;
             for (let ci = 0; ci < cases.length; ci++) {
                 const cur = cases[ci];
                 const next = cases[ci + 1];
-                if (!cur || typeof cur.start !== 'number') continue;
-                const endOffset = (next && typeof next.start === 'number')
-                    ? next.start - 1
-                    : (typeof sw.end === 'number' ? sw.end - 1 : (typeof cur.end === 'number' ? cur.end : undefined));
-                if (typeof endOffset !== 'number') continue;
+                if (!cur) continue;
+                const endOffset = next ? next.start - 1 : node.end - 1;
                 add(lineAt(cur.start), lineAt(endOffset));
             }
         }
-        for (const k of Object.keys(node)) {
-            if (k === 'leadingJsDoc') continue; // JSDoc is folded via the comment pass
-            const v = (node as unknown as Record<string, unknown>)[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string') visit(v as AstNode);
-        }
-    };
-    if (ast) visit(ast);
+    });
 
     // 2) Leading import group — fold a run of >=2 consecutive top-level imports.
-    const body: AstNode[] = (ast && Array.isArray((ast as ProgramNode).body)) ? (ast as ProgramNode).body : [];
+    const body: AstNode[] = ast?.type === 'Program' ? ast.body : [];
     for (let i = 0; i < body.length;) {
         if (body[i]?.type === 'ImportDeclaration') {
             let j = i;

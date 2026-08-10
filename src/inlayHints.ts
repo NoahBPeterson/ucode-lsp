@@ -14,7 +14,8 @@
 import { InlayHint, InlayHintKind } from 'vscode-languageserver/node';
 import { typeToString, type SymbolTable, type Symbol } from './analysis/symbolTable';
 import { resolveCalleeParameters } from './signatureHelp';
-import type { AstNode, VariableDeclarationNode, CallExpressionNode } from './ast/nodes';
+import type { AstNode } from './ast/nodes';
+import { forEachAstChild } from './ast/astChildren';
 
 type PosAt = (offset: number) => { line: number; character: number };
 
@@ -59,12 +60,10 @@ export function computeRawInlayHints(
     const hints: RawInlayHint[] = [];
 
     const visit = (node: AstNode): void => {
-        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
-
         // 1) Variable type hint after the declared name.
         if (node.type === 'VariableDeclaration') {
-            for (const d of ((node as VariableDeclarationNode).declarations || [])) {
-                if (d?.id?.type !== 'Identifier' || !isNonObviousInit(d.init)) continue;
+            for (const d of node.declarations) {
+                if (d.id.type !== 'Identifier' || !isNonObviousInit(d.init)) continue;
                 const sym: Symbol | null = symbolTable?.resolveReference(d.id.name, d.id.start);
                 if (sym?.dataType === undefined) continue;
                 const ts = typeToString(sym.dataType);
@@ -75,32 +74,26 @@ export function computeRawInlayHints(
 
         // 2) Parameter-name hints at call arguments.
         if (node.type === 'CallExpression') {
-            const call = node as CallExpressionNode;
-            if (Array.isArray(call.arguments) && call.arguments.length) {
-                const sig = resolveCalleeParameters(call.callee, symbolTable, builtins);
+            if (node.arguments.length) {
+                const sig = resolveCalleeParameters(node.callee, symbolTable, builtins);
                 if (sig && sig.params.length) {
                     const lastIsRest = sig.params[sig.params.length - 1]!.isRest;
-                    for (let i = 0; i < call.arguments.length; i++) {
-                        const arg = call.arguments[i];
+                    for (let i = 0; i < node.arguments.length; i++) {
+                        const arg = node.arguments[i];
                         if (!arg) continue;
                         // Map arg index → parameter (a trailing rest param absorbs extras).
                         const p = i < sig.params.length ? sig.params[i]
                             : (lastIsRest ? sig.params[sig.params.length - 1] : undefined);
                         if (!p || p.isRest) continue;
                         // Redundant when the argument is exactly that name (`foo(name)`).
-                        if (arg.type === 'Identifier' && (arg as { name?: string }).name === p.name) continue;
+                        if (arg.type === 'Identifier' && arg.name === p.name) continue;
                         hints.push({ offset: arg.start, label: `${p.name}:`, kind: InlayHintKind.Parameter, paddingLeft: false, paddingRight: true });
                     }
                 }
             }
         }
 
-        for (const k of Object.keys(node)) {
-            if (k === 'leadingJsDoc') continue;
-            const v = (node as unknown as Record<string, unknown>)[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string') visit(v as AstNode);
-        }
+        forEachAstChild(node, visit);
     };
     if (ast) visit(ast);
     return hints;

@@ -1,7 +1,8 @@
 import { UcodeLexer } from '../lexer';
 import { detectTemplateModeForFile, bridgeTemplateTokens } from '../lexer/templateMode';
 import { UcodeParser } from '../parser';
-import { type FunctionDeclarationNode, type AstNode, type ExportDefaultDeclarationNode, type ExportNamedDeclarationNode, type IdentifierNode } from '../ast/nodes';
+import { type FunctionDeclarationNode, type FunctionExpressionNode, type ArrowFunctionExpressionNode, type AstNode, type ExportNamedDeclarationNode, type IdentifierNode, type ObjectExpressionNode, type PropertyNode } from '../ast/nodes';
+import { forEachAstChild, walkAst } from '../ast/astChildren';
 import { discoverAvailableModules, getModuleMembers } from '../moduleDiscovery';
 import { UcodeType, type UcodeDataType, type SingleType, createUnionType, isUnionType, isObjectType, isArrayType, typeToString, widenWithNull, type ParamInfo } from './symbolTable';
 import { parseJsDocComment, resolveTypeExpression } from './jsdocParser';
@@ -63,39 +64,20 @@ export interface FactoryReturnInfo {
     propertyDefinitionLocations?: Map<string, { start: number; end: number }>;
 }
 
-/**
- * Structural view of an AST node for the type-only / literal-rendering walks in
- * this module. Several helpers receive nodes that were obtained through `as any`
- * casts of the parser output and access a handful of fields dynamically; this
- * captures exactly those fields while keeping child access typed rather than
- * `any`. Children are themselves `AstBag` so chained access (`prop.key.name`)
- * stays sound, and `value` is `unknown` (a Literal's value is a JS primitive).
- */
-interface AstBag {
-    type?: string;
-    start?: number;
-    end?: number;
-    name?: string;
-    operator?: string;
-    // `value` is overloaded in the AST: a Literal's value is a JS primitive,
-    // while a Property's value is a child node. Kept `unknown`; narrow with
-    // `asBag` for the node case and `typeof` for the primitive case.
-    value?: unknown;
-    literalType?: string;
-    argument?: AstBag;
-    key?: AstBag;
-    properties?: AstBag[];
-    expression?: AstBag;
-    declarations?: AstBag[];
-    id?: AstBag;
-    init?: AstBag;
-    left?: AstBag;
-    right?: AstBag;
+/** A property's key the way the object-shape walks read it: an Identifier key's
+ *  name, a Literal key's value (string/number/boolean/null), undefined otherwise. */
+function propertyKeyValue(prop: PropertyNode): string | number | boolean | null | undefined {
+    if (prop.key.type === 'Identifier') return prop.key.name;
+    if (prop.key.type === 'Literal') return prop.key.value;
+    return undefined;
 }
 
-/** Narrow an arbitrary value to a walkable AST-node bag. */
-function asBag(v: unknown): AstBag | undefined {
-    return (v && typeof v === 'object') ? (v as AstBag) : undefined;
+/** Function-like node kinds (the only ones carrying params/body/leadingJsDoc). */
+type FunctionLikeNode = FunctionDeclarationNode | FunctionExpressionNode | ArrowFunctionExpressionNode;
+
+function asFunctionLike(node: AstNode): FunctionLikeNode | null {
+    return node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression'
+        ? node : null;
 }
 
 export class FileResolver {
@@ -182,12 +164,11 @@ export class FileResolver {
             const content = this.readFileContent(fileUri);
             if (content === null) return [];
             const ast = this.getCachedAst(fileUri, content);
-            const body = (ast as { body?: unknown[] } | null)?.body;
-            if (!Array.isArray(body)) return [];
+            if (ast?.type !== 'Program') return [];
             const edges: string[] = [];
-            for (const stmt of body as Array<{ type?: string; source?: { value?: unknown } }>) {
-                if (!stmt || stmt.type !== 'ImportDeclaration') continue;
-                const rawSrc = stmt.source?.value;
+            for (const stmt of ast.body) {
+                if (stmt.type !== 'ImportDeclaration') continue;
+                const rawSrc = stmt.source.value;
                 if (typeof rawSrc !== 'string') continue;
                 const src = rawSrc.replace(/^['"]|['"]$/g, '');
                 const resolved = this.resolveImportPath(src, fileUri);
@@ -245,24 +226,23 @@ export class FileResolver {
         const targetUri = this.filePathToUri(targetPath);
         const content = this.readFileContent(targetUri);
         if (content === null) return [];
-        const ast = this.getCachedAst(targetUri, content) as { type?: string; body?: unknown[] } | null;
-        if (!ast || ast.type !== 'Program' || !Array.isArray(ast.body)) return [];
+        const ast = this.getCachedAst(targetUri, content);
+        if (ast?.type !== 'Program') return [];
 
         // Top-level declared names (let/const/function) — these are local to the loaded
         // program and must NOT count as injected implicit globals.
         const declared = new Set<string>();
         for (const stmt of ast.body) {
-            const s = stmt as { type?: string; id?: { name?: string }; declarations?: { id?: { type?: string; name?: string } }[] };
-            if (s?.type === 'FunctionDeclaration' && s.id?.name) declared.add(s.id.name);
-            if (s?.type === 'VariableDeclaration') {
-                for (const d of (s.declarations ?? [])) {
-                    if (d?.id?.type === 'Identifier' && d.id.name) declared.add(d.id.name);
+            if (stmt.type === 'FunctionDeclaration' && stmt.id.name) declared.add(stmt.id.name);
+            if (stmt.type === 'VariableDeclaration') {
+                for (const d of stmt.declarations) {
+                    if (d.id.name) declared.add(d.id.name);
                 }
             }
         }
 
-        const coarseType = (rhs: any): string => {
-            switch (rhs?.type) {
+        const coarseType = (rhs: AstNode): string => {
+            switch (rhs.type) {
                 case 'FunctionExpression':
                 case 'ArrowFunctionExpression': return 'function';
                 case 'ObjectExpression': return 'object';
@@ -273,7 +253,7 @@ export class FileResolver {
                     if (typeof v === 'boolean') return 'bool';
                     if (v === null) return 'null';
                     // Exponent notation (`1e5`) is a double literal (ticket 115).
-                    if (typeof v === 'number') return ((rhs as any).literalType === 'double' || !Number.isInteger(v)) ? 'double' : 'integer';
+                    if (typeof v === 'number') return (rhs.literalType === 'double' || !Number.isInteger(v)) ? 'double' : 'integer';
                     return 'unknown';
                 }
                 default: return 'unknown';
@@ -282,26 +262,27 @@ export class FileResolver {
 
         const out: LoadfileGlobal[] = [];
         const seen = new Set<string>();
-        const add = (name: string, defNode: any, rhs: any) => {
+        const add = (name: string, defNode: AstNode, rhs: AstNode) => {
             if (!name || seen.has(name)) return;
             seen.add(name);
             const entry: LoadfileGlobal = {
                 name, uri: targetUri,
-                defStart: typeof defNode?.start === 'number' ? defNode.start : 0,
-                defEnd: typeof defNode?.end === 'number' ? defNode.end : 0,
+                defStart: defNode.start,
+                defEnd: defNode.end,
                 typeStr: coarseType(rhs),
             };
             // Carry the object shape so a member access on the injected global resolves
             // cross-file (mirrors the in-file `global.X = { … }` property inference).
-            if (rhs?.type === 'ObjectExpression') {
+            if (rhs.type === 'ObjectExpression') {
                 const propTypes = this.inferObjectLiteralPropertyTypesShallow(rhs);
                 if (propTypes.size > 0) entry.propertyTypes = propTypes;
                 const fnReturns = new Map<string, string>();
-                for (const prop of (rhs.properties || [])) {
-                    const key = prop?.key?.name ?? prop?.key?.value;
-                    const val = prop?.value;
+                for (const prop of rhs.properties) {
+                    if (prop.type !== 'Property') continue;
+                    const key = propertyKeyValue(prop);
+                    const val = prop.value;
                     if (typeof key !== 'string' && typeof key !== 'number') continue;
-                    if (val?.type === 'FunctionExpression' || val?.type === 'ArrowFunctionExpression') {
+                    if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
                         const ret = this.functionReturnTypeString(val);
                         if (ret) fnReturns.set(String(key), ret);
                     }
@@ -311,19 +292,18 @@ export class FileResolver {
             out.push(entry);
         };
         for (const stmt of ast.body) {
-            const s = stmt as { type?: string; expression?: any };
-            const expr = s?.type === 'ExpressionStatement' ? s.expression : null;
+            const expr = stmt.type === 'ExpressionStatement' ? stmt.expression : null;
             if (!expr || expr.type !== 'AssignmentExpression' || expr.operator !== '=') continue;
             const left = expr.left;
-            if (left?.type === 'MemberExpression'
-                && left.object?.type === 'Identifier' && left.object.name === 'global') {
+            if (left.type === 'MemberExpression'
+                && left.object.type === 'Identifier' && left.object.name === 'global') {
                 // global.X = …  (explicit global property) — def range is the `X` property node
-                if (!left.computed && left.property?.type === 'Identifier' && left.property.name) {
+                if (!left.computed && left.property.type === 'Identifier' && left.property.name) {
                     add(left.property.name, left.property, expr.right);
-                } else if (left.computed && left.property?.type === 'Literal' && typeof left.property.value === 'string') {
+                } else if (left.computed && left.property.type === 'Literal' && typeof left.property.value === 'string') {
                     add(left.property.value, left.property, expr.right);
                 }
-            } else if (left?.type === 'Identifier' && left.name && !declared.has(left.name)) {
+            } else if (left.type === 'Identifier' && left.name && !declared.has(left.name)) {
                 // bare implicit-global assignment X = … (non-strict) — def range is the identifier
                 add(left.name, left, expr.right);
             }
@@ -401,34 +381,26 @@ export class FileResolver {
         const ast = this.getCachedAst(fileUri, content);
         if (!ast) return null;
         let found: { start: number; end: number } | null = null;
-        const walk = (n: unknown): void => {
-            if (found || !n || typeof n !== 'object') return;
-            const node = n as { type?: string } & Record<string, unknown>;
-            if (typeof node.type !== 'string') return;
+        walkAst(ast, (node) => {
+            if (found) return false;
             if (node.type === 'FunctionDeclaration') {
-                const id = node.id as { name?: string; start?: number; end?: number } | undefined;
-                if (id?.name === member && typeof id.start === 'number' && typeof id.end === 'number') {
+                const id = node.id;
+                if (id.name === member) {
                     found = { start: id.start, end: id.end };
-                    return;
+                    return false;
                 }
             }
             if (node.type === 'Property' && !node.computed) {
-                const key = node.key as { type?: string; name?: string; value?: unknown; start?: number; end?: number } | undefined;
-                const keyName = key?.type === 'Identifier' ? key.name
-                    : key?.type === 'Literal' && typeof key.value === 'string' ? key.value : undefined;
-                if (keyName === member && typeof key?.start === 'number' && typeof key?.end === 'number') {
+                const key = node.key;
+                const keyName = key.type === 'Identifier' ? key.name
+                    : key.type === 'Literal' && typeof key.value === 'string' ? key.value : undefined;
+                if (keyName === member) {
                     found = { start: key.start, end: key.end };
-                    return;
+                    return false;
                 }
             }
-            for (const k of Object.keys(node)) {
-                if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-                const v = node[k];
-                if (Array.isArray(v)) { for (const it of v) walk(it); }
-                else if (v && typeof v === 'object') walk(v);
-            }
-        };
-        walk(ast);
+            return undefined;
+        });
         return found;
     }
 
@@ -449,43 +421,42 @@ export class FileResolver {
             visited.add(targetUri);
             const content = this.readFileContent(targetUri);
             if (content === null) return;
-            const ast = this.getCachedAst(targetUri, content) as { type?: string; body?: unknown[] } | null;
-            if (!ast || ast.type !== 'Program' || !Array.isArray(ast.body)) return;
+            const ast = this.getCachedAst(targetUri, content);
+            if (ast?.type !== 'Program') return;
 
             // Top-level declared names (let/const/function) are child-locals — they must NOT
             // count as leaked implicit globals.
             const declared = new Set<string>();
             for (const stmt of ast.body) {
-                const s = stmt as { type?: string; id?: { name?: string }; declarations?: { id?: { type?: string; name?: string } }[] };
-                if (s?.type === 'FunctionDeclaration' && s.id?.name) declared.add(s.id.name);
-                if (s?.type === 'VariableDeclaration') {
-                    for (const d of (s.declarations ?? [])) {
-                        if (d?.id?.type === 'Identifier' && d.id.name) declared.add(d.id.name);
+                if (stmt.type === 'FunctionDeclaration' && stmt.id.name) declared.add(stmt.id.name);
+                if (stmt.type === 'VariableDeclaration') {
+                    for (const d of stmt.declarations) {
+                        if (d.id.name) declared.add(d.id.name);
                     }
                 }
             }
             for (const stmt of ast.body) {
-                const s = stmt as { type?: string; expression?: any };
-                const expr = s?.type === 'ExpressionStatement' ? s.expression : null;
+                const expr = stmt.type === 'ExpressionStatement' ? stmt.expression : null;
                 if (expr?.type === 'AssignmentExpression' && expr.operator === '=') {
                     const left = expr.left;
-                    if (left?.type === 'Identifier' && left.name && !declared.has(left.name)) {
+                    if (left.type === 'Identifier' && left.name && !declared.has(left.name)) {
                         out.add(left.name); // bare implicit-global assignment X = …
-                    } else if (left?.type === 'MemberExpression' && !left.computed
-                               && left.object?.type === 'Identifier' && left.object.name === 'global'
-                               && left.property?.type === 'Identifier' && left.property.name) {
+                    } else if (left.type === 'MemberExpression' && !left.computed
+                               && left.object.type === 'Identifier' && left.object.name === 'global'
+                               && left.property.type === 'Identifier' && left.property.name) {
                         out.add(left.property.name); // explicit global.X = …
-                    } else if (left?.type === 'MemberExpression' && left.computed
-                               && left.object?.type === 'Identifier' && left.object.name === 'global'
-                               && left.property?.type === 'Literal' && typeof left.property.value === 'string') {
+                    } else if (left.type === 'MemberExpression' && left.computed
+                               && left.object.type === 'Identifier' && left.object.name === 'global'
+                               && left.property.type === 'Literal' && typeof left.property.value === 'string') {
                         out.add(left.property.value);
                     }
                 } else if (expr?.type === 'CallExpression'
-                           && expr.callee?.type === 'Identifier' && expr.callee.name === 'include'
-                           && expr.arguments?.[0]?.type === 'Literal'
-                           && typeof expr.arguments[0].value === 'string') {
-                    // A child's own top-level include leaks into the child's scope, hence ours.
-                    collect(targetUri, expr.arguments[0].value as string, depth + 1);
+                           && expr.callee.type === 'Identifier' && expr.callee.name === 'include') {
+                    const arg0 = expr.arguments[0];
+                    if (arg0?.type === 'Literal' && typeof arg0.value === 'string') {
+                        // A child's own top-level include leaks into the child's scope, hence ours.
+                        collect(targetUri, arg0.value, depth + 1);
+                    }
                 }
             }
         };
@@ -515,9 +486,9 @@ export class FileResolver {
         const targetUri = this.filePathToUri(targetPath);
         const content = this.readFileContent(targetUri);
         if (content === null) return null;
-        const ast = this.getCachedAst(targetUri, content) as { type?: string; body?: unknown[] } | null;
-        if (!ast || ast.type !== 'Program' || !Array.isArray(ast.body)) return null;
-        return this.topLevelReturnShape(ast.body.map(asBag));
+        const ast = this.getCachedAst(targetUri, content);
+        if (ast?.type !== 'Program') return null;
+        return this.topLevelReturnShape(ast.body);
     }
 
     /**
@@ -528,32 +499,31 @@ export class FileResolver {
      * whatever it top-level `return`s; `export` syntax is sugar for building that
      * same value).
      */
-    private topLevelReturnShape(body: (AstBag | undefined)[]): LoadfileProgramReturn | null {
+    private topLevelReturnShape(body: AstNode[]): LoadfileProgramReturn | null {
         // The returned expression: first explicit top-level return, else a trailing bare
         // expression statement (undefined = "no explicit return found yet").
-        let retNode: AstBag | null | undefined = undefined;
+        let retNode: AstNode | null | undefined = undefined;
         for (const stmt of body) {
-            if (stmt?.type === 'ReturnStatement') { retNode = stmt.argument ?? null; break; }
+            if (stmt.type === 'ReturnStatement') { retNode = stmt.argument ?? null; break; }
         }
         if (retNode === undefined) {
             const last = body[body.length - 1];
-            retNode = last?.type === 'ExpressionStatement' ? (last.expression ?? null) : null;
+            retNode = last?.type === 'ExpressionStatement' ? last.expression : null;
         }
         if (retNode === null) return { dataType: UcodeType.NULL as UcodeDataType };
 
         // `return M;` — one-hop trace to M's last top-level initializer/assignment.
-        if (retNode.type === 'Identifier' && typeof retNode.name === 'string') {
+        if (retNode.type === 'Identifier') {
             const target = retNode.name;
-            let traced: AstBag | undefined;
+            let traced: AstNode | undefined;
             for (const stmt of body) {
-                if (stmt?.type === 'VariableDeclaration') {
-                    for (const d of stmt.declarations ?? []) {
-                        if (d?.id?.type === 'Identifier' && d.id.name === target && d.init) traced = d.init;
+                if (stmt.type === 'VariableDeclaration') {
+                    for (const d of stmt.declarations) {
+                        if (d.id.name === target && d.init) traced = d.init;
                     }
-                } else if (stmt?.type === 'ExpressionStatement' && stmt.expression?.type === 'AssignmentExpression'
+                } else if (stmt.type === 'ExpressionStatement' && stmt.expression.type === 'AssignmentExpression'
                            && stmt.expression.operator === '='
-                           && stmt.expression.left?.type === 'Identifier' && stmt.expression.left.name === target
-                           && stmt.expression.right) {
+                           && stmt.expression.left.type === 'Identifier' && stmt.expression.left.name === target) {
                     traced = stmt.expression.right;
                 }
             }
@@ -566,12 +536,13 @@ export class FileResolver {
                 const propTypes = this.inferObjectLiteralPropertyTypesShallow(retNode);
                 if (propTypes.size > 0) out.propertyTypes = propTypes;
                 const fnReturns = new Map<string, string>();
-                for (const prop of retNode.properties ?? []) {
-                    const key = prop?.key?.name ?? prop?.key?.value;
-                    const val = asBag(prop?.value);
+                for (const prop of retNode.properties) {
+                    if (prop.type !== 'Property') continue;
+                    const key = propertyKeyValue(prop);
+                    const val = prop.value;
                     if (typeof key !== 'string' && typeof key !== 'number') continue;
-                    if (val?.type === 'FunctionExpression' || val?.type === 'ArrowFunctionExpression') {
-                        const ret = this.functionReturnTypeString(val as unknown as AstNode);
+                    if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
+                        const ret = this.functionReturnTypeString(val);
                         if (ret) fnReturns.set(String(key), ret);
                     }
                 }
@@ -618,9 +589,9 @@ export class FileResolver {
             const filePath = this.uriToFilePath(resolvedUri);
             if (!filePath || !fs.existsSync(filePath)) return false;
             const source = getOpenDocumentContent(resolvedUri) ?? fs.readFileSync(filePath, 'utf-8');
-            const ast = this.getCachedAst(resolvedUri, source) as { type?: string; body?: unknown[] } | null;
-            if (!ast || ast.type !== 'Program' || !Array.isArray(ast.body)) return false;
-            return this.topLevelReturnShape(ast.body.map(asBag))?.dataType === UcodeType.FUNCTION;
+            const ast = this.getCachedAst(resolvedUri, source);
+            if (ast?.type !== 'Program') return false;
+            return this.topLevelReturnShape(ast.body)?.dataType === UcodeType.FUNCTION;
         } catch {
             return false;
         }
@@ -666,9 +637,9 @@ export class FileResolver {
             const filePath = this.uriToFilePath(resolvedUri);
             if (!filePath || !fs.existsSync(filePath)) return null;
             const source = getOpenDocumentContent(resolvedUri) ?? fs.readFileSync(filePath, 'utf-8');
-            const ast = this.getCachedAst(resolvedUri, source) as { type?: string; body?: unknown[] } | null;
-            if (!ast || ast.type !== 'Program' || !Array.isArray(ast.body)) return null;
-            return this.topLevelReturnShape(ast.body.map(asBag));
+            const ast = this.getCachedAst(resolvedUri, source);
+            if (ast?.type !== 'Program') return null;
+            return this.topLevelReturnShape(ast.body);
         } catch {
             return null;
         }
@@ -950,11 +921,10 @@ export class FileResolver {
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, content);
             parser.setComments(lexer.comments);
-            const ast = parser.parse().ast as any;
-            if (!ast?.body) return null;
+            const ast = parser.parse().ast;
+            if (ast?.type !== 'Program') return null;
 
-            const renderLiteral = (v: AstBag | undefined): string | null => {
-                if (!v) return null;
+            const renderLiteral = (v: AstNode): string | null => {
                 if (v.type === 'Literal') {
                     if (typeof v.value === 'string') return display ? JSON.stringify(v.value) : v.value;
                     if (typeof v.value === 'number' || typeof v.value === 'boolean') return String(v.value);
@@ -962,35 +932,35 @@ export class FileResolver {
                     return null;
                 }
                 // Negative-number literals are parsed as UnaryExpression in ucode
-                if (v.type === 'UnaryExpression' && v.operator === '-' && v.argument?.type === 'Literal' && typeof v.argument.value === 'number') {
+                if (v.type === 'UnaryExpression' && v.operator === '-' && v.argument.type === 'Literal' && typeof v.argument.value === 'number') {
                     return String(-v.argument.value);
                 }
                 return null;
             };
 
-            const findInObject = (objNode: AstBag | undefined): string | null => {
-                for (const prop of (objNode?.properties || [])) {
-                    const key = prop?.key?.name ?? prop?.key?.value;
+            const findInObject = (objNode: ObjectExpressionNode): string | null => {
+                for (const prop of objNode.properties) {
+                    if (prop.type !== 'Property') continue;
+                    const key = propertyKeyValue(prop);
                     if (key !== propertyName) continue;
-                    return renderLiteral(asBag(prop?.value));
+                    return renderLiteral(prop.value);
                 }
                 return null;
             };
 
             for (const stmt of ast.body) {
-                if (!stmt) continue;
                 if (stmt.type === 'ExportNamedDeclaration') {
-                    const decl = (stmt as any).declaration;
+                    const decl = stmt.declaration;
                     if (decl?.type === 'VariableDeclaration') {
-                        for (const d of (decl.declarations || [])) {
-                            if (d?.id?.name === exportName && d.init?.type === 'ObjectExpression') {
+                        for (const d of decl.declarations) {
+                            if (d.id.name === exportName && d.init?.type === 'ObjectExpression') {
                                 return findInObject(d.init);
                             }
                         }
                     }
                 } else if (stmt.type === 'ExportDefaultDeclaration' && exportName === 'default') {
-                    const decl = (stmt as any).declaration;
-                    if (decl?.type === 'ObjectExpression') return findInObject(decl);
+                    const decl = stmt.declaration;
+                    if (decl.type === 'ObjectExpression') return findInObject(decl);
                 }
             }
             return null;
@@ -1013,14 +983,14 @@ export class FileResolver {
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, content);
             parser.setComments(lexer.comments);
-            const ast = parser.parse().ast as any;
-            if (!ast?.body) return null;
+            const ast = parser.parse().ast;
+            if (ast?.type !== 'Program') return null;
 
-            const findInObject = (objNode: AstBag | undefined): { start: number; end: number } | null => {
-                for (const prop of (objNode?.properties || [])) {
-                    const key = prop?.key?.name ?? prop?.key?.value;
-                    if (key === propertyName && prop.key
-                        && typeof prop.key.start === 'number' && typeof prop.key.end === 'number') {
+            const findInObject = (objNode: ObjectExpressionNode): { start: number; end: number } | null => {
+                for (const prop of objNode.properties) {
+                    if (prop.type !== 'Property') continue;
+                    const key = propertyKeyValue(prop);
+                    if (key === propertyName) {
                         return { start: prop.key.start, end: prop.key.end };
                     }
                 }
@@ -1028,19 +998,18 @@ export class FileResolver {
             };
 
             for (const stmt of ast.body) {
-                if (!stmt) continue;
                 if (stmt.type === 'ExportNamedDeclaration') {
-                    const decl = (stmt as any).declaration;
+                    const decl = stmt.declaration;
                     if (decl?.type === 'VariableDeclaration') {
-                        for (const d of (decl.declarations || [])) {
-                            if (d?.id?.name === exportName && d.init?.type === 'ObjectExpression') {
+                        for (const d of decl.declarations) {
+                            if (d.id.name === exportName && d.init?.type === 'ObjectExpression') {
                                 return findInObject(d.init);
                             }
                         }
                     }
                 } else if (stmt.type === 'ExportDefaultDeclaration' && exportName === 'default') {
-                    const decl = (stmt as any).declaration;
-                    if (decl?.type === 'ObjectExpression') return findInObject(decl);
+                    const decl = stmt.declaration;
+                    if (decl.type === 'ObjectExpression') return findInObject(decl);
                 }
             }
             return null;
@@ -1065,13 +1034,13 @@ export class FileResolver {
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, content);
             const parseResult = parser.parse();
-            const body = (parseResult.ast as any)?.body;
-            if (!Array.isArray(body)) return null;
-            for (const stmt of body) {
-                if (!stmt || stmt.type !== 'ImportDeclaration') continue;
-                for (const spec of (stmt.specifiers || [])) {
-                    if (spec.type === 'ImportNamespaceSpecifier' && spec.local?.name === name) {
-                        let src = stmt.source?.value;
+            const ast = parseResult.ast;
+            if (ast?.type !== 'Program') return null;
+            for (const stmt of ast.body) {
+                if (stmt.type !== 'ImportDeclaration') continue;
+                for (const spec of stmt.specifiers) {
+                    if (spec.type === 'ImportNamespaceSpecifier' && spec.local.name === name) {
+                        let src = stmt.source.value;
                         if (typeof src !== 'string') return null;
                         src = src.replace(/^['"]|['"]$/g, '');
                         return this.resolveImportPath(src, fileUri);
@@ -1091,12 +1060,11 @@ export class FileResolver {
      * where `dsl` is `import * as dsl from './leaf.uc'` — docs/tc-barrel-reexport-typing.md).
      */
     private resolveNamespaceMemberAlias(fileUri: string, init: AstNode | undefined): { uri: string; member: string } | null {
-        if (!init || (init as any).type !== 'MemberExpression') return null;
-        const mem = init as any;
-        if (mem.computed || mem.object?.type !== 'Identifier' || mem.property?.type !== 'Identifier') return null;
-        const nsUri = this.findNamespaceImportSource(fileUri, mem.object.name);
+        if (!init || init.type !== 'MemberExpression') return null;
+        if (init.computed || init.object.type !== 'Identifier' || init.property.type !== 'Identifier') return null;
+        const nsUri = this.findNamespaceImportSource(fileUri, init.object.name);
         if (!nsUri || !nsUri.startsWith('file://')) return null;
-        return { uri: nsUri, member: mem.property.name };
+        return { uri: nsUri, member: init.property.name };
     }
 
     /**
@@ -1144,19 +1112,19 @@ export class FileResolver {
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, content);
             const parseResult = parser.parse();
-            const body = (parseResult.ast as any)?.body;
-            if (!Array.isArray(body)) return null;
+            const ast = parseResult.ast;
+            if (ast?.type !== 'Program') return null;
 
-            for (const stmt of body) {
-                if (!stmt || stmt.type !== 'ImportDeclaration') continue;
-                for (const spec of (stmt.specifiers || [])) {
-                    if (spec.type === 'ImportSpecifier' && spec.local?.name === localName) {
-                        let src = stmt.source?.value;
+            for (const stmt of ast.body) {
+                if (stmt.type !== 'ImportDeclaration') continue;
+                for (const spec of stmt.specifiers) {
+                    if (spec.type === 'ImportSpecifier' && spec.local.name === localName) {
+                        let src = stmt.source.value;
                         if (typeof src !== 'string') return null;
                         src = src.replace(/^['"]|['"]$/g, '');
                         const resolved = this.resolveImportPath(src, fileUri);
                         if (!resolved) return null;
-                        return { uri: resolved, importedName: spec.imported?.name || localName };
+                        return { uri: resolved, importedName: spec.imported.name || localName };
                     }
                 }
             }
@@ -1261,7 +1229,7 @@ export class FileResolver {
      */
     private findFunctions(node: AstNode, functions: FunctionDefinition[]): void {
         if (node.type === 'FunctionDeclaration') {
-            const funcNode = node as FunctionDeclarationNode;
+            const funcNode = node;
             functions.push({
                 name: funcNode.id.name,
                 node: funcNode,
@@ -1285,17 +1253,16 @@ export class FileResolver {
      * collected) wins.
      */
     private findTopLevelVariables(ast: AstNode, defs: FunctionDefinition[]): void {
-        const body = (ast as any).body;
-        if (!Array.isArray(body)) return;
-        for (const stmt of body) {
+        if (ast.type !== 'Program') return;
+        for (const stmt of ast.body) {
             const varDecl =
-                stmt?.type === 'VariableDeclaration' ? stmt :
-                (stmt?.type === 'ExportNamedDeclaration' && stmt.declaration?.type === 'VariableDeclaration')
+                stmt.type === 'VariableDeclaration' ? stmt :
+                (stmt.type === 'ExportNamedDeclaration' && stmt.declaration?.type === 'VariableDeclaration')
                     ? stmt.declaration : null;
             if (!varDecl) continue;
-            for (const d of varDecl.declarations || []) {
-                const id = d?.id;
-                if (id?.type !== 'Identifier' || !id.name) continue;
+            for (const d of varDecl.declarations) {
+                const id = d.id;
+                if (!id.name) continue;
                 if (defs.some(def => def.name === id.name)) continue; // function shadows
                 defs.push({ name: id.name, node: d, start: id.start, end: id.end, kind: 'variable' });
             }
@@ -1306,20 +1273,7 @@ export class FileResolver {
      * Visit all child nodes of an AST node
      */
     private visitChildren(node: AstNode, visitor: (child: AstNode) => void): void {
-        for (const key in node) {
-            if (key === 'type' || key === 'start' || key === 'end') continue;
-            
-            const value = (node as any)[key];
-            if (Array.isArray(value)) {
-                for (const item of value) {
-                    if (item && typeof item === 'object' && item.type) {
-                        visitor(item);
-                    }
-                }
-            } else if (value && typeof value === 'object' && value.type) {
-                visitor(value);
-            }
-        }
+        forEachAstChild(node, visitor);
     }
 
     /**
@@ -1348,11 +1302,12 @@ export class FileResolver {
             // Include `export function foo` (an ExportNamedDeclaration wrapping a
             // FunctionDeclaration), so `export default foo` is flagged as a function.
             const topLevelFunctionNames = new Set<string>();
-            for (const stmt of (result.ast as any).body || []) {
+            const programBody = result.ast.type === 'Program' ? result.ast.body : [];
+            for (const stmt of programBody) {
                 const fnDecl = stmt.type === 'FunctionDeclaration' ? stmt
                     : (stmt.type === 'ExportNamedDeclaration' && stmt.declaration?.type === 'FunctionDeclaration') ? stmt.declaration
                     : null;
-                if (fnDecl?.id?.name) {
+                if (fnDecl?.id.name) {
                     topLevelFunctionNames.add(fnDecl.id.name);
                 }
             }
@@ -1375,22 +1330,23 @@ export class FileResolver {
         // here (the "Error loading module exports" RangeError). (#117)
         if (depth > MAX_ANALYSIS_DEPTH) return;
         if (node.type === 'ExportDefaultDeclaration') {
-            const exportNode = node as ExportDefaultDeclarationNode;
+            const exportNode = node;
             const decl = exportNode.declaration;
-            const isFuncDecl = decl?.type === 'FunctionDeclaration' || decl?.type === 'FunctionExpression';
+            const isFuncDecl = decl.type === 'FunctionDeclaration' || decl.type === 'FunctionExpression';
             // Check if default export is an identifier referencing a top-level function
-            const isIdentifierFunc = decl?.type === 'Identifier' && topLevelFunctionNames?.has((decl as any).name);
+            const isIdentifierFunc = decl.type === 'Identifier' && topLevelFunctionNames?.has(decl.name);
             // The default's source name: an `export default foo` identifier, OR the id
             // of an inline `export default function foo()` (so cross-file refs/rename
             // can resolve it — without this, exportedName was undefined for inline fns).
-            const exportedName = decl?.type === 'Identifier' ? (decl as any).name
-                : (decl?.type === 'FunctionDeclaration' || decl?.type === 'FunctionExpression') ? (decl as any).id?.name
+            const exportedName = decl.type === 'Identifier' ? decl.name
+                : decl.type === 'FunctionDeclaration' ? decl.id.name
+                : decl.type === 'FunctionExpression' ? decl.id?.name
                 : undefined;
             exports.push({
                 name: 'default',
                 type: 'default',
                 isFunction: isFuncDecl || !!isIdentifierFunc,
-                exportedName
+                ...(exportedName !== undefined ? { exportedName } : {})
             });
         } else if (node.type === 'ExportNamedDeclaration') {
             const exportNode = node as ExportNamedDeclarationNode;
@@ -1404,7 +1360,7 @@ export class FileResolver {
                         isFunction: true
                     });
                 } else if (exportNode.declaration.type === 'VariableDeclaration') {
-                    const varDecl = exportNode.declaration as any; // VariableDeclarationNode
+                    const varDecl = exportNode.declaration;
                     for (const declarator of varDecl.declarations) {
                         exports.push({
                             name: declarator.id.name,
@@ -1497,7 +1453,7 @@ export class FileResolver {
      * inference. Returns null when there's no usable `@returns`.
      */
     private functionReturnTypeFromJsDoc(funcNode: AstNode): UcodeDataType | null {
-        const leadingJsDoc = (funcNode as any).leadingJsDoc;
+        const leadingJsDoc = asFunctionLike(funcNode)?.leadingJsDoc;
         if (!leadingJsDoc?.value) return null;
         const parsed = parseJsDocComment(leadingJsDoc.value);
         const ret = parsed.tags.find(t => t.tag === 'returns');
@@ -1540,7 +1496,7 @@ export class FileResolver {
             const tokens = lexer.tokenize();
             const parser = new UcodeParser(tokens, content);
             parser.setComments(lexer.comments);
-            const ast = parser.parse().ast as any;
+            const ast = parser.parse().ast;
             const types = new Map<string, UcodeDataType>();
             const nested = new Map<string, Map<string, UcodeDataType>>();
             const functionReturnTypes = new Map<string, string>();
@@ -1548,12 +1504,12 @@ export class FileResolver {
             // resolve the function's params via the cross-file resolver. (#171)
             const defLocations = new Map<string, { start: number; end: number }>();
 
-            const recordExport = (name: string, init: AstBag | undefined) => {
+            const recordExport = (name: string, init: AstNode | null | undefined) => {
                 // Barrel re-export: `export const mock = _mock;` where `_mock` is a
                 // namespace import — chase into the namespace module and carry its full
                 // shape as this export's ONE-level-deeper shape, so a two-hop access
                 // (`ns.mock.member`) resolves. docs/tc-barrel-reexport-typing.md
-                if (init?.type === 'Identifier' && typeof init.name === 'string') {
+                if (init?.type === 'Identifier') {
                     const nsUri = this.findNamespaceImportSource(fileUri, init.name);
                     if (nsUri && nsUri.startsWith('file://')) {
                         const nsInfo = this.getNamespaceExportInfo(nsUri);
@@ -1567,12 +1523,10 @@ export class FileResolver {
                 // `export const describe = dsl.describe;` — re-export through a
                 // namespace member. docs/tc-barrel-reexport-typing.md
                 if (init?.type === 'MemberExpression') {
-                    const memAny = init as unknown as { computed?: boolean; object?: AstBag; property?: AstBag };
-                    if (!memAny.computed && memAny.object?.type === 'Identifier' && memAny.property?.type === 'Identifier'
-                        && typeof memAny.object.name === 'string' && typeof memAny.property.name === 'string') {
-                        const nsUri = this.findNamespaceImportSource(fileUri, memAny.object.name);
+                    if (!init.computed && init.object.type === 'Identifier' && init.property.type === 'Identifier') {
+                        const nsUri = this.findNamespaceImportSource(fileUri, init.object.name);
                         if (nsUri && nsUri.startsWith('file://')) {
-                            const memberName = memAny.property.name;
+                            const memberName = init.property.name;
                             const nsInfo = this.getNamespaceExportInfo(nsUri);
                             const memberType = nsInfo?.types.get(memberName);
                             if (memberType !== undefined) {
@@ -1597,37 +1551,32 @@ export class FileResolver {
                 // Function-valued const export (`export const f = () => …`): carry
                 // its return type too, like a FunctionDeclaration export.
                 if (init?.type === 'FunctionExpression' || init?.type === 'ArrowFunctionExpression') {
-                    const retStr = this.functionReturnTypeString(init as unknown as AstNode);
+                    const retStr = this.functionReturnTypeString(init);
                     if (retStr) functionReturnTypes.set(name, retStr);
                     // The function VALUE node's start is what findFunctionNodeAt matches (#171).
-                    if (typeof init.start === 'number' && typeof init.end === 'number') {
-                        defLocations.set(name, { start: init.start, end: init.end });
-                    }
+                    defLocations.set(name, { start: init.start, end: init.end });
                 }
             };
 
-            if (ast?.body) {
+            if (ast?.type === 'Program') {
                 for (const stmt of ast.body) {
-                    if (!stmt) continue;
                     if (stmt.type === 'ExportNamedDeclaration') {
-                        const decl = (stmt as any).declaration;
-                        if (decl?.type === 'FunctionDeclaration' && decl.id?.name) {
+                        const decl = stmt.declaration;
+                        if (decl?.type === 'FunctionDeclaration' && decl.id.name) {
                             types.set(decl.id.name, UcodeType.FUNCTION as UcodeDataType);
                             // Carry the function's return type (JSDoc @returns first, else
                             // body inference) so `ns.fn()` call sites resolve a real type
                             // instead of `unknown`.
                             const retStr = this.functionReturnTypeString(decl);
                             if (retStr) functionReturnTypes.set(decl.id.name, retStr);
-                            if (typeof decl.start === 'number' && typeof decl.end === 'number') {
-                                defLocations.set(decl.id.name, { start: decl.start, end: decl.end });
-                            }
+                            defLocations.set(decl.id.name, { start: decl.start, end: decl.end });
                         } else if (decl?.type === 'VariableDeclaration') {
-                            for (const d of (decl.declarations || [])) {
-                                if (d?.id?.name) recordExport(d.id.name, d.init);
+                            for (const d of decl.declarations) {
+                                if (d.id.name) recordExport(d.id.name, d.init);
                             }
                         }
                     } else if (stmt.type === 'ExportDefaultDeclaration') {
-                        recordExport('default', (stmt as any).declaration);
+                        recordExport('default', stmt.declaration);
                     }
                 }
             }
@@ -1641,19 +1590,19 @@ export class FileResolver {
     }
 
     /** Type-only walk of an ObjectExpression's direct properties — one level. */
-    private inferObjectLiteralPropertyTypesShallow(objNode: AstBag | undefined): Map<string, UcodeDataType> {
+    private inferObjectLiteralPropertyTypesShallow(objNode: ObjectExpressionNode): Map<string, UcodeDataType> {
         const m = new Map<string, UcodeDataType>();
-        for (const prop of (objNode?.properties || [])) {
-            const key = prop?.key?.name ?? prop?.key?.value;
+        for (const prop of objNode.properties) {
+            if (prop.type !== 'Property') continue;
+            const key = propertyKeyValue(prop);
             if (typeof key !== 'string' && typeof key !== 'number') continue;
             const keyStr = String(key);
-            const val = asBag(prop?.value);
-            if (val) m.set(keyStr, this.inferShallowType(val));
+            m.set(keyStr, this.inferShallowType(prop.value));
         }
         return m;
     }
 
-    private inferShallowType(node: AstBag | undefined): UcodeDataType {
+    private inferShallowType(node: AstNode | null | undefined): UcodeDataType {
         if (!node) return UcodeType.UNKNOWN as UcodeDataType;
         switch (node.type) {
             case 'FunctionDeclaration':
@@ -1668,7 +1617,7 @@ export class FileResolver {
                 const lit = node;
                 if (lit.literalType === 'string' || typeof lit.value === 'string') return UcodeType.STRING as UcodeDataType;
                 if (lit.literalType === 'double' || (typeof lit.value === 'number' && !Number.isInteger(lit.value))) return UcodeType.DOUBLE as UcodeDataType;
-                if (lit.literalType === 'integer' || typeof lit.value === 'number') return UcodeType.INTEGER as UcodeDataType;
+                if (typeof lit.value === 'number') return UcodeType.INTEGER as UcodeDataType;
                 if (lit.literalType === 'boolean' || typeof lit.value === 'boolean') return UcodeType.BOOLEAN as UcodeDataType;
                 if (lit.literalType === 'null' || lit.value === null) return UcodeType.NULL as UcodeDataType;
                 return UcodeType.UNKNOWN as UcodeDataType;
@@ -1691,20 +1640,20 @@ export class FileResolver {
             const result = { ast: this.getCachedAst(fileUri, source) };
             if (!result.ast) return null;
 
-            const body = (result.ast as any).body || [];
+            const body = result.ast.type === 'Program' ? result.ast.body : [];
 
             // Build maps of top-level variable initializers, function names, and function nodes
             const varInits = new Map<string, AstNode>();
             const funcNames = new Set<string>();
             const funcNodes = new Map<string, AstNode>();
             for (const stmt of body) {
-                if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
+                if (stmt.type === 'FunctionDeclaration' && stmt.id.name) {
                     funcNames.add(stmt.id.name);
                     funcNodes.set(stmt.id.name, stmt);
                 }
                 if (stmt.type === 'VariableDeclaration') {
-                    for (const decl of stmt.declarations || []) {
-                        if (decl.id?.name && decl.init) {
+                    for (const decl of stmt.declarations) {
+                        if (decl.id.name && decl.init) {
                             varInits.set(decl.id.name, decl.init);
                         }
                     }
@@ -1715,7 +1664,7 @@ export class FileResolver {
             let defaultDecl: AstNode | null = null;
             for (const stmt of body) {
                 if (stmt.type === 'ExportDefaultDeclaration') {
-                    defaultDecl = (stmt as ExportDefaultDeclarationNode).declaration;
+                    defaultDecl = stmt.declaration;
                     break;
                 }
             }
@@ -1728,8 +1677,8 @@ export class FileResolver {
             // (`someVar.x = …`), so it is NOT closed.
             const isInlineLiteral = defaultDecl.type === 'ObjectExpression';
             let objNode = defaultDecl;
-            if (objNode.type === 'Identifier' && varInits.has((objNode as any).name)) {
-                objNode = varInits.get((objNode as any).name)!;
+            if (objNode.type === 'Identifier' && varInits.has(objNode.name)) {
+                objNode = varInits.get(objNode.name)!;
             }
 
             // Must be an ObjectExpression
@@ -1739,12 +1688,13 @@ export class FileResolver {
             const nestedPropertyTypes = new Map<string, Map<string, UcodeDataType>>();
             const functionReturnTypes = new Map<string, UcodeDataType>();
 
-            for (const prop of (objNode as any).properties || []) {
-                const key = prop.key?.name || prop.key?.value;
-                if (!key) continue;
+            for (const prop of objNode.properties) {
+                if (prop.type !== 'Property') continue;
+                const rawKey = propertyKeyValue(prop);
+                if (!rawKey) continue;
+                const key = rawKey as string;
 
                 const val = prop.value;
-                if (!val) continue;
 
                 if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
                     propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
@@ -1759,7 +1709,7 @@ export class FileResolver {
                         const retType = this.inferFunctionReturnType(funcNode);
                         if (retType) functionReturnTypes.set(key, retType);
                     }
-                } else if (val.type === 'Literal' || val.type === 'StringLiteral') {
+                } else if (val.type === 'Literal') {
                     if (typeof val.value === 'number') {
                         propertyTypes.set(key, UcodeType.INTEGER as UcodeDataType);
                     } else if (typeof val.value === 'string') {
@@ -1806,18 +1756,17 @@ export class FileResolver {
             // before the export statement (docs/tc-fn-reference-property-returns.md,
             // shape 3).
             if (!isInlineLiteral && defaultDecl.type === 'Identifier') {
-                const exportedName = (defaultDecl as IdentifierNode).name;
+                const exportedName = defaultDecl.name;
                 for (const stmt of body) {
                     if (stmt.type !== 'ExpressionStatement') continue;
-                    const expr = (stmt as any).expression;
-                    if (!expr || expr.type !== 'AssignmentExpression' || expr.operator !== '=') continue;
+                    const expr = stmt.expression;
+                    if (expr.type !== 'AssignmentExpression' || expr.operator !== '=') continue;
                     const left = expr.left;
-                    if (!left || left.type !== 'MemberExpression' || left.computed) continue;
-                    if (left.object?.type !== 'Identifier' || left.object.name !== exportedName) continue;
-                    if (left.property?.type !== 'Identifier') continue;
-                    const key = left.property.name as string;
+                    if (left.type !== 'MemberExpression' || left.computed) continue;
+                    if (left.object.type !== 'Identifier' || left.object.name !== exportedName) continue;
+                    if (left.property.type !== 'Identifier') continue;
+                    const key = left.property.name;
                     const val = expr.right;
-                    if (!val) continue;
 
                     if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
                         propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
@@ -1841,7 +1790,7 @@ export class FileResolver {
                         } else {
                             propertyTypes.set(key, UcodeType.UNKNOWN as UcodeDataType);
                         }
-                    } else if (val.type === 'Literal' || val.type === 'StringLiteral') {
+                    } else if (val.type === 'Literal') {
                         if (typeof val.value === 'number') {
                             propertyTypes.set(key, UcodeType.INTEGER as UcodeDataType);
                         } else if (typeof val.value === 'string') {
@@ -1903,20 +1852,20 @@ export class FileResolver {
             const result = { ast: this.getCachedAst(fileUri, source) };
             if (!result.ast) return null;
 
-            const body = (result.ast as any).body || [];
+            const body = result.ast.type === 'Program' ? result.ast.body : [];
 
             // Build maps of top-level variable initializers and function names
             const varInits = new Map<string, AstNode>();
             const funcNames = new Set<string>();
             const funcNodes = new Map<string, AstNode>();
             for (const stmt of body) {
-                if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
+                if (stmt.type === 'FunctionDeclaration' && stmt.id.name) {
                     funcNames.add(stmt.id.name);
                     funcNodes.set(stmt.id.name, stmt);
                 }
                 if (stmt.type === 'VariableDeclaration') {
-                    for (const decl of stmt.declarations || []) {
-                        if (decl.id?.name && decl.init) {
+                    for (const decl of stmt.declarations) {
+                        if (decl.id.name && decl.init) {
                             varInits.set(decl.id.name, decl.init);
                         }
                     }
@@ -1926,18 +1875,18 @@ export class FileResolver {
             // Find the named export
             for (const stmt of body) {
                 if (stmt.type !== 'ExportNamedDeclaration') continue;
-                const exportNode = stmt as ExportNamedDeclarationNode;
+                const exportNode = stmt;
 
                 if (exportNode.declaration) {
                     if (exportNode.declaration.type === 'FunctionDeclaration') {
-                        const funcDecl = exportNode.declaration as FunctionDeclarationNode;
+                        const funcDecl = exportNode.declaration;
                         if (funcDecl.id.name === exportName) {
                             return { type: UcodeType.FUNCTION as UcodeDataType };
                         }
                     } else if (exportNode.declaration.type === 'VariableDeclaration') {
-                        const varDecl = exportNode.declaration as any;
+                        const varDecl = exportNode.declaration;
                         for (const declarator of varDecl.declarations) {
-                            if (declarator.id?.name !== exportName) continue;
+                            if (declarator.id.name !== exportName) continue;
 
                             const init = declarator.init;
                             if (!init) return { type: UcodeType.UNKNOWN as UcodeDataType };
@@ -1946,7 +1895,7 @@ export class FileResolver {
                             // this file — follow the import chain into the source module
                             // (mirrors getNamedExportFunctionParameters' re-export handling).
                             if (init.type === 'Identifier') {
-                                const chained = this.resolveReexportedIdentifierType(fileUri, (init as IdentifierNode).name, _visited);
+                                const chained = this.resolveReexportedIdentifierType(fileUri, init.name, _visited);
                                 if (chained) return chained;
                             }
 
@@ -1970,9 +1919,11 @@ export class FileResolver {
                                 const propertyTypes = new Map<string, UcodeDataType>();
                                 const nestedPropertyTypes = new Map<string, Map<string, UcodeDataType>>();
 
-                                for (const prop of init.properties || []) {
-                                    const key = prop.key?.name || prop.key?.value;
-                                    if (!key || !prop.value) continue;
+                                for (const prop of init.properties) {
+                                    if (prop.type !== 'Property') continue;
+                                    const rawKey = propertyKeyValue(prop);
+                                    if (!rawKey) continue;
+                                    const key = rawKey as string;
 
                                     const val = prop.value;
                                     if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
@@ -2015,7 +1966,7 @@ export class FileResolver {
                         // `const VAL2 = VAL; export { VAL2 };` where VAL is an import
                         // binding — follow the chain to the module that really declares it.
                         if (init && init.type === 'Identifier') {
-                            const chained = this.resolveReexportedIdentifierType(fileUri, (init as IdentifierNode).name, _visited);
+                            const chained = this.resolveReexportedIdentifierType(fileUri, init.name, _visited);
                             if (chained) return chained;
                         }
                         // `const x = ns.member; export { x };` — barrel re-export through a
@@ -2105,18 +2056,18 @@ export class FileResolver {
             const result = { ast: this.getCachedAst(fileUri, source) };
             if (!result.ast) return null;
 
-            const body = (result.ast as any).body || [];
+            const body = result.ast.type === 'Program' ? result.ast.body : [];
 
             // Build maps of top-level declarations
             const topLevelFuncs = new Map<string, AstNode>();
             const topLevelVars = new Map<string, AstNode>();
             for (const stmt of body) {
-                if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
+                if (stmt.type === 'FunctionDeclaration' && stmt.id.name) {
                     topLevelFuncs.set(stmt.id.name, stmt);
                 }
                 if (stmt.type === 'VariableDeclaration') {
-                    for (const decl of stmt.declarations || []) {
-                        if (decl.id?.name && decl.init) {
+                    for (const decl of stmt.declarations) {
+                        if (decl.id.name && decl.init) {
                             topLevelVars.set(decl.id.name, decl.init);
                         }
                     }
@@ -2127,7 +2078,7 @@ export class FileResolver {
             let defaultDecl: AstNode | null = null;
             for (const stmt of body) {
                 if (stmt.type === 'ExportDefaultDeclaration') {
-                    defaultDecl = (stmt as ExportDefaultDeclarationNode).declaration;
+                    defaultDecl = stmt.declaration;
                     break;
                 }
             }
@@ -2138,7 +2089,7 @@ export class FileResolver {
             if (defaultDecl.type === 'FunctionDeclaration' || defaultDecl.type === 'FunctionExpression') {
                 funcNode = defaultDecl;
             } else if (defaultDecl.type === 'Identifier') {
-                const name = (defaultDecl as IdentifierNode).name;
+                const name = defaultDecl.name;
                 if (topLevelFuncs.has(name)) {
                     funcNode = topLevelFuncs.get(name)!;
                 }
@@ -2189,18 +2140,18 @@ export class FileResolver {
             const result = { ast: this.getCachedAst(fileUri, source) };
             if (!result.ast) return null;
 
-            const body = (result.ast as any).body || [];
+            const body = result.ast.type === 'Program' ? result.ast.body : [];
 
             // Build maps of top-level declarations (for `export { name }` resolution)
             const topLevelFuncs = new Map<string, AstNode>();
             const topLevelVarInits = new Map<string, AstNode>();
             for (const stmt of body) {
-                if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
+                if (stmt.type === 'FunctionDeclaration' && stmt.id.name) {
                     topLevelFuncs.set(stmt.id.name, stmt);
                 }
                 if (stmt.type === 'VariableDeclaration') {
-                    for (const decl of stmt.declarations || []) {
-                        if (decl.id?.name && decl.init) {
+                    for (const decl of stmt.declarations) {
+                        if (decl.id.name && decl.init) {
                             topLevelVarInits.set(decl.id.name, decl.init);
                         }
                     }
@@ -2211,16 +2162,16 @@ export class FileResolver {
             let funcNode: AstNode | null = null;
             for (const stmt of body) {
                 if (stmt.type !== 'ExportNamedDeclaration') continue;
-                const exportNode = stmt as ExportNamedDeclarationNode;
+                const exportNode = stmt;
 
                 if (exportNode.declaration) {
                     if (exportNode.declaration.type === 'FunctionDeclaration') {
-                        const funcDecl = exportNode.declaration as FunctionDeclarationNode;
-                        if (funcDecl.id?.name === exportName) { funcNode = funcDecl; break; }
+                        const funcDecl = exportNode.declaration;
+                        if (funcDecl.id.name === exportName) { funcNode = funcDecl; break; }
                     } else if (exportNode.declaration.type === 'VariableDeclaration') {
-                        const varDecl = exportNode.declaration as any;
-                        for (const declarator of varDecl.declarations || []) {
-                            if (declarator.id?.name !== exportName) continue;
+                        const varDecl = exportNode.declaration;
+                        for (const declarator of varDecl.declarations) {
+                            if (declarator.id.name !== exportName) continue;
                             const init = declarator.init;
                             if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) {
                                 funcNode = init;
@@ -2228,7 +2179,7 @@ export class FileResolver {
                                 // `export const describe = someFn;` where someFn is an
                                 // imported named function — chase the import chain.
                                 // docs/tc-barrel-reexport-typing.md
-                                const reexp = this.findReexportedSource(fileUri, (init as IdentifierNode).name);
+                                const reexp = this.findReexportedSource(fileUri, init.name);
                                 if (reexp) return this.getNamedExportFunctionReturnInfo(reexp.uri, reexp.importedName, _visited);
                             } else if (init && init.type === 'MemberExpression') {
                                 // `export const describe = dsl.describe;` (barrel re-export
@@ -2342,15 +2293,15 @@ export class FileResolver {
             const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
             const ast = this.getCachedAst(fileUri, source);
             if (!ast) return null;
-            const body = (ast as any).body || [];
+            const body = ast.type === 'Program' ? ast.body : [];
 
             const topLevelFuncs = new Map<string, AstNode>();
             const topLevelVarInits = new Map<string, AstNode>();
             for (const stmt of body) {
-                if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) topLevelFuncs.set(stmt.id.name, stmt);
+                if (stmt.type === 'FunctionDeclaration' && stmt.id.name) topLevelFuncs.set(stmt.id.name, stmt);
                 if (stmt.type === 'VariableDeclaration') {
-                    for (const decl of stmt.declarations || []) {
-                        if (decl.id?.name && decl.init) topLevelVarInits.set(decl.id.name, decl.init);
+                    for (const decl of stmt.declarations) {
+                        if (decl.id.name && decl.init) topLevelVarInits.set(decl.id.name, decl.init);
                     }
                 }
             }
@@ -2358,22 +2309,22 @@ export class FileResolver {
             let funcNode: AstNode | null = null;
             for (const stmt of body) {
                 if (stmt.type !== 'ExportNamedDeclaration') continue;
-                const exportNode = stmt as ExportNamedDeclarationNode;
+                const exportNode = stmt;
                 if (exportNode.declaration) {
                     if (exportNode.declaration.type === 'FunctionDeclaration') {
-                        const funcDecl = exportNode.declaration as FunctionDeclarationNode;
-                        if (funcDecl.id?.name === exportName) { funcNode = funcDecl; break; }
+                        const funcDecl = exportNode.declaration;
+                        if (funcDecl.id.name === exportName) { funcNode = funcDecl; break; }
                     } else if (exportNode.declaration.type === 'VariableDeclaration') {
-                        const varDecl = exportNode.declaration as any;
-                        for (const declarator of varDecl.declarations || []) {
-                            if (declarator.id?.name !== exportName) continue;
+                        const varDecl = exportNode.declaration;
+                        for (const declarator of varDecl.declarations) {
+                            if (declarator.id.name !== exportName) continue;
                             const init = declarator.init;
                             if (init && (init.type === 'FunctionExpression' || init.type === 'ArrowFunctionExpression')) {
                                 funcNode = init;
                             } else if (init && init.type === 'Identifier') {
                                 // `export const describe = someFn;` — chase an imported alias.
                                 // docs/tc-barrel-reexport-typing.md
-                                const reexp = this.findReexportedSource(fileUri, (init as IdentifierNode).name);
+                                const reexp = this.findReexportedSource(fileUri, init.name);
                                 if (reexp) return this.resolveNamedExportFunctionNode(reexp.uri, reexp.importedName, _visited);
                             } else if (init && init.type === 'MemberExpression') {
                                 // `export const describe = dsl.describe;` — barrel re-export
@@ -2432,16 +2383,16 @@ export class FileResolver {
             const source = getOpenDocumentContent(fileUri) ?? fs.readFileSync(filePath, 'utf-8');
             const ast = this.getCachedAst(fileUri, source);
             if (!ast) return null;
-            const body = (ast as any).body || [];
+            const body = ast.type === 'Program' ? ast.body : [];
 
             const topLevelFuncs = new Map<string, AstNode>();
             for (const stmt of body) {
-                if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) topLevelFuncs.set(stmt.id.name, stmt);
+                if (stmt.type === 'FunctionDeclaration' && stmt.id.name) topLevelFuncs.set(stmt.id.name, stmt);
             }
 
             let defaultDecl: AstNode | null = null;
             for (const stmt of body) {
-                if (stmt.type === 'ExportDefaultDeclaration') { defaultDecl = (stmt as ExportDefaultDeclarationNode).declaration; break; }
+                if (stmt.type === 'ExportDefaultDeclaration') { defaultDecl = stmt.declaration; break; }
             }
             if (!defaultDecl) return null;
 
@@ -2449,7 +2400,7 @@ export class FileResolver {
             if (defaultDecl.type === 'FunctionDeclaration' || defaultDecl.type === 'FunctionExpression') {
                 funcNode = defaultDecl;
             } else if (defaultDecl.type === 'Identifier') {
-                const name = (defaultDecl as IdentifierNode).name;
+                const name = defaultDecl.name;
                 if (topLevelFuncs.has(name)) funcNode = topLevelFuncs.get(name)!;
             }
 
@@ -2466,10 +2417,11 @@ export class FileResolver {
      * semanticAnalyzer's visitFunctionDeclaration.
      */
     private extractFunctionParameters(funcNode: AstNode): ParamInfo[] | null {
-        if ((funcNode as any).forwardDeclaration) return null;
-        const params = (funcNode as any).params || [];
-        const restParam = (funcNode as any).restParam;
-        const leadingJsDoc = (funcNode as any).leadingJsDoc;
+        const fn = asFunctionLike(funcNode);
+        if (fn?.type === 'FunctionDeclaration' && fn.forwardDeclaration) return null;
+        const params = fn?.params ?? [];
+        const restParam = fn?.restParam;
+        const leadingJsDoc = fn?.leadingJsDoc;
 
         const jsdocTypes = new Map<string, UcodeDataType>();
         const jsdocOptional = new Set<string>();
@@ -2487,7 +2439,7 @@ export class FileResolver {
             }
         }
 
-        const result: ParamInfo[] = (params as { name: string }[]).map((p) => {
+        const result: ParamInfo[] = params.map((p) => {
             const declared = jsdocTypes.get(p.name) ?? (UcodeType.UNKNOWN as UcodeDataType);
             const optional = jsdocOptional.has(p.name);
             return {
@@ -2515,20 +2467,21 @@ export class FileResolver {
         funcNode: AstNode,
         topLevelFuncs: Map<string, AstNode>
     ): FactoryReturnInfo | null {
-        const funcBody = (funcNode as FunctionDeclarationNode).body;
-        if (!funcBody) return null;
+        const fn = asFunctionLike(funcNode);
+        if (!fn) return null;
+        const funcBody = fn.body;
 
         // Collect local function nodes and variable initializers within the function body
         const localFuncNodes = new Map<string, AstNode>();
         const localVarInits = new Map<string, AstNode>();
-        const bodyStmts = (funcBody as any).body || [];
+        const bodyStmts = funcBody.type === 'BlockStatement' ? funcBody.body : [];
         for (const stmt of bodyStmts) {
-            if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) {
+            if (stmt.type === 'FunctionDeclaration' && stmt.id.name) {
                 localFuncNodes.set(stmt.id.name, stmt);
             }
             if (stmt.type === 'VariableDeclaration') {
-                for (const decl of stmt.declarations || []) {
-                    if (decl.id?.name && decl.init) {
+                for (const decl of stmt.declarations) {
+                    if (decl.id.name && decl.init) {
                         localVarInits.set(decl.id.name, decl.init);
                     }
                 }
@@ -2585,7 +2538,7 @@ export class FileResolver {
         // Analyze return types of function-typed properties
         const propertyFunctionReturnTypes = this.analyzePropertyFunctionReturnTypes(
             merged, localFuncNodes, localVarInits, topLevelFuncs,
-            (funcNode as FunctionDeclarationNode).params || []
+            fn.params
         );
 
         // The returned OBJECT is joined with every non-object branch (and the
@@ -2624,7 +2577,7 @@ export class FileResolver {
     ): void {
         for (const stmt of stmts) {
             if (stmt.type === 'ReturnStatement') {
-                const arg = (stmt as any).argument;
+                const arg = stmt.argument;
                 if (arg?.type === 'ObjectExpression') {
                     const locs = new Map<string, { start: number; end: number }>();
                     const propTypes = this.extractObjectPropertyTypes(arg, localFuncNodes, localVarInits, topLevelFuncs, locs);
@@ -2639,21 +2592,18 @@ export class FileResolver {
                         ? this.inferReturnArgType(arg, localVarInits)
                         : UcodeType.NULL as UcodeDataType);
                 }
-            } else if (stmt.type === 'FunctionDeclaration' || stmt.type === 'FunctionExpression' || stmt.type === 'ArrowFunctionExpression') {
+            } else if (stmt.type === 'FunctionDeclaration') {
                 // Skip nested function bodies
                 continue;
             } else if (stmt.type === 'IfStatement') {
-                const ifStmt = stmt as any;
-                if (ifStmt.consequent) {
-                    const block = ifStmt.consequent.type === 'BlockStatement' ? ifStmt.consequent.body : [ifStmt.consequent];
-                    this.collectReturnObjectProperties(block, localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs, extraReturnTypes);
-                }
-                if (ifStmt.alternate) {
-                    const block = ifStmt.alternate.type === 'BlockStatement' ? ifStmt.alternate.body : [ifStmt.alternate];
-                    this.collectReturnObjectProperties(block, localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs, extraReturnTypes);
+                const consequentBlock = stmt.consequent.type === 'BlockStatement' ? stmt.consequent.body : [stmt.consequent];
+                this.collectReturnObjectProperties(consequentBlock, localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs, extraReturnTypes);
+                if (stmt.alternate) {
+                    const alternateBlock = stmt.alternate.type === 'BlockStatement' ? stmt.alternate.body : [stmt.alternate];
+                    this.collectReturnObjectProperties(alternateBlock, localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs, extraReturnTypes);
                 }
             } else if (stmt.type === 'BlockStatement') {
-                this.collectReturnObjectProperties((stmt as any).body || [], localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs, extraReturnTypes);
+                this.collectReturnObjectProperties(stmt.body, localFuncNodes, localVarInits, topLevelFuncs, result, resultLocs, extraReturnTypes);
             }
         }
     }
@@ -2681,24 +2631,22 @@ export class FileResolver {
      *  add `| null` to a factory's return union: noise, never a missed crash. */
     private blockAlwaysReturns(block: AstNode | null | undefined): boolean {
         if (!block || typeof block !== 'object') return false;
-        const stmts: AstNode[] = block.type === 'BlockStatement' ? ((block as any).body || []) : [block];
+        const stmts: AstNode[] = block.type === 'BlockStatement' ? block.body : [block];
         if (stmts.length === 0) return false;
         const last = stmts[stmts.length - 1]!;
         if (last.type === 'ReturnStatement') return true;
         if (last.type === 'ExpressionStatement') {
-            const expr = (last as any).expression;
-            if (expr?.type === 'CallExpression' && expr.callee?.type === 'Identifier'
+            const expr = last.expression;
+            if (expr.type === 'CallExpression' && expr.callee.type === 'Identifier'
                 && (expr.callee.name === 'die' || expr.callee.name === 'exit')) return true;
         }
         if (last.type === 'TryStatement') {
-            const t = last as any;
-            if (!this.blockAlwaysReturns(t.block)) return false;
-            return !t.handler || this.blockAlwaysReturns(t.handler.body);
+            if (!this.blockAlwaysReturns(last.block)) return false;
+            return !last.handler || this.blockAlwaysReturns(last.handler.body);
         }
         if (last.type === 'IfStatement') {
-            const i = last as any;
-            return this.blockAlwaysReturns(i.consequent)
-                && !!i.alternate && this.blockAlwaysReturns(i.alternate);
+            return this.blockAlwaysReturns(last.consequent)
+                && !!last.alternate && this.blockAlwaysReturns(last.alternate);
         }
         return false;
     }
@@ -2715,17 +2663,19 @@ export class FileResolver {
         outLocs?: Map<string, { start: number; end: number }>
     ): Map<string, UcodeDataType> {
         const propertyTypes = new Map<string, UcodeDataType>();
-        const setLoc = (key: string, node: AstBag | null | undefined) => {
-            if (outLocs && node && typeof node.start === 'number' && typeof node.end === 'number') {
+        const setLoc = (key: string, node: { start: number; end: number } | null | undefined) => {
+            if (outLocs && node) {
                 outLocs.set(key, { start: node.start, end: node.end });
             }
         };
-        for (const prop of (objNode as any).properties || []) {
-            const key = prop.key?.name || prop.key?.value;
-            if (!key) continue;
+        if (objNode.type !== 'ObjectExpression') return propertyTypes;
+        for (const prop of objNode.properties) {
+            if (prop.type !== 'Property') continue;
+            const rawKey = propertyKeyValue(prop);
+            if (!rawKey) continue;
+            const key = rawKey as string;
 
             const val = prop.value;
-            if (!val) continue;
 
             if (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression') {
                 propertyTypes.set(key, UcodeType.FUNCTION as UcodeDataType);
@@ -2749,7 +2699,7 @@ export class FileResolver {
             } else if (val.type === 'Literal') {
                 if (typeof val.value === 'number') {
                     // Exponent notation (`1e5`) is a double literal (ticket 115).
-                    propertyTypes.set(key, (((val as any).literalType === 'double' || !Number.isInteger(val.value)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType);
+                    propertyTypes.set(key, ((val.literalType === 'double' || !Number.isInteger(val.value)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType);
                 } else if (typeof val.value === 'string') {
                     propertyTypes.set(key, UcodeType.STRING as UcodeDataType);
                 } else if (typeof val.value === 'boolean') {
@@ -2817,10 +2767,11 @@ export class FileResolver {
         localVarInits: Map<string, AstNode>,
         paramNames: Set<string>
     ): string | null {
-        const body = (funcNode as FunctionDeclarationNode).body;
-        if (!body) return null;
+        const fn = asFunctionLike(funcNode);
+        if (!fn) return null;
+        const body = fn.body;
 
-        const stmts = (body as any).body || [];
+        const stmts = body.type === 'BlockStatement' ? body.body : [];
 
         // Also collect assignments within the function body to augment localVarInits.
         // e.g., _cursor = cursor_fn() where _cursor was initially null.
@@ -2870,28 +2821,27 @@ export class FileResolver {
 
         // Literals
         if (node.type === 'Literal') {
-            const val = (node as any).value;
+            const val = node.value;
             if (typeof val === 'string') return 'string';
             // Exponent notation (`1e5`) is a double literal (ticket 115).
-            if (typeof val === 'number') return ((node as any).literalType === 'double' || !Number.isInteger(val)) ? 'double' : 'integer';
+            if (typeof val === 'number') return (node.literalType === 'double' || !Number.isInteger(val)) ? 'double' : 'integer';
             if (typeof val === 'boolean') return 'boolean';
             if (val === null) return 'null';
             return null;
         }
 
         // String operations: string concatenation, template literals
-        if (node.type === 'BinaryExpression' && (node as any).operator === '+') {
-            const left = this.inferReturnExprType((node as any).left);
-            const right = this.inferReturnExprType((node as any).right);
+        if (node.type === 'BinaryExpression' && node.operator === '+') {
+            const left = this.inferReturnExprType(node.left);
+            const right = this.inferReturnExprType(node.right);
             if (left === 'string' || right === 'string') return 'string';
         }
         if (node.type === 'TemplateLiteral') return 'string';
 
         // Known builtin function calls that return specific types
         if (node.type === 'CallExpression') {
-            const call = node as any;
-            if (call.callee?.type === 'Identifier') {
-                const name = call.callee.name;
+            if (node.callee.type === 'Identifier') {
+                const name = node.callee.name;
                 const returnType = this.resolveBuiltinReturnType(name);
                 if (returnType) return returnType;
             }
@@ -2902,17 +2852,17 @@ export class FileResolver {
         if (node.type === 'ArrayExpression') return 'array';
 
         // Unary ! returns boolean
-        if (node.type === 'UnaryExpression' && (node as any).operator === '!') return 'boolean';
+        if (node.type === 'UnaryExpression' && node.operator === '!') return 'boolean';
 
         // Comparison operators return boolean
         if (node.type === 'BinaryExpression') {
-            const op = (node as any).operator;
+            const op: string = node.operator;
             if (['==', '!=', '===', '!==', '<', '>', '<=', '>='].includes(op)) return 'boolean';
         }
 
         // Logical || — take the type of the right side if left could be falsy
-        if (node.type === 'LogicalExpression' && (node as any).operator === '||') {
-            return this.inferReturnExprType((node as any).right);
+        if (node.type === 'LogicalExpression' && node.operator === '||') {
+            return this.inferReturnExprType(node.right);
         }
 
         return null;
@@ -2965,25 +2915,37 @@ export class FileResolver {
 
             // Direct assignment: x = expr
             if (stmt.type === 'ExpressionStatement') {
-                const expr = (stmt as any).expression;
-                if (expr?.type === 'AssignmentExpression' && expr.left?.type === 'Identifier' && expr.right) {
+                const expr = stmt.expression;
+                if (expr.type === 'AssignmentExpression' && expr.left.type === 'Identifier') {
                     const name = expr.left.name;
                     // Only augment if current init is null/unknown
                     const existing = inits.get(name);
-                    if (!existing || (existing.type === 'Literal' && (existing as any).value === null)) {
+                    if (!existing || (existing.type === 'Literal' && existing.value === null)) {
                         inits.set(name, expr.right);
                     }
                 }
             }
 
             // Recurse into control flow (if/for/while bodies)
-            for (const key of ['body', 'consequent', 'alternate', 'block']) {
-                const child = (stmt as any)[key];
-                if (Array.isArray(child)) {
-                    this.collectAssignments(child, inits);
-                } else if (child && typeof child === 'object' && child.type) {
-                    this.collectAssignments([child], inits);
-                }
+            switch (stmt.type) {
+                case 'BlockStatement':
+                    this.collectAssignments(stmt.body, inits);
+                    break;
+                case 'ForStatement':
+                case 'ForInStatement':
+                case 'WhileStatement':
+                    this.collectAssignments([stmt.body], inits);
+                    break;
+                case 'IfStatement':
+                    this.collectAssignments([stmt.consequent], inits);
+                    if (stmt.alternate) this.collectAssignments([stmt.alternate], inits);
+                    break;
+                case 'TryStatement':
+                    this.collectAssignments([stmt.block], inits);
+                    break;
+                case 'CatchClause':
+                    this.collectAssignments([stmt.body], inits);
+                    break;
             }
         }
     }
@@ -2998,19 +2960,36 @@ export class FileResolver {
             node.type === 'ArrowFunctionExpression') return;
 
         if (node.type === 'ReturnStatement') {
-            const arg = (node as any).argument;
+            const arg = node.argument;
             if (arg) results.push(arg);
             return;
         }
 
         // Recurse into control flow
-        for (const key of ['body', 'consequent', 'alternate', 'block', 'handler', 'finalizer']) {
-            const child = (node as any)[key];
-            if (Array.isArray(child)) {
-                for (const c of child) this.collectReturnValues(c, results);
-            } else if (child && typeof child === 'object' && child.type) {
-                this.collectReturnValues(child, results);
-            }
+        switch (node.type) {
+            case 'Program':
+            case 'BlockStatement':
+                for (const c of node.body) this.collectReturnValues(c, results);
+                break;
+            case 'ForStatement':
+            case 'ForInStatement':
+            case 'WhileStatement':
+                this.collectReturnValues(node.body, results);
+                break;
+            case 'IfStatement':
+                this.collectReturnValues(node.consequent, results);
+                if (node.alternate) this.collectReturnValues(node.alternate, results);
+                break;
+            case 'TryStatement':
+                this.collectReturnValues(node.block, results);
+                if (node.handler) this.collectReturnValues(node.handler, results);
+                break;
+            case 'CatchClause':
+                this.collectReturnValues(node.body, results);
+                break;
+            case 'SwitchCase':
+                for (const c of node.consequent) this.collectReturnValues(c, results);
+                break;
         }
     }
 
@@ -3029,7 +3008,7 @@ export class FileResolver {
 
         // Direct identifier — trace through variable inits
         if (node.type === 'Identifier') {
-            const name = (node as IdentifierNode).name;
+            const name = node.name;
             const init = localVarInits.get(name);
             if (init) {
                 return this.resolveNodeToKnownType(init, localVarInits, paramNames, depth + 1);
@@ -3039,10 +3018,10 @@ export class FileResolver {
 
         // Call expression — check if it's a known pattern
         if (node.type === 'CallExpression') {
-            const call = node as any;
+            const callee = node.callee;
 
-            if (call.callee?.type === 'Identifier') {
-                const funcName = call.callee.name;
+            if (callee.type === 'Identifier') {
+                const funcName = callee.name;
 
                 // Direct call: cursor(), connect(), open(), etc.
                 const directResult = this.resolveKnownFunctionReturnType(funcName);
@@ -3052,9 +3031,8 @@ export class FileResolver {
                 // where cursor_fn = uci_mod.cursor
                 const calleeInit = localVarInits.get(funcName);
                 if (calleeInit?.type === 'MemberExpression') {
-                    const member = calleeInit as any;
-                    if (member.property?.type === 'Identifier') {
-                        const methodName = member.property.name;
+                    if (calleeInit.property.type === 'Identifier') {
+                        const methodName = calleeInit.property.name;
                         const indirectResult = this.resolveKnownFunctionReturnType(methodName);
                         if (indirectResult) return indirectResult;
                     }
@@ -3062,10 +3040,9 @@ export class FileResolver {
             }
 
             // Member call: obj.cursor(), param.cursor(), etc.
-            if (call.callee?.type === 'MemberExpression') {
-                const member = call.callee;
-                if (member.property?.type === 'Identifier') {
-                    const methodName = member.property.name;
+            if (callee.type === 'MemberExpression') {
+                if (callee.property.type === 'Identifier') {
+                    const methodName = callee.property.name;
                     return this.resolveKnownFunctionReturnType(methodName);
                 }
             }
@@ -3105,7 +3082,7 @@ export class FileResolver {
                 // Without this, every negative-valued object-literal constant resolved to
                 // UNKNOWN at the import site (positive `NONE: 0` worked). `+x`/`-x` follow
                 // the operand's numeric type; `!x` is boolean; `~x` is integer.
-                const un = node as any;
+                const un = node;
                 if (un.operator === '!') return UcodeType.BOOLEAN as UcodeDataType;
                 if (un.operator === '~') return UcodeType.INTEGER as UcodeDataType;
                 if (un.operator === '-' || un.operator === '+') {
@@ -3116,18 +3093,19 @@ export class FileResolver {
                 return UcodeType.UNKNOWN as UcodeDataType;
             }
             case 'Literal': {
-                const val = (node as any).value;
+                const val = node.value;
                 if (typeof val === 'string') return UcodeType.STRING as UcodeDataType;
                 // Exponent notation (`1e5`) is a double literal (ticket 115).
-                if (typeof val === 'number') return (((node as any).literalType === 'double' || !Number.isInteger(val)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType;
+                if (typeof val === 'number') return ((node.literalType === 'double' || !Number.isInteger(val)) ? UcodeType.DOUBLE : UcodeType.INTEGER) as UcodeDataType;
                 if (typeof val === 'boolean') return UcodeType.BOOLEAN as UcodeDataType;
                 if (val === null) return UcodeType.NULL as UcodeDataType;
                 return UcodeType.UNKNOWN as UcodeDataType;
             }
             case 'BinaryExpression': {
                 // String concatenation: any + with a string operand → string
-                const binNode = node as any;
-                if (binNode.operator === '+') {
+                const binNode = node;
+                const binOp: string = binNode.operator;
+                if (binOp === '+') {
                     const leftType = this.inferNodeType(binNode.left);
                     const rightType = this.inferNodeType(binNode.right);
                     if (leftType === UcodeType.STRING || rightType === UcodeType.STRING) {
@@ -3141,19 +3119,19 @@ export class FileResolver {
                     }
                 }
                 // Comparison operators return boolean
-                if (['==', '!=', '<', '>', '<=', '>=', '===', '!=='].includes(binNode.operator)) {
+                if (['==', '!=', '<', '>', '<=', '>=', '===', '!=='].includes(binOp)) {
                     return UcodeType.BOOLEAN as UcodeDataType;
                 }
                 // Arithmetic operators with known numeric operands
-                if (['-', '*', '/', '%'].includes(binNode.operator)) {
+                if (['-', '*', '/', '%'].includes(binOp)) {
                     return UcodeType.INTEGER as UcodeDataType;
                 }
                 return UcodeType.UNKNOWN as UcodeDataType;
             }
             case 'CallExpression': {
                 // sprintf always returns string
-                const callNode = node as any;
-                if (callNode.callee?.type === 'Identifier') {
+                const callNode = node;
+                if (callNode.callee.type === 'Identifier') {
                     const name = callNode.callee.name;
                     if (name === 'sprintf' || name === 'substr' || name === 'trim' || name === 'ltrim' || name === 'rtrim' ||
                         name === 'join' || name === 'replace' || name === 'uchr' || name === 'lc' || name === 'uc') {
@@ -3184,10 +3162,11 @@ export class FileResolver {
      * return statements is treated as always returning `null` (ucode semantics).
      */
     private inferFunctionReturnType(funcNode: AstNode): UcodeDataType | null {
-        const body = (funcNode as any).body;
-        if (!body) return null;
-        const stmts = body.body || body;
-        if (!Array.isArray(stmts)) return null;
+        const fn = asFunctionLike(funcNode);
+        if (!fn) return null;
+        const body = fn.body;
+        if (body.type !== 'BlockStatement') return null;
+        const stmts = body.body;
 
         // Collect top-level `let/const` initializers so `return identifier;`
         // can be resolved through them (a common pattern: build a string in a
@@ -3198,8 +3177,8 @@ export class FileResolver {
         const localVarInits = new Map<string, AstNode>();
         for (const s of stmts) {
             if (s.type === 'VariableDeclaration') {
-                for (const d of ((s as any).declarations || [])) {
-                    if (d?.id?.name && d.init) localVarInits.set(d.id.name, d.init);
+                for (const d of s.declarations) {
+                    if (d.id.name && d.init) localVarInits.set(d.id.name, d.init);
                 }
             }
         }
@@ -3246,7 +3225,7 @@ export class FileResolver {
                 continue; // Skip nested function bodies
             }
             if (stmt.type === 'ReturnStatement') {
-                const arg = (stmt as any).argument;
+                const arg = stmt.argument;
                 if (arg) {
                     result.push(this.inferReturnArgType(arg, localVarInits));
                 } else {
@@ -3256,37 +3235,40 @@ export class FileResolver {
                 continue;
             }
             // BlockStatement (and similar) hold their children in .body
-            if (stmt.type === 'BlockStatement' && Array.isArray((stmt as any).body)) {
-                this.collectReturnTypes((stmt as any).body, result, localVarInits);
+            if (stmt.type === 'BlockStatement') {
+                this.collectReturnTypes(stmt.body, result, localVarInits);
                 continue;
             }
             // Try/catch/finally — handler is a CatchClause with its own .body
             if (stmt.type === 'TryStatement') {
-                const tryStmt = stmt as any;
-                if (tryStmt.block) this.collectReturnTypes([tryStmt.block], result, localVarInits);
-                if (tryStmt.handler?.body) this.collectReturnTypes([tryStmt.handler.body], result, localVarInits);
-                if (tryStmt.finalizer) this.collectReturnTypes([tryStmt.finalizer], result, localVarInits);
+                this.collectReturnTypes([stmt.block], result, localVarInits);
+                if (stmt.handler?.body) this.collectReturnTypes([stmt.handler.body], result, localVarInits);
                 continue;
             }
             // SwitchStatement — walk each case's consequent
             if (stmt.type === 'SwitchStatement') {
-                const cases = (stmt as any).cases || [];
-                for (const c of cases) {
-                    if (Array.isArray(c?.consequent)) {
-                        this.collectReturnTypes(c.consequent, result, localVarInits);
-                    }
+                for (const c of stmt.cases) {
+                    this.collectReturnTypes(c.consequent, result, localVarInits);
                 }
                 continue;
             }
             // Generic recursion into common child slots
-            for (const key of ['body', 'consequent', 'alternate', 'block', 'handler', 'finalizer']) {
-                const child = (stmt as any)[key];
-                if (child == null) continue;
-                if (Array.isArray(child)) {
-                    this.collectReturnTypes(child, result, localVarInits);
-                } else if (typeof child === 'object' && child.type) {
-                    this.collectReturnTypes([child], result, localVarInits);
-                }
+            switch (stmt.type) {
+                case 'ForStatement':
+                case 'ForInStatement':
+                case 'WhileStatement':
+                    this.collectReturnTypes([stmt.body], result, localVarInits);
+                    break;
+                case 'IfStatement':
+                    this.collectReturnTypes([stmt.consequent], result, localVarInits);
+                    if (stmt.alternate) this.collectReturnTypes([stmt.alternate], result, localVarInits);
+                    break;
+                case 'CatchClause':
+                    this.collectReturnTypes([stmt.body], result, localVarInits);
+                    break;
+                case 'SwitchCase':
+                    this.collectReturnTypes(stmt.consequent, result, localVarInits);
+                    break;
             }
         }
     }
@@ -3298,7 +3280,7 @@ export class FileResolver {
      */
     private inferReturnArgType(node: AstNode, localVarInits?: Map<string, AstNode>): UcodeDataType {
         if (node.type === 'Identifier' && localVarInits) {
-            const init = localVarInits.get((node as IdentifierNode).name);
+            const init = localVarInits.get(node.name);
             if (init) return this.inferNodeType(init);
         }
         return this.inferNodeType(node);

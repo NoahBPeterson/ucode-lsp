@@ -18,18 +18,15 @@
  * know the key set is incomplete and must not treat it as exhaustive.
  */
 
-import { type AstNode } from '../ast/nodes';
+import {
+  type AstNode, type ObjectExpressionNode, type CallExpressionNode,
+  type FunctionDeclarationNode, type FunctionExpressionNode, type ArrowFunctionExpressionNode,
+} from '../ast/nodes';
+import { astChildren, walkAst } from '../ast/astChildren';
 import { enclosingBindings, functionOwnBindings } from '../ast/scopeRoles';
 
-/** A node viewed as an open record, for dynamic traversal/property access. AST nodes carry
- *  many type-specific fields that the base `AstNode` interface does not enumerate; this alias
- *  documents that we are reading those dynamically (after a `type`-string guard). */
-type AnyNode = AstNode & Record<string, unknown>;
-
-/** Narrow an arbitrary value to a traversable AST-like node (an object with a string `type`). */
-function isNode(n: unknown): n is AnyNode {
-  return !!n && typeof n === 'object' && typeof (n as { type?: unknown }).type === 'string';
-}
+/** The function kinds that can enclose an include site (for parameter-evidence mining). */
+type FunctionLikeNode = FunctionDeclarationNode | FunctionExpressionNode | ArrowFunctionExpressionNode;
 
 /** How a scope value's type is determined. */
 export type ScopeValueInfo =
@@ -84,13 +81,11 @@ function mergeScopeInfo(
 }
 
 /** Collect the statically-known keys/values of an object-literal scope argument. */
-function collectObjectScope(scopeArg: AnyNode): { keys: string[]; values: Record<string, ScopeValueInfo>; dynamic: boolean } {
+function collectObjectScope(scopeArg: ObjectExpressionNode): { keys: string[]; values: Record<string, ScopeValueInfo>; dynamic: boolean } {
   const keys: string[] = [];
   const values: Record<string, ScopeValueInfo> = {};
   let dynamic = false;
-  const properties = Array.isArray(scopeArg.properties) ? scopeArg.properties : [];
-  for (const p of properties) {
-    if (!isNode(p)) continue;
+  for (const p of scopeArg.properties) {
     if (p.type === 'SpreadElement') { dynamic = true; continue; }
     if (p.type === 'Property') {
       if (p.computed) { dynamic = true; continue; }
@@ -122,40 +117,30 @@ function collectObjectScope(scopeArg: AnyNode): { keys: string[]; values: Record
  * absent.
  */
 function mineIdentifierScope(
-  ast: AstNode | null | undefined, name: string, enclosingFns: AnyNode[],
+  ast: AstNode | null | undefined, name: string, enclosingFns: FunctionLikeNode[],
 ): { keys: string[]; values: Record<string, ScopeValueInfo> } | null {
   const keys: string[] = [];
   const values: Record<string, ScopeValueInfo> = {};
   let found = false;
 
-  const eachNode = (root: unknown, fn: (n: AnyNode) => void): void => {
-    const walk = (n: unknown): void => {
-      if (!isNode(n)) return;
-      fn(n);
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isNode(v)) walk(v);
-      }
-    };
-    walk(root);
+  const eachNode = (root: AstNode | null | undefined, fn: (n: AstNode) => void): void => {
+    if (root) walkAst(root, fn);
   };
 
   // 1. Local binding evidence: declarator init object literal + member assignments.
   eachNode(ast, (n) => {
-    if (n.type === 'VariableDeclarator' && isNode(n.id) && n.id.type === 'Identifier' && n.id.name === name
-        && isNode(n.init) && n.init.type === 'ObjectExpression') {
-      const o = collectObjectScope(n.init as AnyNode);
+    if (n.type === 'VariableDeclarator' && n.id.name === name
+        && n.init?.type === 'ObjectExpression') {
+      const o = collectObjectScope(n.init);
       mergeScopeInfo(keys, values, o.keys, o.values);
       found = true;
     }
-    if (n.type === 'AssignmentExpression' && isNode(n.left) && n.left.type === 'MemberExpression') {
-      const left = n.left as AnyNode;
-      if (isNode(left.object) && left.object.type === 'Identifier' && left.object.name === name) {
+    if (n.type === 'AssignmentExpression' && n.left.type === 'MemberExpression') {
+      const left = n.left;
+      if (left.object.type === 'Identifier' && left.object.name === name) {
         const key = left.computed
-          ? (isNode(left.property) && left.property.type === 'Literal' && left.property.value != null ? String(left.property.value) : null)
-          : (isNode(left.property) && left.property.type === 'Identifier' ? String(left.property.name) : null);
+          ? (left.property.type === 'Literal' && left.property.value != null ? String(left.property.value) : null)
+          : (left.property.type === 'Identifier' ? left.property.name : null);
         if (key !== null) {
           mergeScopeInfo(keys, values, [key], { [key]: classifyScopeValue(n.right) });
           found = true;
@@ -165,16 +150,15 @@ function mineIdentifierScope(
   });
 
   // 2. Parameter evidence: object literals flowing into the enclosing function's param slot.
-  const paramOwner = enclosingFns.find((f) => Array.isArray(f.params)
-    && (f.params as unknown[]).some((p) => isNode(p) && p.type === 'Identifier' && p.name === name));
+  const paramOwner = enclosingFns.find((f) => f.params.some((p) => p.name === name));
   if (paramOwner) {
-    const paramIndex = (paramOwner.params as unknown[]).findIndex((p) => isNode(p) && (p as AnyNode).name === name);
-    const fnName = isNode(paramOwner.id) && typeof paramOwner.id.name === 'string' ? paramOwner.id.name : null;
+    const paramIndex = paramOwner.params.findIndex((p) => p.name === name);
+    const fnName = paramOwner.type !== 'ArrowFunctionExpression' && paramOwner.id ? paramOwner.id.name : null;
     if (fnName !== null && paramIndex >= 0) {
-      const takeCallArg = (call: AnyNode, index: number): void => {
-        const a = Array.isArray(call.arguments) ? call.arguments[index] : undefined;
-        if (isNode(a) && a.type === 'ObjectExpression') {
-          const o = collectObjectScope(a as AnyNode);
+      const takeCallArg = (call: CallExpressionNode, index: number): void => {
+        const a = call.arguments[index];
+        if (a?.type === 'ObjectExpression') {
+          const o = collectObjectScope(a);
           mergeScopeInfo(keys, values, o.keys, o.values);
           found = true;
         }
@@ -183,21 +167,19 @@ function mineIdentifierScope(
         if (n.type !== 'CallExpression') return;
         const callee = n.callee;
         // Direct call: F({…}).
-        if (isNode(callee) && callee.type === 'Identifier' && callee.name === fnName) takeCallArg(n, paramIndex);
+        if (callee.type === 'Identifier' && callee.name === fnName) takeCallArg(n, paramIndex);
         // Indirect: F passed as an argument to G(…) — follow G's matching param name
         // through G's body to the object literals it passes when calling it back.
-        const args = Array.isArray(n.arguments) ? n.arguments : [];
-        const fnArgPos = args.findIndex((a) => isNode(a) && (a as AnyNode).type === 'Identifier' && (a as AnyNode).name === fnName);
-        if (fnArgPos < 0 || !isNode(callee) || callee.type !== 'Identifier') return;
+        const fnArgPos = n.arguments.findIndex((a) => a.type === 'Identifier' && a.name === fnName);
+        if (fnArgPos < 0 || callee.type !== 'Identifier') return;
         const gName = callee.name;
         eachNode(ast, (g) => {
-          if (g.type !== 'FunctionDeclaration' || !isNode(g.id) || g.id.name !== gName) return;
-          const gParams = Array.isArray(g.params) ? g.params : [];
-          const cbParam = gParams[fnArgPos];
-          const cbName = isNode(cbParam) && cbParam.type === 'Identifier' ? cbParam.name : null;
+          if (g.type !== 'FunctionDeclaration' || g.id.name !== gName) return;
+          const cbParam = g.params[fnArgPos];
+          const cbName = cbParam ? cbParam.name : null;
           if (typeof cbName !== 'string') return;
           eachNode(g.body, (c) => {
-            if (c.type === 'CallExpression' && isNode(c.callee) && c.callee.type === 'Identifier' && c.callee.name === cbName) {
+            if (c.type === 'CallExpression' && c.callee.type === 'Identifier' && c.callee.name === cbName) {
               takeCallArg(c, paramIndex);
             }
           });
@@ -211,16 +193,14 @@ function mineIdentifierScope(
 
 /** Read a property key name from either a `Literal` (shorthand `{ fw4 }` normalizes to a
  *  Literal "fw4") or an `Identifier` key. Returns null for anything else. */
-function propertyKeyName(key: unknown): string | null {
-  if (!isNode(key)) return null;
-  if (key.type === 'Identifier' && typeof key.name === 'string') return key.name;
+function propertyKeyName(key: AstNode): string | null {
+  if (key.type === 'Identifier') return key.name;
   if (key.type === 'Literal' && key.value != null) return String(key.value);
   return null;
 }
 
 /** Classify a scope value expression into a type, an identifier reference, or a require(). */
-function classifyScopeValue(node: unknown): ScopeValueInfo {
-  if (!isNode(node)) return { kind: 'unknown' };
+function classifyScopeValue(node: AstNode): ScopeValueInfo {
   switch (node.type) {
     case 'Literal': {
       const v = node.value;
@@ -234,14 +214,13 @@ function classifyScopeValue(node: unknown): ScopeValueInfo {
     case 'ArrayExpression': return { kind: 'type', type: 'array' };
     case 'ArrowFunctionExpression':
     case 'FunctionExpression': return { kind: 'type', type: 'function' };
-    case 'Identifier': return typeof node.name === 'string' && node.name ? { kind: 'ident', name: node.name } : { kind: 'unknown' };
+    case 'Identifier': return node.name ? { kind: 'ident', name: node.name } : { kind: 'unknown' };
     case 'CallExpression': {
       const callee = node.callee;
-      const args = node.arguments;
-      if (isNode(callee) && callee.type === 'Identifier' && callee.name === 'require'
-          && Array.isArray(args) && isNode(args[0]) && args[0].type === 'Literal'
-          && typeof args[0].value === 'string') {
-        return { kind: 'require', module: args[0].value };
+      const arg0 = node.arguments[0];
+      if (callee.type === 'Identifier' && callee.name === 'require'
+          && arg0?.type === 'Literal' && typeof arg0.value === 'string') {
+        return { kind: 'require', module: arg0.value };
       }
       return { kind: 'unknown' };
     }
@@ -257,45 +236,36 @@ function classifyScopeValue(node: unknown): ScopeValueInfo {
  */
 export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSite[] {
   const sites: IncludeSite[] = [];
-  const fnStack: AnyNode[] = [];
+  const fnStack: FunctionLikeNode[] = [];
 
   // A path argument as (pattern, isPattern): a string literal verbatim; a template
   // literal with each interpolation replaced by `*` (`themes/${theme}/header` →
   // themes/*/header — the LuCI theme-dispatch shims); an identifier resolved one hop
   // through its declarator initializer (`let p = \`themes/${x}/sysauth\`; render(p, s)`).
-  const pathOf = (arg: unknown, depth = 0): { path: string; isPattern: boolean } | null => {
-    if (!isNode(arg)) return null;
+  const pathOf = (arg: AstNode | undefined, depth = 0): { path: string; isPattern: boolean } | null => {
+    if (!arg) return null;
     if (arg.type === 'Literal' && typeof arg.value === 'string') return { path: arg.value, isPattern: false };
     if (arg.type === 'TemplateLiteral') {
-      const quasis = Array.isArray(arg.quasis) ? arg.quasis : [];
-      const exprs = Array.isArray(arg.expressions) ? arg.expressions : [];
+      const quasis = arg.quasis;
+      const exprs = arg.expressions;
       let out = '';
       for (let i = 0; i < quasis.length; i++) {
-        const q = quasis[i] as AnyNode;
-        const cooked = (q?.value as { cooked?: unknown } | undefined)?.cooked;
+        const cooked = quasis[i]?.value.cooked;
         out += typeof cooked === 'string' ? cooked : '';
         if (i < exprs.length) out += '*';
       }
       return exprs.length > 0 ? { path: out, isPattern: true } : { path: out, isPattern: false };
     }
-    if (arg.type === 'Identifier' && typeof arg.name === 'string' && depth === 0) {
+    if (arg.type === 'Identifier' && depth === 0) {
       // Every declarator initializer of this name must agree (dispatcher.uc declares its
       // theme_sysauth template path identically in two sibling blocks) — a genuine
       // disagreement means we can't know which path renders, so give up.
       const found: Array<{ path: string; isPattern: boolean } | null> = [];
-      const scan = (n: unknown): void => {
-        if (!isNode(n)) return;
-        if (n.type === 'VariableDeclarator' && isNode(n.id) && n.id.type === 'Identifier' && n.id.name === arg.name && n.init) {
+      if (ast) walkAst(ast, (n) => {
+        if (n.type === 'VariableDeclarator' && n.id.name === arg.name && n.init) {
           found.push(pathOf(n.init, 1));
         }
-        for (const k of Object.keys(n)) {
-          if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-          const v = n[k];
-          if (Array.isArray(v)) { for (const it of v) scan(it); }
-          else if (isNode(v)) scan(v);
-        }
-      };
-      scan(ast);
+      });
       if (found.length === 0 || found.some((f) => f === null)) return null;
       const first = found[0]!;
       return found.every((f) => f!.path === first.path && f!.isPattern === first.isPattern) ? first : null;
@@ -303,79 +273,73 @@ export function extractIncludeSites(ast: AstNode | null | undefined): IncludeSit
     return null;
   };
 
-  const walk = (n: unknown): void => {
-    if (!isNode(n)) return;
+  const walk = (n: AstNode): void => {
+    const fnNode = n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression' ? n : null;
+    if (fnNode) fnStack.push(fnNode);
 
-    const isFn = n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression';
-    if (isFn) fnStack.push(n);
+    if (n.type === 'CallExpression' && n.arguments.length >= 1) {
+      const callee = n.callee;
+      // `include(...)` (builtin or LuCI env), bare `render(...)`, or `<obj>.render(...)`
+      // (LuCI runtime.render) — all feed a render scope to a template.
+      const via: 'include' | 'render' | null =
+        callee.type === 'Identifier' && callee.name === 'include' ? 'include'
+          : callee.type === 'Identifier' && callee.name === 'render' ? 'render'
+            : callee.type === 'MemberExpression' && !callee.computed
+                && callee.property.type === 'Identifier' && callee.property.name === 'render' ? 'render'
+              : null;
+      if (via !== null) {
+        const resolved = pathOf(n.arguments[0]);
+        if (resolved !== null && resolved.path !== '') {
+          const scopeArg = n.arguments[1];
+          let scopeKeys: string[] = [];
+          let scopeValues: Record<string, ScopeValueInfo> = {};
+          let hasScope = false;
+          let hasDynamicScope = false;
 
-    const callee = n.callee;
-    // `include(...)` (builtin or LuCI env), bare `render(...)`, or `<obj>.render(...)`
-    // (LuCI runtime.render) — all feed a render scope to a template.
-    const via: 'include' | 'render' | null =
-      isNode(callee) && callee.type === 'Identifier' && callee.name === 'include' ? 'include'
-        : isNode(callee) && callee.type === 'Identifier' && callee.name === 'render' ? 'render'
-          : isNode(callee) && callee.type === 'MemberExpression' && !callee.computed
-              && isNode(callee.property) && (callee.property as AnyNode).name === 'render' ? 'render'
-            : null;
-    if (n.type === 'CallExpression' && via !== null
-        && Array.isArray(n.arguments) && n.arguments.length >= 1) {
-      const resolved = pathOf(n.arguments[0]);
-      if (resolved !== null && resolved.path !== '') {
-        const scopeArg: unknown = n.arguments[1];
-        let scopeKeys: string[] = [];
-        let scopeValues: Record<string, ScopeValueInfo> = {};
-        let hasScope = false;
-        let hasDynamicScope = false;
+          if (scopeArg?.type === 'ObjectExpression') {
+            hasScope = true;
+            const o = collectObjectScope(scopeArg);
+            scopeKeys = o.keys;
+            scopeValues = o.values;
+            hasDynamicScope = o.dynamic;
+          } else if (scopeArg?.type === 'Identifier') {
+            // A bare-identifier scope (`include('tmpl', result)`) — mine the identifier's
+            // object shape from same-file evidence (declarator init / member assigns /
+            // call-site object literals incl. one callback hop). The mined key set is
+            // never exhaustive, so the site stays dynamic — it feeds names/types into the
+            // target without licensing "missing key" claims.
+            hasScope = true;
+            hasDynamicScope = true;
+            const mined = mineIdentifierScope(ast, scopeArg.name, [...fnStack].reverse());
+            if (mined) { scopeKeys = mined.keys; scopeValues = mined.values; }
+          } else if (scopeArg) {
+            // Any other non-literal 2nd argument (a call, member expr, etc.) — scope
+            // exists but its keys are unknown.
+            hasScope = true;
+            hasDynamicScope = true;
+          }
 
-        if (isNode(scopeArg) && scopeArg.type === 'ObjectExpression') {
-          hasScope = true;
-          const o = collectObjectScope(scopeArg as AnyNode);
-          scopeKeys = o.keys;
-          scopeValues = o.values;
-          hasDynamicScope = o.dynamic;
-        } else if (isNode(scopeArg) && scopeArg.type === 'Identifier' && typeof scopeArg.name === 'string') {
-          // A bare-identifier scope (`include('tmpl', result)`) — mine the identifier's
-          // object shape from same-file evidence (declarator init / member assigns /
-          // call-site object literals incl. one callback hop). The mined key set is
-          // never exhaustive, so the site stays dynamic — it feeds names/types into the
-          // target without licensing "missing key" claims.
-          hasScope = true;
-          hasDynamicScope = true;
-          const mined = mineIdentifierScope(ast, scopeArg.name, [...fnStack].reverse());
-          if (mined) { scopeKeys = mined.keys; scopeValues = mined.values; }
-        } else if (scopeArg) {
-          // Any other non-literal 2nd argument (a call, member expr, etc.) — scope
-          // exists but its keys are unknown.
-          hasScope = true;
-          hasDynamicScope = true;
+          sites.push({
+            path: resolved.path,
+            via,
+            isPattern: resolved.isPattern,
+            scopeKeys,
+            scopeValues,
+            hasScope,
+            hasDynamicScope,
+            start: n.start,
+            end: n.end,
+          });
         }
-
-        sites.push({
-          path: resolved.path,
-          via,
-          isPattern: resolved.isPattern,
-          scopeKeys,
-          scopeValues,
-          hasScope,
-          hasDynamicScope,
-          start: n.start,
-          end: n.end,
-        });
       }
     }
 
-    for (const k of Object.keys(n)) {
-      if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc.)
-      const v = n[k];
-      if (Array.isArray(v)) { for (const it of v) walk(it); }
-      else if (isNode(v)) walk(v);
-    }
+    for (const c of astChildren(n)) walk(c);
 
-    if (isFn) fnStack.pop();
+    if (fnNode) fnStack.pop();
   };
 
-  walk(ast);
+  if (ast) walk(ast);
   return sites;
 }
 
@@ -579,9 +543,6 @@ export function buildIncludeScopeIndex(
   return index;
 }
 
-// Node types that introduce a binding whose name must NOT count as a free variable.
-const DECLARES_VIA_ID = new Set(['VariableDeclarator', 'FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
-
 /**
  * Identifiers READ in `ast` but never declared anywhere in it (let/const/param/function/
  * import/for-loop var). Over-approximates the declared set (file-wide, not scope-precise),
@@ -592,50 +553,72 @@ export function computeFreeVariables(ast: AstNode | null | undefined): Set<strin
   const declared = new Set<string>();
   const read = new Set<string>();
 
-  const addId = (n: unknown) => { if (isNode(n) && n.type === 'Identifier' && typeof n.name === 'string') declared.add(n.name); };
-
-  const collectDecls = (n: unknown): void => {
-    if (!isNode(n)) return;
+  const collectDecls = (root: AstNode): void => {
     // Bindings via the shared, compiler-enforced classifier (let/const, fn names, params + rest,
     // catch params, import locals). This is file-WIDE (over-approximates the declared set across
     // nested functions too — safe: it can only UNDER-report frees), so we DO descend into nested
     // functions and collect their own params/rest as well.
-    for (const nm of enclosingBindings(n as AstNode)) declared.add(nm);
-    for (const nm of functionOwnBindings(n as AstNode)) declared.add(nm);
-    // A bare `for (x in …)` loop var is an implicit global (an assignment, not a declaration, so
-    // it's not a SCOPE_ROLE binding) — but for free-variable purposes it's assigned, so count it.
-    if (n.type === 'ForInStatement' && isNode(n.left) && n.left.type === 'Identifier') addId(n.left);
-    for (const k of Object.keys(n)) {
-      if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc.)
-      const v = n[k];
-      if (Array.isArray(v)) { for (const it of v) collectDecls(it); }
-      else if (isNode(v)) collectDecls(v);
+    walkAst(root, (n) => {
+      for (const nm of enclosingBindings(n)) declared.add(nm);
+      for (const nm of functionOwnBindings(n)) declared.add(nm);
+      // A bare `for (x in …)` loop var is an implicit global (an assignment, not a declaration, so
+      // it's not a SCOPE_ROLE binding) — but for free-variable purposes it's assigned, so count it.
+      if (n.type === 'ForInStatement' && n.left.type === 'Identifier') declared.add(n.left.name);
+    });
+  };
+
+  // The read walk visits the typed child stream PLUS the identifier positions it elides
+  // (break/continue labels, import/export specifier identifiers, rest params) — those were
+  // always visited here, and the declared-set over-approximation keeps them from
+  // over-reporting frees.
+  const readChildren = (n: AstNode): AstNode[] => {
+    switch (n.type) {
+      case 'BreakStatement':
+      case 'ContinueStatement':
+        return n.label ? [n.label] : [];
+      case 'ImportSpecifier':
+        return [n.imported, n.local];
+      case 'ImportDefaultSpecifier':
+      case 'ImportNamespaceSpecifier':
+        return [n.local];
+      case 'ExportSpecifier':
+        return [n.local, n.exported];
+      case 'ExportAllDeclaration':
+        return n.exported ? [n.exported] : [];
+      case 'FunctionDeclaration':
+      case 'FunctionExpression':
+      case 'ArrowFunctionExpression':
+        return n.restParam ? [...astChildren(n), n.restParam] : astChildren(n);
+      default:
+        return astChildren(n);
     }
   };
 
-  const collectReads = (n: unknown): void => {
-    if (!isNode(n)) return;
-    if (n.type === 'Identifier' && typeof n.name === 'string' && n.name) {
+  const collectReads = (n: AstNode): void => {
+    if (n.type === 'Identifier' && n.name) {
       // Only count value-position reads: skip declaration ids, the `.prop` of a member,
       // and object-literal property keys (handled by their parents below).
       read.add(n.name);
     }
-    for (const k of Object.keys(n)) {
-      if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc.)
-      // Skip non-read identifier positions.
-      if (n.type === 'MemberExpression' && k === 'property' && !n.computed) continue;
-      if (n.type === 'Property' && k === 'key' && !n.computed) continue;
-      if (DECLARES_VIA_ID.has(n.type) && k === 'id') continue;
-      if ((n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') && k === 'params') continue;
-      if (n.type === 'ForInStatement' && k === 'left') continue;
-      const v = n[k];
-      if (Array.isArray(v)) { for (const it of v) collectReads(it); }
-      else if (isNode(v)) collectReads(v);
+    // Skip non-read identifier positions.
+    const skip = new Set<AstNode>();
+    if (n.type === 'MemberExpression' && !n.computed) skip.add(n.property);
+    if (n.type === 'Property' && !n.computed) skip.add(n.key);
+    if (n.type === 'VariableDeclarator') skip.add(n.id);
+    if ((n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression') && n.id) skip.add(n.id);
+    if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') {
+      for (const p of n.params) skip.add(p);
+    }
+    if (n.type === 'ForInStatement') skip.add(n.left);
+    for (const c of readChildren(n)) {
+      if (!skip.has(c)) collectReads(c);
     }
   };
 
-  collectDecls(ast);
-  collectReads(ast);
+  if (ast) {
+    collectDecls(ast);
+    collectReads(ast);
+  }
 
   const free = new Set<string>();
   for (const name of read) if (!declared.has(name)) free.add(name);

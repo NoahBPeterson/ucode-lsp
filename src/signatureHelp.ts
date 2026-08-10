@@ -12,8 +12,8 @@ import { isKnownModule, isKnownObjectType, MODULE_REGISTRIES, OBJECT_REGISTRIES 
 import type {
     AstNode, CallExpressionNode, MemberExpressionNode, IdentifierNode, LiteralNode,
     ObjectExpressionNode, PropertyNode, FunctionExpressionNode, ArrowFunctionExpressionNode,
-    VariableDeclaratorNode,
 } from './ast/nodes';
+import { walkAst } from './ast/astChildren';
 import { Option } from 'effect';
 
 interface ParamInfo { name: string; type?: UcodeDataType; isRest?: boolean }
@@ -23,29 +23,20 @@ interface ParamInfo { name: string; type?: UcodeDataType; isRest?: boolean }
  *  the callee but within the call node means we're in the parentheses. */
 function findEnclosingCall(ast: AstNode | null | undefined, offset: number): { call: CallExpressionNode; activeParam: number } | null {
     let best: CallExpressionNode | null = null;
-    const visit = (node: AstNode | null | undefined): void => {
-        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+    if (ast) walkAst(ast, (node) => {
         if (node.type === 'CallExpression') {
-            const call = node as CallExpressionNode;
             // An unterminated call (no closing `)`) has its `end` truncated to the
             // last token seen; its argument region really runs to EOF, so accept any
             // cursor past the callee for it (#85).
-            const inArgRegion = call.callee
-                && offset > call.callee.end
-                && (offset <= call.end || call.unclosed === true);
+            const inArgRegion = node.callee
+                && offset > node.callee.end
+                && (offset <= node.end || node.unclosed === true);
             if (inArgRegion) {
                 // innermost wins (smallest span)
-                if (!best || (call.end - call.start) < (best.end - best.start)) best = call;
+                if (!best || (node.end - node.start) < (best.end - best.start)) best = node;
             }
         }
-        for (const k of Object.keys(node)) {
-            if (k === 'leadingJsDoc') continue;
-            const v = (node as unknown as Record<string, unknown>)[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode);
-        }
-    };
-    visit(ast);
+    });
     if (!best) return null;
     const args: AstNode[] = (best as CallExpressionNode).arguments || [];
     // active index: first arg whose end is at/after the cursor; else past the last
@@ -236,25 +227,16 @@ export function localObjectLiteralMethodParams(initNode: AstNode | undefined, me
 function findVarInitObjectLiteral(ast: AstNode | null | undefined, name: string, offset: number): ObjectExpressionNode | null {
     let best: ObjectExpressionNode | null = null;
     let bestStart = -1;
-    const visit = (node: AstNode | null | undefined): void => {
-        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+    if (ast) walkAst(ast, (node) => {
         if (node.type === 'VariableDeclarator') {
-            const d = node as VariableDeclaratorNode;
-            if (d.id?.type === 'Identifier' && d.id.name === name
-                && d.init?.type === 'ObjectExpression'
-                && typeof d.id.start === 'number' && d.id.start <= offset && d.id.start > bestStart) {
-                best = d.init as ObjectExpressionNode;
-                bestStart = d.id.start;
+            if (node.id.type === 'Identifier' && node.id.name === name
+                && node.init?.type === 'ObjectExpression'
+                && node.id.start <= offset && node.id.start > bestStart) {
+                best = node.init;
+                bestStart = node.id.start;
             }
         }
-        for (const k of Object.keys(node)) {
-            if (k === 'leadingJsDoc') continue;
-            const v = (node as unknown as Record<string, unknown>)[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode);
-        }
-    };
-    visit(ast);
+    });
     return best;
 }
 
@@ -263,29 +245,19 @@ function findVarInitObjectLiteral(ast: AstNode | null | undefined, name: string,
 function findThisReceiverObject(ast: AstNode | null | undefined, offset: number): ObjectExpressionNode | null {
     let best: ObjectExpressionNode | null = null;
     let bestSpan = Infinity;
-    const visit = (node: AstNode | null | undefined): void => {
-        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+    if (ast) walkAst(ast, (node) => {
         if (node.type === 'ObjectExpression') {
-            const obj = node as ObjectExpressionNode;
-            for (const prop of obj.properties || []) {
+            for (const prop of node.properties) {
                 if (prop.type !== 'Property') continue;
-                const v = (prop as PropertyNode).value;
-                if (v && (v.type === 'FunctionExpression' || v.type === 'ArrowFunctionExpression')
-                    && typeof v.start === 'number' && typeof v.end === 'number'
+                const v = prop.value;
+                if ((v.type === 'FunctionExpression' || v.type === 'ArrowFunctionExpression')
                     && v.start <= offset && offset <= v.end) {
                     const span = v.end - v.start;
-                    if (span < bestSpan) { bestSpan = span; best = obj; }
+                    if (span < bestSpan) { bestSpan = span; best = node; }
                 }
             }
         }
-        for (const k of Object.keys(node)) {
-            if (k === 'leadingJsDoc') continue;
-            const v = (node as unknown as Record<string, unknown>)[k];
-            if (Array.isArray(v)) { for (const it of v) visit(it as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') visit(v as AstNode);
-        }
-    };
-    visit(ast);
+    });
     return best;
 }
 

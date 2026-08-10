@@ -90,7 +90,7 @@ export abstract class BasicStatements extends ControlFlowStatements {
     // never reaches the function's params (types stay unknown, UC7003 still
     // fires). Mirrors the variable-declaration propagation in the analyzer.
     if (expression.type === 'AssignmentExpression') {
-      const rhs = (expression as any).right;
+      const rhs = expression.right;
       if (rhs && (rhs.type === 'FunctionExpression' || rhs.type === 'ArrowFunctionExpression') && !rhs.leadingJsDoc) {
         const leadingJsDoc = this.findLeadingJsDoc(start);
         if (leadingJsDoc) rhs.leadingJsDoc = leadingJsDoc;

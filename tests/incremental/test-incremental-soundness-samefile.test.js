@@ -26,6 +26,7 @@ import { UcodeLexer, detectTemplateMode, bridgeTemplateTokens } from '../../src/
 import { UcodeParser } from '../../src/parser/ucodeParser.ts';
 import { SemanticAnalyzer } from '../../src/analysis/semanticAnalyzer.ts';
 import { runIncremental } from '../../src/analysis/incrementalAnalysis.ts';
+import { extractUnits, classifyBody } from '../../src/analysis/incrementalCache.ts';
 
 const OPTS = { enableScopeAnalysis: true, enableTypeChecking: true, enableControlFlowAnalysis: true, enableUnusedVariableDetection: true, enableShadowingWarnings: true };
 
@@ -460,5 +461,40 @@ describe('soundness · regression anchors for the original 3 hard cases', () => 
   test('top-level make() 3 → { z: 1 } (object-method caller not stale)', () => {
     const mk = (rhs) => `function make(){ return ${rhs}; }\nlet o={ use:function(){ let v=make(); return v.z; } };\nlet r=o.use();`;
     runSeq([mk('3'), mk('{ z: 1 }'), mk('3')]);
+  });
+});
+
+describe('soundness · ++/-- are outward writes (purity classifier regression)', () => {
+  // `x++` is a UnaryExpression in this AST — the classifier used to look for a
+  // nonexistent 'UpdateExpression' kind, so a body whose only global mutation
+  // was `g++` classified as PURE and was skippable with an unreplayed effect.
+  const classify = (text) => new Map(extractUnits(parse(text)).map((u) => [u.name, classifyBody(u)]));
+
+  test('a top-level function whose only write is g++ is impure', () => {
+    const m = classify('let g = 0;\nfunction bump() {\n\tg++;\n\treturn 1;\n}\nbump();\n');
+    expect(m.get('bump')).toBe('impure');
+  });
+  test('postfix --, prefix ++, and prefix -- on a global are all impure', () => {
+    const m = classify('let g = 0;\nfunction a() {\n\tg--;\n}\nfunction b() {\n\t++g;\n}\nfunction c() {\n\t--g;\n}\na(); b(); c();\n');
+    expect(m.get('a')).toBe('impure');
+    expect(m.get('b')).toBe('impure');
+    expect(m.get('c')).toBe('impure');
+  });
+  test('++ on a body-local stays pure', () => {
+    const m = classify('function f(x) {\n\tlet i = 0;\n\ti++;\n\treturn i + x;\n}\nlet r = f(1);\n');
+    expect(m.get('f')).toBe('pure');
+  });
+  test('this.n++ in an object method is thisSafe, on a top-level function impure', () => {
+    const m = classify('let o = { m: function() {\n\tthis.n++;\n\treturn 1;\n} };\nfunction t() {\n\tthis.n++;\n}\nlet r = o.m();\nt();\n');
+    expect(m.get('m')).toBe('thisSafe');
+    expect(m.get('t')).toBe('impure');
+  });
+  test('g++ through a member root (obj.count++) on an outer object is impure', () => {
+    const m = classify('let obj = { count: 0 };\nfunction bump() {\n\tobj.count++;\n}\nbump();\n');
+    expect(m.get('bump')).toBe('impure');
+  });
+  test('equivalence holds across edits with a g++ sibling in the file', () => {
+    const mk = (b) => `let g = 0;\nfunction bump() {\n\tg++;\n}\nfunction read(x) {\n${b}\n}\nbump();\nlet r = read(1);\n`;
+    runSeq([mk('\treturn x;'), mk('\treturn x + 1; // edited'), mk('\treturn x;')]);
   });
 });

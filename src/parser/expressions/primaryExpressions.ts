@@ -5,7 +5,7 @@
 
 import { TokenType, type Token } from '../../lexer';
 import { UcodeErrorCode } from '../../analysis/errorConstants';
-import { type AstNode, type IdentifierNode, type LiteralNode, type ThisExpressionNode, type FunctionExpressionNode, type BlockStatementNode, type TemplateLiteralNode, type TemplateElementNode, type SpreadElementNode } from '../../ast/nodes';
+import { type AstNode, type IdentifierNode, type LiteralNode, type ThisExpressionNode, type FunctionExpressionNode, type BlockStatementNode, type TemplateLiteralNode, type TemplateElementNode, type SpreadElementNode, type CallExpressionNode } from '../../ast/nodes';
 import { ParseRules } from '../parseRules';
 import { Precedence } from '../types';
 
@@ -107,7 +107,7 @@ export abstract class PrimaryExpressions extends ParseRules {
       end: token.end,
       value,
       raw: String(token.value),
-      literalType: literalType as any
+      literalType: literalType as LiteralNode['literalType']
     };
   }
 
@@ -255,7 +255,7 @@ export abstract class PrimaryExpressions extends ParseRules {
       // Create a fake CallExpression node with parameters as arguments
       // This is what the arrow function parser expects
       const prevToken = this.previous();
-      return {
+      const paramList: CallExpressionNode = {
         type: 'CallExpression',
         start: params.length > 0 ? params[0]!.start : (prevToken?.pos || 0),
         end: prevToken?.end || 0,
@@ -266,7 +266,8 @@ export abstract class PrimaryExpressions extends ParseRules {
           name: '__arrow_params__'
         } as IdentifierNode,
         arguments: params
-      } as any;
+      };
+      return paramList;
     } else {
       // Parse as regular grouped expression with comma operator support
       const expr = this.parseExpression(Precedence.COMMA);

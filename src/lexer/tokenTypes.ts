@@ -134,7 +134,7 @@ export interface LexerError {
     severity?: 'warning' | 'error';
     /** Structured payload threaded onto the LSP diagnostic's `data` for quick fixes
      *  (the lexer is the only party that knows the offsets involved). */
-    data?: Record<string, unknown>;
+    data?: { commentEndedEarly?: { insertSpaceBefore: number[]; intendedStart: number } };
 }
 
 export interface LexerState {

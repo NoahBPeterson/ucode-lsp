@@ -62,7 +62,7 @@ export abstract class OperatorExpressions extends CompositeExpressions {
       type: 'UnaryExpression',
       start: operatorToken.pos,
       end: argument.end,
-      operator: operator as any,
+      operator: operator as UnaryExpressionNode['operator'],
       argument,
       prefix: true,
       absorbedAssignment,
@@ -81,7 +81,7 @@ export abstract class OperatorExpressions extends CompositeExpressions {
       type: 'BinaryExpression',
       start: left.start,
       end: right.end,
-      operator: operator as any,
+      operator: operator as BinaryExpressionNode['operator'],
       left,
       right
     };
@@ -103,7 +103,7 @@ export abstract class OperatorExpressions extends CompositeExpressions {
       type: 'AssignmentExpression',
       start: left.start,
       end: right.end,
-      operator: operator as any,
+      operator: operator as AssignmentExpressionNode['operator'],
       left,
       right
     };
@@ -117,7 +117,7 @@ export abstract class OperatorExpressions extends CompositeExpressions {
       type: 'UnaryExpression',
       start: left.start,
       end: operatorToken.end,
-      operator: operator as any,
+      operator: operator as UnaryExpressionNode['operator'],
       argument: left,
       prefix: false
     };
@@ -136,14 +136,13 @@ export abstract class OperatorExpressions extends CompositeExpressions {
     } else if (left.type === 'CallExpression') {
       // This is actually a parameter list: (param1, param2) => body
       // The left side would be parsed as a call expression with arguments
-      const callExpr = left as any;
-      for (const arg of callExpr.arguments) {
+      for (const arg of left.arguments) {
         if (arg.type === 'Identifier') {
-          params.push(arg as IdentifierNode);
+          params.push(arg);
         } else if (arg.type === 'SpreadElement') {
           // Handle rest parameter: ...args
           if (arg.argument && arg.argument.type === 'Identifier') {
-            restParam = arg.argument as IdentifierNode;
+            restParam = arg.argument;
             // Params after a rest param already got their one UC6011 in
             // parseGrouping; keep converting them so they stay declared for
             // body analysis (recovery).

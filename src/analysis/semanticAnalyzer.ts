@@ -8,6 +8,7 @@ import { type AstNode, type ProgramNode, type VariableDeclarationNode, type Vari
          type BlockStatementNode, type ReturnStatementNode, type BreakStatementNode, 
          type ContinueStatementNode, type AssignmentExpressionNode, type BinaryExpressionNode, type UnaryExpressionNode, type LogicalExpressionNode, type ImportDeclarationNode,
          type ImportSpecifierNode, type ImportDefaultSpecifierNode, type ImportNamespaceSpecifierNode,
+         type ExportSpecifierNode,
          type PropertyNode, type MemberExpressionNode, type TryStatementNode, type CatchClauseNode,
          type ExportNamedDeclarationNode, type ExportDefaultDeclarationNode, type ArrowFunctionExpressionNode,
          type SpreadElementNode, type TemplateLiteralNode, type SwitchStatementNode, type LiteralNode, type IfStatementNode, type ObjectExpressionNode, type ConditionalExpressionNode, type ExpressionStatementNode, type DeleteExpressionNode,
@@ -45,19 +46,84 @@ import { isLuciEnvFile, findLuciWorkspace, hasLuciLuaViewFallback, suggestLuciMo
 import { mineParamShape } from './typedefFromUsage';
 import { LUCI_ENV_GLOBALS, LUCI_TEMPLATE_RENDER_COMPAT_NAMES } from './luciTypes';
 import { parseDisableDirectives, directiveCovers, type DisableDirective } from './disableDirectives';
+import { astChildren } from '../ast/astChildren';
+import { type CleanBody } from './incrementalAnalysis';
 
-/** An AST node viewed as an open record, for dynamic traversal/field access. The base
- *  `AstNode` interface only enumerates `type`/`start`/`end`; the generic walkers read
- *  kind-specific fields after a `type`-string guard. */
-type AnyNode = AstNode & Record<string, unknown>;
-
-/** Narrow an arbitrary value to a traversable AST-like node (an object with a string `type`). */
-function isAstNodeLike(n: unknown): n is AnyNode {
-  return !!n && typeof n === 'object' && typeof (n as { type?: unknown }).type === 'string';
+/** Children exactly as the historical generic field walks visited them: `astChildren`
+ *  plus the identifier/literal-bearing fields it deliberately skips (rest params, catch
+ *  params, break/continue labels, import/export specifier names and `source` literals,
+ *  template quasis, un-flattened switch cases). The walks below that recursed over every
+ *  object field saw these nodes, so behavior-preserving conversions must too. */
+function legacyChildren(node: AstNode): AstNode[] {
+  switch (node.type) {
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+    case 'ArrowFunctionExpression':
+      return node.restParam ? [...astChildren(node), node.restParam] : astChildren(node);
+    case 'CatchClause':
+      return node.param ? [node.param, node.body] : [node.body];
+    case 'BreakStatement':
+    case 'ContinueStatement':
+      return node.label ? [node.label] : [];
+    case 'TemplateLiteral':
+      return [...node.expressions, ...node.quasis];
+    case 'SwitchStatement':
+      return [node.discriminant, ...node.cases];
+    case 'ImportDeclaration':
+      return [...node.specifiers, node.source];
+    case 'ImportSpecifier':
+      return [node.imported, node.local];
+    case 'ImportDefaultSpecifier':
+    case 'ImportNamespaceSpecifier':
+      return [node.local];
+    case 'ExportNamedDeclaration': {
+      const out: AstNode[] = node.declaration ? [node.declaration] : [];
+      out.push(...(node.specifiers ?? []));
+      if (node.source) out.push(node.source);
+      return out;
+    }
+    case 'ExportSpecifier':
+      return node.exported ? [node.local, node.exported] : [node.local];
+    case 'ExportAllDeclaration':
+      return node.exported ? [node.source, node.exported] : [node.source];
+    default:
+      return astChildren(node);
+  }
 }
 
 /** Any function-shaped AST node (declaration, expression, or arrow). */
 type FunctionLikeNode = FunctionDeclarationNode | FunctionExpressionNode | ArrowFunctionExpressionNode;
+
+/** Synthetic inference annotations stamped onto AST nodes during the visit (underscore-
+ *  prefixed so generic walks skip them). All optional: a node carries a stamp only after
+ *  the corresponding pass has visited it. */
+interface InferenceStamps {
+  /** Inferred return type of a function expression/arrow (visitFunctionExpression et al.). */
+  _inferredReturnType?: UcodeDataType;
+  /** Inferred parameter signature of a function expression/arrow. */
+  _inferredParams?: ParamInfo[];
+  /** keys()-provenance tag: the symbol whose keys this expression's value enumerates. */
+  _keysOfSymbol?: string;
+  /** `this.prop = …` writes recorded while visiting a method body (name → type). */
+  _thisWrites?: Array<[string, UcodeDataType]>;
+  /** Object literal's per-method accurate return types from the shallow pre-pass. */
+  _precomputedMethodReturns?: Map<string, UcodeDataType>;
+}
+/** View a node's synthetic inference stamps (see InferenceStamps). */
+function stampsOf(node: AstNode): AstNode & InferenceStamps {
+  return node as AstNode & InferenceStamps;
+}
+
+/** Structured payload attached to a diagnostic for the server's per-code quick-fix
+ *  dispatch. Each error code has its own payload contract (the server casts to the
+ *  shape it expects); the analyzer itself only inspects the `unnecessary` fade flag. */
+type DiagnosticData = object;
+
+/** UC7005 `@returns` quick-fix payload (jsdocReturnFixData / withGuardCoercionFix). */
+interface ReturnsFixData {
+  ucReturnsFix?: { exprStart: number; exprEnd: number; suggested: string };
+  returnGuardNonNull?: { insertAfter: number; lhsStart: number; lhsEnd: number };
+}
 
 export interface SemanticAnalysisOptions {
   enableScopeAnalysis?: boolean;
@@ -170,13 +236,13 @@ export class SemanticAnalyzer extends BaseVisitor {
   private switchScopes: number[] = []; // Track switch statement scope levels
   private commonjsImports: Map<string, { importedFrom: string; importSpecifier: string }> = new Map();
   private resolvedImports: Set<string> = new Set();
-  private currentFunctionNode: FunctionDeclarationNode | null = null;
-  private functionReturnTypes = new Map<FunctionDeclarationNode, { node: ReturnStatementNode, type: UcodeDataType }[]>();
-  private functionReturnPropertyTypes = new Map<FunctionDeclarationNode, Map<string, UcodeDataType>[]>();
+  private currentFunctionNode: FunctionLikeNode | null = null;
+  private functionReturnTypes = new Map<FunctionLikeNode, { node: ReturnStatementNode, type: UcodeDataType }[]>();
+  private functionReturnPropertyTypes = new Map<FunctionLikeNode, Map<string, UcodeDataType>[]>();
   // Per return branch: source location of each function-valued property in a returned
   // object literal, so signature help / goto-def works on a SAME-FILE factory's methods
   // (the cross-file path gets these from FileResolver; this is the local equivalent).
-  private functionReturnPropertyLocations = new Map<FunctionDeclarationNode, Map<string, { uri: string; start: number; end: number }>[]>();
+  private functionReturnPropertyLocations = new Map<FunctionLikeNode, Map<string, { uri: string; start: number; end: number }>[]>();
   private processingFunctionCallCallee = false; // Track when processing function call callee
   private visitingMemberBase = false; // Track when visiting the receiver of `obj.x` (suppresses the generic Undefined-variable for a known-module base, which validateModuleMember reports more specifically)
   private cfg: ControlFlowGraph | null = null;
@@ -213,14 +279,14 @@ export class SemanticAnalyzer extends BaseVisitor {
   // fell inside it last time (re-anchored to current positions by the caller). The scope
   // visit re-emits scope diagnostics fresh; we add back only the cached ones it didn't
   // re-emit (the type-checker diagnostics, which were short-circuited).
-  private cleanBodies: Map<number, { bodyEnd: number; returnType: unknown; diagnostics: Diagnostic[]; thisWrites: Array<[string, unknown]> }> = new Map();
+  private cleanBodies: Map<number, CleanBody> = new Map();
 
   /** Provide the set of unchanged function/method bodies whose type checking can be skipped.
    *  The type checker short-circuits inside their ranges; the analyzer restores the cached
    *  return type and dedup-merges the cached diagnostics with the fresh scope ones. Hover/
    *  completion inside a skipped body are served by the server from a lazily-computed full
    *  analysis, not from this fast pass. */
-  setCleanBodies(m: Map<number, { bodyEnd: number; returnType: unknown; diagnostics: Diagnostic[]; thisWrites: Array<[string, unknown]> }>): void {
+  setCleanBodies(m: Map<number, CleanBody>): void {
     this.cleanBodies = m;
     const ranges = [...m.entries()].map(([start, v]) => ({ start, end: v.bodyEnd }));
     this.typeChecker.setCleanRanges(ranges);
@@ -446,7 +512,7 @@ export class SemanticAnalyzer extends BaseVisitor {
    *  compile failure. data carries `{ feature }` (+ fix offsets) for the server's
    *  per-feature quick-fix dispatch - never a one-size-fits-all fix on UC6005. */
   private flagVersionMin(introducedIn: UcodeTargetVersion, message: string, start: number, end: number,
-      severityOverride?: DiagnosticSeverity, data?: unknown): void {
+      severityOverride?: DiagnosticSeverity, data?: DiagnosticData): void {
     if (!targetLacksFeature(this.targetVersion, introducedIn)) return;
     const intro = introducedIn === 'main' ? 'OpenWrt main/snapshot' : `OpenWrt ${introducedIn}`;
     this.addDiagnosticErrorCode(
@@ -534,7 +600,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     } catch (error) {
       // A deep-nesting overflow degrades to one honest "too deeply nested" warning; any other
       // error keeps the generic "Semantic analysis error" report. (#117)
-      if (!this.reportTraversalOverflow(error, ast)) {
+      if (!this.reportTraversalOverflow(error instanceof Error ? error : undefined, ast)) {
         this.addDiagnostic(
           `Semantic analysis error: ${error instanceof Error ? error.message : 'Unknown error'}`,
           ast.start,
@@ -570,7 +636,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Post-process diagnostics to apply flow-sensitive narrowing
       this.diagnostics = this.filterDiagnosticsWithFlowSensitiveAnalysis(this.diagnostics);
     } catch (error) {
-      if (!this.reportTraversalOverflow(error, ast)) throw error;
+      if (!this.reportTraversalOverflow(error instanceof Error ? error : undefined, ast)) throw error;
     }
 
     const result: SemanticAnalysisResult = {
@@ -791,84 +857,73 @@ export class SemanticAnalyzer extends BaseVisitor {
     const tainted = new Set<string>();
     const reads: Array<{ name: string; prop: string; start: number; end: number }> = [];
     // Locals that shadow a candidate name make bare references ambiguous → taint.
-    const walk = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
-      const t = n.type;
+    const walk = (n: AstNode | null | undefined): void => {
+      if (!n) return;
       // Any local binding (let/const, fn name, params + rest, catch param, import local) that
       // shadows a candidate name makes bare references to it ambiguous → taint. Uses the shared
       // classifier so no binding construct is missed.
-      for (const nm of enclosingBindings(n as AstNode)) if (candidates.has(nm)) tainted.add(nm);
-      for (const nm of functionOwnBindings(n as AstNode)) if (candidates.has(nm)) tainted.add(nm);
-      if (t === 'AssignmentExpression') {
-        const a = n as unknown as AssignmentExpressionNode;
-        const left = a.left;
+      for (const nm of enclosingBindings(n)) if (candidates.has(nm)) tainted.add(nm);
+      for (const nm of functionOwnBindings(n)) if (candidates.has(nm)) tainted.add(nm);
+      if (n.type === 'AssignmentExpression') {
+        const left = n.left;
         // `global.X = <expr>`: an object literal refreshes the shape; anything else taints.
         const reName = left ? globalRefName(left) : null;
         if (reName && left!.type === 'MemberExpression') {
-          if (a.right?.type !== 'ObjectExpression') tainted.add(reName);
-          walk(a.right);
+          if (n.right?.type !== 'ObjectExpression') tainted.add(reName);
+          walk(n.right);
           return;
         }
         // `X.p = …` / `global.X.p = …`: a WRITE — the property exists; not a read of p.
         // `X[k] = …`: computed write → unknown key → taint.
         if (left?.type === 'MemberExpression') {
-          const m = left as MemberExpressionNode;
-          const baseName = globalRefName(m.object as AstNode);
+          const baseName = globalRefName(left.object);
           if (baseName) {
-            if (m.computed) tainted.add(baseName);
-            walk(a.right);
+            if (left.computed) tainted.add(baseName);
+            walk(n.right);
             return;
           }
         }
-        walk(a.left);
-        walk(a.right);
+        walk(n.left);
+        walk(n.right);
         return;
       }
-      if (t === 'MemberExpression') {
-        const m = n as unknown as MemberExpressionNode;
-        const baseName = globalRefName(m.object as AstNode);
+      if (n.type === 'MemberExpression') {
+        const baseName = globalRefName(n.object);
         if (baseName) {
-          if (!m.computed && m.property.type === 'Identifier') {
-            const p = m.property as IdentifierNode;
+          if (!n.computed && n.property.type === 'Identifier') {
+            const p = n.property;
             reads.push({ name: baseName, prop: p.name, start: p.start, end: p.end });
           }
           // computed READ `X[k]` is fine (can't add props); don't descend into the base
           // (it would look like a bare value use), do descend into a computed key.
-          if (m.computed) walk(m.property);
+          if (n.computed) walk(n.property);
           return;
         }
-        walk(m.object);
-        if (m.computed) walk(m.property);
+        walk(n.object);
+        if (n.computed) walk(n.property);
         return;
       }
-      if (t === 'ForInStatement') {
+      if (n.type === 'ForInStatement') {
         // `for (k in X)` reads keys — safe; don't treat the RHS as a value escape.
-        const s = n as unknown as { left?: unknown; right?: AstNode; body?: unknown };
-        if (!(s.right && globalRefName(s.right))) walk(s.right);
-        walk(s.left);
-        walk(s.body);
+        if (!(n.right && globalRefName(n.right))) walk(n.right);
+        walk(n.left);
+        walk(n.body);
         return;
       }
-      if (t === 'DeleteExpression') {
+      if (n.type === 'DeleteExpression') {
         // delete removes — it can't create a property; skip the member inside.
-        const arg = (n as unknown as { argument?: AstNode }).argument;
-        if (arg?.type === 'MemberExpression' && globalRefName((arg as MemberExpressionNode).object as AstNode)) return;
+        const arg = n.argument;
+        if (arg?.type === 'MemberExpression' && globalRefName(arg.object)) return;
         walk(arg);
         return;
       }
-      if (t === 'Identifier') {
+      if (n.type === 'Identifier') {
         // A bare candidate identifier reached OUTSIDE the handled member/for-in contexts is
         // a VALUE use (call arg, alias, return, element, …) → the object escapes → taint.
-        const nm = (n as unknown as IdentifierNode).name;
-        if (candidates.has(nm)) tainted.add(nm); // value use — the object escapes
+        if (candidates.has(n.name)) tainted.add(n.name); // value use — the object escapes
         return;
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else walk(v);
-      }
+      for (const c of legacyChildren(n)) walk(c);
     };
     walk(node);
 
@@ -883,34 +938,26 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Handle it directly: treat `global.X` appearing OUTSIDE assignment-target/member-base
     // positions as an escape. The walk above already recursed into MemberExpression with
     // base 'global' via the non-candidate path, recording nothing — so re-scan cheaply:
-    const escapeScan = (n: unknown, safe: boolean): void => {
-      if (!isAstNodeLike(n)) return;
-      const ref = globalRefName(n as AstNode);
+    const escapeScan = (n: AstNode | null | undefined, safe: boolean): void => {
+      if (!n) return;
+      const ref = globalRefName(n);
       if (ref && n.type === 'MemberExpression' && !safe) { tainted.add(ref); return; }
       if (n.type === 'AssignmentExpression') {
-        const a = n as unknown as AssignmentExpressionNode;
-        escapeScan(a.left, true);   // `global.X = …` target — not an escape
-        escapeScan(a.right, false);
+        escapeScan(n.left, true);   // `global.X = …` target — not an escape
+        escapeScan(n.right, false);
         return;
       }
       if (n.type === 'MemberExpression') {
-        const m = n as unknown as MemberExpressionNode;
-        escapeScan(m.object, true); // base position — `global.X.p` — not an escape
-        if (m.computed) escapeScan(m.property, false);
+        escapeScan(n.object, true); // base position — `global.X.p` — not an escape
+        if (n.computed) escapeScan(n.property, false);
         return;
       }
       if (n.type === 'ForInStatement') {
-        const s = n as unknown as { left?: unknown; right?: unknown; body?: unknown };
-        escapeScan(s.right, true); escapeScan(s.left, false); escapeScan(s.body, false);
+        escapeScan(n.right, true); escapeScan(n.left, false); escapeScan(n.body, false);
         return;
       }
-      if (n.type === 'DeleteExpression') { escapeScan((n as unknown as { argument?: unknown }).argument, true); return; }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) escapeScan(it, false); }
-        else escapeScan(v, false);
-      }
+      if (n.type === 'DeleteExpression') { escapeScan(n.argument, true); return; }
+      for (const c of legacyChildren(n)) escapeScan(c, false);
     };
     escapeScan(node, false);
 
@@ -946,29 +993,23 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Candidates: every `let/const <Identifier> = <fully-static ObjectExpression>` in the
     // file, keyed by name → set of declaredAt (symbol identity).
     const candidates = new Map<string, Set<number>>();
-    const collect = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
+    const collect = (n: AstNode | null | undefined): void => {
+      if (!n) return;
       if (n.type === 'VariableDeclarator') {
-        const d = n as unknown as { id?: AstNode; init?: AstNode };
-        if (d.id?.type === 'Identifier' && d.init?.type === 'ObjectExpression'
-            && this.isFullyStaticObjectLiteral(d.init as ObjectExpressionNode)) {
-          const name = (d.id as IdentifierNode).name;
-          const sym = this.symbolTable.resolveReference(name, d.id.start);
+        if (n.id?.type === 'Identifier' && n.init?.type === 'ObjectExpression'
+            && this.isFullyStaticObjectLiteral(n.init)) {
+          const name = n.id.name;
+          const sym = this.symbolTable.resolveReference(name, n.id.start);
           // declaredAt identity ties the occurrence to THIS declarator; names that are also
           // object-literal GLOBALS are UC8006's turf (top-level `let` is fine — it's a local).
-          if (sym && sym.declaredAt === d.id.start && !this.globalObjectBindings.has(name)) {
+          if (sym && sym.declaredAt === n.id.start && !this.globalObjectBindings.has(name)) {
             let set = candidates.get(name);
             if (!set) { set = new Set(); candidates.set(name, set); }
             set.add(sym.declaredAt);
           }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) collect(it); }
-        else collect(v);
-      }
+      for (const c of legacyChildren(n)) collect(c);
     };
     collect(node);
     if (candidates.size === 0) return;
@@ -1005,29 +1046,23 @@ export class SemanticAnalyzer extends BaseVisitor {
     //     every kind that merely CONTAINS expressions;
     //   • positions where an identifier is NOT a value (declarator ids, property keys,
     //     non-computed member names, import/export specifiers) must NOT reach it.
-    const walkChildren = (n: AnyNode): void => {
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else walk(v);
-      }
+    const walkChildren = (n: AstNode): void => {
+      for (const c of legacyChildren(n)) walk(c);
     };
-    const skip = (_n: AnyNode): void => {};
+    const skip = (_n: AstNode): void => {};
     const handlers = {
       // ── the contexts this check actually reasons about ────────────────────────────────
-      AssignmentExpression: (n: AnyNode) => {
-        const a = n as unknown as AssignmentExpressionNode;
+      AssignmentExpression: (a: AssignmentExpressionNode) => {
         if (a.left?.type === 'Identifier') {
           // Reassignment of the variable itself — shape no longer the literal's → taint.
-          taint((a.left as IdentifierNode).name, a.left.start);
+          taint(a.left.name, a.left.start);
           walk(a.right);
           return;
         }
         if (a.left?.type === 'MemberExpression') {
-          const m = a.left as MemberExpressionNode;
+          const m = a.left;
           if (m.object.type === 'Identifier') {
-            const baseName = (m.object as IdentifierNode).name;
+            const baseName = m.object.name;
             if (resolveCandidate(baseName, m.object.start) !== null) {
               if (m.computed) { taint(baseName, m.object.start); walk(m.property); } // unknown key written
               // non-computed write: recordPropertyWrite already added it to propertyTypes
@@ -1041,14 +1076,13 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
         walk(a.left); walk(a.right);
       },
-      MemberExpression: (n: AnyNode) => {
-        const m = n as unknown as MemberExpressionNode;
+      MemberExpression: (m: MemberExpressionNode) => {
         if (m.object.type === 'Identifier') {
-          const baseName = (m.object as IdentifierNode).name;
+          const baseName = m.object.name;
           const r = resolveCandidate(baseName, m.object.start);
           if (r !== null && r !== 'ambiguous') {
             if (!m.computed && m.property.type === 'Identifier') {
-              const p = m.property as IdentifierNode;
+              const p = m.property;
               reads.push({ key: r, name: baseName, prop: p.name, start: p.start, end: p.end });
             }
             if (m.computed) walk(m.property); // computed READ can't add props — safe
@@ -1058,49 +1092,46 @@ export class SemanticAnalyzer extends BaseVisitor {
         walk(m.object);
         if (m.computed) walk(m.property);
       },
-      ForInStatement: (n: AnyNode) => {
-        const s = n as unknown as { left?: unknown; right?: AstNode; body?: unknown };
+      ForInStatement: (f: ForInStatementNode) => {
         // `for (k in x)` reads keys — safe, not an escape.
-        if (!(s.right?.type === 'Identifier' && resolveCandidate((s.right as IdentifierNode).name, s.right.start) !== null)) walk(s.right);
-        walk(s.left); walk(s.body);
+        if (!(f.right?.type === 'Identifier' && resolveCandidate(f.right.name, f.right.start) !== null)) walk(f.right);
+        walk(f.left); walk(f.body);
       },
-      DeleteExpression: (n: AnyNode) => {
-        const arg = (n as unknown as { argument?: AstNode }).argument;
-        if (arg?.type === 'MemberExpression' && (arg as MemberExpressionNode).object.type === 'Identifier') {
-          const m = arg as MemberExpressionNode;
-          const baseName = (m.object as IdentifierNode).name;
-          const r = resolveCandidate(baseName, m.object.start);
+      DeleteExpression: (d: DeleteExpressionNode) => {
+        const arg = d.argument;
+        if (arg?.type === 'MemberExpression' && arg.object.type === 'Identifier') {
+          const baseName = arg.object.name;
+          const r = resolveCandidate(baseName, arg.object.start);
           if (r !== null && r !== 'ambiguous') {
             // delete removes, never adds — the base stays untainted. A non-computed
             // target on an untainted candidate is checkable: deleting a never-assigned
             // property is a provable no-op (likely typo), recorded for UC8008 below.
-            if (!m.computed && m.property.type === 'Identifier') {
-              const p = m.property as IdentifierNode;
+            if (!arg.computed && arg.property.type === 'Identifier') {
+              const p = arg.property;
               deletes.push({ key: r, name: baseName, prop: p.name, start: p.start, end: p.end });
             }
-            if (m.computed) walk(m.property); // the KEY expression is still a value use
+            if (arg.computed) walk(arg.property); // the KEY expression is still a value use
             return;
           }
         }
         walk(arg);
       },
-      VariableDeclarator: (n: AnyNode) => walk((n as unknown as { init?: unknown }).init), // id is a declaration, not a use
-      Property: (n: AnyNode) => {
-        const p = n as unknown as { computed?: boolean; key?: unknown; value?: unknown };
+      VariableDeclarator: (d: VariableDeclaratorNode) => walk(d.init), // id is a declaration, not a use
+      Property: (p: PropertyNode) => {
         if (p.computed) walk(p.key); // computed key IS a value use
         walk(p.value);               // a non-computed key is not
       },
-      Identifier: (n: AnyNode) => {
+      Identifier: (n: IdentifierNode) => {
         // A candidate reached OUTSIDE the handled contexts is a VALUE use → escapes → taint.
-        taint((n as unknown as IdentifierNode).name, n.start);
+        taint(n.name, n.start);
       },
       // ── kinds where an identifier child is a NAME, not a value — must not taint ───────
       ImportDeclaration: skip, ImportSpecifier: skip, ImportDefaultSpecifier: skip,
       ImportNamespaceSpecifier: skip, ExportAllDeclaration: skip,
-      ExportSpecifier: (n: AnyNode) => {
+      ExportSpecifier: (spec: ExportSpecifierNode) => {
         // `export { cache }` hands the object to other modules — an escape → taint.
-        const local = (n as unknown as { local?: AstNode }).local;
-        if (local?.type === 'Identifier') taint((local as IdentifierNode).name, local.start);
+        const local = spec.local;
+        if (local?.type === 'Identifier') taint(local.name, local.start);
       },
       // ── leaves: nothing to do ──────────────────────────────────────────────────────────
       Literal: skip, ThisExpression: skip, TemplateElement: skip, JsDocComment: skip,
@@ -1116,14 +1147,12 @@ export class SemanticAnalyzer extends BaseVisitor {
       ConditionalExpression: walkChildren, CallExpression: walkChildren, SpreadElement: walkChildren,
       ArrayExpression: walkChildren, ObjectExpression: walkChildren, TemplateLiteral: walkChildren,
       ExportDefaultDeclaration: walkChildren, ExportNamedDeclaration: walkChildren,
-    } satisfies Record<AstNodeKind, (n: AnyNode) => void>;
-    const walk = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
-      // `satisfies` guarantees compile-time exhaustiveness over AstNodeKind, but
-      // isAstNodeLike is structural — nodes can carry NON-AST objects that happen to have a
-      // string `type` (parsed JSDoc tags, stashed inference data). Fall back to generic
-      // recursion for those instead of crashing the analysis.
-      (handlers[n.type as keyof typeof handlers] ?? walkChildren)(n);
+    } satisfies { [K in AstNodeKind]: (n: Extract<AstNode, { type: K }>) => void };
+    const walk = (n: AstNode | null | undefined): void => {
+      if (!n) return;
+      // `satisfies` guarantees compile-time exhaustiveness over AstNodeKind; the typed
+      // traversal delivers only real AST nodes here, so the dispatch is total.
+      (handlers[n.type] as (x: AstNode) => void)(n);
     };
     walk(node);
 
@@ -1194,8 +1223,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Top-level let/const/function names are locals, not globals.
     const localNames = new Set<string>();
     for (const stmt of node.body) {
-      if (stmt.type === 'FunctionDeclaration' && (stmt as unknown as FunctionDeclarationNode).id?.name) localNames.add((stmt as unknown as FunctionDeclarationNode).id!.name);
-      if (stmt.type === 'VariableDeclaration') for (const d of ((stmt as unknown as VariableDeclarationNode).declarations || [])) if (d?.id?.type === 'Identifier') localNames.add((d.id as IdentifierNode).name);
+      if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) localNames.add(stmt.id.name);
+      if (stmt.type === 'VariableDeclaration') for (const d of (stmt.declarations || [])) if (d?.id?.type === 'Identifier') localNames.add(d.id.name);
     }
 
     const globalTargetName = (left: AstNode | undefined): string | null => {
@@ -1235,12 +1264,12 @@ export class SemanticAnalyzer extends BaseVisitor {
     // `!== true` (negated) and their non-negating mirrors.
     const existsGuard = (test: AstNode | undefined): { name: string; negated: boolean } | null => {
       if (!test) return null;
-      if (test.type === 'UnaryExpression' && (test as unknown as { operator?: string }).operator === '!') {
-        const inner = existsGuard((test as unknown as { argument?: AstNode }).argument);
+      if (test.type === 'UnaryExpression' && test.operator === '!') {
+        const inner = existsGuard(test.argument);
         return inner ? { name: inner.name, negated: !inner.negated } : null;
       }
       if (test.type === 'BinaryExpression') {
-        const b = test as unknown as { operator?: string; left?: AstNode; right?: AstNode };
+        const b = test;
         if (b.operator === '==' || b.operator === '===' || b.operator === '!=' || b.operator === '!==') {
           const boolLit = (n: AstNode | undefined): boolean | null =>
             (n?.type === 'Literal' && typeof (n as LiteralNode).value === 'boolean') ? (n as LiteralNode).value as boolean : null;
@@ -1280,26 +1309,21 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Does this subtree contain control flow that could skip FOLLOWING statements —
     // a return anywhere, or a break/continue not consumed by a loop/switch inside `n`?
     // (Nested functions don't count; their control flow is theirs.)
-    const mayDivert = (n: unknown, loopDepth: number): boolean => {
-      if (!isAstNodeLike(n)) return false;
+    const mayDivert = (n: AstNode | null | undefined, loopDepth: number): boolean => {
+      if (!n) return false;
       const t = n.type;
       if (t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') return false;
       if (t === 'ReturnStatement' || t === 'ThrowStatement') return true;
       if ((t === 'BreakStatement' || t === 'ContinueStatement') && loopDepth === 0) return true;
       const nested = (t === 'WhileStatement' || t === 'ForStatement'
         || t === 'ForInStatement' || t === 'SwitchStatement') ? loopDepth + 1 : loopDepth;
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) if (mayDivert(it, nested)) return true; }
-        else if (mayDivert(v, nested)) return true;
-      }
+      for (const c of legacyChildren(n)) if (mayDivert(c, nested)) return true;
       return false;
     };
 
     // Straight-line sequence: accumulate must-assigns; stop after a statement that may
     // divert control (its own must-assign still counts — it executed up to the divert).
-    const seqAssigns = (stmts: unknown[]): Set<string> => {
+    const seqAssigns = (stmts: AstNode[]): Set<string> => {
       const acc = new Set<string>();
       for (const stmt of stmts) {
         for (const nm of definitelyAssigns(stmt)) acc.add(nm);
@@ -1318,33 +1342,26 @@ export class SemanticAnalyzer extends BaseVisitor {
     // that is REASSIGNED anywhere is excluded (the call site's target is then unknowable);
     // `const` can't be reassigned. Memoized; cycles yield ∅ (sound).
     const reassignedNames = new Set<string>();
-    const scanReassigns = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
+    const scanReassigns = (n: AstNode | null | undefined): void => {
+      if (!n) return;
       if (n.type === 'AssignmentExpression') {
-        const a = n as unknown as AssignmentExpressionNode;
-        if (a.left?.type === 'Identifier' && (a.left as IdentifierNode).name) reassignedNames.add((a.left as IdentifierNode).name);
+        if (n.left?.type === 'Identifier' && n.left.name) reassignedNames.add(n.left.name);
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) scanReassigns(it); }
-        else scanReassigns(v);
-      }
+      for (const c of legacyChildren(n)) scanReassigns(c);
     };
     scanReassigns(node);
     const fnBodies = new Map<string, AstNode>();
     for (const stmt of node.body) {
       if (stmt.type === 'FunctionDeclaration') {
-        const fd = stmt as unknown as FunctionDeclarationNode;
-        if (fd.id?.name && !fd.forwardDeclaration) fnBodies.set(fd.id.name, fd.body);
+        if (stmt.id?.name && !stmt.forwardDeclaration) fnBodies.set(stmt.id.name, stmt.body);
       }
       if (stmt.type === 'VariableDeclaration') {
-        for (const d of ((stmt as unknown as VariableDeclarationNode).declarations || [])) {
-          const init = (d as unknown as { init?: AstNode }).init;
-          if (d?.id?.type === 'Identifier' && (d.id as IdentifierNode).name
+        for (const d of (stmt.declarations || [])) {
+          const init = d.init;
+          if (d?.id?.type === 'Identifier' && d.id.name
               && (init?.type === 'FunctionExpression' || init?.type === 'ArrowFunctionExpression')
-              && !reassignedNames.has((d.id as IdentifierNode).name)) {
-            fnBodies.set((d.id as IdentifierNode).name, (init as unknown as { body: AstNode }).body);
+              && !reassignedNames.has(d.id.name)) {
+            fnBodies.set(d.id.name, init.body);
           }
         }
       }
@@ -1363,13 +1380,13 @@ export class SemanticAnalyzer extends BaseVisitor {
       return result;
     };
 
-    const definitelyAssigns = (n: unknown): Set<string> => {
-      if (!isAstNodeLike(n)) return new Set();
+    const definitelyAssigns = (n: AstNode | null | undefined): Set<string> => {
+      if (!n) return new Set();
       switch (n.type) {
         case 'ExpressionStatement':
-          return definitelyAssigns((n as Record<string, unknown>)['expression']);
+          return definitelyAssigns(n.expression);
         case 'AssignmentExpression': {
-          const a = n as unknown as AssignmentExpressionNode;
+          const a = n;
           const out = definitelyAssigns(a.right); // RHS evaluates before the store
           if (a.operator === '=') {
             const name = globalTargetName(a.left);
@@ -1378,20 +1395,20 @@ export class SemanticAnalyzer extends BaseVisitor {
           return out;
         }
         case 'CallExpression': {
-          const c = n as unknown as CallExpressionNode;
+          const c = n;
           const out = new Set<string>();
           for (const arg of (c.arguments || [])) for (const nm of definitelyAssigns(arg)) out.add(nm);
           if (c.callee?.type === 'Identifier') {
-            for (const nm of callMustAssign((c.callee as IdentifierNode).name)) out.add(nm);
+            for (const nm of callMustAssign(c.callee.name)) out.add(nm);
           } else {
             for (const nm of definitelyAssigns(c.callee)) out.add(nm);
           }
           return out;
         }
         case 'BlockStatement':
-          return seqAssigns((n as unknown as BlockStatementNode).body || []);
+          return seqAssigns(n.body || []);
         case 'IfStatement': {
-          const s = n as unknown as { test?: AstNode; consequent?: unknown; alternate?: unknown };
+          const s = n;
           const out = definitelyAssigns(s.test);
           // Existence-guard seeding: `if (!exists(global,'X')) global.X = v;` defines X
           // on BOTH paths — the branch that doesn't assign is exactly the branch where
@@ -1411,7 +1428,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           return out;
         }
         case 'ConditionalExpression': {
-          const s = n as unknown as { test?: AstNode; consequent?: unknown; alternate?: unknown };
+          const s = n;
           const out = definitelyAssigns(s.test);
           // A statically-decided test takes exactly one arm (mirrors the `if (true)` rule).
           const arm = isStaticTruthy(s.test) ? definitelyAssigns(s.consequent)
@@ -1422,7 +1439,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
         case 'SwitchStatement': {
           // Exhaustive only WITH a default; every entry point (fallthrough followed) must assign.
-          const s = n as unknown as { discriminant?: unknown; cases?: SwitchCaseLike[] };
+          const s = n;
           const out = definitelyAssigns(s.discriminant);
           const cases = s.cases || [];
           if (!cases.some(c => !c.test)) return out; // no default → not exhaustive
@@ -1444,33 +1461,33 @@ export class SemanticAnalyzer extends BaseVisitor {
           // Normal path runs the block; exception path runs the handler (or unwinds out of
           // scope entirely, in which case no later read happens) → block ∩ handler, or the
           // block alone when there's no handler.
-          const s = n as unknown as { block?: unknown; handler?: { body?: unknown } | null };
+          const s = n;
           const blockSet = definitelyAssigns(s.block);
           return s.handler ? intersect(blockSet, definitelyAssigns(s.handler.body)) : blockSet;
         }
         case 'WhileStatement': // test always evaluates once; body may not
-          return definitelyAssigns((n as unknown as { test?: unknown }).test);
+          return definitelyAssigns(n.test);
         case 'ForStatement': {
-          const s = n as unknown as { init?: unknown; test?: unknown };
+          const s = n;
           const out = definitelyAssigns(s.init);
           for (const nm of definitelyAssigns(s.test)) out.add(nm);
           return out;
         }
         case 'ForInStatement': // the iterated expression always evaluates
-          return definitelyAssigns((n as unknown as { right?: unknown }).right);
+          return definitelyAssigns(n.right);
         case 'VariableDeclaration': {
           const out = new Set<string>();
-          for (const d of ((n as unknown as VariableDeclarationNode).declarations || [])) {
-            for (const nm of definitelyAssigns((d as unknown as Record<string, unknown>)['init'])) out.add(nm);
+          for (const d of (n.declarations || [])) {
+            for (const nm of definitelyAssigns(d.init)) out.add(nm);
           }
           return out;
         }
         case 'ReturnStatement':
-          return definitelyAssigns((n as unknown as { argument?: unknown }).argument);
+          return definitelyAssigns(n.argument);
         case 'UnaryExpression':
-          return definitelyAssigns((n as unknown as { argument?: unknown }).argument);
+          return definitelyAssigns(n.argument);
         case 'BinaryExpression': case 'LogicalExpression': {
-          const s = n as unknown as { operator?: string; left?: unknown; right?: unknown };
+          const s = n;
           const out = definitelyAssigns(s.left);
           if (s.operator !== '&&' && s.operator !== '||' && s.operator !== '??') {
             for (const nm of definitelyAssigns(s.right)) out.add(nm); // short-circuit RHS may not run
@@ -1481,7 +1498,6 @@ export class SemanticAnalyzer extends BaseVisitor {
           return new Set(); // unknown shape → prove nothing (stays flagged)
       }
     };
-    type SwitchCaseLike = { test?: AstNode | null; consequent?: unknown[] };
 
     // ctx = the innermost non-deterministic context enclosing a node, or null (deterministic,
     // straight-line top level). Innermost wins for the message.
@@ -1500,38 +1516,32 @@ export class SemanticAnalyzer extends BaseVisitor {
       else sites.push({ name, start: left.start, end: (right ?? left).end, ctx, implicit: left.type === 'Identifier' });
     };
 
-    const recurseChildren = (n: AnyNode, ctx: Ctx): void => {
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it, ctx); }
-        else walk(v, ctx);
-      }
+    const recurseChildren = (n: AstNode, ctx: Ctx): void => {
+      for (const c of legacyChildren(n)) walk(c, ctx);
     };
-    const walk = (n: unknown, ctx: Ctx): void => {
-      if (!isAstNodeLike(n)) return;
+    const walk = (n: AstNode | null | undefined, ctx: Ctx): void => {
+      if (!n) return;
       switch (n.type) {
         case 'AssignmentExpression': {
-          const a = n as unknown as AssignmentExpressionNode;
+          const a = n;
           if (a.operator === '=') record(a.left, a.right, ctx);
           walk(a.right, ctx); // RHS may nest further assignments / functions
-          if (a.left?.type === 'MemberExpression') walk((a.left as MemberExpressionNode).object, ctx);
+          if (a.left?.type === 'MemberExpression') walk(a.left.object, ctx);
           return;
         }
         case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression': {
-          const fn = n as unknown as { id?: IdentifierNode; params?: unknown[]; body?: unknown };
-          const inner: Ctx = { kind: 'function', detail: fn.id?.name };
-          for (const p of (fn.params || [])) walk(p, inner);
-          walk(fn.body, inner);
+          const inner: Ctx = { kind: 'function', detail: n.type === 'ArrowFunctionExpression' ? undefined : n.id?.name };
+          for (const p of (n.params || [])) walk(p, inner);
+          walk(n.body, inner);
           return;
         }
         case 'VariableDeclarator': {
           // `let lambda = () => …` — name the lambda in the message ("inside function 'lambda'").
-          const d = n as unknown as { id?: AstNode; init?: AstNode };
-          if (d.id?.type === 'Identifier' && (d.id as IdentifierNode).name
+          const d = n;
+          if (d.id?.type === 'Identifier' && d.id.name
               && (d.init?.type === 'FunctionExpression' || d.init?.type === 'ArrowFunctionExpression')) {
-            const fn = d.init as unknown as { params?: unknown[]; body?: unknown };
-            const inner: Ctx = { kind: 'function', detail: (d.id as IdentifierNode).name };
+            const fn = d.init;
+            const inner: Ctx = { kind: 'function', detail: d.id.name };
             for (const p of (fn.params || [])) walk(p, inner);
             walk(fn.body, inner);
             return;
@@ -1540,7 +1550,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           return;
         }
         case 'IfStatement': {
-          const s = n as unknown as { test?: AstNode; consequent?: unknown; alternate?: unknown };
+          const s = n;
           walk(s.test, ctx);
           // `if (true)`'s consequent / `if (false)`'s alternate stays deterministic; the
           // dead branch is conditional.
@@ -1550,38 +1560,37 @@ export class SemanticAnalyzer extends BaseVisitor {
           return;
         }
         case 'SwitchStatement': {
-          const s = n as unknown as { discriminant?: unknown; cases?: unknown[] };
+          const s = n;
           walk(s.discriminant, ctx);
           for (const c of (s.cases || [])) walk(c, { kind: 'switch' });
           return;
         }
         case 'WhileStatement': {
-          const s = n as unknown as { test?: unknown; body?: unknown };
+          const s = n;
           walk(s.test, ctx);
           walk(s.body, { kind: 'loop' });
           return;
         }
         case 'ForStatement': {
-          const s = n as unknown as { init?: unknown; test?: unknown; update?: unknown; body?: unknown };
+          const s = n;
           walk(s.init, ctx); walk(s.test, ctx); walk(s.update, ctx);
           walk(s.body, { kind: 'loop' });
           return;
         }
         case 'ForInStatement': {
-          const s = n as unknown as { left?: unknown; right?: unknown; body?: unknown };
+          const s = n;
           walk(s.right, ctx);
           walk(s.body, { kind: 'loop' });
           return;
         }
         case 'TryStatement': {
-          const s = n as unknown as { block?: unknown; handler?: unknown; finalizer?: unknown };
+          const s = n;
           walk(s.block, { kind: 'try' });
           walk(s.handler, { kind: 'try' });
-          if (s.finalizer) walk(s.finalizer, ctx); // finally always runs
           return;
         }
         case 'ConditionalExpression': {
-          const s = n as unknown as { test?: AstNode; consequent?: unknown; alternate?: unknown };
+          const s = n;
           walk(s.test, ctx);
           // `(true) ? A : B` — the taken arm is deterministic (same as `if (true)`); the
           // dead arm stays conditional.
@@ -1591,7 +1600,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           return;
         }
         case 'LogicalExpression': case 'BinaryExpression': {
-          const s = n as unknown as { operator?: string; left?: unknown; right?: unknown };
+          const s = n;
           // Short-circuit operators only evaluate the RHS conditionally; other binaries don't.
           if (s.operator === '&&' || s.operator === '||' || s.operator === '??') {
             walk(s.left, ctx);
@@ -1686,13 +1695,13 @@ export class SemanticAnalyzer extends BaseVisitor {
     // functions (their locals are their own).
     // A function's own locals (params/rest + body decls, catch params, nested-fn names; not
     // descending into nested functions) — from the shared, compiler-enforced classifier.
-    const fnLocalNames = (fn: { params?: unknown[]; restParam?: unknown; body?: unknown }): Set<string> =>
-      collectScopeBindings(fn as unknown as AstNode);
+    const fnLocalNames = (fn: FunctionLikeNode): Set<string> =>
+      collectScopeBindings(fn);
     // Walk a statement SEQUENCE tracking what's definitely assigned so far: reads in
     // statement N are suppressed by must-assigns of statements 1..N-1 (they provably ran
     // if N runs). Within one statement the pre-statement set applies (an RHS read happens
     // before its own store).
-    const readSeq = (stmts: unknown[], locals: Set<string>, assigned: Set<string>): void => {
+    const readSeq = (stmts: AstNode[], locals: Set<string>, assigned: Set<string>): void => {
       let cur = assigned;
       for (const stmt of stmts) {
         collectReads(stmt, locals, cur);
@@ -1701,58 +1710,49 @@ export class SemanticAnalyzer extends BaseVisitor {
         cur = next;
       }
     };
-    const enterFunction = (fn: { params?: unknown[]; restParam?: unknown; body?: unknown }, locals: Set<string>): void => {
+    const enterFunction = (fn: FunctionLikeNode, locals: Set<string>): void => {
       const inner = new Set([...locals, ...fnLocalNames(fn)]);
       // Call timing unknown → nothing carried in from the caller's straight line.
-      if (isAstNodeLike(fn.body) && fn.body.type === 'BlockStatement') {
-        readSeq(((fn.body as unknown as BlockStatementNode).body || []) as unknown[], inner, new Set());
+      if (fn.body.type === 'BlockStatement') {
+        readSeq(fn.body.body || [], inner, new Set());
       } else {
         collectReads(fn.body, inner, new Set()); // arrow expression body
       }
     };
-    const collectReads = (n: unknown, locals: Set<string>, assigned: Set<string>): void => {
-      if (!isAstNodeLike(n)) return;
-      const t = n.type;
-      if (t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') {
-        enterFunction(n as unknown as { params?: unknown[]; body?: unknown }, locals);
+    const collectReads = (n: AstNode | null | undefined, locals: Set<string>, assigned: Set<string>): void => {
+      if (!n) return;
+      if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') {
+        enterFunction(n, locals);
         return;
       }
-      if (t === 'BlockStatement') { readSeq(((n as unknown as BlockStatementNode).body || []) as unknown[], locals, assigned); return; }
-      if (t === 'Identifier') {
-        const name = (n as unknown as IdentifierNode).name;
+      if (n.type === 'BlockStatement') { readSeq(n.body || [], locals, assigned); return; }
+      if (n.type === 'Identifier') {
+        const name = n.name;
         if (!locals.has(name) && !assigned.has(name)) visitRead(name, n.start);
         return;
       }
-      if (t === 'MemberExpression') {
-        const m = n as unknown as MemberExpressionNode;
-        collectReads(m.object, locals, assigned);
-        if (m.computed) collectReads(m.property, locals, assigned); // obj[x]: x is a read; obj.prop: prop is not
+      if (n.type === 'MemberExpression') {
+        collectReads(n.object, locals, assigned);
+        if (n.computed) collectReads(n.property, locals, assigned); // obj[x]: x is a read; obj.prop: prop is not
         return;
       }
-      if (t === 'AssignmentExpression') {
-        const a = n as unknown as AssignmentExpressionNode;
+      if (n.type === 'AssignmentExpression') {
         // A bare-identifier LHS is a write, not a read; a member LHS still reads its object.
-        if (a.left?.type === 'MemberExpression') collectReads((a.left as MemberExpressionNode).object, locals, assigned);
-        else if (a.left?.type !== 'Identifier') collectReads(a.left, locals, assigned);
-        collectReads(a.right, locals, assigned);
+        if (n.left?.type === 'MemberExpression') collectReads(n.left.object, locals, assigned);
+        else if (n.left?.type !== 'Identifier') collectReads(n.left, locals, assigned);
+        collectReads(n.right, locals, assigned);
         return;
       }
-      if (t === 'VariableDeclarator') { collectReads((n as Record<string, unknown>)['init'], locals, assigned); return; } // id is not a read
-      if (t === 'Property' && !(n as Record<string, unknown>)['computed']) { collectReads((n as Record<string, unknown>)['value'], locals, assigned); return; } // key is not a read
-      if (t === 'CatchClause') {
-        const c = n as unknown as CatchClauseNode;
-        const inner = c.param?.name ? new Set([...locals, c.param.name]) : locals;
-        collectReads(c.body, inner, assigned);
+      if (n.type === 'VariableDeclarator') { collectReads(n.init, locals, assigned); return; } // id is not a read
+      if (n.type === 'Property' && !n.computed) { collectReads(n.value, locals, assigned); return; } // key is not a read
+      if (n.type === 'CatchClause') {
+        const inner = n.param?.name ? new Set([...locals, n.param.name]) : locals;
+        collectReads(n.body, inner, assigned);
         return;
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) collectReads(it, locals, assigned); }
-        else collectReads(v, locals, assigned);
-      }
+      for (const c of legacyChildren(n)) collectReads(c, locals, assigned);
     };
-    readSeq(node.body as unknown[], new Set(localNames), new Set());
+    readSeq(node.body, new Set(localNames), new Set());
   }
 
   /**
@@ -1777,8 +1777,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Top-level let/const/function names are locals — a `let X` reassignment is not a global.
     const localNames = new Set<string>();
     for (const stmt of node.body) {
-      if (stmt.type === 'FunctionDeclaration' && (stmt as unknown as FunctionDeclarationNode).id?.name) localNames.add((stmt as unknown as FunctionDeclarationNode).id!.name);
-      if (stmt.type === 'VariableDeclaration') for (const d of ((stmt as unknown as VariableDeclarationNode).declarations || [])) if (d?.id?.type === 'Identifier') localNames.add((d.id as IdentifierNode).name);
+      if (stmt.type === 'FunctionDeclaration' && stmt.id?.name) localNames.add(stmt.id.name);
+      if (stmt.type === 'VariableDeclaration') for (const d of (stmt.declarations || [])) if (d?.id?.type === 'Identifier') localNames.add(d.id.name);
     }
 
     const coarse = (n: AstNode | undefined): string => {
@@ -1813,14 +1813,13 @@ export class SemanticAnalyzer extends BaseVisitor {
 
     // Collect EVERY typed global assignment, noting whether it sits inside a function.
     const assigns = new Map<string, Array<{ type: string; inFunc: boolean; fnName: string | undefined; start: number; end: number }>>();
-    const walk = (n: unknown, inFunc: boolean, fnName: string | undefined): void => {
-      if (!isAstNodeLike(n)) return;
-      const t = n.type;
+    const walk = (n: AstNode | null | undefined, inFunc: boolean, fnName: string | undefined): void => {
+      if (!n) return;
       let nextFn = fnName;
-      const entering = t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression';
-      if (entering) nextFn = (n as unknown as { id?: IdentifierNode }).id?.name ?? undefined;
-      if (t === 'AssignmentExpression' && (n as unknown as AssignmentExpressionNode).operator === '=') {
-        const a = n as unknown as AssignmentExpressionNode;
+      const entering = n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression';
+      if (entering) nextFn = (n.type === 'ArrowFunctionExpression' ? undefined : n.id?.name) ?? undefined;
+      if (n.type === 'AssignmentExpression' && n.operator === '=') {
+        const a = n;
         const name = targetName(a.left);
         // Bare `X =` counts only when X is an implicit global (non-strict); `global.X =` always.
         const isGlobalTarget = a.left?.type === 'MemberExpression'
@@ -1834,12 +1833,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it, inFunc || entering, nextFn); }
-        else walk(v, inFunc || entering, nextFn);
-      }
+      for (const c of legacyChildren(n)) walk(c, inFunc || entering, nextFn);
     };
     walk(node, false, undefined);
 
@@ -1886,33 +1880,27 @@ export class SemanticAnalyzer extends BaseVisitor {
     // the declaration line itself as a "read before it" (wwand-migrate's
     // `for (…) { let cur = …; if (type(cur) != 'array') cur = [cur]; }`).
     const localNames = new Set<string>();
-    const collectLocalNames = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
-      const t = n.type;
-      if (t === 'FunctionDeclaration') {
-        const id = (n as unknown as FunctionDeclarationNode).id;
+    const collectLocalNames = (n: AstNode | null | undefined): void => {
+      if (!n) return;
+      if (n.type === 'FunctionDeclaration') {
+        const id = n.id;
         if (id?.name) localNames.add(id.name);
         return; // its body's declarations are function-locals — irrelevant to top-level reads
       }
-      if (t === 'FunctionExpression' || t === 'ArrowFunctionExpression') return;
-      if (t === 'VariableDeclaration') {
-        for (const d of ((n as unknown as VariableDeclarationNode).declarations || [])) {
-          if (d?.id?.type === 'Identifier' && (d.id as IdentifierNode).name) localNames.add((d.id as IdentifierNode).name);
+      if (n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return;
+      if (n.type === 'VariableDeclaration') {
+        for (const d of (n.declarations || [])) {
+          if (d?.id?.type === 'Identifier' && d.id.name) localNames.add(d.id.name);
         }
       }
       // A catch parameter is block-scoped to its handler — never a global.
       // Without this, `catch (e) { if (!e) e = 'unknown'; … }` read the
       // normalize as a "global def" and flagged the `!e` test above it.
-      if (t === 'CatchClause') {
-        const p = (n as unknown as { param?: IdentifierNode }).param;
+      if (n.type === 'CatchClause') {
+        const p = n.param;
         if (p?.name) localNames.add(p.name);
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) collectLocalNames(it); }
-        else collectLocalNames(v);
-      }
+      for (const c of legacyChildren(n)) collectLocalNames(c);
     };
     collectLocalNames(node);
 
@@ -1926,7 +1914,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     const loadfileInjects = (call: CallExpressionNode): string[] => {
       const inner = call.callee;
       if (inner?.type === 'CallExpression') {
-        const lf = inner as CallExpressionNode;
+        const lf = inner;
         if (lf.callee?.type === 'Identifier' && (lf.callee as IdentifierNode).name === 'loadfile'
             && lf.arguments?.[0]?.type === 'Literal' && typeof (lf.arguments[0] as LiteralNode).value === 'string') {
           return this.fileResolver.getLoadfileGlobals((lf.arguments[0] as LiteralNode).value as string, this.textDocument.uri).map(g => g.name);
@@ -1947,36 +1935,30 @@ export class SemanticAnalyzer extends BaseVisitor {
     };
 
     // Pass 1: collect def points. inFunc assignments/loadfiles → funcAssigned (skip name).
-    const collectDefs = (n: unknown, inFunc: boolean): void => {
-      if (!isAstNodeLike(n)) return;
-      const t = n.type;
-      const entering = t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression';
-      if (t === 'AssignmentExpression' && (n as unknown as AssignmentExpressionNode).operator === '=') {
-        const name = assignTargetName((n as unknown as AssignmentExpressionNode).left);
+    const collectDefs = (n: AstNode | null | undefined, inFunc: boolean): void => {
+      if (!n) return;
+      const entering = n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression';
+      if (n.type === 'AssignmentExpression' && n.operator === '=') {
+        const name = assignTargetName(n.left);
         if (name && !localNames.has(name)) { if (inFunc) funcAssigned.add(name); else recordDef(name, n.start); }
       }
       // A bare for-in head (`for (k in x)`) WRITES k on every iteration — it is
       // a def at the loop, exactly like `k = …` (a `let` head is already a
       // localName). Certainty (empty iterable → never assigned) is UC8004's
       // department, not this order check's.
-      if (t === 'ForInStatement') {
-        const left = (n as unknown as { left?: AstNode }).left;
-        if (left?.type === 'Identifier' && (left as IdentifierNode).name && !localNames.has((left as IdentifierNode).name)) {
-          if (inFunc) funcAssigned.add((left as IdentifierNode).name);
-          else recordDef((left as IdentifierNode).name, left.start);
+      if (n.type === 'ForInStatement') {
+        const left = n.left;
+        if (left?.type === 'Identifier' && left.name && !localNames.has(left.name)) {
+          if (inFunc) funcAssigned.add(left.name);
+          else recordDef(left.name, left.start);
         }
       }
-      if (t === 'CallExpression') {
-        for (const name of loadfileInjects(n as unknown as CallExpressionNode)) {
+      if (n.type === 'CallExpression') {
+        for (const name of loadfileInjects(n)) {
           if (!localNames.has(name)) { if (inFunc) funcAssigned.add(name); else recordDef(name, n.start); }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) collectDefs(it, inFunc || entering); }
-        else collectDefs(v, inFunc || entering);
-      }
+      for (const c of legacyChildren(n)) collectDefs(c, inFunc || entering);
     };
     collectDefs(node, false);
     if (earliestDef.size === 0) return;
@@ -1999,42 +1981,33 @@ export class SemanticAnalyzer extends BaseVisitor {
         pos, pos + name.length, severity, UcodeErrorCode.GLOBAL_USED_BEFORE_DEFINED,
       );
     };
-    const collectReads = (n: unknown, inFunc: boolean): void => {
-      if (!isAstNodeLike(n)) return;
-      const t = n.type;
-      if (t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') return; // call timing unknown
+    const collectReads = (n: AstNode | null | undefined, inFunc: boolean): void => {
+      if (!n) return;
+      if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') return; // call timing unknown
       if (inFunc) return;
-      if (t === 'Identifier') { visitRead((n as unknown as IdentifierNode).name, n.start); return; }
-      if (t === 'MemberExpression') {
-        const m = n as unknown as MemberExpressionNode;
-        collectReads(m.object, inFunc);
-        if (m.computed) collectReads(m.property, inFunc); // obj[x]: x is a read; obj.prop: prop is not
+      if (n.type === 'Identifier') { visitRead(n.name, n.start); return; }
+      if (n.type === 'MemberExpression') {
+        collectReads(n.object, inFunc);
+        if (n.computed) collectReads(n.property, inFunc); // obj[x]: x is a read; obj.prop: prop is not
         return;
       }
-      if (t === 'AssignmentExpression') {
-        const a = n as unknown as AssignmentExpressionNode;
+      if (n.type === 'AssignmentExpression') {
         // LHS bare identifier is a write, not a read; a member LHS still reads its object.
-        if (a.left?.type === 'MemberExpression') collectReads((a.left as MemberExpressionNode).object, inFunc);
-        else if (a.left?.type !== 'Identifier') collectReads(a.left, inFunc);
-        collectReads(a.right, inFunc);
+        if (n.left?.type === 'MemberExpression') collectReads(n.left.object, inFunc);
+        else if (n.left?.type !== 'Identifier') collectReads(n.left, inFunc);
+        collectReads(n.right, inFunc);
         return;
       }
-      if (t === 'VariableDeclarator') { collectReads((n as Record<string, unknown>)['init'], inFunc); return; } // id is not a read
-      if (t === 'Property' && !(n as Record<string, unknown>)['computed']) { collectReads((n as Record<string, unknown>)['value'], inFunc); return; } // key is not a read
-      if (t === 'ForInStatement') {
+      if (n.type === 'VariableDeclarator') { collectReads(n.init, inFunc); return; } // id is not a read
+      if (n.type === 'Property' && !n.computed) { collectReads(n.value, inFunc); return; } // key is not a read
+      if (n.type === 'ForInStatement') {
         // The bare head identifier is a WRITE target, not a read.
-        const fi = n as unknown as { left?: AstNode; right?: unknown; body?: unknown };
-        if (fi.left && fi.left.type !== 'Identifier') collectReads(fi.left, inFunc);
-        collectReads(fi.right, inFunc);
-        collectReads(fi.body, inFunc);
+        if (n.left && n.left.type !== 'Identifier') collectReads(n.left, inFunc);
+        collectReads(n.right, inFunc);
+        collectReads(n.body, inFunc);
         return;
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) collectReads(it, inFunc); }
-        else collectReads(v, inFunc);
-      }
+      for (const c of legacyChildren(n)) collectReads(c, inFunc);
     };
     collectReads(node, false);
   }
@@ -2073,32 +2046,27 @@ export class SemanticAnalyzer extends BaseVisitor {
     // Does `stmt` contain a throwing-builtin call AT THIS block level — i.e. before any
     // nested block/try/function boundary (those are handled by their own walkBlock)?
     // Returns the first such CallExpression, or null.
-    const firstThrowAtLevel = (n: unknown): CallExpressionNode | null => {
-      if (!isAstNodeLike(n)) return null;
+    const firstThrowAtLevel = (n: AstNode | null | undefined): CallExpressionNode | null => {
+      if (!n) return null;
       const t = n.type;
       // Don't descend past boundaries that start a new statement-list.
       if (t === 'BlockStatement' || t === 'TryStatement'
           || t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') {
         return null;
       }
-      if (t === 'CallExpression') {
-        const call = n as unknown as CallExpressionNode;
+      if (n.type === 'CallExpression') {
+        const call = n;
         if (call.callee?.type === 'Identifier'
-            && THROWING_BUILTINS.has((call.callee as IdentifierNode).name)) {
+            && THROWING_BUILTINS.has(call.callee.name)) {
           // Only the actual builtin throws; if a user shadowed the name with their own
           // binding, it's not our throwing builtin, so skip it. Position-aware: this
           // pass runs post-visit, so a function/block-scoped shadow is invisible to
           // the open-chain walk and a miss would masquerade as "the real builtin".
-          const sym = this.symbolTable.resolveReference((call.callee as IdentifierNode).name, call.callee.start);
+          const sym = this.symbolTable.resolveReference(call.callee.name, call.callee.start);
           if (!sym || sym.type === SymbolType.BUILTIN) return call;
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) { const f = firstThrowAtLevel(it); if (f) return f; } }
-        else { const f = firstThrowAtLevel(v); if (f) return f; }
-      }
+      for (const c of legacyChildren(n)) { const f = firstThrowAtLevel(c); if (f) return f; }
       return null;
     };
 
@@ -2148,20 +2116,14 @@ export class SemanticAnalyzer extends BaseVisitor {
       return [];
     };
     // Does `stmt` read any of `names`? (skips non-computed member property positions).
-    const stmtRefsAny = (n: unknown, names: Set<string>): boolean => {
-      if (!isAstNodeLike(n)) return false;
-      if (n.type === 'Identifier') return names.has((n as unknown as IdentifierNode).name);
+    const stmtRefsAny = (n: AstNode | null | undefined, names: Set<string>): boolean => {
+      if (!n) return false;
+      if (n.type === 'Identifier') return names.has(n.name);
       if (n.type === 'MemberExpression') {
-        const m = n as unknown as MemberExpressionNode;
-        if (stmtRefsAny(m.object, names)) return true;
-        return m.computed ? stmtRefsAny(m.property, names) : false;
+        if (stmtRefsAny(n.object, names)) return true;
+        return n.computed ? stmtRefsAny(n.property, names) : false;
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) if (stmtRefsAny(it, names)) return true; }
-        else if (stmtRefsAny(v, names)) return true;
-      }
+      for (const c of legacyChildren(n)) if (stmtRefsAny(c, names)) return true;
       return false;
     };
 
@@ -2256,33 +2218,26 @@ export class SemanticAnalyzer extends BaseVisitor {
     };
 
     // Walk into nested blocks/try/functions, invoking walkBlock on each new list.
-    const descend = (n: unknown, insideTry: boolean): void => {
-      if (!isAstNodeLike(n)) return;
-      const t = n.type;
-      if (t === 'BlockStatement') { walkBlock((n as any).body, insideTry); return; }
-      if (t === 'TryStatement') {
-        const tryNode = n as any;
-        walkBlock(tryNode.block?.body, true);                 // guarded
-        if (tryNode.catch?.body) walkBlock(tryNode.catch.body.body, false); // catch isn't caught by this try
-        if (tryNode.finalizer?.body) walkBlock(tryNode.finalizer.body.body, false);
+    const descend = (n: AstNode | null | undefined, insideTry: boolean): void => {
+      if (!n) return;
+      if (n.type === 'BlockStatement') { walkBlock(n.body, insideTry); return; }
+      if (n.type === 'TryStatement') {
+        walkBlock(n.block?.body, true);                 // guarded
+        // A catch body is NOT guarded by its own try — an exception raised while
+        // handling one propagates to the caller. Walk it as unguarded.
+        if (n.handler?.body) walkBlock(n.handler.body.body, insideTry);
         return;
       }
-      if (t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') {
-        const fn = n as any;
-        const body = fn.body;
+      if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') {
+        const body = n.body;
         if (body?.type === 'BlockStatement') walkBlock(body.body, false);
         else descend(body, false); // expression-bodied arrow
         return;
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) descend(it, insideTry); }
-        else descend(v, insideTry);
-      }
+      for (const c of legacyChildren(n)) descend(c, insideTry);
     };
 
-    walkBlock(node.body as AstNode[], false);
+    walkBlock(node.body, false);
   }
 
   /**
@@ -2352,35 +2307,29 @@ export class SemanticAnalyzer extends BaseVisitor {
     const definedNames = new Set<string>();
     const exportedNames = new Set<string>();
 
-    const collect = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
+    const collect = (n: AstNode | null | undefined): void => {
+      if (!n) return;
       if (n.type === 'FunctionDeclaration') {
-        const fn = n as unknown as FunctionDeclarationNode;
+        const fn = n;
         if (fn.id?.name) {
           if (fn.forwardDeclaration) forwardDecls.push(fn);
           else definedNames.add(fn.id.name);
         }
       } else if (n.type === 'ExportNamedDeclaration') {
-        const exp = n as unknown as ExportNamedDeclarationNode;
+        const exp = n;
         const decl = exp.declaration;
-        if (decl?.type === 'FunctionDeclaration' && (decl as FunctionDeclarationNode).id?.name) {
-          const fnDecl = decl as FunctionDeclarationNode;
-          (fnDecl.forwardDeclaration ? exportedNames : definedNames).add(fnDecl.id.name);
+        if (decl?.type === 'FunctionDeclaration' && decl.id?.name) {
+          (decl.forwardDeclaration ? exportedNames : definedNames).add(decl.id.name);
         }
         for (const spec of (exp.specifiers || [])) {
           const nm = spec.local?.name ?? spec.exported?.name;
           if (nm) exportedNames.add(nm);
         }
       } else if (n.type === 'ExportDefaultDeclaration') {
-        const exp = n as unknown as ExportDefaultDeclarationNode;
-        if (exp.declaration?.type === 'Identifier') exportedNames.add((exp.declaration as IdentifierNode).name);
+        const exp = n;
+        if (exp.declaration?.type === 'Identifier') exportedNames.add(exp.declaration.name);
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) collect(it); }
-        else if (isAstNodeLike(v)) collect(v);
-      }
+      for (const c of legacyChildren(n)) collect(c);
     };
     collect(node);
 
@@ -2427,44 +2376,36 @@ export class SemanticAnalyzer extends BaseVisitor {
     // from silently forgetting a binding construct (as it once did for switch-case `let`).
     const declaredIn = (scopes: Set<string>[], nm: string): boolean => scopes.some(s => s.has(nm));
 
-    const walk = (n: unknown, scopes: Set<string>[]): void => {
-      if (!isAstNodeLike(n)) return;
+    const walk = (n: AstNode | null | undefined, scopes: Set<string>[]): void => {
+      if (!n) return;
 
       // A function opens a new scope (its params + every declaration in its body).
       let inner = scopes;
       if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') {
-        inner = [...scopes, collectScopeBindings(n as AstNode)];
+        inner = [...scopes, collectScopeBindings(n)];
       }
 
       if (n.type === 'AssignmentExpression') {
-        const a = n as unknown as AssignmentExpressionNode;
-        if (a.left?.type === 'Identifier' && (a.left as IdentifierNode).name) {
-          const nm = (a.left as IdentifierNode).name;
+        if (n.left?.type === 'Identifier' && n.left.name) {
+          const nm = n.left.name;
           if (!declaredIn(inner, nm)) names.add(nm);
         }
       } else if (n.type === 'UnaryExpression') {
-        const u = n as unknown as UnaryExpressionNode;
-        if ((u.operator === '++' || u.operator === '--')
-            && u.argument?.type === 'Identifier' && (u.argument as IdentifierNode).name) {
-          const nm = (u.argument as IdentifierNode).name;
+        if ((n.operator === '++' || n.operator === '--')
+            && n.argument?.type === 'Identifier' && n.argument.name) {
+          const nm = n.argument.name;
           if (!declaredIn(inner, nm)) names.add(nm);
         }
       } else if (n.type === 'ForInStatement') {
-        const f = n as unknown as ForInStatementNode;
-        if (f.left?.type === 'Identifier' && (f.left as IdentifierNode).name) {
+        if (n.left?.type === 'Identifier' && n.left.name) {
           // A bare `for (x in …)` loop variable (no `let`) is an implicit global that persists
           // after the loop (verified vs the interpreter), unless x is declared in an outer scope.
-          const nm = (f.left as IdentifierNode).name;
+          const nm = n.left.name;
           if (!declaredIn(inner, nm)) names.add(nm);
         }
       }
 
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it, inner); }
-        else if (isAstNodeLike(v)) walk(v, inner);
-      }
+      for (const c of legacyChildren(n)) walk(c, inner);
     };
     walk(node, [collectScopeBindings(node)]); // seed with the top-level (program) scope
   }
@@ -2518,27 +2459,23 @@ export class SemanticAnalyzer extends BaseVisitor {
         }
       }
     };
-    const walk = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
+    const walk = (n: AstNode | null | undefined): void => {
+      if (!n) return;
       // immediate-invoke: outer CallExpression whose callee is `loadfile(<literal>)`
       if (n.type === 'CallExpression') {
-        const inner = (n as unknown as CallExpressionNode).callee;
-        if (isAstNodeLike(inner) && inner.type === 'CallExpression') {
-          const lf = inner as unknown as CallExpressionNode;
-          if (lf.callee?.type === 'Identifier' && (lf.callee as IdentifierNode).name === 'loadfile'
+        const inner = n.callee;
+        if (inner?.type === 'CallExpression') {
+          const lf = inner;
+          const arg0 = lf.arguments?.[0];
+          if (lf.callee?.type === 'Identifier' && lf.callee.name === 'loadfile'
               && lf.arguments?.length >= 1
-              && lf.arguments[0]?.type === 'Literal'
-              && typeof (lf.arguments[0] as LiteralNode).value === 'string') {
-            merge((lf.arguments[0] as LiteralNode).value as string);
+              && arg0?.type === 'Literal'
+              && typeof arg0.value === 'string') {
+            merge(arg0.value);
           }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
+      for (const c of legacyChildren(n)) walk(c);
     };
     walk(node);
   }
@@ -2597,25 +2534,20 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (sym) { sym.dataType = UcodeType.UNKNOWN as UcodeDataType; sym.used = true; }
       }
     };
-    const walk = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
+    const walk = (n: AstNode | null | undefined): void => {
+      if (!n) return;
       if (n.type === 'CallExpression') {
-        const call = n as unknown as CallExpressionNode;
-        if (call.callee?.type === 'Identifier' && (call.callee as IdentifierNode).name === 'include'
+        const call = n;
+        const arg = call.arguments?.[0];
+        if (call.callee?.type === 'Identifier' && call.callee.name === 'include'
             && call.arguments?.length >= 1
-            && call.arguments[0]?.type === 'Literal'
-            && typeof (call.arguments[0] as LiteralNode).value === 'string') {
-          const arg = call.arguments[0] as LiteralNode;
-          flagTarget(arg.value as string, arg.start, arg.end);
-          merge(arg.value as string);
+            && arg?.type === 'Literal'
+            && typeof arg.value === 'string') {
+          flagTarget(arg.value, arg.start, arg.end);
+          merge(arg.value);
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
+      for (const c of legacyChildren(n)) walk(c);
     };
     walk(node);
   }
@@ -2635,9 +2567,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       return null;
     }
     if (n.type === 'UnaryExpression') {
-      const u = n as unknown as { operator?: string; argument?: AstNode };
-      if ((u.operator === '-' || u.operator === '+') && u.argument?.type === 'Literal') {
-        const inner = this.scalarCoarseType(u.argument);
+      if ((n.operator === '-' || n.operator === '+') && n.argument?.type === 'Literal') {
+        const inner = this.scalarCoarseType(n.argument);
         return (inner === UcodeType.INTEGER || inner === UcodeType.DOUBLE) ? inner : null;
       }
     }
@@ -2665,29 +2596,29 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (straight && this.scalarCoarseType(rhs) !== null) sawScalar.add(name);
       else tainted.add(name);
     };
-    const walk = (n: unknown, straight: boolean): void => {
-      if (!isAstNodeLike(n)) return;
+    const walk = (n: AstNode | null | undefined, straight: boolean): void => {
+      if (!n) return;
       if (n.type === 'AssignmentExpression') {
-        const a = n as unknown as AssignmentExpressionNode;
+        const a = n;
         if (a.operator === '=' && a.left?.type === 'MemberExpression') {
-          const mem = a.left as MemberExpressionNode;
-          if (mem.object?.type === 'Identifier' && (mem.object as IdentifierNode).name === 'global') {
+          const mem = a.left;
+          if (mem.object?.type === 'Identifier' && mem.object.name === 'global') {
             const prop = mem.property;
-            if (!mem.computed && prop?.type === 'Identifier' && (prop as IdentifierNode).name) {
-              names.add((prop as IdentifierNode).name);
-              recordSite((prop as IdentifierNode).name, prop.start, prop.end);
-              noteAssign((prop as IdentifierNode).name, a.right, straight);
-            } else if (mem.computed && prop?.type === 'Literal' && typeof (prop as LiteralNode).value === 'string') {
-              names.add((prop as LiteralNode).value as string);
-              recordSite((prop as LiteralNode).value as string, prop.start, prop.end);
-              noteAssign((prop as LiteralNode).value as string, a.right, straight);
+            if (!mem.computed && prop?.type === 'Identifier' && prop.name) {
+              names.add(prop.name);
+              recordSite(prop.name, prop.start, prop.end);
+              noteAssign(prop.name, a.right, straight);
+            } else if (mem.computed && prop?.type === 'Literal' && typeof prop.value === 'string') {
+              names.add(prop.value);
+              recordSite(prop.value, prop.start, prop.end);
+              noteAssign(prop.value, a.right, straight);
             }
           }
         } else if (a.operator === '=' && a.left?.type === 'Identifier') {
           // Bare `X = …` where X is an implicit global (non-strict) — a def site too, so
           // go-to-definition on a later read of X can land here. (collectImplicitGlobalNames
           // has already run; the name-only suppression set is unaffected.)
-          const nm = (a.left as IdentifierNode).name;
+          const nm = a.left.name;
           if (nm && this.implicitGlobalNames.has(nm)) {
             recordSite(nm, a.left.start, a.left.end);
             noteAssign(nm, a.right, straight);
@@ -2698,12 +2629,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // chains; descending into anything else (functions, branches, calls, …) breaks it.
       const keepsStraight = n.type === 'Program' || n.type === 'ExpressionStatement'
         || n.type === 'AssignmentExpression';
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it, straight && keepsStraight); }
-        else if (isAstNodeLike(v)) walk(v, straight && keepsStraight);
-      }
+      for (const c of legacyChildren(n)) walk(c, straight && keepsStraight);
     };
     walk(node, true);
     for (const nm of sawScalar) if (!tainted.has(nm)) this.scalarSSAEligible.add(nm);
@@ -2720,22 +2646,23 @@ export class SemanticAnalyzer extends BaseVisitor {
    */
   private hoistBareRequireModules(node: ProgramNode): void {
     if (!this.options.enableScopeAnalysis) return;
-    const walk = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
+    const walk = (n: AstNode | null | undefined): void => {
+      if (!n) return;
       if (n.type === 'AssignmentExpression') {
-        const a = n as unknown as AssignmentExpressionNode;
+        const a = n;
         const left = a.left;
         const right = a.right;
-        if (a.operator === '=' && left?.type === 'Identifier' && (left as IdentifierNode).name
+        if (a.operator === '=' && left?.type === 'Identifier' && left.name
             && right?.type === 'CallExpression') {
-          const call = right as CallExpressionNode;
-          if (call.callee?.type === 'Identifier' && (call.callee as IdentifierNode).name === 'require'
+          const call = right;
+          const arg0 = call.arguments?.[0];
+          if (call.callee?.type === 'Identifier' && call.callee.name === 'require'
               && call.arguments?.length === 1
-              && call.arguments[0]?.type === 'Literal' && typeof (call.arguments[0] as LiteralNode).value === 'string') {
-            const moduleName = (call.arguments[0] as LiteralNode).value as string;
+              && arg0?.type === 'Literal' && typeof arg0.value === 'string') {
+            const moduleName = arg0.value;
             if (isKnownModule(moduleName)) {
               const dataType = { type: UcodeType.OBJECT, moduleName } as UcodeDataType;
-              this.symbolTable.declare((left as IdentifierNode).name, SymbolType.MODULE, dataType, left);
+              this.symbolTable.declare(left.name, SymbolType.MODULE, dataType, left);
             } else if (!moduleName.startsWith('./') && !moduleName.startsWith('../')) {
               // Bare `name = require("user-module")` (no `let`/`const` — e.g. a
               // `try { m4 = require('mwan4'); } catch(e) {}` feature probe). Mirrors
@@ -2748,8 +2675,8 @@ export class SemanticAnalyzer extends BaseVisitor {
               const resolvedUri = this.fileResolver.resolveImportPath(moduleName, this.textDocument.uri);
               if (resolvedUri) {
                 const dataType: UcodeDataType = { type: UcodeType.OBJECT, isDefaultImport: true };
-                this.symbolTable.declare((left as IdentifierNode).name, SymbolType.IMPORTED, dataType, left);
-                const sym = this.symbolTable.lookupOpenScopes((left as IdentifierNode).name);
+                this.symbolTable.declare(left.name, SymbolType.IMPORTED, dataType, left);
+                const sym = this.symbolTable.lookupOpenScopes(left.name);
                 if (sym) {
                   sym.importedFrom = this.normalizeImportedFrom(moduleName, resolvedUri);
                   sym.importSpecifier = 'default';
@@ -2777,12 +2704,7 @@ export class SemanticAnalyzer extends BaseVisitor {
           }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
+      for (const c of legacyChildren(n)) walk(c);
     };
     walk(node);
   }
@@ -2799,8 +2721,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (stmt.type === 'FunctionDeclaration') {
         funcNode = stmt as FunctionDeclarationNode;
       } else if ((stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportDefaultDeclaration')
-          && (stmt as any).declaration?.type === 'FunctionDeclaration') {
-        funcNode = (stmt as any).declaration as FunctionDeclarationNode;
+          && stmt.declaration?.type === 'FunctionDeclaration') {
+        funcNode = stmt.declaration;
       }
       if (funcNode?.id?.name) {
         // Pre-declare all top-level functions (so type/completion/signature features
@@ -2834,10 +2756,10 @@ export class SemanticAnalyzer extends BaseVisitor {
     const fns: FunctionDeclarationNode[] = [];
     for (const stmt of program.body) {
       const fn = stmt.type === 'FunctionDeclaration'
-        ? stmt as FunctionDeclarationNode
+        ? stmt
         : ((stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportDefaultDeclaration')
-            && (stmt as { declaration?: AstNode }).declaration?.type === 'FunctionDeclaration'
-          ? (stmt as { declaration?: AstNode }).declaration as FunctionDeclarationNode
+            && stmt.declaration?.type === 'FunctionDeclaration'
+          ? stmt.declaration
           : null);
       if (fn?.id?.name && fn.body) fns.push(fn);
     }
@@ -2849,12 +2771,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (n.type === 'ReturnStatement') return true;
         // A nested function's returns are its own, not the outer body's.
         if (n !== node && (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression')) continue;
-        for (const k of Object.keys(n)) {
-          if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-          const v = (n as unknown as Record<string, unknown>)[k];
-          if (Array.isArray(v)) { for (const it of v) { if (it && typeof (it as AstNode).type === 'string') stack.push(it as AstNode); } }
-          else if (v && typeof (v as AstNode).type === 'string') stack.push(v as AstNode);
-        }
+        for (const c of legacyChildren(n)) stack.push(c);
       }
       return false;
     };
@@ -2866,9 +2783,9 @@ export class SemanticAnalyzer extends BaseVisitor {
         const body = fn.body.body ?? [];
         const last = body[body.length - 1];
         if (!last || last.type !== 'ExpressionStatement') continue;
-        const call = (last as ExpressionStatementNode).expression;
-        if (call?.type !== 'CallExpression' || (call as CallExpressionNode).callee.type !== 'Identifier') continue;
-        if (!terminators.has(((call as CallExpressionNode).callee as IdentifierNode).name)) continue;
+        const call = last.expression;
+        if (call?.type !== 'CallExpression' || call.callee.type !== 'Identifier') continue;
+        if (!terminators.has(call.callee.name)) continue;
         if (containsReturn(fn.body)) continue;
         terminators.add(fn.id.name);
         const sym = this.symbolTable.resolveReference(fn.id.name, fn.id.start);
@@ -2890,15 +2807,14 @@ export class SemanticAnalyzer extends BaseVisitor {
    *  declarator is visited (verified: the inner declaration is the one that crashes). */
   private flagNamedFuncexprInInitializer(varName: string, init: AstNode): void {
     if (!targetLacksFeature(this.targetVersion, 'main')) return;
-    const stack: unknown[] = [init];
+    const stack: AstNode[] = [init];
     while (stack.length) {
-      const n = stack.pop();
-      if (!n || typeof n !== 'object' || typeof (n as { type?: unknown }).type !== 'string') continue;
-      const node = n as AstNode;
+      const node = stack.pop();
+      if (!node) continue;
       if (node.type === 'FunctionExpression') {
-        const fn = node as FunctionExpressionNode;
+        const fn = node;
         if (fn.id) {
-          const nameUsedInBody = this.identifierAppearsIn(fn.body as AstNode, fn.id.name);
+          const nameUsedInBody = this.identifierAppearsIn(fn.body, fn.id.name);
           this.flagVersionMin('main',
             `Naming this function \`${fn.id.name}\` breaks \`${varName}\` on {TARGET}: every use of \`${varName}\` after this line fails to compile ("Can't access lexical declaration").`
               + (nameUsedInBody ? ` For recursion, use a declaration: \`function ${varName}(...) { ... }\`.` : ''),
@@ -2911,12 +2827,7 @@ export class SemanticAnalyzer extends BaseVisitor {
         continue; // nested bodies corrupt their own scope, not this declarator
       }
       if (node.type === 'ArrowFunctionExpression') continue;
-      for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // runtime-stamped annotations, not AST
-        const v = (node as unknown as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) stack.push(it); }
-        else stack.push(v);
-      }
+      for (const c of legacyChildren(node)) stack.push(c);
     }
   }
 
@@ -2945,43 +2856,34 @@ export class SemanticAnalyzer extends BaseVisitor {
   /** First reference-position Identifier named `name` under `root`, respecting
    *  re-binding (shadowing) at function granularity; null if none. */
   private findSelfRef(root: AstNode | null | undefined, name: string): IdentifierNode | null {
-    if (!root || typeof root !== 'object' || typeof (root as { type?: unknown }).type !== 'string') return null;
+    if (!root) return null;
     switch (root.type) {
       case 'Identifier':
-        return (root as IdentifierNode).name === name ? (root as IdentifierNode) : null;
+        return root.name === name ? root : null;
       case 'MemberExpression': {
-        const m = root as MemberExpressionNode;
+        const m = root;
         return this.findSelfRef(m.object, name)
           ?? (m.computed ? this.findSelfRef(m.property, name) : null);
       }
       case 'Property': {
-        const p = root as PropertyNode;
+        const p = root;
         return (p.computed ? this.findSelfRef(p.key, name) : null)
           ?? this.findSelfRef(p.value, name);
       }
       case 'FunctionExpression':
       case 'ArrowFunctionExpression':
       case 'FunctionDeclaration': {
-        const fn = root as unknown as { id?: IdentifierNode; params?: IdentifierNode[]; restParam?: IdentifierNode; body?: AstNode };
-        if (fn.id?.name === name) return null;                       // funcexpr's own name shadows
+        const fn = root;
+        if (fn.type !== 'ArrowFunctionExpression' && fn.id?.name === name) return null; // funcexpr's own name shadows
         if ((fn.params || []).some(p => p?.name === name)) return null;
         if (fn.restParam?.name === name) return null;
         if (fn.body && this.rebindsName(fn.body, name)) return null; // inner let/const/function shadows
         return this.findSelfRef(fn.body, name);
       }
       default: {
-        for (const k of Object.keys(root)) {
-          if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-          const v = (root as unknown as Record<string, unknown>)[k];
-          if (Array.isArray(v)) {
-            for (const it of v) {
-              const hit = this.findSelfRef(it as AstNode, name);
-              if (hit) return hit;
-            }
-          } else if (v && typeof v === 'object') {
-            const hit = this.findSelfRef(v as AstNode, name);
-            if (hit) return hit;
-          }
+        for (const c of legacyChildren(root)) {
+          const hit = this.findSelfRef(c, name);
+          if (hit) return hit;
         }
         return null;
       }
@@ -2992,21 +2894,15 @@ export class SemanticAnalyzer extends BaseVisitor {
    *  param re-declare `name` anywhere under `root`? (Conservative: block-scoped
    *  inner shadows count for the whole function.) */
   private rebindsName(root: AstNode | null | undefined, name: string): boolean {
-    const stack: unknown[] = [root];
+    if (!root) return false;
+    const stack: AstNode[] = [root];
     while (stack.length) {
-      const n = stack.pop();
-      if (!n || typeof n !== 'object' || typeof (n as { type?: unknown }).type !== 'string') continue;
-      const node = n as AstNode;
-      if (node.type === 'VariableDeclarator' && (node as VariableDeclaratorNode).id?.name === name) return true;
-      if (node.type === 'FunctionDeclaration' && (node as FunctionDeclarationNode).id?.name === name) return true;
+      const node = stack.pop()!;
+      if (node.type === 'VariableDeclarator' && node.id?.name === name) return true;
+      if (node.type === 'FunctionDeclaration' && node.id?.name === name) return true;
       if ((node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression')
-          && ((node as unknown as { params?: IdentifierNode[] }).params || []).some(p => p?.name === name)) return true;
-      for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-        const v = (node as unknown as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) stack.push(it); }
-        else stack.push(v);
-      }
+          && (node.params || []).some(p => p?.name === name)) return true;
+      for (const c of legacyChildren(node)) stack.push(c);
     }
     return false;
   }
@@ -3014,18 +2910,11 @@ export class SemanticAnalyzer extends BaseVisitor {
   /** Conservative subtree scan: does any Identifier named `name` appear under `root`?
    *  (Shadowing is ignored on purpose - a false "used" only withholds a quick fix.) */
   private identifierAppearsIn(root: AstNode, name: string): boolean {
-    const stack: unknown[] = [root];
+    const stack: AstNode[] = [root];
     while (stack.length) {
-      const n = stack.pop();
-      if (!n || typeof n !== 'object' || typeof (n as { type?: unknown }).type !== 'string') continue;
-      const node = n as AstNode;
-      if (node.type === 'Identifier' && (node as unknown as IdentifierNode).name === name) return true;
-      for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
-        const v = (node as unknown as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) stack.push(it); }
-        else stack.push(v);
-      }
+      const node = stack.pop()!;
+      if (node.type === 'Identifier' && node.name === name) return true;
+      for (const c of legacyChildren(node)) stack.push(c);
     }
     return false;
   }
@@ -3075,8 +2964,8 @@ export class SemanticAnalyzer extends BaseVisitor {
           case 'ObjectExpression':
             dataType = UcodeType.OBJECT as UcodeDataType;
             break;
-          case 'Literal':
-            const literal = node.init as any;
+          case 'Literal': {
+            const literal = node.init;
             if (literal.literalType === 'regexp') {
               dataType = UcodeType.REGEX as UcodeDataType;
             } else if (typeof literal.value === 'string') {
@@ -3093,6 +2982,7 @@ export class SemanticAnalyzer extends BaseVisitor {
               dataType = UcodeType.NULL as UcodeDataType;
             }
             break;
+          }
         }
       } else if (node.id && node.id.type === 'Identifier') {
         // No initializer: in ucode an uninitialized binding is definitively `null`
@@ -3111,12 +3001,12 @@ export class SemanticAnalyzer extends BaseVisitor {
       // docs/tc-require-user-module-typing.md
       let requireResolvedUri: string | null = null;
       if (node.init && node.init.type === 'CallExpression') {
-        const callExpr = node.init as any; // CallExpressionNode
+        const callExpr = node.init;
         if (callExpr.callee && callExpr.callee.type === 'Identifier' && callExpr.callee.name === 'require') {
           // Check if it's requiring a known module
           if (callExpr.arguments && callExpr.arguments.length === 1) {
             const arg = callExpr.arguments[0];
-            if (arg.type === 'Literal' && typeof arg.value === 'string') {
+            if (arg && arg.type === 'Literal' && typeof arg.value === 'string') {
               const moduleName = arg.value;
               // Handle known modules
               if (isKnownModule(moduleName)) {
@@ -3227,7 +3117,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Handle member expression assignments (e.g., const logger = logs.default)
       if (node.init && node.init.type === 'MemberExpression') {
-        const memberExpr = node.init as any; // MemberExpressionNode
+        const memberExpr = node.init;
         if (memberExpr.object && memberExpr.object.type === 'Identifier') {
           const objectName = memberExpr.object.name;
           const sourceSymbol = this.symbolTable.lookupOpenScopes(objectName);
@@ -3409,11 +3299,11 @@ export class SemanticAnalyzer extends BaseVisitor {
           const fnSym = this.symbolTable.lookupOpenScopes(name);
           if (fnSym) {
             fnSym.dataType = UcodeType.FUNCTION as UcodeDataType;
-            const rt = (node.init as any)._inferredReturnType;
+            const rt = stampsOf(node.init)._inferredReturnType;
             if (rt !== undefined && rt !== null) fnSym.returnType = rt;
             // Stamp the param signature so call sites argument-check `f(...)` like a
             // named function (JSDoc `@param {T}` types flow through the param symbols).
-            const params = (node.init as any)._inferredParams as ParamInfo[] | undefined;
+            const params = stampsOf(node.init)._inferredParams;
             if (params) fnSym.parameters = params;
           }
         }
@@ -3466,7 +3356,7 @@ export class SemanticAnalyzer extends BaseVisitor {
             //   let k  = ks[i];                // init is a tagged MemberExpression
             // Set at declaration site only; we don't track reassignments, so
             // `let k = keys(o); k = "x"; o[k]` keeps the tag (accepted leak).
-            const initKeysOf = (node.init as any)._keysOfSymbol as string | undefined;
+            const initKeysOf = stampsOf(node.init)._keysOfSymbol;
             if (initKeysOf) sym.keysOfSymbol = initKeysOf;
           }
         }
@@ -4284,7 +4174,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 
   /** Quick-fix payload for a UC7005 `@returns` mismatch: where the `{…}` is and what to set
    *  it to (the true inferred return type). The code-action provider reads `ucReturnsFix`. */
-  private jsdocReturnFixData(jsDocNode: JsDocCommentNode, inferred: UcodeDataType): unknown {
+  private jsdocReturnFixData(jsDocNode: JsDocCommentNode, inferred: UcodeDataType): ReturnsFixData | undefined {
     const range = this.jsdocReturnTypeExprRange(jsDocNode);
     if (!range) return undefined;
     return { ucReturnsFix: { exprStart: range.start, exprEnd: range.end, suggested: this.jsdocTypeDisplay(inferred) } };
@@ -4299,10 +4189,10 @@ export class SemanticAnalyzer extends BaseVisitor {
    *  Gated on an ATOM LHS (identifier/member/call): after a compound LHS, `!= null`
    *  would rebind under its higher precedence (`a && b != null && c`). */
   private withGuardCoercionFix(
-    base: unknown,
+    base: ReturnsFixData | undefined,
     declared: UcodeDataType,
     e: { node: ReturnStatementNode; type: UcodeDataType },
-  ): unknown {
+  ): ReturnsFixData | undefined {
     const arg = e.node.argument;
     if (!arg || arg.type !== 'BinaryExpression') return base;
     const bin = arg as BinaryExpressionNode;
@@ -4322,7 +4212,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (!arms.includes(UcodeType.NULL)) return base;
     if (!arms.every(a => a === UcodeType.NULL || alwaysTruthy.has(a))) return base;
     return {
-      ...((base as object) ?? {}),
+      ...(base ?? {}),
       returnGuardNonNull: { insertAfter: bin.left.end, lhsStart: bin.left.start, lhsEnd: bin.left.end },
     };
   }
@@ -5039,7 +4929,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // built (verified vs the interpreter, strict and non-strict). The pre-pass is
       // best-effort (literal/object/array returns resolve; param/local/this-chain returns
       // stay unknown and are filled by the accurate per-method type once it's visited).
-      (node as any)._precomputedMethodReturns = this.precomputeObjectMethodReturnTypes(node);
+      stampsOf(node)._precomputedMethodReturns = this.precomputeObjectMethodReturnTypes(node);
     }
     super.visitObjectExpression(node);
     if (propTypes) {
@@ -5075,21 +4965,21 @@ export class SemanticAnalyzer extends BaseVisitor {
    */
   private inferObjectLiteralFunctionReturnTypes(node: ObjectExpressionNode, shallowOut?: Set<string>): Map<string, UcodeDataType> | null {
     const out = new Map<string, UcodeDataType>();
-    const pre: Map<string, UcodeDataType> | undefined = (node as any)._precomputedMethodReturns;
+    const pre: Map<string, UcodeDataType> | undefined = stampsOf(node)._precomputedMethodReturns;
     for (const prop of node.properties) {
       if (prop.type === 'SpreadElement') continue;
       const key = this.resolveObjectLiteralKey(prop);
       if (!key) continue;
       const val = prop.value;
       if (val.type === 'Identifier') {
-        const refRt = this.resolveIdentifierFunctionReturnType(val as IdentifierNode);
+        const refRt = this.resolveIdentifierFunctionReturnType(val);
         if (refRt !== null) out.set(key, refRt);
         continue;
       }
       if (val.type !== 'FunctionExpression' && val.type !== 'ArrowFunctionExpression') continue;
       // Prefer the accurate type stamped by the real visit (params/locals in scope); fall
       // back to the pre-pass type for siblings not yet visited (forward references).
-      const accurateRt = (val as any)._inferredReturnType;
+      const accurateRt = stampsOf(val)._inferredReturnType;
       let rt = accurateRt;
       let isShallow = false;
       if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) {
@@ -5184,9 +5074,9 @@ export class SemanticAnalyzer extends BaseVisitor {
    */
   private functionReturnTypeOfRhs(rhs: AstNode): UcodeDataType | null {
     if (rhs.type === 'FunctionExpression' || rhs.type === 'ArrowFunctionExpression') {
-      const rt = (rhs as any)._inferredReturnType;
+      const rt = stampsOf(rhs)._inferredReturnType;
       if (rt === undefined || rt === null || rt === UcodeType.UNKNOWN) return null;
-      return rt as UcodeDataType;
+      return rt;
     }
     if (rhs.type === 'Identifier') {
       return this.resolveIdentifierFunctionReturnType(rhs as IdentifierNode);
@@ -5206,8 +5096,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (prop.type === 'SpreadElement') continue;
       const key = this.resolveObjectLiteralKey(prop);
       if (!key) continue;
-      const keyNode = (prop as any).key;
-      const start = keyNode?.start ?? (prop as any).start;
+      const keyNode = prop.key;
+      const start = keyNode?.start ?? prop.start;
       const end = keyNode?.end ?? start;
       if (typeof start !== 'number') continue;
       out.set(key, { uri, start, end: typeof end === 'number' ? end : start });
@@ -5227,9 +5117,9 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (prop.type === 'SpreadElement') continue;
       const key = this.resolveObjectLiteralKey(prop);
       if (!key) continue;
-      const val = prop.value as any;
+      const val = prop.value;
       if (val.type === 'Identifier') {
-        const refRt = this.resolveIdentifierFunctionReturnType(val as IdentifierNode);
+        const refRt = this.resolveIdentifierFunctionReturnType(val);
         if (refRt !== null) out.set(key, refRt);
         continue;
       }
@@ -5248,21 +5138,15 @@ export class SemanticAnalyzer extends BaseVisitor {
       return this.typeChecker.checkNodeQuietly(fnNode.body) as UcodeDataType;
     }
     const types: UcodeDataType[] = [];
-    const walk = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
+    const walk = (n: AstNode | null | undefined): void => {
+      if (!n) return;
       // Don't descend into nested functions — their returns aren't this function's.
       if (n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression' || n.type === 'FunctionDeclaration') return;
       if (n.type === 'ReturnStatement') {
-        const ret = n as unknown as ReturnStatementNode;
-        types.push(ret.argument ? (this.typeChecker.checkNodeQuietly(ret.argument) as UcodeDataType) : (UcodeType.NULL as UcodeDataType));
+        types.push(n.argument ? (this.typeChecker.checkNodeQuietly(n.argument) as UcodeDataType) : (UcodeType.NULL as UcodeDataType));
         return;
       }
-      for (const k in n) {
-        if (k === 'parent') continue;
-        const v = (n as AnyNode)[k];
-        if (Array.isArray(v)) v.forEach(walk);
-        else if (isAstNodeLike(v)) walk(v);
-      }
+      for (const c of legacyChildren(n)) walk(c);
     };
     if (fnNode.body) walk(fnNode.body);
     if (types.length === 0) return UcodeType.UNKNOWN as UcodeDataType;
@@ -5312,10 +5196,10 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Set context for nested return statement analysis.
       const previousFunction = this.currentFunctionNode;
-      this.currentFunctionNode = node as any; // Type compatibility - both have id, params, body
-      this.functionReturnTypes.set(node as any, []);
-      this.functionReturnPropertyTypes.set(node as any, []);
-      this.functionReturnPropertyLocations.set(node as any, []);
+      this.currentFunctionNode = node;
+      this.functionReturnTypes.set(node, []);
+      this.functionReturnPropertyTypes.set(node, []);
+      this.functionReturnPropertyLocations.set(node, []);
 
       // Enter function scope
       this.symbolTable.enterScope(node.start);
@@ -5398,20 +5282,20 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Capture this method's this-property writes (post-restore, so they're the real types)
       // for the incremental cache.
       if (feThisMap && feThisBefore) {
-        const writes: Array<[string, unknown]> = [];
+        const writes: Array<[string, UcodeDataType]> = [];
         for (const [k, v] of feThisMap) if (!feThisBefore.has(k) || feThisBefore.get(k) !== v) writes.push([k, v]);
-        (node as any)._thisWrites = writes;
+        stampsOf(node)._thisWrites = writes;
       }
 
       // Infer the return type (common type of all returns) and stash it on the node —
       // an anonymous function expression has no symbol of its own, so the binding site
       // (variable declarator / assignment) reads `_inferredReturnType` off the node.
-      const fnReturnTypes = (this.functionReturnTypes.get(node as any) || []).map(e => e.type);
-      (node as any)._inferredReturnType = feClean ? (feClean.returnType as UcodeDataType ?? this.typeChecker.getCommonReturnType(fnReturnTypes)) : this.widenReturnForFallthrough(node.body, fnReturnTypes.length, this.typeChecker.getCommonReturnType(fnReturnTypes));
+      const fnReturnTypes = (this.functionReturnTypes.get(node) || []).map(e => e.type);
+      stampsOf(node)._inferredReturnType = feClean ? (feClean.returnType as UcodeDataType ?? this.typeChecker.getCommonReturnType(fnReturnTypes)) : this.widenReturnForFallthrough(node.body, fnReturnTypes.length, this.typeChecker.getCommonReturnType(fnReturnTypes));
       if (feClean) this.replayCleanBodyTypeDiagnostics(feClean, feDiagBefore);
 
       // Stash the param signature (read while still in scope) for the binding site.
-      (node as any)._inferredParams = this.buildFunctionExprParamInfos(node);
+      stampsOf(node)._inferredParams = this.buildFunctionExprParamInfos(node);
 
       // Exit function scope
       this.symbolTable.exitScope(node.end);
@@ -5440,10 +5324,10 @@ export class SemanticAnalyzer extends BaseVisitor {
 
       // Set context for nested return statement analysis
       const previousFunction = this.currentFunctionNode;
-      this.currentFunctionNode = node as any; // Type compatibility for analysis
-      this.functionReturnTypes.set(node as any, []);
-      this.functionReturnPropertyTypes.set(node as any, []);
-      this.functionReturnPropertyLocations.set(node as any, []);
+      this.currentFunctionNode = node;
+      this.functionReturnTypes.set(node, []);
+      this.functionReturnPropertyTypes.set(node, []);
+      this.functionReturnPropertyLocations.set(node, []);
 
       // Enter function scope for parameters
       this.symbolTable.enterScope(node.start);
@@ -5496,17 +5380,17 @@ export class SemanticAnalyzer extends BaseVisitor {
       // (computed here while the params are still in scope, before exitScope).
       let arrowReturnType: UcodeDataType;
       if (node.body.type === 'BlockStatement') {
-        const rts = (this.functionReturnTypes.get(node as any) || []).map(e => e.type);
+        const rts = (this.functionReturnTypes.get(node) || []).map(e => e.type);
         arrowReturnType = this.widenReturnForFallthrough(node.body, rts.length, this.typeChecker.getCommonReturnType(rts));
       } else {
         // Inference-only: the body was already validated during the visit above, so query
         // its type without re-emitting diagnostics (checkNode would double-report).
         arrowReturnType = this.typeChecker.checkNodeQuietly(node.body) ?? (UcodeType.UNKNOWN as UcodeDataType);
       }
-      (node as any)._inferredReturnType = arrowReturnType;
+      stampsOf(node)._inferredReturnType = arrowReturnType;
 
       // Stash the param signature (read while still in scope) for the binding site.
-      (node as any)._inferredParams = this.buildFunctionExprParamInfos(node);
+      stampsOf(node)._inferredParams = this.buildFunctionExprParamInfos(node);
 
       // Exit function scope
       this.symbolTable.exitScope(node.end);
@@ -5917,7 +5801,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
     // Negative literal — parsed as UnaryExpression in ucode
     if (node.type === 'UnaryExpression') {
-      const u = node as any;
+      const u = node;
       if (u.operator === '-' && u.argument?.type === 'Literal' && typeof u.argument.value === 'number') {
         return String(-u.argument.value);
       }
@@ -5963,7 +5847,7 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
 
     if (!candidate && typeof symbol.dataType === 'object' && symbol.dataType !== null) {
-      const dataType = symbol.dataType as { moduleName?: unknown };
+      const dataType = symbol.dataType as { moduleName?: string };
       if (typeof dataType.moduleName === 'string') {
         candidate = dataType.moduleName;
       }
@@ -5997,7 +5881,7 @@ export class SemanticAnalyzer extends BaseVisitor {
 private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // Check if this is a call expression to an imported fs function
     if (node.type === 'CallExpression') {
-      const callExpr = node as any; // CallExpressionNode
+      const callExpr = node;
       if (callExpr.callee && callExpr.callee.type === 'Identifier') {
         const functionName = callExpr.callee.name;
         
@@ -6577,7 +6461,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               const funcSym = this.symbolTable.lookupOpenScopes((callExpr.callee as IdentifierNode).name);
               if (funcSym) this.copyFactoryReturnToBinding(symbol, funcSym);
             } else if (callExpr.callee.type === 'ArrowFunctionExpression' || callExpr.callee.type === 'FunctionExpression') {
-              const merged = this.mergeReturnPropertyEntries(this.functionReturnPropertyTypes.get(callExpr.callee as unknown as FunctionDeclarationNode) ?? []);
+              const merged = this.mergeReturnPropertyEntries(this.functionReturnPropertyTypes.get(callExpr.callee) ?? []);
               if (merged) symbol.propertyTypes = merged;
             }
           }
@@ -6612,7 +6496,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private isFullyStaticObjectLiteral(objNode: ObjectExpressionNode): boolean {
     for (const prop of (objNode.properties || [])) {
       if (!prop || prop.type !== 'Property') return false; // SpreadElement etc.
-      if ((prop as unknown as { computed?: boolean }).computed) return false;
+      if (prop.computed) return false;
     }
     return true;
   }
@@ -6647,9 +6531,9 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     if (!sym) return;
     this.stampGlobalSymbolPosition(name, sym);
     sym.dataType = UcodeType.FUNCTION as UcodeDataType;
-    const rt = (fnNode as unknown as { _inferredReturnType?: UcodeDataType })._inferredReturnType;
+    const rt = stampsOf(fnNode)._inferredReturnType;
     if (rt !== undefined && rt !== null) sym.returnType = rt;
-    const params = (fnNode as unknown as { _inferredParams?: ParamInfo[] })._inferredParams;
+    const params = stampsOf(fnNode)._inferredParams;
     if (params) sym.parameters = params;
   }
 
@@ -6881,11 +6765,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private exponentLiteralSign(node: AstNode): 'neg' | 'nonneg' | 'unknown' {
     let n: AstNode = node, sign = 1;
     if (n.type === 'UnaryExpression') {
-      const u = n as UnaryExpressionNode;
+      const u = n;
       if (u.operator === '-' || u.operator === '+') { if (u.operator === '-') sign = -1; n = u.argument; }
     }
-    const v = (n as { value?: unknown }).value;
-    if (n.type === 'Literal' && typeof v === 'number') return sign * v < 0 ? 'neg' : 'nonneg';
+    if (n.type === 'Literal' && typeof n.value === 'number') return sign * n.value < 0 ? 'neg' : 'nonneg';
     return 'unknown';
   }
 
@@ -6928,9 +6811,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             // gets these from FileResolver; this is the local equivalent.
             const locs = new Map<string, { uri: string; start: number; end: number }>();
             for (const propEntry of (objNode.properties || [])) {
-              if ((propEntry as any).type !== 'Property') continue; // skip spread elements
-              const prop = propEntry as any;
-              const key = prop.key?.name ?? prop.key?.value;
+              if (propEntry.type !== 'Property') continue; // skip spread elements
+              const prop = propEntry;
+              const keyNode = prop.key;
+              const key = keyNode?.type === 'Identifier' ? keyNode.name
+                : keyNode?.type === 'Literal' ? keyNode.value : undefined;
               const val = prop.value;
               if (key != null && val && (val.type === 'FunctionExpression' || val.type === 'ArrowFunctionExpression')
                   && typeof val.start === 'number' && typeof val.end === 'number') {
@@ -7212,11 +7097,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             const rightSym = this.symbolTable.lookupOpenScopes(rightName);
             if (rightSym?.keysOfSymbol) {
               keysOf = rightSym.keysOfSymbol;
-            } else if (rightSym && (rightSym.dataType === UcodeType.OBJECT || (typeof rightSym.dataType === 'object' && (rightSym.dataType as any).type === UcodeType.OBJECT))) {
+            } else if (rightSym && (rightSym.dataType === UcodeType.OBJECT || (typeof rightSym.dataType === 'object' && rightSym.dataType.type === UcodeType.OBJECT))) {
               keysOf = rightName;
             }
           } else if (node.right.type === 'CallExpression') {
-            const k = (node.right as any)._keysOfSymbol as string | undefined;
+            const k = stampsOf(node.right)._keysOfSymbol;
             if (k) keysOf = k;
           }
           if (keysOf) iterSym.keysOfSymbol = keysOf;
@@ -7284,11 +7169,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
                 const rightSym = this.symbolTable.lookupOpenScopes(rightName);
                 if (rightSym?.keysOfSymbol) {
                   keysOf = rightSym.keysOfSymbol;
-                } else if (rightSym && (rightSym.dataType === UcodeType.OBJECT || (typeof rightSym.dataType === 'object' && (rightSym.dataType as any).type === UcodeType.OBJECT))) {
+                } else if (rightSym && (rightSym.dataType === UcodeType.OBJECT || (typeof rightSym.dataType === 'object' && rightSym.dataType.type === UcodeType.OBJECT))) {
                   keysOf = rightName;
                 }
               } else if (node.right.type === 'CallExpression') {
-                const k = (node.right as any)._keysOfSymbol as string | undefined;
+                const k = stampsOf(node.right)._keysOfSymbol;
                 if (k) keysOf = k;
               }
               if (keysOf) iterSym.keysOfSymbol = keysOf;
@@ -7494,12 +7379,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    *  IS the runtime existence check (an uninjected global reads as null). */
   private refIsBareTruthinessTest(refStart: number): boolean {
     if (!this.currentASTRoot) return false;
-    const isRefIdent = (n: unknown): boolean =>
-      isAstNodeLike(n) && n.type === 'Identifier' && (n as unknown as AstNode).start === refStart;
+    const isRefIdent = (n: AstNode | null | undefined): boolean =>
+      !!n && n.type === 'Identifier' && n.start === refStart;
     let found = false;
-    const walk = (node: unknown): void => {
-      if (found || !isAstNodeLike(node)) return;
-      const n = node as unknown as AstNode & { test?: AstNode; argument?: AstNode; left?: AstNode; operator?: string };
+    const walk = (n: AstNode | null | undefined): void => {
+      if (found || !n) return;
       if (n.start > refStart || n.end <= refStart) {
         // Spans are ordered; a node not containing the ref can't parent it.
         if (n.start > refStart) return;
@@ -7509,11 +7393,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (n.type === 'UnaryExpression' && n.operator === '!' && isRefIdent(n.argument)) { found = true; return; }
       if (n.type === 'BinaryExpression' && (n.operator === '||' || n.operator === '&&' || n.operator === '??')
           && isRefIdent(n.left)) { found = true; return; }
-      for (const key of Object.keys(n)) {
-        if (key === 'leadingJsDoc' || key.startsWith('_')) continue; // skip runtime-stamped annotations
-        const v = (n as unknown as Record<string, unknown>)[key];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
+      for (const c of legacyChildren(n)) {
+        walk(c);
         if (found) return;
       }
     };
@@ -7528,21 +7409,17 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private refIsTypeCallArgument(refStart: number): boolean {
     if (!this.currentASTRoot) return false;
     let found = false;
-    const walk = (node: unknown): void => {
-      if (found || !isAstNodeLike(node)) return;
-      const n = node as unknown as AstNode & { callee?: AstNode; arguments?: AstNode[] };
+    const walk = (n: AstNode | null | undefined): void => {
+      if (found || !n) return;
       if (n.start > refStart) return;
       if (n.type === 'CallExpression' && n.callee?.type === 'Identifier'
-          && (n.callee as IdentifierNode).name === 'type'
+          && n.callee.name === 'type'
           && (n.arguments ?? []).some(a => a?.type === 'Identifier' && a.start === refStart)) {
         found = true;
         return;
       }
-      for (const key of Object.keys(n)) {
-        if (key === 'leadingJsDoc' || key.startsWith('_')) continue; // skip runtime-stamped annotations
-        const v = (n as unknown as Record<string, unknown>)[key];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
+      for (const c of legacyChildren(n)) {
+        walk(c);
         if (found) return;
       }
     };
@@ -7672,49 +7549,33 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const names = new Set<string>();
     const root = this.currentASTRoot;
     if (!root) return names;
-    const walk = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
+    const walk = (n: AstNode | null | undefined): void => {
+      if (!n) return;
       if (n.type === 'AssignmentExpression') {
-        const a = n as unknown as AssignmentExpressionNode;
-        if (a.left?.type === 'Identifier' && (a.left as IdentifierNode).name) {
-          names.add((a.left as IdentifierNode).name);
+        if (n.left?.type === 'Identifier' && n.left.name) {
+          names.add(n.left.name);
         }
       } else if (n.type === 'UnaryExpression') {
-        const u = n as unknown as UnaryExpressionNode;
-        if ((u.operator === '++' || u.operator === '--')
-            && u.argument?.type === 'Identifier' && (u.argument as IdentifierNode).name) {
-          names.add((u.argument as IdentifierNode).name);
+        if ((n.operator === '++' || n.operator === '--')
+            && n.argument?.type === 'Identifier' && n.argument.name) {
+          names.add(n.argument.name);
         }
       } else if (n.type === 'ForInStatement') {
-        const f = n as unknown as ForInStatementNode;
-        if (f.left?.type === 'Identifier' && (f.left as IdentifierNode).name) {
-          names.add((f.left as IdentifierNode).name);
+        if (n.left?.type === 'Identifier' && n.left.name) {
+          names.add(n.left.name);
         }
       } else if (n.type === 'VariableDeclaration') {
-        const vd = n as unknown as { declarations?: { id?: { type?: string; name?: string } }[] };
-        for (const d of (vd.declarations ?? [])) {
+        for (const d of (n.declarations ?? [])) {
           if (d?.id?.type === 'Identifier' && d.id.name) names.add(d.id.name);
         }
       } else if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression'
                  || n.type === 'ArrowFunctionExpression') {
-        const fn = n as unknown as {
-          id?: { type?: string; name?: string };
-          params?: { type?: string; name?: string; argument?: { type?: string; name?: string } }[];
-        };
-        if (fn.id?.type === 'Identifier' && fn.id.name) names.add(fn.id.name);
-        for (const p of (fn.params ?? [])) {
+        if (n.type !== 'ArrowFunctionExpression' && n.id?.type === 'Identifier' && n.id.name) names.add(n.id.name);
+        for (const p of (n.params ?? [])) {
           if (p?.type === 'Identifier' && p.name) names.add(p.name);
-          else if (p?.type === 'RestElement' && p.argument?.type === 'Identifier' && p.argument.name) {
-            names.add(p.argument.name);
-          }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (isAstNodeLike(v)) walk(v);
-      }
+      for (const c of legacyChildren(n)) walk(c);
     };
     walk(root);
     return names;
@@ -8131,7 +7992,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     const setterHops: { fnName: string; paramIndex: number }[] = [];
     let bailed = false;
 
-    const isFn = (n: unknown): n is FunctionLikeNode => isAstNodeLike(n) && (n.type === 'FunctionDeclaration'
+    const isFn = (n: AstNode | null | undefined): n is FunctionLikeNode => !!n && (n.type === 'FunctionDeclaration'
       || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression');
 
     // Does function `fnNode` REDECLARE `nm` (a param, rest-param, or a local
@@ -8144,18 +8005,13 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (params.some((p) => p?.name === nm)) return true;
       if (fnNode.restParam?.name === nm) return true;
       let found = false;
-      const scan = (n: unknown): void => {
-        if (found || !isAstNodeLike(n)) return;
+      const scan = (n: AstNode | null | undefined): void => {
+        if (found || !n) return;
         if (isFn(n) && n !== fnNode) return; // don't descend into deeper functions
         if (n.type === 'VariableDeclaration') {
-          for (const d of (n as unknown as VariableDeclarationNode).declarations || []) if (d?.id?.name === nm) { found = true; return; }
+          for (const d of n.declarations || []) if (d?.id?.name === nm) { found = true; return; }
         }
-        for (const k of Object.keys(n)) {
-          if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-          const v = n[k];
-          if (Array.isArray(v)) { for (const it of v) scan(it); }
-          else if (isAstNodeLike(v)) scan(v);
-        }
+        for (const c of legacyChildren(n)) scan(c);
       };
       scan(fnNode.body);
       return found;
@@ -8163,38 +8019,34 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
 
     // Collect computed writes to `mapName`, tracking the nearest enclosing
     // function so `m[k] = param` can be resolved to (function, param index).
-    const walk = (node: unknown, fn: FunctionLikeNode | null): void => {
-      if (bailed || !isAstNodeLike(node)) return;
+    const walk = (node: AstNode | null | undefined, fn: FunctionLikeNode | null): void => {
+      if (bailed || !node) return;
       // Scope safety: a nested function that redeclares `mapName` is a different
       // binding — skip it entirely so its writes don't pollute this map's shape.
       if (isFn(node) && node !== scopeRoot && declaresLocally(node, mapName)) return;
       const curFn: FunctionLikeNode | null = isFn(node) ? node : fn;
       if (node.type === 'AssignmentExpression') {
-        const asn = node as unknown as AssignmentExpressionNode;
-        const left = asn.left as MemberExpressionNode;
+        const asn = node;
+        const left = asn.left;
         if (asn.operator === '='
             && left?.type === 'MemberExpression' && left.computed
-            && left.object?.type === 'Identifier' && (left.object as IdentifierNode).name === mapName) {
+            && left.object?.type === 'Identifier' && left.object.name === mapName) {
           const rhs = asn.right;
+          const curFnName = curFn && curFn.type !== 'ArrowFunctionExpression' ? curFn.id?.name : undefined;
           if (rhs?.type === 'ObjectExpression') {
-            const shape = this.inferObjectLiteralPropertyTypes(rhs as ObjectExpressionNode);
+            const shape = this.inferObjectLiteralPropertyTypes(rhs);
             if (shape) shapes.push(shape); // empty literal → ignore (no shape contribution)
           } else if (rhs?.type === 'Identifier' && curFn && Array.isArray(curFn.params)
-                     && (curFn as FunctionDeclarationNode).id?.name) {
-            const idx = curFn.params.findIndex((p) => p?.name === (rhs as IdentifierNode).name);
-            if (idx >= 0) setterHops.push({ fnName: (curFn as FunctionDeclarationNode).id.name, paramIndex: idx });
+                     && curFnName) {
+            const idx = curFn.params.findIndex((p) => p?.name === rhs.name);
+            if (idx >= 0) setterHops.push({ fnName: curFnName, paramIndex: idx });
             else bailed = true; // assigned an identifier of unknown shape
           } else {
             bailed = true; // non-object write → heterogeneous/opaque map
           }
         }
       }
-      for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = node[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it, curFn); }
-        else if (isAstNodeLike(v)) walk(v, curFn);
-      }
+      for (const c of legacyChildren(node)) walk(c, curFn);
     };
     walk(scopeRoot, null);
     if (bailed) return;
@@ -8203,24 +8055,19 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // call sites within the same scope.
     for (const hop of setterHops) {
       let found = false;
-      const callWalk = (node: unknown): void => {
-        if (!isAstNodeLike(node)) return;
+      const callWalk = (node: AstNode | null | undefined): void => {
+        if (!node) return;
         if (node.type === 'CallExpression') {
-          const call = node as unknown as CallExpressionNode;
-          if (call.callee?.type === 'Identifier' && (call.callee as IdentifierNode).name === hop.fnName) {
+          const call = node;
+          if (call.callee?.type === 'Identifier' && call.callee.name === hop.fnName) {
             const arg = call.arguments?.[hop.paramIndex];
             if (arg?.type === 'ObjectExpression') {
-              const shape = this.inferObjectLiteralPropertyTypes(arg as ObjectExpressionNode);
+              const shape = this.inferObjectLiteralPropertyTypes(arg);
               if (shape) { shapes.push(shape); found = true; }
             }
           }
         }
-        for (const k of Object.keys(node)) {
-          if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-          const v = node[k];
-          if (Array.isArray(v)) { for (const it of v) callWalk(it); }
-          else if (isAstNodeLike(v)) callWalk(v);
-        }
+        for (const c of legacyChildren(node)) callWalk(c);
       };
       callWalk(scopeRoot);
       if (!found) return; // setter feeds the map but no literal call args → unshaped
@@ -8288,7 +8135,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     // was visited as part of this initializer, which stamped its inferred return
     // type on the node — that IS the call's type.
     if (callExpr.callee.type === 'ArrowFunctionExpression' || callExpr.callee.type === 'FunctionExpression') {
-      const rt = (callExpr.callee as unknown as { _inferredReturnType?: UcodeDataType })._inferredReturnType;
+      const rt = stampsOf(callExpr.callee)._inferredReturnType;
       return rt ?? null;
     }
     if (callExpr.callee.type !== 'Identifier') {
@@ -8530,7 +8377,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             } else if (callExpr.callee.type === 'ArrowFunctionExpression' || callExpr.callee.type === 'FunctionExpression') {
               // IIFE: the literal accumulated its return-object property maps during
               // its visit — merge them exactly like a named factory's shape.
-              const merged = this.mergeReturnPropertyEntries(this.functionReturnPropertyTypes.get(callExpr.callee as unknown as FunctionDeclarationNode) ?? []);
+              const merged = this.mergeReturnPropertyEntries(this.functionReturnPropertyTypes.get(callExpr.callee) ?? []);
               if (merged) symbol.propertyTypes = merged;
             }
           }
@@ -8630,10 +8477,10 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
   private forwardTypeCheckerDiagnostics(): void {
     const fresh = this.typeChecker.drainNewDiagnostics();
     for (const error of fresh.errors) {
-      this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data);
+      this.addDiagnostic(error.message, error.start, error.end, DiagnosticSeverity.Error, error.code, error.data as DiagnosticData | undefined);
     }
     for (const warning of fresh.warnings) {
-      this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data);
+      this.addDiagnostic(warning.message, warning.start, warning.end, DiagnosticSeverity.Warning, warning.code, warning.data as DiagnosticData | undefined);
     }
   }
 
@@ -8643,7 +8490,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
     start: number,
     end: number,
     severity: DiagnosticSeverity,
-    data?: unknown
+    data?: DiagnosticData
   ): void {
     // Check if diagnostic should be converted to lower severity by disable comment
     if (this.shouldReduceSeverity(start, end)) {
@@ -8686,11 +8533,11 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         diagnostic.code = errorCode;
       }
       if (data !== undefined) {
-        (diagnostic as { data?: unknown }).data = data;
+        diagnostic.data = data;
       }
       // Mirror addDiagnostic: a `{ unnecessary: true }` data payload fades the range
       // in the editor (e.g. an unused import/variable) via DiagnosticTag.Unnecessary.
-      if (data && typeof data === 'object' && (data as { unnecessary?: unknown }).unnecessary) {
+      if (data && typeof data === 'object' && (data as { unnecessary?: boolean }).unnecessary) {
         diagnostic.tags = [DiagnosticTag.Unnecessary];
       }
 
@@ -8704,7 +8551,7 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
    * warning and return true. Otherwise return false (the caller handles/rethrows it). This is
    * the containment net that turns the #117 server-crash into a graceful degradation: the code
    * is valid, only deep semantic analysis is skipped. */
-  private reportTraversalOverflow(error: unknown, ast: AstNode): boolean {
+  private reportTraversalOverflow(error: Error | undefined, ast: AstNode): boolean {
     const isOverflow = error instanceof AnalysisDepthExceeded
       || (error instanceof RangeError && /call stack|Maximum call stack/i.test(error.message));
     if (!isOverflow) return false;
@@ -8742,18 +8589,8 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
       if (++iterations > 500000) break; // safety cap; we only need a rough "which is deepest"
       const { node, depth } = stack.pop()!;
       if (depth > max) max = depth;
-      for (const key of Object.keys(node)) {
-        if (key === 'leadingJsDoc' || key.startsWith('_')) continue; // skip runtime-stamped annotations
-        const value = (node as unknown as Record<string, unknown>)[key];
-        if (Array.isArray(value)) {
-          for (const item of value) {
-            if (item && typeof item === 'object' && typeof (item as AstNode).type === 'string') {
-              stack.push({ node: item as AstNode, depth: depth + 1 });
-            }
-          }
-        } else if (value && typeof value === 'object' && typeof (value as AstNode).type === 'string') {
-          stack.push({ node: value as AstNode, depth: depth + 1 });
-        }
+      for (const child of legacyChildren(node)) {
+        stack.push({ node: child, depth: depth + 1 });
       }
     }
     return max;
@@ -8765,7 +8602,7 @@ private addDiagnostic(
     end: number,
     severity?: DiagnosticSeverity,
     code?: string,
-    data?: unknown,
+    data?: DiagnosticData,
     relatedInformation?: DiagnosticRelatedInformation[],
     tags?: DiagnosticTag[]
   ): void {
@@ -8810,7 +8647,7 @@ private addDiagnostic(
         ...(relatedInformation && relatedInformation.length > 0 ? { relatedInformation } : {})
       };
 
-      if (data && typeof data === 'object' && (data as { unnecessary?: unknown }).unnecessary) {
+      if (data && typeof data === 'object' && (data as { unnecessary?: boolean }).unnecessary) {
         diagnostic.tags = [DiagnosticTag.Unnecessary];
       }
       if (tags && tags.length > 0) {
@@ -8909,16 +8746,11 @@ private addDiagnostic(
    *  functions/loops too) so it never under-reports an exit → never a false error. */
   private bodyContainsLoopExit(node: AstNode): boolean {
     let found = false;
-    const scan = (n: unknown): void => {
-      if (found || !isAstNodeLike(n)) return;
+    const scan = (n: AstNode | null | undefined): void => {
+      if (found || !n) return;
       if (n.type === 'BreakStatement' || n.type === 'ReturnStatement') { found = true; return; }
       if (n.type === 'CallExpression' && this.isExitingCall(n)) { found = true; return; }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = n[k];
-        if (Array.isArray(v)) { for (const it of v) scan(it); }
-        else if (isAstNodeLike(v)) scan(v);
-      }
+      for (const c of legacyChildren(n)) scan(c);
     };
     scan(node);
     return found;
@@ -8944,21 +8776,15 @@ private addDiagnostic(
    *  so it may not run every iteration. (UC4005, finding #58.) */
   private collectIterateeRebinds(loopBody: AstNode, name: string): Array<{ start: number; conditional: boolean }> {
     const rebinds: Array<{ start: number; conditional: boolean }> = [];
-    const walk = (node: unknown, conditional: boolean): void => {
-      if (!isAstNodeLike(node)) return;
+    const walk = (node: AstNode | null | undefined, conditional: boolean): void => {
+      if (!node) return;
       if (node.type === 'AssignmentExpression') {
-        const a = node as unknown as AssignmentExpressionNode;
-        if (a.operator === '=' && a.left?.type === 'Identifier' && (a.left as IdentifierNode).name === name) {
+        if (node.operator === '=' && node.left?.type === 'Identifier' && node.left.name === name) {
           rebinds.push({ start: node.start, conditional });
         }
       }
       const childConditional = conditional || SemanticAnalyzer.CONDITIONAL_CONTAINERS.has(node.type);
-      for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = node[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it, childConditional); }
-        else if (isAstNodeLike(v)) walk(v, childConditional);
-      }
+      for (const c of legacyChildren(node)) walk(c, childConditional);
     };
     walk(loopBody, false);
     return rebinds;
@@ -8978,7 +8804,7 @@ private addDiagnostic(
     if (!sym || (sym.typeHistory && sym.typeHistory.length > 0)) return names;
     const init = sym.initNode;
     if (init && init.type === 'Identifier') {
-      const src = (init as IdentifierNode).name;
+      const src = init.name;
       if (src && src !== name) {
         // Likewise skip if the source itself was reassigned before the loop.
         const srcSym = this.symbolTable.lookupOpenScopes(src);
@@ -9000,14 +8826,13 @@ private addDiagnostic(
     // A rebind of ANY alias name before a mutator makes that mutator touch a different
     // object (conservative: de-escalates rather than over-reports).
     const rebinds = itereeNames.flatMap(n => this.collectIterateeRebinds(loopBody, n));
-    const walk = (node: unknown, enclosingBlock: AstNode, conditional: boolean): void => {
-      if (!isAstNodeLike(node)) return;
+    const walk = (node: AstNode | null | undefined, enclosingBlock: AstNode, conditional: boolean): void => {
+      if (!node) return;
       const block: AstNode = node.type === 'BlockStatement' ? node : enclosingBlock;
       const childConditional = conditional || SemanticAnalyzer.CONDITIONAL_CONTAINERS.has(node.type);
-      const call = node as unknown as CallExpressionNode;
-      if (node.type === 'CallExpression' && call.callee?.type === 'Identifier'
-          && SemanticAnalyzer.ARRAY_MUTATORS.has((call.callee as IdentifierNode).name)
-          && call.arguments?.[0]?.type === 'Identifier' && nameSet.has((call.arguments[0] as IdentifierNode).name)) {
+      if (node.type === 'CallExpression' && node.callee?.type === 'Identifier'
+          && SemanticAnalyzer.ARRAY_MUTATORS.has(node.callee.name)
+          && node.arguments?.[0]?.type === 'Identifier' && nameSet.has((node.arguments[0] as IdentifierNode).name)) {
         if (!this.blockExitsLoop(enclosingBlock)) {
           // A rebind of the iteratee name BEFORE this call means the call operates
           // on a different array object than the one being iterated (finding #58).
@@ -9016,7 +8841,7 @@ private addDiagnostic(
           const priorRebinds = rebinds.filter(r => r.start < node.start);
           if (priorRebinds.some(r => !r.conditional)) return;
           const conditionallyRebound = priorRebinds.length > 0;
-          const fn = (call.callee as IdentifierNode).name;
+          const fn = node.callee.name;
           const grows = fn === 'push' || fn === 'unshift';
           const provablyInfinite = grows && !conditional && !bodyHasExit && !conditionallyRebound;
           const message = provablyInfinite
@@ -9031,12 +8856,7 @@ private addDiagnostic(
           );
         }
       }
-      for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = node[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it, block, childConditional); }
-        else if (isAstNodeLike(v)) walk(v, block, childConditional);
-      }
+      for (const c of legacyChildren(node)) walk(c, block, childConditional);
     };
     walk(loopBody, loopBody, false);
   }
@@ -9047,7 +8867,7 @@ private addDiagnostic(
     // statement, so a following `{% 'use strict'; %}` still leads (oracle-verified).
     const first = ast.body.find((s) => s && s.type !== 'EmptyStatement');
     if (first?.type === 'ExpressionStatement') {
-      const expr = (first as any).expression;
+      const expr = first.expression;
       if (expr?.type === 'Literal' && expr.value === 'use strict') {
         // In a TEMPLATE, `'use strict'` is only a directive when its `{% %}` block leads the
         // file — any preceding text or `{{ }}` compiles to a print() statement, making the
@@ -9326,15 +9146,10 @@ private addDiagnostic(
   /** Whole-AST pass (post-traversal, so the symbol table is complete): flag every
    *  blocking recv()/recvmsg() on a socket.pair() socket. */
   private checkBlockingSocketpairRecvs(root: ProgramNode): void {
-    const visit = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
-      if (n.type === 'CallExpression') this.flagBlockingSocketpairRecv(n as unknown as CallExpressionNode);
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) visit(it); }
-        else visit(v);
-      }
+    const visit = (n: AstNode | null | undefined): void => {
+      if (!n) return;
+      if (n.type === 'CallExpression') this.flagBlockingSocketpairRecv(n);
+      for (const c of legacyChildren(n)) visit(c);
     };
     visit(root);
   }
@@ -9464,12 +9279,24 @@ private addDiagnostic(
   private argsReferenceFlag(args: AstNode[], flagName: string, flagValue: number): boolean {
     const walk = (n: AstNode | null | undefined): boolean => {
       if (!n || typeof n !== 'object') return false;
-      if (n.type === 'Identifier' && (n as IdentifierNode).name === flagName) return true;
-      if (n.type === 'Literal' && (n as LiteralNode).value === flagValue) return true;
-      for (const key of ['left', 'right', 'argument', 'object', 'property', 'expression']) {
-        if (walk((n as any)[key])) return true;
+      if (n.type === 'Identifier' && n.name === flagName) return true;
+      if (n.type === 'Literal' && n.value === flagValue) return true;
+      // Historical probe set: only left/right/argument/object/property/expression
+      // fields were followed (never call arguments or function bodies).
+      switch (n.type) {
+        case 'BinaryExpression': case 'LogicalExpression': case 'AssignmentExpression': case 'ForInStatement':
+          return walk(n.left) || walk(n.right);
+        case 'UnaryExpression': case 'DeleteExpression': case 'SpreadElement':
+          return walk(n.argument);
+        case 'ReturnStatement': case 'ThrowStatement':
+          return walk(n.argument);
+        case 'MemberExpression':
+          return walk(n.object) || walk(n.property);
+        case 'ExpressionStatement':
+          return walk(n.expression);
+        default:
+          return false;
       }
-      return false;
     };
     return (args || []).some(walk);
   }
@@ -9480,24 +9307,19 @@ private addDiagnostic(
   private sentPairCalls(): Set<CallExpressionNode> {
     if (this.pairSocketSendCache) return this.pairSocketSendCache;
     const found = new Set<CallExpressionNode>();
-    const visit = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
+    const visit = (n: AstNode | null | undefined): void => {
+      if (!n) return;
       if (n.type === 'CallExpression') {
-        const c = n as unknown as CallExpressionNode;
-        if (c.callee.type === 'MemberExpression' && !(c.callee as MemberExpressionNode).computed) {
-          const mn = this.staticMemberName((c.callee as MemberExpressionNode).property);
+        const c = n;
+        if (c.callee.type === 'MemberExpression' && !c.callee.computed) {
+          const mn = this.staticMemberName(c.callee.property);
           if (mn === 'send' || mn === 'sendmsg') {
-            const p = this.findPairSocketForReceiver((c.callee as MemberExpressionNode).object, 0);
+            const p = this.findPairSocketForReceiver(c.callee.object, 0);
             if (p) found.add(p);
           }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) visit(it); }
-        else visit(v);
-      }
+      for (const c2 of legacyChildren(n)) visit(c2);
     };
     if (this.currentASTRoot) visit(this.currentASTRoot);
     this.pairSocketSendCache = found;
@@ -9533,12 +9355,12 @@ private addDiagnostic(
       if (a?.type === 'Literal' && typeof (a as LiteralNode).value === 'string') return (a as LiteralNode).value as string;
       return null;
     };
-    const visit = (n: unknown): void => {
-      if (!isAstNodeLike(n)) return;
+    const visit = (n: AstNode | null | undefined): void => {
+      if (!n) return;
       if (n.type === 'CallExpression') {
-        const c = n as unknown as CallExpressionNode;
+        const c = n;
         if (c.callee?.type === 'Identifier') {
-          const name = (c.callee as IdentifierNode).name;
+          const name = c.callee.name;
           if (name === 'loadfile' || name === 'include') {
             const sym = this.symbolTable.resolveReference(name, c.callee.start);
             if (!sym || sym.type === SymbolType.BUILTIN) {
@@ -9563,12 +9385,7 @@ private addDiagnostic(
           }
         }
       }
-      for (const k of Object.keys(n)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (n as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) visit(it); }
-        else visit(v);
-      }
+      for (const c2 of legacyChildren(n)) visit(c2);
     };
     visit(root);
   }
@@ -9589,19 +9406,17 @@ private addDiagnostic(
     const members = new Set<string>();
     let declaresNetifd = false;
     const uses: Array<{ start: number; end: number }> = [];
-    const walk = (n: unknown): void => {
-      if (!n || typeof n !== 'object') return;
-      const node = n as AnyNode;
-      const t = node.type;
-      if (t === 'VariableDeclarator' && (node.id as AnyNode | undefined)?.name === 'netifd') declaresNetifd = true;
-      if ((t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression')) {
-        if ((node.id as AnyNode | undefined)?.name === 'netifd') declaresNetifd = true;
+    const walk = (node: AstNode | null | undefined): void => {
+      if (!node) return;
+      if (node.type === 'VariableDeclarator' && node.id?.name === 'netifd') declaresNetifd = true;
+      if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
+        if (node.type !== 'ArrowFunctionExpression' && node.id?.name === 'netifd') declaresNetifd = true;
         const params = Array.isArray(node.params) ? node.params : [];
-        for (const p of params) if ((p as AnyNode | undefined)?.name === 'netifd') declaresNetifd = true;
+        for (const p of params) if (p?.name === 'netifd') declaresNetifd = true;
       }
-      if (t === 'MemberExpression' && !node.computed) {
-        const obj = node.object as AnyNode | undefined;
-        const prop = node.property as AnyNode | undefined;
+      if (node.type === 'MemberExpression' && !node.computed) {
+        const obj = node.object;
+        const prop = node.property;
         if (obj?.type === 'Identifier' && obj.name === 'netifd' && prop?.type === 'Identifier' && typeof prop.name === 'string') {
           members.add(prop.name);
           // Record the MEMBER's range (`add_proto`/`log`/…) — the specific netifd API used — so
@@ -9611,12 +9426,7 @@ private addDiagnostic(
           }
         }
       }
-      for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (node as unknown as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (v && typeof v === 'object') walk(v);
-      }
+      for (const c of legacyChildren(node)) walk(c);
     };
     walk(root);
     return declaresNetifd ? { members: new Set(), declaresNetifd, uses: [] } : { members, declaresNetifd, uses };
@@ -9680,30 +9490,23 @@ private addDiagnostic(
     const members = new Set<string>();
     let declaresSelf = false;
     const uses: Array<{ member: string; start: number; end: number }> = [];
-    const walk = (n: unknown): void => {
-      if (!n || typeof n !== 'object') return;
-      const node = n as AnyNode;
-      const t = node.type;
-      if (t === 'VariableDeclarator' && (node.id as AnyNode | undefined)?.name === name) declaresSelf = true;
-      if (t === 'FunctionDeclaration' || t === 'FunctionExpression' || t === 'ArrowFunctionExpression') {
-        if ((node.id as AnyNode | undefined)?.name === name) declaresSelf = true;
+    const walk = (node: AstNode | null | undefined): void => {
+      if (!node) return;
+      if (node.type === 'VariableDeclarator' && node.id?.name === name) declaresSelf = true;
+      if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
+        if (node.type !== 'ArrowFunctionExpression' && node.id?.name === name) declaresSelf = true;
         const params = Array.isArray(node.params) ? node.params : [];
-        for (const p of params) if ((p as AnyNode | undefined)?.name === name) declaresSelf = true;
+        for (const p of params) if (p?.name === name) declaresSelf = true;
       }
-      if (t === 'MemberExpression' && !node.computed) {
-        const obj = node.object as AnyNode | undefined;
-        const prop = node.property as AnyNode | undefined;
+      if (node.type === 'MemberExpression' && !node.computed) {
+        const obj = node.object;
+        const prop = node.property;
         if (obj?.type === 'Identifier' && obj.name === name && prop?.type === 'Identifier' && typeof prop.name === 'string') {
           members.add(prop.name);
           if (typeof prop.start === 'number' && typeof prop.end === 'number') uses.push({ member: prop.name, start: prop.start, end: prop.end });
         }
       }
-      for (const k of Object.keys(node)) {
-        if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
-        const v = (node as unknown as Record<string, unknown>)[k];
-        if (Array.isArray(v)) { for (const it of v) walk(it); }
-        else if (v && typeof v === 'object') walk(v);
-      }
+      for (const c of legacyChildren(node)) walk(c);
     };
     walk(root);
     return declaresSelf ? { members: new Set(), declaresSelf, uses: [] } : { members, declaresSelf, uses };
@@ -9767,25 +9570,24 @@ private addDiagnostic(
    *  must NOT disable the ambient for the rest of the file. */
   private collectSelfDeclaredNames(root: AstNode, names: ReadonlySet<string>): Set<string> {
     const declared = new Set<string>();
-    const note = (n: unknown): void => {
-      const name = (n as AnyNode | undefined)?.name;
+    const note = (n: AstNode | null | undefined): void => {
+      const name = n?.type === 'Identifier' ? n.name : undefined;
       if (typeof name === 'string' && names.has(name)) declared.add(name);
     };
-    const body = Array.isArray((root as AnyNode).body) ? ((root as AnyNode).body as unknown[]) : [];
+    const body = root.type === 'Program' ? root.body : [];
     for (const raw of body) {
       if (!raw || typeof raw !== 'object') continue;
-      let stmt = raw as AnyNode;
+      let stmt: AstNode = raw;
       // Unwrap export wrappers so `export let http = …` / `export function ubus()` count.
       if ((stmt.type === 'ExportNamedDeclaration' || stmt.type === 'ExportDefaultDeclaration') && stmt.declaration) {
-        stmt = stmt.declaration as AnyNode;
+        stmt = stmt.declaration;
       }
       if (stmt.type === 'VariableDeclaration') {
-        for (const d of (Array.isArray(stmt.declarations) ? stmt.declarations : [])) note((d as AnyNode)?.id);
+        for (const d of (Array.isArray(stmt.declarations) ? stmt.declarations : [])) note(d?.id);
       } else if (stmt.type === 'FunctionDeclaration') {
         note(stmt.id);
       } else if (stmt.type === 'ImportDeclaration') {
-        for (const s of (Array.isArray(stmt.specifiers) ? stmt.specifiers : [])) {
-          const spec = s as AnyNode;
+        for (const spec of (Array.isArray(stmt.specifiers) ? stmt.specifiers : [])) {
           note(spec.local ?? spec);
         }
       }
@@ -9998,39 +9800,49 @@ private addDiagnostic(
       }
     }
 
-    // Recursively check all child nodes
-    if ((node as any).body) {
-      const body = (node as any).body;
-      if (Array.isArray(body)) {
-        for (const child of body) {
-          if (this.findContainingNullGuard(child, variableName, position)) {
-            return true;
-          }
-        }
-      } else {
-        if (this.findContainingNullGuard(body, variableName, position)) {
-          return true;
-        }
-      }
+    // Recursively check the historical child-probe set: `body` plus consequent/
+    // alternate/test/left/right/argument/callee/arguments (only those fields).
+    const probes: Array<AstNode | AstNode[] | null | undefined> = [];
+    switch (node.type) {
+      case 'Program': case 'BlockStatement':
+        probes.push(node.body); break;
+      case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
+        probes.push(node.body); break;
+      case 'CatchClause':
+        probes.push(node.body); break;
+      case 'ForStatement':
+        probes.push(node.body, node.test); break;
+      case 'ForInStatement':
+        probes.push(node.body, node.left, node.right); break;
+      case 'WhileStatement':
+        probes.push(node.body, node.test); break;
+      case 'IfStatement': case 'ConditionalExpression':
+        probes.push(node.consequent, node.alternate, node.test); break;
+      case 'SwitchCase':
+        probes.push(node.consequent, node.test); break;
+      case 'BinaryExpression': case 'LogicalExpression': case 'AssignmentExpression':
+        probes.push(node.left, node.right); break;
+      case 'UnaryExpression': case 'DeleteExpression': case 'SpreadElement':
+      case 'ReturnStatement': case 'ThrowStatement':
+        probes.push(node.argument); break;
+      case 'CallExpression':
+        probes.push(node.callee, node.arguments); break;
+      default:
+        break;
     }
-
-    // Check other common child properties
-    const childProps = ['consequent', 'alternate', 'test', 'left', 'right', 'argument', 'callee', 'arguments'];
-    for (const prop of childProps) {
-      const child = (node as any)[prop];
-      if (child) {
-        if (Array.isArray(child)) {
-          for (const item of child) {
-            if (item && typeof item === 'object' && item.type) {
-              if (this.findContainingNullGuard(item, variableName, position)) {
-                return true;
-              }
+    for (const child of probes) {
+      if (!child) continue;
+      if (Array.isArray(child)) {
+        for (const item of child) {
+          if (item && typeof item === 'object' && item.type) {
+            if (this.findContainingNullGuard(item, variableName, position)) {
+              return true;
             }
           }
-        } else if (typeof child === 'object' && child.type) {
-          if (this.findContainingNullGuard(child, variableName, position)) {
-            return true;
-          }
+        }
+      } else if (typeof child === 'object' && child.type) {
+        if (this.findContainingNullGuard(child, variableName, position)) {
+          return true;
         }
       }
     }
@@ -10048,9 +9860,9 @@ private addDiagnostic(
     // Check for "variableName != null" pattern
     if ((binaryExpr.operator === '!=' || binaryExpr.operator === '!==') &&
         binaryExpr.left.type === 'Identifier' &&
-        (binaryExpr.left as IdentifierNode).name === variableName &&
+        binaryExpr.left.name === variableName &&
         binaryExpr.right.type === 'Literal' &&
-        (binaryExpr.right as any).value === null) {
+        binaryExpr.right.value === null) {
       return true;
     }
 
@@ -10119,7 +9931,7 @@ private addDiagnostic(
         // Their keys must leave the duplicate filter too, or the re-emission below would
         // be swallowed as a duplicate of the entry just removed.
         this.diagnostics = this.diagnostics.filter(d => {
-          if ((d as any).code !== UcodeErrorCode.UNREACHABLE_CODE) return true;
+          if (d.code !== UcodeErrorCode.UNREACHABLE_CODE) return true;
           this.seenDiagnosticKeys.delete(this.diagKey(
             d.message, d.severity, this.textDocument.offsetAt(d.range.start), this.textDocument.offsetAt(d.range.end)
           ));
@@ -10139,21 +9951,10 @@ private addDiagnostic(
    */
   private collectFunctionNodes(node: AstNode, result: FunctionLikeNode[]): void {
     if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
-      result.push(node as unknown as FunctionLikeNode);
+      result.push(node);
     }
-    for (const key of Object.keys(node)) {
-      const val = (node as AnyNode)[key];
-      if (val && typeof val === 'object') {
-        if (Array.isArray(val)) {
-          for (const child of val) {
-            if (child && typeof child.type === 'string') {
-              this.collectFunctionNodes(child, result);
-            }
-          }
-        } else if (isAstNodeLike(val)) {
-          this.collectFunctionNodes(val, result);
-        }
-      }
+    for (const child of legacyChildren(node)) {
+      this.collectFunctionNodes(child, result);
     }
   }
 
@@ -10209,9 +10010,9 @@ private addDiagnostic(
         continue;
       }
       if (lastStmt.type === 'ExpressionStatement') {
-        const expr = (lastStmt as any).expression;
+        const expr = lastStmt.expression;
         if (expr && expr.type === 'CallExpression' && expr.callee?.type === 'Identifier') {
-          const calleeName = (expr.callee as any).name;
+          const calleeName = expr.callee.name;
           if (calleeName && terminators.has(calleeName)) {
             // Terminator call — doesn't count as normal return
             continue;
@@ -10248,7 +10049,7 @@ private addDiagnostic(
   }
 
   private narrowFunctionReturnType(funcNode: FunctionLikeNode, engine: CFGQueryEngine, cfg: ControlFlowGraph): void {
-    const returnEntries = this.functionReturnTypes.get(funcNode as FunctionDeclarationNode);
+    const returnEntries = this.functionReturnTypes.get(funcNode);
     if (!returnEntries || returnEntries.length === 0) return;
 
     // Collect start offsets of all statements in unreachable blocks
@@ -10265,7 +10066,7 @@ private addDiagnostic(
     if (reachableEntries.length === returnEntries.length) return; // nothing changed
 
     // Update the stored entries
-    this.functionReturnTypes.set(funcNode as FunctionDeclarationNode, reachableEntries);
+    this.functionReturnTypes.set(funcNode, reachableEntries);
 
     // Re-compute and update the function symbol's return type
     const name = (funcNode as FunctionDeclarationNode).id?.name;
@@ -10355,7 +10156,7 @@ private addDiagnostic(
     const verb = na.isWrite ? 'setting' : 'accessing';
     const what = na.propName ? `${verb} property '${na.propName}'` : (na.isWrite ? 'setting an element' : 'indexing');
     diagnostic.severity = DiagnosticSeverity.Warning;
-    (diagnostic as any).code = UcodeErrorCode.POSSIBLY_NULL_MEMBER_ACCESS;
+    diagnostic.code = UcodeErrorCode.POSSIBLY_NULL_MEMBER_ACCESS;
     diagnostic.message = `${who} may be null here - ${what} will fail at runtime if it is null. Guard against null${na.isWrite ? '' : ', or use optional chaining (?.)'}.`;
   }
 
@@ -10364,7 +10165,7 @@ private addDiagnostic(
    * Returns true if the diagnostic should be filtered (expression is valid with CFG types).
    */
   private recheckExpressionWithCFG(diagnostic: Diagnostic): boolean {
-    const diagnosticData = (diagnostic as any).data;
+    const diagnosticData = diagnostic.data;
     if (
       !diagnosticData ||
       !diagnosticData.variableName ||
@@ -10468,7 +10269,7 @@ private addDiagnostic(
       // "still null here" flow state doesn't apply. Post-visit so mutually-recursive
       // partners assigned LATER in the file are already stamped.
       // (docs/forward-declared-function-valued-let-uc1002.md)
-      if ((diagnostic as any).code === UcodeErrorCode.NOT_CALLABLE) {
+      if (diagnostic.code === UcodeErrorCode.NOT_CALLABLE) {
         const calleeMatch = diagnostic.message.match(/^'(\w+)' is not a function/);
         if (calleeMatch && this.typeChecker.isDeferredCallableFalsePositive(
               calleeMatch[1]!, this.textDocument.offsetAt(diagnostic.range.start))) {
@@ -10484,8 +10285,8 @@ private addDiagnostic(
       // the receiver: if it is NOT provably null there, the definite claim is wrong —
       // suppress it (provably non-null) or downgrade it to a may-null WARNING (a real
       // first-iteration null is still defensible as a warning, never a hard error).
-      if ((diagnostic as any).code === UcodeErrorCode.NULL_MEMBER_ACCESS) {
-        const na = (diagnostic as any).data?.nullAccess;
+      if (diagnostic.code === UcodeErrorCode.NULL_MEMBER_ACCESS) {
+        const na = diagnostic.data?.nullAccess;
         if (na?.objName && typeof na.objStart === 'number') {
           const joined = this.typeChecker.getNarrowedTypeAtPosition(na.objName, na.objStart);
           const verdict = this.classifyFlowNullability(joined);
@@ -10514,22 +10315,22 @@ private addDiagnostic(
       // narrowed type at the argument: when every member is acceptable to the
       // callee, the complaint is a false positive — drop it. Refine-only: an
       // inconclusive or still-violating type keeps the diagnostic.
-      const code = String((diagnostic as any).code ?? '');
+      const code = String(diagnostic.code ?? '');
       if (code === 'nullable-argument' || code === 'incompatible-function-argument') {
-        const ad = (diagnostic as any).data;
+        const ad = diagnostic.data;
         if (ad?.variableName && typeof ad.argumentOffset === 'number'
             && Array.isArray(ad.expectedTypes) && ad.expectedTypes.length > 0) {
           const ok = new Set<string>([...ad.expectedTypes, ...(ad.toleratedTypes ?? [])]);
-          const allAcceptable = (t: unknown): boolean => {
+          const allAcceptable = (t: UcodeDataType | null | undefined): boolean => {
             if (t === null || t === undefined) return false;
-            const members = getUnionTypes(t as UcodeDataType).map(m => singleTypeToBase(m) as string);
+            const members = getUnionTypes(t).map(m => singleTypeToBase(m) as string);
             return members.length > 0 && members.every(m => ok.has(m));
           };
           if (allAcceptable(this.typeChecker.topLevelFlowTypeAt(ad.variableName, ad.argumentOffset))) return false;
         }
       }
-      if ((diagnostic as any).code === UcodeErrorCode.IMPOSSIBLE_COMPARISON) {
-        const cb = (diagnostic as any).data?.impossibleCompareBase;
+      if (diagnostic.code === UcodeErrorCode.IMPOSSIBLE_COMPARISON) {
+        const cb = diagnostic.data?.impossibleCompareBase;
         if (cb?.name && typeof cb.offset === 'number') {
           const joined = this.typeChecker.getNarrowedTypeAtPosition(cb.name, cb.offset);
           // If the receiver can be a non-null array/object here, indexing/member access
@@ -10545,7 +10346,7 @@ private addDiagnostic(
         // writes): if new type members appeared, the at-emit "can never be" claim
         // no longer holds — drop it. Unchanged types keep the diagnostic, so
         // straight-line true positives survive.
-        const refs = (diagnostic as any).data?.impossibleCompareRefs as
+        const refs = diagnostic.data?.impossibleCompareRefs as
           Array<{ name: string; offset: number; prop?: string; members: string[] }> | undefined;
         if (refs) {
           // Only growth by a SCALAR-ish member can rescue the comparison: every
@@ -10579,7 +10380,7 @@ private addDiagnostic(
       // (warning; error under 'use strict', matching the direct-emit path).
       // Growth by still-disallowed members keeps the error (still definitely wrong).
       {
-        const sta = (diagnostic as any).data?.staleTypeArg as
+        const sta = diagnostic.data?.staleTypeArg as
           { name: string; offset: number; prop?: string; members: string[]; funcName: string; argPosition: number; expected: string[] } | undefined;
         // Only re-validate the read-before-write SIGNATURE: an at-emit type that
         // includes null (the declared seed of an unwritten `let`). An emit type
@@ -10603,7 +10404,7 @@ private addDiagnostic(
               if (grew && nowCompatible) {
                 const disallowed = postMembers.filter(m => !expectedSet.has(m.toLowerCase()));
                 diagnostic.severity = this.strictMode ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning;
-                (diagnostic as any).code = 'nullable-argument';
+                diagnostic.code = 'nullable-argument';
                 diagnostic.message = `Argument ${sta.argPosition} of ${sta.funcName}() may be ${disallowed.join(' | ') || String(UcodeType.NULL)}. `
                   + `Use a type guard to narrow to ${sta.expected.join(' | ')}.`;
               }
@@ -10614,8 +10415,8 @@ private addDiagnostic(
 
       // Option C: Selective Re-checking
       // Check if this is a recheckable diagnostic (nullable-argument with variable name and AST node)
-      if ((diagnostic as any).code === 'nullable-argument') {
-        const diagnosticData = (diagnostic as any).data;
+      if (diagnostic.code === 'nullable-argument') {
+        const diagnosticData = diagnostic.data;
         if (
           diagnosticData &&
           diagnosticData.variableName &&
@@ -10644,7 +10445,7 @@ private addDiagnostic(
 
       // Legacy: Check if this is a builtin argument warning about "may be X"
       if (diagnostic.message.includes("may be") && diagnostic.severity === DiagnosticSeverity.Warning) {
-        const diagnosticData = (diagnostic as any).data;
+        const diagnosticData = diagnostic.data;
         if (diagnosticData && diagnosticData.variableName) {
           // This is the old path for diagnostics without AST nodes
           // Keep this for backward compatibility
@@ -10686,8 +10487,8 @@ private addDiagnostic(
       // satisfies the constraint. During the walk, globals referenced in function bodies
       // may appear as 'unknown' because their assignment hasn't been processed yet.
       // At runtime, functions are typically called after global initialization.
-      if ((diagnostic as any).code === 'incompatible-function-argument') {
-        const diagnosticData = (diagnostic as any).data;
+      if (diagnostic.code === 'incompatible-function-argument') {
+        const diagnosticData = diagnostic.data;
         if (diagnosticData?.variableName && diagnosticData.actualType === UcodeType.UNKNOWN) {
           // Deferred filter: resolve at the diagnostic's own position like every
           // sibling branch, so a local can't be confused with a same-name global.
@@ -10794,25 +10595,27 @@ private addDiagnostic(
       }
     }
 
-    // Recurse into child nodes
-    const childProps = ['body', 'consequent', 'alternate'];
-    for (const prop of childProps) {
-      const child = (node as any)[prop];
-      if (child) {
-        if (Array.isArray(child)) {
-          for (const item of child) {
-            if (item && typeof item === 'object' && item.type &&
-                position >= item.start && position <= item.end) {
-              if (this.hasPropertyAccessGuard(item, memberPath, position)) {
-                return true;
-              }
-            }
-          }
-        } else if (typeof child === 'object' && child.type &&
-                   position >= child.start && position <= child.end) {
-          if (this.hasPropertyAccessGuard(child, memberPath, position)) {
-            return true;
-          }
+    // Recurse into the historical probe set: only `body`/`consequent`/`alternate`
+    // fields were ever followed here.
+    const children: Array<AstNode | null> = [];
+    switch (node.type) {
+      case 'Program': case 'BlockStatement':
+        children.push(...node.body); break;
+      case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
+      case 'CatchClause': case 'ForStatement': case 'ForInStatement': case 'WhileStatement':
+        children.push(node.body); break;
+      case 'IfStatement': case 'ConditionalExpression':
+        children.push(node.consequent, node.alternate); break;
+      case 'SwitchCase':
+        children.push(...node.consequent); break;
+      default:
+        break;
+    }
+    for (const item of children) {
+      if (item && typeof item === 'object' && item.type &&
+          position >= item.start && position <= item.end) {
+        if (this.hasPropertyAccessGuard(item, memberPath, position)) {
+          return true;
         }
       }
     }
@@ -10888,24 +10691,53 @@ private addDiagnostic(
       return node;
     }
 
-    // Recurse into children
-    const childProps = ['body', 'consequent', 'alternate', 'test', 'left', 'right',
-      'argument', 'callee', 'arguments', 'init', 'update', 'declarations',
-      'expression', 'elements', 'properties', 'value', 'object', 'property'];
-    for (const prop of childProps) {
-      const child = (node as any)[prop];
-      if (child) {
-        if (Array.isArray(child)) {
-          for (const item of child) {
-            if (item && typeof item === 'object' && item.type) {
-              const found = this.findCallExpressionAt(item, offset);
-              if (found) return found;
-            }
-          }
-        } else if (typeof child === 'object' && child.type) {
-          const found = this.findCallExpressionAt(child, offset);
-          if (found) return found;
-        }
+    // Recurse into the historical probe set (body/branches/operands/initializers/
+    // elements/properties — switch and try interiors were never followed here).
+    const children: Array<AstNode | null | undefined> = [];
+    switch (node.type) {
+      case 'Program': case 'BlockStatement':
+        children.push(...node.body); break;
+      case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
+      case 'CatchClause':
+        children.push(node.body); break;
+      case 'ForStatement':
+        children.push(node.body, node.test, node.init, node.update); break;
+      case 'ForInStatement':
+        children.push(node.body, node.left, node.right); break;
+      case 'WhileStatement':
+        children.push(node.body, node.test); break;
+      case 'IfStatement': case 'ConditionalExpression':
+        children.push(node.consequent, node.alternate, node.test); break;
+      case 'SwitchCase':
+        children.push(...node.consequent, node.test); break;
+      case 'BinaryExpression': case 'LogicalExpression': case 'AssignmentExpression':
+        children.push(node.left, node.right); break;
+      case 'UnaryExpression': case 'DeleteExpression': case 'SpreadElement':
+      case 'ReturnStatement': case 'ThrowStatement':
+        children.push(node.argument); break;
+      case 'CallExpression':
+        children.push(node.callee, ...node.arguments); break;
+      case 'VariableDeclaration':
+        children.push(...node.declarations); break;
+      case 'VariableDeclarator':
+        children.push(node.init); break;
+      case 'ExpressionStatement':
+        children.push(node.expression); break;
+      case 'ArrayExpression':
+        children.push(...node.elements); break;
+      case 'ObjectExpression':
+        children.push(...node.properties); break;
+      case 'Property':
+        children.push(node.value); break;
+      case 'MemberExpression':
+        children.push(node.object, node.property); break;
+      default:
+        break;
+    }
+    for (const item of children) {
+      if (item && typeof item === 'object' && item.type) {
+        const found = this.findCallExpressionAt(item, offset);
+        if (found) return found;
       }
     }
 
@@ -10927,21 +10759,39 @@ private addDiagnostic(
       }
     }
     
-    // Recursively check children
-    const childProps = ['body', 'consequent', 'alternate', 'test', 'left', 'right', 'argument', 'callee', 'arguments'];
-    for (const prop of childProps) {
-      const child = (node as any)[prop];
-      if (child) {
-        if (Array.isArray(child)) {
-          for (const item of child) {
-            if (item && typeof item === 'object' && item.type) {
-              if (this.findNullGuardAtPosition(item, position)) {
-                return true;
-              }
-            }
-          }
-        } else if (typeof child === 'object' && child.type) {
-          if (this.findNullGuardAtPosition(child, position)) {
+    // Recursively check children (the same historical probe set as
+    // findContainingNullGuard: body/branches/operands/call parts only).
+    const children: Array<AstNode | null | undefined> = [];
+    switch (node.type) {
+      case 'Program': case 'BlockStatement':
+        children.push(...node.body); break;
+      case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
+      case 'CatchClause':
+        children.push(node.body); break;
+      case 'ForStatement':
+        children.push(node.body, node.test); break;
+      case 'ForInStatement':
+        children.push(node.body, node.left, node.right); break;
+      case 'WhileStatement':
+        children.push(node.body, node.test); break;
+      case 'IfStatement': case 'ConditionalExpression':
+        children.push(node.consequent, node.alternate, node.test); break;
+      case 'SwitchCase':
+        children.push(...node.consequent, node.test); break;
+      case 'BinaryExpression': case 'LogicalExpression': case 'AssignmentExpression':
+        children.push(node.left, node.right); break;
+      case 'UnaryExpression': case 'DeleteExpression': case 'SpreadElement':
+      case 'ReturnStatement': case 'ThrowStatement':
+        children.push(node.argument); break;
+      case 'CallExpression':
+        children.push(node.callee, ...node.arguments); break;
+      default:
+        break;
+    }
+    for (const item of children) {
+      if (item) {
+        if (typeof item === 'object' && item.type) {
+          if (this.findNullGuardAtPosition(item, position)) {
             return true;
           }
         }

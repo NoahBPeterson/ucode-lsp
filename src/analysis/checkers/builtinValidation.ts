@@ -15,6 +15,36 @@ export type ConstantValue =
   | { kind: 'string'; value: string }
   | { kind: 'integer'; value: number };
 
+/** `data` payload for the nullable/unknown-argument diagnostics ('nullable-argument' /
+ *  'incompatible-function-argument') — read by the quick-fix layer (server.ts DiagnosticData). */
+interface ArgumentDiagnosticData {
+  functionName: string;
+  argumentIndex: number;
+  expectedType: string;
+  expectedTypes: UcodeType[];
+  actualType: string;
+  variableName: string | null;
+  argumentOffset: number;
+  toleratedTypes?: UcodeType[];
+  fallbackStart?: number;
+  fallbackEnd?: number;
+  fullExprStart?: number;
+  fullExprEnd?: number;
+}
+
+/** `data` payload for the "will be coerced to a string" diagnostic (#32) — drives the
+ *  coerce-to-string quick fix. */
+interface CoerceToStringDiagnosticData {
+  functionName: string;
+  argumentIndex: number;
+  expectedType: string;
+  actualType: string;
+  variableName: string | null;
+  coerceToString: boolean;
+  argNeedsParens: boolean;
+  narrowable: boolean;
+}
+
 export interface FormatSpecifier {
   specifier: string;
   expectedTypes: UcodeType[];
@@ -366,11 +396,11 @@ export class BuiltinValidator {
   }
 
   /** Push a strict-gated diagnostic: warning in non-strict, error under `'use strict'`. */
-  private pushWarnOrStrictError(message: string, start: number, end: number, code: string, data?: unknown): void {
+  private pushWarnOrStrictError(message: string, start: number, end: number, code: string, data?: CoerceToStringDiagnosticData): void {
     if (this.strictMode) {
-      this.errors.push({ message, start, end, severity: 'error', code, data });
+      this.errors.push({ message, start, end, severity: 'error', code, ...(data !== undefined ? { data } : {}) });
     } else {
-      this.warnings.push({ message, start, end, severity: 'warning', code, data });
+      this.warnings.push({ message, start, end, severity: 'warning', code, ...(data !== undefined ? { data } : {}) });
     }
   }
 
@@ -453,11 +483,10 @@ export class BuiltinValidator {
       return { name: (arg as IdentifierNode).name, offset: arg.start, members, funcName, argPosition, expected };
     }
     if (arg.type === 'MemberExpression') {
-      const m = arg as unknown as { computed?: boolean; object?: AstNode; property?: AstNode };
-      if (!m.computed && m.object?.type === 'Identifier' && m.property?.type === 'Identifier') {
+      if (!arg.computed && arg.object.type === 'Identifier' && arg.property.type === 'Identifier') {
         return {
-          name: (m.object as IdentifierNode).name, offset: m.object.start,
-          prop: (m.property as IdentifierNode).name, members, funcName, argPosition, expected,
+          name: arg.object.name, offset: arg.object.start,
+          prop: arg.property.name, members, funcName, argPosition, expected,
         };
       }
     }
@@ -556,17 +585,20 @@ export class BuiltinValidator {
     let fallbackStart: number | null = null;
     let fallbackEnd: number | null = null;
     let fallbackValid = false;
+    let fallbackLeft: AstNode | null = null;
 
-    if ((arg as any).operator === '||' && (arg as any).left && (arg as any).right) {
-      const fallbackType = this.getNodeType((arg as any).right);
+    if ((arg.type === 'BinaryExpression' || arg.type === 'LogicalExpression')
+        && arg.operator === '||' && arg.left && arg.right) {
+      const fallbackType = this.getNodeType(arg.right);
       const fallbackTypes = fallbackType.split(' | ').map((t: string) => t.trim());
       fallbackValid = fallbackTypes.every(t => allowedTypes.includes(t as UcodeType));
 
       // Always narrow diagnostic to left operand — the fallback isn't the problem
-      diagStart = (arg as any).left.start;
-      diagEnd = (arg as any).left.end;
-      fallbackStart = (arg as any).right.start;
-      fallbackEnd = (arg as any).right.end;
+      diagStart = arg.left.start;
+      diagEnd = arg.left.end;
+      fallbackStart = arg.right.start;
+      fallbackEnd = arg.right.end;
+      fallbackLeft = arg.left;
 
       // In non-strict mode, valid fallback suppresses the diagnostic entirely
       if (fallbackValid && !this.strictMode) {
@@ -643,9 +675,9 @@ export class BuiltinValidator {
           `Argument ${argPosition} of ${funcName}() may be ${disallowedTypes.join(' | ')}. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
 
         // For || fallback, get the variable name from the left operand
-        const variableName = fallbackStart != null ? this.getVariableName((arg as any).left) : this.getVariableName(arg);
+        const variableName = fallbackLeft != null ? this.getVariableName(fallbackLeft) : this.getVariableName(arg);
 
-        const diagData: Record<string, any> = {
+        const diagData: ArgumentDiagnosticData = {
           functionName: funcName,
           argumentIndex: argPosition - 1,
           expectedType: allowedTypes.join(' | '),
@@ -690,9 +722,9 @@ export class BuiltinValidator {
         const message =
           `Argument ${argPosition} of ${funcName}() is unknown. Use a type guard to narrow to ${allowedTypes.join(' | ')}.`;
 
-        const variableName = fallbackStart != null ? this.getVariableName((arg as any).left) : this.getVariableName(arg);
+        const variableName = fallbackLeft != null ? this.getVariableName(fallbackLeft) : this.getVariableName(arg);
 
-        const diagData: Record<string, any> = {
+        const diagData: ArgumentDiagnosticData = {
           functionName: funcName,
           argumentIndex: argPosition - 1,
           expectedType: allowedTypes.join(' | '),
@@ -775,7 +807,7 @@ export class BuiltinValidator {
 
   private isKnownTruish(node: AstNode): boolean {
     if (node.type === 'Literal') {
-      const literal = node as any;
+      const literal = node;
       switch (literal.literalType) {
         case 'null':
           // UC_NULL: always false
@@ -791,7 +823,7 @@ export class BuiltinValidator {
           return literal.value !== '';
         case 'double':
           // UC_DOUBLE: false if 0 or NaN, true otherwise
-          return literal.value !== 0 && !isNaN(literal.value);
+          return literal.value !== 0 && !isNaN(Number(literal.value));
         default:
           // UC_ARRAY, UC_OBJECT, UC_REGEXP, UC_CFUNCTION, UC_CLOSURE, etc: always true (default case)
           return true;
@@ -807,7 +839,7 @@ export class BuiltinValidator {
    */
   private getVariableName(node: AstNode): string | null {
     if (node.type === 'Identifier') {
-      return (node as any).name;
+      return node.name;
     }
     // For member expressions, return the dotted path (e.g., "data.platform")
     if (node.type === 'MemberExpression') {
@@ -815,18 +847,17 @@ export class BuiltinValidator {
     }
     // For X || fallback patterns, extract the variable from the left side
     if (node.type === 'BinaryExpression') {
-      const bin = node as any;
-      if (bin.operator === '||' || bin.operator === '??') {
-        return this.getVariableName(bin.left);
+      if (node.operator === '||' || node.operator === '??') {
+        return this.getVariableName(node.left);
       }
     }
     return null;
   }
 
   private getDottedPath(node: AstNode): string | null {
-    if (node.type === 'Identifier') return (node as any).name;
+    if (node.type === 'Identifier') return node.name;
     if (node.type === 'MemberExpression') {
-      const member = node as any;
+      const member = node;
       if (member.computed) return null;
       const objPath = this.getDottedPath(member.object);
       if (!objPath) return null;
@@ -868,7 +899,7 @@ export class BuiltinValidator {
    *  regexes (`regexp(...)`) or variables — their flags aren't statically known. */
   private regexLiteralHasGlobalFlag(node: AstNode | undefined): boolean {
     if (!node || node.type !== 'Literal') return false;
-    const lit = node as any;
+    const lit = node;
     if (lit.literalType !== 'regexp') return false;
     const v = String(lit.value);
     const lastSlash = v.lastIndexOf('/');
@@ -946,7 +977,7 @@ export class BuiltinValidator {
     if (regexArg) {
       if (regexType !== UcodeType.REGEX && regexType !== UcodeType.UNKNOWN) {
         if (regexArg.type === 'Literal') {
-          const literal = regexArg as any;
+          const literal = regexArg;
           if (literal.literalType === 'string') {
             // ucode does NOT compile a string as a regex — `match(s, "[0-9]")` silently returns
             // null (never matches). Hard error, with a "convert to regex literal" quick-fix. Both
@@ -1152,7 +1183,7 @@ export class BuiltinValidator {
         // Validate flags string - only 'i', 's', 'g' are allowed
         const flagsArg = node.arguments[1];
         if (flagsArg && flagsArg.type === 'Literal') {
-          const literal = flagsArg as any;
+          const literal = flagsArg;
           if (literal.literalType === 'string') {
             const flags = literal.value as string;
             const validFlags = new Set(['i', 's', 'g']);
@@ -1204,7 +1235,7 @@ export class BuiltinValidator {
     // Currently not used in validation but available for enhancement
 
     if (patternArg && patternArg.type === 'Literal') {
-      const lit = patternArg as any;
+      const lit = patternArg as LiteralNode & { valueStart?: number; valueEnd?: number };
       if (lit.literalType === 'string') {
         const pattern: string = String(lit.value ?? '');
         const valueStart: number = (lit.valueStart ?? (patternArg.start + 1));
@@ -2673,13 +2704,13 @@ export class BuiltinValidator {
     // keys() always returns array<string> (object keys are strings)
     if (this.narrowedReturnType === UcodeType.ARRAY) {
       this.narrowedReturnType = createArrayType(UcodeType.STRING);
-    } else if (this.narrowedReturnType !== null && isUnionType(this.narrowedReturnType as unknown as UcodeDataType)) {
+    } else if (this.narrowedReturnType !== null && isUnionType(this.narrowedReturnType)) {
       // Arg only MAY be an object (e.g. `object | unknown` from a loop-carried
       // union): the object path still yields string keys — refine the ARRAY
       // member to array<string>, keeping the | null wrong-type path.
-      const parts = getUnionTypes(this.narrowedReturnType as unknown as UcodeDataType)
+      const parts = getUnionTypes(this.narrowedReturnType)
         .map(m => m === UcodeType.ARRAY ? createArrayType(UcodeType.STRING) : m);
-      this.narrowedReturnType = createUnionType(parts as SingleType[]) as unknown as UcodeType;
+      this.narrowedReturnType = createUnionType(parts as SingleType[]);
     }
     this.validateArgumentType(node.arguments[0], 'keys', 1, [UcodeType.OBJECT]);
     // Tag the call result with keys-of provenance. When the argument is a
@@ -2690,7 +2721,7 @@ export class BuiltinValidator {
     // skipped (no chasing aliases here — we'd lose soundness on mutation).
     const arg = node.arguments?.[0];
     if (arg?.type === 'Identifier') {
-      (node as any)._keysOfSymbol = (arg as any).name;
+      (node as CallExpressionNode & { _keysOfSymbol?: string })._keysOfSymbol = arg.name;
     }
     return true;
   }

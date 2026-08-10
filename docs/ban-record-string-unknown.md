@@ -1,6 +1,58 @@
 # Rid the codebase of `Record<string, unknown>` — and keep it out
 
-Status: **OPEN — user-requested 2026-08-09.**
+Status: **BUILT 2026-08-09, COMMITTED 7503a6c (0.8.8)** — user-requested
+2026-08-09; scope EXPANDED same day to a full ban on the `unknown` and `any`
+types everywhere in src/ (not just the `Record` forms, and no ratchet — total
+eradication in one pass). Final numbers: **842 → 0** AST-level violations
+(oxlint's count; the original grep-based inventory undercounted — it missed
+generic positions and a whole file, incrementalCache.ts). Verification: tsc
+clean, `bun run compile` (now lint-gated) green, both test systems green
+(4,473/0 fast suite + mocha aggregate), and the corpus mega-sweep over 283
+files / 93,523 lines came out exactly **−0/+0** (after re-baselining: two
+glinet corpus files in ~/Downloads changed on disk mid-session and initially
+masqueraded as diffs). `SKIP_BAN_LINT=1` bypasses the test-fast gate for
+mid-refactor runs only. Incidental dead code found by the union's narrowing
+(all provably unreachable, removed without behavior change): a
+`'UpdateExpression'` check in incrementalCache (not a ucode node kind — `x++`
+is UnaryExpression), `tryNode.catch`/`tryNode.finalizer` probes in
+semanticAnalyzer (fields don't exist; catch bodies were never descended —
+preserved as-is), `'StringLiteral'`/`literalType === 'integer'` comparisons in
+fileResolver. **Follow-up (same day, user-approved, 0.8.8): the two of those
+that were real bugs are FIXED** — `++`/`--` now count as outward writes in the
+incremental purity classifier (a `g++`-only body is no longer skippable), and
+UC8001 now walks catch bodies as unguarded (inheriting the OUTER try context,
+so a nested try/catch under an outer try stays silent). 6 + 2 new tests;
+corpus sweep still −0/+0 (no corpus file throws inside a catch body). One deliberately weak remnant: semanticAnalyzer's local
+`type DiagnosticData = object` (payloads are per-error-code contracts; a
+precise union is future work — `object` contains no banned tokens).
+
+## As executed (2026-08-09)
+
+The root cause of every bag-cast was that `AstNode` was a *base interface*, so
+`node.type === 'X'` never narrowed and every consumer cast its way out. Fix
+order actually used:
+
+1. `AstNode` is now the real discriminated union (`AstNodeBase` base interface
+   + completed `AstNodeType` union — 5 kinds were missing: JsDocComment and the
+   4 import/export specifiers — + `type AstNode = AstNodeType` + a
+   `Exclude<AstNodeKind, AstNodeType['type']> extends never` static totality
+   assert). Whole codebase compiled with only 7 fallout errors.
+2. `src/ast/astChildren.ts`: total-switch `astChildren`/`forEachAstChild`/
+   `walkAst` (zero casts — the union narrows per case); typeChecker's
+   `getChildNodes` now delegates to it.
+3. Per-file eradication of all `unknown`/`any`/`Record<string, unknown|any>`
+   type syntax (~842 AST-level occurrences by oxlint's count).
+4. Enforcement — **oxlint** (devDependency, Rust, ~50ms over src/) with
+   `.oxlintrc.json`: stock `typescript/no-explicit-any` (catches every `any`
+   incl. `as any` and `Record<string, any>`) + a custom JS plugin
+   `scripts/oxlint/ban-types-plugin.mjs` whose `ban-types/no-unknown` rule
+   reports every `TSUnknownKeyword` (catches `: unknown`, `as unknown`, and
+   the `unknown` inside `Record<string, unknown>`). AST-based, so comment
+   prose and string literals mentioning any/unknown are never false-flagged —
+   this is why the originally-planned grep script (`check-banned-types.mjs`)
+   was dropped. Wired as the first step of `bun run compile`, `bun run
+   package` (so `vscode:prepublish` gates too), and `scripts/test-fast.mjs`;
+   standalone via `bun run lint`.
 
 ## The ruling
 

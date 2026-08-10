@@ -9,7 +9,8 @@
 import { execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
-import type { AstNode, FunctionDeclarationNode } from './ast/nodes';
+import type { AstNode, FunctionDeclarationNode, ObjectExpressionNode } from './ast/nodes';
+import { walkAst } from './ast/astChildren';
 
 /** One parsed commit from the `git log -L` custom format. */
 export interface GitCommit {
@@ -38,19 +39,11 @@ export interface GitSummary {
  */
 export function collectFunctionDeclarations(ast: AstNode | null | undefined): FunctionDeclarationNode[] {
     const out: FunctionDeclarationNode[] = [];
-    const walk = (n: AstNode): void => {
-        if (!n || typeof n !== 'object' || typeof n.type !== 'string') return;
+    if (ast) walkAst(ast, (n) => {
         // Skip forward declarations (`function f;`) — they have no body; the real
         // definition (if any) gets the lens, so `f` isn't annotated twice.
-        if (n.type === 'FunctionDeclaration' && !(n as FunctionDeclarationNode).forwardDeclaration) out.push(n as FunctionDeclarationNode);
-        for (const k of Object.keys(n)) {
-            if (k === 'leadingJsDoc') continue;
-            const v = (n as unknown as Record<string, unknown>)[k];
-            if (Array.isArray(v)) { for (const it of v) walk(it as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string') walk(v as AstNode);
-        }
-    };
-    if (ast) walk(ast);
+        if (n.type === 'FunctionDeclaration' && !n.forwardDeclaration) out.push(n);
+    });
     return out;
 }
 
@@ -77,7 +70,8 @@ export interface CodeLensFn {
     isGlobal?: boolean;
 }
 
-const isFnValue = (n: any): boolean => n?.type === 'FunctionExpression' || n?.type === 'ArrowFunctionExpression';
+const isFnValue = (n: AstNode | null | undefined): boolean =>
+    n?.type === 'FunctionExpression' || n?.type === 'ArrowFunctionExpression';
 
 /**
  * CodeLens targets = every `collectFunctionDeclarations` PLUS top-level function-valued
@@ -94,42 +88,38 @@ export function collectCodeLensFunctions(ast: AstNode | null | undefined): CodeL
     for (const fn of collectFunctionDeclarations(ast)) {
         if (fn.id) out.push({ name: fn.id.name, idNode: fn.id, nameStart: fn.id.start, anchorStart: fn.start, defStart: fn.start, defEnd: fn.end });
     }
-    const prog = ast as { type?: string; body?: unknown[] } | null | undefined;
-    if (!prog || prog.type !== 'Program' || !Array.isArray(prog.body)) return out;
+    if (!ast || ast.type !== 'Program') return out;
 
     // Top-level let/const/function names — a bare `name = fn` to one of these is a local
     // reassignment, not a global, so it gets no lens (consistent with `let f = function`).
     const declared = new Set<string>();
-    for (const stmt of prog.body) {
-        const s = stmt as { type?: string; id?: { name?: string }; declarations?: { id?: { type?: string; name?: string } }[] };
-        if (s?.type === 'FunctionDeclaration' && s.id?.name) declared.add(s.id.name);
-        if (s?.type === 'VariableDeclaration') for (const d of (s.declarations ?? [])) if (d?.id?.type === 'Identifier' && d.id.name) declared.add(d.id.name);
+    for (const stmt of ast.body) {
+        if (stmt.type === 'FunctionDeclaration' && stmt.id.name) declared.add(stmt.id.name);
+        if (stmt.type === 'VariableDeclaration') for (const d of stmt.declarations) if (d.id.type === 'Identifier' && d.id.name) declared.add(d.id.name);
     }
 
     // Emit a lens per function-valued property of an object literal, bound to `memberOf`.
-    const emitObjectMethods = (obj: any, memberOf: string): void => {
-        for (const prop of (obj?.properties ?? [])) {
-            if (prop?.type !== 'Property' || !isFnValue(prop.value)) continue;
+    const emitObjectMethods = (obj: ObjectExpressionNode, memberOf: string): void => {
+        for (const prop of obj.properties) {
+            if (prop.type !== 'Property' || !isFnValue(prop.value)) continue;
             const key = prop.key;
-            const keyName = key?.type === 'Identifier' ? key.name
-                : (key?.type === 'Literal' && typeof key.value === 'string' ? key.value : undefined);
+            const keyName = key.type === 'Identifier' ? key.name
+                : (key.type === 'Literal' && typeof key.value === 'string' ? key.value : undefined);
             if (!keyName) continue;
             out.push({
-                name: keyName, idNode: key as AstNode, nameStart: key.start,
+                name: keyName, idNode: key, nameStart: key.start,
                 anchorStart: prop.start, defStart: prop.start, defEnd: prop.value.end, memberOf,
             });
         }
     };
 
-    for (const stmt of prog.body) {
-        const s = stmt as { type?: string; expression?: any; declarations?: any[]; argument?: any };
-
+    for (const stmt of ast.body) {
         // let/const X = fn  (module-scope function var)  |  let/const api = { …methods }
-        if (s?.type === 'VariableDeclaration') {
-            for (const d of (s.declarations ?? [])) {
-                if (d?.id?.type !== 'Identifier' || !d.init) continue;
+        if (stmt.type === 'VariableDeclaration') {
+            for (const d of stmt.declarations) {
+                if (d.id.type !== 'Identifier' || !d.init) continue;
                 if (isFnValue(d.init)) {
-                    out.push({ name: d.id.name, idNode: d.id as AstNode, nameStart: d.id.start, anchorStart: d.id.start, defStart: d.init.start, defEnd: d.init.end });
+                    out.push({ name: d.id.name, idNode: d.id, nameStart: d.id.start, anchorStart: d.id.start, defStart: d.init.start, defEnd: d.init.end });
                 } else if (d.init.type === 'ObjectExpression') {
                     emitObjectMethods(d.init, d.id.name);
                 }
@@ -138,27 +128,27 @@ export function collectCodeLensFunctions(ast: AstNode | null | undefined): CodeL
         }
 
         // top-level `return { …methods }`  (module export object — unbound)
-        if (s?.type === 'ReturnStatement' && s.argument?.type === 'ObjectExpression') {
-            emitObjectMethods(s.argument, '');
+        if (stmt.type === 'ReturnStatement' && stmt.argument?.type === 'ObjectExpression') {
+            emitObjectMethods(stmt.argument, '');
             continue;
         }
 
-        const expr = s?.type === 'ExpressionStatement' ? s.expression : null;
+        const expr = stmt.type === 'ExpressionStatement' ? stmt.expression : null;
         if (!expr || expr.type !== 'AssignmentExpression' || expr.operator !== '=') continue;
         const left = expr.left, rhs = expr.right;
 
         // api = { …methods }  (assignment to a bare identifier)
-        if (rhs?.type === 'ObjectExpression' && left?.type === 'Identifier' && left.name) {
+        if (rhs.type === 'ObjectExpression' && left.type === 'Identifier' && left.name) {
             emitObjectMethods(rhs, left.name);
             continue;
         }
         if (!isFnValue(rhs)) continue;
         // global.X = fn  |  bare X = fn (implicit global)
-        if (left?.type === 'MemberExpression' && left.object?.type === 'Identifier' && left.object.name === 'global'
-            && !left.computed && left.property?.type === 'Identifier' && left.property.name) {
-            out.push({ name: left.property.name, idNode: left.property as AstNode, nameStart: left.property.start, anchorStart: expr.start, defStart: expr.start, defEnd: rhs.end, isGlobal: true });
-        } else if (left?.type === 'Identifier' && left.name && !declared.has(left.name)) {
-            out.push({ name: left.name, idNode: left as AstNode, nameStart: left.start, anchorStart: left.start, defStart: left.start, defEnd: rhs.end, isGlobal: true });
+        if (left.type === 'MemberExpression' && left.object.type === 'Identifier' && left.object.name === 'global'
+            && !left.computed && left.property.type === 'Identifier' && left.property.name) {
+            out.push({ name: left.property.name, idNode: left.property, nameStart: left.property.start, anchorStart: expr.start, defStart: expr.start, defEnd: rhs.end, isGlobal: true });
+        } else if (left.type === 'Identifier' && left.name && !declared.has(left.name)) {
+            out.push({ name: left.name, idNode: left, nameStart: left.start, anchorStart: left.start, defStart: left.start, defEnd: rhs.end, isGlobal: true });
         }
     }
     return out;

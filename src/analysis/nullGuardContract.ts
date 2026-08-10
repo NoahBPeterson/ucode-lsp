@@ -33,6 +33,7 @@
  */
 
 import type { AstNode, BinaryExpressionNode, IdentifierNode, LiteralNode, TemplateLiteralNode, UnaryExpressionNode } from '../ast/nodes';
+import { astChildren } from '../ast/astChildren';
 
 const contractCache = new WeakMap<AstNode, number[]>();
 
@@ -171,14 +172,8 @@ function walkOwn(node: AstNode, visit: (n: AstNode) => void): void {
   const stack: AstNode[] = [node];
   while (stack.length > 0) {
     const n = stack.pop()!;
-    if (!n || typeof n !== 'object' || typeof (n as { type?: unknown }).type !== 'string') continue;
     if (n !== node && (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression')) continue;
     visit(n);
-    for (const key of Object.keys(n)) {
-      if (key === 'parent' || key === 'leadingJsDoc' || key.startsWith('_')) continue;
-      const v = (n as unknown as Record<string, unknown>)[key];
-      if (Array.isArray(v)) { for (const it of v) if (it && typeof it === 'object') stack.push(it as AstNode); }
-      else if (v && typeof v === 'object') stack.push(v as AstNode);
-    }
+    for (const child of astChildren(n)) stack.push(child);
   }
 }

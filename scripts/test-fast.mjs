@@ -30,6 +30,18 @@ function discover(dir) {
 }
 const files = discover('tests').sort();
 
+// Banned-types gate (docs/ban-record-string-unknown.md): `any`/`unknown`
+// reintroduced anywhere in src/ fails the suite before a single test runs.
+// SKIP_BAN_LINT=1 bypasses it (mid-refactor test runs only — CI never sets it).
+if (process.env.SKIP_BAN_LINT !== '1') {
+  const lint = spawn('bunx', ['oxlint', '-c', '.oxlintrc.json', 'src'], { stdio: 'inherit' });
+  const lintCode = await new Promise((resolve) => lint.on('close', resolve));
+  if (lintCode !== 0) {
+    console.error('\nbanned-types lint failed (oxlint) — fix before running tests.');
+    process.exit(1);
+  }
+}
+
 const shards = Array.from({ length: SHARDS }, () => []);
 files.forEach((f, i) => shards[i % SHARDS].push(f));
 

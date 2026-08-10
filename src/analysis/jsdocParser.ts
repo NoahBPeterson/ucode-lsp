@@ -291,11 +291,10 @@ function parseParamTag(body: string, tags: JsDocTag[]): void {
  *  Registered object types have a first-class union representation (ObjectType,
  *  'objectKind') — the same one socket.create()'s own `socket | null` uses. */
 function asUnionMember(t: UcodeDataType): UcodeDataType {
-  if (t && typeof t === 'object'
-      && (t as { type?: unknown }).type === UcodeType.OBJECT
-      && typeof (t as { moduleName?: unknown }).moduleName === 'string'
-      && isKnownObjectType((t as { moduleName: string }).moduleName)) {
-    return { type: 'objectKind', name: (t as { moduleName: string }).moduleName } as UcodeDataType;
+  if (t && typeof t === 'object' && t.type === UcodeType.OBJECT
+      && 'moduleName' in t && typeof t.moduleName === 'string'
+      && isKnownObjectType(t.moduleName)) {
+    return { type: 'objectKind', name: t.moduleName } as UcodeDataType;
   }
   return t;
 }
@@ -344,7 +343,7 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
         if (typeof resolved === 'string') {
           types.push(resolved as UcodeType);
         } else if (typeof resolved === 'object' && resolved.type === UcodeType.UNION) {
-          types.push(...(resolved as any).types);
+          types.push(...resolved.types);
         } else if (isObjectType(resolved) || isArrayType(resolved)) {
           // ObjectType or ArrayType can be used directly as SingleType
           types.push(resolved);

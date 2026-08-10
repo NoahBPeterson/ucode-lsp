@@ -15,6 +15,7 @@
  */
 
 import type { AstNode, MemberExpressionNode, IdentifierNode, CallExpressionNode, BinaryExpressionNode, AssignmentExpressionNode, LiteralNode } from '../ast/nodes';
+import { astChildren } from '../ast/astChildren';
 
 export interface MinedProperty {
   /** Dotted path below the parameter, e.g. `action.path`. */
@@ -128,18 +129,8 @@ export function mineParamShape(fnNode: AstNode, paramName: string): MinedPropert
       }
     }
 
-    for (const key of Object.keys(node)) {
-      if (key === 'leadingJsDoc' || key.startsWith('_')) continue;
-      const value = (node as unknown as Record<string, unknown>)[key];
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          if (item && typeof item === 'object' && typeof (item as AstNode).type === 'string') {
-            visit(item as AstNode, node);
-          }
-        }
-      } else if (value && typeof value === 'object' && typeof (value as AstNode).type === 'string') {
-        visit(value as AstNode, node);
-      }
+    for (const child of astChildren(node)) {
+      visit(child, node);
     }
   };
   visit(body, fnNode);
@@ -271,7 +262,7 @@ export function propertyKeyName(prop: { computed?: boolean; key?: AstNode }): st
   if (prop.computed || !prop.key) return null;
   if (prop.key.type === 'Identifier') return (prop.key as IdentifierNode).name;
   if (prop.key.type === 'Literal') {
-    const v = (prop.key as { value?: unknown }).value;
+    const v = prop.key.value;
     return typeof v === 'string' ? v : null;
   }
   return null;

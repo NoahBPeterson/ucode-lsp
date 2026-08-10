@@ -81,6 +81,7 @@ import type {
     AssignmentExpressionNode,
     LiteralNode,
 } from './ast/nodes';
+import { forEachAstChild, walkAst } from './ast/astChildren';
 import { UCODE_TARGET_VERSIONS, type UcodeTargetVersion, DEFAULT_TARGET_VERSION } from './analysis/ucodeVersions';
 import { UcodeErrorCode } from './analysis/errorConstants';
 import { stringSourceToRegexLiteral } from './analysis/checkers/builtinValidation';
@@ -162,6 +163,38 @@ interface DiagnosticData {
         leftStart: number; leftEnd: number;
         rightStart: number; rightEnd: number;
     };
+    /** UC8009: relative loadfile() path — the raw path text + its string literal's offsets,
+     *  for the sourcepath(0, true)/deployed-path rewrites. */
+    loadfileRelPath?: { raw: string; litStart: number; litEnd: number };
+    /** UC8010: blocking recv() on a socketpair → the MSG_DONTWAIT insertion payload. */
+    blockingRecv?: {
+        flagText: string; needsImport: boolean; mode: 'append' | 'or';
+        insertOffset?: number; arg1Start?: number; arg1End?: number;
+    };
+    /** UC8012/UC8013: uhttpd handler-form conversion (wrap in a template, or register
+     *  the entry point as `global.handle_request`). */
+    handlerFormFix?: { mode: 'wrap' }
+        | { mode: 'toGlobalFunc'; replaceStart: number; replaceEnd: number; appendAt: number }
+        | { mode: 'toGlobalVar'; replaceStart: number; replaceEnd: number };
+    /** UC6005: which version-gated feature fired — dispatches the per-feature compat fix. */
+    feature?: string;
+    /** UC6005 named-funcexpr-in-init: the function-expression name's offsets + whether
+     *  the body references it (deleting the name is only safe when it doesn't). */
+    nameStart?: number;
+    nameEnd?: number;
+    nameUsedInBody?: boolean;
+    /** UC6005 for-leading-declarator: end of the uninitialized declarator's id (`= null` insert). */
+    idEnd?: number;
+    /** UC6005 hex-literal-sign-split: the sign character's offset (the AST literal's end). */
+    signOffset?: number;
+    /** UC6007: the absorbed assignment's offsets, for the clarifying parens. */
+    unaryAssign?: { assignStart: number; assignEnd: number };
+    /** UC7005: the JSDoc `{…}` type-expression span + the true inferred return type. */
+    ucReturnsFix?: { exprStart: number; exprEnd: number; suggested: string };
+    /** UC2009 type()-string mismatch: correct type-name suggestion(s) + the literal's offsets. */
+    typeStringFix?: string[];
+    litStart?: number;
+    litEnd?: number;
 }
 
 /** Narrow a diagnostic's opaque `data` payload to our known shape. */
@@ -174,7 +207,15 @@ function diagData(diagnostic: Diagnostic): DiagnosticData {
 // read arbitrary child fields (which are themselves nodes, node arrays, or scalars)
 // without resorting to `any`. Specific field reads after a `node.type` check are done
 // through a cast to the matching node interface instead.
-type WalkableNode = AstNode & Record<string, unknown>;
+/** What an arbitrary AST node field can hold: a child node, a list of children, a
+ *  scalar (operator/name/flag), or the TemplateElement cooked/raw pair. */
+type AstFieldValue =
+    | WalkableNode
+    | (WalkableNode | null)[]
+    | string | number | boolean | null | undefined
+    | { raw: string; cooked: string };
+interface WalkableFields { [key: string]: AstFieldValue }
+type WalkableNode = AstNode & WalkableFields;
 const asWalkable = (node: AstNode): WalkableNode => node as WalkableNode;
 
 /** Top-level statement list of a Program-shaped node, as walkable nodes (empty if absent). */
@@ -198,12 +239,20 @@ type FunctionLikeNode = FunctionDeclarationNode | FunctionExpressionNode | Arrow
         'onWorkspaceSymbol'];
     const NULL_RESULT = ['onHover', 'onDefinition', 'onSignatureHelp', 'onPrepareRename',
         'onRenameRequest'];
-    const wrapRegistration = (name: string, fallback: unknown) => {
-        const orig = (connection as any)[name];
+    // A registration surface over the connection: every onX method takes a handler
+    // and re-registers it. Handler args/results are passed through opaquely, so the
+    // handler view is the universal function shape (`never[]` params accept any
+    // handler; results are LSP result objects, arrays, or null).
+    type WrappedResult = object | null | undefined;
+    type WrappedHandler = (...args: never[]) => WrappedResult;
+    interface WrappableConnection { [method: string]: (handler: WrappedHandler) => void }
+    const wrappable = connection as object as WrappableConnection;
+    const wrapRegistration = (name: string, fallback: object | null) => {
+        const orig = wrappable[name];
         if (typeof orig !== 'function') return;
-        (connection as any)[name] = (handler: (...a: unknown[]) => unknown) =>
-            orig.call(connection, (...args: unknown[]) => {
-                const onErr = (e: unknown) => {
+        wrappable[name] = (handler: WrappedHandler) =>
+            orig.call(connection, (...args: never[]) => {
+                const onErr = <E,>(e: E): WrappedResult => {
                     if (isStackOverflow(e)) {
                         connection.console.warn(`ucode-lsp: ${name} skipped - document too deeply nested to analyze`);
                         return fallback;
@@ -430,7 +479,8 @@ async function scanDirectoryRecursively(dir: string, ucodeFiles: string[]): Prom
         }
     } catch (error) {
         // Silently ignore permission errors and continue scanning
-        if ((error as any).code !== 'EACCES' && (error as any).code !== 'EPERM') {
+        const code = (error as { code?: string }).code;
+        if (code !== 'EACCES' && code !== 'EPERM') {
             connection.console.warn(`Error reading directory ${dir}: ${error}`);
         }
     }
@@ -670,7 +720,7 @@ documents.onDidOpen(async (change: TextDocumentChangeEvent<TextDocument>) => {
 
 /** True for a native stack overflow (deeply-nested input) or our analyzer's depth-guard bail.
  *  Used to degrade gracefully instead of crashing the server. (#117) */
-function isStackOverflow(e: unknown): boolean {
+function isStackOverflow<E>(e: E): boolean {
     return (e instanceof RangeError && /call stack|Maximum call stack/i.test(e.message))
         || (e instanceof Error && e.name === 'AnalysisDepthExceeded');
 }
@@ -752,7 +802,7 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
             // umbrella fallback if an emission site didn't set a more specific one.
             code: err.code ?? UcodeErrorCode.SYNTAX_ERROR,
             // Lexer-computed quick-fix payloads (e.g. UC6020's neutralize offsets).
-            ...((err as { data?: Record<string, unknown> }).data ? { data: (err as { data?: Record<string, unknown> }).data } : {}),
+            ...(('data' in err && err.data) ? { data: err.data } : {}),
         };
         return diagnostic;
     }).filter(d => {
@@ -811,7 +861,7 @@ async function validateAndAnalyzeDocumentInner(textDocument: TextDocument, force
         let cleanCount = 0;
         try {
             const prev = forceFull ? undefined : incrementalCacheByUri.get(textDocument.uri);
-            const inc = runIncremental(textDocument, parseResult.ast as any, prev, runAnalysis);
+            const inc = runIncremental(textDocument, parseResult.ast as ProgramNode, prev, runAnalysis);
             analysisResult = inc.result;
             cleanCount = inc.skipped;
             incrementalCacheByUri.set(textDocument.uri, inc.cache);
@@ -1855,25 +1905,16 @@ function generateTypedefFromUsageActions(
                 }
             }
         }
-        const keyName = node.type === 'Property' && !(node as PropertyNode).computed
-            ? ((node as PropertyNode).key.type === 'Identifier'
-                ? ((node as PropertyNode).key as IdentifierNode).name
-                : String(((node as PropertyNode).key as { value?: unknown }).value ?? ''))
+        const keyNode = node.type === 'Property' && !node.computed ? node.key : null;
+        const keyName = keyNode
+            ? (keyNode.type === 'Identifier'
+                ? keyNode.name
+                : String((keyNode.type === 'Literal' ? keyNode.value : undefined) ?? ''))
             : null;
         if (keyName) enclosingKeys.push(keyName);
         const isObj = node.type === 'ObjectExpression';
         if (isObj) objStack.push(node as ObjectExpressionNode);
-        for (const key of Object.keys(node)) {
-            if (key === 'leadingJsDoc' || key.startsWith('_')) continue;
-            const value = (node as unknown as Record<string, unknown>)[key];
-            if (Array.isArray(value)) {
-                for (const item of value) {
-                    if (item && typeof item === 'object' && typeof (item as AstNode).type === 'string') visit(item as AstNode);
-                }
-            } else if (value && typeof value === 'object' && typeof (value as AstNode).type === 'string') {
-                visit(value as AstNode);
-            }
-        }
+        forEachAstChild(node, visit);
         if (isObj) objStack.pop();
         if (keyName) enclosingKeys.pop();
     };
@@ -2046,9 +2087,10 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             //     directory at runtime, works from any launch dir (interpreter-verified)
             //  2. the deployed absolute path, when the target sits in an OpenWrt package
             //     `files/` tree (…/files/lib/netifd/x.uc installs at /lib/netifd/x.uc)
+            const loadfileFix = diagData(diagnostic).loadfileRelPath;
             if (diagnostic.code === UcodeErrorCode.LOADFILE_CWD_RELATIVE_PATH
-                && (diagnostic as any).data?.loadfileRelPath) {
-                const { raw, litStart, litEnd } = (diagnostic as any).data.loadfileRelPath;
+                && loadfileFix) {
+                const { raw, litStart, litEnd } = loadfileFix;
                 const litRange = { start: document.positionAt(litStart), end: document.positionAt(litEnd) };
                 const q = document.getText({
                     start: litRange.start, end: document.positionAt(litStart + 1),
@@ -2083,12 +2125,10 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
 
             // UC8010: blocking recv() on a socketpair → offer to add MSG_DONTWAIT (making the
             // read non-blocking), auto-importing socket's MSG_DONTWAIT when it isn't in scope.
+            const blockingRecvFix = diagData(diagnostic).blockingRecv;
             if (diagnostic.code === UcodeErrorCode.BLOCKING_SOCKETPAIR_RECV
-                && (diagnostic as any).data?.blockingRecv) {
-                const fx = (diagnostic as any).data.blockingRecv as {
-                    flagText: string; needsImport: boolean; mode: 'append' | 'or';
-                    insertOffset?: number; arg1Start?: number; arg1End?: number;
-                };
+                && blockingRecvFix) {
+                const fx = blockingRecvFix;
                 const edits: TextEdit[] = [];
                 if (fx.mode === 'append' && typeof fx.insertOffset === 'number') {
                     edits.push(TextEdit.insert(document.positionAt(fx.insertOffset), `, ${fx.flagText}`));
@@ -2133,7 +2173,7 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // file in `{% … %}`. UC8013 (FN-2): a wrong-form entry point → convert to
             // `global.handle_request = …`.
             if (diagnostic.code === UcodeErrorCode.HANDLER_NOT_A_TEMPLATE
-                && (diagnostic as any).data?.handlerFormFix?.mode === 'wrap') {
+                && diagData(diagnostic).handlerFormFix?.mode === 'wrap') {
                 const text = document.getText();
                 // Keep a leading shebang line outside the template block.
                 const shebang = /^#![^\n]*\n/.exec(text);
@@ -2150,9 +2190,10 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                     ] } },
                 });
             }
+            const handlerFix = diagData(diagnostic).handlerFormFix;
             if (diagnostic.code === UcodeErrorCode.HANDLER_ENTRY_WRONG_FORM
-                && (diagnostic as any).data?.handlerFormFix) {
-                const fx = (diagnostic as any).data.handlerFormFix;
+                && handlerFix) {
+                const fx = handlerFix;
                 const edits: TextEdit[] = [];
                 if (fx.mode === 'toGlobalFunc') {
                     edits.push(TextEdit.replace(
@@ -2196,7 +2237,8 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // "add ';'" spliced a semicolon into e.g. `0x1e+2` → `0x1e+;2`). Availability
             // gates (missing module/function) have no syntax fix and only get the retarget.
             if (diagnostic.code === 'UC6005') {
-                const feature = (diagnostic as any).data?.feature;
+                const d6005 = diagData(diagnostic);
+                const feature = d6005.feature;
                 if (feature === 'export-function-no-semicolon') {
                     codeActions.push({
                         title: `Add ';' (compatible with OpenWrt ${ucodeTargetVersion})`,
@@ -2206,12 +2248,13 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                         edit: { changes: { [params.textDocument.uri]: [TextEdit.insert(diagnostic.range.end, ';')] } },
                     });
                 }
-                if (feature === 'named-funcexpr-in-init' && typeof (diagnostic as any).data?.nameStart === 'number'
-                        && !(diagnostic as any).data?.nameUsedInBody) {
+                if (feature === 'named-funcexpr-in-init' && typeof d6005.nameStart === 'number'
+                        && !d6005.nameUsedInBody) {
                     // Deleting the name is only offered when the body never references it -
                     // for self-recursion the remedy is a function declaration (message says so),
                     // which is a rewrite we don't automate. AST offsets stamped by the analyzer.
-                    const { nameStart, nameEnd } = (diagnostic as any).data;
+                    const nameStart = d6005.nameStart;
+                    const nameEnd = d6005.nameEnd!;
                     codeActions.push({
                         title: 'Remove the function name',
                         kind: CodeActionKind.QuickFix,
@@ -2222,7 +2265,7 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                         ] } },
                     });
                 }
-                if (feature === 'for-leading-declarator' && typeof (diagnostic as any).data?.idEnd === 'number') {
+                if (feature === 'for-leading-declarator' && typeof d6005.idEnd === 'number') {
                     // `for (let x, y = 0; ...)` -> `for (let x = null, y = 0; ...)` -
                     // oracle-verified fine on every ucode version; matches what the
                     // dropped declarator's value would have been on fixed ucode anyway.
@@ -2232,15 +2275,15 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                         diagnostics: [diagnostic],
                         isPreferred: true,
                         edit: { changes: { [params.textDocument.uri]: [
-                            TextEdit.insert(document.positionAt((diagnostic as any).data.idEnd), ' = null'),
+                            TextEdit.insert(document.positionAt(d6005.idEnd), ' = null'),
                         ] } },
                     });
                 }
-                if (feature === 'hex-literal-sign-split' && typeof (diagnostic as any).data?.signOffset === 'number') {
+                if (feature === 'hex-literal-sign-split' && typeof d6005.signOffset === 'number') {
                     // Un-bond the sign from the hex literal: ` ` before it, and after it too
                     // unless whitespace already follows (`0x1e+2` → `0x1e + 2`). signOffset is
                     // the AST literal's end offset, stamped by the analyzer.
-                    const signOffset: number = (diagnostic as any).data.signOffset;
+                    const signOffset: number = d6005.signOffset;
                     const text = document.getText();
                     const sign = text[signOffset] ?? '';
                     const edits = [TextEdit.insert(document.positionAt(signOffset), ' ')];
@@ -2270,8 +2313,9 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
 
             // UC6007: `!x = y` parses as `!(x = y)`. Offer to add the clarifying parens
             // around the assignment (AST-based: uses the assignment node's offsets).
-            if (diagnostic.code === 'UC6007' && (diagnostic as any).data?.unaryAssign) {
-                const { assignStart, assignEnd } = (diagnostic as any).data.unaryAssign;
+            const unaryAssignFix = diagData(diagnostic).unaryAssign;
+            if (diagnostic.code === 'UC6007' && unaryAssignFix) {
+                const { assignStart, assignEnd } = unaryAssignFix;
                 codeActions.push({
                     title: 'Add parentheses around the assignment',
                     kind: CodeActionKind.QuickFix,
@@ -2309,8 +2353,9 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                     });
                 }
             }
-            if (diagnostic.code === 'UC7005' && (diagnostic as any).data?.ucReturnsFix) {
-                const fix = (diagnostic as any).data.ucReturnsFix;
+            const returnsFix = diagData(diagnostic).ucReturnsFix;
+            if (diagnostic.code === 'UC7005' && returnsFix) {
+                const fix = returnsFix;
                 const range = { start: document.positionAt(fix.exprStart), end: document.positionAt(fix.exprEnd) };
                 codeActions.push({
                     title: `Change @returns to '{${fix.suggested}}'`,
@@ -2352,13 +2397,13 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             // Quick-fix for the UC2009 type()-string mismatch: replace the wrong
             // type string (e.g. "number", "integer", "boolean") with the correct
             // ucode type name(s) ("int"/"double", "int", "bool").
-            if (diagnostic.code === 'UC2009' && (diagnostic as any).data?.typeStringFix) {
-                const fixData = (diagnostic as any).data;
+            const d2009 = diagData(diagnostic);
+            if (diagnostic.code === 'UC2009' && d2009.typeStringFix) {
                 const range = {
-                    start: document.positionAt(fixData.litStart),
-                    end: document.positionAt(fixData.litEnd),
+                    start: document.positionAt(d2009.litStart!),
+                    end: document.positionAt(d2009.litEnd!),
                 };
-                const suggestions: string[] = fixData.typeStringFix;
+                const suggestions: string[] = d2009.typeStringFix;
                 for (const suggestion of suggestions) {
                     codeActions.push({
                         title: `Change to "${suggestion}"`,
@@ -2422,8 +2467,7 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
             const isJsDocTrigger =
                 diagnostic.code === 'UC7003'
                 || ((diagnostic.code === 'incompatible-function-argument' || diagnostic.code === 'nullable-argument')
-                    && (diagnostic as any).data
-                    && typeof (diagnostic as any).data.variableName === 'string');
+                    && typeof diagData(diagnostic).variableName === 'string');
             if (isJsDocTrigger && ast && cacheEntry?.result) {
                 const diagOffset = document.offsetAt(diagnostic.range.start);
                 const jsDocAction = generateJsDocQuickFix(ast, diagOffset, document, params.textDocument.uri, cacheEntry.result);
@@ -2436,7 +2480,7 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                         jsDocAction.diagnostics = [diagnostic];
                         codeActions.push(jsDocAction);
                     } else {
-                        const varName = (diagnostic as any).data.variableName;
+                        const varName = diagData(diagnostic).variableName;
                         const funcNode = findFunctionAtOffset(ast, diagOffset);
                         const isParam = funcNode?.params?.some((p: IdentifierNode) => p.name === varName);
                         if (isParam) {
@@ -2721,25 +2765,20 @@ function findCrossFileReferences(targetUri: string, fnName: string): RefLocation
 // resolves to `targetPath`? (Relative to the caller's dir, matching getLoadfileGlobals.)
 function fileLoadfilesTarget(ast: AstNode, callerFilePath: string, targetPath: string): boolean {
     let found = false;
-    const walk = (n: any): void => {
-        if (found || !n || typeof n.type !== 'string') return;
-        if (n.type === 'CallExpression' && n.callee?.type === 'CallExpression') {
+    walkAst(ast, (n) => {
+        if (found) return false;
+        if (n.type === 'CallExpression' && n.callee.type === 'CallExpression') {
             const lf = n.callee;
-            if (lf.callee?.type === 'Identifier' && lf.callee.name === 'loadfile'
-                && lf.arguments?.[0]?.type === 'Literal' && typeof lf.arguments[0].value === 'string') {
-                const raw: string = lf.arguments[0].value;
+            const arg0 = lf.arguments[0];
+            if (lf.callee.type === 'Identifier' && lf.callee.name === 'loadfile'
+                && arg0?.type === 'Literal' && typeof arg0.value === 'string') {
+                const raw: string = arg0.value;
                 const resolved = raw.startsWith('/') ? path.normalize(raw) : path.normalize(path.join(path.dirname(callerFilePath), raw));
-                if (path.resolve(resolved) === targetPath) { found = true; return; }
+                if (path.resolve(resolved) === targetPath) { found = true; return false; }
             }
         }
-        for (const k of Object.keys(n)) {
-            if (k === 'leadingJsDoc' || found) continue;
-            const v = (n as Record<string, unknown>)[k];
-            if (Array.isArray(v)) { for (const it of v) walk(it); }
-            else if (v && typeof v === 'object' && typeof (v as { type?: unknown }).type === 'string') walk(v);
-        }
-    };
-    walk(ast);
+        return undefined;
+    });
     return found;
 }
 
@@ -2797,8 +2836,14 @@ connection.onCodeLens(async (params: CodeLensParams): Promise<CodeLens[]> => {
     return lenses;
 });
 
+// The payloads onCodeLens attaches to its two lens kinds (serialized through the client
+// and read back in the resolve round-trip).
+type CodeLensData =
+    | { kind: 'git'; uri: string; startLine: number; endLine: number; name: string }
+    | { kind: 'refs'; uri: string; nameStart: number; name: string };
+
 connection.onCodeLensResolve((lens: CodeLens): CodeLens => {
-    const data = lens.data as any;
+    const data = lens.data as CodeLensData | undefined;
     if (!data) return lens;
 
     // References lens: count in-file references to the function and wire a peek.
@@ -3347,15 +3392,12 @@ connection.onSignatureHelp(async (params: SignatureHelpParams): Promise<Signatur
  */
 function collectWriteTargetOffsets(ast: AstNode | null | undefined): Set<number> {
     const writes = new Set<number>();
-    const markIfIdent = (n: unknown): void => {
-        const node = n as WalkableNode | null | undefined;
-        if (node && typeof node === 'object' && node.type === 'Identifier' && typeof node.start === 'number') {
+    const markIfIdent = (node: AstNode | null | undefined): void => {
+        if (node && node.type === 'Identifier') {
             writes.add(node.start);
         }
     };
-    const walk = (nodeArg: unknown): void => {
-        const node = nodeArg as WalkableNode | null | undefined;
-        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
+    const walk = (node: AstNode): void => {
         switch (node.type) {
             case 'VariableDeclarator': markIfIdent(node.id); break;
             case 'AssignmentExpression': markIfIdent(node.left); break;
@@ -3366,7 +3408,7 @@ function collectWriteTargetOffsets(ast: AstNode | null | undefined): Set<number>
             case 'FunctionDeclaration':
             case 'FunctionExpression':
             case 'ArrowFunctionExpression':
-                if (Array.isArray(node.params)) node.params.forEach(markIfIdent);
+                node.params.forEach(markIfIdent);
                 markIfIdent(node.restParam);
                 break;
             case 'CatchClause':
@@ -3374,12 +3416,7 @@ function collectWriteTargetOffsets(ast: AstNode | null | undefined): Set<number>
                 markIfIdent(node.param);
                 break;
         }
-        for (const key of Object.keys(node)) {
-            if (key === 'leadingJsDoc') continue;
-            const v = node[key];
-            if (Array.isArray(v)) v.forEach(walk);
-            else if (v && typeof v === 'object') walk(v);
-        }
+        forEachAstChild(node, walk);
     };
     if (ast) walk(ast);
     return writes;
@@ -3791,7 +3828,7 @@ function findEnclosingContext(ast: AstNode | null | undefined, document: TextDoc
         result.inFunction = newInFunc;
         if (isFunc) {
             result.enclosingFunctionLine = document.positionAt(node.start).line;
-            result.enclosingFunction = node as unknown as FunctionLikeNode;
+            result.enclosingFunction = nodeArg as FunctionLikeNode;
         }
         result.inLoop = newInLoop;
         result.inLoopHeader = inLoopHeader;
@@ -3855,7 +3892,7 @@ function findEnclosingContext(ast: AstNode | null | undefined, document: TextDoc
             const childInCondition = isCondKey ? true : (isControl && (key === 'body' || key === 'consequent' || key === 'alternate') ? false : inCondition);
             const childCondOwner: AstNode | null = isCondKey ? (node as AstNode) : (isControl && !isCondKey ? null : condOwner);
             if (Array.isArray(val)) {
-                for (const item of val as unknown[]) {
+                for (const item of val) {
                     if (item && typeof item === 'object' && typeof (item as AstNode).start === 'number') {
                         walk(item as AstNode, newInFunc, childInLoop, childInLoopHeader, childInCondition, childCondOwner);
                     }
@@ -4112,8 +4149,8 @@ function documentedParamNames(jsDocValue: string): Set<string> {
 
 /** Params of a function-like node that its leading JSDoc (if any) does not document. */
 function undocumentedParams(fn: FunctionLikeNode): IdentifierNode[] {
-    const params = (fn.params as IdentifierNode[] | undefined) ?? [];
-    const jsDoc = (fn as { leadingJsDoc?: { value: string } }).leadingJsDoc;
+    const params = fn.params ?? [];
+    const jsDoc = fn.leadingJsDoc;
     if (!jsDoc) return params;
     const documented = documentedParamNames(jsDoc.value);
     return params.filter(p => !documented.has(p.name));
@@ -4124,22 +4161,13 @@ function undocumentedParams(fn: FunctionLikeNode): IdentifierNode[] {
  *  param-usage inference still sees them. */
 function collectUnannotatedFunctions(ast: AstNode | null | undefined): FunctionLikeNode[] {
     const out: FunctionLikeNode[] = [];
-    const walk = (node: AstNode): void => {
-        if (!node || typeof node !== 'object' || typeof node.type !== 'string') return;
-        const n = asWalkable(node);
+    if (ast) walkAst(ast, (node) => {
         if ((node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression')
-            && n.params && (n.params as unknown[]).length > 0
-            && undocumentedParams(node as FunctionLikeNode).length > 0) {
-            out.push(node as FunctionLikeNode);
+            && node.params.length > 0
+            && undocumentedParams(node).length > 0) {
+            out.push(node);
         }
-        for (const k of Object.keys(node)) {
-            if (k === 'leadingJsDoc') continue;
-            const v = n[k];
-            if (Array.isArray(v)) { for (const it of v) walk(it as AstNode); }
-            else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') walk(v as AstNode);
-        }
-    };
-    if (ast) walk(ast);
+    });
     return out;
 }
 
@@ -4410,7 +4438,7 @@ function inferParamTypesFromUsage(
  * Cached on the AST via a WeakMap so repeat calls within the same request don't
  * re-run.
  */
-const inferenceCache = new WeakMap<object, { diagVersion: unknown, result: AllInferences }>();
+const inferenceCache = new WeakMap<object, { diagVersion: Diagnostic[], result: AllInferences }>();
 
 function inferAllParamTypesFromUsage(ast: AstNode, allDiagnostics: Diagnostic[], symbolTable?: SymbolTable): AllInferences {
     // Cache keyed on the AST; invalidate if the diagnostic set changed.

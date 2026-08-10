@@ -1,0 +1,11 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "jsPlugins": ["./scripts/oxlint/ban-types-plugin.mjs"],
+  "categories": {
+    "correctness": "off"
+  },
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    "ban-types/no-unknown": "error"
+  }
+}

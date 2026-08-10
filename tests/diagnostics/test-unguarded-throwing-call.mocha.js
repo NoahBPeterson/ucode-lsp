@@ -195,6 +195,51 @@ describe('Unguarded throwing-call lint (UC8001) + wrap-in-try/catch quick fix', 
     s.notifyConfigChange({ warnUnguardedThrowingCalls: false });
     const ds = await s.waitForDiagnostics(uri, (d) => u8(d).length === 0, 4000).catch(() => [{ code: 'UC8001' }]);
     assert.strictEqual(u8(ds).length, 0, 'explicit false must silence it');
-    // (last test in the suite — no need to restore the setting)
+    s.notifyConfigChange({ warnUnguardedThrowingCalls: true }); // restore for the catch-body tests below
+  });
+
+  it('a throwing call INSIDE a catch body is NOT guarded — flagged', async () => {
+    const uri = `file://${path.join(ws, 'catch-body.uc')}`;
+    const code = [
+      'let raw = "x";',
+      'let data;',
+      'try {',
+      '\tdata = json(raw);',                 // 3 — guarded by the try: NOT flagged
+      '} catch (e) {',
+      '\tdata = json("{\\"fallback\\":1}");', // 5 — raised here propagates: flagged
+      '}',
+      'print(data);',
+      '',
+    ].join('\n');
+    s.openOrChangeDocument(uri, code);
+    const ds = await s.waitForDiagnostics(uri, (d) => u8(d).length >= 1, 8000);
+    const hits = u8(ds);
+    assert.strictEqual(hits.length, 1, `exactly the catch-body json() should be flagged, got ${JSON.stringify(hits.map(h => h.range))}`);
+    assert.strictEqual(hits[0].range.start.line, 5, 'should point at the json() inside the catch body');
+  });
+
+  it('a catch body nested inside an OUTER try IS guarded — not flagged', async () => {
+    const uri = `file://${path.join(ws, 'catch-body-outer.uc')}`;
+    const code = [
+      'let raw = "x";',
+      'let data;',
+      'try {',
+      '\ttry {',
+      '\t\tdata = json(raw);',
+      '\t} catch (e) {',
+      '\t\tdata = json("{}");',   // guarded by the OUTER try
+      '\t}',
+      '} catch (e2) {',
+      '\tdata = null;',
+      '}',
+      'print(data);',
+      '',
+    ].join('\n');
+    s.openOrChangeDocument(uri, code);
+    // Wait for a publish, give a settle beat, then read the latest cached state.
+    await s.waitForDiagnostics(uri, () => true, 8000);
+    await new Promise(r => setTimeout(r, 600));
+    const latest = await s.waitForDiagnostics(uri, () => true, 1000);
+    assert.strictEqual(u8(latest).length, 0, 'everything is inside the outer try — nothing to flag');
   });
 });

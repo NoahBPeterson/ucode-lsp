@@ -9,9 +9,10 @@ import { TextDocument } from 'vscode-languageserver-textdocument';
 import { splitTopLevel } from './analysis/typeStringUtils';
 import { UcodeLexer, TokenType, isKeyword, isMemberAccessDot, decodeEscape, type Token } from './lexer';
 import type {
-    AstNode, PropertyNode, ImportDeclarationNode, ImportSpecifierNode,
+    AstNode, PropertyNode,
     LiteralNode, FunctionExpressionNode, ArrowFunctionExpressionNode, FunctionDeclarationNode,
 } from './ast/nodes';
+import { astChildren } from './ast/astChildren';
 import { allBuiltinFunctions } from './builtins';
 import { type SemanticAnalysisResult, SymbolType, type Symbol as UcodeSymbol } from './analysis';
 import { typeToString, type UcodeDataType, UcodeType, effectiveSymbolType, isObjectType, getObjectTypeName, isUnionType, getUnionTypes, extractModuleType, propertyTypeAt, isNeverType } from './analysis/symbolTable';
@@ -646,25 +647,15 @@ function getFormatSpecifierHover(token: Token, tokenIndex: number, tokens: Token
 
 /** Find the object-literal Property whose KEY identifier spans `offset`. */
 function findPropertyKeyAtOffset(node: AstNode, offset: number): PropertyNode | null {
-    if (!node || typeof node !== 'object' || typeof node.type !== 'string') return null;
     // Span pruning: a subtree that doesn't contain the offset can't hold the key.
-    if (typeof node.start === 'number' && typeof node.end === 'number'
-        && (offset < node.start || offset > node.end)) return null;
+    if (offset < node.start || offset > node.end) return null;
     if (node.type === 'Property') {
-        const prop = node as PropertyNode;
-        if (prop.key && typeof prop.key.start === 'number'
-            && prop.key.start <= offset && offset <= prop.key.end) {
-            return prop;
+        if (node.key.start <= offset && offset <= node.key.end) {
+            return node;
         }
     }
-    for (const k of Object.keys(node)) {
-        if (k === 'type' || k === 'start' || k === 'end') continue;
-        const v = (node as unknown as Record<string, unknown>)[k];
-        if (Array.isArray(v)) {
-            for (const it of v) { const f = findPropertyKeyAtOffset(it as AstNode, offset); if (f) return f; }
-        } else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') {
-            const f = findPropertyKeyAtOffset(v as AstNode, offset); if (f) return f;
-        }
+    for (const child of astChildren(node)) {
+        const f = findPropertyKeyAtOffset(child, offset); if (f) return f;
     }
     return null;
 }
@@ -675,35 +666,22 @@ function findPropertyKeyAtOffset(node: AstNode, offset: number): PropertyNode | 
  * how the import statement is wrapped across lines.
  */
 function findImportedNameAtOffset(node: AstNode, offset: number): { moduleName: string; importedName: string } | null {
-    if (!node || typeof node !== 'object' || typeof node.type !== 'string') return null;
     // Span pruning: a subtree that doesn't contain the offset can't hold the name.
-    if (typeof node.start === 'number' && typeof node.end === 'number'
-        && (offset < node.start || offset > node.end)) return null;
+    if (offset < node.start || offset > node.end) return null;
     if (node.type === 'ImportDeclaration') {
-        const imp = node as ImportDeclarationNode;
-        if (Array.isArray(imp.specifiers) && imp.source) {
-            for (const spec of imp.specifiers) {
-                if (spec.type === 'ImportSpecifier') {
-                    const importSpec = spec as ImportSpecifierNode;
-                    if (importSpec.imported && typeof importSpec.imported.start === 'number'
-                        && importSpec.imported.start <= offset && offset <= importSpec.imported.end) {
-                        const raw = imp.source.value;
-                        if (typeof raw === 'string') {
-                            return { moduleName: raw.replace(/^['"]|['"]$/g, ''), importedName: importSpec.imported.name };
-                        }
+        for (const spec of node.specifiers) {
+            if (spec.type === 'ImportSpecifier') {
+                if (spec.imported.start <= offset && offset <= spec.imported.end) {
+                    const raw = node.source.value;
+                    if (typeof raw === 'string') {
+                        return { moduleName: raw.replace(/^['"]|['"]$/g, ''), importedName: spec.imported.name };
                     }
                 }
             }
         }
     }
-    for (const k of Object.keys(node)) {
-        if (k === 'type' || k === 'start' || k === 'end') continue;
-        const v = (node as unknown as Record<string, unknown>)[k];
-        if (Array.isArray(v)) {
-            for (const it of v) { const f = findImportedNameAtOffset(it as AstNode, offset); if (f) return f; }
-        } else if (v && typeof v === 'object' && typeof (v as AstNode).type === 'string') {
-            const f = findImportedNameAtOffset(v as AstNode, offset); if (f) return f;
-        }
+    for (const child of astChildren(node)) {
+        const f = findImportedNameAtOffset(child, offset); if (f) return f;
     }
     return null;
 }
@@ -927,12 +905,12 @@ export function handleHover(
             } else {
                 const cl = new UcodeLexer(text, { rawMode: true });
                 cl.tokenize();
-                comments = (cl as any).comments || [];
+                comments = cl.comments || [];
             }
         } else {
             const lexer = new UcodeLexer(text, { rawMode: true });
             tokens = lexer.tokenize();
-            comments = (lexer as any).comments || [];
+            comments = lexer.comments || [];
         }
 
         // Suppress hover inside a comment — the cursor is on prose, not code, so a word there
@@ -1209,7 +1187,7 @@ export function handleHover(
                 // range/text back to the minus and negate the decimal-value note.
                 // (docs/tc-negative-array-index.md)
                 let startPos = token.pos;
-                let displayValue: unknown = token.value;
+                let displayValue: string | number | boolean = token.value;
                 if ((litType === 'integer' || litType === 'double') && tokenIndex > 0) {
                     const prevToken = tokens[tokenIndex - 1];
                     if (prevToken && prevToken.type === TokenType.TK_SUB && isUnaryMinusContext(tokens, tokenIndex - 1)) {
@@ -1441,7 +1419,9 @@ export function handleHover(
                             declared: true,
                             used: true,
                             node: { type: 'Identifier', start: token.pos, end: token.end, name: word },
-                        } as any;
+                            declaredAt: token.pos,
+                            usedAt: [],
+                        };
                     }
                 }
 

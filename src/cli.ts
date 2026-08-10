@@ -335,7 +335,7 @@ function collectVariableIdentifiers(root: AstNode): IdentifierNode[] {
 
         // Children that are NOT variable positions (identity-based, so the shared
         // imported===local node of a non-aliased import is never skipped).
-        const skip = new Set<unknown>();
+        const skip = new Set<AstNode>();
         switch (node.type) {
             case 'MemberExpression': {
                 const m = node as MemberExpressionNode;
@@ -364,9 +364,8 @@ function collectVariableIdentifiers(root: AstNode): IdentifierNode[] {
             }
         }
 
-        for (const key of Object.keys(node)) {
+        for (const [key, value] of Object.entries(node)) {
             if (key === 'type' || key === 'start' || key === 'end' || key === 'leadingJsDoc') continue;
-            const value = (node as unknown as Record<string, unknown>)[key];
             if (Array.isArray(value)) {
                 for (const item of value) {
                     if (item && typeof item === 'object' && !skip.has(item)) visit(item as AstNode);
@@ -410,7 +409,7 @@ function auditTypeCoverage(analysis: FileAnalysis): { issues: CoverageIssue[]; p
     // handleHover only needs `.get(uri)` from the documents collection.
     const documents = {
         get: (uri: string) => (uri === document.uri ? document : undefined),
-    } as unknown as TextDocuments<TextDocument>;
+    } as Partial<TextDocuments<TextDocument>> as TextDocuments<TextDocument>;
 
     const identifiers = collectVariableIdentifiers(result.ast)
         .sort((a, b) => a.start - b.start);
@@ -491,7 +490,7 @@ function runTypeCoverage(files: string[], targetVersion: UcodeTargetVersion): vo
         let analysis: FileAnalysis;
         try {
             analysis = analyzeFile(file, targetVersion);
-        } catch (e: unknown) {
+        } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             process.stderr.write(`ucode-lsp: error analyzing ${file}: ${msg}\n`);
             skipped++;
@@ -588,7 +587,7 @@ function runCheck() {
             } else if (stat.isFile()) {
                 files.push(resolved);
             }
-        } catch (e: unknown) {
+        } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             process.stderr.write(`ucode-lsp: cannot access '${target}': ${msg}\n`);
             process.exit(2);
@@ -613,7 +612,7 @@ function runCheck() {
         let diagnostics: Diagnostic[];
         try {
             diagnostics = analyzeFile(file, targetVersion).diagnostics;
-        } catch (e: unknown) {
+        } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             process.stderr.write(`ucode-lsp: error analyzing ${file}: ${msg}\n`);
             continue;

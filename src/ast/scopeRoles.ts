@@ -16,7 +16,8 @@
  *     check, owned by the symbol table). Not consulted by the function-scope collectors; carried
  *     so this map stays the complete classification.
  */
-import type { AstNode, AstNodeKind, IdentifierNode } from './nodes';
+import type { AstNode, AstNodeKind } from './nodes';
+import { astChildren } from './astChildren';
 
 export interface ScopeRole {
   /** Binding this node contributes to its ENCLOSING scope, and via which field:
@@ -94,9 +95,9 @@ function roleOf(node: AstNode): ScopeRole {
   return SCOPE_ROLE[node.type] ?? NONE;
 }
 
-const idName = (n: unknown): string | null => {
-  if (n && typeof n === 'object' && (n as { type?: unknown }).type === 'Identifier') {
-    const nm = (n as IdentifierNode).name;
+const idName = (n: AstNode | null | undefined): string | null => {
+  if (n && n.type === 'Identifier') {
+    const nm = n.name;
     return typeof nm === 'string' && nm ? nm : null;
   }
   return null;
@@ -105,22 +106,22 @@ const idName = (n: unknown): string | null => {
 /** Names this node binds into its ENCLOSING scope (a nested-function name, a `let`/`const` id, a
  *  `catch` param, an import local). NOT a function's own params — see `functionOwnBindings`. */
 export function enclosingBindings(node: AstNode): string[] {
-  const n = node as unknown as Record<string, unknown>;
   switch (roleOf(node).binds) {
     case 'none': return [];
-    case 'id': { const nm = idName(n['id']); return nm ? [nm] : []; }
-    case 'param': { const nm = idName(n['param']); return nm ? [nm] : []; }
-    case 'import-local': { const nm = idName(n['local']); return nm ? [nm] : []; }
+    case 'id': { const nm = 'id' in node ? idName(node.id) : null; return nm ? [nm] : []; }
+    case 'param': { const nm = node.type === 'CatchClause' ? idName(node.param) : null; return nm ? [nm] : []; }
+    case 'import-local': { const nm = 'local' in node ? idName(node.local) : null; return nm ? [nm] : []; }
   }
 }
 
 /** Names a FUNCTION binds into its OWN scope: params + rest param. `[]` for non-functions. */
 export function functionOwnBindings(node: AstNode): string[] {
   if (!roleOf(node).opensFunctionScope) return [];
-  const fn = node as unknown as { params?: unknown[]; restParam?: unknown };
+  if (node.type !== 'FunctionDeclaration' && node.type !== 'FunctionExpression'
+      && node.type !== 'ArrowFunctionExpression') return [];
   const out: string[] = [];
-  for (const p of (fn.params ?? [])) { const nm = idName(p); if (nm) out.push(nm); }
-  const rest = idName(fn.restParam); if (rest) out.push(rest);
+  for (const p of (node.params ?? [])) { const nm = idName(p); if (nm) out.push(nm); }
+  const rest = idName(node.restParam); if (rest) out.push(rest);
   return out;
 }
 
@@ -135,20 +136,17 @@ export const opensFunctionScope = (node: AstNode): boolean => roleOf(node).opens
  */
 export function collectScopeBindings(node: AstNode): Set<string> {
   const out = new Set<string>(functionOwnBindings(node));
-  const walk = (n: unknown): void => {
-    if (!n || typeof n !== 'object' || typeof (n as { type?: unknown }).type !== 'string') return;
-    const cur = n as AstNode;
+  const walk = (cur: AstNode): void => {
     for (const nm of enclosingBindings(cur)) out.add(nm);
     if (opensFunctionScope(cur)) return; // nested function — its own scope
-    for (const k of Object.keys(cur)) {
-      if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc.)
-      const v = (cur as unknown as Record<string, unknown>)[k];
-      if (Array.isArray(v)) { for (const it of v) walk(it); }
-      else walk(v);
-    }
+    // astChildren skips `leadingJsDoc` and runtime-stamped `_`-prefixed annotations
+    // (_inferredParams, etc.) by construction — it only enumerates declared child fields.
+    for (const child of astChildren(cur)) walk(child);
   };
-  const body = (node as unknown as { body?: unknown }).body;
-  if (Array.isArray(body)) { for (const it of body) walk(it); }
-  else if (body) walk(body);
+  if (node.type === 'Program' || node.type === 'BlockStatement') {
+    for (const it of node.body) walk(it);
+  } else if ('body' in node && node.body) {
+    walk(node.body);
+  }
   return out;
 }

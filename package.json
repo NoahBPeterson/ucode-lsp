@@ -2,7 +2,7 @@
   "name": "ucode-lsp",
   "displayName": "ucode Language Support",
   "description": "Language Server Protocol support for ucode scripting language",
-  "version": "0.8.7",
+  "version": "0.8.8",
   "publisher": "noahbpeterson",
   "repository": {
     "type": "git",
@@ -210,9 +210,10 @@
   },
   "scripts": {
     "vscode:prepublish": "bun run package",
-    "compile": "webpack",
+    "lint": "oxlint -c .oxlintrc.json src",
+    "compile": "bun run lint && webpack",
     "test:fast": "bun scripts/test-fast.mjs",
-    "package": "webpack --mode production --devtool false",
+    "package": "bun run lint && webpack --mode production --devtool false",
     "watch": "webpack --watch",
     "coverage:e2e": "node scripts/coverage/run-e2e-coverage.cjs",
     "postinstall": "node -e \"try{require('child_process').execSync('sh ./scripts/postinstall.sh',{stdio:'ignore'})}catch(e){}\""
@@ -231,6 +232,7 @@
     "esbuild-loader": "^4.5.0",
     "mocha": "^11.7.1",
     "monocart-coverage-reports": "^2.12.11",
+    "oxlint": "^1.77.0",
     "typescript": "6.0.3",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.3.2",
