@@ -280,3 +280,28 @@ handler-fatal semantics in them (it may emit unrelated diagnostics — `include(
 arg-type, `UC1006`, `UC8004`). The false **positive** repro is simply the correct handler
 in Part 1 — run `ucode-lsp` on `files/usr/share/gl-ucode/handler.uc` to see UC6001 /
 UC3007 / UC1002 / UC1006 on valid template code.
+
+---
+
+## CORRECTION (2026-08-09, 0.8.7): FN-4's mechanism was misdiagnosed
+
+The FN-4 table above ("uncatchable VM abort, empty response, no log") is
+**wrong**. Re-verified against the uhttpd source (ucode.c) and the 25.12
+container interpreter:
+
+- uhttpd's handler VM runs in **TEMPLATE mode** (its parse config never sets
+  `raw_mode`), and its exception handler prints a `Status: 500` page WITH the
+  exception text — there is no uncatchable silent abort.
+- The REAL hazard is a **parse-mode mismatch**: `loadfile()`/`include()`
+  inherit the VM's mode, so a raw `.uc` file compiles as a template and its
+  source is **emitted as response text instead of executing** (proven:
+  `ucode -T` + include/loadfile of a raw file echoes the code verbatim).
+  That — silent wrong output plus source disclosure — is what actually sank
+  the loadfile-dispatcher ("worked under `ucode -S`, empty on real uhttpd").
+- `include('x.ut', scope)` of a template is uhttpd's NATIVE composition
+  mechanism (uspot ships 15 of them) and must not be flagged.
+
+UC8011 was redesigned accordingly in 0.8.7: include/loadfile of a literal
+`.uc` path = error (source echoed); dynamic-path loadfile = warning; template
+includes = silent. tests/diagnostics/test-uhttpd-handler-vm-abort.test.js
+pins the corrected semantics.

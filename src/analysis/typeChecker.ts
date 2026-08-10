@@ -3125,6 +3125,31 @@ export class TypeChecker {
     return this.insideFunctionExcluding(position, symbol.declaredAt);
   }
 
+  /** UC5005's companion to isDeferredCallableFalsePositive: a module-level handle
+   *  declared null (`let uacct;`) whose real assignment lives inside an init
+   *  function, read via member access inside ANOTHER function. The closure runs
+   *  after init by the daemon's lifecycle contract, so the position-based
+   *  "provably null" claim is stale — the honest severity is a may-null WARNING
+   *  (uspot's uacct, pbr's svc_data/dnsmasq_ubus). True only when SOME
+   *  assignment somewhere gave the symbol a non-null type. */
+  isDeferredNonNullFalsePositive(name: string, position: number): boolean {
+    const symbol = this.symbolTable.lookupAtPosition(name, position);
+    if (!symbol) return false;
+    // ANY recorded assignment whose type isn't exactly-null counts — including
+    // unknown (e.g. `uacct = require('uspotbpf')`, a native module we can't
+    // type): the write itself is the evidence the handle gets set.
+    const nonNullCapable = (t: UcodeDataType | undefined): boolean =>
+      t !== undefined && getUnionTypes(t).some(m => singleTypeToBase(m) !== UcodeType.NULL);
+    const everNonNull = nonNullCapable(symbol.currentType)
+      || (symbol.typeHistory ?? []).some(h => nonNullCapable(h.type));
+    if (!everNonNull) return false;
+    // An EXPLICIT `x = null` before the read is a straight-line provable null —
+    // the deferred-init story must not soften it (`if (!ctx) return; ctx = null;
+    // ctx.foo` stays a hard error). Over-blocking is the safe direction.
+    if (this.isVariableAssignedNullBetween(this.currentAST, name, symbol.declaredAt, position)) return false;
+    return this.insideFunctionExcluding(position, symbol.declaredAt);
+  }
+
   /** True when `position` lies inside a function-like node that does NOT contain
    *  `declaredAt` — i.e. the reference executes inside a closure capturing the symbol,
    *  deferred relative to straight-line top-level flow. */
@@ -4950,6 +4975,15 @@ export class TypeChecker {
         end: node.end,
         severity: 'error',
         code: UcodeErrorCode.PROPERTY_NOT_FOUND,
+        // AST offsets for the `s[i]` → `substr(s, i, 1)` quick fix (server.ts):
+        // the receiver and index slices are rebuilt into the call verbatim.
+        data: {
+          stringIndexFix: {
+            objStart: node.object.start, objEnd: node.object.end,
+            idxStart: node.property.start, idxEnd: node.property.end,
+            exprStart: node.start, exprEnd: node.end,
+          },
+        },
       });
       return UcodeType.UNKNOWN;
     }
@@ -5608,6 +5642,24 @@ export class TypeChecker {
    *  Each entry covers a function body's source range. */
   private flowEngines: Array<{ start: number; end: number; engine: FlowTypeEngine }> = [];
 
+  /** Whole-program engine over the top-level statements (see buildFlowEngines).
+   *  Consulted ONLY via topLevelFlowTypeAt by the argument-diagnostic filter. */
+  private topLevelEngine: FlowTypeEngine | null = null;
+
+  /** The top-level engine's statement-entry type for `variableName` at
+   *  `position` — the guard-folded join the SSA pass cannot compute (edge
+   *  guards are folded into the env by the edge transfer). Refine-only
+   *  consumer contract: use to DROP a provably-clean diagnostic, never to
+   *  emit one. Returns undefined inside function bodies (their own engines +
+   *  guard layer already serve those positions). */
+  topLevelFlowTypeAt(variableName: string, position: number): UcodeDataType | undefined {
+    if (!this.topLevelEngine) return undefined;
+    for (const fe of this.flowEngines) {
+      if (position >= fe.start && position <= fe.end) return undefined;
+    }
+    return this.topLevelEngine.baseTypeAt(variableName, position);
+  }
+
   /** The flow engine's reassignment-narrowed base for `varName` at `position`,
    *  using the INNERMOST enclosing function's engine. Empty (→ undefined) during
    *  the main analysis pass, so it only augments post-analysis queries (hover). */
@@ -5663,6 +5715,24 @@ export class TypeChecker {
     const typeOf = (n: AstNode) => this.nodeTypeForFlow(n);
     const transfer = makeAssignmentTransfer(typeOf);
     const edgeGuard = this.makeEdgeGuardTransfer(); // C1: guards folded into the dataflow
+
+    // TOP-LEVEL engine: CLI/shebang scripts do their real work outside any
+    // function, and without an engine the conditional-reassign JOIN never
+    // happens there — `if (type(cur) != 'array') cur = [cur];` left `cur`
+    // un-narrowed at top level while the same code inside a function was fine
+    // (wwand-migrate). Kept PRIVATE to the post-visit argument-diagnostic
+    // filter (topLevelFlowTypeAt), NOT pushed into flowEngines: exposing it to
+    // hover and the general filters changed top-level display/union semantics
+    // the loop-soundness suites pin (try/catch unions, back-edge seeds,
+    // redeclaration hovers) — refine-only consumption sidesteps all of that.
+    this.topLevelEngine = null;
+    try {
+      const topBody = { type: 'BlockStatement', body: ast.body, start: ast.start, end: ast.end } as unknown as AstNode;
+      const cfg = new CFGBuilder('top').build(topBody);
+      const engine = new FlowTypeEngine(cfg, transfer, new Map(), edgeGuard);
+      engine.compute();
+      this.topLevelEngine = engine;
+    } catch { /* never let engine construction break analysis */ }
 
     const visit = (node: AstNode): void => {
       if (!node || typeof node !== 'object') return;

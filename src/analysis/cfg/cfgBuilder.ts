@@ -658,6 +658,7 @@ export class CFGBuilder {
    *              [after]
    */
   private visitTryStatement(node: TryStatementNode): void {
+    const preTryBlock = this.currentBlock;
     const tryBlock = this.createBlock('try');
     const catchBlock = node.handler ? this.createBlock('catch') : null;
     const afterTryBlock = this.createBlock('try.after');
@@ -677,6 +678,13 @@ export class CFGBuilder {
     // Exception edge from try to catch (if catch exists)
     if (catchBlock && node.handler) {
       this.connect(tryBlock, catchBlock);
+      // The exception can fire BEFORE any try-block statement ran, but the
+      // tryBlock→catch edge carries tryBlock's OUT env (post-write state) —
+      // which alone over-narrows: `let x = null; try { x = f(); } catch {}`
+      // read x after the try as f()'s type, losing the exception path where
+      // the write never happened. An edge from the PRE-try block joins the
+      // unwritten state back in (two-end approximation of "thrown anywhere").
+      this.connect(preTryBlock, catchBlock);
 
       this.currentBlock = catchBlock;
       if (node.handler.param) {

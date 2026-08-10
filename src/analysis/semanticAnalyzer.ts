@@ -1879,18 +1879,42 @@ export class SemanticAnalyzer extends BaseVisitor {
    * the name with a JSDoc @global tag if a caller or a previous run defines it.
    */
   private checkGlobalScopeOrder(node: ProgramNode): void {
-    // Top-level let/const/function names are locals (or hoisted) — never "globals" here.
+    // let/const/function names declared ANYWHERE outside a function body are
+    // locals (block-scoped or hoisted) — never "globals" here. Scanning only the
+    // program's immediate statement list missed a `let` inside a top-level loop
+    // or if block: its conditional reassignment then read as a "global def", and
+    // the declaration line itself as a "read before it" (wwand-migrate's
+    // `for (…) { let cur = …; if (type(cur) != 'array') cur = [cur]; }`).
     const localNames = new Set<string>();
-    for (const stmt of node.body) {
-      if (stmt.type === 'FunctionDeclaration' && (stmt as unknown as FunctionDeclarationNode).id?.name) {
-        localNames.add((stmt as unknown as FunctionDeclarationNode).id!.name);
+    const collectLocalNames = (n: unknown): void => {
+      if (!isAstNodeLike(n)) return;
+      const t = n.type;
+      if (t === 'FunctionDeclaration') {
+        const id = (n as unknown as FunctionDeclarationNode).id;
+        if (id?.name) localNames.add(id.name);
+        return; // its body's declarations are function-locals — irrelevant to top-level reads
       }
-      if (stmt.type === 'VariableDeclaration') {
-        for (const d of ((stmt as unknown as VariableDeclarationNode).declarations || [])) {
+      if (t === 'FunctionExpression' || t === 'ArrowFunctionExpression') return;
+      if (t === 'VariableDeclaration') {
+        for (const d of ((n as unknown as VariableDeclarationNode).declarations || [])) {
           if (d?.id?.type === 'Identifier' && (d.id as IdentifierNode).name) localNames.add((d.id as IdentifierNode).name);
         }
       }
-    }
+      // A catch parameter is block-scoped to its handler — never a global.
+      // Without this, `catch (e) { if (!e) e = 'unknown'; … }` read the
+      // normalize as a "global def" and flagged the `!e` test above it.
+      if (t === 'CatchClause') {
+        const p = (n as unknown as { param?: IdentifierNode }).param;
+        if (p?.name) localNames.add(p.name);
+      }
+      for (const k of Object.keys(n)) {
+        if (k === 'leadingJsDoc' || k.startsWith('_')) continue;
+        const v = (n as Record<string, unknown>)[k];
+        if (Array.isArray(v)) { for (const it of v) collectLocalNames(it); }
+        else collectLocalNames(v);
+      }
+    };
+    collectLocalNames(node);
 
     const earliestDef = new Map<string, number>(); // global name → earliest top-level def offset
     const funcAssigned = new Set<string>();         // global assigned inside some function → skip
@@ -1930,6 +1954,17 @@ export class SemanticAnalyzer extends BaseVisitor {
       if (t === 'AssignmentExpression' && (n as unknown as AssignmentExpressionNode).operator === '=') {
         const name = assignTargetName((n as unknown as AssignmentExpressionNode).left);
         if (name && !localNames.has(name)) { if (inFunc) funcAssigned.add(name); else recordDef(name, n.start); }
+      }
+      // A bare for-in head (`for (k in x)`) WRITES k on every iteration — it is
+      // a def at the loop, exactly like `k = …` (a `let` head is already a
+      // localName). Certainty (empty iterable → never assigned) is UC8004's
+      // department, not this order check's.
+      if (t === 'ForInStatement') {
+        const left = (n as unknown as { left?: AstNode }).left;
+        if (left?.type === 'Identifier' && (left as IdentifierNode).name && !localNames.has((left as IdentifierNode).name)) {
+          if (inFunc) funcAssigned.add((left as IdentifierNode).name);
+          else recordDef((left as IdentifierNode).name, left.start);
+        }
       }
       if (t === 'CallExpression') {
         for (const name of loadfileInjects(n as unknown as CallExpressionNode)) {
@@ -1986,6 +2021,14 @@ export class SemanticAnalyzer extends BaseVisitor {
       }
       if (t === 'VariableDeclarator') { collectReads((n as Record<string, unknown>)['init'], inFunc); return; } // id is not a read
       if (t === 'Property' && !(n as Record<string, unknown>)['computed']) { collectReads((n as Record<string, unknown>)['value'], inFunc); return; } // key is not a read
+      if (t === 'ForInStatement') {
+        // The bare head identifier is a WRITE target, not a read.
+        const fi = n as unknown as { left?: AstNode; right?: unknown; body?: unknown };
+        if (fi.left && fi.left.type !== 'Identifier') collectReads(fi.left, inFunc);
+        collectReads(fi.right, inFunc);
+        collectReads(fi.body, inFunc);
+        return;
+      }
       for (const k of Object.keys(n)) {
         if (k === 'leadingJsDoc' || k.startsWith('_')) continue; // skip runtime-stamped annotations (_inferredParams, etc. — not real AST fields)
         const v = (n as Record<string, unknown>)[k];
@@ -6409,10 +6452,24 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
         const variableName = (node.left as IdentifierNode).name;
         let symbol = this.symbolTable.lookupOpenScopes(variableName);
         
-        // Skip require() calls - they're handled specially in visitVariableDeclarator
+        // require() RHS: the rich module resolution lives in visitVariableDeclarator
+        // (declarations only) — but the ASSIGNMENT form must still update SSA, or
+        // `let m4 = null; try { m4 = require('mwan4'); m4.load(); } …` keeps the
+        // declared null seed and flags "provably null" (pbr platform.uc). require()
+        // THROWS on a missing module — it never returns null — so the post-call
+        // type is the checked result (a typed module record for known modules)
+        // with an exactly-null result lifted to unknown.
         const isRequireCall = node.right.type === 'CallExpression' &&
                              (node.right as CallExpressionNode).callee.type === 'Identifier' &&
                              ((node.right as CallExpressionNode).callee as IdentifierNode).name === 'require';
+        if (isRequireCall && symbol) {
+          const checked = this.typeChecker.checkNodeQuietly(node.right);
+          const reqType = (checked === UcodeType.NULL || checked === undefined)
+            ? (UcodeType.UNKNOWN as UcodeDataType) : checked;
+          symbol.currentType = reqType;
+          symbol.currentTypeEffectiveFrom = node.end;
+          this.recordTypeHistory(symbol, node.end, reqType, node.start);
+        }
 
         if (!isRequireCall) {
           // Check for all types of function calls that return specific types
@@ -9455,11 +9512,27 @@ private addDiagnostic(
     return null;
   }
 
-  /** UC8011 — in a uhttpd handler, flag loadfile()/include() (incl. loadfile()()): they abort
-   *  the request VM uncatchably (empty response, no stderr; try/catch does not help). Static
-   *  `import` and loadstring() are safe. Whole-file: a top-level call (module load) and one
-   *  inside handle_request both abort. Only the real builtins, not a user-shadowed name. */
+  /** UC8011 — in a uhttpd handler, flag the PARSE-MODE MISMATCH hazards. The handler VM
+   *  runs in TEMPLATE mode (uhttpd-src/ucode.c: parse config has no raw_mode), and
+   *  loadfile()/include() inherit the VM's mode — so a RAW `.uc` file compiles as a
+   *  template and its source code is EMITTED AS RESPONSE TEXT instead of executing
+   *  (container-verified 2026-08-09; this was the real mechanism behind the original
+   *  "empty response" dispatcher bug — not an uncatchable VM abort, which was a
+   *  misdiagnosis: uhttpd's exception handler prints a Status: 500 page).
+   *  Consequences:
+   *    - include('x.ut', scope) of a TEMPLATE is uhttpd's NATIVE composition
+   *      mechanism (uspot does it 15×) — never flagged.
+   *    - include('x.uc') / loadfile('x.uc')() of raw code = the code leaks to the
+   *      client as text — flagged (ERROR: silent wrong output + source disclosure).
+   *    - loadfile() with a non-`.uc` or unknown path still gets a warning-level nudge:
+   *      the template-compiled result is almost never what a handler wants.
+   *  Only the real builtins, not a user-shadowed name. */
   private checkHandlerVmAbortingCalls(root: ProgramNode): void {
+    const literalArgPath = (c: CallExpressionNode): string | null => {
+      const a = c.arguments?.[0];
+      if (a?.type === 'Literal' && typeof (a as LiteralNode).value === 'string') return (a as LiteralNode).value as string;
+      return null;
+    };
     const visit = (n: unknown): void => {
       if (!isAstNodeLike(n)) return;
       if (n.type === 'CallExpression') {
@@ -9469,16 +9542,23 @@ private addDiagnostic(
           if (name === 'loadfile' || name === 'include') {
             const sym = this.symbolTable.resolveReference(name, c.callee.start);
             if (!sym || sym.type === SymbolType.BUILTIN) {
-              // ERROR, not warning, and NOT strict-gated: the abort is uncatchable, silent
-              // (empty response, no log), unrecoverable, and has no legitimate use in a handler
-              // (loadstring/import are the alternatives). Unlike UC8001 (a catchable throw whose
-              // strict escalation reflects a strict-dependent semantic), this fails identically
-              // in strict and non-strict. Detection needs all three signals (template +
-              // global.handle_request + loadfile/include), so false positives are ~impossible.
-              this.addDiagnostic(
-                `${name}() in a uhttpd handler aborts the request VM uncatchably - the client gets an empty response, nothing is logged, and try/catch does not help. Use a static \`import\` instead (loadstring() is also safe).`,
-                c.callee.start, c.callee.end, DiagnosticSeverity.Error,
-                UcodeErrorCode.HANDLER_VM_ABORTING_CALL);
+              const path = literalArgPath(c);
+              const isRawUc = path !== null && path.endsWith('.uc');
+              if (name === 'include' && !isRawUc) {
+                // Template include — the sanctioned mechanism. Silent.
+              } else if (isRawUc) {
+                this.addDiagnostic(
+                  `${name}() of a raw .uc file in a uhttpd handler compiles it as a TEMPLATE (the handler VM is template-mode), so its source code is sent to the client as text instead of executing. Use a static \`import\` for code; include() is for .ut templates.`,
+                  c.callee.start, c.callee.end, DiagnosticSeverity.Error,
+                  UcodeErrorCode.HANDLER_VM_ABORTING_CALL);
+              } else {
+                // loadfile() with a non-.uc/unknown path: template-compiled closure —
+                // calling it renders text; it never yields a module. Nudge, don't block.
+                this.addDiagnostic(
+                  `loadfile() in a uhttpd handler compiles the file as a template (the handler VM is template-mode); calling the result emits text rather than executing raw code. For code, use a static \`import\`.`,
+                  c.callee.start, c.callee.end, DiagnosticSeverity.Warning,
+                  UcodeErrorCode.HANDLER_VM_ABORTING_CALL);
+              }
             }
           }
         }
@@ -10414,7 +10494,38 @@ private addDiagnostic(
             this.downgradeNullMemberToWarning(diagnostic, na);
             return true;
           }
+          // Deferred-init module handle: `let uacct;` at module level, assigned
+          // non-null ONLY inside an init function, and this read runs inside a
+          // DIFFERENT function (a closure — executes after init by lifecycle
+          // contract). "Provably null" is stale there; the honest claim is
+          // may-null. Mirror of isDeferredCallableFalsePositive (UC2010).
+          if (this.typeChecker.isDeferredNonNullFalsePositive(na.objName, na.objStart)) {
+            this.downgradeNullMemberToWarning(diagnostic, na);
+            return true;
+          }
           // 'null' / 'unknown' → keep the original error (genuinely/undeterminably null)
+        }
+      }
+      // Argument-type checks (nullable-argument / incompatible-function-argument)
+      // are emitted mid-pass from SSA state, which cannot see a conditional
+      // normalize (`if (type(cur) != 'array') cur = [cur]; push(cur, …)`) —
+      // the join of "guard proved array" and "reassigned to array" IS array,
+      // but only the flow engine computes that join. Re-query the engine-backed
+      // narrowed type at the argument: when every member is acceptable to the
+      // callee, the complaint is a false positive — drop it. Refine-only: an
+      // inconclusive or still-violating type keeps the diagnostic.
+      const code = String((diagnostic as any).code ?? '');
+      if (code === 'nullable-argument' || code === 'incompatible-function-argument') {
+        const ad = (diagnostic as any).data;
+        if (ad?.variableName && typeof ad.argumentOffset === 'number'
+            && Array.isArray(ad.expectedTypes) && ad.expectedTypes.length > 0) {
+          const ok = new Set<string>([...ad.expectedTypes, ...(ad.toleratedTypes ?? [])]);
+          const allAcceptable = (t: unknown): boolean => {
+            if (t === null || t === undefined) return false;
+            const members = getUnionTypes(t as UcodeDataType).map(m => singleTypeToBase(m) as string);
+            return members.length > 0 && members.every(m => ok.has(m));
+          };
+          if (allAcceptable(this.typeChecker.topLevelFlowTypeAt(ad.variableName, ad.argumentOffset))) return false;
         }
       }
       if ((diagnostic as any).code === UcodeErrorCode.IMPOSSIBLE_COMPARISON) {

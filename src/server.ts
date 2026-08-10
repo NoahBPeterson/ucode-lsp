@@ -121,6 +121,13 @@ interface DiagnosticData {
     /** UC7005 on `return X && (…)` leaking X's null: offsets for the `X != null &&`
      *  boolean-coercion fix (insertAfter = end of the guard atom X). */
     returnGuardNonNull?: { insertAfter?: number; lhsStart?: number; lhsEnd?: number };
+    /** UC5003 string indexing (`s[i]` — a runtime error): AST offsets of the
+     *  receiver, index, and whole expression for the `substr(s, i, 1)` rewrite. */
+    stringIndexFix?: {
+        objStart?: number; objEnd?: number;
+        idxStart?: number; idxEnd?: number;
+        exprStart?: number; exprEnd?: number;
+    };
     coerceToString?: boolean;
     argNeedsParens?: boolean;
     convertStringToRegex?: boolean;
@@ -2313,6 +2320,33 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                     isPreferred: diagData(diagnostic).returnGuardNonNull?.insertAfter === undefined,
                     edit: { changes: { [params.textDocument.uri]: [TextEdit.replace(range, `{${fix.suggested}}`)] } },
                 });
+            }
+
+            // UC5003 string indexing: `s[i]` raises at runtime — rewrite to
+            // `substr(s, i, 1)`. AST-based: the receiver and index slices come
+            // from the analyzer's node offsets, rebuilt verbatim into the call.
+            if (diagnostic.code === 'UC5003') {
+                const sf = diagData(diagnostic).stringIndexFix;
+                if (sf?.objStart !== undefined && sf.objEnd !== undefined
+                    && sf.idxStart !== undefined && sf.idxEnd !== undefined
+                    && sf.exprStart !== undefined && sf.exprEnd !== undefined) {
+                    const objText = document.getText({
+                        start: document.positionAt(sf.objStart), end: document.positionAt(sf.objEnd),
+                    });
+                    const idxText = document.getText({
+                        start: document.positionAt(sf.idxStart), end: document.positionAt(sf.idxEnd),
+                    });
+                    const range = { start: document.positionAt(sf.exprStart), end: document.positionAt(sf.exprEnd) };
+                    codeActions.push({
+                        title: `Replace with substr(${objText}, ${idxText}, 1)`,
+                        kind: CodeActionKind.QuickFix,
+                        diagnostics: [diagnostic],
+                        isPreferred: true,
+                        edit: { changes: { [params.textDocument.uri]: [
+                            TextEdit.replace(range, `substr(${objText}, ${idxText}, 1)`),
+                        ] } },
+                    });
+                }
             }
 
             // Quick-fix for the UC2009 type()-string mismatch: replace the wrong
