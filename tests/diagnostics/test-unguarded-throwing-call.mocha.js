@@ -72,7 +72,7 @@ describe('Unguarded throwing-call lint (UC8001) + wrap-in-try/catch quick fix', 
   it("the wrap STOPS before a following function declaration (top-level) — does not swallow it", async () => {
     const uri = `file://${path.join(ws, 'boundary.uc')}`;
     const code = [
-      'let cfg = json("x");',            // 0 — throwing (wrap starts here)
+      'let cfg = json(ARGV[0]);',            // 0 — throwing (wrap starts here)
       'apply(cfg);',                     // 1 — downstream (wrapped)
       'function helper(n) { return n; }',// 2 — BOUNDARY: must NOT be wrapped
       'function other() { return 1; }',  // 3 — also stays out
@@ -83,7 +83,7 @@ describe('Unguarded throwing-call lint (UC8001) + wrap-in-try/catch quick fix', 
     const d = u8(ds).find(x => x.range.start.line === 0);
     const acts = await s.getCodeActions(path.join(ws, 'boundary.uc'), [d], d.range.start.line, d.range.start.character);
     const out = acts.find(a => /try\/catch/.test(a.title)).edit.changes[uri][0].newText;
-    assert.ok(/let cfg = json\("x"\);/.test(out) && /apply\(cfg\);/.test(out), 'wraps the throwing stmt + downstream');
+    assert.ok(/let cfg = json\(ARGV\[0\]\);/.test(out) && /apply\(cfg\);/.test(out), 'wraps the throwing stmt + downstream');
     assert.ok(!/function helper/.test(out), 'must NOT swallow the following function declaration');
     assert.ok(!/function other/.test(out), 'must NOT swallow later declarations either');
   });
@@ -123,7 +123,7 @@ describe('Unguarded throwing-call lint (UC8001) + wrap-in-try/catch quick fix', 
   it('flags EVERY independent throwing call in a block (not just the first)', async () => {
     const uri = `file://${path.join(ws, 'multi.uc')}`;
     // json (L0) and an independent require (L2) — both must be flagged.
-    const code = ['let d = json("x");', 'use(d);', 'require("lolza");', ''].join('\n');
+    const code = ['let d = json(ARGV[0]);', 'use(d);', 'require("lolza");', ''].join('\n');
     s.openOrChangeDocument(uri, code);
     const ds = await s.waitForDiagnostics(uri, (d) => u8(d).length >= 2, 8000).catch(() => []);
     const lines = u8(ds).map(d => d.range.start.line).sort((a, b) => a - b);
@@ -133,7 +133,7 @@ describe('Unguarded throwing-call lint (UC8001) + wrap-in-try/catch quick fix', 
   it('the wrap covers only transitive dependents — not unrelated trailing code', async () => {
     const uri = `file://${path.join(ws, 'deps.uc')}`;
     const code = [
-      'let cfg = json("x");',   // 0 — throwing
+      'let cfg = json(ARGV[0]);',   // 0 — throwing
       'let n = cfg + 1;',       // 1 — depends on cfg (transitive)
       'require("other");',      // 2 — independent thrower, must NOT be swallowed
       ''
@@ -143,13 +143,13 @@ describe('Unguarded throwing-call lint (UC8001) + wrap-in-try/catch quick fix', 
     const jsonDiag = u8(ds).find(d => d.range.start.line === 0);
     const acts = await s.getCodeActions(path.join(ws, 'deps.uc'), [jsonDiag], 0, jsonDiag.range.start.character);
     const out = acts.find(a => /try\/catch/.test(a.title)).edit.changes[uri][0].newText;
-    assert.ok(/let cfg = json\("x"\);/.test(out) && /let n = cfg \+ 1;/.test(out), 'wraps the dependent chain');
+    assert.ok(/let cfg = json\(ARGV\[0\]\);/.test(out) && /let n = cfg \+ 1;/.test(out), 'wraps the dependent chain');
     assert.ok(!/require\("other"\)/.test(out), 'must NOT swallow the unrelated require into the try');
   });
 
   it('does NOT flag a call already inside try/catch', async () => {
     const uri = `file://${path.join(ws, 'c.uc')}`;
-    const code = ['try {', '  let d = json("x");', '  print(d);', '} catch (e) {}', ''].join('\n');
+    const code = ['try {', '  let d = json(ARGV[0]);', '  print(d);', '} catch (e) {}', ''].join('\n');
     s.openOrChangeDocument(uri, code);
     // give the server a moment; expect no UC8001
     const ds = await s.waitForDiagnostics(uri, () => true, 3000).catch(() => []);
@@ -158,7 +158,7 @@ describe('Unguarded throwing-call lint (UC8001) + wrap-in-try/catch quick fix', 
 
   it('does NOT flag when the name is a user-defined (non-builtin) function', async () => {
     const uri = `file://${path.join(ws, 'd.uc')}`;
-    const code = ['function json(x) { return x; }', 'let d = json("x");', ''].join('\n');
+    const code = ['function json(x) { return x; }', 'let d = json(ARGV[0]);', ''].join('\n');
     s.openOrChangeDocument(uri, code);
     const ds = await s.waitForDiagnostics(uri, () => true, 3000).catch(() => []);
     assert.strictEqual(u8(ds).length, 0, 'user-shadowed json must not be flagged');
@@ -175,7 +175,7 @@ describe('Unguarded throwing-call lint (UC8001) + wrap-in-try/catch quick fix', 
     await s2.initialize();
     try {
       const uri = `file://${path.join(ws2, 'e.uc')}`;
-      const code = ['let d = json("x");', 'print(d);', ''].join('\n');
+      const code = ['let d = json(ARGV[0]);', 'print(d);', ''].join('\n');
       s2.openOrChangeDocument(uri, code);
       const ds = await s2.waitForDiagnostics(uri, (d) => u8(d).length >= 1, 4000).catch(() => []);
       assert.strictEqual(u8(ds).length, 1, 'must be ON by default');
@@ -189,13 +189,39 @@ describe('Unguarded throwing-call lint (UC8001) + wrap-in-try/catch quick fix', 
     // change — the proven reliable path (a fresh server + immediate open races the config
     // pull). Restore ON afterward so later tests are unaffected.
     const uri = `file://${path.join(ws, 'off.uc')}`;
-    const code = ['let d = json("x");', 'print(d);', ''].join('\n');
+    const code = ['let d = json(ARGV[0]);', 'print(d);', ''].join('\n');
     s.openOrChangeDocument(uri, code);
     await s.waitForDiagnostics(uri, (d) => u8(d).length >= 1, 4000).catch(() => []); // ON first
     s.notifyConfigChange({ warnUnguardedThrowingCalls: false });
     const ds = await s.waitForDiagnostics(uri, (d) => u8(d).length === 0, 4000).catch(() => [{ code: 'UC8001' }]);
     assert.strictEqual(u8(ds).length, 0, 'explicit false must silence it');
     s.notifyConfigChange({ warnUnguardedThrowingCalls: true }); // restore for the catch-body tests below
+  });
+
+  it('json() of a PROVABLY VALID literal is not flagged — it cannot throw', async () => {
+    // The literal is checked against json-c's grammar at analysis time, so there
+    // is no runtime failure to guard against. An INVALID literal is a certain
+    // throw and UC2017 owns it, so UC8001 stays quiet there too.
+    const uri = `file://${path.join(ws, 'validlit.uc')}`;
+    const code = [
+      `let a = json('{"a":1}');`,   // 0 — valid: no UC8001
+      `let b = json("{'a':1}");`,   // 1 — json-c accepts single quotes
+      `let c = json('{"a":1,}');`,  // 2 — trailing comma is fine
+      'print(a, b, c);',
+      '',
+    ].join('\n');
+    s.openOrChangeDocument(uri, code);
+    await s.waitForDiagnostics(uri, () => true, 8000).catch(() => []);
+    await new Promise(r => setTimeout(r, 400));
+    const ds = await s.waitForDiagnostics(uri, () => true, 1000).catch(() => []);
+    assert.strictEqual(u8(ds).length, 0, `valid JSON literals must not warn, got ${JSON.stringify(u8(ds).map(d => d.range.start.line))}`);
+  });
+
+  it('json() of a NON-literal argument is still flagged', async () => {
+    const uri = `file://${path.join(ws, 'nonlit.uc')}`;
+    s.openOrChangeDocument(uri, ['let raw = "x";', 'let d = json(raw);', 'print(d);', ''].join('\n'));
+    const ds = await s.waitForDiagnostics(uri, (d) => u8(d).length >= 1, 8000);
+    assert.strictEqual(u8(ds)[0].range.start.line, 1, 'a variable argument can still throw');
   });
 
   it('a throwing call INSIDE a catch body is NOT guarded — flagged', async () => {
@@ -206,7 +232,7 @@ describe('Unguarded throwing-call lint (UC8001) + wrap-in-try/catch quick fix', 
       'try {',
       '\tdata = json(raw);',                 // 3 — guarded by the try: NOT flagged
       '} catch (e) {',
-      '\tdata = json("{\\"fallback\\":1}");', // 5 — raised here propagates: flagged
+      '\tdata = json(raw);',                 // 5 — raised here propagates: flagged
       '}',
       'print(data);',
       '',
@@ -227,7 +253,7 @@ describe('Unguarded throwing-call lint (UC8001) + wrap-in-try/catch quick fix', 
       '\ttry {',
       '\t\tdata = json(raw);',
       '\t} catch (e) {',
-      '\t\tdata = json("{}");',   // guarded by the OUTER try
+      '\t\tdata = json(ARGV[0]);',   // guarded by the OUTER try
       '\t}',
       '} catch (e2) {',
       '\tdata = null;',

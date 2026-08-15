@@ -121,6 +121,12 @@ interface DiagnosticData {
         idxStart?: number; idxEnd?: number;
         exprStart?: number; exprEnd?: number;
     };
+    /** UC2017 json()-as-serializer: AST offsets of the whole call and its argument,
+     *  for the `sprintf("%J", value)` rewrite. */
+    jsonSerializeFix?: {
+        callStart?: number; callEnd?: number;
+        argStart?: number; argEnd?: number;
+    };
     coerceToString?: boolean;
     argNeedsParens?: boolean;
     convertStringToRegex?: boolean;
@@ -2405,6 +2411,28 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
                         isPreferred: true,
                         edit: { changes: { [params.textDocument.uri]: [
                             TextEdit.replace(range, `substr(${objText}, ${idxText}, 1)`),
+                        ] } },
+                    });
+                }
+            }
+
+            // UC2017: json() parses, it cannot serialize — rewrite the whole call
+            // to sprintf("%J", <arg>), reusing the argument slice verbatim.
+            if (diagnostic.code === 'UC2017') {
+                const jf = diagData(diagnostic).jsonSerializeFix;
+                if (jf?.callStart !== undefined && jf.callEnd !== undefined
+                    && jf.argStart !== undefined && jf.argEnd !== undefined) {
+                    const argText = document.getText({
+                        start: document.positionAt(jf.argStart), end: document.positionAt(jf.argEnd),
+                    });
+                    const range = { start: document.positionAt(jf.callStart), end: document.positionAt(jf.callEnd) };
+                    codeActions.push({
+                        title: `Replace with sprintf("%J", ${argText})`,
+                        kind: CodeActionKind.QuickFix,
+                        diagnostics: [diagnostic],
+                        isPreferred: true,
+                        edit: { changes: { [params.textDocument.uri]: [
+                            TextEdit.replace(range, `sprintf("%J", ${argText})`),
                         ] } },
                     });
                 }

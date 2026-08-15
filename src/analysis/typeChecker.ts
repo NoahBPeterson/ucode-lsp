@@ -14,6 +14,9 @@ import {
   type DeleteExpressionNode
 } from '../ast/nodes';
 import { astChildren, walkAst } from '../ast/astChildren';
+
+/** Whether `json()` can stream from a value: proven yes, proven no, or unprovable. */
+export type JsonReadability = 'readable' | 'not-readable' | 'unknown';
 import { AnalysisDepthExceeded, MAX_ANALYSIS_DEPTH } from './visitor';
 
 /** A scalar literal's runtime value (`LiteralNode.value`), or undefined when the
@@ -292,6 +295,14 @@ export interface DiagnosticFixData {
     computed: boolean; isWrite: boolean; isIdentifier: boolean;
     objName?: string; propName?: string;
   };
+  /** UC2017 raised on an UNPROVABLE argument (not a proven throw) — dropped when
+   *  the call already sits inside a try/catch. */
+  jsonUnprovable?: boolean;
+  // `json(v)` → `sprintf("%J", v)` fix offsets (json parses, it can't serialize)
+  jsonSerializeFix?: {
+    callStart: number; callEnd: number;
+    argStart: number; argEnd: number;
+  };
   // match() string-literal → regex-literal fix
   convertStringToRegex?: boolean;
   loadfileRelPath?: { raw: string; litStart: number; litEnd: number };
@@ -516,6 +527,7 @@ export class TypeChecker {
     // Use a method that returns the full type description including unions
     this.builtinValidator.setTypeChecker(this.getNodeTypeDescription.bind(this));
     this.builtinValidator.setFullTypeChecker(this.getFullTypeFromNode.bind(this));
+    this.builtinValidator.setJsonReadabilityProbe(this.jsonSourceReadability.bind(this));
     this.builtinValidator.setConstantValueResolver((n) => this.constantLiteralValue(n));
 
     this.initializeBuiltins();
@@ -5005,6 +5017,25 @@ export class TypeChecker {
         : String(node.property.type === 'Literal' ? node.property.value : undefined);
 
       if (hasArray && !hasObject) {
+        // Arrays have no OWN named members — but they DO have a prototype slot
+        // (types.c ucv_prototype_get handles UC_ARRAY), and ucv_key_get walks the
+        // chain, skipping the array level itself, so `proto(arr, { m: fn })` makes
+        // `arr.m()` legal. Consult the chain before calling this broken.
+        const viaProto = this.effectiveMembers(node.object, 0);
+        if (viaProto.names.has(propertyName)) {
+          return UcodeType.UNKNOWN; // supplied by the prototype — legal
+        }
+        if (this.mayHavePrototype(node.object) && !viaProto.complete) {
+          // A prototype we cannot enumerate may supply it; don't hard-error.
+          this.warnings.push({
+            message: `Property '${propertyName}' is read on an array. Arrays have no properties of their own - this works only if a prototype supplies '${propertyName}' (proto(arr, { ${propertyName}: … })), otherwise it is null.`,
+            start: node.property.start,
+            end: node.property.end,
+            severity: 'warning',
+            code: UcodeErrorCode.PROPERTY_NOT_FOUND,
+          });
+          return UcodeType.UNKNOWN;
+        }
         // Pure array (or array | null | scalar) — arrays have no named members. Hard error.
         this.errors.push({
           message: `Property '${propertyName}' does not exist on array type. Arrays in ucode have no properties or methods. Use builtin functions instead (e.g., length(array), filter(array, callback)).`,
@@ -5045,6 +5076,9 @@ export class TypeChecker {
     // whose base collapses to UNKNOWN). Catches the common JavaScript-port
     // mistake `someStr.toUpperCase()`. objectType IS the rich type now.
     let receiverHasString = objectBase === UcodeType.STRING || narrowedBase === UcodeType.STRING;
+    // Definite when the receiver can only be a string (or string|null); a union
+    // that also admits property-carrying members is merely possible.
+    let stringReceiverIsDefinite = true;
     if (!receiverHasString && !node.computed) {
       // Honor flow/guard narrowing for an identifier receiver, exactly like the
       // provably-null check above: inside `if (type(x) == "object")` a
@@ -5059,20 +5093,43 @@ export class TypeChecker {
       if (receiverType === UcodeType.STRING) {
         receiverHasString = true;
       } else if (isUnionType(receiverType)) {
-        receiverHasString = getUnionTypes(receiverType).some(m => singleTypeToBase(m) === UcodeType.STRING);
+        const members = getUnionTypes(receiverType);
+        receiverHasString = members.some(m => singleTypeToBase(m) === UcodeType.STRING);
+        // A union whose OTHER members legitimately carry properties (object,
+        // array, module/handle, or an unresolved type) means the access is
+        // correct on at least one path — `string | object` is a MAY-fail, not
+        // the definite breakage `string` / `string | null` is. Reporting it as
+        // a hard error red-flags correct code (openwrt unetd unet.uc:829: a
+        // try/catch whose catch unconditionally reassigns, where the string is
+        // in fact unreachable — see docs/try-catch-kill-set.md).
+        stringReceiverIsDefinite = !members.some(m => {
+          const base = singleTypeToBase(m);
+          return base === UcodeType.OBJECT || base === UcodeType.ARRAY
+            || base === UcodeType.UNKNOWN || base === UcodeType.ANY;
+        });
       }
     }
     if (receiverHasString && !node.computed && node.property.type === 'Identifier') {
       // String has no properties.
       const propertyName = node.property.name;
       const hint = SCALAR_MEMBER_HINTS[propertyName];
-      this.errors.push({
-        message: `Property '${propertyName}' does not exist on string type. Strings in ucode have no member variables or functions.${hint ? ' ' + hint : ''}`,
-        start: node.property.start,
-        end: node.property.end,
-        severity: 'error',
-        code: UcodeErrorCode.PROPERTY_NOT_FOUND,
-      });
+      if (stringReceiverIsDefinite) {
+        this.errors.push({
+          message: `Property '${propertyName}' does not exist on string type. Strings in ucode have no member variables or functions.${hint ? ' ' + hint : ''}`,
+          start: node.property.start,
+          end: node.property.end,
+          severity: 'error',
+          code: UcodeErrorCode.PROPERTY_NOT_FOUND,
+        });
+      } else {
+        this.warnings.push({
+          message: `'${node.object.type === 'Identifier' ? node.object.name : 'This value'}' may be a string here, and strings have no properties - reading '${propertyName}' raises a runtime error on that path.${hint ? ' ' + hint : ''}`,
+          start: node.property.start,
+          end: node.property.end,
+          severity: 'warning',
+          code: UcodeErrorCode.PROPERTY_NOT_FOUND,
+        });
+      }
 
       return UcodeType.UNKNOWN;
     }
@@ -8002,6 +8059,131 @@ export class TypeChecker {
   }
 
   /** Child nodes for traversal — delegates to the shared total astChildren utility. */
+  /** Can `json()` stream from this value? Decided against ucode's actual rules
+   *  (lib.c uc_json_from_object + types.c):
+   *    - the member lookup `ucv_property_get(v, "read")` walks the WHOLE
+   *      prototype chain, so every level has to be followed;
+   *    - the resolved `read` must be CALLABLE — `{ read: 5 }` still raises;
+   *    - only arrays and objects can carry a prototype (`ucv_prototype_set`),
+   *      so a scalar can never acquire one.
+   *  'unknown' whenever the chain cannot be fully enumerated — never a guess. */
+  private jsonSourceReadability(node: AstNode): JsonReadability {
+    const members = this.effectiveMembers(node, 0);
+    const read = members.names.get('read');
+    if (read !== undefined) {
+      // Present: readable only if it is callable. `undefined` = present but of
+      // unknown type, which we do not second-guess.
+      if (read === 'function' || read === 'unknown') return 'readable';
+      return 'not-readable'; // e.g. `{ read: 5 }` — ucv_is_callable() fails
+    }
+    return members.complete ? 'not-readable' : 'unknown';
+  }
+
+  /** Member names visible on `node`, following the prototype chain. `complete`
+   *  is true only when every level was fully enumerable. Values are coarse:
+   *  'function' | 'unknown' — enough to answer the callable question. */
+  private effectiveMembers(node: AstNode, depth: number): { names: Map<string, string>; complete: boolean } {
+    const names = new Map<string, string>();
+    if (depth > 8) return { names, complete: false }; // cycle / pathological chain guard
+
+    const kindOf = (valueNode: AstNode | undefined, declared: UcodeDataType | undefined): string => {
+      if (valueNode?.type === 'FunctionExpression' || valueNode?.type === 'ArrowFunctionExpression') return 'function';
+      if (declared !== undefined) {
+        const base = dataTypeToBase(declared);
+        if (base === UcodeType.FUNCTION) return 'function';
+        // A known non-function type fails ucv_is_callable() — `{ read: 5 }` throws.
+        if (base !== UcodeType.UNKNOWN && base !== UcodeType.ANY) return 'not-callable';
+        return 'unknown';
+      }
+      if (valueNode?.type === 'Literal') return 'not-callable';
+      return 'unknown';
+    };
+
+    // Own members, plus the prototype expression this value carries (if any).
+    let ownComplete = false;
+    let protoExpr: AstNode | undefined;
+    let target: AstNode = node;
+
+    // `proto(V, P)` evaluates to V with prototype P.
+    if (node.type === 'CallExpression' && node.callee.type === 'Identifier' && node.callee.name === 'proto') {
+      const [v, p] = node.arguments;
+      if (!v) return { names, complete: false };
+      target = v;
+      if (!p) return { names, complete: false }; // 1-arg form READS the prototype
+      protoExpr = p;
+    }
+
+    if (target.type === 'ObjectExpression') {
+      ownComplete = true;
+      for (const prop of target.properties) {
+        if (prop.type !== 'Property' || prop.computed) { ownComplete = false; continue; }
+        const key = prop.key.type === 'Identifier' ? prop.key.name
+          : (prop.key.type === 'Literal' && typeof prop.key.value === 'string' ? prop.key.value : undefined);
+        if (key === undefined) { ownComplete = false; continue; }
+        names.set(key, kindOf(prop.value, undefined));
+      }
+    } else if (target.type === 'ArrayExpression') {
+      ownComplete = true; // an array has no own named members
+    } else if (target.type === 'Identifier') {
+      const symbol = this.symbolTable.resolveReference(target.name, target.start);
+      if (symbol) {
+        if (symbol.propertyTypes && symbol.propertyTypes.size > 0) {
+          ownComplete = true;
+          for (const [k, t] of symbol.propertyTypes) names.set(k, kindOf(undefined, t));
+        } else if (symbol.initNode) {
+          const viaInit = this.effectiveMembers(symbol.initNode, depth + 1);
+          for (const [k, v] of viaInit.names) if (!names.has(k)) names.set(k, v);
+          ownComplete = viaInit.complete;
+        }
+      }
+      // An in-place `proto(target, P)` anywhere in the file re-parents it.
+      const inPlace = this.inPlaceProtoArgs(target.name);
+      if (inPlace === 'ambiguous') return { names, complete: false };
+      if (inPlace !== undefined) protoExpr = inPlace;
+    }
+
+    if (!protoExpr) return { names, complete: ownComplete };
+    const viaProto = this.effectiveMembers(protoExpr, depth + 1);
+    for (const [k, v] of viaProto.names) if (!names.has(k)) names.set(k, v); // own shadows prototype
+    return { names, complete: ownComplete && viaProto.complete };
+  }
+
+  /** True when a prototype is actually in play for this value — it IS a proto()
+   *  call, was initialized by one, or is re-parented by a bare `proto(name, P);`
+   *  somewhere in the file. Arrays have no OWN named members (types.c
+   *  ucv_object_get returns not-found for non-objects), so a prototype is the
+   *  only way `arr.foo` can resolve; without one the access is definitely broken. */
+  private mayHavePrototype(node: AstNode): boolean {
+    const isProtoCall = (n: AstNode): boolean =>
+      n.type === 'CallExpression' && n.callee.type === 'Identifier' && n.callee.name === 'proto'
+      && n.arguments.length >= 2;
+    if (isProtoCall(node)) return true;
+    if (node.type !== 'Identifier') return false;
+    const symbol = this.symbolTable.resolveReference(node.name, node.start);
+    if (symbol?.initNode && isProtoCall(symbol.initNode)) return true;
+    return this.inPlaceProtoArgs(node.name) !== undefined;
+  }
+
+  /** The prototype expression from a bare `proto(name, P);` statement in this
+   *  file, 'ambiguous' when several compete (a later call replaces the earlier
+   *  prototype and we do not model order), or undefined when there are none. */
+  private inPlaceProtoArgs(name: string): AstNode | 'ambiguous' | undefined {
+    if (!this.currentAST) return undefined;
+    const found: AstNode[] = [];
+    const scan = (n: AstNode): void => {
+      if (n.type === 'CallExpression' && n.callee.type === 'Identifier' && n.callee.name === 'proto') {
+        const target = n.arguments[0];
+        const p = n.arguments[1];
+        if (target?.type === 'Identifier' && target.name === name && p) found.push(p);
+      }
+      for (const child of astChildren(n)) scan(child);
+    };
+    scan(this.currentAST);
+    if (found.length === 0) return undefined;
+    if (found.length > 1) return 'ambiguous';
+    return found[0];
+  }
+
   private getChildNodes(node: AstNode): AstNode[] {
     return astChildren(node);
   }

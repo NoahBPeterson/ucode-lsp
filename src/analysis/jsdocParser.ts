@@ -77,7 +77,11 @@ export { splitTopLevel };
  *  UC7001 did-you-mean suggester can treat them as candidates. */
 export const JSDOC_PRIMITIVE_MAP: Record<string, UcodeType> = {
   'string': UcodeType.STRING,
-  'number': UcodeType.DOUBLE,
+  // NOTE: 'number' is deliberately absent here — ucode has no `number` type
+  // (`type(204)` is "int", `type(2.5)` is "double"), so the JS-ism `{number}`
+  // means EITHER, and is resolved to `integer | double` below. Listing it here
+  // as a single type made `x === 204` a hard "always false" error on correctly
+  // annotated code.
   'integer': UcodeType.INTEGER,
   'int': UcodeType.INTEGER,
   'double': UcodeType.DOUBLE,
@@ -388,6 +392,10 @@ export function resolveTypeExpression(typeExpr: string): UcodeDataType | null {
 
   // Handle primitive types
   const lower = typeExpr.toLowerCase();
+  // `{number}` is a JS-ism: ucode has no such type, and a numeric value is an
+  // `int` OR a `double`. Resolving it to one of them makes strict comparisons
+  // against literals of the other kind look impossible.
+  if (lower === 'number') return createUnionType([UcodeType.INTEGER, UcodeType.DOUBLE]);
   const primitive = JSDOC_PRIMITIVE_MAP[lower];
   if (primitive !== undefined) {
     return primitive;

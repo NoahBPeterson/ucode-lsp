@@ -33,6 +33,7 @@ export enum UcodeErrorCode {
   EXPONENT_TYPE_NOTE = 'UC2014',        // INFO: explains a `**` result type (a negative exponent yields a double; unknown sign → integer|double)
   COERCING_EQUALITY = 'UC2015',         // `==`/`!=` between distinct types coerces (ucode `==` is relational, not strict); `===` would be always-false — likely meant `===` or an explicit convert
   REFERENCE_EQUALITY = 'UC2016',        // `==`/`!=` between two reference values (object/array/function/regexp) compares IDENTITY, not contents — likely meant a structural deep-equal (is_equal)
+  JSON_IS_PARSE_ONLY = 'UC2017',    // json() PARSES JSON text; it cannot serialize. A plain object/array (no read() method) or a scalar raises at runtime — sprintf("%J", v) is the serializer
 
   // Import/Export errors (3000-3999)
   INVALID_IMPORT = 'UC3001',

@@ -81,7 +81,7 @@ test("render is polymorphic: function arg silent, resolvable path silent, missin
 
 test("severity under 'use strict': only json is an Error by default; the rest are Warnings", () => {
   const sev = (code) => u8c("'use strict';\n" + code)[0]?.severity;
-  expect(sev('json("x");\n')).toBe(1);            // Error
+  expect(sev('json(ARGV[0]);\n')).toBe(1);            // Error
   expect(sev('loadstring("1+");\n')).toBe(2);     // Warning
   expect(sev('render("./nope.uc");\n')).toBe(2);  // Warning
   expect(sev('require("lolza");\n')).toBe(2);     // Warning

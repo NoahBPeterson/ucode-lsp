@@ -3,8 +3,10 @@
  */
 
 import { type AstNode, type CallExpressionNode, type LiteralNode } from '../../ast/nodes';
-import { UcodeType, type UcodeDataType, createUnionType, createArrayType, createTupleArrayType, isArrayType, getArrayElementType, extractModuleType, getObjectTypeName, isUnionType, getUnionTypes, widenWithNull } from '../symbolTable';
+import { UcodeType, type UcodeDataType, createUnionType, createArrayType, createTupleArrayType, isArrayType, getArrayElementType, extractModuleType, getObjectTypeName, isUnionType, getUnionTypes, singleTypeToBase, widenWithNull } from '../symbolTable';
 import { type TypeError, type TypeWarning } from '../types';
+import type { JsonReadability } from '../typeChecker';
+import { validateJsonText } from '../jsonTextValidator';
 import { UcodeErrorCode } from '../errorConstants';
 import { isKnownObjectType, OBJECT_REGISTRIES } from '../moduleDispatch';
 import { regexTypeRegistry, analyzeCaptureGroups, type CaptureGroupInfo } from '../regexTypes';
@@ -1607,16 +1609,90 @@ export class BuiltinValidator {
 
   validateJsonFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'json', 1)) return true;
-    // ucode's uc_json (lib.c uc_json / uc_json_from_object) accepts a STRING, a
-    // plain OBJECT/ARRAY, OR any resource/object exposing a callable read() method
-    // (it streams chunks from read() into the tokener). So a readable handle such as
-    // an fs.file / fs.proc / io.handle returned by open()/popen() is a valid argument
-    // — don't flag it. (auto-docs #141)
-    if (this.argIsReadableHandle(node.arguments[0])) {
+    const arg = node.arguments[0];
+    // ucode's json() PARSES; it never serializes (lib.c uc_json). A STRING is
+    // tokenized directly. UC_RESOURCE/UC_OBJECT/UC_ARRAY go to
+    // uc_json_from_object, which REQUIRES a callable `read` property and raises
+    // "Input object does not implement read() method" without one — so a readable
+    // handle (fs.file / fs.proc / io.handle from open()/popen()) is fine, but a
+    // plain dict or array always throws. Everything else raises "Passed value is
+    // neither a string nor an object".
+    if (this.argIsReadableHandle(arg)) {
       return true;
     }
+    // Prototype-aware readability: `proto(v, { read: … })` makes any array or
+    // object streamable, and the lookup walks the whole chain. 'readable' is
+    // silent; 'unknown' is silent (never guess); only a proven negative falls
+    // through to the parse-only rule below.
+    // A string LITERAL is JSON TEXT we can check right now: json-c raises a
+    // syntax error on malformed input, so `json('{1:2}')` throws on every call.
+    // Validated against json-c's real grammar (jsonTextValidator), not JSON.parse
+    // — json-c accepts single quotes, trailing commas, comments, NaN and leading
+    // zeros, so the JS parser would false-positive on working input.
+    if (arg?.type === 'Literal' && typeof arg.value === 'string') {
+      if (validateJsonText(arg.value) === 'invalid') {
+        // A literal we can parse right now: this raises on every call, so it is
+        // a PROVEN throw — error, like every other proven throw here.
+        this.errors.push({
+          message: `This is not valid JSON text - json() raises a syntax error at runtime. `
+            + `Object keys must be quoted, and nothing may follow the value.`,
+          start: arg.start,
+          end: arg.end,
+          severity: 'error',
+          code: UcodeErrorCode.JSON_IS_PARSE_ONLY,
+        });
+        return true;
+      }
+      return true; // valid JSON text — the correct, silent case
+    }
+
+    const readability = arg ? this.jsonReadability(arg) : 'unknown';
+    if (readability === 'readable') return true;
+
+    // 1. Proven to raise: scalars, and objects/arrays whose whole member chain
+    //    is visible and carries no callable read(). Hard error + serialize fix.
+    if (arg && this.jsonArgProvablyThrows(arg)) {
+      this.errors.push({
+        message: `json() parses JSON text, it does not produce it - passing ${this.jsonArgNoun(arg)} raises a runtime error. `
+          + `Use sprintf("%J", value) to serialize a value to JSON text.`,
+        start: arg.start,
+        end: arg.end,
+        severity: 'error',
+        code: UcodeErrorCode.JSON_IS_PARSE_ONLY,
+        data: { jsonSerializeFix: { callStart: node.start, callEnd: node.end, argStart: arg.start, argEnd: arg.end } },
+      });
+      return true;
+    }
+
+    // 2. Unprovable, and the value is one that json() cannot simply accept: an
+    //    opaque object/array (may or may not carry read()), or a value of wholly
+    //    unknown type — an unannotated parameter, the shape the GL.iNet field bug
+    //    took, where the generic "argument is unknown" wording never named the
+    //    real failure. A crash the author cannot see deserves a squiggle, but it
+    //    may legitimately be JSON text at runtime, so this is not a hard error.
+    //    Values that ARE plausibly text (string, string|null, …) fall through to
+    //    the ordinary argument-type check, which has better null-aware wording.
+    if (arg && this.jsonArgIsUnprovable(arg)) {
+      const entry = {
+        message: `json() parses JSON text, it does not produce it - this call throws unless ${this.jsonArgNoun(arg)} is JSON text or provides a callable read() method. `
+          + `To serialize a value to JSON text, use sprintf("%J", value).`,
+        start: arg.start,
+        end: arg.end,
+        code: UcodeErrorCode.JSON_IS_PARSE_ONLY,
+        data: {
+          jsonSerializeFix: { callStart: node.start, callEnd: node.end, argStart: arg.start, argEnd: arg.end },
+          // Unprovable, not proven-broken: a try/catch around the call already
+          // handles the throw, so a post-pass drops these when guarded.
+          jsonUnprovable: true,
+        },
+      };
+      if (this.strictMode && this.strictUnknownArguments) this.errors.push({ ...entry, severity: 'error' });
+      else this.warnings.push({ ...entry, severity: 'warning' });
+      return true;
+    }
+
     this.validateArgumentType(
-      node.arguments[0],
+      arg,
       'json',
       1,
       [UcodeType.STRING, UcodeType.OBJECT],
@@ -1624,6 +1700,96 @@ export class BuiltinValidator {
       `Function 'json' expects a string or a readable handle as argument`
     );
     return true;
+  }
+
+  /** True when `json(arg)` provably raises: the value can be neither JSON TEXT
+   *  (a string) nor a streaming source (an object exposing a callable read()).
+   *  Deliberately silent on anything unproven — UNKNOWN/ANY, unions that admit a
+   *  string, and known handle types all pass through. */
+  private jsonArgProvablyThrows(arg: AstNode): boolean {
+    // Literals: the readability analysis reads their own members and any
+    // prototype attached via proto(), so let it decide.
+    if (arg.type === 'ArrayExpression' || arg.type === 'ObjectExpression') {
+      return this.jsonReadability(arg) === 'not-readable';
+    }
+
+    const fullType = this.getNodeFullType(arg);
+    if (!fullType) return false;
+    // A union is provably bad only if EVERY member is.
+    const members = isUnionType(fullType) ? getUnionTypes(fullType) : [fullType];
+    if (members.length === 0) return false;
+    return members.every(m => {
+      // Known handle kinds (fs.file, …) are caught by argIsReadableHandle; any other
+      // named object kind or module is opaque to us — stay silent.
+      if (getObjectTypeName(m) !== null || extractModuleType(m) !== null) return false;
+      // Arrays and objects can carry a prototype, so only the readability
+      // analysis can prove them broken.
+      if (isArrayType(m)) return this.jsonReadability(arg) === 'not-readable';
+      const base = singleTypeToBase(m);
+      // A NULL argument is a null-handling bug, not a serializer mix-up —
+      // "use sprintf(%J)" would be wrong advice. Left to the existing
+      // wrong-argument-type diagnostic.
+      if (base === UcodeType.NULL) return false;
+      switch (base) {
+        case UcodeType.INTEGER:
+        case UcodeType.DOUBLE:
+        case UcodeType.BOOLEAN:
+        case UcodeType.REGEX:
+          return true; // scalars have no prototype slot (types.c ucv_prototype_set)
+        case UcodeType.OBJECT:
+        case UcodeType.ARRAY:
+          return this.jsonReadability(arg) === 'not-readable';
+        default:
+          return false; // STRING, FUNCTION, UNKNOWN, ANY — unproven or fine
+      }
+    });
+  }
+
+  /** True when json() cannot be shown safe for this argument AND the value is
+   *  not plausibly JSON text: an object/array whose members we cannot enumerate,
+   *  or a wholly unknown value. Anything that could be a string (string,
+   *  string|null, …) is left to the ordinary argument-type check. */
+  private jsonArgIsUnprovable(arg: AstNode): boolean {
+    if (arg.type === 'ObjectExpression' || arg.type === 'ArrayExpression') return true;
+    const fullType = this.getNodeFullType(arg);
+    // No resolvable type at all: unprovable by definition, but only claim it
+    // when the readability analysis also came back undecided.
+    if (!fullType) return this.jsonReadability(arg) === 'unknown';
+    const members = isUnionType(fullType) ? getUnionTypes(fullType) : [fullType];
+    if (members.length === 0) return false;
+    // Any member that could be text (or a handle we recognise) → not our case.
+    if (members.some(m => singleTypeToBase(m) === UcodeType.STRING)) return false;
+    return members.every(m => {
+      if (isArrayType(m)) return true;
+      const base = singleTypeToBase(m);
+      return base === UcodeType.OBJECT || base === UcodeType.ARRAY
+        || base === UcodeType.UNKNOWN || base === UcodeType.ANY;
+    });
+  }
+
+  /** How to name the offending argument in the diagnostic. */
+  private jsonArgNoun(arg: AstNode): string {
+    if (arg.type === 'ObjectExpression') return 'an object';
+    if (arg.type === 'ArrayExpression') return 'an array';
+    const fullType = this.getNodeFullType(arg);
+    if (fullType) {
+      const members = isUnionType(fullType) ? getUnionTypes(fullType) : [fullType];
+      const first = members[0];
+      if (members.length === 1 && first !== undefined) {
+        if (isArrayType(first)) return 'an array';
+        switch (singleTypeToBase(first)) {
+          case UcodeType.OBJECT: return 'an object';
+          case UcodeType.ARRAY: return 'an array';
+          case UcodeType.INTEGER:
+          case UcodeType.DOUBLE: return 'a number';
+          case UcodeType.BOOLEAN: return 'a boolean';
+          case UcodeType.NULL: return 'null';
+          case UcodeType.REGEX: return 'a regular expression';
+          default: break;
+        }
+      }
+    }
+    return 'this value';
   }
 
   /** True when the argument's resolved type is (or includes) a known handle object
@@ -2869,6 +3035,12 @@ export class BuiltinValidator {
     return null;
   }
 
+  /** Injected by the type checker: whether json() can stream from this value,
+   *  following the prototype chain the way ucv_property_get does. */
+  private jsonReadability(_node: AstNode): JsonReadability {
+    return 'unknown';
+  }
+
   // Method to inject the type checker
   setTypeChecker(typeChecker: (node: AstNode | undefined) => UcodeType): void {
     this.getNodeType = typeChecker;
@@ -2876,5 +3048,9 @@ export class BuiltinValidator {
 
   setFullTypeChecker(checker: (node: AstNode) => UcodeDataType | null): void {
     this.getNodeFullType = checker;
+  }
+
+  setJsonReadabilityProbe(probe: (node: AstNode) => JsonReadability): void {
+    this.jsonReadability = probe;
   }
 }

@@ -31,6 +31,7 @@ import { uloopObjectRegistry } from './uloopTypes';
 import { createExceptionObjectDataType } from './exceptionTypes';
 import { UcodeErrorCode } from './errorConstants';
 import { type UcodeTargetVersion, type VersionGatedFeature, VERSION_FEATURES, VERSION_MODULES, VERSION_MODULE_FUNCTIONS, VERSION_OBJECT_METHODS, VERSION_GLOBAL_BUILTINS, PLATFORM_GATED_SYMBOLS, targetLacksFeature, DEFAULT_TARGET_VERSION } from './ucodeVersions';
+import { validateJsonText } from './jsonTextValidator';
 import { parseJsDocComment, resolveTypeExpression, resolveTypeExpressionDetailed, parseInlineObjectShape, parseImportTypeExpression, extractTypedef, JSDOC_PRIMITIVE_MAP, type ParsedTypedef, type ParsedTypedefProperty } from './jsdocParser';
 import { editDistanceAtMost } from './typeStringUtils';
 import { KNOWN_HOST_GLOBALS, isHostEntryPointCallback } from './hostGlobals';
@@ -797,6 +798,8 @@ export class SemanticAnalyzer extends BaseVisitor {
       // Flag `export { name }` of a name that isn't a module-local binding.
       this.checkExportedNames(node);
     }
+    // A try/catch already handles an unprovable json() argument — drop those.
+    this.dropGuardedUnprovableJsonDiagnostics(node);
     // Opt-in: flag calls to throwing builtins (json/loadfile/…) outside try/catch.
     if (this.options.warnUnguardedThrowingCalls) {
       this.checkUnguardedThrowingCalls(node);
@@ -2068,6 +2071,42 @@ export class SemanticAnalyzer extends BaseVisitor {
    * own statement-list: a throw inside a nested block wraps within that block; a call
    * already inside a try block (its `block`, not its catch/finally) is not flagged.
    */
+  /** True when a diagnostic already proves this call raises unconditionally (today:
+   *  UC2017, a json() argument that can never be parsed). Those own the site — the
+   *  generic "guard it with try/catch" advice would contradict their fix, which is
+   *  to stop passing the value at all. Type-checker diagnostics are forwarded during
+   *  traversal, so they are present by the time this post-pass runs. */
+  private hasCertainThrowDiagnostic(call: CallExpressionNode): boolean {
+    return this.diagnostics.some((d) => {
+      if (d.code !== UcodeErrorCode.JSON_IS_PARSE_ONLY) return false;
+      const dStart = this.textDocument.offsetAt(d.range.start);
+      const dEnd = this.textDocument.offsetAt(d.range.end);
+      return dStart >= call.start && dEnd <= call.end;
+    });
+  }
+
+  /** Drop UC2017 diagnostics raised on merely-UNPROVABLE arguments when the call
+   *  already sits inside a try/catch: the author has handled the throw, so the
+   *  nudge adds nothing. Proven-broken arguments keep their hard error — a call
+   *  that always raises is a bug whether or not it is caught. Mirrors UC8001,
+   *  which likewise stays quiet inside a guard. */
+  private dropGuardedUnprovableJsonDiagnostics(program: ProgramNode): void {
+    const guarded: Array<{ start: number; end: number }> = [];
+    const collect = (n: AstNode): void => {
+      if (n.type === 'TryStatement') guarded.push({ start: n.block.start, end: n.block.end });
+      for (const child of astChildren(n)) collect(child);
+    };
+    collect(program);
+    if (guarded.length === 0) return;
+    const inGuard = (offset: number): boolean =>
+      guarded.some(g => offset >= g.start && offset < g.end);
+    this.diagnostics = this.diagnostics.filter((d) => {
+      if (d.code !== UcodeErrorCode.JSON_IS_PARSE_ONLY) return true;
+      if (d.data === undefined || !('jsonUnprovable' in d.data)) return true;
+      return !inGuard(this.textDocument.offsetAt(d.range.start));
+    });
+  }
+
   private checkUnguardedThrowingCalls(node: ProgramNode): void {
     // Does `stmt` contain a throwing-builtin call AT THIS block level — i.e. before any
     // nested block/try/function boundary (those are handled by their own walkBlock)?
@@ -2169,6 +2208,19 @@ export class SemanticAnalyzer extends BaseVisitor {
           // request VM uncatchably, so "guard it with try/catch" is WRONG advice.
           // checkHandlerVmAbortingCalls emits the correct fix (UC8011); skip UC8001 here.
           if (this.isUhttpdHandler && throwName === 'loadfile') { i++; continue; }
+          // Likewise when we already KNOW the call throws: UC2017 says this json()
+          // argument can never be parsed, so "wrap it in try/catch" is the wrong
+          // advice — the fix is to stop passing that value, which UC2017 offers.
+          if (this.hasCertainThrowDiagnostic(call)) { i++; continue; }
+          // `json('<valid JSON text>')` cannot throw: the literal is checked
+          // against json-c's grammar right here, so there is no failure to
+          // guard against. (An invalid literal is a CERTAIN throw and UC2017
+          // owns it, above.)
+          if (throwName === 'json') {
+            const lit = call.arguments[0];
+            if (lit?.type === 'Literal' && typeof lit.value === 'string'
+                && validateJsonText(lit.value) === 'valid') { i++; continue; }
+          }
           const spec = THROWING_BUILTINS.get(throwName);
           // For a `resolvable` builtin, decide whether its string-literal argument provably
           // resolves. 'module' (require): a builtin available at the CONFIGURED target version
@@ -4162,6 +4214,8 @@ export class SemanticAnalyzer extends BaseVisitor {
     if (/^[A-Za-z_$][\w.$]*$/.test(token)) {
       const candidates = new Set<string>([
         ...Object.keys(JSDOC_PRIMITIVE_MAP),
+        'number', // resolved as `integer | double`, so not in the primitive map
+
         ...Object.keys(OBJECT_REGISTRIES),
         ...KNOWN_MODULES,
         ...this.typedefRegistry.keys(),
