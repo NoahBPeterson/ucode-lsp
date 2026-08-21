@@ -41,12 +41,6 @@ function hasInferenceStamps(n: AstNode): n is AstNode & InferenceStamps {
   return typeof n === 'object';
 }
 
-/** Defensive view of a `try` node's (grammar-absent) `finally` block — see
- *  checkTryStatement. All-optional, so structurally always admissible. */
-function mayCarryFinalizer(n: TryStatementNode): n is TryStatementNode & { finalizer?: AstNode } {
-  return typeof n === 'object';
-}
-
 const UCODE_TYPE_NAMES = new Set<string>(Object.values(UcodeType));
 /** Is this string one of the bare UcodeType enum values (e.g. "array", "null")? */
 function isUcodeTypeName(s: string): s is UcodeType {
@@ -5613,12 +5607,9 @@ export class TypeChecker {
       this.checkNode(node.handler);
     }
 
-    // Check finally block. NOTE: TryStatementNode has no `finalizer` in the grammar
-    // (ucode `try` has no `finally`), so this branch is effectively dead; kept for safety.
-    const finalizer = mayCarryFinalizer(node) ? node.finalizer : undefined;
-    if (finalizer) {
-      this.checkNode(finalizer);
-    }
+    // No `finally` block to check: ucode's grammar has no `finally` (the
+    // interpreter rejects it with a syntax error) and TryStatementNode carries
+    // no `finalizer` field, so there is nothing here to walk.
 
     return UcodeType.UNKNOWN;
   }
