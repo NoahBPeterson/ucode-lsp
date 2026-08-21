@@ -3381,10 +3381,23 @@ connection.onDocumentLinks((params): DocumentLink[] => {
 /** Find a function node (expression/decl) starting exactly at `start` in `ast`. */
 function findFunctionNodeAt(ast: AstNode | null | undefined, start: number): FunctionLikeNode | null {
     let found: FunctionLikeNode | null = null;
+    // A key-anchored property whose value is an IDENTIFIER — the free-function
+    // prototype-table idiom (`const P = { setup }`): remember the referenced
+    // name and resolve it to its function declaration in a second pass.
+    let referencedFnName: string | null = null;
     const visit = (node: AstNode): void => {
         if (found || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
         if ((node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression' || node.type === 'FunctionDeclaration')
             && node.start === start) { found = node; return; }
+        // A member location may anchor on the property KEY (the prototype-chain
+        // stamps do — the key is the better go-to-def landing spot). Resolve the
+        // key to its function VALUE for signature help.
+        if (node.type === 'Property' && node.key?.start === start) {
+            if (node.value?.type === 'FunctionExpression' || node.value.type === 'ArrowFunctionExpression') {
+                found = node.value; return;
+            }
+            if (node.value?.type === 'Identifier') { referencedFnName = node.value.name; return; }
+        }
         for (const [k, v] of astFieldEntries(node)) {
             if (k === 'leadingJsDoc') continue;
             if (Array.isArray(v)) { for (const it of v) if (it) visit(it); }
@@ -3392,6 +3405,21 @@ function findFunctionNodeAt(ast: AstNode | null | undefined, start: number): Fun
         }
     };
     if (ast) visit(ast);
+    if (!found && referencedFnName !== null && ast) {
+        // Second pass: the anchor was `{ setup }` / `{ stop: halt }` — find the
+        // named function declaration the property references.
+        const wanted: string = referencedFnName;
+        const findDecl = (node: AstNode): void => {
+            if (found || !node || typeof node !== 'object' || typeof node.type !== 'string') return;
+            if (node.type === 'FunctionDeclaration' && node.id.name === wanted) { found = node; return; }
+            for (const [k, v] of astFieldEntries(node)) {
+                if (k === 'leadingJsDoc') continue;
+                if (Array.isArray(v)) { for (const it of v) if (it) findDecl(it); }
+                else if (v && typeof v === 'object' && 'type' in v && typeof v.type === 'string') findDecl(v);
+            }
+        };
+        findDecl(ast);
+    }
     return found;
 }
 

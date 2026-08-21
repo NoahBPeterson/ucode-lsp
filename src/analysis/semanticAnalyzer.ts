@@ -22,6 +22,7 @@ import { Diagnostic, DiagnosticSeverity, DiagnosticTag, type DiagnosticRelatedIn
 import { TextDocument } from 'vscode-languageserver-textdocument';
 import { allBuiltinFunctions } from '../builtins';
 import { FileResolver, type FactoryReturnInfo, type LoadfileGlobal, type LoadfileProgramReturn } from './fileResolver';
+import { asProtoCall, collectPrototypeInstances, collectPrototypeMethodFunctions, declaratorInitNear, detectProtoCycles, instanceBaseType, protoOperandKey, staticLiteralKeys } from './protoResolver';
 import { CFGBuilder } from './cfg/cfgBuilder';
 import { CFGQueryEngine } from './cfg/queryEngine';
 import { type ControlFlowGraph } from './cfg/types';
@@ -46,7 +47,7 @@ import { isLuciEnvFile, findLuciWorkspace, hasLuciLuaViewFallback, suggestLuciMo
 import { mineParamShape } from './typedefFromUsage';
 import { LUCI_ENV_GLOBALS, LUCI_TEMPLATE_RENDER_COMPAT_NAMES } from './luciTypes';
 import { parseDisableDirectives, directiveCovers, type DisableDirective } from './disableDirectives';
-import { astChildren } from '../ast/astChildren';
+import { astChildren, walkAst } from '../ast/astChildren';
 import { type CleanBody } from './incrementalAnalysis';
 
 /** Children exactly as the historical generic field walks visited them: `astChildren`
@@ -281,6 +282,21 @@ export class SemanticAnalyzer extends BaseVisitor {
   private currentASTRoot: ProgramNode | null = null;
   private thisPropertyStack: Map<string, UcodeDataType>[] = []; // Track `this` context for object method property types
   private thisObjectNodeStack: ObjectExpressionNode[] = []; // Parallel to thisPropertyStack: the object node, so `this.method()` return types resolve from sibling function properties (define-before-use)
+  // Parallel to thisPropertyStack: the runtime type of `this` inside this literal's
+  // methods. Non-null only when the literal is a PROTOTYPE table (it appears as
+  // `proto(V, P)`'s second operand) — `this` is then the INSTANCE V, whose base type
+  // proto() preserves (an array instance keeps type "array", so `shift(this)` is legal).
+  private thisInstanceTypeStack: (UcodeDataType | null)[] = [];
+  // `proto(V, P)` sites per prototype OBJECT LITERAL, plus the free functions the
+  // tables reference as methods — scanned once per AST root (lazy — see
+  // getProtoInstanceRegistry). Drives instance-shaped `this` typing.
+  private protoInstanceRegistry: Map<ObjectExpressionNode, AstNode[]> | null = null;
+  private protoMethodFunctionRegistry: Map<string, ObjectExpressionNode[]> | null = null;
+  private protoInstanceRegistryRoot: ProgramNode | null = null;
+  // Member names a bare `proto(name, P);` statement merged onto `name`'s symbol, so a
+  // LATER re-parenting call can honor ucode's REPLACE (not merge) semantics by first
+  // removing the previous prototype's contributions.
+  private protoStampedKeys = new WeakMap<SymbolEntry, Set<string>>();
   // Forward `this.method()` call sites resolved from the shallow pre-pass (the sibling
   // wasn't visited yet) — keyed by the enclosing object literal so they can be patched
   // once every method's accurate return type is known (docs/tc-this-method-forward-ref-
@@ -809,6 +825,13 @@ export class SemanticAnalyzer extends BaseVisitor {
     // the initNode traces can see forward-declared sockets.
     if (this.options.enableScopeAnalysis) {
       this.checkBlockingSocketpairRecvs(node);
+    }
+    // Cyclic prototype chains: the VM walks proto->proto with no cycle guard, so
+    // reading any MISSING member on the cycle hangs the program forever
+    // (container-proven; docs/cyclic-proto-chain-hang.md). Whole-file pass —
+    // the cycle only exists across several proto() calls.
+    if (this.options.enableScopeAnalysis) {
+      this.checkCyclicPrototypeChains(node);
     }
     // uhttpd handler (Phase C / FN-4): loadfile()/loadfile()()/include() abort the request
     // VM uncatchably. Runs only for a detected handler file.
@@ -3601,6 +3624,18 @@ export class SemanticAnalyzer extends BaseVisitor {
             if (merged && merged.size > 0) sym.propertyTypes = merged;
           }
         }
+        // Case 1c: `let w = proto(V, P)` — proto() returns V with prototype P
+        // attached, so the binding's member shape is V's own fields merged over
+        // P's whole chain (docs/prototypes-as-a-first-class-concept.md). Stamps
+        // the same four maps an object literal gets, so completion/hover/
+        // go-to-def/signature help resolve prototype members.
+        else {
+          const pc = asProtoCall(node.init);
+          if (pc) {
+            const sym = this.symbolTable.lookupOpenScopes(name);
+            if (sym) this.stampProtoShapeOnSymbol(sym, pc.value, pc.protoExpr, 'binding');
+          }
+        }
       }
     } else {
       super.visitVariableDeclarator(node);
@@ -4877,6 +4912,12 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (restSym) restSym.isRestParam = true;
       }
 
+      // A free function referenced BY NAME from a prototype table (`function setup()
+      // {…}` + `const wdev_proto = { setup, … }` + `proto(wdev, wdev_proto)`) is a
+      // METHOD — declare `this` as the instance, exactly like a function expression
+      // inside a prototype literal (the wifi-scripts idiom).
+      this.declareThisForPrototypeMethodFunction(name, node);
+
       // Visit the function body to find all return statements. For an unchanged incremental
       // unit, type checking inside the body is short-circuited (see typeChecker clean ranges),
       // but the SCOPE visit still runs so declarations/usage/shadowing stay correct.
@@ -5011,11 +5052,403 @@ export class SemanticAnalyzer extends BaseVisitor {
     }
   }
 
+  // ── proto(): ucode's class mechanism, modeled once ─────────────────────────────────
+  // (docs/prototypes-as-a-first-class-concept.md — see protoResolver.ts for the
+  // runtime rules.) The analyzer's job is to stamp the MERGED chain shape onto the
+  // symbols involved; every consumer (completion, hover, go-to-def, signature help,
+  // member checks, json readability) then reads the ordinary symbol maps.
+
+  /** `proto(V, P)` sites per prototype object literal, scanned once per AST root. */
+  private getProtoInstanceRegistry(): Map<ObjectExpressionNode, AstNode[]> {
+    if (!this.currentASTRoot) return new Map();
+    if (this.protoInstanceRegistry && this.protoInstanceRegistryRoot === this.currentASTRoot) {
+      return this.protoInstanceRegistry;
+    }
+    this.protoInstanceRegistry = collectPrototypeInstances(this.currentASTRoot);
+    this.protoMethodFunctionRegistry = collectPrototypeMethodFunctions(this.protoInstanceRegistry);
+    this.protoInstanceRegistryRoot = this.currentASTRoot;
+    return this.protoInstanceRegistry;
+  }
+
+  /** Flag every proto() call participating in a cyclic prototype chain (UC8016
+   *  Warning), and escalate to an ERROR at any member READ that PROVABLY hangs:
+   *  the read executes unconditionally at the top level after the cycle is
+   *  closed, the whole chain's member set is statically known, and the member
+   *  exists nowhere on it — ucv_key_get/ucv_property_get walk proto→proto with
+   *  no cycle guard, so that lookup never returns (container-proven hang).
+   *  WRITES and deletes are exempt: ucv_key_set/ucv_key_delete touch only the
+   *  receiver's own members, no chain walk (container-proven safe). */
+  private checkCyclicPrototypeChains(root: ProgramNode): void {
+    const cycles = detectProtoCycles(root);
+    if (cycles.length === 0) return;
+
+    // One structural pass: spans where execution is conditional or deferred
+    // (a read there may simply never run — no ERROR can be proven), member
+    // reads, assignment/delete targets, and proto-instance bindings.
+    const guardSpans: Array<{ start: number; end: number }> = [];
+    const memberReads: MemberExpressionNode[] = [];
+    const writeOrDeleteTargets = new Set<AstNode>();
+    const instanceBindings: Array<{ call: AstNode; protoKey: string; valueNode: AstNode; bindingName: string | null }> = [];
+    walkAst(root, (n) => {
+      switch (n.type) {
+        case 'FunctionDeclaration': case 'FunctionExpression': case 'ArrowFunctionExpression':
+        case 'IfStatement': case 'WhileStatement':
+        case 'ForStatement': case 'ForInStatement': case 'SwitchStatement':
+        case 'TryStatement': case 'ConditionalExpression':
+          guardSpans.push({ start: n.start, end: n.end });
+          break;
+        case 'BinaryExpression':
+          // Short-circuit operators make their right side conditional; the
+          // whole span is treated as guarded (conservative, keeps this proven).
+          if (n.operator === '&&' || n.operator === '||' || n.operator === '??') {
+            guardSpans.push({ start: n.start, end: n.end });
+          }
+          break;
+        case 'MemberExpression':
+          if (!n.computed && n.object.type === 'Identifier' && n.property.type === 'Identifier') memberReads.push(n);
+          break;
+        case 'AssignmentExpression':
+          if (n.left.type === 'MemberExpression') writeOrDeleteTargets.add(n.left);
+          if (n.left.type === 'Identifier' && n.right) {
+            const rpc = asProtoCall(n.right);
+            if (rpc) {
+              const pk = protoOperandKey(rpc.protoExpr);
+              if (pk !== null) instanceBindings.push({ call: n.right, protoKey: pk, valueNode: rpc.value, bindingName: n.left.name });
+            }
+          }
+          break;
+        case 'DeleteExpression':
+          if (n.argument.type === 'MemberExpression') writeOrDeleteTargets.add(n.argument);
+          break;
+        case 'VariableDeclarator':
+          if (n.init) {
+            const dpc = asProtoCall(n.init);
+            if (dpc) {
+              const pk = protoOperandKey(dpc.protoExpr);
+              if (pk !== null) instanceBindings.push({ call: n.init, protoKey: pk, valueNode: dpc.value, bindingName: n.id.name });
+            }
+          }
+          break;
+        case 'CallExpression': {
+          const cpc = asProtoCall(n);
+          if (cpc) {
+            const pk = protoOperandKey(cpc.protoExpr);
+            // A bare `proto(w, P);` carries no declarator; the VALUE identifier is the binding.
+            if (pk !== null && cpc.value.type === 'Identifier') {
+              instanceBindings.push({ call: n, protoKey: pk, valueNode: cpc.value, bindingName: cpc.value.name });
+            }
+          }
+          break;
+        }
+        default: break;
+      }
+    });
+    const unconditional = (pos: number): boolean => !guardSpans.some((s) => pos > s.start && pos < s.end);
+
+    // Resolve a proto() operand to its fully-static object literal's keys, or
+    // null when nothing can be proven about ABSENT members.
+    const staticKeysOf = (expr: AstNode): string[] | null => {
+      const target = asProtoCall(expr)?.value ?? expr;
+      if (target.type === 'ObjectExpression') return staticLiteralKeys(target);
+      if (target.type === 'ArrayExpression') return []; // no own NAMED members
+      if (target.type === 'Identifier' && this.currentASTRoot) {
+        const init = declaratorInitNear(target.name, target.start, this.currentASTRoot);
+        if (init) {
+          const lit = asProtoCall(init)?.value ?? init;
+          if (lit.type === 'ObjectExpression') return staticLiteralKeys(lit);
+          if (lit.type === 'ArrayExpression') return [];
+        }
+      }
+      return null;
+    };
+
+    for (const cycle of cycles) {
+      const first = cycle.names[0];
+      if (first === undefined) continue;
+      const loop = [...cycle.names, first].join(' → ');
+      // The call latest in the file is the one that turns a legal linear chain
+      // into a cycle; the earlier calls are fine on their own and are flagged
+      // as becoming part of it.
+      const completingStart = Math.max(...cycle.calls.map((c) => c.start));
+      for (const call of cycle.calls) {
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.CYCLIC_PROTOTYPE_CHAIN,
+          call.start === completingStart
+            ? `This proto() call creates a prototype cycle (${loop}). Reading any member that exists nowhere on the chain makes the program hang forever.`
+            : `A later proto() call turns this prototype chain into a cycle (${loop}). Reading any member that exists nowhere on the chain makes the program hang forever.`,
+          call.start,
+          call.end,
+          DiagnosticSeverity.Warning,
+        );
+      }
+
+      // ── Proven-hang reads (error) ────────────────────────────────────────
+      // Everything below must be certain; any doubt keeps the warning only.
+      if (!cycle.calls.every((c) => unconditional(c.start))) continue;
+      let universe: Set<string> | null = new Set<string>();
+      for (const v of cycle.valueNodes) {
+        const keys = staticKeysOf(v);
+        if (keys === null) { universe = null; break; }
+        for (const k of keys) universe.add(k);
+      }
+      if (universe === null) continue;
+      const chainMembers = universe;
+      const closureEnd = Math.max(...cycle.calls.map((c) => c.end));
+
+      // Names that carry the cyclic chain: the participants themselves, every
+      // ρ-shape TAIL node (its chain runs into the cycle — a missing read
+      // walks the tail then loops forever, container-proven), and every
+      // instance attached to any of those by an unconditional call.
+      const carriers = new Map<string, { allowed: Set<string>; from: number; viaTail: boolean }>();
+      const tailInfoByKey = new Map<string, { allowed: Set<string>; from: number }>();
+      for (const key of cycle.keys) {
+        if (key.startsWith('id:')) carriers.set(key.slice(3), { allowed: chainMembers, from: closureEnd, viaTail: false });
+      }
+      for (const tail of cycle.tails) {
+        if (!tail.calls.every((c) => unconditional(c.start))) continue;
+        let pathMembers: Set<string> | null = new Set(chainMembers);
+        for (const v of tail.valueNodes) {
+          const keys = staticKeysOf(v);
+          if (keys === null) { pathMembers = null; break; }
+          for (const k of keys) pathMembers.add(k);
+        }
+        if (pathMembers === null) continue; // a non-static table on the path — nothing provable
+        const from = Math.max(closureEnd, ...tail.calls.map((c) => c.end));
+        tailInfoByKey.set(tail.key, { allowed: pathMembers, from });
+        if (tail.key.startsWith('id:')) {
+          carriers.set(tail.key.slice(3), { allowed: pathMembers, from, viaTail: true });
+        }
+      }
+      for (const inst of instanceBindings) {
+        const viaCycle = cycle.keys.includes(inst.protoKey);
+        const viaTail = tailInfoByKey.get(inst.protoKey);
+        if (!viaCycle && viaTail === undefined) continue;
+        if (inst.bindingName === null || !unconditional(inst.call.start)) continue;
+        const own = staticKeysOf(inst.valueNode);
+        if (own === null) continue; // opaque instance — nothing provable
+        const base = viaCycle ? { allowed: chainMembers, from: closureEnd } : viaTail;
+        if (base === undefined) continue;
+        const allowed = new Set([...base.allowed, ...own]);
+        carriers.set(inst.bindingName, { allowed, from: Math.max(base.from, inst.call.end), viaTail: !viaCycle });
+      }
+
+      for (const read of memberReads) {
+        if (writeOrDeleteTargets.has(read)) continue; // writes/deletes never walk the chain
+        if (read.object.type !== 'Identifier' || read.property.type !== 'Identifier') continue;
+        const carrier = carriers.get(read.object.name);
+        if (!carrier) continue;
+        if (read.start < carrier.from || !unconditional(read.start)) continue;
+        const member = read.property.name;
+        if (carrier.allowed.has(member)) continue;
+        this.addDiagnosticErrorCode(
+          UcodeErrorCode.CYCLIC_PROTOTYPE_CHAIN,
+          carrier.viaTail
+            ? `Reading '${member}' hangs the program forever — it exists nowhere on this prototype chain, which runs into the cycle ${loop}, so the lookup never ends.`
+            : `Reading '${member}' hangs the program forever — it exists nowhere on the cyclic prototype chain ${loop}, so the lookup never ends.`,
+          read.property.start,
+          read.property.end,
+          DiagnosticSeverity.Error,
+        );
+      }
+    }
+  }
+
+  /** Declare `this` for a free function that a prototype table references as a
+   *  method — the instance shape, mirroring the object-literal-method path in
+   *  visitFunctionExpression. No-op for ordinary functions. */
+  private declareThisForPrototypeMethodFunction(fnName: string, node: AstNode): void {
+    this.getProtoInstanceRegistry(); // ensure both registries are built
+    const tables = this.protoMethodFunctionRegistry?.get(fnName);
+    const lit = tables?.[0]; // >1 referencing table is vanishingly rare; first wins
+    if (!lit) return;
+    const protoProps = this.inferObjectLiteralPropertyTypes(lit) ?? new Map<string, UcodeDataType>();
+    const instances = this.getProtoInstanceRegistry().get(lit) ?? [];
+    const { thisProps, thisType } = this.prototypeInstanceThisShape(protoProps, instances);
+    this.symbolTable.declare('this', SymbolType.VARIABLE, thisType ?? UcodeType.OBJECT, node);
+    const thisSym = this.symbolTable.lookupOpenScopes('this');
+    if (!thisSym) return;
+    thisSym.propertyTypes = thisProps;
+    const fnReturns = this.inferObjectLiteralFunctionReturnTypes(lit);
+    if (fnReturns) thisSym.propertyReturnTypes = fnReturns;
+    const locs = this.inferObjectLiteralPropertyLocations(lit);
+    if (locs) thisSym.propertyDefinitionLocations = locs;
+  }
+
+  /** One level of a prototype chain, as the four symbol maps stamped for object
+   *  literals: an inline literal is inferred directly; an identifier reads the
+   *  referenced symbol's maps (which, for a proto()-built binding, already carry
+   *  ITS merged chain — recursion through declarations handles multi-level
+   *  chains); a nested `proto(V, P)` merges its own two layers (own wins). */
+  private protoLayerShape(expr: AstNode): {
+    props: Map<string, UcodeDataType>;
+    returns: Map<string, UcodeDataType>;
+    locs: Map<string, { uri: string; start: number; end: number }>;
+    nested: Map<string, Map<string, UcodeDataType>>;
+  } {
+    const empty = () => ({
+      props: new Map<string, UcodeDataType>(),
+      returns: new Map<string, UcodeDataType>(),
+      locs: new Map<string, { uri: string; start: number; end: number }>(),
+      nested: new Map<string, Map<string, UcodeDataType>>(),
+    });
+    const pc = asProtoCall(expr);
+    if (pc) {
+      const proto = this.protoLayerShape(pc.protoExpr);
+      const own = this.protoLayerShape(pc.value);
+      for (const [k, v] of own.props) proto.props.set(k, v);
+      for (const [k, v] of own.returns) proto.returns.set(k, v);
+      for (const [k, v] of own.locs) proto.locs.set(k, v);
+      for (const [k, v] of own.nested) proto.nested.set(k, v);
+      return proto;
+    }
+    if (expr.type === 'ObjectExpression') {
+      const shape = empty();
+      for (const [k, v] of this.inferObjectLiteralPropertyTypes(expr) ?? new Map<string, UcodeDataType>()) shape.props.set(k, v);
+      for (const [k, v] of this.inferObjectLiteralFunctionReturnTypes(expr) ?? new Map<string, UcodeDataType>()) shape.returns.set(k, v);
+      for (const [k, v] of this.inferObjectLiteralPropertyLocations(expr) ?? new Map<string, { uri: string; start: number; end: number }>()) shape.locs.set(k, v);
+      for (const [k, v] of this.inferObjectLiteralNestedPropertyTypes(expr) ?? new Map<string, Map<string, UcodeDataType>>()) shape.nested.set(k, v);
+      return shape;
+    }
+    if (expr.type === 'Identifier') {
+      const sym = this.symbolTable.resolveReference(expr.name, expr.start);
+      const shape = empty();
+      if (sym) {
+        for (const [k, v] of sym.propertyTypes ?? new Map<string, UcodeDataType>()) shape.props.set(k, v);
+        for (const [k, v] of sym.propertyReturnTypes ?? new Map<string, UcodeDataType>()) shape.returns.set(k, v);
+        for (const [k, v] of sym.propertyDefinitionLocations ?? new Map<string, { uri: string; start: number; end: number }>()) shape.locs.set(k, v);
+        for (const [k, v] of sym.nestedPropertyTypes ?? new Map<string, Map<string, UcodeDataType>>()) shape.nested.set(k, v);
+      }
+      return shape;
+    }
+    return empty(); // array literals have no own named members; anything else is opaque
+  }
+
+  /** Stamp the merged shape of `proto(V, P)` onto the value's symbol. `mode`
+   *  distinguishes a fresh binding (`let w = proto(…)`) from an in-place
+   *  re-parenting statement (`proto(w, P);`), where ucode REPLACES the previous
+   *  prototype — the earlier chain's contributions are removed first. */
+  private stampProtoShapeOnSymbol(sym: SymbolEntry, value: AstNode, protoExpr: AstNode, mode: 'binding' | 'reparent'): void {
+    const proto = this.protoLayerShape(protoExpr);
+    if (mode === 'binding') {
+      const own = this.protoLayerShape(value);
+      for (const [k, v] of own.props) proto.props.set(k, v); // own shadows prototype
+      for (const [k, v] of own.returns) proto.returns.set(k, v);
+      for (const [k, v] of own.locs) proto.locs.set(k, v);
+      for (const [k, v] of own.nested) proto.nested.set(k, v);
+      if (proto.props.size > 0) sym.propertyTypes = proto.props;
+      if (proto.returns.size > 0) sym.propertyReturnTypes = proto.returns;
+      if (proto.locs.size > 0) sym.propertyDefinitionLocations = proto.locs;
+      if (proto.nested.size > 0) sym.nestedPropertyTypes = proto.nested;
+      return;
+    }
+    // Re-parent: drop the previous prototype's contributions (REPLACE semantics),
+    // then merge the new chain UNDER the symbol's existing own members. The maps
+    // are cloned first — several stamping paths SHARE map references across
+    // symbols (require shapes, global properties), and an in-place merge must
+    // not leak prototype members onto those.
+    if (sym.propertyTypes) sym.propertyTypes = new Map(sym.propertyTypes);
+    if (sym.propertyReturnTypes) sym.propertyReturnTypes = new Map(sym.propertyReturnTypes);
+    if (sym.propertyDefinitionLocations) sym.propertyDefinitionLocations = new Map(sym.propertyDefinitionLocations);
+    if (sym.nestedPropertyTypes) sym.nestedPropertyTypes = new Map(sym.nestedPropertyTypes);
+    const prevKeys = this.protoStampedKeys.get(sym);
+    if (prevKeys) {
+      for (const k of prevKeys) {
+        sym.propertyTypes?.delete(k);
+        sym.propertyReturnTypes?.delete(k);
+        sym.propertyDefinitionLocations?.delete(k);
+        sym.nestedPropertyTypes?.delete(k);
+      }
+    }
+    const stamped = new Set<string>();
+    for (const [k, v] of proto.props) {
+      if (sym.propertyTypes?.has(k)) continue; // own shadows prototype
+      (sym.propertyTypes ??= new Map()).set(k, v);
+      stamped.add(k);
+    }
+    for (const [k, v] of proto.returns) {
+      if (!stamped.has(k) && sym.propertyReturnTypes?.has(k)) continue;
+      (sym.propertyReturnTypes ??= new Map()).set(k, v);
+    }
+    for (const [k, v] of proto.locs) {
+      if (!stamped.has(k) && sym.propertyDefinitionLocations?.has(k)) continue;
+      (sym.propertyDefinitionLocations ??= new Map()).set(k, v);
+    }
+    for (const [k, v] of proto.nested) {
+      if (!stamped.has(k) && sym.nestedPropertyTypes?.has(k)) continue;
+      (sym.nestedPropertyTypes ??= new Map()).set(k, v);
+    }
+    this.protoStampedKeys.set(sym, stamped);
+  }
+
+  /** The `this` shape inside a PROTOTYPE literal's methods: at runtime `this` is
+   *  the INSTANCE (proto()'s first operand), so its members are each instance's
+   *  own fields merged over the prototype's (own shadows), and its base type is
+   *  the union of the instances' runtime types — proto() preserves them, so an
+   *  array instance keeps type "array" and `shift(this)` is legal. */
+  private prototypeInstanceThisShape(
+    protoProps: Map<string, UcodeDataType>,
+    instances: AstNode[],
+  ): { thisProps: Map<string, UcodeDataType>; thisType: UcodeDataType | null } {
+    const thisProps = new Map(protoProps);
+    const bases: SingleType[] = [];
+    let allBasesKnown = true;
+    for (const inst of instances) {
+      const root = this.currentASTRoot;
+      const base = root ? instanceBaseType(inst, root) : null;
+      if (base) bases.push(base);
+      else allBasesKnown = false;
+      // Instance OWN fields (visible to every method as `this.<field>`): union
+      // across instances — different constructors may carry different fields.
+      // The wifi-scripts idiom names the instance first (`let wdev = {…}; …;
+      // return proto(wdev, wdev_proto)`), so identifiers resolve scope-aware to
+      // the declarator visible at the proto() site.
+      let target = asProtoCall(inst)?.value ?? inst;
+      if (target.type === 'Identifier' && this.currentASTRoot) {
+        const declInit = declaratorInitNear(target.name, target.start, this.currentASTRoot);
+        if (declInit) target = asProtoCall(declInit)?.value ?? declInit;
+      }
+      if (target.type !== 'ObjectExpression') continue;
+      for (const [k, v] of this.inferObjectLiteralPropertyTypes(target) ?? new Map<string, UcodeDataType>()) {
+        const existing = thisProps.get(k);
+        if (existing === undefined || existing === v) {
+          thisProps.set(k, v);
+          continue;
+        }
+        // Union across instances — but a KNOWN type beats unknown: the prototype
+        // is visited before the instance sites, so a field fed by a not-yet-typed
+        // expression (a constructor param, a call result) contributes UNKNOWN and
+        // would swallow the type every other instance proves.
+        const parts = [...getUnionTypes(existing), ...getUnionTypes(v)];
+        const known = parts.filter(t => singleTypeToBase(t) !== UcodeType.UNKNOWN);
+        thisProps.set(k, createUnionType(known.length > 0 ? known : parts));
+      }
+    }
+    // Commit to the exact union when EVERY instance's type is proven. An
+    // UNPROVEN instance (a call result, an unresolvable name) still bounds
+    // `this`: only objects and arrays can carry a prototype, so the fallback
+    // is object|array — warning tier for type mismatches, never the hard
+    // OBJECT claim (error tier) that a proven-object instance set earns.
+    const thisType = allBasesKnown && bases.length > 0
+      ? createUnionType(bases)
+      : createUnionType([UcodeType.OBJECT, UcodeType.ARRAY]);
+    return { thisProps, thisType };
+  }
+
   override visitObjectExpression(node: ObjectExpressionNode): void {
     // Extract property types for `this` context inside method bodies
     const propTypes = this.inferObjectLiteralPropertyTypes(node);
     if (propTypes) {
-      this.thisPropertyStack.push(propTypes);
+      // A PROTOTYPE literal (it appears as `proto(V, P)`'s second operand) types
+      // `this` as the INSTANCE: V's own fields merged over these methods, base
+      // type preserved from V (array instances stay arrays).
+      const instances = this.getProtoInstanceRegistry().get(node);
+      let thisProps = propTypes;
+      let thisType: UcodeDataType | null = null;
+      if (instances && instances.length > 0) {
+        ({ thisProps, thisType } = this.prototypeInstanceThisShape(propTypes, instances));
+      }
+      this.thisPropertyStack.push(thisProps);
+      this.thisInstanceTypeStack.push(thisType);
       this.thisObjectNodeStack.push(node);
       this.pendingForwardCallDeps.set(node, []);
       // Pre-compute each method's return type BEFORE visiting any body, so a method can
@@ -5034,6 +5467,7 @@ export class SemanticAnalyzer extends BaseVisitor {
       // (docs/tc-this-method-forward-ref-return.md).
       this.patchForwardCallDependencies(node);
       this.thisPropertyStack.pop();
+      this.thisInstanceTypeStack.pop();
       this.thisObjectNodeStack.pop();
       this.pendingForwardCallDeps.delete(node);
     }
@@ -5334,10 +5768,13 @@ export class SemanticAnalyzer extends BaseVisitor {
         if (restSym) restSym.isRestParam = true;
       }
 
-      // Declare `this` with property types from enclosing object literal
+      // Declare `this` with property types from enclosing object literal. Inside a
+      // PROTOTYPE literal's methods, `this` is the instance — its base type comes
+      // from the proto(V, P) sites (array instances included), not a blanket OBJECT.
       const thisProps = this.thisPropertyStack[this.thisPropertyStack.length - 1];
       if (thisProps !== undefined) {
-        this.symbolTable.declare('this', SymbolType.VARIABLE, UcodeType.OBJECT, node);
+        const instanceType = this.thisInstanceTypeStack[this.thisInstanceTypeStack.length - 1] ?? null;
+        this.symbolTable.declare('this', SymbolType.VARIABLE, instanceType ?? UcodeType.OBJECT, node);
         const thisSym = this.symbolTable.lookupOpenScopes('this');
         if (thisSym) {
           thisSym.propertyTypes = new Map(thisProps);
@@ -6046,6 +6483,14 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
           }
         }
       }
+      // In-place re-parenting: `proto(w, P)` attaches P's chain to the EXISTING
+      // binding w (ucode replaces any previous prototype). Merge P's shape under
+      // w's own members so prototype methods resolve from here on.
+      const pc = asProtoCall(node);
+      if (pc && pc.value.type === 'Identifier') {
+        const sym = this.symbolTable.resolveReference(pc.value.name, pc.value.start);
+        if (sym) this.stampProtoShapeOnSymbol(sym, pc.value, pc.protoExpr, 'reparent');
+      }
     }
 
     // Version-gate calls to global builtins introduced after the configured target
@@ -6557,6 +7002,12 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
             const propTypes = this.inferObjectLiteralPropertyTypes(node.right);
             if (propTypes) symbol.propertyTypes = propTypes;
           }
+          // `w = proto(V, P)` — same merged-chain stamping as the declarator path
+          // (Case 1c), so a reassigned binding resolves prototype members too.
+          else if (symbol) {
+            const pc = asProtoCall(node.right);
+            if (pc) this.stampProtoShapeOnSymbol(symbol, pc.value, pc.protoExpr, 'binding');
+          }
 
           // Propagate return property types from function call at assignment
           if (functionReturnType && symbol && node.right.type === 'CallExpression') {
@@ -6928,6 +7379,19 @@ private inferImportedFsFunctionReturnType(node: AstNode): UcodeDataType | null {
               }
             }
             if (locs.size > 0) this.functionReturnPropertyLocations.get(this.currentFunctionNode)?.push(locs);
+          }
+        }
+        // `return proto({…}, P)` — the constructor idiom (docs/prototypes-as-a-
+        // first-class-concept.md): the returned value is the object with P's
+        // chain attached. Record the MERGED shape (own fields over the chain) so
+        // `let w = make()` resolves prototype members like any factory return.
+        else if (node.argument && asProtoCall(node.argument)) {
+          const shape = this.protoLayerShape(node.argument);
+          if (shape.props.size > 0) {
+            this.functionReturnPropertyTypes.get(this.currentFunctionNode)?.push(shape.props);
+          }
+          if (shape.locs.size > 0) {
+            this.functionReturnPropertyLocations.get(this.currentFunctionNode)?.push(shape.locs);
           }
         }
         // Gap 1 (registry value-shape): `return map[k]` where `map` is a locally

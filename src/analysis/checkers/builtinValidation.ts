@@ -8,6 +8,7 @@ import { type TypeError, type TypeWarning } from '../types';
 import type { JsonReadability } from '../typeChecker';
 import { validateJsonText } from '../jsonTextValidator';
 import { UcodeErrorCode } from '../errorConstants';
+import { isResourceBackedObjectType } from '../moduleDispatch';
 import { isKnownObjectType, OBJECT_REGISTRIES } from '../moduleDispatch';
 import { regexTypeRegistry, analyzeCaptureGroups, type CaptureGroupInfo } from '../regexTypes';
 
@@ -3004,6 +3005,22 @@ export class BuiltinValidator {
     return UcodeType.UNKNOWN;
   }
 
+  /** The handle type name when `arg` is provably a C resource (every non-null
+   *  member of its type is resource-backed), else null. A `handle | null` reads
+   *  as a definite handle here — both branches throw in proto() — but a genuine
+   *  `object | handle` union proves nothing. */
+  private resourceHandleName(arg: AstNode | undefined): string | null {
+    if (!arg) return null;
+    const full = this.getNodeFullType(arg);
+    if (full === null) return null;
+    const candidates = getUnionTypes(full).filter(m => singleTypeToBase(m) !== UcodeType.NULL);
+    if (candidates.length === 0) return null;
+    const names = candidates.map(m => extractModuleType(m)?.moduleName ?? getObjectTypeName(m));
+    const first = names[0];
+    if (first === null || first === undefined) return null;
+    return names.every(n => n !== null && isResourceBackedObjectType(n)) ? first : null;
+  }
+
   validateProtoFunction(node: CallExpressionNode): boolean {
     if (!this.checkArgumentCount(node, 'proto', 1)) return true;
 
@@ -3012,18 +3029,77 @@ export class BuiltinValidator {
       // tolerates ANY value: a non-object/array argument simply returns null (no
       // throw), so the argument is not type-restricted. (auto-docs #150)
     } else {
-      // 2-arg form: proto(obj, proto_obj) — set prototype, returns first arg
-      // C source: returns the first argument directly (ucv_get)
+      // 2-arg form: proto(target, prototype) — attaches and returns the TARGET
+      // (lib.c uc_proto: `return ucv_get(val)`).
+      //
+      // Both operands are strict, and a violation THROWS rather than returning
+      // null: uc_proto raises EXCEPTION_TYPE whenever ucv_prototype_set() fails,
+      // which it does unless the target is an ARRAY or OBJECT *and* the
+      // prototype is an OBJECT (types.c ucv_prototype_set). Verified against the
+      // interpreter: `proto({}, null)`, `proto({}, [1,2])`, `proto({}, 5)`,
+      // `proto(5, {})`, `proto("str", {})` and `proto(<fs.file>, {})` all throw
+      // "Passed value is neither a prototype, resource or object".
       const argType = this.getNodeType(node.arguments[0]);
       if (argType === UcodeType.OBJECT || argType === UcodeType.ARRAY) {
         this.narrowedReturnType = argType;
       } else if (argType !== UcodeType.UNKNOWN && !argType.includes(' | ')) {
-        // Definitely wrong type — returns null
+        // A provably-wrong target THROWS (see above), so nothing is returned at
+        // all. Kept typed NULL — the argument-type error above is the real
+        // report, and NULL keeps any downstream (unreachable) code from
+        // inheriting a bogus object shape. Pinned by the auto-docs suite (#150).
         this.narrowedReturnType = UcodeType.NULL;
       }
-      this.validateArgumentType(node.arguments[0], 'proto', 1, [UcodeType.OBJECT, UcodeType.ARRAY]);
-      if (node.arguments[1]) {
-        this.validateArgumentType(node.arguments[1], 'proto', 2, [UcodeType.OBJECT, UcodeType.NULL]);
+      // A C RESOURCE handle types as an object here, so the ordinary contract
+      // check would wave it through — but ucv_prototype_set (types.c) accepts
+      // only UC_ARRAY/UC_OBJECT targets and requires a UC_OBJECT prototype, so
+      // a handle in EITHER position always throws. Verified live (owrt-main
+      // 2026-08-21): fs.file/fs.dir/fs.proc/uloop.timer/uci.cursor throw as
+      // targets, a handle used as the prototype throws too, and the plain
+      // dictionaries in the same registry (fs.stat, fs.statvfs, the exception
+      // object) attach fine.
+      //
+      // Reported INSTEAD of the generic contract diagnostic, not alongside it:
+      // "may be null" is useless advice for a call that throws either way.
+      const targetArg = node.arguments[0];
+      const targetHandle = this.resourceHandleName(targetArg);
+      if (targetArg && targetHandle !== null) {
+        this.pushTypeMismatch(
+          `proto() cannot attach a prototype to a ${targetHandle} handle - this throws at runtime. Only arrays and objects can carry one.`,
+          targetArg.start,
+          targetArg.end,
+        );
+      } else {
+        this.validateArgumentType(node.arguments[0], 'proto', 1, [UcodeType.OBJECT, UcodeType.ARRAY]);
+      }
+      const protoArg = node.arguments[1];
+      if (protoArg) {
+        // The ordinary contract check. Deliberately still admits NULL, so that
+        // the idiomatic `proto(ret, proto(this))` — whose second operand is the
+        // `object | null` read form, and which is correct wherever the receiver
+        // actually has a prototype (every real use in the OpenWrt trees) — is
+        // not reported, and so unknown arguments keep the same treatment every
+        // other builtin gives them.
+        const protoHandle = this.resourceHandleName(protoArg);
+        if (protoHandle !== null) {
+          this.pushTypeMismatch(
+            `proto() cannot use a ${protoHandle} handle as a prototype - this throws at runtime. A prototype must be a plain object.`,
+            protoArg.start,
+            protoArg.end,
+          );
+        } else {
+          this.validateArgumentType(protoArg, 'proto', 2, [UcodeType.OBJECT, UcodeType.NULL]);
+        }
+        // ...plus the one fact that contract cannot express: null is NOT a
+        // valid prototype either. `proto(x, null)` raises at runtime; it does
+        // not detach the prototype (there is no detach form). Only a PROVABLY
+        // null operand is reported — a `T | null` union is the idiom above.
+        if (this.getNodeType(protoArg) === UcodeType.NULL) {
+          this.pushTypeMismatch(
+            'proto() cannot take null as a prototype - this throws at runtime. A prototype must be an object, and there is no way to detach one once set.',
+            protoArg.start,
+            protoArg.end,
+          );
+        }
       }
     }
 

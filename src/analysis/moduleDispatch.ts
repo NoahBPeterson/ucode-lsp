@@ -239,3 +239,46 @@ export function validateImport(m: KnownModule, name: string): Either.Either<true
 export function getObjectMethodDocumentation(t: KnownObjectType, method: string): Option.Option<string> {
   return OBJECT_REGISTRIES[t].getMethodDocumentation(method);
 }
+
+/**
+ * Object types backed by a C **resource** (`uc_type_declare`), as opposed to
+ * the plain ucode dictionaries the rest of the registry describes.
+ *
+ * This distinction is observable and matters: only arrays and objects can carry
+ * a prototype (types.c `ucv_prototype_set`), so `proto(<resource>, {…})` throws
+ * — while `proto(<plain dict>, {…})` is perfectly legal.
+ *
+ * Provenance: every name below is declared with `uc_type_declare()` in the
+ * vendored `ucode/lib/*.c` or in the OpenWrt packages under `openwrt/`.
+ * Spot-checked against the interpreter (owrt-main, 2026-08-21) — `fs.file`,
+ * `fs.dir`, `fs.proc`, `uloop.timer` and `uci.cursor` all report
+ * `type() == "resource"` and throw on attach, while `fs.stat`, `fs.statvfs`
+ * and the exception object report `"object"` and attach fine.
+ *
+ * NOT resource-backed (deliberately absent): fs.stat*, fs.statvfs,
+ * uci.section, uhttpd, netifd.*, luci.*, exception.
+ */
+export const RESOURCE_BACKED_OBJECT_TYPES: ReadonlySet<KnownObjectType> = new Set([
+  // core ucode (ucode/lib/*.c)
+  'fs.file', 'fs.dir', 'fs.proc', 'io.handle',
+  'nl80211.listener', 'rtnl.listener', 'socket',
+  'struct.buffer', 'struct.instance', // C name: "struct.format"
+  'ubus.channel', 'ubus.connection', 'ubus.deferred', 'ubus.listener',
+  'ubus.notify', 'ubus.object', 'ubus.request', 'ubus.subscriber',
+  'uci.cursor',
+  'uloop.handle', 'uloop.interval', 'uloop.pipe', 'uloop.process',
+  'uloop.signal', 'uloop.task', 'uloop.timer',
+  'zlib.deflate', 'zlib.inflate',
+  // OpenWrt packages (openwrt/**)
+  'bpf.module', 'bpf.map', 'bpf.program', 'bpf.map.iterator', // C name: "bpf.map_iter"
+  'hostapd.global', 'hostapd.bss', 'hostapd.iface',
+  'wpas.global', 'wpas.iface',
+  'mbedtls.pk', 'mbedtls.crt',
+  'uline.state', 'uline.argp',
+]);
+
+/** True when the type name denotes a C resource handle rather than a plain
+ *  ucode dictionary. See RESOURCE_BACKED_OBJECT_TYPES. */
+export function isResourceBackedObjectType(name: string): boolean {
+  return isKnownObjectType(name) && RESOURCE_BACKED_OBJECT_TYPES.has(name);
+}

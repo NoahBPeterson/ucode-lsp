@@ -111,6 +111,7 @@ export enum UcodeErrorCode {
   HANDLER_ENTRY_WRONG_FORM = 'UC8013',            // in a handler template, handle_request defined as a local/export/let form — uhttpd looks it up on the global scope, so only `global.handle_request = …` is found.
   UNNECESSARY_DISABLE_DIRECTIVE = 'UC8014',       // a code-targeted `ucode-lsp disable UCxxxx` directive that suppressed nothing — stale/wrong suppression worth cleaning up
   BLANKET_DISABLE_NARROWABLE = 'UC8015',          // a USED bare `ucode-lsp disable` — it hides EVERY diagnostic on the line; the codes it actually suppresses are known, so it can be narrowed to them
+  CYCLIC_PROTOTYPE_CHAIN = 'UC8016',              // proto() calls form a cyclic prototype chain — reading any MISSING member walks it forever (no cycle guard in the VM; container-proven hang, docs/cyclic-proto-chain-hang.md)
 
   // System and internal errors (9000-9999)
   ANALYSIS_ERROR = 'UC9002'

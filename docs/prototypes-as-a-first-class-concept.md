@@ -1,9 +1,55 @@
 # Model `proto()` once, as its own concept — not per-check special cases
 
-Status: **OPEN — 🟠 HIGH VALUE** (unlocks completion/hover/go-to-def for
-OpenWrt's standard OOP pattern). Filed 2026-08-14 on user direction: "handle
-proto objects like the special objects that they are, rather than special
-arrays or special objects or special everythings."
+Status: **BUILT 0.8.11 (uncommitted, awaiting user test).** Filed 2026-08-14 on
+user direction: "handle proto objects like the special objects that they are,
+rather than special arrays or special objects or special everythings."
+
+## As built (2026-08-15)
+
+One model, `src/analysis/protoResolver.ts` (pure AST helpers: `asProtoCall`,
+`collectPrototypeInstances`, `collectPrototypeMethodFunctions`,
+`declaratorInitNear`, `instanceBaseType`), consumed by the semantic analyzer,
+which stamps the MERGED chain shape onto the ordinary symbol maps
+(`propertyTypes` / `propertyReturnTypes` / `propertyDefinitionLocations` /
+`nestedPropertyTypes`) — so completion, hover, go-to-definition, signature
+help, member typing, `this` typing, and json() readability all resolve through
+the channels they already read. Stamping paths: declarator `let w = proto(V,P)`
+(Case 1c), assignment `w = proto(V,P)`, bare re-parent `proto(w, P);` (REPLACE
+semantics: previous chain's contributions removed first, own members cloned
+before mutation — several stamp paths share map references), and factory
+returns `return proto({…}, P)` (flows through the existing
+returnPropertyTypes/copyFactoryReturnToBinding pipeline).
+
+`this` inside prototype methods is the INSTANCE: base type from `proto(V,P)`
+sites (array instances keep type `array` — `shift(this)` legal; commits only
+when EVERY instance's type is proven), fields as the union of instance own
+fields over the table's (known types beat UNKNOWN — the table is visited before
+instance sites, so constructor-param-fed fields would otherwise swallow proven
+types). Covers all three real idioms: inline methods, `let wdev = {…}; return
+proto(wdev, wdev_proto)` (identifier instances resolve scope-aware via
+`declaratorInitNear`), and the wifi-scripts free-function table (`function
+setup() { this.state… }` + `const wdev_proto = { setup, … }` — declarations
+referenced by name from an instanced table get instance-shaped `this`).
+`ThisExpression` in the type checker now reads the declared `this` symbol
+instead of hardcoding OBJECT. `findFunctionNodeAt` (server.ts) also matches a
+property KEY anchor so signature help resolves key-anchored member locations.
+
+Verified: 87 new tests (47 unit `tests/unit/test-proto-resolver.test.js`, 40
+e2e `tests/test-proto-first-class.test.js` — cyclic re-parenting, mixed
+object+array instances, own-shadows-proto, 1-arg proto, extra-arg proto
+(oracle-checked), spread args/properties, computed keys, aliasing, ambiguous
+tables, scope decoys (incl. arrow scopes), known-beats-unknown, alias chains,
+UC8016 incl. REPLACE-edge identity, sig help + go-to-def through shorthand
+tables), demo
+`zzzz/proto-first-class-demo.uc` (0 diagnostics, hovers server-verified, runs
+in owrt-main). Corpus sweep 284 files: **−8 / +0** — LuCI runtime.uc ×6
+(`this.scopes` now array: push/pop warnings gone, both copies) and unetmsg
+client.uc ×2 (former sev1 ERRORS: `keys(this.cb_pub)` / `keys(this.cb_sub)`).
+
+Still open from the proposal: typo detection (item 5 — severity undecided, a
+user call); method return types through same-file factory BINDINGS
+(`let w2 = wdev_new(); w2.get_name()` hovers `unknown` — parity with existing
+plain-object factory behavior, not a regression).
 
 ## proto() is NOT rare — it is ucode's class mechanism
 

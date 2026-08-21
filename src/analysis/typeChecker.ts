@@ -1062,8 +1062,14 @@ export class TypeChecker {
         return this.checkTryStatement(node);
       case 'CatchClause':
         return this.checkCatchClause(node);
-      case 'ThisExpression':
-        return UcodeType.OBJECT;
+      case 'ThisExpression': {
+        // Inside a PROTOTYPE literal's methods the analyzer declares `this` as the
+        // INSTANCE type — proto() preserves it, so an array instance keeps type
+        // "array" and `shift(this)` is legal (docs/prototypes-as-a-first-class-
+        // concept.md). Plain object-literal methods keep the OBJECT default.
+        const thisSym = this.symbolTable.resolveReference('this', node.start);
+        return thisSym ? thisSym.dataType : UcodeType.OBJECT;
+      }
       case 'DeleteExpression':
         return this.checkDeleteExpression(node);
       default:
