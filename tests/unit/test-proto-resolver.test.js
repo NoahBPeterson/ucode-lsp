@@ -8,7 +8,7 @@
 import { test, expect, describe } from 'bun:test';
 import { UcodeLexer } from '../../src/lexer/index.ts';
 import { UcodeParser } from '../../src/parser/ucodeParser.ts';
-import { asProtoCall, collectPrototypeInstances, collectPrototypeMethodFunctions, declaratorInitNear, detectProtoCycles, instanceBaseType } from '../../src/analysis/protoResolver.ts';
+import { asProtoCall, collectPrototypeInstances, collectPrototypeMethodFunctions, declaratorInitNear, detectProtoCycles, instanceBaseType, staticLiteralKeys } from '../../src/analysis/protoResolver.ts';
 import { walkAst } from '../../src/ast/astChildren.ts';
 import { UcodeType } from '../../src/analysis/symbolTable.ts';
 
@@ -440,5 +440,35 @@ describe('detectProtoCycles — ρ shapes (tails into a cycle)', () => {
   test('tails are empty when there is no cycle at all', () => {
     const cycles = detectProtoCycles(parse('const A = {};\nconst B = {};\nproto(A, B);\n'));
     expect(cycles.length).toBe(0);
+  });
+});
+
+describe('staticLiteralKeys — key shapes (parser reality, not assumption)', () => {
+  // Verified against the parser: plain, quoted AND shorthand keys all parse as
+  // Literal; only a COMPUTED key parses as an Identifier, and that shape exits
+  // earlier. So a prototype table's member set is provable only when every key
+  // is a string literal.
+  test('plain, quoted and shorthand keys are all enumerable', () => {
+    const ast = parse('function fn() {}\nconst P = { plain: 1, "quoted": 2, fn };\nlet w = proto({}, P);\n');
+    const lit = [...collectPrototypeInstances(ast).keys()][0];
+    expect(staticLiteralKeys(lit).sort()).toEqual(['fn', 'plain', 'quoted']);
+  });
+
+  test('a NUMERIC key makes the set unprovable (not a member name)', () => {
+    const ast = parse('const P = { 5: 1, ok: 2 };\nlet w = proto({}, P);\n');
+    const lit = [...collectPrototypeInstances(ast).keys()][0];
+    expect(staticLiteralKeys(lit)).toBeNull();
+  });
+
+  test('a COMPUTED key makes the set unprovable', () => {
+    const ast = parse('const k = "dyn";\nconst P = { [k]: 1, ok: 2 };\nlet w = proto({}, P);\n');
+    const lit = [...collectPrototypeInstances(ast).keys()][0];
+    expect(staticLiteralKeys(lit)).toBeNull();
+  });
+
+  test('a numeric-keyed table therefore blocks the proven-hang proof', () => {
+    // The cycle warning still stands; only the ERROR needs a provable member set.
+    const ast = parse('const A = { 5: 1 };\nconst B = { b: 2 };\nproto(A, B);\nproto(B, A);\n');
+    expect(detectProtoCycles(ast).length).toBe(1);
   });
 });

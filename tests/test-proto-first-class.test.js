@@ -674,3 +674,65 @@ describe('proto() argument contract (lib.c uc_proto + types.c ucv_prototype_set)
     }
   });
 });
+
+describe('e2e coverage of the resource + nested-chain paths', () => {
+  // These paths were previously exercised ONLY by direct-import unit tests,
+  // which run in the bun process and never touch the spawned server — so the
+  // server-side code was untested end-to-end. Driving them through the LSP.
+  const protoErrs = (diags) => diags.filter(d => /proto\(\)/.test(d.message));
+
+  test('resource handle as TARGET is rejected through the server', async () => {
+    const code = 'import { open } from "fs";\nlet fh = open("/etc/passwd", "r");\nif (fh) {\n\tproto(fh, { m: 1 });\n}\nprint(fh);\n';
+    const errs = protoErrs(await server.getDiagnostics(code, fp('e2e-res-target')));
+    expect(errs.length).toBe(1);
+    expect(errs[0].message).toMatch(/cannot attach a prototype to a fs\.file handle/);
+  });
+
+  test('resource handle as PROTOTYPE is rejected through the server', async () => {
+    const code = 'import { open } from "fs";\nlet fh = open("/etc/passwd", "r");\nlet t = { own: 1 };\nif (fh) {\n\tproto(t, fh);\n}\nprint(t);\n';
+    const errs = protoErrs(await server.getDiagnostics(code, fp('e2e-res-proto')));
+    expect(errs.length).toBe(1);
+    expect(errs[0].message).toMatch(/cannot use a fs\.file handle as a prototype/);
+  });
+
+  test('a uci.cursor handle is caught too (a different registry entry)', async () => {
+    const code = 'import * as uci from "uci";\nlet c = uci.cursor();\nproto(c, { m: 1 });\nprint(c);\n';
+    const errs = protoErrs(await server.getDiagnostics(code, fp('e2e-res-uci')));
+    expect(errs.some(d => /uci\.cursor handle/.test(d.message))).toBe(true);
+  });
+
+  test('a plain DICT from the same module still attaches (fs.stat)', async () => {
+    const code = 'import { stat } from "fs";\nlet st = stat("/etc/passwd");\nif (st) {\n\tproto(st, { m: 1 });\n}\nprint(st);\n';
+    expect(protoErrs(await server.getDiagnostics(code, fp('e2e-dict-ok'))).length).toBe(0);
+  });
+
+  test('nested proto() — `proto(proto(v, A), B)` resolves both layers', async () => {
+    const code = 'const A = {\n\tfrom_a: function() {\n\t\treturn "a";\n\t},\n};\nconst B = {\n\tfrom_b: function() {\n\t\treturn "b";\n\t},\n};\nlet w = proto(proto({ own: 1 }, A), B);\nprint(w);\nw.';
+    const lines = code.split('\n');
+    const ls = labels(await server.getCompletions(code, fp('e2e-nested'), lines.length - 1, 2));
+    for (const want of ['from_a', 'from_b', 'own']) expect(ls).toContain(want);
+  });
+
+  test('a nested proto() instance keeps the INNER value type (array stays array)', async () => {
+    const code = 'const A = {\n\tgo: function() {\n\t\treturn shift(this);\n\t},\n};\nconst B = {\n\tother: function() {\n\t\treturn 1;\n\t},\n};\nlet w = proto(proto([1, 2], A), B);\nprint(w.go());\n';
+    const diags = await server.getDiagnostics(code, fp('e2e-nested-arr'));
+    expect(diags.filter(d => d.severity === 1).length).toBe(0);
+  });
+
+  test('a prototype name whose declarator is NOT an object literal resolves nothing', async () => {
+    const code = 'let P = make_proto();\nlet w = proto({ own: 1 }, P);\nprint(w);\nw.';
+    const lines = code.split('\n');
+    const ls = labels(await server.getCompletions(code, fp('e2e-nonlit'), lines.length - 1, 2));
+    expect(ls).toContain('own');       // own members still resolve
+    expect(ls).not.toContain('from_a'); // nothing invented from the opaque table
+  });
+
+  test('a dead-end chain alongside a real cycle is not treated as a tail', async () => {
+    // A→B dead-ends; C↔D is the cycle. Only C and D may be flagged.
+    const code = 'const A = { a1: 1 };\nconst B = { b1: 1 };\nconst C = { c1: 1 };\nconst D = { d1: 1 };\nproto(A, B);\nproto(C, D);\nproto(D, C);\nprint(A.nope);\n';
+    const diags = await server.getDiagnostics(code, fp('e2e-deadend'));
+    const hits = diags.filter(d => d.code === 'UC8016');
+    expect(hits.filter(d => d.severity === 2).length).toBe(2); // C↔D only
+    expect(hits.filter(d => d.severity === 1).length).toBe(0); // A.nope cannot hang
+  });
+});

@@ -219,10 +219,12 @@ export function protoOperandKey(expr: AstNode): string | null {
 export function staticLiteralKeys(lit: ObjectExpressionNode): string[] | null {
   const out: string[] = [];
   for (const prop of lit.properties) {
+    // A COMPUTED key (`{ [k]: 1 }`) is the only shape whose key parses as an
+    // Identifier, and it is unknowable anyway — bail before looking at it.
+    // Every other key, including shorthand `{ f }`, parses as a Literal.
     if (prop.type !== 'Property' || prop.computed) return null;
-    if (prop.key.type === 'Identifier') out.push(prop.key.name);
-    else if (prop.key.type === 'Literal' && typeof prop.key.value === 'string') out.push(prop.key.value);
-    else return null;
+    if (prop.key.type === 'Literal' && typeof prop.key.value === 'string') out.push(prop.key.value);
+    else return null; // a numeric key (`{ 5: 1 }`) is not a member NAME
   }
   return out;
 }
