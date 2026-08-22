@@ -1,5 +1,113 @@
 # Changelog
 
+## 0.8.11 (2026-08-21)
+
+Everything since `v0.8.6` (0.8.7–0.8.11). Two arcs. First, **all unsoundness was banned
+from the codebase**: 842 `any`/`unknown`/`Record<string, unknown>`, then 1,444 `as`
+assertions, then 380 `!` non-null assertions — eradicated and gated by lint rules that
+fail the build. Second, **`proto()` was modeled as what it actually is**: ucode's OOP
+mechanism, which now resolves through every editor feature. Chasing the ban and the
+prototype work each surfaced real bugs — in this codebase, in LuCI, and in the ucode
+interpreter itself.
+
+Every change validated by a 284-file / 77,400-line differential sweep across the LuCI
+tree, the OpenWrt package tree, GL.iNet firmware, and community packages.
+
+### `proto()` is ucode's OOP (0.8.11)
+
+ucode has no `class`; `proto(instance, table)` is the entire object story — 32 call
+sites across the tracked trees. Until now nothing resolved through it: completion after
+`w.` was empty, `w.get_name` hovered `unknown`, go-to-definition did nothing, and three
+separate checks had each grown their own private prototype awareness.
+
+- Modeled **once**, in `src/analysis/protoResolver.ts`. The analyzer stamps the merged
+  chain shape onto the ordinary symbol maps, so completion, hover, go-to-definition,
+  signature help, member typing and `json()` readability all resolve through channels
+  they already read.
+- Covers every real idiom: `let w = proto({…}, P)`, reassignment, the bare
+  `proto(w, P);` re-parent (with ucode's **replace-not-merge** semantics), factory
+  returns, and the wifi-scripts free-function table (`function setup(){…}` +
+  `const wdev_proto = { setup, … }`).
+- **`this` is the instance**, not the prototype table. Its base type comes from the
+  `proto()` sites, so an array instance keeps type `array` and `shift(this)` is legal —
+  killing that false positive. Severity follows the evidence: all-object instances still
+  error, mixed or unproven ones warn.
+- **`proto()`'s own contract**, corrected against `lib.c`/`types.c` and the interpreter:
+  a resource handle can be read from but never given a prototype nor used as one, and a
+  null prototype throws rather than detaching. The hover said otherwise; it now explains
+  the type-preservation, replace semantics, and cycle hazard.
+
+### UC8016: cyclic prototype chains hang the VM
+
+`ucv_key_get`/`ucv_property_get` walk `proto->proto` with no cycle guard, and
+`ucv_prototype_set` accepts a cycle without error. A cyclic program runs correctly until
+the first read of a member that exists nowhere on the chain — which then spins forever
+at 100% CPU. Minimum repro: `ucode -e 'let o = {}; proto(o, o); o.x;'`.
+
+- Reported upstream as [jow-/ucode#425](https://github.com/jow-/ucode/issues/425).
+- **Warning** on the calls that create a cycle; **error** at reads proven to hang,
+  including ρ-shaped tails that run into a cycle. Writes, deletes, pre-closure reads and
+  guarded reads are exempt — each verified against the interpreter.
+
+### `json()` parses; it cannot serialize (0.8.10)
+
+A GL.iNet tree shipped `writef(path, json(obj))`, which throws on every call — the
+helper behind it could never have worked. `json()` is parse-only.
+
+- **UC2017** with a `sprintf("%J", value)` quick fix. A string literal is validated as
+  JSON text against **json-c's** grammar, not `JSON.parse` — json-c accepts single
+  quotes, trailing commas, comments, `NaN` and leading zeros, so the JS parser would
+  false-positive on working input (42-case differential, zero mismatches).
+- Severity follows proof: a proven throw is an error, an unprovable one warns. A
+  duck-typed or prototype-supplied `read()` counts as readable, so `json(fs.open(…))`
+  and ucode's own streaming-array idiom stay silent.
+- `{number}` in JSDoc now means `integer | double` rather than collapsing to one.
+
+### All unsoundness banned (0.8.8, plus the `as`/`!` follow-through)
+
+- `AstNode` became a real discriminated union, which is what made ~500 bag-casts
+  *deletable* rather than replaceable. **842** `any`/`unknown`/`Record<string, unknown>`
+  → 0; then **1,444** `as` assertions → 0; then **380** `!` assertions → 0.
+- Four oxlint rules fail `bun run compile` on reintroduction.
+- The refactor was a bug hunt, not a cleanup. It exposed: `g++` classified as a pure
+  body (it is a `UnaryExpression`, not the nonexistent `UpdateExpression` the purity
+  check looked for); UC8001 never descending into `catch` bodies; and the comma operator
+  yielding `unknown` instead of its right operand (0.8.9).
+
+### Real bugs found in real code
+
+- **LuCI `dispatcher.uc`/`sys.uc`**: `st.user_exec` is always null (the field lives on
+  `.perm`), and `null == false` is false — a permission check that never fires.
+  `sprintf("%x", st.ino)` is a constant `"0"` (the field is `inode`).
+- **LuCI `runtime.uc`** ×6 and **unetmsg `client.uc`** ×2 (hard errors): false positives
+  that the prototype work eliminated.
+
+### Coverage and dead code
+
+- Coverage measures only the spawned server, which hid that both resource-handle checks
+  had no end-to-end test at all; added.
+- Three dead functions removed. `checkTryStatement` walked a `finalizer` that cannot
+  exist — ucode's grammar has no `finally`. A diagnostic filter keyed on a message
+  containing `'in' operator` that nothing emits was the only caller of
+  `findNullGuardAtPosition`, itself the only caller of `findContainingNullGuard`; the
+  whole 186-line island went. Both of `semanticAnalyzer`'s largest uncovered regions
+  turned out to be unreachable rather than untested.
+- typeChecker 91.5 → 92.5%, semanticAnalyzer 91.2 → 92.6%.
+
+### Also in this range
+
+- **Top-level flow refinement** (0.8.7): top-level scripts get a refine-only flow engine,
+  so the conditional-normalize join clears argument diagnostics outside functions too;
+  CFG gained the pre-`try`→`catch` edge.
+- **UC8011 corrected** (0.8.7): the "uncatchable VM abort" was a research misdiagnosis —
+  uhttpd's handler VM is template-mode, and the real hazard is a parse-mode mismatch
+  emitting a raw `.uc` file's source as response text.
+- Switch `case`/block pairing in the CFG; prototype-aware member access; string-index
+  and deferred-init handling.
+
+**Tests: 4,805 passing** across both test systems (+~350 in this range). Corpus sweep for
+the prototype work: **−8 / +0** — every removed diagnostic a false positive.
+
 ## 0.8.6 (2026-08-09)
 
 Everything since `v0.7.89` (0.7.90–0.8.6). Four arcs: the analyzer got **~100× faster**
